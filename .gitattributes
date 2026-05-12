@@ -1,0 +1,1 @@
+installers/0.20.0/verenu-0.20.0-1-x86_64.pkg.tar.zst filter=lfs diff=lfs merge=lfs -text
