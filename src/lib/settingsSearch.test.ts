@@ -29,4 +29,11 @@ describe('settings search', () => {
   it('does not return results from hidden settings sections', () => {
     expect(searchSettings('notification test', visibleSections)).toEqual([]);
   });
+
+  it('routes microphone mute-button dictation to audio settings', () => {
+    expect(searchSettings('mute button dictation', visibleSections)[0]).toMatchObject({
+      section: 'advanced',
+      target: 'audio-mic-mute-button',
+    });
+  });
 });
