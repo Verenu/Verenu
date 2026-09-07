@@ -308,11 +308,8 @@ mod win {
                     log::info!("mic_mute_trigger: ignored pulse — could not reserve starting");
                     return;
                 }
-                // Release the idle PCM client before opening the dictation
-                // capture stream. Waiting for the watcher loop is too late —
-                // both clients would briefly share the mic and flatten the
-                // visualizer.
-                release_active_pcm();
+                // Idle PCM was already released on the blocking pool before
+                // this unmute dispatch ran.
                 let target = WindowTarget::capture_foreground();
                 if let Ok(mut st) = state.lock() {
                     st.target = target;
