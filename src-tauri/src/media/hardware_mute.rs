@@ -6,8 +6,8 @@
 
 use std::collections::HashSet;
 use windows::core::Interface;
-use windows::Win32::Media::Audio::{IAudioMute, IDeviceTopology, IPart, IMMDevice};
-use windows::Win32::System::Com::CLSCTX_ALL;
+use windows::Win32::Media::Audio::{IAudioMute, IDeviceTopology, IMMDevice, IPart};
+use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL};
 
 const MAX_DEPTH: u8 = 16;
 
@@ -21,7 +21,11 @@ impl TopologyMuteWatch {
         let mutes = collect_capture_path_mutes(device);
         let last = mutes
             .iter()
-            .map(|mute| unsafe { mute.GetMute() }.map(|v| v.as_bool()).unwrap_or(false))
+            .map(|mute| {
+                unsafe { mute.GetMute() }
+                    .map(|v| v.as_bool())
+                    .unwrap_or(false)
+            })
             .collect();
         log::info!(
             "mic_mute_trigger: {} hardware mute control(s) on the capture path",
@@ -105,10 +109,12 @@ fn walk_incoming(
         return;
     }
     if let Ok(global_id) = unsafe { part.GetGlobalId() } {
-        if let Ok(id) = unsafe { global_id.to_string() } {
-            if !id.is_empty() && !visited.insert(id) {
-                return;
-            }
+        let id = unsafe { global_id.to_string() }.unwrap_or_default();
+        unsafe {
+            CoTaskMemFree(Some(global_id.0 as *const _));
+        }
+        if !id.is_empty() && !visited.insert(id) {
+            return;
         }
     }
 
@@ -129,10 +135,16 @@ fn try_push_mute(part: &IPart, mutes: &mut Vec<IAudioMute>) {
     let Some(mute) = activate_mute(part) else {
         return;
     };
-    let name = unsafe { part.GetName() }
-        .ok()
-        .and_then(|pwstr| unsafe { pwstr.to_string().ok() })
-        .unwrap_or_else(|| "unnamed".into());
+    let name = match unsafe { part.GetName() } {
+        Ok(pwstr) => {
+            let text = unsafe { pwstr.to_string() }.unwrap_or_else(|_| "unnamed".into());
+            unsafe {
+                CoTaskMemFree(Some(pwstr.0 as *const _));
+            }
+            text
+        }
+        Err(_) => "unnamed".into(),
+    };
     log::info!("mic_mute_trigger: capture-path hardware mute '{name}'");
     mutes.push(mute);
 }
@@ -140,12 +152,8 @@ fn try_push_mute(part: &IPart, mutes: &mut Vec<IAudioMute>) {
 fn activate_mute(part: &IPart) -> Option<IAudioMute> {
     unsafe {
         let mut ppv: *mut std::ffi::c_void = std::ptr::null_mut();
-        part.Activate(
-            CLSCTX_ALL.0,
-            &IAudioMute::IID,
-            Some(&mut ppv),
-        )
-        .ok()?;
+        part.Activate(CLSCTX_ALL.0, &IAudioMute::IID, Some(&mut ppv))
+            .ok()?;
         if ppv.is_null() {
             return None;
         }

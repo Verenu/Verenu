@@ -73,7 +73,7 @@ pub fn device_name_match_score(candidate: &str, desired: &str) -> u8 {
     } else {
         (&nd, &nc)
     };
-    if shorter.len() >= 6 && longer.contains(shorter.as_str()) {
+    if shorter.chars().count() >= 6 && longer.contains(shorter.as_str()) {
         return SCORE_CONTAINS;
     }
     SCORE_NONE
@@ -136,10 +136,7 @@ mod tests {
             device_name_match_score("Microphone (Yeti Nano)", "Yeti Nano"),
             SCORE_NORMALIZED
         );
-        assert_eq!(
-            normalize_device_name("Microphone (Yeti Nano)"),
-            "yeti nano"
-        );
+        assert_eq!(normalize_device_name("Microphone (Yeti Nano)"), "yeti nano");
     }
 
     #[test]
@@ -156,10 +153,7 @@ mod tests {
     #[test]
     fn bluetooth_product_substring_matches() {
         assert_eq!(
-            device_name_match_score(
-                "Headset (WH-1000XM5 Hands-Free AG Audio)",
-                "WH-1000XM5"
-            ),
+            device_name_match_score("Headset (WH-1000XM5 Hands-Free AG Audio)", "WH-1000XM5"),
             SCORE_CONTAINS
         );
     }

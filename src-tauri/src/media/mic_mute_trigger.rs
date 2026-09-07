@@ -35,11 +35,9 @@ mod win {
         BecameMuted { method: DetectionMethod },
         BecameUnmuted { method: DetectionMethod },
     }
-    use crate::media::digital_silence::{
-        DigitalSilenceDetector, MuteDebouncer, SilenceTransition,
-    };
-    use crate::pipeline::{self, start_recording_session, SharedState};
     use crate::core::window_geometry::WindowTarget;
+    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer, SilenceTransition};
+    use crate::pipeline::{self, start_recording_session, SharedState};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
@@ -50,8 +48,8 @@ mod win {
         IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
     };
     use windows::Win32::Media::Audio::{
-        eCapture, eConsole, AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE_ACTIVE,
-        ENDPOINT_HARDWARE_SUPPORT_MUTE, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+        eCapture, eConsole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+        AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE_ACTIVE, ENDPOINT_HARDWARE_SUPPORT_MUTE,
     };
     use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
     use windows::Win32::System::Com::{
@@ -88,8 +86,9 @@ mod win {
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     static STARTED: AtomicBool = AtomicBool::new(false);
     static WATCHER_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
-    static EVENT_TX: OnceLock<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>> =
-        OnceLock::new();
+    static EVENT_TX: OnceLock<
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
+    > = OnceLock::new();
     /// Instant the selected mic last entered the muted bit, used to recognize
     /// a mute→unmute pulse as a hands-free toggle.
     static PULSE_MUTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
@@ -111,10 +110,7 @@ mod win {
     }
 
     fn pcm_is_running() -> bool {
-        ACTIVE_PCM
-            .lock()
-            .ok()
-            .is_some_and(|slot| slot.is_some())
+        ACTIVE_PCM.lock().ok().is_some_and(|slot| slot.is_some())
     }
 
     fn install_active_pcm(guard: PcmMonitorGuard) {
@@ -123,7 +119,8 @@ mod win {
         }
     }
 
-    fn event_tx_slot() -> &'static std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>
+    fn event_tx_slot(
+    ) -> &'static std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>
     {
         EVENT_TX.get_or_init(|| std::sync::Mutex::new(None))
     }
@@ -271,10 +268,7 @@ mod win {
 
                 if recording {
                     crate::core::hotkey::set_handless_active(false);
-                    tauri::async_runtime::spawn(pipeline::run_pipeline(
-                        app.clone(),
-                        state.clone(),
-                    ));
+                    tauri::async_runtime::spawn(pipeline::run_pipeline(app.clone(), state.clone()));
                     log::info!("mic_mute_trigger: dictation stop requested");
                     return;
                 }
@@ -769,7 +763,8 @@ mod win {
                     let Ok(candidate) = device.name() else {
                         continue;
                     };
-                    let score = crate::media::device_match::device_name_match_score(&candidate, name);
+                    let score =
+                        crate::media::device_match::device_name_match_score(&candidate, name);
                     if score == crate::media::device_match::SCORE_NONE {
                         continue;
                     }
@@ -829,8 +824,8 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[f64], _| {
-                        let buf: Vec<f32> = data.iter().map(|s| *s as f32).collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) = pcm_stats(data.iter().map(|s| (*s as f32).abs()));
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -840,8 +835,9 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[i16], _| {
-                        let buf: Vec<f32> = data.iter().map(|s| *s as f32 / 32768.0).collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) =
+                            pcm_stats(data.iter().map(|s| (*s as f32 / 32768.0).abs()));
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -851,11 +847,9 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[i32], _| {
-                        let buf: Vec<f32> = data
-                            .iter()
-                            .map(|s| *s as f32 / 2147483648.0)
-                            .collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) =
+                            pcm_stats(data.iter().map(|s| (*s as f32 / 2147483648.0).abs()));
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -865,8 +859,9 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[i8], _| {
-                        let buf: Vec<f32> = data.iter().map(|s| *s as f32 / 128.0).collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) =
+                            pcm_stats(data.iter().map(|s| (*s as f32 / 128.0).abs()));
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -876,11 +871,11 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[u16], _| {
-                        let buf: Vec<f32> = data
-                            .iter()
-                            .map(|s| (*s as f32 - 32768.0) / 32768.0)
-                            .collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) = pcm_stats(
+                            data.iter()
+                                .map(|s| ((*s as f32 - 32768.0) / 32768.0).abs()),
+                        );
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -890,8 +885,9 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[u8], _| {
-                        let buf: Vec<f32> = data.iter().map(|s| (*s as f32 - 128.0) / 128.0).collect();
-                        handle_pcm_block(&buf, &detector_cb, &last_ep);
+                        let (silent, abs_max) =
+                            pcm_stats(data.iter().map(|s| ((*s as f32 - 128.0) / 128.0).abs()));
+                        handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
                     None,
@@ -910,6 +906,39 @@ mod win {
         Ok(())
     }
 
+    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
+        let mut silent = 0u32;
+        let mut abs_max = 0.0f32;
+        for a in abs_samples {
+            if a > abs_max {
+                abs_max = a;
+            }
+            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
+                silent += 1;
+            }
+        }
+        (silent, abs_max)
+    }
+
+    fn handle_pcm_stats(
+        total: usize,
+        silent: u32,
+        abs_max: f32,
+        detector: &Mutex<DigitalSilenceDetector>,
+        last_endpoint_event: &Mutex<Option<(bool, Instant)>>,
+    ) {
+        let now = Instant::now();
+        let Ok(mut det) = detector.lock() else {
+            return;
+        };
+        let Some(transition) =
+            det.push_chunk_stats(now, silent, total as u32, abs_max)
+        else {
+            return;
+        };
+        finish_pcm_transition(transition, now, last_endpoint_event);
+    }
+
     fn handle_pcm_block(
         samples: &[f32],
         detector: &Mutex<DigitalSilenceDetector>,
@@ -922,10 +951,19 @@ mod win {
         let Some(transition) = det.push_samples(samples, now) else {
             return;
         };
+        finish_pcm_transition(transition, now, last_endpoint_event);
+    }
+
+    fn finish_pcm_transition(
+        transition: SilenceTransition,
+        now: Instant,
+        last_endpoint_event: &Mutex<Option<(bool, Instant)>>,
+    ) {
         let muted = matches!(transition, SilenceTransition::BecameMuted);
         if let Ok(last) = last_endpoint_event.lock() {
             if let Some((ep_muted, at)) = *last {
-                if ep_muted == muted && now.saturating_duration_since(at) <= ENDPOINT_PRIORITY_WINDOW
+                if ep_muted == muted
+                    && now.saturating_duration_since(at) <= ENDPOINT_PRIORITY_WINDOW
                 {
                     log::debug!(
                         "mic_mute_trigger: PCM {} ignored — endpoint already reported it",

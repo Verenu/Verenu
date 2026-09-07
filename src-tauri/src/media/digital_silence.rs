@@ -74,24 +74,35 @@ impl DigitalSilenceDetector {
 
     /// Push a block of PCM samples observed at `now`. Returns a debounced
     /// transition when the mute state has been stable long enough.
-    pub fn push_samples(
-        &mut self,
-        samples: &[f32],
-        now: Instant,
-    ) -> Option<SilenceTransition> {
-        if !samples.is_empty() {
-            let mut silent = 0u32;
-            let mut abs_max = 0.0f32;
-            for &sample in samples {
-                let a = sample.abs();
-                if a > abs_max {
-                    abs_max = a;
-                }
-                if Self::is_digital_silent_sample(sample) {
-                    silent += 1;
-                }
+    pub fn push_samples(&mut self, samples: &[f32], now: Instant) -> Option<SilenceTransition> {
+        if samples.is_empty() {
+            self.prune(now);
+            return self.evaluate(now);
+        }
+        let mut silent = 0u32;
+        let mut abs_max = 0.0f32;
+        for &sample in samples {
+            let a = sample.abs();
+            if a > abs_max {
+                abs_max = a;
             }
-            let total = samples.len() as u32;
+            if Self::is_digital_silent_sample(sample) {
+                silent += 1;
+            }
+        }
+        self.push_chunk_stats(now, silent, samples.len() as u32, abs_max)
+    }
+
+    /// Same as [`Self::push_samples`], but callers can compute stats without
+    /// allocating a converted float buffer on the realtime audio thread.
+    pub fn push_chunk_stats(
+        &mut self,
+        now: Instant,
+        silent: u32,
+        total: u32,
+        abs_max: f32,
+    ) -> Option<SilenceTransition> {
+        if total > 0 {
             self.chunks.push_back(ChunkStat {
                 at: now,
                 silent,
@@ -109,6 +120,7 @@ impl DigitalSilenceDetector {
     }
 
     fn prune(&mut self, now: Instant) {
+        let mut removed = false;
         while let Some(front) = self.chunks.front().copied() {
             if now.saturating_duration_since(front.at) <= self.window {
                 break;
@@ -116,16 +128,15 @@ impl DigitalSilenceDetector {
             self.chunks.pop_front();
             self.silent_count = self.silent_count.saturating_sub(u64::from(front.silent));
             self.total_count = self.total_count.saturating_sub(u64::from(front.total));
+            removed = true;
+        }
+        if removed {
             self.recompute_abs_max();
         }
     }
 
     fn recompute_abs_max(&mut self) {
-        self.abs_max = self
-            .chunks
-            .iter()
-            .map(|c| c.abs_max)
-            .fold(0.0f32, f32::max);
+        self.abs_max = self.chunks.iter().map(|c| c.abs_max).fold(0.0f32, f32::max);
     }
 
     fn evaluate(&mut self, now: Instant) -> Option<SilenceTransition> {
@@ -241,10 +252,8 @@ mod tests {
     #[test]
     fn exact_zeros_become_muted_after_debounce() {
         let start = Instant::now();
-        let mut det = DigitalSilenceDetector::new(
-            Duration::from_millis(200),
-            Duration::from_millis(100),
-        );
+        let mut det =
+            DigitalSilenceDetector::new(Duration::from_millis(200), Duration::from_millis(100));
         // Seed with non-silent so the first mute is a real transition.
         assert!(det.push_samples(&noise(512, 0.01), start).is_none());
         assert!(!det.is_muted());
@@ -267,10 +276,8 @@ mod tests {
     #[test]
     fn whisper_quiet_noise_is_not_muted() {
         let start = Instant::now();
-        let mut det = DigitalSilenceDetector::new(
-            Duration::from_millis(200),
-            Duration::from_millis(100),
-        );
+        let mut det =
+            DigitalSilenceDetector::new(Duration::from_millis(200), Duration::from_millis(100));
         // ~0.001 is far above 1/32768 (~3e-5) but still "quiet".
         let quiet = noise(2048, 0.001);
         assert!(det.push_samples(&quiet, start).is_none());
@@ -289,10 +296,8 @@ mod tests {
     #[test]
     fn unmute_requires_sustained_non_silent() {
         let start = Instant::now();
-        let mut det = DigitalSilenceDetector::new(
-            Duration::from_millis(200),
-            Duration::from_millis(100),
-        );
+        let mut det =
+            DigitalSilenceDetector::new(Duration::from_millis(200), Duration::from_millis(100));
         assert!(det.push_samples(&noise(256, 0.01), start).is_none());
         assert!(det
             .push_samples(&zeros(4096), start + Duration::from_millis(50))
