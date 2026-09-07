@@ -122,12 +122,15 @@ mod win {
     }
 
     fn install_active_pcm(guard: PcmMonitorGuard) {
-        if let Ok(mut slot) = ACTIVE_PCM.lock() {
-            let previous = slot.take();
+        let previous = if let Ok(mut slot) = ACTIVE_PCM.lock() {
+            let old = slot.take();
             *slot = Some(guard);
-            // Join any finished/failed prior thread before keeping the new guard.
-            drop(previous);
-        }
+            old
+        } else {
+            None
+        };
+        // Join outside the mutex — Drop may block on JoinHandle::join.
+        drop(previous);
     }
 
     fn event_tx_slot(
