@@ -33,6 +33,11 @@ pub fn frontend_ready(
 /// `system::platform::is_macos_intel` for the reasoning.
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
+    // Android has no ONNX Runtime speech builds nor a llama-server runtime
+    // (see crate::android::local_ai_supported_on_android and docs/ANDROID.md).
+    if cfg!(target_os = "android") {
+        return false;
+    }
     !crate::system::platform::is_macos_intel()
 }
 

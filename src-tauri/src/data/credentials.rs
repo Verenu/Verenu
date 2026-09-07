@@ -554,7 +554,7 @@ pub fn save(app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 pub fn save(_app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
     set(provider, key)
 }
@@ -583,29 +583,95 @@ pub fn delete_saved(app: &AppHandle, provider: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
+pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
+    delete(provider)
+}
+
+// ============================== Android: Keystore bridge ==============================
+//
+// Durable storage on Android is the Kotlin `VerenuKeystore`
+// (`EncryptedSharedPreferences` backed by AndroidKeyStore — see
+// `src-tauri/android/` and `docs/ANDROID.md`). Rust holds keys only in the
+// in-memory `crate::android` cache: populated at startup by Kotlin via
+// `android_provide_credential` / `POST /v1/credential`, updated by saves,
+// and cleared on revocation/lock. Rotations reach Kotlin through the
+// `android_keystore_save` command's single-delivery staging
+// (`crate::android::bridge`). Rust itself writes no secret to disk.
+
+#[cfg(target_os = "android")]
+pub fn set(provider: &str, key: &str) -> Result<(), String> {
+    if user_for(provider).is_none() {
+        return Err(format!("Unknown provider: {provider}"));
+    }
+    crate::android::provide_credential(provider, normalize_key(key));
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn get(provider: &str) -> String {
+    let key = crate::android::cached_credential(provider);
+    log::debug!(
+        "credentials(android): read {} provider={} key_len={}",
+        if key.is_empty() { "miss" } else { "ok" },
+        provider,
+        key.len()
+    );
+    key
+}
+
+#[cfg(target_os = "android")]
+pub fn has(provider: &str) -> bool {
+    !get(provider).is_empty()
+}
+
+#[cfg(target_os = "android")]
+pub fn delete(provider: &str) -> Result<(), String> {
+    crate::android::provide_credential(provider, "");
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+pub fn save(_app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
+    // Memory-only by design. Durable persistence on Android goes through the
+    // `android_keystore_save` command (staged rotation → Kotlin
+    // EncryptedSharedPreferences), which the frontend calls instead of this
+    // on Android — see crate::android::bridge. Keeping this a plain memory
+    // write (rather than emitting a persist event nobody can hear without a
+    // live WebView) preserves the `save_api_key` contract for any other
+    // caller, e.g. settings migration.
+    set(provider, normalize_key(key))?;
+    log::info!(
+        "credentials(android): cached provider={} key_len={} (durable save via android_keystore_save)",
+        provider,
+        normalize_key(key).len()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
 pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
 
 // ============================== Fallback (e.g. Linux) ==============================
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
 pub fn set(_provider: &str, _key: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
 pub fn get(_provider: &str) -> String {
     String::new()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
 pub fn has(_provider: &str) -> bool {
     false
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
 pub fn delete(_provider: &str) -> Result<(), String> {
     Ok(())
 }

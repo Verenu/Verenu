@@ -10,6 +10,7 @@
 //! perceptible latency, especially since the caller runs it concurrently
 //! with the network transcription call rather than gating on it first.
 
+#[cfg_attr(target_os = "android", allow(unused_imports))]
 use crate::data::store;
 
 /// Aggregate result of running VAD across an entire recording.
@@ -28,30 +29,38 @@ pub struct SpeechDetectionResult {
 }
 
 /// Silero's fixed frame size for its v4 ONNX graph: 30ms at 16kHz.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const FRAME_SAMPLES: usize = 480;
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const FRAME_MS: u64 = 30;
 
 /// Per-frame speech/non-speech cutoff — transcribe-rs's own documented
 /// recommended default for this model.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const SPEECH_PROBABILITY_THRESHOLD: f32 = 0.3;
 
 // Acceptance thresholds at the app's default mic gain. Scaled down for
 // higher gain via `gain_leniency_scale` below — starting points, not final
 // tuned values (per the design this was built against).
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const MIN_SPEECH_MS_BASE: u64 = 300;
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const MIN_SPEECH_RATIO_BASE: f32 = 0.12;
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const MIN_LONGEST_RUN_MS_BASE: u64 = 250;
 
 /// The Silero v4 ONNX model, bundled directly into the binary. At ~1.8MB
 /// this is small enough that shipping it as a Tauri bundle resource (with
 /// its own resource-path resolution at runtime) isn't worth the extra
 /// moving part — `include_bytes!` keeps dev and packaged builds identical.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 static MODEL_BYTES: &[u8] = include_bytes!("../../assets/silero_vad_v4.onnx");
 
 /// `SileroVad::new` only accepts a file path (it calls onnxruntime's
 /// `commit_from_file`), so the embedded bytes are staged to a stable path
 /// once per process and reused — writing 1.8MB to disk on every dictation
 /// would defeat the point of keeping this cheap.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn staged_model_path() -> anyhow::Result<std::path::PathBuf> {
     static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     static STAGE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -120,6 +129,7 @@ fn staged_model_path() -> anyhow::Result<std::path::PathBuf> {
     Ok(path)
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn staged_model_matches(path: &std::path::Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -140,6 +150,7 @@ fn staged_model_matches(path: &std::path::Path) -> bool {
 /// down proportionally instead of penalizing them twice for the same thing.
 /// Floored at 0.4 rather than scaling to zero — VAD still needs *some*
 /// signal to tell speech from a fan.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn gain_leniency_scale(active_gain: f32) -> f32 {
     let gain = active_gain.clamp(store::MIN_MIC_GAIN, store::MAX_MIC_GAIN);
     if gain <= store::DEFAULT_MIC_GAIN {
@@ -154,6 +165,11 @@ fn gain_leniency_scale(active_gain: f32) -> f32 {
 /// Blocking (ONNX inference) — call from `spawn_blocking`, ideally started
 /// concurrently with the transcription API call so it adds no wall-clock
 /// latency of its own.
+///
+/// On Android this always returns an error (Silero/ORT has no Android ARM64
+/// build — see `crate::android`). Callers fall back to the RMS speech gate,
+/// so dictation works normally, just without the neural VAD refinement.
+#[cfg(not(target_os = "android"))]
 #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 pub fn analyze_speech(
     samples_16k: &[f32],
@@ -208,6 +224,19 @@ pub fn analyze_speech(
     })
 }
 
+/// Android stub: no Silero/ORT runtime on Android ARM64. Returns an error so
+/// both call sites (`pipeline` speech gate, setup calibration) fall back to
+/// the RMS loudness gate they already use when VAD staging fails on desktop.
+#[cfg(target_os = "android")]
+pub fn analyze_speech(
+    _samples_16k: &[f32],
+    _active_gain: f32,
+) -> anyhow::Result<SpeechDetectionResult> {
+    anyhow::bail!(
+        "Silero voice-activity detection is not available on Android; using the volume gate instead"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +270,7 @@ mod tests {
         assert_eq!(gain_leniency_scale(1.0), 1.0);
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn analyze_speech_on_digital_silence_finds_no_speech() {
         let silence = vec![0.0f32; 16_000]; // 1s of exact silence
@@ -248,5 +278,13 @@ mod tests {
             .expect("model should load and run on staged path");
         assert!(!result.contains_speech);
         assert_eq!(result.speech_ms, 0);
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn analyze_speech_stub_errors_on_android() {
+        let silence = vec![0.0f32; 480];
+        let err = analyze_speech(&silence, 1.0).expect_err("Android VAD stub must bail");
+        assert!(err.to_string().contains("Android"));
     }
 }

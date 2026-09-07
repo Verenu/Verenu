@@ -23,6 +23,17 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
+# ANDROID BUILD NOTE (required before the first SDK build): `native-tls`
+# needs an OpenSSL cross-compile that the NDK does not provide. Move TLS to
+# per-target features — desktop keeps `native-tls`, Android uses `rustls-tls`
+# (pulls rustls/ring, already in this dependency closure for sync):
+#   reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "charset"] }
+#   [target.'cfg(not(target_os = "android"))'.dependencies]
+#   reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+#   [target.'cfg(target_os = "android")'.dependencies]
+#   reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Kept as-is here so desktop builds need no network re-resolution; see
+# docs/ANDROID.md ("first SDK build" checklist).
 reqwest     = { version = "0.12", default-features = false, features = ["json", "multipart", "native-tls", "charset"] }
 # LAN device sync: mDNS discovery (pure Rust, no system daemon) + a TLS
 # transport with self-signed per-device certificates. rustls uses the ring
@@ -55,9 +66,16 @@ zip         = { version = "2", default-features = false, features = ["deflate"] 
 # (transcribe_rs::vad::SileroVad) on top of the ort/onnxruntime dependency
 # "onnx" already requires — no separate ort dependency or hand-rolled ONNX
 # plumbing needed for local speech detection.
-transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
+#
+# Android has no ONNX Runtime / transcribe-rs build (no ARM64 prebuilts, and
+# multi-hundred-MB model payloads are unrealistic on phones), so this stays a
+# desktop-only dependency — see the target table below, `local_stt/engine.rs`
+# and `media/vad.rs` Android stubs, `crate::android`, and docs/ANDROID.md.
 image       = { version = "0.25", default-features = false, features = ["png"] }
 libc        = "0.2"     # POSIX host/system calls
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
 
 [target.'cfg(windows)'.dependencies]
 notify-rust = "4.18.0"

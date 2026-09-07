@@ -470,6 +470,10 @@ pub(crate) fn show_copied_pill(app: &AppHandle, msg: &str) {
 /// string; the frontend maps it to a label, so adding a stage never requires
 /// an IPC schema change.
 pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
+    // Mirror into the Android bridge so the overlay poller (which can't see
+    // WebView events when the main activity is dead) renders the same
+    // Transcribing → Cleaning → Pasting refinement. One short-string store.
+    crate::android::bridge::note_pill_stage(stage);
     if let Some(pill) = app.get_webview_window("pill") {
         pill.emit("pill-stage", stage).ok();
     }

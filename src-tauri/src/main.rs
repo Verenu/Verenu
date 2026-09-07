@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod android;
 mod api;
 mod app_hotkey;
 mod app_setup;
@@ -220,6 +221,22 @@ fn main() {
             } else {
                 log::info!("sync: disabled by setting");
             }
+            // Android overlay service bridge (loopback): the Kotlin
+            // AccessibilityService drives recording and insertion through
+            // this; see crate::android::bridge. Soft-fails like sync —
+            // a bridge failure must never block startup.
+            #[cfg(target_os = "android")]
+            {
+                match crate::android::bridge::start_bridge(app.handle().clone()) {
+                    Ok(addr) => log::info!("android bridge listening on {addr}"),
+                    Err(error) => log::warn!("android bridge failed to start: {error}"),
+                }
+            }
+            start_storage_maintenance(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+                settings.clone(),
+            );
 
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "windows")]
@@ -554,6 +571,20 @@ fn main() {
             commands::sync_remove_device,
             commands::sync_now,
             commands::sync_get_diagnostics,
+            commands::android_get_platform_info,
+            commands::android_on_keyboard_visibility,
+            commands::android_decide_insertion,
+            commands::android_context_for_package,
+            commands::android_provide_credential,
+            commands::android_keystore_save,
+            commands::android_clear_credentials,
+            commands::android_has_credential,
+            commands::android_permission_rationale,
+            commands::android_request_permission,
+            commands::android_evaluate_permissions,
+            commands::android_width_class,
+            commands::android_insert_text_result,
+            commands::android_on_permission_revoked,
         ])
         .build(tauri::generate_context!())
         .expect("error building Verenu")

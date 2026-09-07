@@ -571,6 +571,10 @@ pub fn spawn_level_emitter(
             }
             let level_val = f32::from_bits(level.load(Ordering::Relaxed));
             let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
+            // Mirror for the Android overlay poller (same pattern as the
+            // pill-stage mirror): the native pill can't see WebView events
+            // when the main activity is dead. One atomic store per tick.
+            crate::android::bridge::note_audio_level(level_val);
             emit_level(level_val);
             emit_envelope(envelope.drain());
             if emit_globally {
@@ -581,6 +585,7 @@ pub fn spawn_level_emitter(
 
         // Emit final reset to ensure level goes to 0 regardless of timing
         emit_envelope(envelope.drain());
+        crate::android::bridge::note_audio_level(0.0);
         emit_level(0.0);
         if emit_globally {
             let _ = app.emit("audio-level-raw", 0.0f32);

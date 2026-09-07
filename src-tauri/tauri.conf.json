@@ -78,6 +78,9 @@
       "bundleName": "Verenu",
       "minimumSystemVersion": "11.0",
       "entitlements": "Entitlements.plist"
+    },
+    "android": {
+      "minSdkVersion": 26
     }
   }
 }
