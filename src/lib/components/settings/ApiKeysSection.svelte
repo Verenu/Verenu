@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
+  import { isAndroid } from '../../platform';
   import { getProviderLogo } from '../../setup/ProviderLogos';
 
   type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai';
@@ -60,6 +61,9 @@
       }
 
       await invoke('save_api_key', { provider, key });
+      // Android persists through the Keystore bridge (EncryptedSharedPreferences);
+      // save_api_key is memory-only there by design.
+      if (isAndroid) await invoke('android_keystore_save', { provider, key });
       const status = await loadKeyStatus();
       if (!status[provider]) {
         keyValidation[provider] = { status: 'idle', message: '' };
@@ -92,6 +96,8 @@
     keySaving[provider] = true;
     try {
       await invoke('delete_api_key', { provider });
+      // Rotate the deletion through the Keystore bridge too.
+      if (isAndroid) await invoke('android_keystore_save', { provider, key: '' });
       await loadKeyStatus();
       draftKeys[provider] = '';
       keyValidation[provider] = { status: 'idle', message: '' };
@@ -109,7 +115,7 @@
 </script>
 
 <h2 class="settings-h">API Keys</h2>
-<p class="panel-note">Keys are stored locally and never readable from the UI after saving.</p>
+<p class="panel-note">{isAndroid ? 'Keys are stored encrypted in the Android Keystore and never readable from the UI after saving.' : 'Keys are stored locally and never readable from the UI after saving.'}</p>
 
 {#each keyProviders as item}
   <div class="setting-row key-row" data-setting-target={`api-key-${item.id}`}>

@@ -124,6 +124,15 @@
   /* Width of the custom scrollbars in app.css. Anything that has to line up
      with a `scrollbar-gutter: stable` scroller needs to reserve the same. */
   --scrollbar-w: 10px;
+
+  /* Touch + edge-to-edge (Android shell; 0/no-op on desktop).
+     --touch-target-min is the minimum hit area for coarse pointers;
+     --safe-* mirror the OS insets for gesture nav, cutouts, and hinges. */
+  --touch-target-min: 48px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 ::view-transition-old(root),

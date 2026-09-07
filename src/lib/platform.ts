@@ -2,9 +2,22 @@
 // no extra Tauri plugin/dependency is required. The backend remains the source
 // of truth for actual platform behavior.
 const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+const uaDataPlatform =
+	typeof navigator !== 'undefined'
+		? (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+				?.platform ?? ''
+		: '';
 
 export const isMac = /Mac/i.test(ua);
 export const isWindows = /Win/i.test(ua);
+export const isAndroid = /Android/i.test(ua) || /Android/i.test(uaDataPlatform);
+/** Phone/tablet/foldable shell: touch-first layout, bottom nav, safe-area insets. */
+export const isMobile = isAndroid;
+/** Coarse pointers need larger hit targets regardless of OS. */
+export const isTouchDevice =
+	typeof window !== 'undefined' &&
+	typeof window.matchMedia !== 'undefined' &&
+	window.matchMedia('(pointer: coarse)').matches;
 
 /** Human label for a `KeyboardEvent.code`, OS-aware (⌘/⌃/⌥ + fn on macOS). */
 export function formatKeyLabel(code: string): string {

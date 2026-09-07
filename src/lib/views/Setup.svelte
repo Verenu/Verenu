@@ -5,7 +5,7 @@
   import { getSetupCalibrationCopy } from '../calibrationCopy';
   import { saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
   import { getTranscriptionLanguageLabel, transcriptionLanguages, type TranscriptionLanguageCode } from '../transcriptionLanguages';
-  import { isMac } from '../platform';
+  import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
   import { isCalibrating, calibratedGain } from '../calibration';
@@ -17,6 +17,7 @@
   import ProviderStep from '../setup/steps/ProviderStep.svelte';
   import ApiKeyStep from '../setup/steps/ApiKeyStep.svelte';
   import PermissionsStep from '../setup/steps/PermissionsStep.svelte';
+  import AndroidPermissionsStep from '../setup/steps/AndroidPermissionsStep.svelte';
   import ModelsStep from '../setup/steps/ModelsStep.svelte';
   import WritingStyleStep from '../setup/steps/WritingStyleStep.svelte';
   import LanguageStep from '../setup/steps/LanguageStep.svelte';
@@ -25,16 +26,20 @@
   import TryItStep from '../setup/steps/TryItStep.svelte';
   import DoneStep from '../setup/steps/DoneStep.svelte';
 
-  const TOTAL_STEPS = isMac ? 9 : 8;
+  // macOS and Android both need an OS-permission step at index 3 (macOS:
+  // Accessibility + Microphone; Android: microphone, accessibility service,
+  // battery exemption, notifications). Windows has none.
+  const hasOsPermissionStep = isMac || isAndroid;
+  const TOTAL_STEPS = hasOsPermissionStep ? 9 : 8;
   const providerStep = 1;
   const apiKeyStep = 2;
-  const permissionStep = isMac ? 3 : -1;
-  const modelsStep = isMac ? 4 : 3;
-  const writingStyleStep = isMac ? 5 : 4;
-  const languageStep = isMac ? 6 : 5;
-  const audioEnvStep = isMac ? 7 : 6;
-  const calibrationStep = isMac ? 8 : 7;
-  const tryItStep = isMac ? 9 : 8;
+  const permissionStep = hasOsPermissionStep ? 3 : -1;
+  const modelsStep = hasOsPermissionStep ? 4 : 3;
+  const writingStyleStep = hasOsPermissionStep ? 5 : 4;
+  const languageStep = hasOsPermissionStep ? 6 : 5;
+  const audioEnvStep = hasOsPermissionStep ? 7 : 6;
+  const calibrationStep = hasOsPermissionStep ? 8 : 7;
+  const tryItStep = hasOsPermissionStep ? 9 : 8;
   const doneStep = TOTAL_STEPS + 1;
 
   let step = $state(0);
@@ -166,6 +171,9 @@
     keyValidation = { status: 'idle', message: '' };
     try {
       await invoke('save_api_key', { provider, key: trimmed });
+      // Android persists through the Keystore bridge (EncryptedSharedPreferences);
+      // save_api_key is memory-only there by design.
+      if (isAndroid) await invoke('android_keystore_save', { provider, key: trimmed });
       providerKeyStatus = { ...providerKeyStatus, [provider]: true };
       keySaved = true;
       apiKeyDraft = '';
@@ -293,7 +301,9 @@
         () => saveSetting('auto_learn_enabled', true),
       ];
       for (const save of settingsToSave) await save();
-      await invoke('set_autostart', { enabled: true });
+      // No autostart API on Android — background reliability comes from the
+      // battery-exemption grant (see AndroidPermissionsStep) instead.
+      if (!isAndroid) await invoke('set_autostart', { enabled: true });
     } catch (err) {
       // Previously this was swallowed, leaving a half-written config behind an
       // apparently successful setup. Stop before marking setup complete.
@@ -334,6 +344,7 @@
       return { name: 'API Key', title: `Connect ${providerDisplayName}`, subtitle: 'Verenu needs a key to send audio for transcription.' };
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
+    if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
     if (s === modelsStep) return { name: 'Models', title: 'How should Verenu run?', subtitle: 'Each option picks a transcription and cleanup model for you.' };
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
@@ -382,6 +393,14 @@
       return bar({ leftLabel: 'Skip for now', rightLabel: 'Continue', onRight: goNext });
     }
     if (isMac && step === permissionStep) {
+      return bar({
+        rightLabel: allCoreGranted ? 'Next' : 'Grant permissions to continue',
+        rightDisabled: !allCoreGranted,
+        rightGlow: allCoreGranted,
+        onRight: goNext,
+      });
+    }
+    if (isAndroid && step === permissionStep) {
       return bar({
         rightLabel: allCoreGranted ? 'Next' : 'Grant permissions to continue',
         rightDisabled: !allCoreGranted,
@@ -504,6 +523,8 @@
       />
     {:else if isMac && step === permissionStep}
       <PermissionsStep {provider} bind:allCoreGranted />
+    {:else if isAndroid && step === permissionStep}
+      <AndroidPermissionsStep bind:allCoreGranted />
     {:else if step === modelsStep}
       <ModelsStep apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
     {:else if step === writingStyleStep}

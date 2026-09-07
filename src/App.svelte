@@ -33,6 +33,13 @@
   import { expoOut } from 'svelte/easing';
   import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
+  import { isAndroid } from './lib/platform';
+  import MobileNav from './lib/components/layout/MobileNav.svelte';
+  import {
+    snapshotForSize,
+    trackViewport,
+    type ViewportSnapshot,
+  } from './lib/android/viewport';
 
   type EffectiveTheme = 'light' | 'dark';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
@@ -74,6 +81,16 @@
     const accentColor = appStore.accentColor;
     if (typeof document !== 'undefined') applyAccentTheme(document.documentElement, accentColor);
   });
+
+  // Adaptive shell: live window-size class for foldables, rotation,
+  // split-screen, and freeform windows. Defaults to expanded so desktop
+  // first paint is unchanged; the tracker corrects it on mount.
+  let viewport = $state<ViewportSnapshot>(
+    snapshotForSize(1280, 800),
+  );
+  // Compact Android windows collapse the desktop rail to the bottom bar.
+  // Desktop keeps its rail at every width.
+  const compactNav = $derived(isAndroid && viewport.widthClass === 'compact');
 
   // Error toast
   let errorToast = $state('');
@@ -322,6 +339,13 @@
 
     const connectivityPoll = startPolling(pingConnectivity, 60_000);
 
+    // Live window dimensions drive data-width-class (fold/unfold, rotation,
+    // split-screen, freeform). No restart, no lost state on reclassification.
+    const stopViewport = trackViewport(
+      () => ({ width: window.innerWidth, height: window.innerHeight }),
+      (snapshot) => { viewport = snapshot; },
+    );
+
     return () => {
       mounted = false;
       if (cleanupFn) cleanupFn();
@@ -338,16 +362,24 @@
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       media?.removeEventListener?.('change', onSystemThemeChange);
       connectivityPoll.stop();
+      stopViewport();
     };
   });
 </script>
 
-<div class="app" class:app-windows={isWindows}>
+<div
+  class="app"
+  class:app-windows={isWindows}
+  data-width-class={viewport.widthClass}
+  data-compact-nav={compactNav ? 'true' : 'false'}
+>
   {#if appStore.setupComplete === false}
     <Setup />
   {/if}
   <div class="body" inert={appStore.setupComplete === false}>
-    <Sidebar />
+    <div class="rail">
+      <Sidebar />
+    </div>
     <div class="content-fade content-fade-top" class:visible={fadeTop && !appStore.settingsOpen} aria-hidden="true"></div>
     <div class="content-fade content-fade-bottom" class:visible={fadeBottom && !appStore.settingsOpen} aria-hidden="true"></div>
     <div
@@ -415,6 +447,9 @@
       No internet connection
     </div>
   {/if}
+  {#if compactNav}
+    <MobileNav />
+  {/if}
 </div>
 
 <style>
@@ -446,11 +481,17 @@
   .app {
     width: 100%;
     height: 100vh;
+    height: 100dvh;
     background: var(--paper);
     display: flex;
     flex-direction: column;
     font-family: var(--sans);
     position: relative;
+    /* Edge-to-edge: draw behind system bars; children consume safe-area
+       insets individually so desktop (where env() is 0) is unaffected. */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
   }
 
   /* The native Windows caption is non-client chrome, so it does not consume
@@ -467,6 +508,36 @@
     padding: 0 0 var(--app-gutter) 0;
     gap: var(--app-gutter);
     position: relative;
+  }
+
+  /* Layout-neutral wrapper so compact Android can hide the desktop rail
+     without touching Sidebar's own layout. */
+  .rail {
+    display: contents;
+  }
+
+  .app[data-compact-nav='true'] .rail {
+    display: none;
+  }
+
+  .app[data-compact-nav='true'] .body {
+    gap: 0;
+    padding-bottom: 0;
+  }
+
+  /* Compact windows (phones, narrow foldables, snapped split-screen):
+     tighten page rhythm and keep the gesture bar clear of content. */
+  .app[data-width-class='compact'] {
+    --page-pad-x: 16px;
+    --page-pad-y: 16px;
+  }
+
+  .app[data-width-class='compact'] .content {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .app[data-width-class='compact'] .page-wrapper {
+    padding-right: 0;
   }
 
   /*
