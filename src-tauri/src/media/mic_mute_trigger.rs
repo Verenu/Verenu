@@ -440,6 +440,8 @@ mod win {
         }
         let mut level_debouncer = MuteDebouncer::new(DEBOUNCE);
         let mut level_seeded = false;
+        let mut last_pcm_start_at: Option<Instant> = None;
+        const PCM_RETRY: Duration = Duration::from_secs(5);
 
         let mut debouncer = MuteDebouncer::new(DEBOUNCE);
         debouncer.seed(initial_muted);
@@ -515,13 +517,19 @@ mod win {
                     }
                 }
             } else if need_pcm && !pcm_is_running() {
-                log::info!(
-                    "mic_mute_trigger: starting digital-silence PCM monitor (hw_mute={hw_mute})"
-                );
-                install_active_pcm(start_pcm_monitor(
-                    Some(friendly.clone()),
-                    Arc::clone(&last_endpoint_event),
-                ));
+                let can_retry = last_pcm_start_at
+                    .map(|at| at.elapsed() >= PCM_RETRY)
+                    .unwrap_or(true);
+                if can_retry {
+                    log::info!(
+                        "mic_mute_trigger: starting digital-silence PCM monitor (hw_mute={hw_mute})"
+                    );
+                    last_pcm_start_at = Some(Instant::now());
+                    install_active_pcm(start_pcm_monitor(
+                        Some(friendly.clone()),
+                        Arc::clone(&last_endpoint_event),
+                    ));
+                }
             }
 
             let mut method = DetectionMethod::EndpointPoll;
