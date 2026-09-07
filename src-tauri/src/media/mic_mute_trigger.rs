@@ -482,8 +482,9 @@ mod win {
                 if pcm_is_running() {
                     release_active_pcm();
                     log::info!("mic_mute_trigger: PCM monitor paused (dictation holds the mic)");
-                    level_seeded = false;
                 }
+                // Allow idle PCM to restart immediately after this dictation.
+                last_pcm_start_at = None;
                 if let Some(level) = recording_raw_level(state) {
                     let silent = level <= crate::media::digital_silence::DIGITAL_SILENCE_EPS * 4.0;
                     if !level_seeded {
@@ -516,19 +517,22 @@ mod win {
                         }
                     }
                 }
-            } else if need_pcm && !pcm_is_running() {
-                let can_retry = last_pcm_start_at
-                    .map(|at| at.elapsed() >= PCM_RETRY)
-                    .unwrap_or(true);
-                if can_retry {
-                    log::info!(
-                        "mic_mute_trigger: starting digital-silence PCM monitor (hw_mute={hw_mute})"
-                    );
-                    last_pcm_start_at = Some(Instant::now());
-                    install_active_pcm(start_pcm_monitor(
-                        Some(friendly.clone()),
-                        Arc::clone(&last_endpoint_event),
-                    ));
+            } else {
+                level_seeded = false;
+                if need_pcm && !pcm_is_running() {
+                    let can_retry = last_pcm_start_at
+                        .map(|at| at.elapsed() >= PCM_RETRY)
+                        .unwrap_or(true);
+                    if can_retry {
+                        log::info!(
+                            "mic_mute_trigger: starting digital-silence PCM monitor (hw_mute={hw_mute})"
+                        );
+                        last_pcm_start_at = Some(Instant::now());
+                        install_active_pcm(start_pcm_monitor(
+                            Some(friendly.clone()),
+                            Arc::clone(&last_endpoint_event),
+                        ));
+                    }
                 }
             }
 
