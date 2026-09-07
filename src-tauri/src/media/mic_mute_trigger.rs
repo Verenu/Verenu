@@ -147,6 +147,12 @@ mod win {
         let state_hk = shared;
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
+                // Joining the idle PCM WASAPI client can take tens of ms.
+                // Do that on a blocking pool thread before unmute dispatch may
+                // open the dictation capture stream on this Tokio worker.
+                if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
+                    let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
+                }
                 dispatch_event(&app_hk, &state_hk, event);
             }
         });
