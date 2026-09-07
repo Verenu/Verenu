@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added an optional Windows Audio setting to toggle hands-free dictation with a mute→unmute pulse on the selected microphone. Matches the selected mic across WASAPI/CPAL name variants, watches the endpoint mute bit plus USB/headset hardware mute controls on the capture path, and uses a digital-silence PCM fallback when those controls are absent — releasing that idle capture client before dictation opens the mic so the pill visualizer is not starved. Mute watching runs only while the setting is on.
 - Removed orange from the native and packaged app icons. Runtime icons now use a pure black-and-white pair that follows light and dark appearance modes instead of the selected accent color.
 - Fixed hands-free conversion from an active hold-to-talk dictation ending when
   the original Windows modifier chord is released; stale release events now

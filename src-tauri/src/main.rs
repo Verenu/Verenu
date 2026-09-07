@@ -235,6 +235,7 @@ fn main() {
                 app_tray::apply_runtime_icons(app.handle(), theme);
             }
             app_hotkey::setup_hotkey(app, shared.clone());
+            media::mic_mute_trigger::setup(app, shared.clone());
             // setup_tray() already applies runtime icons (both platforms) via
             // apply_runtime_icons() — no need to call it again here.
             #[cfg(target_os = "macos")]
