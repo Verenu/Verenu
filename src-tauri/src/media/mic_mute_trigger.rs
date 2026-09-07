@@ -110,12 +110,23 @@ mod win {
     }
 
     fn pcm_is_running() -> bool {
-        ACTIVE_PCM.lock().ok().is_some_and(|slot| slot.is_some())
+        let Ok(slot) = ACTIVE_PCM.lock() else {
+            return false;
+        };
+        slot.as_ref().is_some_and(|guard| {
+            guard
+                .join
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
+        })
     }
 
     fn install_active_pcm(guard: PcmMonitorGuard) {
         if let Ok(mut slot) = ACTIVE_PCM.lock() {
+            let previous = slot.take();
             *slot = Some(guard);
+            // Join any finished/failed prior thread before keeping the new guard.
+            drop(previous);
         }
     }
 
