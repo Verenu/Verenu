@@ -261,6 +261,7 @@ pub const CLEANUP_INTENSITY: &str = "cleanup_intensity";
 pub const APP_MAPPINGS: &str = "app_mappings";
 pub const NOISE_REDUCTION: &str = "noise_reduction";
 pub const MUTE_AUDIO: &str = "mute_audio";
+pub const MIC_MUTE_BUTTON_DICTATION: &str = "mic_mute_button_dictation";
 pub const EXCLUSIVE_MIC: &str = "exclusive_mic";
 pub const PAUSE_MEDIA_DURING_DICTATION: &str = "pause_media_during_dictation";
 pub const MIC_GAIN: &str = "mic_gain";

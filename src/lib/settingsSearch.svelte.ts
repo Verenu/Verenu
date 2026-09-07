@@ -78,6 +78,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'audio-system-mute', section: 'advanced', label: 'Mute system audio', description: 'Mute computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'sound'] },
   { id: 'audio-exclusive', section: 'advanced', label: 'Exclusive microphone access', description: 'Reserve the microphone for Verenu while dictating', target: 'audio-exclusive', keywords: ['mic', 'input', 'other apps'] },
   { id: 'audio-pause-media', section: 'advanced', label: 'Pause media while dictating', description: 'Pause and resume active media around dictation', target: 'audio-pause-media', keywords: ['music', 'video', 'windows'] },
+  { id: 'audio-mic-mute-button', section: 'advanced', label: 'Use microphone mute button for dictation', description: 'Mute then unmute the selected mic to toggle hands-free dictation', target: 'audio-mic-mute-button', keywords: ['windows', 'mute', 'microphone', 'handsfree', 'button'] },
   { id: 'audio-noise', section: 'advanced', label: 'Noise reduction', description: 'Suppress background noise before transcription', target: 'audio-noise', keywords: ['rnnoise', 'background', 'mic'] },
   { id: 'audio-sounds', section: 'advanced', label: 'Sound effects volume', description: 'Set the volume of dictation chimes', target: 'audio-sounds', keywords: ['chime', 'sound', 'mute'] },
 

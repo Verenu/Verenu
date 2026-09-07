@@ -25,8 +25,11 @@
   let muteAudio = $state(false);
   let exclusiveMic = $state(false);
   let pauseMediaDuringDictation = $state(false);
+  let micMuteButtonDictation = $state(false);
   let soundEffectsVolume = $state(100);
   let micGain = $state(3.5);
+  let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastSavedMicGain: number | null = null;
   const audioCopy = $derived(getAudioCalibrationCopy());
 
   // Reset any stale calibrated gain on mount so it cannot override the saved
@@ -42,11 +45,12 @@
 
   async function loadSettings() {
     try {
-      const [nr, mute, exclusive, pauseMedia, legacySounds, savedVolume, savedGain] = await Promise.all([
+      const [nr, mute, exclusive, pauseMedia, micMute, legacySounds, savedVolume, savedGain] = await Promise.all([
         invoke<boolean | null>('get_setting', { key: 'noise_reduction' }),
         invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
         invoke<boolean | null>('get_setting', { key: 'exclusive_mic' }),
         invoke<boolean | null>('get_setting', { key: 'pause_media_during_dictation' }),
+        invoke<boolean | null>('get_setting', { key: 'mic_mute_button_dictation' }),
         invoke<boolean | null>('get_setting', { key: 'play_start_stop_sounds' }),
         invoke<number | null>('get_setting', { key: 'sound_effects_volume' }),
         invoke<number | null>('get_setting', { key: 'mic_gain' }),
@@ -55,12 +59,14 @@
       muteAudio = mute ?? false;
       exclusiveMic = exclusive ?? false;
       pauseMediaDuringDictation = pauseMedia ?? false;
+      micMuteButtonDictation = micMute ?? false;
       soundEffectsVolume = savedVolume !== null && savedVolume !== undefined
         ? Math.max(0, Math.min(100, savedVolume))
         : legacySounds === false ? 0 : 100;
       if (savedGain !== null && savedGain !== undefined) {
         micGain = Math.max(1, Math.min(8, savedGain));
       }
+      lastSavedMicGain = micGain;
     } catch (err) {
       console.error('AudioSection load failed:', err);
     }
@@ -106,6 +112,16 @@
     }
   }
 
+  async function handleMicMuteButtonDictation(value: boolean) {
+    micMuteButtonDictation = value;
+    try {
+      await saveSetting('mic_mute_button_dictation', value);
+    } catch (err) {
+      micMuteButtonDictation = !value;
+      console.error('save mic_mute_button_dictation failed:', err);
+    }
+  }
+
   async function saveSoundEffectsVolume() {
     try {
       await saveSetting('sound_effects_volume', soundEffectsVolume);
@@ -114,15 +130,37 @@
     }
   }
 
-  async function saveMicGain() {
+  async function persistMicGain() {
+    const value = micGain;
+    if (lastSavedMicGain === value) return;
+    lastSavedMicGain = value;
     try {
-      await saveSetting('mic_gain', micGain);
+      await saveSetting('mic_gain', value);
     } catch (err) {
+      lastSavedMicGain = null;
       console.error('saveMicGain failed:', err);
     }
   }
 
+  function scheduleMicGainSave() {
+    if (micGainSaveTimer) clearTimeout(micGainSaveTimer);
+    micGainSaveTimer = setTimeout(() => {
+      micGainSaveTimer = null;
+      void persistMicGain();
+    }, 250);
+  }
+
+  function saveMicGainOnRelease() {
+    if (micGainSaveTimer) {
+      clearTimeout(micGainSaveTimer);
+      micGainSaveTimer = null;
+    }
+    void persistMicGain();
+  }
+
   onDestroy(() => {
+    if (micGainSaveTimer) clearTimeout(micGainSaveTimer);
+    void persistMicGain();
     void cancelCalibration();
     calibrationError.set(null);
   });
@@ -152,7 +190,8 @@
       class="gain-slider"
       min="1" max="8" step="0.1"
       bind:value={micGain}
-      oninput={saveMicGain}
+      oninput={scheduleMicGainSave}
+      onchange={saveMicGainOnRelease}
       style="--pct: {((micGain - 1) / 7 * 100).toFixed(1)}%"
       aria-label="Microphone gain"
     />
@@ -248,6 +287,17 @@
   <div class="setting-row" data-setting-target="audio-pause-media">
     <div><div class="label">Pause media while dictating</div><div class="desc">Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.</div></div>
     <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" />
+  </div>
+  <div class="setting-row" data-setting-target="audio-mic-mute-button">
+    <div>
+      <div class="label">Use microphone mute button for dictation</div>
+      <div class="desc">Mute then unmute the selected mic (within ~3s) to toggle hands-free dictation. Works with mute buttons Windows can see — mixer mute, USB/headset hardware mute, or a mute that silences the capture stream. Keyboard hotkey is unchanged.</div>
+    </div>
+    <Toggle
+      checked={micMuteButtonDictation}
+      onchange={handleMicMuteButtonDictation}
+      label="Use microphone mute button for dictation"
+    />
   </div>
 {/if}
 <div class="setting-row" data-setting-target="audio-noise">

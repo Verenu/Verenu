@@ -138,6 +138,12 @@ const SETTING_SPECS: &[SettingSpec] = &[
     setting_spec(store::APP_MAPPINGS, SettingKind::AppMappings, true, true),
     setting_spec(store::NOISE_REDUCTION, SettingKind::Bool, true, true),
     setting_spec(store::MUTE_AUDIO, SettingKind::Bool, true, true),
+    setting_spec(
+        store::MIC_MUTE_BUTTON_DICTATION,
+        SettingKind::Bool,
+        true,
+        true,
+    ),
     setting_spec(store::EXCLUSIVE_MIC, SettingKind::Bool, true, true),
     setting_spec(
         store::PAUSE_MEDIA_DURING_DICTATION,
@@ -564,6 +570,10 @@ pub async fn save_setting(
         crate::media::sound::set_volume(volume);
     }
 
+    if key == store::MIC_MUTE_BUTTON_DICTATION || key == store::MICROPHONE_DEVICE {
+        crate::media::mic_mute_trigger::reload(&app);
+    }
+
     if let Some(days) = history_prune_days {
         let db = app.state::<DbHandle>().inner().clone();
         let deleted =
@@ -609,6 +619,7 @@ pub struct AllSettings {
     pub cleanup_enabled: Option<bool>,
     pub noise_reduction: Option<bool>,
     pub mute_audio: Option<bool>,
+    pub mic_mute_button_dictation: Option<bool>,
     pub exclusive_mic: Option<bool>,
     pub pause_media_during_dictation: Option<bool>,
     pub play_start_stop_sounds: Option<bool>,
@@ -679,6 +690,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         cleanup_enabled: bool_val(store::CLEANUP_ENABLED),
         noise_reduction: bool_val(store::NOISE_REDUCTION),
         mute_audio: bool_val(store::MUTE_AUDIO),
+        mic_mute_button_dictation: bool_val(store::MIC_MUTE_BUTTON_DICTATION),
         exclusive_mic: bool_val(store::EXCLUSIVE_MIC),
         pause_media_during_dictation: bool_val(store::PAUSE_MEDIA_DURING_DICTATION),
         play_start_stop_sounds: bool_val(store::PLAY_START_STOP_SOUNDS),
