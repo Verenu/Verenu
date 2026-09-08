@@ -562,6 +562,7 @@
                   type="button"
                   class="settings-nav-item"
                   class:active={appStore.settingsSection === entry.id}
+                  data-debug-id={`settings.${entry.id}`}
                   onclick={() => goToSection(entry.id)}
                   in:fly|global={{ x: -motionPx(RAIL_TRAVEL_PX), duration: motionMs(RAIL_IN_MS), delay: 0, easing: cubicOut }}
                   out:fly|global={{ x: -motionPx(RAIL_TRAVEL_PX), duration: motionMs(RAIL_OUT_MS), delay: 0, easing: cubicOut }}
@@ -584,6 +585,7 @@
             type="button"
             class="nav-item"
             class:active={appStore.currentPage === entry.id}
+            data-debug-id={`nav.${entry.id}`}
             disabled={entry.locked}
             onclick={() => nav(entry.id)}
             in:fly|global={{ x: -motionPx(RAIL_TRAVEL_PX), duration: motionMs(RAIL_IN_MS), delay: railDelay(i, RAIL_IN_DELAY_MS), easing: cubicOut }}
@@ -635,6 +637,7 @@
               class="ctx-row"
               class:has-stack={stack.length > 0}
               class:active={appStore.currentPage === 'contexts' && contextsStore.selectedId === context.id}
+              data-debug-id={`context.${context.id}`}
               onclick={() => openContext(context.id)}
             >
               <span class="ctx-icon" style={context.color ? `color: ${context.color}` : ''} aria-hidden="true">
@@ -788,6 +791,7 @@
     <button
       type="button"
       class={appStore.settingsOpen ? 'settings-back' : 'nav-item'}
+      data-debug-id={appStore.settingsOpen ? 'nav.back' : 'nav.settings'}
       onclick={appStore.settingsOpen ? backToApp : openSettings}
     >
       {#if appStore.settingsOpen}

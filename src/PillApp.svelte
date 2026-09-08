@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
+  import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
 
   type PillState = 'idle' | 'recording' | 'processing' | 'loading_local_model' | 'handsfree' | 'error' | 'cancelled' | 'interrupted' | 'paste_failed' | 'copied' | 'clipboard_warning';
   const isCancelLike = (s: PillState) => s === 'cancelled' || s === 'interrupted';
@@ -899,6 +900,19 @@
     goIdle();
   }
 
+  $: dumpExtras = {
+    pillState: state,
+    prevState,
+    errorMsg,
+    contextLabel,
+    stageIndex,
+    seenStages,
+    errOpen,
+    errLines,
+    showHfButtons,
+    cancelOpen,
+  };
+
 </script>
 
 <!-- --bar-w/--bar-gap live on .wrap so every pill state (incl. processing, which
@@ -1090,6 +1104,7 @@
   </div>
 
 </div>
+<AgentAccessibilityDump windowKind="pill" extras={dumpExtras} />
 
 <style>
   :global(*, *::before, *::after) { box-sizing: border-box; }
