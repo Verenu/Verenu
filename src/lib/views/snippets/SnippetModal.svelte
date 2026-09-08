@@ -4,6 +4,7 @@
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { autoGrow, countCodePoints, normalizeText, requireCreatedRecordMeta, TRIGGER_LIMIT } from './helpers';
 
   let {
@@ -45,7 +46,7 @@
   const hasEverywhereConflict = $derived(
     mode === 'add'
       && contextId != null
-      && contextId !== 1
+      && contextId !== EVERYWHERE_ID
       && conflictContexts.some((context) => context.is_everywhere),
   );
 
@@ -58,7 +59,7 @@
 
   async function findConflictContexts(trigger: string): Promise<ContextAssignment[]> {
     const contexts = await invoke<Context[]>('get_contexts');
-    const priorityIds = new Set([1, contextId as number]);
+    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
     const priority = contexts.filter((context) => priorityIds.has(context.id));
     const checked = new Set(priority.map((context) => context.id));
     const findIn = async (context: Context) => {
@@ -126,7 +127,8 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      if (mode === 'add' && contextId != null && contextId !== 1) {
+      const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
         try {
           conflictContexts = await findConflictContexts(t);
         } catch {
@@ -143,7 +145,7 @@
   }
 
   async function moveExistingToContext() {
-    if (mode !== 'add' || contextId == null || contextId === 1) return;
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
     const trigger = (triggerInput?.value ?? draftTrigger).trim();
     movingExisting = true;
     saveError = '';
@@ -156,7 +158,7 @@
         assigned: true,
       });
       await invoke('set_snippet_context_assignment', {
-        contextId: 1,
+        contextId: EVERYWHERE_ID,
         snippetId: existing.id,
         assigned: false,
       });

@@ -6,6 +6,7 @@
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { countCodePoints, MISTAKE_LIMIT, requireCreatedRecordMeta, TERM_LIMIT } from './helpers';
 
   let {
@@ -46,7 +47,7 @@
   const hasEverywhereConflict = $derived(
     mode === 'add'
       && contextId != null
-      && contextId !== 1
+      && contextId !== EVERYWHERE_ID
       && conflictContexts.some((context) => context.is_everywhere),
   );
 
@@ -59,7 +60,7 @@
 
   async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
     const contexts = await invoke<Context[]>('get_contexts');
-    const priorityIds = new Set([1, contextId as number]);
+    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
     const priority = contexts.filter((context) => priorityIds.has(context.id));
     const checked = new Set(priority.map((context) => context.id));
     const findIn = async (context: Context) => {
@@ -124,7 +125,8 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      if (mode === 'add' && contextId != null && contextId !== 1) {
+      const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
         try {
           conflictContexts = await findConflictContexts(term);
         } catch {
@@ -138,24 +140,30 @@
   }
 
   async function moveExistingToContext() {
-    if (mode !== 'add' || contextId == null || contextId === 1) return;
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
     const term = (termInput?.value ?? draftTerm).trim();
     movingExisting = true;
     saveError = '';
     try {
       const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
       if (!existing) throw new Error(`"${term}" was not found`);
+      const mistake = (mistakeInput?.value ?? draftMistake).trim() || null;
       await invoke('set_dictionary_context_assignment', {
         contextId,
         dictionaryId: existing.id,
         assigned: true,
       });
+      let movedEntry = existing;
+      if (mistake !== existing.mistake) {
+        await invoke('edit_dictionary_entry', { id: existing.id, term: existing.term, mistake });
+        movedEntry = { ...existing, mistake };
+      }
       await invoke('set_dictionary_context_assignment', {
-        contextId: 1,
+        contextId: EVERYWHERE_ID,
         dictionaryId: existing.id,
         assigned: false,
       });
-      onSaved(existing);
+      onSaved(movedEntry);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);
