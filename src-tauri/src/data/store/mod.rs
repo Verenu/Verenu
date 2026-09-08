@@ -1,13 +1,14 @@
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tauri::{AppHandle, Manager};
 
 const SETTINGS_FILE: &str = "settings.json";
 pub(crate) const STORAGE_FULL_ERROR: &str = "STORAGE_FULL";
 
 static SIMULATE_STORAGE_FULL: AtomicBool = AtomicBool::new(false);
+static SETTINGS_FILE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) fn set_storage_full_simulation(enabled: bool) {
     SIMULATE_STORAGE_FULL.store(enabled, Ordering::Relaxed);
@@ -20,12 +21,12 @@ pub(crate) fn storage_full_simulation_enabled() -> bool {
 #[derive(Clone)]
 pub struct SettingsHandle {
     path: Arc<PathBuf>,
-    values: Arc<Mutex<Map<String, Value>>>,
+    values: Arc<RwLock<Arc<Map<String, Value>>>>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SettingsSnapshot {
-    values: Map<String, Value>,
+    values: Arc<Map<String, Value>>,
 }
 
 impl SettingsSnapshot {
@@ -40,7 +41,7 @@ impl SettingsSnapshot {
     #[cfg(test)]
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, Value)>) -> Self {
         SettingsSnapshot {
-            values: pairs.into_iter().collect(),
+            values: Arc::new(pairs.into_iter().collect()),
         }
     }
 }
@@ -51,21 +52,21 @@ impl SettingsHandle {
         let values = read_settings_file(&path)?;
         Ok(Self {
             path: Arc::new(path),
-            values: Arc::new(Mutex::new(values)),
+            values: Arc::new(RwLock::new(Arc::new(values))),
         })
     }
 
     pub fn snapshot(&self) -> Result<SettingsSnapshot, String> {
         let values = self
             .values
-            .lock()
+            .read()
             .map_err(|_| "Settings lock was poisoned".to_string())?
             .clone();
         Ok(SettingsSnapshot { values })
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        match self.values.lock() {
+        match self.values.read() {
             Ok(values) => values.get(key).cloned(),
             Err(_) => {
                 log::error!("Settings lock was poisoned when reading key: {key}");
@@ -75,40 +76,26 @@ impl SettingsHandle {
     }
 
     pub fn set(&self, key: impl Into<String>, value: Value) -> Result<(), String> {
-        self.values
-            .lock()
-            .map_err(|_| "Settings lock was poisoned".to_string())?
-            .insert(key.into(), value);
-        Ok(())
-    }
-
-    pub fn set_many<I, K>(&self, values: I) -> Result<(), String>
-    where
-        I: IntoIterator<Item = (K, Value)>,
-        K: Into<String>,
-    {
         let mut settings = self
             .values
-            .lock()
+            .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
-        for (key, value) in values {
-            settings.insert(key.into(), value);
-        }
+        Arc::make_mut(&mut *settings).insert(key.into(), value);
         Ok(())
     }
 
     pub fn delete(&self, key: &str) -> Result<Option<Value>, String> {
-        Ok(self
+        let mut settings = self
             .values
-            .lock()
-            .map_err(|_| "Settings lock was poisoned".to_string())?
-            .remove(key))
+            .write()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        Ok(Arc::make_mut(&mut *settings).remove(key))
     }
 
     pub fn save(&self) -> Result<(), String> {
         let values = self
             .values
-            .lock()
+            .read()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
         write_settings_file(&self.path, &values)
     }
@@ -122,17 +109,39 @@ impl SettingsHandle {
         I: IntoIterator<Item = (K, Value)>,
         K: Into<String>,
     {
+        self.save_values_if_changed(values).map(|_| ())
+    }
+
+    /// Persists a batch only when at least one value differs from the current
+    /// snapshot. The immutable Arc lets readers retain a cheap snapshot while
+    /// the first write after that snapshot performs the necessary map clone.
+    pub fn save_values_if_changed<I, K>(&self, values: I) -> Result<bool, String>
+    where
+        I: IntoIterator<Item = (K, Value)>,
+        K: Into<String>,
+    {
+        let pending: Vec<(String, Value)> = values
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect();
         let mut settings = self
             .values
-            .lock()
+            .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
-        let mut next = settings.clone();
-        for (key, value) in values {
-            next.insert(key.into(), value);
+        if pending
+            .iter()
+            .all(|(key, value)| settings.get(key) == Some(value))
+        {
+            return Ok(false);
+        }
+
+        let mut next = (**settings).clone();
+        for (key, value) in pending {
+            next.insert(key, value);
         }
         write_settings_file(&self.path, &next)?;
-        *settings = next;
-        Ok(())
+        *settings = Arc::new(next);
+        Ok(true)
     }
 }
 
@@ -198,18 +207,31 @@ fn write_settings_file(path: &Path, values: &Map<String, Value>) -> Result<(), S
     }
     let json = serde_json::to_string_pretty(values)
         .map_err(|e| format!("Failed to serialize settings.json: {e}"))?;
+    // The temporary name is shared by every SettingsHandle for this file.
+    // Serialize the complete write-and-rename sequence so separate handles
+    // cannot overwrite or remove one another's settings.json.tmp.
+    let _write_guard = SETTINGS_FILE_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Settings write lock was poisoned".to_string())?;
     // Write to a temp file then atomically rename so an interrupted write
     // (crash, power loss, disk full) can't truncate the live settings.json.
     let tmp_path = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp_path, json) {
         // A failed/partial write shouldn't leave a stale temp file behind.
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(settings_write_error("Failed to write temporary settings file", &e));
+        return Err(settings_write_error(
+            "Failed to write temporary settings file",
+            &e,
+        ));
     }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         // Don't leave the temp file behind if the swap failed.
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(settings_write_error("Failed to replace settings.json atomically", &e));
+        return Err(settings_write_error(
+            "Failed to replace settings.json atomically",
+            &e,
+        ));
     }
     Ok(())
 }

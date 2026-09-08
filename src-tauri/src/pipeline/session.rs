@@ -192,7 +192,18 @@ pub fn start_recording_session_ex(
         )
     });
 
-    match audio::RecordingSession::start(device, noise_reduction, mic_gain, durable_sink) {
+    let prepend_samples = prepend_for_lifecycle
+        .as_ref()
+        .map(|audio| audio.samples_16k.len());
+    let max_output_samples =
+        prepend_samples.map(|samples| audio::MAX_RECORDING_SAMPLES.saturating_sub(samples));
+    match audio::RecordingSession::start(
+        device,
+        noise_reduction,
+        mic_gain,
+        durable_sink,
+        max_output_samples,
+    ) {
         Ok(session) => {
             let level_arc = session.level.clone();
             let raw_level_arc = session.raw_level.clone();
@@ -331,11 +342,12 @@ pub async fn cancel_recording_with_resume(
     state: &SharedState,
     session: audio::RecordingSession,
     exclusive_mic_session_id: Option<u64>,
+    prepend_audio: Option<CapturedAudio>,
 ) {
     crate::media::sound::coordinated_unmute();
     crate::system::media_control::end_dictation_media_pause();
 
-    let Some((captured_audio, rms, raw_rms)) =
+    let Some((mut captured_audio, mut rms, mut raw_rms)) =
         stop_and_capture_audio(app, session, exclusive_mic_session_id).await
     else {
         // stop_and_capture_audio already hid the pill on failure.
@@ -345,6 +357,22 @@ pub async fn cancel_recording_with_resume(
     let active_gain = store::settings_snapshot(app)
         .map(|s| store::load_audio_config(&s).mic_gain)
         .unwrap_or(store::DEFAULT_MIC_GAIN);
+
+    if let Some(previous) = prepend_audio {
+        match super::merge_prepend_audio(previous, captured_audio, active_gain) {
+            Ok((merged, merged_rms, merged_raw_rms)) => {
+                captured_audio = merged;
+                rms = merged_rms;
+                raw_rms = merged_raw_rms;
+            }
+            Err(error) => {
+                log::warn!("recording: cancelled continuation merge failed: {error}");
+                super::failover::abandon_live();
+                return;
+            }
+        }
+    }
+
     let min_rms = recording_gate_rms(active_gain);
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
 

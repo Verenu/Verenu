@@ -134,6 +134,7 @@ pub fn insert_snippet_returning_conn(
         params![id],
         |r| r.get(0),
     )?;
+    invalidate_snippet_cache();
     Ok(CreatedRecordMeta { id, created_at })
 }
 
@@ -173,6 +174,7 @@ pub fn update_snippet(
         ],
     )?;
     require_row_changed(changed, "Snippet", id)?;
+    invalidate_snippet_cache();
     Ok(())
 }
 
@@ -186,6 +188,7 @@ pub fn delete_snippet(db: &Db, id: i64) -> Result<()> {
         params![id],
     )?;
     tx.commit()?;
+    invalidate_snippet_cache();
     Ok(())
 }
 

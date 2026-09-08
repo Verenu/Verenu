@@ -155,6 +155,11 @@ fn create_identity(known_uuid: Option<String>) -> Result<DeviceIdentity> {
     })
 }
 
+#[cfg(test)]
+pub(crate) fn generate_for_tests() -> DeviceIdentity {
+    create_identity(None).expect("test identity")
+}
+
 /// Best-effort human name for this machine, shown on the peer during pairing.
 pub fn default_device_name() -> String {
     hostname_raw()
