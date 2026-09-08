@@ -2,7 +2,7 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
-  import { formatIpcError, type DictionaryEntry } from '../../stores';
+  import { formatIpcError, type Context, type DictionaryEntry } from '../../stores';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
@@ -58,6 +58,26 @@
     return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
   }
 
+  async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([1, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const entries = await invoke<DictionaryEntry[]>('get_context_dictionary', { contextId: context.id });
+      return entries.some((entry) => entry.term === term)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
+
   async function saveModal() {
     // Read directly from DOM elements at click time to bypass WKWebView
     // bind:value paste-sync lag, matching the pattern in Snippets.svelte.
@@ -81,15 +101,8 @@
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
-          await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
-||||||| Common ancestor
-          await invoke<unknown>('create_dictionary_entry', { term, mistake }),
-          'create_dictionary_entry',
-=======
           await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
           'create_dictionary_entry',
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
         );
         onSaved({
           id: created.id,
@@ -121,25 +134,19 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
-      const normalizedMessage = msg.toLowerCase();
-      saveError = normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
-        ? 'That term already exists.'
-        : msg;
-||||||| Common ancestor
-      saveError = msg.includes('UNIQUE') ? 'That term already exists.' : msg;
-=======
       if (mode === 'add' && contextId != null && contextId !== 1) {
         try {
-          conflictContexts = await invoke<ContextAssignment[]>('get_dictionary_entry_contexts', { term });
+          conflictContexts = await findConflictContexts(term);
         } catch {
           conflictContexts = [];
         }
       }
+      const normalizedMessage = msg.toLowerCase();
       saveError = conflictContexts.length > 0
         ? `"${term}" already exists inside of ${conflictLocation()}. Move it here?`
-        : msg.includes('UNIQUE') ? 'That term already exists.' : msg;
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
+        : normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
+          ? 'That term already exists.'
+          : msg;
     } finally { saving = false; }
   }
 
@@ -149,11 +156,19 @@
     movingExisting = true;
     saveError = '';
     try {
-      const moved = await invoke<DictionaryEntry>('move_dictionary_entry_to_context', {
-        term,
+      const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
+      if (!existing) throw new Error(`"${term}" was not found`);
+      await invoke('set_dictionary_context_assignment', {
         contextId,
+        dictionaryId: existing.id,
+        assigned: true,
       });
-      onSaved(moved);
+      await invoke('set_dictionary_context_assignment', {
+        contextId: 1,
+        dictionaryId: existing.id,
+        assigned: false,
+      });
+      onSaved(existing);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);
@@ -235,13 +250,6 @@
 
   <div class="modal-footer">
     {#if saveError}
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
-      <div class="save-error" role="alert">
-        <span>{saveError}</span>
-      </div>
-||||||| Common ancestor
-      <p class="save-error">{saveError}</p>
-=======
       <div class="save-error" role="alert">
         <span>{saveError}</span>
         {#if hasEverywhereConflict}
@@ -253,7 +261,6 @@
           >{movingExisting ? 'Moving…' : 'Move it here'}</button>
         {/if}
       </div>
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
     {/if}
     {#if draftTerm.length >= TERM_LIMIT}
       <button
@@ -432,15 +439,9 @@
     border-radius: var(--r-sm);
   }
 
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
-  .save-error > span { min-width: 0; }
-
-||||||| Common ancestor
-=======
   .save-error > span { min-width: 0; }
   .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
 
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
   .spinner {
     display: inline-block;
     width: 11px; height: 11px;

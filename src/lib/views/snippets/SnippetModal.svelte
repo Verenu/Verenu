@@ -37,7 +37,6 @@
   let expansionEl = $state<HTMLTextAreaElement | null>(null);
   let instructionsEl = $state<HTMLTextAreaElement | null>(null);
 
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
   type ContextAssignment = {
     id: number;
     name: string;
@@ -78,29 +77,6 @@
     )).filter((location): location is ContextAssignment => location !== null);
   }
 
-||||||| Common ancestor
-=======
-  type ContextAssignment = {
-    id: number;
-    name: string;
-    is_everywhere: boolean;
-  };
-
-  const hasEverywhereConflict = $derived(
-    mode === 'add'
-      && contextId != null
-      && contextId !== 1
-      && conflictContexts.some((context) => context.is_everywhere),
-  );
-
-  function conflictLocation() {
-    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
-    if (names.length <= 1) return names[0] ?? '';
-    if (names.length === 2) return `${names[0]} and ${names[1]}`;
-    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-  }
-
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
   async function saveModal() {
     // Read straight from the DOM elements. On WKWebView, `bind:value` can fail
     // to propagate a pasted value into reactive state before the click fires.
@@ -151,7 +127,6 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
       const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
       if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
         try {
@@ -165,29 +140,10 @@
         : msg.includes('UNIQUE')
           ? 'A snippet with that trigger already exists.'
           : msg;
-||||||| Common ancestor
-      saveError = msg.includes('UNIQUE')
-        ? 'A snippet with that trigger already exists.'
-        : msg;
-=======
-      if (mode === 'add' && contextId != null && contextId !== 1) {
-        try {
-          conflictContexts = await invoke<ContextAssignment[]>('get_snippet_entry_contexts', { trigger: t });
-        } catch {
-          conflictContexts = [];
-        }
-      }
-      saveError = conflictContexts.length > 0
-        ? `"${t}" already exists inside of ${conflictLocation()}. Move it here?`
-        : msg.includes('UNIQUE')
-          ? 'A snippet with that trigger already exists.'
-          : msg;
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
     }
     finally { saving = false; }
   }
 
-<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
   async function moveExistingToContext() {
     if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
     const trigger = (triggerInput?.value ?? draftTrigger).trim();
@@ -223,28 +179,6 @@
     }
   }
 
-||||||| Common ancestor
-=======
-  async function moveExistingToContext() {
-    if (mode !== 'add' || contextId == null || contextId === 1) return;
-    const trigger = (triggerInput?.value ?? draftTrigger).trim();
-    movingExisting = true;
-    saveError = '';
-    try {
-      const moved = await invoke<Snippet>('move_snippet_entry_to_context', {
-        trigger,
-        contextId,
-      });
-      onSaved(moved);
-      onClose();
-    } catch (err) {
-      saveError = formatIpcError(err);
-    } finally {
-      movingExisting = false;
-    }
-  }
-
->>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveModal();

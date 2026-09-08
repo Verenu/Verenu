@@ -16,17 +16,6 @@ pub struct Snippet {
     pub created_at: String,
 }
 
-fn snippet_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snippet> {
-    Ok(Snippet {
-        id: row.get(0)?,
-        trigger: row.get(1)?,
-        expansion: row.get(2)?,
-        instructions: row.get(3)?,
-        use_count: row.get(4)?,
-        created_at: row.get(5)?,
-    })
-}
-
 #[cfg(test)]
 pub fn insert_snippet(db: &Db, trigger: &str, expansion: &str, instructions: &str) -> Result<()> {
     insert_snippet_returning(db, trigger, expansion, instructions, None)?;
@@ -234,70 +223,18 @@ pub fn query_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippe
          ORDER BY s.created_at DESC",
     )?;
     let rows = stmt
-        .query_map(params![context_id], snippet_from_row)?
+        .query_map(params![context_id], |r| {
+            Ok(Snippet {
+                id: r.get(0)?,
+                trigger: r.get(1)?,
+                expansion: r.get(2)?,
+                instructions: r.get(3)?,
+                use_count: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
-}
-
-/// Removes a snippet from Everywhere and assigns the existing row to a
-/// specific context. The expansion, instructions, and use count remain on
-/// the same global row.
-pub fn move_snippet_entry_to_context(
-    db: &Db,
-    trigger: &str,
-    target_context_id: i64,
-) -> Result<Snippet> {
-    let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
-    validate_char_limit("Trigger", &normalized_trigger, SNIPPET_TRIGGER_CHAR_LIMIT)?;
-
-    let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
-    let everywhere_id = ensure_everywhere_context_conn(&tx)?;
-    if target_context_id == everywhere_id {
-        anyhow::bail!("The Everywhere context cannot be the move destination");
-    }
-    let target_is_everywhere: Option<bool> = tx
-        .query_row(
-            "SELECT is_everywhere FROM contexts WHERE id = ?1",
-            params![target_context_id],
-            |row| Ok(row.get::<_, i64>(0)? != 0),
-        )
-        .optional()?;
-    match target_is_everywhere {
-        Some(false) => {}
-        Some(true) => anyhow::bail!("The Everywhere context cannot be the move destination"),
-        None => anyhow::bail!("Context {target_context_id} was not found"),
-    }
-
-    let snippet_id: i64 = tx
-        .query_row(
-            "SELECT id FROM snippets WHERE trigger = ?1",
-            params![normalized_trigger],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or_else(|| anyhow::anyhow!("\"{normalized_trigger}\" was not found"))?;
-    let removed = tx.execute(
-        "DELETE FROM snippet_contexts WHERE context_id = ?1 AND snippet_id = ?2",
-        params![everywhere_id, snippet_id],
-    )?;
-    if removed == 0 {
-        anyhow::bail!("\"{normalized_trigger}\" is not assigned to Everywhere");
-    }
-    tx.execute(
-        "INSERT OR IGNORE INTO snippet_contexts (context_id, snippet_id)
-         VALUES (?1, ?2)",
-        params![target_context_id, snippet_id],
-    )?;
-    let snippet = tx.query_row(
-        "SELECT id, trigger, expansion, instructions, use_count, created_at
-         FROM snippets WHERE id = ?1",
-        params![snippet_id],
-        snippet_from_row,
-    )?;
-    tx.commit()?;
-    invalidate_snippet_cache();
-    Ok(snippet)
 }
 
 pub fn increment_snippet_use(db: &Db, id: i64) -> Result<()> {
