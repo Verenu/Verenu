@@ -147,11 +147,19 @@
   async function moveExistingToContext() {
     if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
     const trigger = (triggerInput?.value ?? draftTrigger).trim();
+    if (expansionEl) draftExpansion = expansionEl.value;
+    if (instructionsEl) draftInstructions = instructionsEl.value;
+    const expansion = normalizeText(draftExpansion);
+    const instructions = normalizeText(draftInstructions);
     movingExisting = true;
     saveError = '';
     try {
       const existing = (await invoke<Snippet[]>('get_snippets')).find((snippet) => snippet.trigger === trigger);
       if (!existing) throw new Error(`"${trigger}" was not found`);
+      const updated = { ...existing, trigger, expansion, instructions };
+      if (existing.trigger !== trigger || existing.expansion !== expansion || existing.instructions !== instructions) {
+        await invoke('edit_snippet', { id: existing.id, trigger, expansion, instructions });
+      }
       await invoke('set_snippet_context_assignment', {
         contextId,
         snippetId: existing.id,
@@ -162,7 +170,7 @@
         snippetId: existing.id,
         assigned: false,
       });
-      onSaved(existing);
+      onSaved(updated);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);
