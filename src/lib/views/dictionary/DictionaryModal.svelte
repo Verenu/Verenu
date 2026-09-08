@@ -2,21 +2,24 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
-  import { formatIpcError, type DictionaryEntry } from '../../stores';
+  import { formatIpcError, type Context, type DictionaryEntry } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { countCodePoints, MISTAKE_LIMIT, requireCreatedRecordMeta, TERM_LIMIT } from './helpers';
 
   let {
     mode,
     entry,
+    contextId,
     onClose,
     onSaved,
     onGoToSnippets,
   }: {
     mode: 'add' | 'edit';
     entry?: DictionaryEntry;
+    contextId?: number | null;
     onClose: () => void;
     onSaved: (entry: DictionaryEntry) => void;
     onGoToSnippets: () => void;
@@ -30,8 +33,50 @@
   let draftMistake = $state(entry?.mistake ?? '');
   let saving = $state(false);
   let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
   let termInput = $state<HTMLInputElement | null>(null);
   let mistakeInput = $state<HTMLInputElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== EVERYWHERE_ID
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
+
+  async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const entries = await invoke<DictionaryEntry[]>('get_context_dictionary', { contextId: context.id });
+      return entries.some((entry) => entry.term === term)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
 
   async function saveModal() {
     // Read directly from DOM elements at click time to bypass WKWebView
@@ -52,10 +97,11 @@
       return;
     }
     saving = true; saveError = '';
+    conflictContexts = [];
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(
-          await invoke<unknown>('create_dictionary_entry', { term, mistake }),
+          await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
           'create_dictionary_entry',
         );
         onSaved({
@@ -79,8 +125,51 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      saveError = msg.includes('UNIQUE') ? 'That term already exists.' : msg;
+      const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
+        try {
+          conflictContexts = await findConflictContexts(term);
+        } catch {
+          conflictContexts = [];
+        }
+      }
+      saveError = conflictContexts.length > 0
+        ? `"${term}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
+        : msg.includes('UNIQUE') ? 'That term already exists.' : msg;
     } finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
+    const term = (termInput?.value ?? draftTerm).trim();
+    movingExisting = true;
+    saveError = '';
+    try {
+      const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
+      if (!existing) throw new Error(`"${term}" was not found`);
+      const mistake = (mistakeInput?.value ?? draftMistake).trim() || null;
+      await invoke('set_dictionary_context_assignment', {
+        contextId,
+        dictionaryId: existing.id,
+        assigned: true,
+      });
+      let movedEntry = existing;
+      if (mistake !== existing.mistake) {
+        await invoke('edit_dictionary_entry', { id: existing.id, term: existing.term, mistake });
+        movedEntry = { ...existing, mistake };
+      }
+      await invoke('set_dictionary_context_assignment', {
+        contextId: EVERYWHERE_ID,
+        dictionaryId: existing.id,
+        assigned: false,
+      });
+      onSaved(movedEntry);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -156,7 +245,17 @@
 
   <div class="modal-footer">
     {#if saveError}
-      <p class="save-error">{saveError}</p>
+      <div class="save-error" role="alert">
+        <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
+      </div>
     {/if}
     {#if draftTerm.length >= TERM_LIMIT}
       <button
@@ -321,6 +420,11 @@
   }
 
   .save-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
     font-size: 11.5px;
     color: var(--danger);
     margin: 0;
@@ -329,6 +433,9 @@
     border: 1px solid var(--danger-line);
     border-radius: var(--r-sm);
   }
+
+  .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
 
   .spinner {
     display: inline-block;
