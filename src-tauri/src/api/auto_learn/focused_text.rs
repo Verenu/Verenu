@@ -277,6 +277,7 @@ impl FocusedTextReader {
         local.GetText(-1).ok().map(|text| text.to_string())
     }
 
+    #[allow(dead_code)]
     unsafe fn read_local_range_at_end(
         range: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
         extra_chars: i32,
@@ -359,6 +360,7 @@ impl FocusedTextReader {
         }
     }
 
+    #[allow(dead_code)]
     fn read_near_caret(&self, injected_text: &str) -> Option<String> {
         use windows::Win32::UI::Accessibility::{
             IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
@@ -728,6 +730,7 @@ pub fn read_focused_text_around(injected_text: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn read_focused_text_near_caret(injected_text: &str) -> Option<String> {
     FOCUSED_TEXT_STATE.with(|cell| {
         let mut guard = cell.borrow_mut();
