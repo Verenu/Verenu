@@ -1111,6 +1111,19 @@ mod tests {
         assert!(query_snippets_for_context(&db, context.id)
             .unwrap()
             .is_empty());
+
+        insert_dictionary_entry_returning(&db, "Verenu", Some("Vernu"), Some(context.id))
+            .expect("assign existing dictionary entry");
+        insert_snippet_returning(&db, "sig", "signature", "", Some(context.id))
+            .expect("assign existing snippet");
+        assert_eq!(
+            query_dictionary_for_context(&db, context.id).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            query_snippets_for_context(&db, context.id).unwrap().len(),
+            1
+        );
     }
 }
 

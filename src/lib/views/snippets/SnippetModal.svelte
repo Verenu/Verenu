@@ -1,19 +1,22 @@
 <script lang="ts">
   import { invoke } from '../../tauri';
-  import { formatIpcError, type Snippet } from '../../stores';
+  import { formatIpcError, type Context, type Snippet } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { autoGrow, countCodePoints, normalizeText, requireCreatedRecordMeta, TRIGGER_LIMIT } from './helpers';
 
   let {
     mode,
     snippet,
+    contextId,
     onClose,
     onSaved,
   }: {
     mode: 'add' | 'edit';
     snippet?: Snippet;
+    contextId?: number | null;
     onClose: () => void;
     onSaved: (snippet: Snippet) => void;
   } = $props();
@@ -28,9 +31,51 @@
   let draftInstructions = $state(snippet?.instructions ?? '');
   let saving = $state(false);
   let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
   let triggerInput = $state<HTMLInputElement | null>(null);
   let expansionEl = $state<HTMLTextAreaElement | null>(null);
   let instructionsEl = $state<HTMLTextAreaElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== EVERYWHERE_ID
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
+
+  async function findConflictContexts(trigger: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const snippets = await invoke<Snippet[]>('get_context_snippets', { contextId: context.id });
+      return snippets.some((snippet) => snippet.trigger === trigger)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
 
   async function saveModal() {
     // Read straight from the DOM elements. On WKWebView, `bind:value` can fail
@@ -53,12 +98,14 @@
     }
     saving = true;
     saveError = '';
+    conflictContexts = [];
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(await invoke<unknown>('create_snippet', {
           trigger: t,
           expansion: e,
           instructions: i,
+          contextId: contextId ?? null,
         }));
         onSaved({
           id: created.id,
@@ -80,11 +127,56 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      saveError = msg.includes('UNIQUE')
-        ? 'A snippet with that trigger already exists.'
-        : msg;
+      const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
+        try {
+          conflictContexts = await findConflictContexts(t);
+        } catch {
+          conflictContexts = [];
+        }
+      }
+      saveError = conflictContexts.length > 0
+        ? `"${t}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
+        : msg.includes('UNIQUE')
+          ? 'A snippet with that trigger already exists.'
+          : msg;
     }
     finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
+    const trigger = (triggerInput?.value ?? draftTrigger).trim();
+    if (expansionEl) draftExpansion = expansionEl.value;
+    if (instructionsEl) draftInstructions = instructionsEl.value;
+    const expansion = normalizeText(draftExpansion);
+    const instructions = normalizeText(draftInstructions);
+    movingExisting = true;
+    saveError = '';
+    try {
+      const existing = (await invoke<Snippet[]>('get_snippets')).find((snippet) => snippet.trigger === trigger);
+      if (!existing) throw new Error(`"${trigger}" was not found`);
+      const updated = { ...existing, trigger, expansion, instructions };
+      if (existing.trigger !== trigger || existing.expansion !== expansion || existing.instructions !== instructions) {
+        await invoke('edit_snippet', { id: existing.id, trigger, expansion, instructions });
+      }
+      await invoke('set_snippet_context_assignment', {
+        contextId,
+        snippetId: existing.id,
+        assigned: true,
+      });
+      await invoke('set_snippet_context_assignment', {
+        contextId: EVERYWHERE_ID,
+        snippetId: existing.id,
+        assigned: false,
+      });
+      onSaved(updated);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -182,7 +274,17 @@
 
   <div class="modal-footer">
     {#if saveError}
-      <p class="save-error">{saveError}</p>
+      <div class="save-error" role="alert">
+        <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
+      </div>
     {/if}
     <div class="footer-actions">
       <button class="btn-ghost" onclick={onClose}>Cancel</button>
@@ -297,6 +399,11 @@
   }
 
   .save-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
     font-size: 11.5px;
     color: var(--danger);
     margin: 0;
@@ -305,6 +412,9 @@
     border: 1px solid var(--danger-line);
     border-radius: var(--r-sm);
   }
+
+  .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
 
   .field-label {
     font-size: 11.5px;
