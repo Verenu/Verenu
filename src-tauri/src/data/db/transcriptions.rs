@@ -282,6 +282,7 @@ pub fn query_recent_page(
 /// using the AUTOINCREMENT primary key keeps newest-first pagination stable
 /// when rows are inserted while the user is scrolling and avoids SQLite
 /// walking and discarding a deep OFFSET.
+#[allow(dead_code)]
 pub fn query_recent_page_before(
     db: &Db,
     limit: usize,

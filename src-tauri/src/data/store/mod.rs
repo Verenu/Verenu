@@ -307,6 +307,7 @@ pub const ACCENT_COLOR: &str = "accent_color";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 /// Developer-only: stuff a diagnostics dump into the OS accessibility tree
 /// so agent SnapShots can read it. Off by default. Not for real AT users.
+#[allow(dead_code)]
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
 /// One cleanup prompt for every model. Fallback chains made per-model prompts

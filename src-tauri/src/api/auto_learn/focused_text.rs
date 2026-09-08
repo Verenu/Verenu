@@ -953,6 +953,7 @@ pub fn read_focused_text_around(_injected_text: &str) -> Option<String> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn read_focused_text_near_caret(_injected_text: &str) -> Option<String> {
     None
 }

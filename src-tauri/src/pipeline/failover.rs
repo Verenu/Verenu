@@ -226,7 +226,7 @@ pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
             bytes = &bytes[1..];
         }
         let even_len = bytes.len() & !1;
-        for pair in bytes[..even_len].chunks_exact(2) {
+        for pair in bytes[..even_len].as_chunks::<2>().0 {
             samples.push(i16_to_f32(i16::from_le_bytes([pair[0], pair[1]])));
         }
         if even_len != bytes.len() {
