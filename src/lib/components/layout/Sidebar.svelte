@@ -447,7 +447,8 @@
     const names = new Set(contextsStore.contexts.map((context) => context.name.toLowerCase()));
     for (let copyNumber = 1; copyNumber < 10_000; copyNumber += 1) {
       const suffix = copyNumber === 1 ? ' copy' : ` copy ${copyNumber}`;
-      const base = [...sourceName].slice(0, Math.max(0, 30 - [...suffix].length)).join('');
+      const baseLength = Math.max(1, 30 - [...suffix].length);
+      const base = sourceName.slice(0, baseLength).trimEnd() || 'Context';
       const candidate = `${base}${suffix}`;
       if (!names.has(candidate.toLowerCase())) return candidate;
     }
