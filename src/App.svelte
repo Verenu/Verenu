@@ -370,6 +370,7 @@
 <div
   class="app"
   class:app-windows={isWindows}
+  data-android={isAndroid ? 'true' : 'false'}
   data-width-class={viewport.widthClass}
   data-compact-nav={compactNav ? 'true' : 'false'}
 >
