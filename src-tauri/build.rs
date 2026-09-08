@@ -1,14 +1,32 @@
 fn main() {
-    #[cfg(target_os = "windows")]
-    build_windows_titlebar();
+    // Build scripts themselves run for the host, so `cfg(target_os =
+    // "windows")` describes this machine rather than Cargo's Android target.
+    // Read CARGO_CFG_TARGET_OS for cross-compiles and keep desktop-only native
+    // bridges out of mobile builds.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "windows" {
+        #[cfg(target_os = "windows")]
+        build_windows_titlebar();
+    }
 
-    #[cfg(target_os = "macos")]
-    {
-        println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
-        cc::Build::new()
-            .file("src/system/macos_ax_text_marker.m")
-            .flag("-fobjc-arc")
-            .compile("verenu_macos_ax_text_marker");
+    if target_os == "macos" {
+        #[cfg(target_os = "macos")]
+        {
+            println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
+            cc::Build::new()
+                .file("src/system/macos_ax_text_marker.m")
+                .flag("-fobjc-arc")
+                .compile("verenu_macos_ax_text_marker");
+        }
+    }
+
+    // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
+    // runtime as a real Cargo link dependency so the final cdylib retains a
+    // DT_NEEDED entry for libc++_shared.so. Rustflags alone can be reordered
+    // behind the linker’s --as-needed default and silently drop it.
+    if target_os == "android" {
+        println!("cargo:rustc-link-lib=dylib=c++_shared");
+        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
     }
 
     println!("cargo:rerun-if-changed=Info.plist");
@@ -16,7 +34,50 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.icns");
     println!("cargo:rerun-if-changed=icons/verenu-mark.svg");
     println!("cargo:rerun-if-changed=src/generated_icon_geometry.rs");
-    tauri_build::build()
+    if target_os == "windows" {
+        let attributes = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        tauri_build::try_build(attributes).expect("failed to run Tauri build script");
+        link_windows_manifest();
+    } else {
+        tauri_build::build();
+    }
+}
+
+fn link_windows_manifest() {
+    use std::{env, fs, path::PathBuf};
+
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+
+    // tauri-build normally embeds this manifest only in binary targets. The
+    // library test executable also initializes native dialogs, so it needs the
+    // Common Controls v6 activation context as well.
+    const MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
+
+    let manifest_path =
+        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR")).join("verenu.exe.manifest");
+    fs::write(&manifest_path, MANIFEST).expect("write Windows application manifest");
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
+        manifest_path.display()
+    );
 }
 
 #[cfg(target_os = "windows")]

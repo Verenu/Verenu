@@ -32,53 +32,68 @@ pub(super) async fn stop_and_capture_audio(
         manager.set_recording_active(false);
     }
     let audio::RecordingResult {
-        wav,
         samples_16k,
         sample_rate,
         duration_ms,
         rms,
         raw_rms,
-        truncated,
+        termination,
     } = match stop_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             log::error!("audio stop: {e}");
-            super::failover::abandon_live();
             hide_pill(app);
             return None;
         }
         Err(e) => {
             log::error!("audio stop task panicked: {e}");
-            super::failover::abandon_live();
             hide_pill(app);
             return None;
         }
     };
-    if truncated {
-        log::warn!(
-            "pipeline: rejected recording that exceeded max duration limit max_seconds={}",
-            audio::MAX_RECORDING_SECONDS
-        );
-        // show_error_pill already logs and emits "verenu:error" itself, so pass
-        // the full descriptive message here rather than emitting a second event.
-        show_error_pill(
-            app,
-            &format!(
-                "Recording exceeded the {} minute limit. Please split it into shorter dictations.",
-                audio::MAX_RECORDING_SECONDS / 60
-            ),
-        )
-        .await;
-        super::failover::abandon_live();
-        return None;
+    match termination {
+        audio::RecordingTermination::Complete => {}
+        audio::RecordingTermination::DurationLimit => {
+            log::warn!(
+                "pipeline: rejected recording that exceeded max duration limit max_seconds={}",
+                audio::MAX_RECORDING_SECONDS
+            );
+            show_error_pill(
+                app,
+                &format!(
+                    "Recording exceeded the {} minute limit. Please split it into shorter dictations.",
+                    audio::MAX_RECORDING_SECONDS / 60
+                ),
+            )
+            .await;
+            // A deliberate duration cap is not a recoverable partial take.
+            super::failover::abandon_live();
+            return None;
+        }
+        audio::RecordingTermination::DroppedSamples => {
+            log::warn!("pipeline: rejected recording because audio samples were dropped");
+            show_error_pill(
+                app,
+                "Recording was interrupted because audio fell behind and samples were dropped. Please try again.",
+            )
+            .await;
+            // Keep the durable prefix for startup recovery.
+            return None;
+        }
+        audio::RecordingTermination::RecoveryWriteFailed => {
+            log::warn!("pipeline: recovery recording could not be kept durable");
+            show_error_pill(
+                app,
+                "Recording could not be saved for recovery. Check available disk space and try again.",
+            )
+            .await;
+            // The live spool contains the last known durable prefix. Do not
+            // delete it just because the current take hit a disk/queue error.
+            return None;
+        }
     }
     Some((
-        CapturedAudio {
-            wav: bytes::Bytes::from(wav),
-            samples_16k: Arc::new(samples_16k),
-            sample_rate,
-            duration_ms,
-        },
+        CapturedAudio::from_samples(samples_16k, sample_rate, duration_ms),
         rms,
         raw_rms,
     ))
@@ -238,7 +253,7 @@ pub(super) async fn transcribe_any(
 
     let key = api_key.ok_or_else(|| anyhow::anyhow!("No API key saved for {provider_id}"))?;
     transcription::transcribe(
-        audio.wav.clone(),
+        audio.wav_bytes()?,
         ProviderId::from_str(provider_id),
         key,
         language,
@@ -276,7 +291,7 @@ pub(super) async fn run_transcription(
         cfg.transcription_provider,
         cfg.transcription_default_model,
         cfg.transcription_language,
-        audio.wav.len(),
+        audio.wav_len(),
         audio.samples_16k.len()
     );
 

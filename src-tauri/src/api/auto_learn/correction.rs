@@ -7,9 +7,9 @@
 //! auto_learn test module; this was a behavior-preserving move.
 
 use super::{
-    read_focused_text, AlignOp, CandidateCorrection, CorrectionMetrics, TextAnchor, WordToken,
-    MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN, MAX_SPAN_GROWTH_WORDS,
-    MIN_CANDIDATE_NORM_LEN,
+    read_focused_text, read_focused_text_around, AlignOp, CandidateCorrection, CorrectionMetrics,
+    TextAnchor, WordToken, MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN,
+    MAX_SPAN_GROWTH_WORDS, MIN_CANDIDATE_NORM_LEN,
 };
 use crate::system::text::has_distinctive_features;
 
@@ -320,7 +320,7 @@ pub(super) fn current_anchored_span<'a>(
     anchor: TextAnchor,
 ) -> Option<&'a str> {
     if baseline == current {
-        return Some(&current[anchor.start..anchor.end]);
+        return current.get(anchor.start..anchor.end);
     }
 
     let prefix = common_prefix_len(baseline, current);
@@ -334,7 +334,7 @@ pub(super) fn current_anchored_span<'a>(
         if base_change_end <= anchor.start {
             return None;
         }
-        return Some(&current[anchor.start..anchor.end]);
+        return current.get(anchor.start..anchor.end);
     }
 
     if base_change_start < anchor.start || base_change_end > anchor.end {
@@ -361,6 +361,58 @@ pub(super) fn current_anchored_span<'a>(
     Some(&current[anchor.start..new_end])
 }
 
+/// Bounded UI Automation reads may start at different offsets after an edit.
+/// Anchor the span using text immediately beside the injected range instead of
+/// assuming both windows have a shared document origin.
+fn current_span_from_surrounding_context<'a>(
+    baseline: &str,
+    current: &'a str,
+    anchor: TextAnchor,
+) -> Option<&'a str> {
+    const CONTEXT_CHARS: usize = 128;
+    let baseline_left = baseline.get(..anchor.start)?;
+    let baseline_right = baseline.get(anchor.end..)?;
+    if anchor.start > anchor.end
+        || !baseline.is_char_boundary(anchor.start)
+        || !baseline.is_char_boundary(anchor.end)
+    {
+        return None;
+    }
+    let left_start = baseline_left
+        .char_indices()
+        .rev()
+        .nth(CONTEXT_CHARS)
+        .map_or(0, |(index, _)| index);
+    let right_end = baseline_right
+        .char_indices()
+        .nth(CONTEXT_CHARS)
+        .map_or(baseline.len(), |(index, _)| anchor.end + index);
+    let left = &baseline[left_start..anchor.start];
+    let right = &baseline[anchor.end..right_end];
+
+    let unique_match = |needle: &str| {
+        let mut matches = current.match_indices(needle);
+        let first = matches.next()?.0;
+        matches.next().is_none().then_some(first)
+    };
+    match (left.is_empty(), right.is_empty()) {
+        (false, false) => {
+            let start = unique_match(left)? + left.len();
+            let end = unique_match(right)?;
+            current.get(start..end)
+        }
+        (true, false) if anchor.start == 0 => {
+            let end = unique_match(right)?;
+            Some(&current[..end])
+        }
+        (false, true) if anchor.end == baseline.len() => {
+            let start = unique_match(left)? + left.len();
+            Some(&current[start..])
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn find_last_anchor(haystack: &str, needle: &str) -> Option<TextAnchor> {
     if needle.trim().is_empty() {
         return None;
@@ -373,7 +425,7 @@ pub(super) fn find_last_anchor(haystack: &str, needle: &str) -> Option<TextAncho
 }
 
 pub(super) fn capture_baseline_text(injected_text: &str) -> Option<String> {
-    let current_text = read_focused_text()?;
+    let current_text = read_focused_text_around(injected_text)?;
     if find_unique_anchor(&current_text, injected_text).is_some() {
         Some(current_text)
     } else {
@@ -396,59 +448,114 @@ pub(super) fn align_word_ops(
 ) -> Vec<(AlignOp, Option<usize>, Option<usize>)> {
     let m = original.len();
     let n = current.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    let max_changes = MAX_CHANGED_OPS_PER_SPAN;
+    let prefix = (0..m.min(n))
+        .take_while(|index| original[*index].norm == current[*index].norm)
+        .count();
+    let suffix = (0..(m - prefix).min(n - prefix))
+        .take_while(|offset| original[m - 1 - offset].norm == current[n - 1 - offset].norm)
+        .count();
+    let old_end = m - suffix;
+    let new_end = n - suffix;
+    let old_middle = &original[prefix..old_end];
+    let new_middle = &current[prefix..new_end];
 
-    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
-        row[0] = i;
-    }
-    for (j, cell) in dp[0].iter_mut().enumerate().take(n + 1) {
-        *cell = j;
+    // A correction can only survive the caller's changed-operation limit when
+    // the middle is small or mostly identical. Strip equal edges first, then
+    // keep the backtrace in a narrow band. This preserves the old tie-breaking
+    // for useful corrections without ever allocating an m*n matrix.
+    const MAX_ALIGNMENT_MIDDLE_WORDS: usize = 4096;
+    if old_middle.len().max(new_middle.len()) > MAX_ALIGNMENT_MIDDLE_WORDS
+        || old_middle.len().abs_diff(new_middle.len()) > max_changes
+    {
+        return Vec::new();
     }
 
-    for i in 1..=m {
-        for j in 1..=n {
-            let replace_cost = if original[i - 1].norm == current[j - 1].norm {
-                0
-            } else {
-                1
-            };
-            dp[i][j] = (dp[i - 1][j - 1] + replace_cost)
-                .min(dp[i - 1][j] + 1)
-                .min(dp[i][j - 1] + 1);
+    let width = max_changes;
+    let band_width = width * 2 + 1;
+    let mut decisions = vec![0_u8; (old_middle.len() + 1) * band_width];
+    let mut previous = vec![usize::MAX; new_middle.len() + 1];
+    let mut current_row = vec![usize::MAX; new_middle.len() + 1];
+    previous[0] = 0;
+    for j in 1..=new_middle.len().min(width) {
+        previous[j] = j;
+        decisions[j + width] = 3; // Insert.
+    }
+
+    for i in 1..=old_middle.len() {
+        current_row.fill(usize::MAX);
+        if i <= width {
+            current_row[0] = i;
+            decisions[i * band_width + width - i] = 2; // Delete.
         }
+
+        let start = i.saturating_sub(width).max(1);
+        let end = (i + width).min(new_middle.len());
+        for j in start..=end {
+            let slot = (j as isize - i as isize + width as isize) as usize;
+            let diagonal = previous[j - 1];
+            let delete = previous[j].saturating_add(1);
+            let insert = current_row[j - 1].saturating_add(1);
+            let replace_cost = usize::from(old_middle[i - 1].norm != new_middle[j - 1].norm);
+            let diagonal = diagonal.saturating_add(replace_cost);
+
+            let (value, decision) = if diagonal <= delete && diagonal <= insert {
+                (diagonal, 1_u8) // Diagonal, matching the old preference.
+            } else if delete <= insert {
+                (delete, 2_u8)
+            } else {
+                (insert, 3_u8)
+            };
+            if value <= max_changes {
+                current_row[j] = value;
+                decisions[i * band_width + slot] = decision;
+            }
+        }
+        std::mem::swap(&mut previous, &mut current_row);
     }
 
-    let mut ops = Vec::new();
-    let (mut i, mut j) = (m, n);
+    if previous[new_middle.len()] > max_changes {
+        return Vec::new();
+    }
+
+    let mut middle_ops = Vec::with_capacity(old_middle.len() + new_middle.len());
+    let (mut i, mut j) = (old_middle.len(), new_middle.len());
     while i > 0 || j > 0 {
-        if i > 0 && j > 0 {
-            let replace_cost = if original[i - 1].norm == current[j - 1].norm {
-                0
-            } else {
-                1
-            };
-            if dp[i][j] == dp[i - 1][j - 1] + replace_cost {
-                let op = if replace_cost == 0 {
+        let slot = (j as isize - i as isize + width as isize) as usize;
+        match decisions[i * band_width + slot] {
+            1 => {
+                let op = if old_middle[i - 1].norm == new_middle[j - 1].norm {
                     AlignOp::Equal
                 } else {
                     AlignOp::Replace
                 };
-                ops.push((op, Some(i - 1), Some(j - 1)));
+                middle_ops.push((op, Some(prefix + i - 1), Some(prefix + j - 1)));
                 i -= 1;
                 j -= 1;
-                continue;
             }
-        }
-        if i > 0 && dp[i][j] == dp[i - 1][j] + 1 {
-            ops.push((AlignOp::Delete, Some(i - 1), None));
-            i -= 1;
-        } else {
-            ops.push((AlignOp::Insert, None, Some(j - 1)));
-            j -= 1;
+            2 => {
+                middle_ops.push((AlignOp::Delete, Some(prefix + i - 1), None));
+                i -= 1;
+            }
+            3 => {
+                middle_ops.push((AlignOp::Insert, None, Some(prefix + j - 1)));
+                j -= 1;
+            }
+            _ => return Vec::new(),
         }
     }
+    middle_ops.reverse();
 
-    ops.reverse();
+    let mut ops = Vec::with_capacity(prefix + middle_ops.len() + suffix);
+    ops.extend((0..prefix).map(|index| (AlignOp::Equal, Some(index), Some(index))));
+    ops.extend(middle_ops);
+    ops.extend((0..suffix).map(|offset| {
+        (
+            AlignOp::Equal,
+            Some(old_end + offset),
+            Some(new_end + offset),
+        )
+    }));
     ops
 }
 
@@ -533,6 +640,9 @@ pub(super) fn detect_corrections_from_anchored_text(
     };
 
     let Some(current_span) = current_anchored_span(baseline_full_text, current_full_text, anchor)
+        .or_else(|| {
+            current_span_from_surrounding_context(baseline_full_text, current_full_text, anchor)
+        })
     else {
         log::debug!("auto-learn: current edit changed text outside the injected span");
         return vec![];

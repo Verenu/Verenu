@@ -36,8 +36,11 @@ pub fn insert_transcription_returning(
     app_name: Option<&str>,
     context_id: Option<i64>,
 ) -> Result<RecentEntry> {
+    // Compute the snippet-aware spoken count before taking the DB mutex. The
+    // snippet trigger snapshot is cached by the schema layer, so this does
+    // not reload complete snippet rows for every transcription.
+    let spoken_words = compute_spoken_words(db, raw)?;
     let mut conn = lock_conn(db)?;
-    let spoken_words = compute_spoken_words(&conn, raw)?;
     let tx = conn.transaction()?;
     let entry = tx.query_row(
         "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id) \
@@ -119,6 +122,80 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+fn fts_searchable(search: &str) -> bool {
+    search
+        .split_whitespace()
+        .all(|term| term.chars().count() >= 3)
+}
+
+pub(super) fn history_fts_available(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1
+             FROM transcription_fts_meta
+            WHERE name = 'history' AND populated = 1
+              AND (SELECT COUNT(*) FROM sqlite_master
+                   WHERE type = 'trigger' AND name IN (
+                     'trg_transcriptions_fts_ins', 'trg_transcriptions_fts_del',
+                     'trg_transcriptions_fts_upd')) = 3
+         )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|exists| exists != 0)
+    .unwrap_or(false)
+}
+
+fn fts_match_query(search: &str) -> String {
+    search
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn query_recent_page_fts(
+    conn: &rusqlite::Connection,
+    limit: i64,
+    offset: i64,
+    before_id: Option<i64>,
+    search: &str,
+    app_name: Option<&str>,
+) -> Result<Vec<RecentEntry>> {
+    let mut sql = String::from(
+        "SELECT t.id, t.clean_text, t.words, t.duration_ms, t.app_name, t.created_at
+           FROM transcriptions_fts f
+           JOIN transcriptions t ON t.id = f.rowid
+          WHERE transcriptions_fts MATCH ?",
+    );
+    let mut values = vec![rusqlite::types::Value::from(fts_match_query(search))];
+    if let Some(app_name) = app_name {
+        sql.push_str(" AND t.app_name = ?");
+        values.push(rusqlite::types::Value::from(app_name.to_string()));
+    }
+    if let Some(before_id) = before_id {
+        sql.push_str(" AND t.id < ?");
+        values.push(rusqlite::types::Value::from(before_id));
+    }
+    sql.push_str(" ORDER BY t.id DESC LIMIT ? OFFSET ?");
+    values.push(rusqlite::types::Value::from(limit));
+    values.push(rusqlite::types::Value::from(offset));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(values.iter()), |r| {
+            Ok(RecentEntry {
+                id: r.get(0)?,
+                clean_text: r.get(1)?,
+                words: r.get(2)?,
+                duration_ms: r.get(3)?,
+                app_name: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Recent transcription history, newest-first. `search` (when present) matches
 /// case-insensitively against the cleaned text, the raw transcription, AND the
 /// app name — each whitespace-separated term must match at least one of those
@@ -143,19 +220,34 @@ pub fn query_recent_page(
     let terms: Vec<String> = search
         .map(|s| s.split_whitespace().map(escape_like).collect())
         .unwrap_or_default();
+    if let Some(search) = search.filter(|s| fts_searchable(s)) {
+        if history_fts_available(&conn) {
+            if let Ok(rows) = query_recent_page_fts(&conn, limit, offset, None, search, app_name) {
+                return Ok(rows);
+            }
+        }
+    }
 
     // We order by id DESC instead of created_at DESC because id is the
     // autoincrementing primary key. Since IDs are monotonically increasing,
     // this retrieves items in the same chronological order but leverages the
     // primary key index directly, avoiding full table scans and manual sorting
     // overhead in SQLite.
-    let mut sql = String::from(
-        "SELECT id, clean_text, words, duration_ms, app_name, created_at \
-         FROM transcriptions WHERE (?1 IS NULL OR app_name = ?1)",
-    );
-    let mut values: Vec<rusqlite::types::Value> = vec![app_name
-        .map(|s| rusqlite::types::Value::from(s.to_string()))
-        .unwrap_or(rusqlite::types::Value::Null)];
+    let mut sql = if app_name.is_some() {
+        String::from(
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at \
+             FROM transcriptions WHERE app_name = ?",
+        )
+    } else {
+        String::from(
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at \
+             FROM transcriptions WHERE 1 = 1",
+        )
+    };
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    if let Some(app_name) = app_name {
+        values.push(rusqlite::types::Value::from(app_name.to_string()));
+    }
     for term in &terms {
         sql.push_str(
             " AND (lower(clean_text) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
@@ -169,6 +261,83 @@ pub fn query_recent_page(
     sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
     values.push(rusqlite::types::Value::from(limit));
     values.push(rusqlite::types::Value::from(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(values.iter()), |r| {
+            Ok(RecentEntry {
+                id: r.get(0)?,
+                clean_text: r.get(1)?,
+                words: r.get(2)?,
+                duration_ms: r.get(3)?,
+                app_name: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Cursor-based history page. `before_id` is the last row already displayed;
+/// using the AUTOINCREMENT primary key keeps newest-first pagination stable
+/// when rows are inserted while the user is scrolling and avoids SQLite
+/// walking and discarding a deep OFFSET.
+#[allow(dead_code)]
+pub fn query_recent_page_before(
+    db: &Db,
+    limit: usize,
+    before_id: Option<i64>,
+    search: Option<&str>,
+    app_name: Option<&str>,
+) -> Result<Vec<RecentEntry>> {
+    let conn = lock_conn(db)?;
+    let limit = limit.clamp(1, 500) as i64;
+    let search = search.map(str::trim).filter(|s| !s.is_empty());
+    let app_name = app_name.map(str::trim).filter(|s| !s.is_empty());
+    let terms: Vec<String> = search
+        .map(|s| s.split_whitespace().map(escape_like).collect())
+        .unwrap_or_default();
+    if let Some(search) = search.filter(|s| fts_searchable(s)) {
+        if history_fts_available(&conn) {
+            if let Ok(rows) = query_recent_page_fts(&conn, limit, 0, before_id, search, app_name) {
+                return Ok(rows);
+            }
+        }
+    }
+
+    // Keep the filtered and unfiltered shapes separate. The former can use
+    // idx_transcriptions_app_name directly; the latter can seek by rowid.
+    let mut sql = if app_name.is_some() {
+        String::from(
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+             FROM transcriptions WHERE app_name = ?",
+        )
+    } else {
+        String::from(
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+             FROM transcriptions WHERE 1 = 1",
+        )
+    };
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    if let Some(app_name) = app_name {
+        values.push(rusqlite::types::Value::from(app_name.to_string()));
+    }
+    if let Some(before_id) = before_id {
+        sql.push_str(" AND id < ?");
+        values.push(rusqlite::types::Value::from(before_id));
+    }
+    for term in &terms {
+        sql.push_str(
+            " AND (lower(clean_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+             OR lower(raw_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
+        );
+        for _ in 0..3 {
+            values.push(rusqlite::types::Value::from(term.clone()));
+        }
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?");
+    values.push(rusqlite::types::Value::from(limit));
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -206,25 +375,25 @@ pub fn query_stats(db: &Db) -> Result<Stats> {
 
     // Own lifetime counter plus any counters synced from paired devices —
     // each dictation is counted once, by the device it happened on.
-    let total_words: i64 = conn.query_row(
-        "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-              + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
+    // The lifetime counter and WPM aggregate are maintained by the insert and
+    // delete triggers. Home therefore reads two tiny summary rows instead of
+    // rescanning every retained transcription on each refresh.
+    let (total_words, avg_wpm): (i64, f64) = conn.query_row(
+        "SELECT
+           COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
+             + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0),
+           COALESCE((SELECT wpm_sum / NULLIF(wpm_count, 0)
+                       FROM lifetime_stats WHERE id = 1), 0.0)",
         [],
-        |r| r.get(0),
-    )?;
-    let avg_wpm: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(CAST(spoken_words AS REAL) * 60000.0 / duration_ms), 0.0)
-         FROM transcriptions
-         WHERE duration_ms > 0 AND spoken_words > 0",
-        [],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
 
     let day_streak: i64 = conn.query_row(
         "WITH consecutive AS (
-           SELECT DISTINCT date(created_at, 'localtime') AS d
-           FROM transcriptions
-           ORDER BY d DESC
+           SELECT day AS d
+           FROM transcription_daily_stats
+           WHERE total_transcriptions > 0
+           ORDER BY day DESC
          )
          SELECT COUNT(*) FROM (
            SELECT d,
@@ -276,7 +445,10 @@ pub fn prune_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<usi
 
 #[cfg(test)]
 mod tests {
-    use super::{insert_transcription_returning, query_distinct_apps, query_recent_page};
+    use super::{
+        history_fts_available, insert_transcription_returning, query_distinct_apps,
+        query_recent_page, query_recent_page_before, query_recent_page_fts, query_stats,
+    };
 
     #[test]
     fn query_recent_page_applies_limit_and_offset() {
@@ -304,6 +476,43 @@ mod tests {
         assert_eq!(second_page.len(), 2);
         assert_eq!(second_page[0].clean_text, "clean 2");
         assert_eq!(second_page[1].clean_text, "clean 1");
+    }
+
+    #[test]
+    fn stats_wpm_summary_tracks_edits_and_deletes() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        let entry = insert_transcription_returning(
+            &db,
+            "hello world",
+            "hello world",
+            2,
+            1_000,
+            "test",
+            None,
+            None,
+        )
+        .expect("transcription");
+        assert_eq!(query_stats(&db).expect("initial stats").avg_wpm, 120.0);
+
+        {
+            let conn = crate::data::db::lock_conn(&db).expect("lock");
+            conn.execute(
+                "UPDATE transcriptions SET duration_ms = 2_000 WHERE id = ?1",
+                rusqlite::params![entry.id],
+            )
+            .expect("update duration");
+        }
+        assert_eq!(query_stats(&db).expect("updated stats").avg_wpm, 60.0);
+
+        {
+            let conn = crate::data::db::lock_conn(&db).expect("lock");
+            conn.execute(
+                "DELETE FROM transcriptions WHERE id = ?1",
+                rusqlite::params![entry.id],
+            )
+            .expect("delete transcription");
+        }
+        assert_eq!(query_stats(&db).expect("deleted stats").avg_wpm, 0.0);
     }
 
     #[test]
@@ -365,6 +574,148 @@ mod tests {
         // Missing search returns everything.
         let hits = query_recent_page(&db, 50, 0, None, None).expect("all");
         assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn history_search_uses_substring_index_for_mid_word_matches() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        insert_transcription_returning(
+            &db,
+            "raw quarterly",
+            "Quarterly planning",
+            2,
+            1000,
+            "t",
+            None,
+            None,
+        )
+        .expect("insert quarterly");
+
+        // `arter` is not a token prefix. The trigram FTS index must still
+        // find it, while the LIKE fallback remains available on SQLite builds
+        // without FTS5.
+        let hits = query_recent_page(&db, 50, 0, Some("arter"), None).expect("substring search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].clean_text, "Quarterly planning");
+    }
+
+    #[test]
+    fn history_fts_query_executes_when_the_index_is_populated() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        insert_transcription_returning(
+            &db,
+            "raw quarterly",
+            "Quarterly planning",
+            2,
+            1000,
+            "t",
+            None,
+            None,
+        )
+        .expect("insert quarterly");
+        let conn = crate::data::db::lock_conn(&db).expect("lock");
+        if !history_fts_available(&conn) {
+            return;
+        }
+        let hits = query_recent_page_fts(&conn, 50, 0, None, "arter", None)
+            .expect("FTS query must not fall back");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn query_recent_page_before_uses_a_stable_newest_first_cursor() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        for i in 0..5 {
+            insert_transcription_returning(
+                &db,
+                &format!("raw {i}"),
+                &format!("clean {i}"),
+                i + 1,
+                1000,
+                "t",
+                None,
+                None,
+            )
+            .expect("insert");
+        }
+
+        let first = query_recent_page_before(&db, 2, None, None, None).expect("first page");
+        assert_eq!(first.iter().map(|e| e.id).collect::<Vec<_>>(), vec![5, 4]);
+
+        // A new row inserted after page one must not shift page two.
+        insert_transcription_returning(&db, "raw new", "clean new", 1, 1000, "t", None, None)
+            .expect("insert new");
+        let second =
+            query_recent_page_before(&db, 2, Some(first[1].id), None, None).expect("second page");
+        assert_eq!(second.iter().map(|e| e.id).collect::<Vec<_>>(), vec![3, 2]);
+    }
+
+    #[test]
+    fn cursor_history_keeps_app_filtering_across_pages() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        for i in 0..6 {
+            insert_transcription_returning(
+                &db,
+                &format!("raw {i}"),
+                &format!("clean {i}"),
+                1,
+                1000,
+                "t",
+                Some(if i % 2 == 0 { "code.exe" } else { "notes.exe" }),
+                None,
+            )
+            .expect("insert");
+        }
+
+        let first =
+            query_recent_page_before(&db, 2, None, None, Some("code.exe")).expect("first page");
+        assert_eq!(first.iter().map(|e| e.id).collect::<Vec<_>>(), vec![5, 3]);
+        let second = query_recent_page_before(&db, 2, Some(first[1].id), None, Some("code.exe"))
+            .expect("second page");
+        assert_eq!(second.iter().map(|e| e.id).collect::<Vec<_>>(), vec![1]);
+        assert!(second
+            .iter()
+            .all(|entry| entry.app_name.as_deref() == Some("code.exe")));
+    }
+
+    #[test]
+    fn history_cursor_plans_seek_and_app_filter_uses_app_index() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        let conn = super::super::lock_conn(&db).expect("lock");
+
+        let unfiltered: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM transcriptions
+                 WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
+            )
+            .expect("unfiltered explain")
+            .query_map([10_i64, 10_i64], |row| row.get(3))
+            .expect("unfiltered plan rows")
+            .collect::<rusqlite::Result<_>>()
+            .expect("unfiltered plan");
+        assert!(
+            unfiltered
+                .iter()
+                .any(|detail| detail.contains("INTEGER PRIMARY KEY")),
+            "expected rowid seek plan, got {unfiltered:?}"
+        );
+
+        let filtered: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM transcriptions
+                 WHERE app_name = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3",
+            )
+            .expect("filtered explain")
+            .query_map(["code.exe", "10", "10"], |row| row.get(3))
+            .expect("filtered plan rows")
+            .collect::<rusqlite::Result<_>>()
+            .expect("filtered plan");
+        assert!(
+            filtered
+                .iter()
+                .any(|detail| detail.contains("idx_transcriptions_app_name")),
+            "expected app-name index plan, got {filtered:?}"
+        );
     }
 
     #[test]

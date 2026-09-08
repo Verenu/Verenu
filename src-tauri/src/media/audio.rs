@@ -3,12 +3,14 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const DISPLAY_GAIN: f32 = 15.0;
 const AUDIO_QUEUE_CAPACITY_SAMPLES: usize = 320_000;
-const WORKER_IDLE_SLEEP_MS: u64 = 2;
+const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const MAX_RECORDING_SECONDS: u64 = 900;
+pub const MAX_RECORDING_SAMPLES: usize =
+    TARGET_SAMPLE_RATE as usize * MAX_RECORDING_SECONDS as usize;
 
 fn clamp_unit_sample(v: f32) -> f32 {
     if v.is_finite() {
@@ -167,11 +169,22 @@ impl EnvelopeTap {
 }
 
 /// Optional crash-recovery sink for a dictation. The audio worker pushes
-/// gain-adjusted (and optionally denoised) native-rate samples here; the
-/// implementation must not run on the CPAL callback thread.
+/// gain-adjusted, optionally denoised 16 kHz samples here; implementations
+/// must keep disk work off this worker and must not run on the CPAL callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DurableSinkError {
+    Disk,
+    Backpressure,
+}
+
+pub type DurableSinkResult = std::result::Result<(), DurableSinkError>;
+
 pub trait DurableSink: Send {
-    fn extend(&mut self, native_samples: &[f32], native_rate: u32);
-    fn finish(&mut self);
+    /// Returns an error when the sink cannot accept more data. The processing
+    /// worker then ends the take instead of silently producing an incomplete
+    /// recovery spool.
+    fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult;
+    fn finish(&mut self) -> DurableSinkResult;
 }
 
 pub struct RecordingSession {
@@ -184,25 +197,34 @@ pub struct RecordingSession {
 }
 
 pub struct RecordingResult {
-    pub wav: Vec<u8>,
     pub samples_16k: Vec<f32>,
     pub sample_rate: u32,
     pub duration_ms: u64,
     pub rms: f32,
     pub raw_rms: f32,
-    pub truncated: bool,
+    pub termination: RecordingTermination,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingTermination {
+    Complete,
+    DurationLimit,
+    DroppedSamples,
+    RecoveryWriteFailed,
 }
 
 // Stream setup can fail after the processing thread starts. Always stop and
 // join it, including those early returns, so its queue and recovery sink die.
 struct ProcessingWorker {
     stop: Arc<AtomicBool>,
-    handle: Option<std::thread::JoinHandle<(Vec<f32>, bool, f32)>>,
+    wake: Arc<WorkerWake>,
+    handle: Option<std::thread::JoinHandle<(Vec<f32>, RecordingTermination, f32)>>,
 }
 
 impl ProcessingWorker {
-    fn finish(mut self) -> std::thread::Result<(Vec<f32>, bool, f32)> {
+    fn finish(mut self) -> std::thread::Result<(Vec<f32>, RecordingTermination, f32)> {
         self.stop.store(true, Ordering::Relaxed);
+        self.wake.notify();
         self.handle.take().expect("processing worker handle").join()
     }
 }
@@ -210,9 +232,118 @@ impl ProcessingWorker {
 impl Drop for ProcessingWorker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.wake.notify();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+/// A one-way, allocation-free wake path from the audio callback to the
+/// processing worker. `unpark` is nonblocking and does not require taking a
+/// mutex in the realtime callback. The sequence counter closes the race
+/// between draining the queue and parking the worker.
+struct WorkerWake {
+    sequence: AtomicU64,
+    thread: OnceLock<std::thread::Thread>,
+}
+
+impl WorkerWake {
+    fn new() -> Self {
+        Self {
+            sequence: AtomicU64::new(0),
+            thread: OnceLock::new(),
+        }
+    }
+
+    fn notify(&self) {
+        self.sequence.fetch_add(1, Ordering::Release);
+        if let Some(thread) = self.thread.get() {
+            thread.unpark();
+        }
+    }
+}
+
+struct StreamingResampler {
+    sample_rate: u32,
+    source_position: f64,
+    input_samples: u64,
+    tail: Vec<f32>,
+}
+
+impl StreamingResampler {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            source_position: 0.0,
+            input_samples: 0,
+            tail: Vec::with_capacity(8),
+        }
+    }
+
+    fn push(&mut self, input: &[f32], output: &mut Vec<f32>, max_samples: usize) -> bool {
+        if self.sample_rate == TARGET_SAMPLE_RATE {
+            let remaining = max_samples.saturating_sub(output.len());
+            if input.len() > remaining {
+                output.extend_from_slice(&input[..remaining]);
+                return true;
+            }
+            output.extend_from_slice(input);
+            return false;
+        }
+
+        self.input_samples += input.len() as u64;
+        self.tail.extend_from_slice(input);
+        let ratio = self.sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
+        let mut truncated = false;
+        while output.len() < max_samples {
+            let lo = self.source_position.floor() as usize;
+            let hi = lo + 1;
+            if hi >= self.tail.len() {
+                break;
+            }
+            let t = (self.source_position - lo as f64) as f32;
+            output.push(self.tail[lo] * (1.0 - t) + self.tail[hi] * t);
+            self.source_position += ratio;
+        }
+        let drop = self.source_position.floor() as usize;
+        if drop > 0 {
+            // Keep the final source sample: the next chunk may need it as the
+            // lower interpolation endpoint for the first output it produces.
+            let drop = drop.min(self.tail.len().saturating_sub(1));
+            self.tail.drain(..drop);
+            self.source_position -= drop as f64;
+        }
+        if output.len() == max_samples && self.source_position + 1.0 < self.tail.len() as f64 {
+            truncated = true;
+        }
+        truncated
+    }
+
+    fn finish(&mut self, output: &mut Vec<f32>, max_samples: usize) -> bool {
+        if self.sample_rate == TARGET_SAMPLE_RATE {
+            return false;
+        }
+        let ratio = self.sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
+        let expected_samples = self
+            .input_samples
+            .saturating_mul(TARGET_SAMPLE_RATE as u64)
+            .div_ceil(self.sample_rate as u64);
+        let target_samples = expected_samples.min(max_samples as u64) as usize;
+        while output.len() < target_samples {
+            let lo = self.source_position.floor() as usize;
+            if lo >= self.tail.len() {
+                break;
+            }
+            let hi = (lo + 1).min(self.tail.len() - 1);
+            let t = (self.source_position - lo as f64) as f32;
+            output.push(self.tail[lo] * (1.0 - t) + self.tail[hi] * t);
+            self.source_position += ratio;
+        }
+        let truncated = expected_samples > max_samples as u64;
+        self.tail.clear();
+        self.source_position = 0.0;
+        truncated
     }
 }
 
@@ -222,6 +353,7 @@ impl RecordingSession {
         noise_reduction: bool,
         gain: f32,
         durable: Option<Box<dyn DurableSink>>,
+        max_output_samples: Option<usize>,
     ) -> Result<Self> {
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
@@ -260,28 +392,38 @@ impl RecordingSession {
         // scalar level use the same effective gain without applying it twice.
         let processed_display_gain = if gain > 0.0 { display_gain / gain } else { 0.0 };
 
+        let limit_stop_tx = stop_tx.clone();
         std::thread::spawn(move || {
             let queue = Arc::new(ArrayQueue::<f32>::new(AUDIO_QUEUE_CAPACITY_SAMPLES));
             let dropped_samples = Arc::new(AtomicU64::new(0));
             let stop_processing = Arc::new(AtomicBool::new(false));
+            let wake = Arc::new(WorkerWake::new());
+            let worker_wake = Arc::clone(&wake);
 
             let worker_queue = Arc::clone(&queue);
             let worker_stop = Arc::clone(&stop_processing);
             let worker_envelope = Arc::clone(&envelope_w);
+            let worker_dropped = Arc::clone(&dropped_samples);
             let worker = std::thread::spawn(move || {
+                let _ = worker_wake.thread.set(std::thread::current());
                 let mut durable = durable;
-                let mut processed = Vec::<f32>::new();
+                let max_output_samples = max_output_samples.unwrap_or(MAX_RECORDING_SAMPLES);
+                // Grow with the take instead of reserving the 15-minute cap
+                // for every short dictation.
+                let mut samples_16k = Vec::<f32>::new();
                 let mut batch = Vec::<f32>::with_capacity(2048);
+                let mut processed_batch = Vec::<f32>::with_capacity(2048);
                 let mut raw_sum_sq = 0.0f64;
                 let mut raw_sample_count = 0u64;
-                let max_processed_samples = sample_rate as usize * MAX_RECORDING_SECONDS as usize;
-                let mut recording_truncated = false;
+                let mut termination = RecordingTermination::Complete;
+                let mut resampler = StreamingResampler::new(sample_rate);
                 let mut denoiser = if noise_reduction {
                     Some(FrameDenoiser::new())
                 } else {
                     None
                 };
 
+                let mut observed_wake = worker_wake.sequence.load(Ordering::Acquire);
                 loop {
                     batch.clear();
                     while let Some(sample) = worker_queue.pop() {
@@ -291,34 +433,41 @@ impl RecordingSession {
                         batch.push(clamp_unit_sample(sample * gain));
                     }
 
-                    if !batch.is_empty() && !recording_truncated {
-                        let before_len = processed.len();
+                    if !batch.is_empty() && termination == RecordingTermination::Complete {
+                        processed_batch.clear();
                         if let Some(d) = denoiser.as_mut() {
-                            d.push(&batch, &mut processed);
-                            if processed.len() > max_processed_samples {
-                                processed.truncate(max_processed_samples);
-                                recording_truncated = true;
-                            } else if before_len == max_processed_samples {
-                                recording_truncated = true;
-                            }
+                            d.push(&batch, &mut processed_batch);
                         } else {
-                            append_capped_samples(
-                                &mut processed,
-                                &batch,
-                                max_processed_samples,
-                                &mut recording_truncated,
-                            );
+                            processed_batch.extend_from_slice(&batch);
                         }
-                        // Drive the pill from the same gain-adjusted, optionally
-                        // denoised samples that continue into transcription.
-                        // Tapping the device callback here made the visualizer
-                        // learn fans and HVAC as foreground signal even when the
-                        // existing audio processor removed them successfully.
-                        for &sample in &processed[before_len..] {
+                        // Pill envelope must stay on the device sample rate.
+                        // 0.18.1 pushed native-rate peaks (~100 bins/sec at
+                        // 10ms). After streaming resample landed, this loop
+                        // fed 16 kHz samples into a tap still configured for
+                        // 48 kHz, so each bin took ~30ms and the visualizer
+                        // looked slow and dead compared to the release build.
+                        for &sample in &processed_batch {
                             worker_envelope.push_sample(sample, processed_display_gain);
                         }
+                        let before_len = samples_16k.len();
+                        let duration_limit =
+                            resampler.push(&processed_batch, &mut samples_16k, max_output_samples);
+                        if duration_limit {
+                            termination = RecordingTermination::DurationLimit;
+                        }
                         if let Some(sink) = durable.as_mut() {
-                            sink.extend(&processed[before_len..], sample_rate);
+                            if sink.extend(&samples_16k[before_len..]).is_err() {
+                                termination = RecordingTermination::RecoveryWriteFailed;
+                            }
+                        }
+                        if termination == RecordingTermination::Complete
+                            && worker_dropped.load(Ordering::Acquire) > 0
+                        {
+                            termination = RecordingTermination::DroppedSamples;
+                        }
+                        if termination != RecordingTermination::Complete {
+                            let _ = limit_stop_tx.send(());
+                            break;
                         }
                     }
 
@@ -327,27 +476,47 @@ impl RecordingSession {
                     }
 
                     if batch.is_empty() {
-                        std::thread::sleep(std::time::Duration::from_millis(WORKER_IDLE_SLEEP_MS));
+                        let latest = worker_wake.sequence.load(Ordering::Acquire);
+                        if latest == observed_wake {
+                            std::thread::park();
+                        }
+                        observed_wake = worker_wake.sequence.load(Ordering::Acquire);
+                    } else {
+                        observed_wake = worker_wake.sequence.load(Ordering::Acquire);
                     }
                 }
 
-                if let Some(d) = denoiser.as_mut() {
-                    if !recording_truncated {
-                        let before_len = processed.len();
-                        d.flush(&mut processed);
-                        if processed.len() > max_processed_samples {
-                            processed.truncate(max_processed_samples);
-                            recording_truncated = true;
+                if termination == RecordingTermination::Complete {
+                    processed_batch.clear();
+                    if let Some(d) = denoiser.as_mut() {
+                        d.flush(&mut processed_batch);
+                    }
+                    if !processed_batch.is_empty() {
+                        for &sample in &processed_batch {
+                            worker_envelope.push_sample(sample, processed_display_gain);
                         }
-                        if let Some(sink) = durable.as_mut() {
-                            if processed.len() > before_len {
-                                sink.extend(&processed[before_len..], sample_rate);
-                            }
+                    }
+                    let before_len = samples_16k.len();
+                    if !processed_batch.is_empty()
+                        && resampler.push(&processed_batch, &mut samples_16k, max_output_samples)
+                    {
+                        termination = RecordingTermination::DurationLimit;
+                    }
+                    if termination == RecordingTermination::Complete
+                        && resampler.finish(&mut samples_16k, max_output_samples)
+                    {
+                        termination = RecordingTermination::DurationLimit;
+                    }
+                    if let Some(sink) = durable.as_mut() {
+                        if sink.extend(&samples_16k[before_len..]).is_err() {
+                            termination = RecordingTermination::RecoveryWriteFailed;
                         }
                     }
                 }
                 if let Some(mut sink) = durable.take() {
-                    sink.finish();
+                    if sink.finish().is_err() {
+                        termination = RecordingTermination::RecoveryWriteFailed;
+                    }
                 }
 
                 let raw_rms = if raw_sample_count == 0 {
@@ -355,10 +524,11 @@ impl RecordingSession {
                 } else {
                     (raw_sum_sq / raw_sample_count as f64).sqrt() as f32
                 };
-                (processed, recording_truncated, raw_rms)
+                (samples_16k, termination, raw_rms)
             });
             let worker = ProcessingWorker {
                 stop: Arc::clone(&stop_processing),
+                wake: Arc::clone(&wake),
                 handle: Some(worker),
             };
 
@@ -375,11 +545,14 @@ impl RecordingSession {
                         enqueue_f32_buffer(
                             data,
                             channels,
-                            &queue_cb,
-                            &dropped_cb,
-                            &level_cb,
-                            &raw_level_cb,
-                            display_gain,
+                            CaptureBuffer {
+                                queue: &queue_cb,
+                                dropped: &dropped_cb,
+                                level: &level_cb,
+                                raw_level: &raw_level_cb,
+                                display_gain,
+                                wake: &wake,
+                            },
                         )
                     },
                     err_fn,
@@ -391,11 +564,14 @@ impl RecordingSession {
                         enqueue_i16_buffer(
                             data,
                             channels,
-                            &queue_cb,
-                            &dropped_cb,
-                            &level_cb,
-                            &raw_level_cb,
-                            display_gain,
+                            CaptureBuffer {
+                                queue: &queue_cb,
+                                dropped: &dropped_cb,
+                                level: &level_cb,
+                                raw_level: &raw_level_cb,
+                                display_gain,
+                                wake: &wake,
+                            },
                         )
                     },
                     err_fn,
@@ -430,7 +606,7 @@ impl RecordingSession {
             raw_level_w.store(0f32.to_bits(), Ordering::Relaxed);
             stop_processing.store(true, Ordering::Relaxed);
 
-            let (data, recording_truncated, raw_rms) = match worker.finish() {
+            let (samples_16k, termination, raw_rms) = match worker.finish() {
                 Ok(samples) => samples,
                 Err(_) => {
                     let _ =
@@ -447,18 +623,20 @@ impl RecordingSession {
                 log::warn!("audio queue dropped {dropped} oldest samples due to backpressure");
             }
 
-            let dur_ms = data.len() as u64 * 1000 / sample_rate as u64;
-            let overall_rms = rms_f32(&data);
-            let (encode_data, encode_rate) = resample_owned_to_16k(data, sample_rate);
-            let result = encode_wav(&encode_data, encode_rate, 1).map(|wav| RecordingResult {
-                wav,
-                samples_16k: encode_data,
-                sample_rate: encode_rate,
-                duration_ms: dur_ms,
-                rms: overall_rms,
-                raw_rms,
-                truncated: recording_truncated,
-            });
+            let dur_ms = samples_16k.len() as u64 * 1000 / TARGET_SAMPLE_RATE as u64;
+            let overall_rms = rms_f32(&samples_16k);
+            let result = if samples_16k.is_empty() {
+                Err(anyhow::anyhow!("No audio captured"))
+            } else {
+                Ok(RecordingResult {
+                    samples_16k,
+                    sample_rate: TARGET_SAMPLE_RATE,
+                    duration_ms: dur_ms,
+                    rms: overall_rms,
+                    raw_rms,
+                    termination,
+                })
+            };
 
             let _ = result_tx.send(result);
         });
@@ -485,18 +663,19 @@ impl RecordingSession {
     }
 }
 
-fn enqueue_f32_buffer(
-    data: &[f32],
-    channels: usize,
-    queue: &ArrayQueue<f32>,
-    dropped: &AtomicU64,
-    level: &AtomicU32,
-    raw_level: &AtomicU32,
+struct CaptureBuffer<'a> {
+    queue: &'a ArrayQueue<f32>,
+    dropped: &'a AtomicU64,
+    level: &'a AtomicU32,
+    raw_level: &'a AtomicU32,
     display_gain: f32,
-) {
+    wake: &'a WorkerWake,
+}
+
+fn enqueue_f32_buffer(data: &[f32], channels: usize, capture: CaptureBuffer<'_>) {
     if data.is_empty() {
-        level.store(0f32.to_bits(), Ordering::Relaxed);
-        raw_level.store(0f32.to_bits(), Ordering::Relaxed);
+        capture.level.store(0f32.to_bits(), Ordering::Relaxed);
+        capture.raw_level.store(0f32.to_bits(), Ordering::Relaxed);
         return;
     }
 
@@ -507,7 +686,7 @@ fn enqueue_f32_buffer(
             let mono = finite_sample_or_zero(raw);
             sum += mono * mono;
             count += 1;
-            push_overwriting_oldest(queue, dropped, mono);
+            push_overwriting_oldest(capture.queue, capture.dropped, mono);
         }
     } else {
         for frame in data.chunks(channels) {
@@ -515,7 +694,7 @@ fn enqueue_f32_buffer(
                 finite_sample_or_zero(frame.iter().copied().sum::<f32>() / frame.len() as f32);
             sum += mono * mono;
             count += 1;
-            push_overwriting_oldest(queue, dropped, mono);
+            push_overwriting_oldest(capture.queue, capture.dropped, mono);
         }
     }
 
@@ -524,23 +703,16 @@ fn enqueue_f32_buffer(
     } else {
         (sum / count as f32).sqrt()
     };
-    raw_level.store(rms.to_bits(), Ordering::Relaxed);
-    let display = (rms * display_gain).min(1.0);
-    level.store(display.to_bits(), Ordering::Relaxed);
+    capture.raw_level.store(rms.to_bits(), Ordering::Relaxed);
+    let display = (rms * capture.display_gain).min(1.0);
+    capture.level.store(display.to_bits(), Ordering::Relaxed);
+    capture.wake.notify();
 }
 
-fn enqueue_i16_buffer(
-    data: &[i16],
-    channels: usize,
-    queue: &ArrayQueue<f32>,
-    dropped: &AtomicU64,
-    level: &AtomicU32,
-    raw_level: &AtomicU32,
-    display_gain: f32,
-) {
+fn enqueue_i16_buffer(data: &[i16], channels: usize, capture: CaptureBuffer<'_>) {
     if data.is_empty() {
-        level.store(0f32.to_bits(), Ordering::Relaxed);
-        raw_level.store(0f32.to_bits(), Ordering::Relaxed);
+        capture.level.store(0f32.to_bits(), Ordering::Relaxed);
+        capture.raw_level.store(0f32.to_bits(), Ordering::Relaxed);
         return;
     }
 
@@ -551,7 +723,7 @@ fn enqueue_i16_buffer(
             let mono = raw as f32 / i16::MAX as f32;
             sum += mono * mono;
             count += 1;
-            push_overwriting_oldest(queue, dropped, mono);
+            push_overwriting_oldest(capture.queue, capture.dropped, mono);
         }
     } else {
         for frame in data.chunks(channels) {
@@ -559,7 +731,7 @@ fn enqueue_i16_buffer(
             let mono = sum_raw as f32 / (frame.len() as f32 * i16::MAX as f32);
             sum += mono * mono;
             count += 1;
-            push_overwriting_oldest(queue, dropped, mono);
+            push_overwriting_oldest(capture.queue, capture.dropped, mono);
         }
     }
 
@@ -568,9 +740,10 @@ fn enqueue_i16_buffer(
     } else {
         (sum / count as f32).sqrt()
     };
-    raw_level.store(rms.to_bits(), Ordering::Relaxed);
-    let display = (rms * display_gain).min(1.0);
-    level.store(display.to_bits(), Ordering::Relaxed);
+    capture.raw_level.store(rms.to_bits(), Ordering::Relaxed);
+    let display = (rms * capture.display_gain).min(1.0);
+    capture.level.store(display.to_bits(), Ordering::Relaxed);
+    capture.wake.notify();
 }
 
 fn push_overwriting_oldest(queue: &ArrayQueue<f32>, dropped: &AtomicU64, sample: f32) {
@@ -581,27 +754,7 @@ fn push_overwriting_oldest(queue: &ArrayQueue<f32>, dropped: &AtomicU64, sample:
     }
 }
 
-fn append_capped_samples(
-    processed: &mut Vec<f32>,
-    incoming: &[f32],
-    max_samples: usize,
-    recording_truncated: &mut bool,
-) {
-    if *recording_truncated || processed.len() >= max_samples {
-        *recording_truncated = true;
-        return;
-    }
-
-    let remaining = max_samples.saturating_sub(processed.len());
-    if incoming.len() > remaining {
-        processed.extend_from_slice(&incoming[..remaining]);
-        *recording_truncated = true;
-        return;
-    }
-
-    processed.extend_from_slice(incoming);
-}
-
+#[cfg(test)]
 fn resample_to_16k(mono: &[f32], sample_rate: u32) -> (Vec<f32>, u32) {
     const TARGET: u32 = 16_000;
     if sample_rate == TARGET {
@@ -620,14 +773,6 @@ fn resample_to_16k(mono: &[f32], sample_rate: u32) -> (Vec<f32>, u32) {
         })
         .collect();
     (resampled, TARGET)
-}
-
-fn resample_owned_to_16k(mono: Vec<f32>, sample_rate: u32) -> (Vec<f32>, u32) {
-    if sample_rate == 16_000 {
-        return (mono, 16_000);
-    }
-    // Dropping the native-rate input here prevents it overlapping WAV encoding.
-    resample_to_16k(&mono, sample_rate)
 }
 
 pub(crate) fn rms_f32(data: &[f32]) -> f32 {
@@ -660,7 +805,9 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped_samples, enqueue_i16_buffer, push_overwriting_oldest, DISPLAY_GAIN};
+    use super::{
+        enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, WorkerWake, DISPLAY_GAIN,
+    };
     use crossbeam_queue::ArrayQueue;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -672,12 +819,13 @@ mod tests {
         let worker_retained = retained.clone();
         let worker = super::ProcessingWorker {
             stop,
+            wake: std::sync::Arc::new(WorkerWake::new()),
             handle: Some(std::thread::spawn(move || {
                 while !worker_stop.load(Ordering::Relaxed) {
                     std::thread::yield_now();
                 }
                 drop(worker_retained);
-                (Vec::new(), false, 0.0)
+                (Vec::new(), super::RecordingTermination::Complete, 0.0)
             })),
         };
         drop(worker);
@@ -685,17 +833,31 @@ mod tests {
     }
 
     #[test]
-    fn owned_resampling_preserves_samples_and_reuses_16k_allocation() {
-        for rate in [8_000, 16_000, 44_100, 48_000, 96_000] {
-            let input: Vec<f32> = (0..rate).map(|i| (i as f32 * 0.01).sin()).collect();
-            let original_ptr = input.as_ptr();
-            let expected = super::resample_to_16k(&input, rate);
-            let actual = super::resample_owned_to_16k(input, rate);
-            assert_eq!(actual, expected);
-            if rate == 16_000 {
-                assert_eq!(actual.0.as_ptr(), original_ptr);
+    fn streaming_resampler_matches_batch_resampling_across_chunks() {
+        for rate in [8_000, 44_100, 48_000, 96_000] {
+            let input: Vec<f32> = (0..rate * 2)
+                .map(|i| (i as f32 * 0.013).sin() * 0.4)
+                .collect();
+            let expected = super::resample_to_16k(&input, rate).0;
+            let mut resampler = super::StreamingResampler::new(rate);
+            let mut actual = Vec::new();
+            for chunk in input.chunks(137) {
+                assert!(!resampler.push(chunk, &mut actual, usize::MAX));
+            }
+            assert!(!resampler.finish(&mut actual, usize::MAX));
+            assert_eq!(actual.len(), expected.len());
+            for (left, right) in actual.iter().zip(expected) {
+                assert!((left - right).abs() < 1e-5);
             }
         }
+    }
+
+    #[test]
+    fn streaming_resampler_stops_at_bounded_output_capacity() {
+        let mut resampler = super::StreamingResampler::new(48_000);
+        let mut output = Vec::new();
+        assert!(resampler.push(&vec![0.2; 96_000], &mut output, 16_000));
+        assert_eq!(output.len(), 16_000);
     }
 
     #[test]
@@ -765,8 +927,20 @@ mod tests {
         let level = AtomicU32::new(0f32.to_bits());
         let raw_level = AtomicU32::new(0f32.to_bits());
         let data = [i16::MAX, i16::MAX, 0, 0];
+        let wake = WorkerWake::new();
 
-        enqueue_i16_buffer(&data, 2, &q, &dropped, &level, &raw_level, DISPLAY_GAIN);
+        enqueue_i16_buffer(
+            &data,
+            2,
+            CaptureBuffer {
+                queue: &q,
+                dropped: &dropped,
+                level: &level,
+                raw_level: &raw_level,
+                display_gain: DISPLAY_GAIN,
+                wake: &wake,
+            },
+        );
 
         let first = q.pop().expect("first sample");
         let second = q.pop().expect("second sample");
@@ -786,39 +960,36 @@ mod tests {
         let low_level = AtomicU32::new(0f32.to_bits());
         let high_level = AtomicU32::new(0f32.to_bits());
         let raw_level = AtomicU32::new(0f32.to_bits());
+        let low_wake = WorkerWake::new();
+        let high_wake = WorkerWake::new();
 
         enqueue_i16_buffer(
             &data,
             1,
-            &low_queue,
-            &low_dropped,
-            &low_level,
-            &raw_level,
-            DISPLAY_GAIN,
+            CaptureBuffer {
+                queue: &low_queue,
+                dropped: &low_dropped,
+                level: &low_level,
+                raw_level: &raw_level,
+                display_gain: DISPLAY_GAIN,
+                wake: &low_wake,
+            },
         );
         enqueue_i16_buffer(
             &data,
             1,
-            &high_queue,
-            &high_dropped,
-            &high_level,
-            &raw_level,
-            DISPLAY_GAIN * 8.0,
+            CaptureBuffer {
+                queue: &high_queue,
+                dropped: &high_dropped,
+                level: &high_level,
+                raw_level: &raw_level,
+                display_gain: DISPLAY_GAIN * 8.0,
+                wake: &high_wake,
+            },
         );
 
         let low = f32::from_bits(low_level.load(Ordering::Relaxed));
         let high = f32::from_bits(high_level.load(Ordering::Relaxed));
         assert!(high > low * 7.5);
-    }
-
-    #[test]
-    fn append_capped_samples_truncates_and_flags() {
-        let mut processed = vec![0.1, 0.2];
-        let mut truncated = false;
-
-        append_capped_samples(&mut processed, &[0.3, 0.4, 0.5], 4, &mut truncated);
-
-        assert_eq!(processed, vec![0.1, 0.2, 0.3, 0.4]);
-        assert!(truncated);
     }
 }
