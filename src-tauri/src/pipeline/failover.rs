@@ -4,19 +4,20 @@
 //! sidecar. The sidecar `sample_count` is published only after the matching
 //! PCM bytes have been flushed, and load clamps to the shorter of the two.
 
-use crate::core::window_geometry::WindowTarget;
 use super::gates::{MIN_RECORDING_MS, MIN_RECORDING_RMS};
 use super::pill::{show_cancelled_pill, show_interrupted_pill};
 use super::state::{
     lock_state, CancelledCapture, CaptureOrigin, SharedState, CANCEL_RESUME_WINDOW,
 };
 use super::{state, CapturedAudio};
-use crate::media::audio::{self, DurableSink};
+use crate::core::window_geometry::WindowTarget;
+use crate::media::audio::{self, DurableSink, DurableSinkError, DurableSinkResult};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -28,6 +29,7 @@ const COMMITTED_DIR: &str = "committed";
 const SESSION_FILE: &str = "session.json";
 const AUDIO_FILE: &str = "audio.pcm";
 const TTL_SECS: i64 = 24 * 60 * 60;
+const MAX_RECOVERY_SAMPLES: u64 = audio::MAX_RECORDING_SAMPLES as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +48,8 @@ pub struct SessionMeta {
     pub sample_rate: u32,
     pub sample_count: u64,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub rms: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -72,10 +76,6 @@ impl LoadedTake {
             return false;
         }
         audio::rms_f32(&self.samples_16k) >= MIN_RECORDING_RMS
-    }
-
-    fn is_fresh(&self, now_unix: i64) -> bool {
-        now_unix.saturating_sub(self.meta.started_at_unix) < TTL_SECS
     }
 
     fn origin(&self) -> CaptureOrigin {
@@ -118,6 +118,28 @@ fn i16_to_f32(s: i16) -> f32 {
 
 fn slot_dir(root: &Path, live: bool) -> PathBuf {
     root.join(if live { LIVE_DIR } else { COMMITTED_DIR })
+}
+
+/// Keep a durable live prefix from being overwritten by the next fresh take.
+/// The live slot is intentionally left in place while the failure is surfaced;
+/// move it to the committed slot only when a subsequent recording needs the
+/// live slot. This avoids rewriting PCM and preserves crash recovery even when
+/// the original failure was caused by a slow/full disk.
+fn preserve_previous_live(root: &Path, current_id: &str) {
+    let live = slot_dir(root, true);
+    let Some(meta) = load_session(&live.join(SESSION_FILE)) else {
+        return;
+    };
+    if meta.id == current_id {
+        return;
+    }
+    delete_committed(root);
+    if let Err(e) = fs::rename(&live, slot_dir(root, false)) {
+        log::warn!(
+            "failover: could not preserve previous live take id_prefix={}: {e}",
+            id_prefix(&meta.id)
+        );
+    }
 }
 
 fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -179,16 +201,45 @@ pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
     let mut file = File::open(&pcm_path).ok()?;
     let file_len = file.metadata().ok()?.len();
     let file_samples = file_len / 2;
-    let usable = meta.sample_count.min(file_samples);
+    let usable = meta
+        .sample_count
+        .min(file_samples)
+        .min(MAX_RECOVERY_SAMPLES);
     if usable == 0 {
         return None;
     }
-    let byte_len = (usable * 2) as usize;
-    let mut buf = vec![0u8; byte_len];
-    file.read_exact(&mut buf).ok()?;
     let mut samples = Vec::with_capacity(usable as usize);
-    for chunk in buf.as_chunks::<2>().0 {
-        samples.push(i16_to_f32(i16::from_le_bytes(*chunk)));
+    let mut chunk = [0u8; 64 * 1024];
+    let mut pending = None;
+    let mut remaining = usable * 2;
+    while remaining > 0 {
+        let read_len = remaining.min(chunk.len() as u64) as usize;
+        let read_len = file.read(&mut chunk[..read_len]).ok()?;
+        if read_len == 0 {
+            break;
+        }
+        remaining -= read_len as u64;
+        let mut bytes = &chunk[..read_len];
+        if let Some(first) = pending.take() {
+            let value = i16::from_le_bytes([first, bytes[0]]);
+            samples.push(i16_to_f32(value));
+            bytes = &bytes[1..];
+        }
+        let even_len = bytes.len() & !1;
+        for pair in bytes[..even_len].chunks_exact(2) {
+            samples.push(i16_to_f32(i16::from_le_bytes([pair[0], pair[1]])));
+        }
+        if even_len != bytes.len() {
+            pending = bytes.last().copied();
+        }
+    }
+    if let Some(first) = pending {
+        // The published sample count is authoritative; an incomplete final
+        // PCM sample is intentionally discarded.
+        let _ = first;
+    }
+    if samples.is_empty() {
+        return None;
     }
     meta.sample_count = usable;
     meta.duration_ms = usable * 1000 / u64::from(TARGET_RATE);
@@ -196,6 +247,40 @@ pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
         meta,
         samples_16k: samples,
     })
+}
+
+struct SlotInspection {
+    meta: SessionMeta,
+    usable_samples: u64,
+}
+
+fn inspect_slot(root: &Path, live: bool) -> Option<SlotInspection> {
+    let dir = slot_dir(root, live);
+    let meta = load_session(&dir.join(SESSION_FILE))?;
+    let file_samples = File::open(dir.join(AUDIO_FILE))
+        .ok()?
+        .metadata()
+        .ok()?
+        .len()
+        / 2;
+    let usable_samples = meta
+        .sample_count
+        .min(file_samples)
+        .min(MAX_RECOVERY_SAMPLES);
+    (usable_samples > 0).then_some(SlotInspection {
+        meta,
+        usable_samples,
+    })
+}
+
+fn inspection_passes_gates(slot: &SlotInspection) -> bool {
+    if slot.usable_samples * 1000 / u64::from(TARGET_RATE) < MIN_RECORDING_MS {
+        return false;
+    }
+    // New files publish RMS in metadata, so startup can select a winner
+    // without decoding every candidate. A zero value is retained as a
+    // conservative compatibility fallback for pre-metadata files.
+    slot.meta.rms == 0.0 || slot.meta.rms >= MIN_RECORDING_RMS
 }
 
 pub fn delete_slot(root: &Path, live: bool) {
@@ -248,9 +333,11 @@ fn write_slot(
     if samples_16k.is_empty() {
         anyhow::bail!("no samples to commit");
     }
+    if samples_16k.len() as u64 > MAX_RECOVERY_SAMPLES {
+        anyhow::bail!("recovery audio exceeds the recording duration cap");
+    }
     let dir = slot_dir(root, live);
     fs::create_dir_all(&dir)?;
-    let pcm = samples_to_pcm(samples_16k);
     let tmp = dir.join("audio.pcm.tmp");
     let dest = dir.join(AUDIO_FILE);
     {
@@ -259,7 +346,10 @@ fn write_slot(
             .write(true)
             .truncate(true)
             .open(&tmp)?;
-        f.write_all(&pcm)?;
+        for chunk in samples_16k.chunks(TARGET_RATE as usize) {
+            let pcm = samples_to_pcm(chunk);
+            f.write_all(&pcm)?;
+        }
         f.sync_all()?;
     }
     replace_file(&tmp, &dest)?;
@@ -272,6 +362,7 @@ fn write_slot(
         sample_rate: TARGET_RATE,
         sample_count,
         duration_ms: sample_count * 1000 / u64::from(TARGET_RATE),
+        rms: audio::rms_f32(samples_16k),
     };
     write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
     Ok(())
@@ -300,60 +391,66 @@ fn id_prefix(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// Startup restore: pick live vs committed, delete the loser, return the winner.
+/// Startup restore: pick the best candidate, validate it fully, then delete
+/// the alternative and return it.
 pub fn restore_choice(root: &Path, now_unix: i64) -> Option<LoadedTake> {
-    let live_raw = load_slot(root, true);
-    let committed_raw = load_slot(root, false);
-
-    let live = live_raw.filter(|t| {
-        if t.is_fresh(now_unix) && t.passes_gates() {
-            true
-        } else {
-            delete_live(root);
-            false
-        }
+    // Inspect sidecars and file lengths first. This avoids decoding both a
+    // stale committed take and a newer live take just to discard one of them.
+    let live = inspect_slot(root, true);
+    let committed = inspect_slot(root, false);
+    let live = live.filter(|slot| {
+        slot.meta.started_at_unix <= now_unix
+            && slot.meta.started_at_unix.saturating_add(TTL_SECS) > now_unix
+            && inspection_passes_gates(slot)
     });
-    let committed = committed_raw.filter(|t| {
-        if t.is_fresh(now_unix) && t.passes_gates() {
-            true
-        } else {
-            delete_committed(root);
-            false
-        }
+    let committed = committed.filter(|slot| {
+        slot.meta.started_at_unix <= now_unix
+            && slot.meta.started_at_unix.saturating_add(TTL_SECS) > now_unix
+            && inspection_passes_gates(slot)
     });
 
-    match (live, committed) {
+    let winner_live = match (&live, &committed) {
         (Some(l), Some(c)) if l.meta.id == c.meta.id => {
             if c.meta.kind == FailoverKind::Processing {
-                delete_live(root);
-                Some(c)
-            } else if l.usable_samples() >= c.usable_samples() {
-                delete_committed(root);
-                Some(l)
+                false
             } else {
-                delete_live(root);
-                Some(c)
+                l.usable_samples >= c.usable_samples
             }
         }
-        (Some(l), Some(c)) => {
-            if l.meta.started_at_unix >= c.meta.started_at_unix {
-                delete_committed(root);
-                Some(l)
-            } else {
-                delete_live(root);
-                Some(c)
-            }
-        }
-        (Some(l), None) => Some(l),
-        (None, Some(c)) => {
-            delete_live(root);
-            Some(c)
-        }
+        (Some(l), Some(c)) => l.meta.started_at_unix >= c.meta.started_at_unix,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
         (None, None) => {
             delete_all(root);
-            None
+            return None;
+        }
+    };
+    // Decode and re-check the selected winner before touching the alternative.
+    // Metadata inspection is only a cheap filter; the decoded PCM is the
+    // authoritative validation.
+    if let Some(take) = load_slot(root, winner_live).filter(LoadedTake::passes_gates) {
+        delete_slot(root, !winner_live);
+        return Some(take);
+    }
+
+    // A candidate can pass the sidecar gates but fail after decoding (for
+    // example, if its PCM was damaged after the last sidecar checkpoint).
+    // Preserve the alternative long enough to recover it in that case.
+    delete_slot(root, winner_live);
+    let alternative_live = !winner_live;
+    let alternative_is_valid_candidate = if alternative_live {
+        live.is_some()
+    } else {
+        committed.is_some()
+    };
+    if alternative_is_valid_candidate {
+        if let Some(take) = load_slot(root, alternative_live).filter(LoadedTake::passes_gates) {
+            return Some(take);
         }
     }
+
+    delete_all(root);
+    None
 }
 
 fn loaded_to_capture(take: LoadedTake) -> Option<CancelledCapture> {
@@ -361,19 +458,13 @@ fn loaded_to_capture(take: LoadedTake) -> Option<CancelledCapture> {
     let origin = take.origin();
     let started_at_unix = take.meta.started_at_unix;
     let id = take.meta.id.clone();
-    let wav = audio::encode_wav(&take.samples_16k, TARGET_RATE, 1).ok()?;
     let created_at_rfc3339 = Utc
         .timestamp_opt(started_at_unix, 0)
         .single()
         .unwrap_or_else(Utc::now)
         .to_rfc3339_opts(SecondsFormat::Secs, true);
     Some(CancelledCapture {
-        audio: CapturedAudio {
-            wav: bytes::Bytes::from(wav),
-            samples_16k: Arc::new(take.samples_16k),
-            sample_rate: TARGET_RATE,
-            duration_ms,
-        },
+        audio: CapturedAudio::from_samples(take.samples_16k, TARGET_RATE, duration_ms),
         captured_at: Instant::now(),
         id,
         origin,
@@ -446,19 +537,47 @@ pub fn emit_cancelled_payload(app: &AppHandle, created_at: &str, kind: &str) {
 }
 
 pub fn commit_capture(audio: &CapturedAudio, id: &str, kind: FailoverKind, started_at_unix: i64) {
-    if let Err(e) = write_committed(
-        &failover_dir(),
-        id,
-        kind,
-        started_at_unix,
-        &audio.samples_16k,
-    ) {
+    let root = failover_dir();
+    if promote_live(&root, id, kind, started_at_unix).is_ok() {
+        return;
+    }
+    if let Err(e) = write_committed(&root, id, kind, started_at_unix, &audio.samples_16k) {
         log::warn!(
             "failover: commit failed id_prefix={} samples={}: {e}",
             id_prefix(id),
             audio.samples_16k.len()
         );
     }
+}
+
+/// Promote the already durable live spool instead of rewriting the full take
+/// after capture stops. The sidecar is updated atomically before the directory
+/// is moved, so a crash can leave either a valid live or committed candidate.
+fn promote_live(
+    root: &Path,
+    id: &str,
+    kind: FailoverKind,
+    started_at_unix: i64,
+) -> anyhow::Result<()> {
+    let dir = slot_dir(root, true);
+    let mut meta = load_session(&dir.join(SESSION_FILE))
+        .ok_or_else(|| anyhow::anyhow!("no live recovery sidecar"))?;
+    if meta.id != id {
+        anyhow::bail!("live recovery id mismatch");
+    }
+    meta.kind = kind;
+    meta.started_at_unix = started_at_unix;
+    write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
+    let committed = slot_dir(root, false);
+    delete_committed(root);
+    fs::rename(&dir, &committed)?;
+    log::info!(
+        "failover: promoted live id_prefix={} kind={:?} samples={}",
+        id_prefix(id),
+        kind,
+        meta.sample_count
+    );
+    Ok(())
 }
 
 pub fn retire_committed() {
@@ -471,9 +590,9 @@ pub struct LiveWriter {
     root: PathBuf,
     file: File,
     meta: SessionMeta,
-    native_tail: Vec<f32>,
-    native_rate: u32,
-    src_pos: f64,
+    pending: Vec<f32>,
+    rms_sum_sq: f64,
+    failed: bool,
     last_checkpoint: Instant,
     superseded: bool,
     app: Option<AppHandle>,
@@ -488,7 +607,48 @@ impl LiveWriter {
         app: Option<AppHandle>,
         state: Option<SharedState>,
     ) -> anyhow::Result<Self> {
+        if prepend_16k.is_some_and(|samples| samples.len() as u64 > MAX_RECOVERY_SAMPLES) {
+            anyhow::bail!("recovery audio exceeds the recording duration cap");
+        }
         let dir = slot_dir(&root, true);
+        if let Some(prepend) = prepend_16k {
+            let committed_dir = slot_dir(&root, false);
+            let committed_meta = load_session(&committed_dir.join(SESSION_FILE));
+            let committed_len = File::open(committed_dir.join(AUDIO_FILE))
+                .ok()
+                .and_then(|file| file.metadata().ok())
+                .map(|meta| meta.len() / 2);
+            if let (Some(mut meta), Some(file_samples)) = (committed_meta, committed_len) {
+                if meta.id == id
+                    && meta.sample_count == prepend.len() as u64
+                    && meta.sample_count <= MAX_RECOVERY_SAMPLES
+                    && file_samples >= meta.sample_count
+                {
+                    fs::rename(&committed_dir, &dir)?;
+                    meta.kind = FailoverKind::Recording;
+                    write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
+                    let file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(dir.join(AUDIO_FILE))?;
+                    return Ok(Self {
+                        root,
+                        file,
+                        pending: Vec::with_capacity(TARGET_RATE as usize),
+                        rms_sum_sq: f64::from(meta.rms)
+                            * f64::from(meta.rms)
+                            * meta.sample_count as f64,
+                        last_checkpoint: Instant::now(),
+                        superseded: false,
+                        app,
+                        state,
+                        meta,
+                        failed: false,
+                    });
+                }
+            }
+        }
+        preserve_previous_live(&root, &id);
         fs::create_dir_all(&dir)?;
         let pcm_path = dir.join(AUDIO_FILE);
         let _ = fs::remove_file(&pcm_path);
@@ -506,6 +666,7 @@ impl LiveWriter {
             sample_rate: TARGET_RATE,
             sample_count: 0,
             duration_ms: 0,
+            rms: 0.0,
         };
         if let Some(prepend) = prepend_16k {
             if !prepend.is_empty() {
@@ -515,6 +676,7 @@ impl LiveWriter {
                 file.sync_data()?;
                 meta.sample_count = prepend.len() as u64;
                 meta.duration_ms = meta.sample_count * 1000 / u64::from(TARGET_RATE);
+                meta.rms = audio::rms_f32(prepend);
             }
         }
         write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
@@ -522,9 +684,11 @@ impl LiveWriter {
             root,
             file,
             meta,
-            native_tail: Vec::new(),
-            native_rate: 0,
-            src_pos: 0.0,
+            pending: Vec::with_capacity(TARGET_RATE as usize),
+            rms_sum_sq: prepend_16k
+                .map(|samples| samples.iter().map(|s| f64::from(*s) * f64::from(*s)).sum())
+                .unwrap_or(0.0),
+            failed: false,
             last_checkpoint: Instant::now(),
             superseded: false,
             app,
@@ -532,77 +696,36 @@ impl LiveWriter {
         })
     }
 
-    fn convert_native(&mut self, finish: bool) -> Vec<f32> {
-        if self.native_rate == 0 || self.native_tail.is_empty() {
-            if finish {
-                self.native_tail.clear();
-                self.src_pos = 0.0;
-            }
-            return Vec::new();
-        }
-        if self.native_rate == TARGET_RATE {
-            let out = std::mem::take(&mut self.native_tail);
-            self.src_pos = 0.0;
-            return out;
-        }
-        let ratio = f64::from(self.native_rate) / f64::from(TARGET_RATE);
-        let last = self.native_tail.len().saturating_sub(1);
-        let mut out = Vec::new();
-        loop {
-            let lo = self.src_pos.floor() as usize;
-            let hi = lo + 1;
-            if !finish && hi >= self.native_tail.len() {
-                break;
-            }
-            if lo > last {
-                break;
-            }
-            let hi = hi.min(last);
-            let t = (self.src_pos - lo as f64) as f32;
-            out.push(self.native_tail[lo] * (1.0 - t) + self.native_tail[hi] * t);
-            self.src_pos += ratio;
-            if finish && lo >= last {
-                break;
-            }
-        }
-        if finish {
-            self.native_tail.clear();
-            self.src_pos = 0.0;
-        } else {
-            let drop = self.src_pos.floor() as usize;
-            if drop > 0 {
-                let drop = drop.min(self.native_tail.len());
-                self.native_tail.drain(..drop);
-                self.src_pos -= drop as f64;
-                if self.src_pos < 0.0 {
-                    self.src_pos = 0.0;
-                }
-            }
-        }
-        out
-    }
-
     fn checkpoint(&mut self, finish: bool) {
-        let samples = self.convert_native(finish);
-        if samples.is_empty() && !finish {
+        if self.pending.is_empty() && !finish {
             return;
         }
-        if !samples.is_empty() {
-            let pcm = samples_to_pcm(&samples);
+        if !self.pending.is_empty() {
+            let pcm = samples_to_pcm(&self.pending);
             if let Err(e) = self.file.write_all(&pcm).and_then(|_| self.file.flush()) {
                 log::warn!("failover: live pcm write failed: {e}");
+                self.failed = true;
                 return;
             }
             if let Err(e) = self.file.sync_data() {
                 log::warn!("failover: live pcm sync failed: {e}");
+                self.failed = true;
                 return;
             }
-            self.meta.sample_count += samples.len() as u64;
+            self.meta.sample_count += self.pending.len() as u64;
+            self.rms_sum_sq += self
+                .pending
+                .iter()
+                .map(|s| f64::from(*s) * f64::from(*s))
+                .sum::<f64>();
             self.meta.duration_ms = self.meta.sample_count * 1000 / u64::from(TARGET_RATE);
+            self.meta.rms = (self.rms_sum_sq / self.meta.sample_count as f64).sqrt() as f32;
             let session_path = slot_dir(&self.root, true).join(SESSION_FILE);
             if let Err(e) = write_session_atomic(&session_path, &self.meta) {
                 log::warn!("failover: live sidecar write failed: {e}");
+                self.failed = true;
             }
+            self.pending.clear();
         }
         self.last_checkpoint = Instant::now();
         self.maybe_supersede();
@@ -638,29 +761,123 @@ impl LiveWriter {
 }
 
 impl DurableSink for LiveWriter {
-    fn extend(&mut self, native_samples: &[f32], native_rate: u32) {
-        if native_samples.is_empty() {
-            return;
+    fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult {
+        if samples_16k.is_empty() {
+            return if self.failed {
+                Err(DurableSinkError::Disk)
+            } else {
+                Ok(())
+            };
         }
-        if self.native_rate == 0 {
-            self.native_rate = native_rate;
-        } else if self.native_rate != native_rate {
-            self.checkpoint(true);
-            self.native_rate = native_rate;
+        if self.failed {
+            return Err(DurableSinkError::Disk);
         }
-        self.native_tail.extend_from_slice(native_samples);
-        let one_sec = self.native_rate.max(1) as usize;
-        if self.native_tail.len() >= one_sec
+        let buffered = self
+            .meta
+            .sample_count
+            .saturating_add(self.pending.len() as u64);
+        let remaining = MAX_RECOVERY_SAMPLES.saturating_sub(buffered) as usize;
+        if samples_16k.len() > remaining {
+            if remaining > 0 {
+                self.pending.extend_from_slice(&samples_16k[..remaining]);
+                self.checkpoint(true);
+            }
+            self.failed = true;
+            return Err(DurableSinkError::Disk);
+        }
+        self.pending.extend_from_slice(samples_16k);
+        if self.pending.len() >= TARGET_RATE as usize
             || self.last_checkpoint.elapsed() >= Duration::from_secs(1)
         {
             self.checkpoint(false);
         }
+        if self.failed {
+            Err(DurableSinkError::Disk)
+        } else {
+            Ok(())
+        }
     }
 
-    fn finish(&mut self) {
+    fn finish(&mut self) -> DurableSinkResult {
         self.checkpoint(true);
-        let _ = self.file.flush();
-        let _ = self.file.sync_all();
+        if let Err(e) = self.file.flush().and_then(|_| self.file.sync_all()) {
+            log::warn!("failover: final live pcm sync failed: {e}");
+            self.failed = true;
+        }
+        if self.failed {
+            Err(DurableSinkError::Disk)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+enum WriterMessage {
+    Samples(Vec<f32>),
+    Finish,
+}
+
+struct AsyncLiveWriter {
+    tx: Option<std::sync::mpsc::SyncSender<WriterMessage>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    failed: Arc<AtomicBool>,
+}
+
+impl DurableSink for AsyncLiveWriter {
+    fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult {
+        if samples_16k.is_empty() {
+            return if self.failed.load(Ordering::Acquire) {
+                Err(DurableSinkError::Disk)
+            } else {
+                Ok(())
+            };
+        }
+        if self.failed.load(Ordering::Acquire) {
+            return Err(DurableSinkError::Disk);
+        }
+        if let Some(tx) = &self.tx {
+            match tx.try_send(WriterMessage::Samples(samples_16k.to_vec())) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    // A slow disk must stop the take, not make the audio
+                    // processing worker wait behind a bounded queue.
+                    log::warn!("failover: recovery writer queue is full");
+                    self.failed.store(true, Ordering::Release);
+                    return Err(DurableSinkError::Backpressure);
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(DurableSinkError::Disk);
+                }
+            }
+        } else {
+            self.failed.store(true, Ordering::Release);
+            return Err(DurableSinkError::Disk);
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> DurableSinkResult {
+        if let Some(tx) = self.tx.take() {
+            // Finish is best-effort and deliberately nonblocking as well. If
+            // the queue is full, dropping the sender lets the writer drain its
+            // already accepted prefix before it performs its final sync.
+            let _ = tx.try_send(WriterMessage::Finish);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if self.failed.load(Ordering::Acquire) {
+            Err(DurableSinkError::Disk)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for AsyncLiveWriter {
+    fn drop(&mut self) {
+        let _ = self.finish();
     }
 }
 
@@ -677,7 +894,35 @@ pub fn open_live_writer(
         Some(app.clone()),
         Some(state.clone()),
     ) {
-        Ok(w) => Some(Box::new(w)),
+        Ok(writer) => {
+            let (tx, rx) = std::sync::mpsc::sync_channel(8);
+            let failed = Arc::new(AtomicBool::new(false));
+            let failed_thread = Arc::clone(&failed);
+            let handle = std::thread::spawn(move || {
+                let mut writer = writer;
+                while let Ok(message) = rx.recv() {
+                    match message {
+                        WriterMessage::Samples(samples) => {
+                            let _ = writer.extend(&samples);
+                            if writer.failed {
+                                failed_thread.store(true, Ordering::Release);
+                                break;
+                            }
+                        }
+                        WriterMessage::Finish => break,
+                    }
+                }
+                let _ = writer.finish();
+                if writer.failed {
+                    failed_thread.store(true, Ordering::Release);
+                }
+            });
+            Some(Box::new(AsyncLiveWriter {
+                tx: Some(tx),
+                handle: Some(handle),
+                failed,
+            }))
+        }
         Err(e) => {
             log::warn!("failover: live writer open failed: {e}");
             None
@@ -711,14 +956,12 @@ pub fn flush_on_exit(app: &AppHandle) {
         Ok(result) => {
             if let Some(id) = id {
                 if result.duration_ms >= MIN_RECORDING_MS {
-                    let samples = result.samples_16k;
-                    let _ = write_committed(
-                        &failover_dir(),
-                        &id,
-                        FailoverKind::Recording,
-                        started,
-                        &samples,
+                    let audio = CapturedAudio::from_samples(
+                        result.samples_16k,
+                        result.sample_rate,
+                        result.duration_ms,
                     );
+                    commit_capture(&audio, &id, FailoverKind::Recording, started);
                 }
             }
         }
@@ -747,6 +990,67 @@ mod tests {
 
     fn loud_ms(ms: u64) -> Vec<f32> {
         tone((TARGET_RATE as u64 * ms / 1000) as usize, 0.4)
+    }
+
+    #[test]
+    fn async_recovery_queue_full_returns_without_blocking() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(WriterMessage::Samples(vec![0.1])).unwrap();
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut writer = AsyncLiveWriter {
+            tx: Some(tx),
+            handle: None,
+            failed,
+        };
+        let started = Instant::now();
+        let result = writer.extend(&[0.2]);
+        assert_eq!(result, Err(DurableSinkError::Backpressure));
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(writer.finish(), Err(DurableSinkError::Disk));
+    }
+
+    #[test]
+    fn live_writer_keeps_durable_prefix_after_disk_failure() {
+        let root = test_root();
+        let prefix = loud_ms(1000);
+        let mut writer = LiveWriter::open(
+            root.clone(),
+            "disk-failure".into(),
+            Some(&prefix),
+            None,
+            None,
+        )
+        .unwrap();
+        // Make the next sidecar write fail while leaving the already-published
+        // PCM prefix and its metadata intact.
+        fs::create_dir(slot_dir(&root, true).join("session.json.tmp")).unwrap();
+        assert_eq!(writer.extend(&loud_ms(1000)), Err(DurableSinkError::Disk));
+        let _ = writer.finish();
+        let loaded = load_slot(&root, true).expect("published prefix survives");
+        assert_eq!(loaded.samples_16k.len(), prefix.len());
+        delete_all(&root);
+    }
+
+    #[test]
+    fn fresh_take_does_not_overwrite_previous_live_prefix() {
+        let root = test_root();
+        let prefix = loud_ms(1000);
+        let mut previous =
+            LiveWriter::open(root.clone(), "previous".into(), Some(&prefix), None, None).unwrap();
+        let _ = previous.finish();
+        assert!(
+            load_slot(&root, true).is_some(),
+            "previous live take exists"
+        );
+        drop(previous);
+
+        let mut current =
+            LiveWriter::open(root.clone(), "current".into(), None, None, None).unwrap();
+        let _ = current.finish();
+        let preserved = load_slot(&root, false).expect("previous live prefix is preserved");
+        assert_eq!(preserved.meta.id, "previous");
+        assert_eq!(preserved.samples_16k.len(), prefix.len());
+        delete_all(&root);
     }
 
     #[test]
@@ -811,6 +1115,33 @@ mod tests {
     }
 
     #[test]
+    fn recovery_load_caps_sidecar_before_allocating_audio() {
+        let root = test_root();
+        let dir = slot_dir(&root, false);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(AUDIO_FILE), [0u8, 0u8]).unwrap();
+        write_session_atomic(
+            &dir.join(SESSION_FILE),
+            &SessionMeta {
+                version: SESSION_VERSION,
+                id: "oversized-sidecar".into(),
+                kind: FailoverKind::Cancelled,
+                started_at_unix: now_unix(),
+                sample_rate: TARGET_RATE,
+                sample_count: MAX_RECOVERY_SAMPLES + 1,
+                duration_ms: u64::MAX,
+                rms: 1.0,
+            },
+        )
+        .unwrap();
+
+        let loaded = load_slot(&root, false).expect("valid PCM prefix remains recoverable");
+        assert_eq!(loaded.samples_16k.len(), 1);
+        assert_eq!(loaded.meta.sample_count, 1);
+        delete_all(&root);
+    }
+
+    #[test]
     fn odd_trailing_byte_is_dropped() {
         let root = test_root();
         let samples = loud_ms(800);
@@ -864,7 +1195,7 @@ mod tests {
         let short = loud_ms(200);
         let mut w =
             LiveWriter::open(root.clone(), "new-id".into(), Some(&short), None, None).unwrap();
-        w.finish();
+        let _ = w.finish();
         drop(w);
         // 200ms fails gates, so restore_choice drops live and keeps committed.
         let restored = restore_choice(&root, now_unix()).unwrap();
@@ -880,7 +1211,7 @@ mod tests {
         let neu = loud_ms(900);
         let mut w =
             LiveWriter::open(root.clone(), "new-id".into(), Some(&neu), None, None).unwrap();
-        w.finish();
+        let _ = w.finish();
         drop(w);
         let restored = restore_choice(&root, now_unix()).unwrap();
         assert_eq!(restored.meta.id, "new-id");
@@ -889,14 +1220,109 @@ mod tests {
     }
 
     #[test]
+    fn failed_winner_validation_keeps_alternative_for_recovery() {
+        let root = test_root();
+        let t = now_unix();
+        let committed = loud_ms(1200);
+        write_committed(
+            &root,
+            "committed-winner",
+            FailoverKind::Cancelled,
+            t,
+            &committed,
+        )
+        .unwrap();
+        let live = loud_ms(1600);
+        write_slot(
+            &root,
+            true,
+            "damaged-winner",
+            FailoverKind::Recording,
+            t + 1,
+            &live,
+        )
+        .unwrap();
+
+        // Keep the sidecar's optimistic RMS, but make the selected live PCM
+        // fail the full decoded-audio gate.
+        fs::write(
+            slot_dir(&root, true).join(AUDIO_FILE),
+            vec![0_u8; live.len() * 2],
+        )
+        .unwrap();
+
+        let restored = restore_choice(&root, t + 1).expect("alternative should survive");
+        assert_eq!(restored.meta.id, "committed-winner");
+        assert!(!slot_dir(&root, true).exists());
+        delete_all(&root);
+    }
+
+    #[test]
     fn live_writer_publish_after_sync() {
         let root = test_root();
         let mut w = LiveWriter::open(root.clone(), "live-1".into(), None, None, None).unwrap();
-        w.extend(&loud_ms(1000), TARGET_RATE);
-        w.finish();
+        let _ = DurableSink::extend(&mut w, &loud_ms(1000));
+        let _ = w.finish();
         drop(w);
         let loaded = load_slot(&root, true).unwrap();
         assert!(loaded.samples_16k.len() >= 15_000);
+        delete_all(&root);
+    }
+
+    #[test]
+    fn live_spool_is_promoted_without_rewriting_pcm() {
+        let root = test_root();
+        let samples = loud_ms(1000);
+        write_slot(
+            &root,
+            true,
+            "promote-id",
+            FailoverKind::Recording,
+            now_unix(),
+            &samples,
+        )
+        .unwrap();
+        let before = fs::read(slot_dir(&root, true).join(AUDIO_FILE)).unwrap();
+        promote_live(&root, "promote-id", FailoverKind::Processing, now_unix()).unwrap();
+        assert_eq!(
+            fs::read(slot_dir(&root, false).join(AUDIO_FILE)).unwrap(),
+            before
+        );
+        assert!(!slot_dir(&root, true).exists());
+        assert_eq!(
+            load_session(&slot_dir(&root, false).join(SESSION_FILE))
+                .unwrap()
+                .kind,
+            FailoverKind::Processing
+        );
+        delete_all(&root);
+    }
+
+    #[test]
+    fn continuation_reuses_matching_committed_spool() {
+        let root = test_root();
+        let previous = loud_ms(1000);
+        write_committed(
+            &root,
+            "continue-id",
+            FailoverKind::Cancelled,
+            now_unix(),
+            &previous,
+        )
+        .unwrap();
+        let mut writer = LiveWriter::open(
+            root.clone(),
+            "continue-id".into(),
+            Some(&previous),
+            None,
+            None,
+        )
+        .unwrap();
+        let _ = DurableSink::extend(&mut writer, &loud_ms(250));
+        let _ = writer.finish();
+        let live = load_slot(&root, true).unwrap();
+        assert_eq!(live.samples_16k.len(), previous.len() + 4_000);
+        assert!(!slot_dir(&root, false).exists());
         delete_all(&root);
     }
 

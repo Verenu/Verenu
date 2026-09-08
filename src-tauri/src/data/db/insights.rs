@@ -1,9 +1,10 @@
 //! Insights aggregation for the Insights page.
 //!
 //! Mirrors `src/lib/views/insights/types.ts` field for field — serde field
-//! names are the frontend contract and must not drift. Day/hour bucketing
-//! always goes through `date(created_at, 'localtime')` / `strftime('%H',
-//! created_at, 'localtime')` because `created_at` is stored UTC-naive (see
+//! names are the frontend contract and must not drift. Timestamp filters use
+//! UTC-naive range bounds so `created_at` remains seekable; day/hour bucketing
+//! still goes through `date(created_at, 'localtime')` / `strftime('%H',
+//! created_at, 'localtime')` because the stored value is UTC-naive (see
 //! `query_stats` in transcriptions.rs).
 //!
 //! Privacy: this module only ever emits counts, model ids, and normalized
@@ -12,7 +13,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +121,20 @@ pub struct ApiCall {
 
 const TOP_WORDS_LIMIT: usize = 12;
 const MIN_WORD_CHARS: usize = 3;
+#[derive(Debug, Clone)]
+struct DateRange {
+    start_day: NaiveDate,
+    end_day: NaiveDate,
+    start: String,
+    end: String,
+}
+
+#[derive(Debug)]
+struct CleanupLifetime {
+    dictionary_fixes: i64,
+    auto_learned_terms: i64,
+    snippet_expansions: i64,
+}
 
 // Filler/function words users don't need to see in their distinctive
 // vocabulary. Lowercase; `top`/`unique_words`/`avg_word_length` filter on it.
@@ -147,32 +162,75 @@ fn is_stopword(word: &str) -> bool {
 /// `edits_applied`) have no context dimension in the schema and stay global
 /// either way — the UI labels them as such.
 pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Insights> {
-    let conn = lock_conn(db)?;
-    let (range_start, range_end) = range_bounds(&conn, days, context_id)?;
+    let (
+        totals,
+        daily,
+        streak_daily,
+        lifetime_streak_daily,
+        history_started_on,
+        hourly,
+        providers,
+        words,
+        raw_words,
+        clean_words,
+        cleanup_lifetime,
+    ) = {
+        let conn = lock_conn(db)?;
+        let range = range_bounds(&conn, days, context_id)?;
+        let previous = previous_range(days);
+        let totals = query_totals(&conn, &range, previous.as_ref(), context_id)?;
+        let lifetime_range = range_bounds(&conn, 0, context_id)?;
+        // The selected window is always a suffix of the lifetime window. One
+        // grouped query therefore supplies both series, including the idle
+        // prefix needed when a new install has less than `days` of history.
+        let aggregate_start = range.start_day.min(lifetime_range.start_day);
+        let aggregate_range = make_date_range(aggregate_start, range.end_day);
+        let aggregate_daily = query_daily(&conn, &aggregate_range, context_id)?;
+        let daily = slice_daily(&aggregate_daily, aggregate_start, &range);
+        let lifetime_streak_daily = slice_daily(&aggregate_daily, aggregate_start, &lifetime_range);
+        // The lifetime daily series already contains every bucket needed for
+        // the streak calculation. Derive the compact heatmap from it instead
+        // of issuing a second overlapping 365-day aggregation query.
+        let streak_daily = compact_streak_daily(&lifetime_streak_daily);
+        // Scoped too, so the heatmap can still tell "before this context
+        // existed" apart from "a day you didn't use it".
+        let history_started_on: Option<String> = conn.query_row(
+            "SELECT MIN(created_at) FROM transcriptions
+             WHERE (?1 IS NULL OR context_id = ?1)",
+            params![context_id],
+            |r| r.get(0),
+        )?;
+        let history_started_on = history_started_on
+            .map(|created_at| utc_naive_to_local_date(&created_at))
+            .transpose()?
+            .map(|day| day.format("%Y-%m-%d").to_string());
+        let hourly = query_hourly(&conn, &range, context_id)?;
+        let providers = query_providers(&conn, &range, context_id)?;
+        let (words, raw_words, clean_words) = query_text_metrics(&conn, &range, context_id)?;
+        let cleanup_lifetime = query_cleanup_lifetime(&conn, context_id)?;
 
-    let totals = query_totals(&conn, &range_start, &range_end, days, context_id)?;
-    let daily = query_daily(&conn, &range_start, &range_end, context_id)?;
-    let (streak_start, streak_end) = rolling_year_bounds(&conn)?;
-    let streak_daily = query_daily(&conn, &streak_start, &streak_end, context_id)?;
-    let (lifetime_streak_start, lifetime_streak_end) = range_bounds(&conn, 0, context_id)?;
-    let lifetime_streak_daily = query_daily(
-        &conn,
-        &lifetime_streak_start,
-        &lifetime_streak_end,
-        context_id,
-    )?;
-    // Scoped too, so the heatmap can still tell "before this context existed"
-    // apart from "a day you didn't use it".
-    let history_started_on = conn.query_row(
-        "SELECT date(MIN(created_at), 'localtime') FROM transcriptions
-         WHERE (?1 IS NULL OR context_id = ?1)",
-        params![context_id],
-        |r| r.get(0),
-    )?;
-    let hourly = query_hourly(&conn, &range_start, &range_end, context_id)?;
-    let providers = query_providers(&conn, &range_start, &range_end, context_id)?;
-    let cleanup = query_cleanup(&conn, &range_start, &range_end, context_id)?;
-    let words = query_words(&conn, &range_start, &range_end, context_id)?;
+        (
+            totals,
+            daily,
+            streak_daily,
+            lifetime_streak_daily,
+            history_started_on,
+            hourly,
+            providers,
+            words,
+            raw_words,
+            clean_words,
+            cleanup_lifetime,
+        )
+    };
+
+    let cleanup = InsightsCleanup {
+        raw_words,
+        clean_words,
+        edits_applied: cleanup_lifetime.dictionary_fixes + cleanup_lifetime.snippet_expansions,
+        dictionary_fixes: cleanup_lifetime.dictionary_fixes,
+        auto_learned_terms: cleanup_lifetime.auto_learned_terms,
+    };
     let streak = compute_streak(&lifetime_streak_daily);
 
     Ok(Insights {
@@ -322,84 +380,123 @@ fn parse_api_usage(api_used: &str) -> ApiUsageParts {
     }
 }
 
-/// Local calendar-day bounds of the requested range, as `"YYYY-MM-DD"`.
-/// `days > 0` spans the last `days` calendar days ending today; `days == 0`
-/// spans the first recorded transcription through today.
-fn range_bounds(conn: &Connection, days: i64, context_id: Option<i64>) -> Result<(String, String)> {
-    let today: String = conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))?;
-    let start = if days > 0 {
-        let n = (days - 1).max(0);
-        conn.query_row(
-            "SELECT date('now', 'localtime', ?1)",
-            params![format!("-{n} days")],
-            |r| r.get(0),
-        )?
+/// Local calendar-day bounds plus UTC-naive timestamp bounds. `created_at` is
+/// stored as a UTC-naive value, so the timestamp predicates below can seek on
+/// the ordinary `created_at` index without applying a function to the column.
+fn range_bounds(conn: &Connection, days: i64, context_id: Option<i64>) -> Result<DateRange> {
+    let today = Local::now().date_naive();
+    let start_day = if days > 0 {
+        today - Duration::days((days - 1).max(0))
     } else {
-        conn.query_row(
-            "SELECT COALESCE(
-               date((SELECT MIN(created_at) FROM transcriptions
-                     WHERE (?1 IS NULL OR context_id = ?1)), 'localtime'),
-               date('now', 'localtime')
-             )",
+        let first_created_at: Option<String> = conn.query_row(
+            "SELECT MIN(created_at) FROM transcriptions
+             WHERE (?1 IS NULL OR context_id = ?1)",
             params![context_id],
             |r| r.get(0),
-        )?
+        )?;
+        first_created_at
+            .map(|created_at| utc_naive_to_local_date(&created_at))
+            .transpose()?
+            .unwrap_or(today)
     };
-    Ok((start, today))
+    Ok(make_date_range(start_day, today))
 }
 
 /// One compact rolling year ending today. The frontend clips this to however
 /// many fixed-width weeks fit in the current window.
-fn rolling_year_bounds(conn: &Connection) -> Result<(String, String)> {
-    let end: String = conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))?;
-    let start: String =
-        conn.query_row("SELECT date('now', 'localtime', '-364 days')", [], |r| {
-            r.get(0)
-        })?;
-    Ok((start, end))
+fn rolling_year_bounds() -> DateRange {
+    let end_day = Local::now().date_naive();
+    make_date_range(end_day - Duration::days(364), end_day)
+}
+
+fn previous_range(days: i64) -> Option<DateRange> {
+    if days <= 0 {
+        return None;
+    }
+    let today = Local::now().date_naive();
+    let end_day = today - Duration::days(days);
+    Some(make_date_range(end_day - Duration::days(days - 1), end_day))
+}
+
+fn make_date_range(start_day: NaiveDate, end_day: NaiveDate) -> DateRange {
+    let start = local_midnight_utc_naive(start_day);
+    let end = local_midnight_utc_naive(end_day + Duration::days(1));
+    DateRange {
+        start_day,
+        end_day,
+        start: start.format("%Y-%m-%d %H:%M:%S").to_string(),
+        end: end.format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
+fn local_midnight_utc_naive(day: NaiveDate) -> NaiveDateTime {
+    let midnight = day.and_hms_opt(0, 0, 0).expect("valid local midnight");
+    // Midnight transitions are unusual but legal. For a nonexistent local
+    // midnight, use the first representable wall-clock hour on that date.
+    (0..6)
+        .find_map(|hour| {
+            let wall = day.and_hms_opt(hour, 0, 0)?;
+            Local
+                .from_local_datetime(&wall)
+                .earliest()
+                .map(|instant| instant.naive_utc())
+        })
+        .unwrap_or_else(|| {
+            Local
+                .from_local_datetime(&midnight)
+                .latest()
+                .expect("local timezone must resolve a day boundary")
+                .naive_utc()
+        })
+}
+
+fn utc_naive_to_local_date(value: &str) -> Result<NaiveDate> {
+    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")?;
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc)
+        .with_timezone(&Local)
+        .date_naive())
 }
 
 fn query_totals(
     conn: &Connection,
-    range_start: &str,
-    range_end: &str,
-    days: i64,
+    range: &DateRange,
+    previous: Option<&DateRange>,
     context_id: Option<i64>,
 ) -> Result<InsightsTotals> {
-    let (total_transcriptions, words_in_range, total_speaking_ms): (i64, i64, i64) = conn
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(words), 0), COALESCE(SUM(duration_ms), 0)
-             FROM transcriptions
-             WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
-               AND (?3 IS NULL OR context_id = ?3)",
-            params![range_start, range_end, context_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+    let previous_start = previous.map(|r| r.start.as_str());
+    let previous_end = previous.map(|r| r.end.as_str());
+    let (
+        total_transcriptions,
+        words_in_range,
+        total_speaking_ms,
+        avg_wpm,
+        best_wpm,
+        words_prev_range,
+    ): (i64, i64, i64, f64, Option<f64>, i64) = conn.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN words ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN duration_ms ELSE 0 END), 0),
+           COALESCE(AVG(CASE WHEN created_at >= ?1 AND created_at < ?2
+                              AND duration_ms > 0 AND spoken_words > 0
+                         THEN CAST(spoken_words AS REAL) * 60000.0 / duration_ms END), 0.0),
+           MAX(CASE WHEN created_at >= ?1 AND created_at < ?2
+                         AND duration_ms > 0 AND spoken_words > 0
+                    THEN CAST(spoken_words AS REAL) * 60000.0 / duration_ms END),
+           COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND created_at >= ?3 AND created_at < ?4
+                         THEN words ELSE 0 END), 0)
+         FROM transcriptions
+         WHERE ((created_at >= ?1 AND created_at < ?2)
+            OR (?3 IS NOT NULL AND created_at >= ?3 AND created_at < ?4))
+           AND (?5 IS NULL OR context_id = ?5)",
+        params![range.start, range.end, previous_start, previous_end, context_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    )?;
 
     // Identical definition to query_stats (average of each clip's own wpm)
     // so the Insights "All time" number matches the Home page exactly;
     // scoped to the range here. Not total_words/total_duration — that
     // aggregates differently and makes the two pages disagree.
-    let avg_wpm: f64 = conn.query_row(
-        "SELECT COALESCE(AVG(CAST(spoken_words AS REAL) * 60000.0 / duration_ms), 0.0)
-         FROM transcriptions
-         WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
-           AND duration_ms > 0 AND spoken_words > 0
-           AND (?3 IS NULL OR context_id = ?3)",
-        params![range_start, range_end, context_id],
-        |r| r.get(0),
-    )?;
-
-    let best_wpm: i64 = conn.query_row(
-        "SELECT COALESCE(CAST(MAX(CAST(spoken_words AS REAL) * 60000.0 / duration_ms) AS INTEGER), 0)
-         FROM transcriptions
-         WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
-           AND duration_ms > 0 AND spoken_words > 0
-           AND (?3 IS NULL OR context_id = ?3)",
-        params![range_start, range_end, context_id],
-        |r| r.get(0),
-    )?;
-
     let total_words: i64 = match context_id {
         None => conn.query_row(
             "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
@@ -419,22 +516,6 @@ fn query_totals(
         )?,
     };
 
-    let words_prev_range: i64 = if days > 0 {
-        let prev_start = format!("-{} days", (2 * days - 1).max(1));
-        let prev_end = format!("-{} days", days);
-        conn.query_row(
-            "SELECT COALESCE(SUM(words), 0)
-             FROM transcriptions
-             WHERE date(created_at, 'localtime') BETWEEN date('now', 'localtime', ?1)
-                                                   AND date('now', 'localtime', ?2)
-               AND (?3 IS NULL OR context_id = ?3)",
-            params![prev_start, prev_end, context_id],
-            |r| r.get(0),
-        )?
-    } else {
-        0
-    };
-
     let avg_words_per_transcription = if total_transcriptions > 0 {
         (words_in_range as f64 / total_transcriptions as f64).round() as i64
     } else {
@@ -447,7 +528,7 @@ fn query_totals(
         total_speaking_ms,
         avg_words_per_transcription,
         avg_wpm,
-        best_wpm,
+        best_wpm: best_wpm.unwrap_or(0.0) as i64,
         words_in_range,
         words_prev_range,
     })
@@ -456,8 +537,7 @@ fn query_totals(
 /// One row per calendar day in the range, ascending, zero-filled for idle days.
 fn query_daily(
     conn: &Connection,
-    range_start: &str,
-    range_end: &str,
+    range: &DateRange,
     context_id: Option<i64>,
 ) -> Result<Vec<InsightsDay>> {
     let mut per_day: HashMap<String, (i64, i64, i64)> = HashMap::new();
@@ -465,11 +545,11 @@ fn query_daily(
         let mut stmt = conn.prepare(
             "SELECT date(created_at, 'localtime'), SUM(words), COUNT(*), SUM(duration_ms)
              FROM transcriptions
-             WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+             WHERE created_at >= ?1 AND created_at < ?2
                AND (?3 IS NULL OR context_id = ?3)
              GROUP BY 1",
         )?;
-        let rows = stmt.query_map(params![range_start, range_end, context_id], |r| {
+        let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 (
@@ -485,8 +565,8 @@ fn query_daily(
         }
     }
 
-    let start = NaiveDate::parse_from_str(range_start, "%Y-%m-%d")?;
-    let end = NaiveDate::parse_from_str(range_end, "%Y-%m-%d")?;
+    let start = range.start_day;
+    let end = range.end_day;
     if start > end {
         // A future-dated transcription (clock drift) can make the range
         // bounds inverted; never spin the zero-fill loop to NaiveDate::MAX.
@@ -515,22 +595,56 @@ fn query_daily(
     Ok(daily)
 }
 
+fn slice_daily(full: &[InsightsDay], full_start: NaiveDate, range: &DateRange) -> Vec<InsightsDay> {
+    let start = (range.start_day - full_start).num_days().max(0) as usize;
+    let len = (range.end_day - range.start_day).num_days().max(0) as usize + 1;
+    full.iter().skip(start).take(len).cloned().collect()
+}
+
+fn compact_streak_daily(lifetime_daily: &[InsightsDay]) -> Vec<InsightsDay> {
+    let range = rolling_year_bounds();
+    let by_day: HashMap<&str, (i64, i64, i64)> = lifetime_daily
+        .iter()
+        .map(|day| {
+            (
+                day.day.as_str(),
+                (day.words, day.transcriptions, day.speaking_ms),
+            )
+        })
+        .collect();
+    let mut daily = Vec::with_capacity(365);
+    let mut current = range.start_day;
+    loop {
+        let day = current.format("%Y-%m-%d").to_string();
+        let (words, transcriptions, speaking_ms) =
+            by_day.get(day.as_str()).copied().unwrap_or((0, 0, 0));
+        daily.push(InsightsDay {
+            day,
+            words,
+            transcriptions,
+            speaking_ms,
+        });
+        if current == range.end_day {
+            break;
+        }
+        current = current
+            .succ_opt()
+            .expect("rolling streak range must fit in a calendar year");
+    }
+    daily
+}
+
 /// Words per hour-of-day, local time; exactly 24 entries, zeros included.
-fn query_hourly(
-    conn: &Connection,
-    range_start: &str,
-    range_end: &str,
-    context_id: Option<i64>,
-) -> Result<Vec<i64>> {
+fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<Vec<i64>> {
     let mut hourly = vec![0i64; 24];
     let mut stmt = conn.prepare(
         "SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER), SUM(words)
          FROM transcriptions
-         WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+         WHERE created_at >= ?1 AND created_at < ?2
            AND (?3 IS NULL OR context_id = ?3)
          GROUP BY 1",
     )?;
-    let rows = stmt.query_map(params![range_start, range_end, context_id], |r| {
+    let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
         Ok((r.get::<_, usize>(0)?, r.get::<_, i64>(1)?))
     })?;
     for row in rows {
@@ -546,8 +660,7 @@ fn query_hourly(
 /// predating the table simply contribute nothing.
 fn query_providers(
     conn: &Connection,
-    range_start: &str,
-    range_end: &str,
+    range: &DateRange,
     context_id: Option<i64>,
 ) -> Result<Vec<InsightsProviderUsage>> {
     // api_calls has no context of its own; it inherits the one recorded on the
@@ -560,12 +673,12 @@ fn query_providers(
                 COALESCE(SUM(a.output_chars), 0)
          FROM api_calls a
          LEFT JOIN transcriptions t ON t.id = a.transcription_id
-         WHERE date(a.created_at, 'localtime') BETWEEN ?1 AND ?2
+         WHERE a.created_at >= ?1 AND a.created_at < ?2
            AND (?3 IS NULL OR t.context_id = ?3)
          GROUP BY a.model, a.provider, a.task
          ORDER BY COUNT(*) DESC, a.model ASC",
     )?;
-    let rows = stmt.query_map(params![range_start, range_end, context_id], |r| {
+    let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
         Ok(InsightsProviderUsage {
             model: r.get(0)?,
             provider: r.get(1)?,
@@ -579,34 +692,7 @@ fn query_providers(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn query_cleanup(
-    conn: &Connection,
-    range_start: &str,
-    range_end: &str,
-    context_id: Option<i64>,
-) -> Result<InsightsCleanup> {
-    // raw/clean word counts are range-scoped from the transcriptions rows we
-    // already load for the vocabulary stats.
-    let (raw_words, clean_words) = {
-        let mut stmt = conn.prepare(
-            "SELECT clean_text, COALESCE(spoken_words, words)
-             FROM transcriptions
-             WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
-               AND (?3 IS NULL OR context_id = ?3)",
-        )?;
-        let rows = stmt.query_map(params![range_start, range_end, context_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
-        let mut raw = 0i64;
-        let mut clean = 0i64;
-        for row in rows {
-            let (clean_text, spoken) = row?;
-            raw += spoken;
-            clean += clean_text.split_whitespace().count() as i64;
-        }
-        (raw, clean)
-    };
-
+fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<CleanupLifetime> {
     let dictionary_fixes: i64 = match context_id {
         None => conn.query_row(
             "SELECT COALESCE((SELECT dictionary_fixes FROM lifetime_stats WHERE id = 1), 0)
@@ -631,56 +717,52 @@ fn query_cleanup(
         |r| r.get(0),
     )?;
 
-    Ok(InsightsCleanup {
-        raw_words,
-        clean_words,
-        edits_applied: dictionary_fixes + snippet_expansions,
+    Ok(CleanupLifetime {
         dictionary_fixes,
         auto_learned_terms,
+        snippet_expansions,
     })
 }
 
-fn query_words(
+/// Count words and vocabulary in one cursor pass. Retain distinct-word counts,
+/// not all transcript text; preserve the product's punctuation and accent rules.
+fn query_text_metrics(
     conn: &Connection,
-    range_start: &str,
-    range_end: &str,
+    range: &DateRange,
     context_id: Option<i64>,
-) -> Result<InsightsWords> {
+) -> Result<(InsightsWords, i64, i64)> {
+    // This intentionally uses the same normalization as existing Insights
+    // results. SQLite's unicode tokenizer splits `re-enter` and folds `café`,
+    // so an FTS vocabulary index would make statistics depend on availability.
     let mut stmt = conn.prepare(
-        "SELECT clean_text FROM transcriptions
-         WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+        "SELECT clean_text, COALESCE(spoken_words, words) FROM transcriptions
+         WHERE created_at >= ?1 AND created_at < ?2
            AND (?3 IS NULL OR context_id = ?3)",
     )?;
-    let rows = stmt.query_map(params![range_start, range_end, context_id], |r| {
-        r.get::<_, String>(0)
-    })?;
-
+    let mut rows = stmt.query(params![range.start, range.end, context_id])?;
     let mut counts: HashMap<String, i64> = HashMap::new();
     let mut longest: Option<String> = None;
     let mut length_sum = 0u64;
     let mut length_count = 0u64;
+    let mut raw_words = 0i64;
+    let mut clean_words = 0i64;
 
-    for row in rows {
-        let clean_text = row?;
+    while let Some(row) = rows.next()? {
+        let clean_text: String = row.get(0)?;
+        raw_words += row.get::<_, i64>(1)?;
         for token in clean_text.split_whitespace() {
+            clean_words += 1;
             let normalized = normalize_word(token);
             if normalized.is_empty() {
                 continue;
             }
-            // `.len()` is byte length; `chars().count()` is the character
-            // count a human word length should measure (non-ASCII words like
-            // accented or non-Latin text would otherwise be over-counted).
             let char_len = normalized.chars().count();
-            // Stopwords are excluded from the vocabulary insights — check
-            // before tracking `longest` so a long filler word like
-            // "because"/"themselves" never shows up as the longest word.
             if char_len < MIN_WORD_CHARS || is_stopword(&normalized) {
                 continue;
             }
             if char_len > longest.as_ref().map_or(0, |w| w.chars().count()) {
                 longest = Some(normalized.clone());
             }
-            // Move `normalized` here — it's not referenced again this iteration.
             *counts.entry(normalized).or_insert(0) += 1;
             length_sum += char_len as u64;
             length_count += 1;
@@ -688,14 +770,15 @@ fn query_words(
     }
 
     let unique_words = counts.len() as i64;
-    let mut top: Vec<InsightsWordCount> = counts
-        .into_iter()
-        .map(|(word, count)| InsightsWordCount { word, count })
-        .collect();
-    top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
-    top.truncate(TOP_WORDS_LIMIT);
-
-    Ok(InsightsWords {
+    let mut top = Vec::with_capacity(TOP_WORDS_LIMIT);
+    for (word, count) in counts {
+        top.push(InsightsWordCount { word, count });
+        top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
+        if top.len() > TOP_WORDS_LIMIT {
+            top.pop();
+        }
+    }
+    Ok((InsightsWords {
         top,
         unique_words,
         longest_word: longest,
@@ -704,7 +787,7 @@ fn query_words(
         } else {
             0.0
         },
-    })
+    }, raw_words, clean_words))
 }
 
 /// Lowercases and strips punctuation, keeping only alphanumeric characters.
@@ -841,6 +924,29 @@ mod tests {
             params![context_id, transcription_id],
         )
         .expect("set context");
+    }
+
+    #[test]
+    fn insights_timestamp_range_predicate_uses_created_at_index() {
+        let db = test_db();
+        let conn = lock_conn(&db).expect("lock");
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM transcriptions
+                 WHERE created_at >= ?1 AND created_at < ?2",
+            )
+            .expect("explain")
+            .query_map(["2026-01-01 00:00:00", "2026-02-01 00:00:00"], |row| {
+                row.get(3)
+            })
+            .expect("plan rows")
+            .collect::<rusqlite::Result<_>>()
+            .expect("plan");
+        assert!(
+            plan.iter()
+                .any(|detail| detail.contains("idx_transcriptions_created_at")),
+            "expected created_at range seek, got {plan:?}"
+        );
     }
 
     #[test]
@@ -1142,6 +1248,25 @@ mod tests {
         assert_eq!(insights.words.unique_words, 3);
         assert_eq!(insights.words.longest_word.as_deref(), Some("banana"));
         assert!(insights.words.avg_word_length > 5.0 && insights.words.avg_word_length < 7.0);
+    }
+
+    #[test]
+    fn streaming_metrics_preserve_word_rules_and_count_excluded_tokens() {
+        let db = test_db();
+        let conn = lock_conn(&db).expect("lock");
+        conn.execute(
+            "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words)
+             VALUES ('synthetic', ?1, 4, NULL)",
+            ["re-enter reenter café café foo !!!"],
+        ).expect("insert");
+        let range = range_bounds(&conn, 0, None).expect("range");
+        let (words, raw, clean) = query_text_metrics(&conn, &range, None).expect("metrics");
+        assert_eq!((raw, clean), (4, 6));
+        assert_eq!(words.unique_words, 3);
+        assert_eq!(words.longest_word.as_deref(), Some("reenter"));
+        assert_eq!(words.avg_word_length, 5.0);
+        assert!(words.top.iter().any(|word| word.word == "café" && word.count == 2));
+        assert!(words.top.iter().any(|word| word.word == "reenter" && word.count == 2));
     }
 
     #[test]

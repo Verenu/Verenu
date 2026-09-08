@@ -16,7 +16,51 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.icns");
     println!("cargo:rerun-if-changed=icons/verenu-mark.svg");
     println!("cargo:rerun-if-changed=src/generated_icon_geometry.rs");
-    tauri_build::build()
+    if target_os == "windows" {
+        let attributes = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        tauri_build::try_build(attributes).expect("failed to run Tauri build script");
+        link_windows_manifest();
+    } else {
+        tauri_build::build();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn link_windows_manifest() {
+    use std::{env, fs, path::PathBuf};
+
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+
+    // tauri-build normally embeds this manifest only in binary targets. The
+    // library test executable also initializes native dialogs, so it needs the
+    // Common Controls v6 activation context as well.
+    const MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
+
+    let manifest_path =
+        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR")).join("verenu.exe.manifest");
+    fs::write(&manifest_path, MANIFEST).expect("write Windows application manifest");
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
+        manifest_path.display()
+    );
 }
 
 #[cfg(target_os = "windows")]

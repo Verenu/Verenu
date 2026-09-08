@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+/// Cleanup responses are useful but disposable.  Keep their persistent
+/// footprint bounded even when a user dictates for years without restarting.
+pub const CLEANUP_CACHE_MAX_ROWS: i64 = 2_000;
+pub const CLEANUP_CACHE_MAX_BYTES: i64 = 16 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CleanupCacheEntry {
     pub key: String,
@@ -98,6 +103,9 @@ pub fn cleanup_cache_insert_new(
                  ?4)",
         params![key, clean_text, expires_at, is_snippet as i64],
     )?;
+    // Insertion is the hot path where a budget violation is created, so do a
+    // cheap opportunistic expiry/budget pass rather than waiting for startup.
+    cleanup_cache_enforce_budget_conn(&conn)?;
     Ok(())
 }
 
@@ -165,7 +173,61 @@ pub fn cleanup_cache_prune_expired(db: &Db) -> Result<usize> {
                 AND is_snippet = 0)",
         [],
     )?;
-    Ok(changed_epoch + changed_fallback)
+    Ok(changed_epoch + changed_fallback + cleanup_cache_enforce_budget_conn(&conn)?)
+}
+
+/// Evict least-recently-used cache responses until both row and byte budgets
+/// are satisfied.  Snippet entries are protected from the normal idle expiry,
+/// but are still evictable under hard storage pressure because they can be
+/// regenerated from the source text.
+fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usize> {
+    let (count, bytes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) +
+                                  length(CAST(clean_text AS BLOB))), 0)
+         FROM cleanup_cache",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let rows_to_free = (count - CLEANUP_CACHE_MAX_ROWS).max(0);
+    let bytes_to_free = (bytes - CLEANUP_CACHE_MAX_BYTES).max(0);
+    if rows_to_free == 0 && bytes_to_free == 0 {
+        return Ok(0);
+    }
+
+    // Pick the complete LRU prefix in one statement. The old loop counted the
+    // whole table and deleted one row at a time, which made a large cache
+    // budget correction O(rows^2). The window sum finds the first row that
+    // frees enough bytes, while the row-number floor enforces the row budget.
+    let removed = conn.execute(
+        "WITH ordered AS (
+           SELECT rowid,
+                  ROW_NUMBER() OVER (
+                    ORDER BY is_snippet ASC,
+                             COALESCE(last_hit_at_epoch, 0) ASC,
+                             last_hit_at ASC,
+                             rowid ASC
+                  ) AS rn,
+                  SUM(length(CAST(key AS BLOB)) + length(CAST(clean_text AS BLOB))) OVER (
+                    ORDER BY is_snippet ASC,
+                             COALESCE(last_hit_at_epoch, 0) ASC,
+                             last_hit_at ASC,
+                             rowid ASC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                  ) AS cumulative_bytes
+             FROM cleanup_cache
+         ), cutoff AS (
+           SELECT MAX(
+                    ?1,
+                    CASE WHEN ?2 > 0
+                         THEN COALESCE((SELECT MIN(rn) FROM ordered WHERE cumulative_bytes >= ?2), 0)
+                         ELSE 0 END
+                  ) AS rn
+         )
+         DELETE FROM cleanup_cache
+          WHERE rowid IN (SELECT ordered.rowid FROM ordered, cutoff WHERE ordered.rn <= cutoff.rn)",
+        params![rows_to_free, bytes_to_free],
+    )?;
+    Ok(removed)
 }
 
 pub fn cleanup_cache_clear_all(db: &Db) -> Result<usize> {

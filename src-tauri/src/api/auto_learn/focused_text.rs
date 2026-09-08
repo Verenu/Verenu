@@ -63,6 +63,9 @@ struct FocusedTextReader {
     automation: windows::Win32::UI::Accessibility::IUIAutomation,
 }
 
+#[cfg(windows)]
+const LOCAL_TEXT_CONTEXT_CHARS: i32 = 2048;
+
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FocusedTextProbe {
@@ -245,6 +248,168 @@ impl FocusedTextReader {
             let automation: IUIAutomation =
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
             Some(Self { automation })
+        }
+    }
+
+    unsafe fn read_local_range(
+        range: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
+        extra_chars: i32,
+    ) -> Option<String> {
+        use windows::Win32::UI::Accessibility::{
+            TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
+        };
+
+        let local = range.Clone().ok()?;
+        local
+            .MoveEndpointByUnit(
+                TextPatternRangeEndpoint_Start,
+                TextUnit_Character,
+                -(LOCAL_TEXT_CONTEXT_CHARS.saturating_add(extra_chars)),
+            )
+            .ok()?;
+        local
+            .MoveEndpointByUnit(
+                TextPatternRangeEndpoint_End,
+                TextUnit_Character,
+                LOCAL_TEXT_CONTEXT_CHARS.saturating_add(extra_chars),
+            )
+            .ok()?;
+        local.GetText(-1).ok().map(|text| text.to_string())
+    }
+
+    unsafe fn read_local_range_at_end(
+        range: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
+        extra_chars: i32,
+    ) -> Option<String> {
+        use windows::Win32::UI::Accessibility::{
+            TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+        };
+
+        // Baseline capture finds the injected range, while later reads use the
+        // caret. Collapse the baseline range to its end first so both local
+        // windows have the same origin in long documents.
+        let collapsed = range.Clone().ok()?;
+        collapsed
+            .MoveEndpointByRange(
+                TextPatternRangeEndpoint_Start,
+                range,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()?;
+        collapsed
+            .MoveEndpointByRange(
+                TextPatternRangeEndpoint_End,
+                range,
+                TextPatternRangeEndpoint_End,
+            )
+            .ok()?;
+        Self::read_local_range(&collapsed, extra_chars)
+    }
+
+    fn read_near_injected_text(&self, injected_text: &str) -> Option<String> {
+        use windows::core::BSTR;
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId,
+            UIA_ValuePatternId,
+        };
+
+        if injected_text.is_empty() {
+            return None;
+        }
+        unsafe {
+            let element = self.automation.GetFocusedElement().ok()?;
+            if let Ok(pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            {
+                if let Ok(document) = pattern.DocumentRange() {
+                    let needle = BSTR::from(injected_text);
+                    if let (Ok(first), Ok(last)) = (
+                        document.FindText(&needle, false, false),
+                        document.FindText(&needle, true, false),
+                    ) {
+                        if first
+                            .CompareEndpoints(
+                                windows::Win32::UI::Accessibility::TextPatternRangeEndpoint_Start,
+                                &last,
+                                windows::Win32::UI::Accessibility::TextPatternRangeEndpoint_Start,
+                            )
+                            .ok()?
+                            != 0
+                        {
+                            return None;
+                        }
+                        // Keep the complete injected range and stable context
+                        // on both sides. A long dictation must not be cut out
+                        // of the very baseline that anchors it.
+                        return Self::read_local_range(&first, 0);
+                    }
+                }
+            }
+
+            // Single-line native edits often expose ValuePattern only. Keep
+            // that established fallback for compatibility; those controls do
+            // not provide a range API from which a nearby window can be read.
+            let value = element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                .ok()?
+                .CurrentValue()
+                .ok()?
+                .to_string();
+            value.contains(injected_text).then_some(value)
+        }
+    }
+
+    fn read_near_caret(&self, injected_text: &str) -> Option<String> {
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationValuePattern,
+            UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
+        };
+
+        unsafe {
+            let element = self.automation.GetFocusedElement().ok()?;
+            if let Ok(text_pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            {
+                let text_pattern2 = element
+                    .GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id)
+                    .ok();
+
+                if let Some(pattern) = text_pattern2 {
+                    let mut active = windows::core::BOOL::default();
+                    if let Ok(range) = pattern.GetCaretRange(&mut active) {
+                        if active.as_bool() {
+                            if let Some(text) = Self::read_local_range(
+                                &range,
+                                injected_text.chars().count().min(i32::MAX as usize) as i32,
+                            ) {
+                                return Some(text);
+                            }
+                        }
+                    }
+                }
+
+                if let Ok(selection) = text_pattern.GetSelection() {
+                    if selection.Length().ok() == Some(1) {
+                        if let Ok(range) = selection.GetElement(0) {
+                            if let Some(text) = Self::read_local_range_at_end(
+                                &range,
+                                injected_text.chars().count().min(i32::MAX as usize) as i32,
+                            ) {
+                                return Some(text);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Preserve support for native single-line edits that expose a
+            // value but no usable caret/selection range. Fetch this whole
+            // value only after a bounded TextPattern read was unavailable.
+            element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                .ok()
+                .and_then(|pattern| pattern.CurrentValue().ok())
+                .map(|value| value.to_string())
         }
     }
 
@@ -548,6 +713,34 @@ pub fn read_focused_text() -> Option<String> {
     }
 }
 
+#[cfg(windows)]
+pub fn read_focused_text_around(injected_text: &str) -> Option<String> {
+    FOCUSED_TEXT_STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.com.is_none() {
+            guard.com = Some(ComGuard::init());
+        }
+        let reader = guard.reader.get_or_insert_with(FocusedTextReader::new);
+        reader
+            .as_ref()
+            .and_then(|reader| reader.read_near_injected_text(injected_text))
+    })
+}
+
+#[cfg(windows)]
+pub fn read_focused_text_near_caret(injected_text: &str) -> Option<String> {
+    FOCUSED_TEXT_STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.com.is_none() {
+            guard.com = Some(ComGuard::init());
+        }
+        let reader = guard.reader.get_or_insert_with(FocusedTextReader::new);
+        reader
+            .as_ref()
+            .and_then(|reader| reader.read_near_caret(injected_text))
+    })
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 #[cfg(windows)]
 pub fn read_injection_context_probe() -> InjectionContextProbe {
@@ -751,6 +944,16 @@ pub fn read_focused_text_probe() -> FocusedTextProbe {
 
 #[cfg(not(windows))]
 pub fn read_focused_text() -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn read_focused_text_around(_injected_text: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn read_focused_text_near_caret(_injected_text: &str) -> Option<String> {
     None
 }
 

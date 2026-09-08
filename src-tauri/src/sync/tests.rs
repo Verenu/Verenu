@@ -47,6 +47,26 @@ fn automatic_sync_has_exactly_one_initiator() {
     assert!(!super::manager::should_auto_initiate(b, a));
 }
 
+#[tokio::test]
+async fn incoming_connection_admission_is_bounded() {
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        super::manager::MAX_INCOMING_CONNECTIONS,
+    ));
+    let mut permits = Vec::new();
+    for _ in 0..super::manager::MAX_INCOMING_CONNECTIONS {
+        permits.push(slots.clone().try_acquire_owned().expect("slot available"));
+    }
+    assert!(
+        slots.clone().try_acquire_owned().is_err(),
+        "the listener must reject excess concurrent connections"
+    );
+    drop(permits);
+    assert!(
+        slots.try_acquire().is_ok(),
+        "a released slot must be reusable"
+    );
+}
+
 #[test]
 fn discovery_excludes_tunnels_virtual_and_non_lan_interfaces() {
     assert!(!super::manager::is_discovery_interface_allowed(
@@ -134,6 +154,8 @@ struct TestHost {
     db_probe: Option<DbHandle>,
     settings: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
     stamps: std::sync::Mutex<std::collections::HashMap<String, (i64, String)>>,
+    setting_batch_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_setting_batch: bool,
 }
 
 impl TestHost {
@@ -143,11 +165,18 @@ impl TestHost {
             db_probe: None,
             settings: Default::default(),
             stamps: Default::default(),
+            setting_batch_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_setting_batch: false,
         }
     }
 
     fn with_db_probe(mut self, db: &DbHandle) -> Self {
         self.db_probe = Some(db.clone());
+        self
+    }
+
+    fn with_failing_setting_batch(mut self) -> Self {
+        self.fail_setting_batch = true;
         self
     }
 }
@@ -188,6 +217,22 @@ impl SyncHost for TestHost {
             .lock()
             .expect("settings")
             .insert(key.to_string(), value.clone());
+        Ok(())
+    }
+
+    fn apply_remote_settings(
+        &self,
+        settings: &[(String, serde_json::Value)],
+    ) -> Result<(), String> {
+        self.setting_batch_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.fail_setting_batch {
+            return Err("simulated settings persistence failure".to_string());
+        }
+        let mut values = self.settings.lock().expect("settings");
+        for (key, value) in settings {
+            values.insert(key.clone(), value.clone());
+        }
         Ok(())
     }
 }
@@ -610,6 +655,153 @@ fn stale_snapshot_does_not_overwrite_newer_local_row() {
     }
 }
 
+#[test]
+fn snapshot_contains_current_tombstones_for_rejoining_peers() {
+    let db = test_db(&uuid("tombstone-source"));
+    let entry = db::insert_dictionary_entry_returning(&db, "gone", None, None).expect("entry");
+    db::delete_dictionary_entry(&db, entry.id).expect("delete");
+
+    let conn = db.lock().expect("lock");
+    let mut progress = engine::SnapshotProgress::default();
+    let mut ops = Vec::new();
+    loop {
+        let (batch, _cursor, done) =
+            engine::collect_ops(&conn, 0, true, 10, &mut progress).expect("snapshot");
+        ops.extend(batch);
+        if done {
+            break;
+        }
+    }
+    assert!(
+        ops.iter()
+            .any(|op| op.is_delete() && op.table == "dictionary"),
+        "a resnapshot must carry retained deletes, not only live rows"
+    );
+}
+
+#[test]
+fn re_pairing_an_old_snapshot_does_not_restore_a_deleted_dictionary_entry() {
+    let source_uuid = uuid("re-pair-source");
+    let peer_uuid = uuid("re-pair-stale");
+    let source = test_db(&source_uuid);
+    let stale = test_db(&peer_uuid);
+    let entry = db::insert_dictionary_entry_returning(&source, "synthetic-deleted-term", None, None)
+        .expect("entry");
+    exchange(&source, &stale);
+    db::delete_dictionary_entry(&source, entry.id).expect("delete while peer is offline");
+
+    // Advance the log timestamps beyond the previous pruning window while
+    // preserving the original upsert-before-delete ordering on both devices.
+    let year = 365 * 24 * 60 * 60 * 1000i64;
+    for db in [&source, &stale] {
+        db.lock().expect("lock").execute(
+            "UPDATE sync_log SET ts_ms = ts_ms - ?1", [year],
+        ).expect("age operations");
+    }
+    {
+        let conn = source.lock().expect("source lock");
+        sync_store::compact_log(&conn).expect("compact with no connected peer");
+        sync_store::upsert_peer(&conn, &peer_uuid, "Repaired device", "synthetic-fingerprint")
+            .expect("re-pair stale device");
+    }
+
+    // Exercise the actual snapshot producer and apply path, stale side first.
+    for (from, to) in [(&stale, &source), (&source, &stale)] {
+        let mut progress = engine::SnapshotProgress::default();
+        loop {
+            let (ops, _, done) = engine::collect_ops(
+                &from.lock().expect("sender"), 0, true, 10, &mut progress,
+            ).expect("snapshot");
+            engine::apply_ops(&to.lock().expect("receiver"), &ops).expect("apply snapshot");
+            if done { break; }
+        }
+    }
+    for db in [&source, &stale] {
+        assert_eq!(count(&db.lock().expect("lock"), "SELECT COUNT(*) FROM dictionary"), 0);
+    }
+}
+
+#[test]
+fn tombstones_survive_compaction_after_the_peer_safety_window() {
+    let db = test_db(&uuid("tombstone-expiry"));
+    let entry = db::insert_dictionary_entry_returning(&db, "gone", None, None).expect("entry");
+    db::delete_dictionary_entry(&db, entry.id).expect("delete");
+
+    let conn = db.lock().expect("lock");
+    let row_uuid: String = conn
+        .query_row(
+            "SELECT row_uuid FROM sync_log
+             WHERE table_name = 'dictionary' AND op = 'delete'
+             ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tombstone uuid");
+    let old_ms = sync_store::now_ms().saturating_sub(365 * 24 * 60 * 60 * 1000);
+    conn.execute(
+        "UPDATE sync_log SET ts_ms = ?1 WHERE table_name = 'dictionary' AND row_uuid = ?2 AND op = 'delete'",
+        rusqlite::params![old_ms, row_uuid],
+    )
+    .expect("backdate tombstone");
+
+    sync_store::compact_log(&conn).expect("compact");
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM sync_log WHERE table_name = 'dictionary' AND row_uuid = ?1 AND op = 'delete'",
+            rusqlite::params![row_uuid],
+            |row| row.get::<_, i64>(0),
+        ).expect("tombstone count"),
+        1
+    );
+}
+
+#[test]
+fn stale_peers_are_resnapshotted_without_forgetting_their_deletes() {
+    let db = test_db(&uuid("stale-source"));
+    let peer = uuid("stale-peer");
+    {
+        let conn = db.lock().expect("lock");
+        sync_store::upsert_peer(&conn, &peer, "Stale", "fp").expect("peer");
+        conn.execute(
+            "UPDATE sync_peers
+             SET last_sync_at = datetime('now', '-31 days'),
+                 needs_snapshot = 0,
+                 send_cursor = 1",
+            [],
+        )
+        .expect("backdate stale peer");
+        let result = sync_store::maintain_peer_lifecycle(&conn).expect("lifecycle");
+        assert_eq!(result, (1, 0));
+        let (_, needs_snapshot) = sync_store::peer_send_position(&conn, &peer).expect("position");
+        assert!(needs_snapshot);
+
+        conn.execute(
+            "UPDATE sync_peers SET last_sync_at = datetime('now', '-181 days')",
+            [],
+        )
+        .expect("backdate expired peer");
+        let result = sync_store::maintain_peer_lifecycle(&conn).expect("lifecycle repeat");
+        assert_eq!(result, (0, 0));
+        assert!(sync_store::get_peer(&conn, &peer)
+            .expect("peer query")
+            .is_some());
+    }
+}
+
+#[test]
+fn compaction_is_safe_without_a_successful_sync_session() {
+    let db = test_db(&uuid("compact-source"));
+    let entry = db::insert_dictionary_entry_returning(&db, "first", None, None).expect("entry");
+    db::update_dictionary_entry(&db, entry.id, "second", None).expect("update");
+    let conn = db.lock().expect("lock");
+    let before = count(&conn, "SELECT COUNT(*) FROM sync_log");
+    let removed = sync_store::compact_log(&conn).expect("compact");
+    let after = count(&conn, "SELECT COUNT(*) FROM sync_log");
+    assert!(before > after);
+    assert_eq!(removed, before as usize - after as usize);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
+}
+
 #[tokio::test]
 async fn session_exchanges_changes_incrementally() {
     let a = test_db(&uuid("aaaa"));
@@ -751,6 +943,64 @@ async fn settings_lww_applies_newer_remote_value() {
 }
 
 #[test]
+fn newer_remote_settings_are_applied_in_one_batch() {
+    let db = test_db(&uuid("batch"));
+    let host = TestHost::new(&uuid("batch-host"));
+    let now = sync_store::now_ms();
+    let records = vec![
+        super::protocol::SettingRecord {
+            key: "default_tone".to_string(),
+            value: json!("formal"),
+            ts_ms: now + 1,
+            origin: uuid("remote-a"),
+        },
+        super::protocol::SettingRecord {
+            key: "cleanup_intensity".to_string(),
+            value: json!("high"),
+            ts_ms: now + 2,
+            origin: uuid("remote-a"),
+        },
+    ];
+    let applied = {
+        let conn = db.lock().expect("lock");
+        engine::apply_settings_exchange(&conn, &host, &records).expect("settings")
+    };
+    assert_eq!(applied, 2);
+    assert_eq!(
+        host.setting_batch_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one settings document write should cover the exchange"
+    );
+}
+
+#[test]
+fn failed_remote_settings_batch_does_not_record_stamps() {
+    let db = test_db(&uuid("failed-batch"));
+    let host = TestHost::new(&uuid("failed-batch-host")).with_failing_setting_batch();
+    let record = super::protocol::SettingRecord {
+        key: "default_tone".to_string(),
+        value: json!("formal"),
+        ts_ms: sync_store::now_ms() + 1,
+        origin: uuid("remote-failure"),
+    };
+
+    let applied = {
+        let conn = db.lock().expect("lock");
+        engine::apply_settings_exchange(&conn, &host, &[record]).expect("exchange remains usable")
+    };
+    assert_eq!(applied, 0);
+    assert!(host.settings.lock().expect("settings").is_empty());
+    let conn = db.lock().expect("lock");
+    assert!(
+        sync_store::get_setting_stamp(&conn, "default_tone")
+            .expect("stamp lookup")
+            .is_none(),
+        "a failed persistence batch must not be stamped"
+    );
+}
+
+#[test]
 fn syncable_settings_exclude_device_local_keys() {
     // Device-specific and secret keys must never appear in the allowlist.
     for key in [
@@ -764,6 +1014,7 @@ fn syncable_settings_exclude_device_local_keys() {
         crate::data::store::AUTOSTART_ENABLED,
         crate::data::store::SETUP_COMPLETE,
         crate::data::store::FORCE_SETUP_ON_LAUNCH,
+        crate::data::store::RUIN_ACCESSIBILITY,
         crate::data::store::NOISE_REDUCTION,
         crate::data::store::MUTE_AUDIO,
         crate::data::store::EXCLUSIVE_MIC,
@@ -821,6 +1072,68 @@ fn remote_transcription_deletes_do_not_erase_local_history() {
     assert_eq!(summary.applied, 0);
     let conn = db.lock().expect("lock");
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM transcriptions"), 1);
+}
+
+#[test]
+fn stale_peer_resnapshot_keeps_tombstones_and_rejects_its_old_row() {
+    let db = test_db(&uuid("tombstone-local"));
+    let row_uuid = uuid("deleted-dictionary");
+    let delete_stamp = sync_store::now_ms();
+    let delete = super::protocol::SyncOp {
+        table: "dictionary".to_string(),
+        row_uuid: row_uuid.clone(),
+        op: "delete".to_string(),
+        ts_ms: delete_stamp,
+        origin: uuid("local-origin"),
+        origin_seq: 1,
+        payload: None,
+    };
+    {
+        let conn = db.lock().expect("lock");
+        engine::apply_ops(&conn, &[delete]).expect("apply deletion");
+        sync_store::upsert_peer(&conn, &uuid("stale-peer"), "old device", "fp").expect("pair peer");
+        conn.execute(
+            "UPDATE sync_peers SET last_sync_at = datetime('now', '-365 days')",
+            [],
+        )
+        .expect("age peer");
+        sync_store::compact_log(&conn).expect("compact");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM sync_peers"),
+            1,
+            "an old device stays paired and is forced through a full snapshot"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sync_log WHERE table_name = 'dictionary' AND row_uuid = ?1 AND op = 'delete'",
+                [&row_uuid], |row| row.get::<_, i64>(0),
+            ).expect("retained deletion stamp"),
+            1,
+            "compaction must retain the delete stamp"
+        );
+    }
+
+    let old_upsert = super::protocol::SyncOp {
+        table: "dictionary".to_string(),
+        row_uuid,
+        op: "upsert".to_string(),
+        ts_ms: delete_stamp.saturating_sub(1),
+        origin: uuid("stale-peer"),
+        origin_seq: 1,
+        payload: Some(json!({
+            "term": "resurrect-me",
+            "mistake": null,
+            "auto_learned": false,
+            "correction_count": 0,
+            "confidence_tier": "low",
+            "last_seen_at": null,
+            "created_at": "2026-01-01 00:00:00"
+        })),
+    };
+    let conn = db.lock().expect("lock");
+    let summary = engine::apply_ops(&conn, &[old_upsert]).expect("apply old snapshot row");
+    assert_eq!(summary.applied, 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 0);
 }
 
 fn test_context_op(
@@ -986,6 +1299,52 @@ async fn messages_roundtrip_through_the_framer() {
         }
         other => panic!("wrong message: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn oversized_and_partial_frames_are_rejected_before_decode() {
+    use super::protocol::{read_message, MAX_MESSAGE_BYTES};
+    use tokio::io::AsyncWriteExt;
+    let (mut writer, mut reader) = tokio::io::duplex(128);
+    let oversized = (MAX_MESSAGE_BYTES + 1).to_be_bytes();
+    writer.write_all(&oversized).await.expect("prefix");
+    drop(writer);
+    assert!(read_message(&mut reader).await.is_err());
+
+    let (mut writer, mut reader) = tokio::io::duplex(128);
+    writer
+        .write_all(&10u32.to_be_bytes())
+        .await
+        .expect("prefix");
+    writer.write_all(b"short").await.expect("partial body");
+    drop(writer);
+    assert!(read_message(&mut reader).await.is_err());
+}
+
+#[tokio::test]
+async fn stalled_tls_handshake_times_out() {
+    use super::transport;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("addr");
+    let client = tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await });
+    let (tcp, _) = listener.accept().await.expect("accept");
+    let server_identity = super::identity::generate_for_tests();
+    let acceptor = tokio_rustls::TlsAcceptor::from(
+        transport::server_config(
+            server_identity.cert_der().clone(),
+            server_identity.tls_key(),
+        )
+        .expect("server config"),
+    );
+    let result =
+        transport::accept_with_timeout(&acceptor, tcp, std::time::Duration::from_millis(20)).await;
+    assert!(
+        result.is_err(),
+        "a client that sends no ClientHello must time out"
+    );
+    let _ = client.await;
 }
 
 // ---- pairing handshake ----

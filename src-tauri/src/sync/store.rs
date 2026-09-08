@@ -7,6 +7,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::protocol::SyncOp;
 
+/// A peer that has not completed a session recently no longer gets to pin
+/// the append-only log.  It is marked for a full resnapshot when it returns.
+pub const PEER_STALE_AFTER_DAYS: i64 = 30;
+
 /// Row of `sync_peers` - a paired, trusted device.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPeer {
@@ -223,6 +227,22 @@ pub fn set_peer_recv_cursor(conn: &Connection, device_uuid: &str, cursor: i64) -
     Ok(())
 }
 
+/// Marks long-absent peers as requiring a snapshot. Pairings and deletion
+/// stamps stay durable: an old device can be restored or re-paired years
+/// later, and a merging snapshot must still see its historical deletes.
+pub fn maintain_peer_lifecycle(conn: &Connection) -> Result<(usize, usize)> {
+    let marked = conn.execute(
+        "UPDATE sync_peers
+         SET needs_snapshot = 1,
+             send_cursor = 0,
+             last_error = 'peer stale; full resnapshot required'
+         WHERE COALESCE(last_sync_at, added_at) < datetime('now', ?1)
+           AND needs_snapshot = 0",
+        params![format!("-{} days", PEER_STALE_AFTER_DAYS)],
+    )?;
+    Ok((marked, 0))
+}
+
 /// Oldest sequence number still present in the change log (None = empty log).
 fn oldest_log_seq(conn: &Connection) -> Result<Option<i64>> {
     let seq: Option<i64> = conn
@@ -323,30 +343,37 @@ pub fn max_log_seq(conn: &Connection) -> Result<i64> {
     Ok(seq)
 }
 
-/// Drops change-log history that every paired device has acknowledged, always
-/// keeping the newest entry per row (the LWW stamp the apply path compares
-/// against). Entries a peer hasn't caught up to are kept so it can still pull
-/// its delta; if it stays away too long it falls back to a full snapshot.
+/// Drops change-log history that every active paired device has acknowledged,
+/// always keeping the newest entry per row (the LWW stamp the apply path
+/// compares against). A stale peer is first moved to resnapshot state and is
+/// deliberately excluded from the minimum cursor. The newest delete for every
+/// row remains a durable tombstone, because re-pairing an old device still
+/// merges its snapshot and must not resurrect deleted content.
 pub fn compact_log(conn: &Connection) -> Result<usize> {
+    let _ = maintain_peer_lifecycle(conn)?;
     let min_cursor: Option<i64> = conn
-        .query_row("SELECT MIN(send_cursor) FROM sync_peers", [], |r| r.get(0))
+        .query_row(
+            "SELECT MIN(send_cursor) FROM sync_peers WHERE needs_snapshot = 0",
+            [],
+            |r| r.get(0),
+        )
         .optional()?
         .flatten();
-    let Some(min_cursor) = min_cursor else {
-        return conn
-            .execute(
-                "DELETE FROM sync_log
-                 WHERE seq NOT IN (SELECT MAX(seq) FROM sync_log GROUP BY table_name, row_uuid)",
-                [],
-            )
-            .map_err(Into::into);
+    let n = if let Some(min_cursor) = min_cursor {
+        conn.execute(
+            "DELETE FROM sync_log
+             WHERE seq <= ?1
+               AND seq NOT IN (SELECT MAX(seq) FROM sync_log GROUP BY table_name, row_uuid)",
+            params![min_cursor],
+        )?
+    } else {
+        conn.execute(
+            "DELETE FROM sync_log
+             WHERE seq NOT IN (SELECT MAX(seq) FROM sync_log GROUP BY table_name, row_uuid)",
+            [],
+        )?
     };
-    let n = conn.execute(
-        "DELETE FROM sync_log
-         WHERE seq <= ?1
-           AND seq NOT IN (SELECT MAX(seq) FROM sync_log GROUP BY table_name, row_uuid)",
-        params![min_cursor],
-    )?;
+
     Ok(n)
 }
 

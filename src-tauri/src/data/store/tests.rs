@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::sync::Arc;
 
 fn unique_tmp_path() -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -32,8 +33,57 @@ fn write_settings_file_overwrites_existing() {
 }
 
 #[test]
+fn concurrent_settings_writes_keep_the_document_valid() {
+    let path = Arc::new(unique_tmp_path());
+    let start = Arc::new(std::sync::Barrier::new(8));
+    let mut workers = Vec::new();
+    for worker in 0..8 {
+        let path = Arc::clone(&path);
+        let start = Arc::clone(&start);
+        workers.push(std::thread::spawn(move || {
+            start.wait();
+            for round in 0..12 {
+                let mut values = Map::new();
+                values.insert("writer".to_string(), json!(worker));
+                values.insert("round".to_string(), json!(round));
+                write_settings_file(&path, &values).expect("concurrent save");
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().expect("writer thread");
+    }
+
+    let values = read_settings_file(&path).expect("final settings remain valid JSON");
+    assert!(values.get("writer").is_some());
+    assert!(values.get("round").is_some());
+    let _ = std::fs::remove_file(path.as_ref());
+}
+
+#[test]
+fn failed_settings_save_does_not_publish_in_memory_values() {
+    let blocker = unique_tmp_path();
+    std::fs::write(&blocker, b"not a directory").expect("create blocker");
+    let path = blocker.join("settings.json");
+    let mut initial = Map::new();
+    initial.insert("default_tone".to_string(), json!("casual"));
+    let handle = SettingsHandle {
+        path: Arc::new(path),
+        values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+    };
+
+    assert!(handle
+        .save_values_if_changed([("default_tone", json!("formal"))])
+        .is_err());
+    assert_eq!(handle.get("default_tone"), Some(json!("casual")));
+    let _ = std::fs::remove_file(blocker);
+}
+
+#[test]
 fn storage_full_errors_are_recognized() {
-    assert!(is_storage_full_error("STORAGE_FULL: simulated settings write failure"));
+    assert!(is_storage_full_error(
+        "STORAGE_FULL: simulated settings write failure"
+    ));
     assert!(is_storage_full_error("os error 112"));
     assert!(is_storage_full_error("database or disk is full"));
     assert!(!is_storage_full_error("permission denied"));
@@ -54,6 +104,39 @@ fn read_settings_file_recovers_from_corrupt_json() {
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&backup);
+}
+
+#[test]
+fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
+    let path = unique_tmp_path();
+    let mut initial = Map::new();
+    initial.insert("mic_gain".to_string(), json!(1.0));
+    let handle = SettingsHandle {
+        path: Arc::new(path.clone()),
+        values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+    };
+
+    let first = handle.snapshot().expect("first snapshot");
+    let second = handle.snapshot().expect("second snapshot");
+    assert!(Arc::ptr_eq(&first.values, &second.values));
+    assert!(!handle
+        .save_values_if_changed([("mic_gain", json!(1.0))])
+        .expect("no-op save"));
+    assert!(
+        !path.exists(),
+        "unchanged values should not rewrite the file"
+    );
+
+    assert!(handle
+        .save_values_if_changed([("mic_gain", json!(0.75))])
+        .expect("changed save"));
+    assert_eq!(first.get_cloned("mic_gain"), Some(json!(1.0)));
+    assert_eq!(handle.get("mic_gain"), Some(json!(0.75)));
+    assert!(!handle
+        .save_values_if_changed([("mic_gain", json!(0.75))])
+        .expect("second no-op save"));
+
+    let _ = std::fs::remove_file(path);
 }
 
 // The new volume setting takes precedence, while the old boolean setting
