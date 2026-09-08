@@ -940,14 +940,14 @@ pub fn open_live_writer(
                         WriterMessage::Finish => break,
                     }
                 }
-                if writer.failed || failed_thread.load(Ordering::Acquire) {
-                    writer.invalidate_recovery();
-                }
                 let _ = writer.finish();
                 if writer.storage_full {
                     if let Some(app) = &writer.app {
                         app.emit("verenu:storage-full", ()).ok();
                     }
+                }
+                if writer.failed || failed_thread.load(Ordering::Acquire) {
+                    writer.invalidate_recovery();
                 }
                 if writer.failed {
                     failed_thread.store(true, Ordering::Release);
