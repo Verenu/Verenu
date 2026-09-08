@@ -384,7 +384,6 @@
     <SyncPairModal />
   {/if}
   <DictationPill />
-  <AgentAccessibilityDump windowKind="main" />
 
   {#if errorToast}
     <div
