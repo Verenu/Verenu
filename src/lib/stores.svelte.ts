@@ -120,6 +120,7 @@ export const appStore = $state({
   providerStatusSimulation: false,
   globalMessage: null as GlobalMessage | null,
   globalMessageSimulation: false,
+  recoveryStorageWarning: false,
   apiHealthy: null as boolean | null,
   isOnline: true,
 });

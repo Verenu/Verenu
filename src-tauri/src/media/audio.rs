@@ -171,6 +171,8 @@ impl EnvelopeTap {
 /// Optional crash-recovery sink for a dictation. The audio worker pushes
 /// gain-adjusted, optionally denoised 16 kHz samples here; implementations
 /// must keep disk work off this worker and must not run on the CPAL callback.
+/// A sink failure only disables crash recovery for the current take. It must
+/// never make the in-memory recording unavailable to transcription.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurableSinkError {
     Disk,
@@ -181,8 +183,8 @@ pub type DurableSinkResult = std::result::Result<(), DurableSinkError>;
 
 pub trait DurableSink: Send {
     /// Returns an error when the sink cannot accept more data. The processing
-    /// worker then ends the take instead of silently producing an incomplete
-    /// recovery spool.
+    /// worker keeps capturing in memory after this error, but will not promise
+    /// that the take can be recovered after a crash.
     fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult;
     fn finish(&mut self) -> DurableSinkResult;
 }
@@ -210,6 +212,7 @@ pub enum RecordingTermination {
     Complete,
     DurationLimit,
     DroppedSamples,
+    /// The optional recovery spool failed, but the in-memory take is intact.
     RecoveryWriteFailed,
 }
 
@@ -416,6 +419,7 @@ impl RecordingSession {
                 let mut raw_sum_sq = 0.0f64;
                 let mut raw_sample_count = 0u64;
                 let mut termination = RecordingTermination::Complete;
+                let mut recovery_write_failed = false;
                 let mut resampler = StreamingResampler::new(sample_rate);
                 let mut denoiser = if noise_reduction {
                     Some(FrameDenoiser::new())
@@ -457,7 +461,7 @@ impl RecordingSession {
                         }
                         if let Some(sink) = durable.as_mut() {
                             if sink.extend(&samples_16k[before_len..]).is_err() {
-                                termination = RecordingTermination::RecoveryWriteFailed;
+                                recovery_write_failed = true;
                             }
                         }
                         if termination == RecordingTermination::Complete
@@ -509,14 +513,17 @@ impl RecordingSession {
                     }
                     if let Some(sink) = durable.as_mut() {
                         if sink.extend(&samples_16k[before_len..]).is_err() {
-                            termination = RecordingTermination::RecoveryWriteFailed;
+                            recovery_write_failed = true;
                         }
                     }
                 }
                 if let Some(mut sink) = durable.take() {
                     if sink.finish().is_err() {
-                        termination = RecordingTermination::RecoveryWriteFailed;
+                        recovery_write_failed = true;
                     }
+                }
+                if recovery_write_failed && termination == RecordingTermination::Complete {
+                    termination = RecordingTermination::RecoveryWriteFailed;
                 }
 
                 let raw_rms = if raw_sample_count == 0 {
