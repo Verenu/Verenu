@@ -300,6 +300,26 @@ fn off_with_dual_transcripts_is_fusion_only_and_preserves_speech_mechanics() {
 }
 
 #[test]
+fn off_with_dual_transcripts_keeps_context_instructions() {
+    let rendered = get_cleanup_prompt_with_alternate_and_evidence(
+        "openai",
+        "gpt-4o-mini",
+        "casual",
+        "none",
+        "MUST ALWAYS FORMAT output in markdown\nMUST ALWAYS put @ before file names",
+        "",
+        Some("X"),
+        "Always make acronyms lowercase. B.S.",
+        None,
+        Some("Always make acronyms lowercase. BS."),
+    );
+
+    assert!(rendered.contains("MUST ALWAYS FORMAT output in markdown"));
+    assert!(rendered.contains("MUST ALWAYS put @ before file names"));
+    assert!(rendered.contains("explicit user-authored instructions"));
+}
+
+#[test]
 fn legacy_alternate_wrapper_keeps_the_new_rendering_path() {
     let through_wrapper = get_cleanup_prompt_with_alternate(
         "groq",
