@@ -1033,6 +1033,58 @@ async fn pipeline_fixture_skips_cleanup_for_pure_snippet_fast_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_runs_cleanup_for_pure_snippet_with_context_instructions() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    register_fixture(FixtureSpec {
+        task: "transcription".into(),
+        provider: "groq".into(),
+        model: "whisper-large-v3-turbo".into(),
+        response: Some("sig".into()),
+        error_kind: None,
+        error_message: None,
+    });
+    register_fixture(FixtureSpec {
+        task: "cleanup".into(),
+        provider: "groq".into(),
+        model: "llama-3.3-70b-versatile".into(),
+        response: Some("Best regards, Noah.".into()),
+        error_kind: None,
+        error_message: None,
+    });
+
+    let mut request = base_request(base_config());
+    let db = crate::data::db::open(":memory:").expect("context test db");
+    crate::db::update_context_settings(
+        &db,
+        crate::db::EVERYWHERE_CONTEXT_ID,
+        None,
+        None,
+        None,
+        Some("Always end the output with a period."),
+        false,
+    )
+    .expect("context instructions should save");
+    request.db = Some(db);
+    request.snippets.push(PipelineTestSnippet {
+        trigger: "sig".into(),
+        expansion: "Best regards, Noah".into(),
+        instructions: String::new(),
+    });
+
+    let result = run_pipeline_fixture(request)
+        .await
+        .expect("context instructions should force cleanup for pure snippets");
+    assert_eq!(result.final_text_before_dictionary, "Best regards, Noah.");
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        1
+    );
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_fixture_applies_instruction_snippets_and_dictionary_last() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
