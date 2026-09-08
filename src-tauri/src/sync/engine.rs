@@ -36,7 +36,7 @@ use super::store::SyncPeer;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SnapshotProgress {
     /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = transcriptions,
-    /// 4 = api_calls, 5 = done.
+    /// 4 = api_calls, 5 = retained tombstones, 6 = done.
     pub stage: u8,
     pub last_id: i64,
     /// Sequence namespace for synthesized snapshot stamps. Snapshot rows are
@@ -88,6 +88,18 @@ pub trait SyncHost: Send + Sync {
     fn settings_payload(&self) -> Result<Vec<SettingRecord>>;
     /// Persist a remote setting value and run its local side effects.
     fn apply_remote_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), String>;
+    /// Persist a group of remote settings as one document write.  The default
+    /// keeps test and third-party hosts source-compatible; the real host
+    /// overrides it to make the batch atomic and avoid one rewrite per key.
+    fn apply_remote_settings(
+        &self,
+        settings: &[(String, serde_json::Value)],
+    ) -> Result<(), String> {
+        for (key, value) in settings {
+            self.apply_remote_setting(key, value)?;
+        }
+        Ok(())
+    }
     /// Maps a peer's platform-specific app identifier to this device. `None`
     /// preserves the assignment as unresolved instead of binding the wrong app.
     fn resolve_app_target(&self, source: &str) -> Option<String> {
@@ -703,7 +715,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 4 {
+        while (ops.len() as i64) < limit && progress.stage <= 5 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -713,8 +725,55 @@ pub fn collect_ops(
                 2 => "contexts",
                 3 => "transcriptions",
                 4 => "api_calls",
+                5 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
+            if stage == 5 {
+                let mut stmt = conn.prepare(
+                    "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
+                     FROM sync_log AS current
+                     WHERE current.op = 'delete'
+                       AND current.seq > ?1
+                       AND current.seq = (
+                         SELECT MAX(previous.seq) FROM sync_log AS previous
+                         WHERE previous.table_name = current.table_name
+                           AND previous.row_uuid = current.row_uuid
+                       )
+                     ORDER BY current.seq ASC LIMIT ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![progress.last_id, chunk], |r| {
+                        Ok(SyncOp {
+                            table: r.get(1)?,
+                            row_uuid: r.get(2)?,
+                            op: "delete".to_string(),
+                            ts_ms: r.get(3)?,
+                            origin: r.get(4)?,
+                            origin_seq: r.get(5)?,
+                            payload: None,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let fetched = rows.len() as i64;
+                if let Some(last) = rows.last() {
+                    progress.last_id = conn.query_row(
+                        "SELECT seq FROM sync_log
+                         WHERE table_name = ?1 AND row_uuid = ?2 AND op = 'delete'
+                         ORDER BY seq DESC LIMIT 1",
+                        params![&last.table, &last.row_uuid],
+                        |r| r.get(0),
+                    )?;
+                }
+                ops.extend(rows);
+                if fetched < chunk {
+                    progress.stage = 6;
+                    progress.origin_seq = Some(origin_seq);
+                    let cursor = sync_store::max_log_seq(conn)?;
+                    return Ok((ops, cursor, true));
+                }
+                progress.origin_seq = Some(origin_seq);
+                return Ok((ops, 0, false));
+            }
             let mut stmt = conn.prepare(&format!(
                 "SELECT id, uuid FROM {table} WHERE id > ?1 ORDER BY id LIMIT ?2"
             ))?;
@@ -741,7 +800,7 @@ pub fn collect_ops(
                 // This table is exhausted; move to the next stage.
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 4 {
+                if progress.stage > 5 {
                     progress.origin_seq = Some(origin_seq);
                     let cursor = sync_store::max_log_seq(conn)?;
                     return Ok((ops, cursor, true));
@@ -752,7 +811,7 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 4 {
+        if progress.stage <= 5 {
             // Capacity exhausted mid-stream.
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
@@ -953,7 +1012,11 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
 
 fn apply_snippet_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
-        return apply_simple_delete(conn, op, "snippets", "snippets");
+        let result = apply_simple_delete(conn, op, "snippets", "snippets");
+        if matches!(result, Ok(Applied::Yes)) {
+            db::invalidate_snippet_cache();
+        }
+        return result;
     }
     if let Some(stamp) = latest_stamp(conn, "snippets", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
@@ -984,9 +1047,13 @@ fn apply_snippet_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             ],
         )
     };
-    apply_with_natural_key_resolution(conn, op, "snippets", insert, &|conn| {
+    let result = apply_with_natural_key_resolution(conn, op, "snippets", insert, &|conn| {
         conflicting_uuid(conn, "snippets", "trigger", &row.trigger, &op.row_uuid)
-    })
+    });
+    if matches!(result, Ok(Applied::Yes)) {
+        db::invalidate_snippet_cache();
+    }
+    result
 }
 
 /// Shared upsert flow with natural-key collision resolution. `insert` writes
@@ -1647,7 +1714,7 @@ pub fn apply_settings_exchange(
     host: &dyn SyncHost,
     settings: &[SettingRecord],
 ) -> Result<usize> {
-    let mut applied = 0;
+    let mut accepted = Vec::new();
     for record in settings {
         if !SYNCABLE_SETTINGS.contains(&record.key.as_str()) {
             continue;
@@ -1659,17 +1726,23 @@ pub fn apply_settings_exchange(
         if (record.ts_ms, record.origin.as_str()) <= (local_stamp.0, local_stamp.1.as_str()) {
             continue;
         }
-        match host.apply_remote_setting(&record.key, &record.value) {
-            Ok(()) => {
-                sync_store::set_setting_stamp(conn, &record.key, record.ts_ms, &record.origin)?;
-                applied += 1;
-            }
-            Err(err) => {
-                log::warn!("sync: failed to apply setting {}: {err}", record.key);
-            }
-        }
+        accepted.push(record);
     }
-    Ok(applied)
+    if accepted.is_empty() {
+        return Ok(0);
+    }
+    let values: Vec<(String, serde_json::Value)> = accepted
+        .iter()
+        .map(|record| (record.key.clone(), record.value.clone()))
+        .collect();
+    if let Err(err) = host.apply_remote_settings(&values) {
+        log::warn!("sync: failed to apply settings batch: {err}");
+        return Ok(0);
+    }
+    for record in accepted {
+        sync_store::set_setting_stamp(conn, &record.key, record.ts_ms, &record.origin)?;
+    }
+    Ok(values.len())
 }
 
 /// Stamps a local settings change so it wins LWW against peers from now on.
@@ -1969,7 +2042,12 @@ where
         match read_message(stream).await? {
             Message::Ack { seq } => {
                 let conn = lock(db)?;
-                sync_store::set_peer_send_position(&conn, &peer.device_uuid, seq, false)?;
+                sync_store::set_peer_send_position(
+                    &conn,
+                    &peer.device_uuid,
+                    seq,
+                    snapshot && !done,
+                )?;
             }
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
             other => return Err(anyhow!("unexpected message during serve: {other:?}")),

@@ -4,7 +4,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Semaphore;
+use tokio::time::{timeout, Duration};
 
 /// Bump when the message set or op payloads change incompatibly. Devices on
 /// different versions refuse to sync with a clear error instead of corrupting
@@ -14,6 +17,25 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Hard cap on one framed message. Batches are chunked well below this; the
 /// cap exists so a hostile peer can't make us allocate unbounded memory.
 pub const MAX_MESSAGE_BYTES: u32 = 64 * 1024 * 1024;
+
+/// A peer may still send a legacy-sized frame, but the aggregate amount of
+/// frame storage held by all readers is bounded.  This keeps the 64 MiB wire
+/// compatibility envelope without allowing concurrent declarations to turn
+/// into hundreds of MiB of allocations.
+const FRAME_MEMORY_UNIT_BYTES: usize = 64 * 1024;
+const FRAME_MEMORY_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+const FRAME_MEMORY_PERMITS: u32 = (FRAME_MEMORY_BUDGET_BYTES / FRAME_MEMORY_UNIT_BYTES) as u32;
+
+/// A partial frame is not allowed to pin a connection or its memory budget
+/// indefinitely.  This applies to both the length prefix and the body.
+pub const MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn frame_memory() -> Arc<Semaphore> {
+    static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    MEMORY
+        .get_or_init(|| Arc::new(Semaphore::new(FRAME_MEMORY_PERMITS as usize)))
+        .clone()
+}
 
 /// Ops are sent in chunks of this many rows (transcription text makes rows
 /// large; this keeps each message comfortably under the frame cap).
@@ -170,12 +192,25 @@ pub async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Messa
 }
 
 pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
+    timeout(MESSAGE_READ_TIMEOUT, read_message_inner(reader))
+        .await
+        .map_err(|_| anyhow!("timed out while reading sync message"))?
+}
+
+async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
     let mut len_bytes = [0u8; 4];
     reader.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes);
     if len > MAX_MESSAGE_BYTES {
         return Err(anyhow!("peer sent oversized message: {len} bytes"));
     }
+    let permits = ((len as usize).saturating_add(FRAME_MEMORY_UNIT_BYTES - 1)
+        / FRAME_MEMORY_UNIT_BYTES)
+        .max(1) as u32;
+    let _memory = frame_memory()
+        .acquire_many_owned(permits)
+        .await
+        .map_err(|_| anyhow!("sync frame memory budget unavailable"))?;
     let mut body = vec![0u8; len as usize];
     reader.read_exact(&mut body).await?;
     let message: Message = serde_json::from_slice(&body).context("decode message from peer")?;
