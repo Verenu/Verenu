@@ -16,10 +16,11 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_rustls::server::TlsStream;
 
 use crate::commands::validate_setting;
@@ -35,6 +36,8 @@ use super::transport;
 
 const SERVICE_TYPE: &str = "_verenu._tcp.local.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const MAX_INCOMING_CONNECTIONS: usize = 8;
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
@@ -144,6 +147,7 @@ pub(crate) struct Inner {
     pub listener_port: AtomicU16,
     pub available: AtomicBool,
     pub listener_failed: AtomicBool,
+    pub incoming_slots: Arc<Semaphore>,
 }
 
 pub(crate) enum PendingPairing {
@@ -152,6 +156,7 @@ pub(crate) enum PendingPairing {
         peer_name: String,
         spake_msg: Vec<u8>,
         stream: Box<TlsStream<tokio::net::TcpStream>>,
+        permit: tokio::sync::OwnedSemaphorePermit,
         created: Instant,
         generation: u64,
     },
@@ -275,6 +280,7 @@ impl SyncManager {
             listener_port: AtomicU16::new(0),
             available: AtomicBool::new(false),
             listener_failed: AtomicBool::new(false),
+            incoming_slots: Arc::new(Semaphore::new(MAX_INCOMING_CONNECTIONS)),
         });
         let manager = SyncManager { inner };
 
@@ -358,13 +364,26 @@ impl SyncManager {
             loop {
                 match listener.accept().await {
                     Ok((tcp, _)) => {
+                        let permit = match accept_inner.incoming_slots.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                log::debug!("sync: incoming connection limit reached");
+                                continue;
+                            }
+                        };
                         let inner = accept_inner.clone();
                         let cfg = server_cfg.clone();
                         tauri::async_runtime::spawn(async move {
                             let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
-                            match acceptor.accept(tcp).await {
+                            match transport::accept_with_timeout(
+                                &acceptor,
+                                tcp,
+                                TLS_HANDSHAKE_TIMEOUT,
+                            )
+                            .await
+                            {
                                 Ok(tls) => {
-                                    handle_connection(inner, tls).await;
+                                    handle_connection(inner, tls, permit).await;
                                 }
                                 Err(err) => {
                                     log::debug!("sync: tls accept failed: {err}");
@@ -883,6 +902,7 @@ impl SyncManager {
                     peer_name,
                     spake_msg,
                     stream,
+                    permit,
                     created,
                     generation,
                 }) => {
@@ -905,7 +925,9 @@ impl SyncManager {
                         self.inner.clear_pairing_status(generation);
                         return Ok(());
                     }
-                    (peer_uuid, peer_name, spake_msg, stream, created, generation)
+                    (
+                        peer_uuid, peer_name, spake_msg, stream, created, generation, permit,
+                    )
                 }
                 Some(PendingPairing::Outgoing { .. }) | None => {
                     return Err(anyhow!("no incoming pairing request to respond to"));
@@ -917,19 +939,20 @@ impl SyncManager {
             pending
         };
         let _pairing_guard = PairingInProgressGuard(&self.inner.pairing_in_progress);
-        let (peer_uuid, peer_name, spake_msg, mut stream, created, generation) = pending;
+        let (peer_uuid, peer_name, spake_msg, mut stream, created, generation, permit) = pending;
         self.inner.update_pairing_phase(generation, "verifying");
         let identity = match self.identity_exchange() {
             Ok(identity) => identity,
             Err(err) => {
-                self.restore_incoming_pairing(
-                    peer_uuid.clone(),
-                    peer_name.clone(),
-                    spake_msg.clone(),
+                self.restore_incoming_pairing(PendingPairing::Incoming {
+                    peer_uuid,
+                    peer_name,
+                    spake_msg,
                     stream,
+                    permit,
                     created,
                     generation,
-                )
+                })
                 .await;
                 return Err(err);
             }
@@ -939,14 +962,15 @@ impl SyncManager {
             Err(err) => {
                 // A mistyped code is retryable; the SPAKE exchange has not
                 // touched the stream yet, so keep the incoming request alive.
-                self.restore_incoming_pairing(
-                    peer_uuid.clone(),
-                    peer_name.clone(),
-                    spake_msg.clone(),
+                self.restore_incoming_pairing(PendingPairing::Incoming {
+                    peer_uuid,
+                    peer_name,
+                    spake_msg,
                     stream,
+                    permit,
                     created,
                     generation,
-                )
+                })
                 .await;
                 return Err(err);
             }
@@ -989,15 +1013,19 @@ impl SyncManager {
         Ok(())
     }
 
-    async fn restore_incoming_pairing(
-        &self,
-        peer_uuid: String,
-        peer_name: String,
-        spake_msg: Vec<u8>,
-        stream: Box<TlsStream<tokio::net::TcpStream>>,
-        created: Instant,
-        generation: u64,
-    ) {
+    async fn restore_incoming_pairing(&self, pending_pairing: PendingPairing) {
+        let PendingPairing::Incoming {
+            peer_uuid,
+            peer_name,
+            spake_msg,
+            stream,
+            permit,
+            created,
+            generation,
+        } = pending_pairing
+        else {
+            return;
+        };
         let mut pending = self.inner.pending.lock().await;
         if pending.is_none() && self.inner.pairing_generation.load(Ordering::Relaxed) == generation
         {
@@ -1006,6 +1034,7 @@ impl SyncManager {
                 peer_name: peer_name.clone(),
                 spake_msg,
                 stream,
+                permit,
                 created,
                 generation,
             });
@@ -1703,7 +1732,11 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
 
 // ---- incoming connection handling ----
 
-async fn handle_connection(inner: Arc<Inner>, mut tls: TlsStream<tokio::net::TcpStream>) {
+async fn handle_connection(
+    inner: Arc<Inner>,
+    mut tls: TlsStream<tokio::net::TcpStream>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let peer_fp = match tls
         .get_ref()
         .1
@@ -1728,8 +1761,16 @@ async fn handle_connection(inner: Arc<Inner>, mut tls: TlsStream<tokio::net::Tcp
             protocol,
             spake_msg,
         } => {
-            handle_incoming_pairing(inner, tls, device_uuid, device_name, protocol, spake_msg)
-                .await;
+            handle_incoming_pairing(
+                inner,
+                tls,
+                device_uuid,
+                device_name,
+                protocol,
+                spake_msg,
+                permit,
+            )
+            .await;
         }
         Message::Hello(hello) => {
             handle_sync_hello(inner, tls, hello, peer_fp).await;
@@ -1772,6 +1813,7 @@ async fn handle_incoming_pairing(
     peer_name: String,
     protocol: u32,
     spake_msg: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     if protocol != PROTOCOL_VERSION {
         let _ = send_message(
@@ -1796,6 +1838,7 @@ async fn handle_incoming_pairing(
             peer_name: peer_name.clone(),
             spake_msg,
             stream: Box::new(tls),
+            permit,
             created: Instant::now(),
             generation,
         });
@@ -1942,7 +1985,10 @@ pub(crate) struct ManagerHost {
     settings: SettingsHandle,
     app: AppHandle,
     uuid: String,
-    installed_apps: Vec<crate::system::apps::InstalledApp>,
+    /// App enumeration is relatively expensive on both platforms.  Most sync
+    /// sessions contain no context-target changes, so defer it until the
+    /// engine actually needs to resolve a target.
+    installed_apps: OnceLock<Vec<crate::system::apps::InstalledApp>>,
 }
 
 impl ManagerHost {
@@ -1963,7 +2009,7 @@ impl ManagerHost {
             }),
             app: inner.app.clone(),
             uuid,
-            installed_apps: crate::system::apps::list_installed_apps(),
+            installed_apps: OnceLock::new(),
         }
     }
 }
@@ -2015,33 +2061,55 @@ impl SyncHost for ManagerHost {
     }
 
     fn apply_remote_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), String> {
+        self.apply_remote_settings(&[(key.to_string(), value.clone())])
+    }
+
+    fn apply_remote_settings(
+        &self,
+        settings: &[(String, serde_json::Value)],
+    ) -> Result<(), String> {
         // Values come from a trusted peer, but they still go through the same
         // validation the local save path uses.
-        validate_setting(key, value)?;
-        if key == store::CONTEXTUAL_FORMATTING {
-            self.settings.set_many([
-                (store::CONTEXTUAL_FORMATTING, value.clone()),
-                (store::CONTEXTUAL_CAPS, value.clone()),
-                (store::AUTO_SPACING, value.clone()),
-            ])?;
-            self.settings.save()?;
-        } else {
-            self.settings.save_value(key, value.clone())?;
+        for (key, value) in settings {
+            validate_setting(key, value)?;
         }
-        // Side effects that keep the running app consistent with the new value.
-        if crate::app_tray::setting_updates_runtime_icons(key) {
-            crate::app_tray::apply_runtime_icons(&self.app, None);
+
+        let mut values = Vec::with_capacity(settings.len() * 3);
+        for (key, value) in settings {
+            if key == store::CONTEXTUAL_FORMATTING {
+                values.push((store::CONTEXTUAL_FORMATTING, value.clone()));
+                values.push((store::CONTEXTUAL_CAPS, value.clone()));
+                values.push((store::AUTO_SPACING, value.clone()));
+            } else {
+                values.push((key.as_str(), value.clone()));
+            }
         }
-        if key == store::SOUND_EFFECTS_VOLUME {
-            if let Some(volume) = value.as_f64() {
-                crate::media::sound::set_volume((volume as f32) / 100.0);
+        // Persist first. SettingsHandle only publishes the new in-memory map
+        // after the atomic document write succeeds, so a failed save cannot
+        // leave a value visible without its sync stamp.
+        self.settings.save_values_if_changed(values)?;
+
+        // Side effects that keep the running app consistent with the new values.
+        for (key, value) in settings {
+            if crate::app_tray::setting_updates_runtime_icons(key) {
+                crate::app_tray::apply_runtime_icons(&self.app, None);
+            }
+            if key == store::SOUND_EFFECTS_VOLUME {
+                if let Some(volume) = value.as_f64() {
+                    crate::media::sound::set_volume((volume as f32) / 100.0);
+                }
             }
         }
         Ok(())
     }
 
     fn resolve_app_target(&self, source: &str) -> Option<String> {
-        closest_installed_app(source, &self.installed_apps).map(|app| app.exe.clone())
+        closest_installed_app(
+            source,
+            self.installed_apps
+                .get_or_init(crate::system::apps::list_installed_apps),
+        )
+        .map(|app| app.exe.clone())
     }
 
     fn resolve_app_target_with_metadata(
@@ -2054,7 +2122,8 @@ impl SyncHost for ManagerHost {
             source,
             app_name,
             developer,
-            &self.installed_apps,
+            self.installed_apps
+                .get_or_init(crate::system::apps::list_installed_apps),
         )
         .map(|app| {
             (

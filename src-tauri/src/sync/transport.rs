@@ -16,6 +16,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, Serve
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio_rustls::server::TlsStream;
 
 #[derive(Debug)]
 pub struct AcceptAnyServer {
@@ -186,4 +189,18 @@ pub fn server_name_for(uuid: &str) -> ServerName<'static> {
 
 pub fn tls_connector(config: Arc<ClientConfig>) -> tokio_rustls::TlsConnector {
     config.into()
+}
+
+/// Complete an incoming TLS handshake within a bounded window.  A TCP peer
+/// that connects and then never sends a ClientHello must not consume an
+/// incoming connection slot forever.
+pub async fn accept_with_timeout(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    tcp: TcpStream,
+    timeout: Duration,
+) -> Result<TlsStream<TcpStream>> {
+    tokio::time::timeout(timeout, acceptor.accept(tcp))
+        .await
+        .map_err(|_| anyhow!("TLS handshake timed out"))?
+        .map_err(|e| anyhow!("TLS handshake failed: {e}"))
 }

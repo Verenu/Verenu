@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use uuid::Uuid;
 
 use super::*;
@@ -26,7 +26,14 @@ CREATE INDEX IF NOT EXISTS idx_transcriptions_created_at
 CREATE TABLE IF NOT EXISTS lifetime_stats (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
   total_words      INTEGER NOT NULL DEFAULT 0,
-  dictionary_fixes INTEGER NOT NULL DEFAULT 0
+  dictionary_fixes INTEGER NOT NULL DEFAULT 0,
+  wpm_sum          REAL NOT NULL DEFAULT 0,
+  wpm_count        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS transcription_daily_stats (
+  day                TEXT PRIMARY KEY,
+  total_words        INTEGER NOT NULL DEFAULT 0,
+  total_transcriptions INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS dictionary (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -735,6 +742,59 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 25 {
+        log::info!("db: migrating schema {user_version} -> 25");
+        run_migration(&mut conn, |conn| {
+            let added_spoken_words = ensure_table_column(
+                conn,
+                "transcriptions",
+                "spoken_words",
+                "ALTER TABLE transcriptions ADD COLUMN spoken_words INTEGER;",
+            )?;
+            if added_spoken_words {
+                backfill_spoken_words(conn)?;
+            }
+            ensure_table_column(
+                conn,
+                "lifetime_stats",
+                "wpm_sum",
+                "ALTER TABLE lifetime_stats ADD COLUMN wpm_sum REAL NOT NULL DEFAULT 0;",
+            )?;
+            ensure_table_column(
+                conn,
+                "lifetime_stats",
+                "wpm_count",
+                "ALTER TABLE lifetime_stats ADD COLUMN wpm_count INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS transcription_daily_stats (
+                   day                  TEXT PRIMARY KEY,
+                   total_words          INTEGER NOT NULL DEFAULT 0,
+                   total_transcriptions INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT OR IGNORE INTO lifetime_stats (id, total_words)
+                   VALUES (1, 0);
+                 UPDATE lifetime_stats
+                    SET wpm_sum = COALESCE((
+                          SELECT SUM(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0
+                                          THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms
+                                          ELSE 0 END)
+                          FROM transcriptions
+                        ), 0),
+                        wpm_count = COALESCE((
+                          SELECT COUNT(*) FROM transcriptions
+                           WHERE duration_ms > 0 AND COALESCE(spoken_words, words) > 0
+                        ), 0)
+                  WHERE id = 1;
+                 INSERT OR REPLACE INTO transcription_daily_stats (day, total_words, total_transcriptions)
+                   SELECT date(created_at, 'localtime'), COALESCE(SUM(words), 0), COUNT(*)
+                     FROM transcriptions
+                    GROUP BY date(created_at, 'localtime');
+                 PRAGMA user_version = 25;",
+            )?;
+            Ok(())
+        })?;
+    }
     // Early v20 development databases created sync_peers before receive and
     // send cursors were split. Their version marker is already 20, so the
     // migration above will not run again. Repair that partial v20 shape on
@@ -784,7 +844,37 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
         }
     }
 
+    ensure_stats_summary_triggers(&conn)?;
+    ensure_history_fts(&conn);
+
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Reclaim SQLite sidecar/free-page space. Existing databases often predate
+/// incremental auto-vacuum, so incremental_vacuum alone is a no-op for them.
+/// Only incremental auto-vacuum runs here. A full VACUUM must use an explicit
+/// user-idle maintenance flow because it holds the shared connection.
+pub fn sqlite_disk_maintenance(db: &Db) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let _: (i64, i64, i64) = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    let auto_vacuum: i64 = conn.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))?;
+    let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    let freelist_count: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+    let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+    // Reclaim in small chunks only when the free list is both material and a
+    // meaningful fraction of the file. A full VACUUM needs an explicit,
+    // user-idle maintenance flow: holding this shared connection while SQLite
+    // rewrites the database would pause recording, history, and sync work.
+    if freelist_count < 256 || freelist_count.saturating_mul(4) < page_count || page_size <= 0 {
+        return Ok(());
+    }
+    if auto_vacuum == 2 {
+        let pages = freelist_count.min(512);
+        conn.execute(&format!("PRAGMA incremental_vacuum({pages})"), [])?;
+    }
+    Ok(())
 }
 
 /// Adds the LAN device-sync layer (v20) without changing any existing row
@@ -1460,6 +1550,194 @@ fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_transcriptions_daily_ins
+           AFTER INSERT ON transcriptions BEGIN
+             INSERT INTO transcription_daily_stats (day, total_words, total_transcriptions)
+             VALUES (date(NEW.created_at, 'localtime'), NEW.words, 1)
+             ON CONFLICT(day) DO UPDATE SET
+               total_words = total_words + excluded.total_words,
+               total_transcriptions = total_transcriptions + 1;
+           END;
+         CREATE TRIGGER IF NOT EXISTS trg_transcriptions_daily_del
+           AFTER DELETE ON transcriptions BEGIN
+             UPDATE transcription_daily_stats
+                SET total_words = total_words - OLD.words,
+                    total_transcriptions = total_transcriptions - 1
+              WHERE day = date(OLD.created_at, 'localtime');
+             DELETE FROM transcription_daily_stats
+              WHERE day = date(OLD.created_at, 'localtime')
+                AND total_transcriptions <= 0;
+           END;
+         CREATE TRIGGER IF NOT EXISTS trg_transcriptions_daily_update
+           AFTER UPDATE OF created_at, words ON transcriptions BEGIN
+             UPDATE transcription_daily_stats
+                SET total_words = total_words - OLD.words,
+                    total_transcriptions = total_transcriptions - 1
+              WHERE day = date(OLD.created_at, 'localtime');
+             DELETE FROM transcription_daily_stats
+              WHERE day = date(OLD.created_at, 'localtime')
+                AND total_transcriptions <= 0;
+             INSERT INTO transcription_daily_stats (day, total_words, total_transcriptions)
+             VALUES (date(NEW.created_at, 'localtime'), NEW.words, 1)
+             ON CONFLICT(day) DO UPDATE SET
+               total_words = total_words + excluded.total_words,
+               total_transcriptions = total_transcriptions + 1;
+           END;
+         CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_ins
+           AFTER INSERT ON transcriptions BEGIN
+             INSERT INTO lifetime_stats (id, wpm_sum, wpm_count)
+             VALUES (
+               1,
+               CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0
+                    THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms
+                    ELSE 0 END,
+               CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0
+                    THEN 1 ELSE 0 END
+             )
+             ON CONFLICT(id) DO UPDATE SET
+               wpm_sum = lifetime_stats.wpm_sum + excluded.wpm_sum,
+               wpm_count = lifetime_stats.wpm_count + excluded.wpm_count;
+           END;
+         CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_del
+           AFTER DELETE ON transcriptions BEGIN
+             UPDATE lifetime_stats
+                SET wpm_sum = MAX(0, wpm_sum - CASE
+                              WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0
+                              THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms
+                              ELSE 0 END),
+                    wpm_count = MAX(0, wpm_count - CASE
+                              WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0
+                              THEN 1 ELSE 0 END)
+              WHERE id = 1;
+           END;
+         CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_upd
+           AFTER UPDATE OF duration_ms, spoken_words, words ON transcriptions BEGIN
+             UPDATE lifetime_stats
+                SET wpm_sum = MAX(0, wpm_sum - CASE
+                              WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0
+                              THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms
+                              ELSE 0 END
+                                  + CASE
+                              WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0
+                              THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms
+                              ELSE 0 END),
+                    wpm_count = MAX(0, wpm_count
+                              - CASE
+                              WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0
+                              THEN 1 ELSE 0 END
+                              + CASE
+                              WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0
+                              THEN 1 ELSE 0 END)
+              WHERE id = 1;
+           END;",
+    )?;
+    Ok(())
+}
+
+/// FTS is optional at runtime because system SQLite builds may omit FTS5.
+/// When present, the trigram index makes substring history search seekable.
+pub(super) fn ensure_history_fts(conn: &Connection) {
+    // Remove the obsolete vocabulary index. History index installation and
+    // repair below publish their triggers and readiness flag together.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS transcription_fts_meta (
+           name TEXT PRIMARY KEY,
+           populated INTEGER NOT NULL DEFAULT 0
+         );
+         DROP TRIGGER IF EXISTS trg_transcriptions_vocab_fts_ins;
+         DROP TRIGGER IF EXISTS trg_transcriptions_vocab_fts_del;
+         DROP TRIGGER IF EXISTS trg_transcriptions_vocab_fts_upd;
+         DROP TABLE IF EXISTS transcriptions_vocab;
+         DROP TABLE IF EXISTS transcriptions_vocab_fts;",
+    );
+
+    // FTS vocabulary tokenization cannot reproduce the product's word rules:
+    // it splits hyphenated words and folds accents. Insights therefore keeps
+    // its established streaming tokenizer; history search alone uses FTS.
+    let result = (|| -> Result<()> {
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
+        let build = (|| -> Result<()> {
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS transcriptions_fts USING fts5(
+                   raw_text, clean_text, app_name,
+                   content='transcriptions', content_rowid='id',
+                   tokenize='trigram'
+                 );
+                 INSERT OR IGNORE INTO transcription_fts_meta (name, populated)
+                 VALUES ('history', 0);",
+            )?;
+            if !super::transcriptions::history_fts_available(conn) {
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS trg_transcriptions_fts_ins;
+                     DROP TRIGGER IF EXISTS trg_transcriptions_fts_del;
+                     DROP TRIGGER IF EXISTS trg_transcriptions_fts_upd;",
+                )?;
+                // Populate before triggers exist. The FTS rebuild command is
+                // atomic with the metadata flag and makes external content
+                // tables consistent without replaying application writes.
+                conn.execute(
+                    "INSERT INTO transcriptions_fts(transcriptions_fts) VALUES ('rebuild')",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE transcription_fts_meta SET populated = 1 WHERE name = 'history'",
+                    [],
+                )?;
+            }
+            conn.execute_batch(
+                "CREATE TRIGGER IF NOT EXISTS trg_transcriptions_fts_ins
+                   AFTER INSERT ON transcriptions BEGIN
+                     INSERT INTO transcriptions_fts(rowid, raw_text, clean_text, app_name)
+                     VALUES (NEW.id, NEW.raw_text, NEW.clean_text, NEW.app_name);
+                   END;
+                 CREATE TRIGGER IF NOT EXISTS trg_transcriptions_fts_del
+                   AFTER DELETE ON transcriptions BEGIN
+                     INSERT INTO transcriptions_fts(transcriptions_fts, rowid, raw_text, clean_text, app_name)
+                     VALUES ('delete', OLD.id, OLD.raw_text, OLD.clean_text, OLD.app_name);
+                   END;
+                 CREATE TRIGGER IF NOT EXISTS trg_transcriptions_fts_upd
+                   AFTER UPDATE OF raw_text, clean_text, app_name ON transcriptions BEGIN
+                     INSERT INTO transcriptions_fts(transcriptions_fts, rowid, raw_text, clean_text, app_name)
+                     VALUES ('delete', OLD.id, OLD.raw_text, OLD.clean_text, OLD.app_name);
+                     INSERT INTO transcriptions_fts(rowid, raw_text, clean_text, app_name)
+                     VALUES (NEW.id, NEW.raw_text, NEW.clean_text, NEW.app_name);
+                   END;",
+            )?;
+            Ok(())
+        })();
+        match build {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(error);
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        // COMMIT itself can fail, leaving the transaction open.
+        let _ = conn.execute_batch("ROLLBACK;");
+        // Rollback may have restored an old readiness flag or incomplete
+        // triggers. Disable both atomically before allowing unindexed writes.
+        // A later successful repair must rebuild those intervening writes.
+        let disabled = conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE transcription_fts_meta SET populated = 0 WHERE name = 'history';
+             DROP TRIGGER IF EXISTS trg_transcriptions_fts_ins;
+             DROP TRIGGER IF EXISTS trg_transcriptions_fts_del;
+             DROP TRIGGER IF EXISTS trg_transcriptions_fts_upd;
+             COMMIT;",
+        );
+        if let Err(disable_error) = disabled {
+            let _ = conn.execute_batch("ROLLBACK;");
+            log::warn!("could not disable incomplete history FTS: {disable_error}");
+        }
+        log::warn!("history FTS unavailable; using LIKE search: {error}");
+    }
+}
+
 fn load_snippet_rows(conn: &Connection) -> Result<Vec<Snippet>> {
     let mut snippet_stmt = conn.prepare(
         "SELECT id, trigger, expansion, instructions, use_count, created_at \
@@ -1480,8 +1758,68 @@ fn load_snippet_rows(conn: &Connection) -> Result<Vec<Snippet>> {
     Ok(rows)
 }
 
-pub fn compute_spoken_words(conn: &Connection, raw_text: &str) -> Result<i64> {
-    let snippets = load_snippet_rows(conn)?;
+fn load_snippet_trigger_rows(conn: &Connection) -> Result<Vec<Snippet>> {
+    let mut stmt = conn.prepare("SELECT id, trigger FROM snippets")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Snippet {
+            id: r.get(0)?,
+            trigger: r.get(1)?,
+            expansion: String::new(),
+            instructions: String::new(),
+            use_count: 0,
+            created_at: String::new(),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+type SnippetCacheEntry = (Weak<Mutex<Connection>>, Arc<Vec<Snippet>>);
+
+static SPOKEN_WORD_SNIPPET_CACHE: OnceLock<Mutex<Vec<SnippetCacheEntry>>> = OnceLock::new();
+
+fn snippet_cache() -> &'static Mutex<Vec<SnippetCacheEntry>> {
+    SPOKEN_WORD_SNIPPET_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Snippet triggers change rarely compared with transcription inserts. Keep a
+/// per-connection snapshot so normal inserts do not reload every full snippet
+/// row. The snapshot contains the existing `Snippet` shape because the shared
+/// matcher already consumes it; it is invalidated by every snippet mutation.
+fn cached_snippet_rows(db: &Db) -> Result<Arc<Vec<Snippet>>> {
+    let db_ptr = Arc::as_ptr(db);
+    {
+        let mut cache = snippet_cache()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Snippet cache lock was poisoned"))?;
+        cache.retain(|(owner, _)| owner.strong_count() > 0);
+        if let Some((_, snippets)) = cache.iter().find(|(owner, _)| owner.as_ptr() == db_ptr) {
+            return Ok(snippets.clone());
+        }
+    }
+
+    // Keep the DB lock while publishing the freshly loaded snapshot. Snippet
+    // writers invalidate the cache while holding the same DB lock, preventing
+    // a concurrent edit from being hidden by a stale insertion into the cache.
+    let conn = lock_conn(db)?;
+    let snippets = Arc::new(load_snippet_trigger_rows(&conn)?);
+    let mut cache = snippet_cache()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Snippet cache lock was poisoned"))?;
+    cache.retain(|(owner, _)| owner.strong_count() > 0);
+    cache.retain(|(owner, _)| owner.as_ptr() != db_ptr);
+    cache.push((Arc::downgrade(db), snippets.clone()));
+    Ok(snippets)
+}
+
+pub(crate) fn invalidate_snippet_cache() {
+    if let Ok(mut cache) = snippet_cache().lock() {
+        cache.clear();
+    }
+}
+
+pub fn compute_spoken_words(db: &Db, raw_text: &str) -> Result<i64> {
+    let snippets = cached_snippet_rows(db)?;
+    // `cached_snippet_rows` releases the DB mutex before this matcher runs.
     Ok(crate::data::snippets::count_words_without_snippet_triggers(
         raw_text, &snippets,
     ))
@@ -1489,17 +1827,44 @@ pub fn compute_spoken_words(conn: &Connection, raw_text: &str) -> Result<i64> {
 
 fn backfill_spoken_words(conn: &Connection) -> Result<()> {
     let snippets = load_snippet_rows(conn)?;
-    let mut select =
-        conn.prepare("SELECT id, raw_text FROM transcriptions WHERE spoken_words IS NULL")?;
-    let rows = select
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut update = conn.prepare("UPDATE transcriptions SET spoken_words = ?2 WHERE id = ?1")?;
+    const BATCH_SIZE: i64 = 256;
+    let mut last_id = 0i64;
 
-    for (id, raw_text) in rows {
-        let spoken_words =
-            crate::data::snippets::count_words_without_snippet_triggers(&raw_text, &snippets);
-        update.execute(params![id, spoken_words])?;
+    loop {
+        let rows = {
+            let mut select = conn.prepare(
+                "SELECT id, raw_text FROM transcriptions
+                 WHERE spoken_words IS NULL AND id > ?1
+                 ORDER BY id LIMIT ?2",
+            )?;
+            let mapped = select.query_map(params![last_id, BATCH_SIZE], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if rows.is_empty() {
+            break;
+        }
+        last_id = rows.last().map(|(id, _)| *id).unwrap_or(last_id);
+
+        let updates = rows
+            .iter()
+            .map(|(id, raw_text)| {
+                (
+                    *id,
+                    crate::data::snippets::count_words_without_snippet_triggers(
+                        raw_text, &snippets,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Callers run migration/self-healing inside their own transaction;
+        // keep each batch bounded without opening a nested transaction.
+        let mut update =
+            conn.prepare("UPDATE transcriptions SET spoken_words = ?2 WHERE id = ?1")?;
+        for (id, spoken_words) in updates {
+            update.execute(params![id, spoken_words])?;
+        }
     }
 
     Ok(())

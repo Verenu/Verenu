@@ -79,6 +79,111 @@ fn open_repairs_v20_sync_peers_missing_recv_cursor() {
 }
 
 #[test]
+fn sqlite_disk_maintenance_does_not_run_a_full_vacuum_on_a_live_database() {
+    let path = temp_db_path("vacuum_non_incremental");
+    let db = open(path.to_str().expect("path string")).expect("open db");
+    {
+        let conn = lock_conn(&db).expect("lock db");
+        conn.execute_batch("CREATE TABLE reclaim_probe (payload BLOB NOT NULL);")
+            .expect("probe table");
+        let payload = vec![b'x'; 4096];
+        for _ in 0..1_024 {
+            conn.execute(
+                "INSERT INTO reclaim_probe (payload) VALUES (?1)",
+                rusqlite::params![payload],
+            )
+            .expect("probe row");
+        }
+        conn.execute("DELETE FROM reclaim_probe", [])
+            .expect("delete probe rows");
+    }
+
+    sqlite_disk_maintenance(&db).expect("reclaim database");
+    let conn = lock_conn(&db).expect("lock reclaimed db");
+    let auto_vacuum: i64 = conn
+        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+        .expect("auto vacuum mode");
+    let freelist: i64 = conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .expect("freelist");
+    assert_eq!(auto_vacuum, 0);
+    assert!(
+        freelist > 0,
+        "automatic maintenance must not rewrite the database"
+    );
+    drop(conn);
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn failed_fts_repair_leaves_transcription_writes_safe() {
+    let db = test_db();
+    let conn = lock_conn(&db).expect("lock");
+    conn.execute_batch(
+        "DROP TRIGGER trg_transcriptions_fts_ins;
+         DROP TRIGGER trg_transcriptions_fts_del;
+         DROP TRIGGER trg_transcriptions_fts_upd;
+         DROP TABLE transcriptions_fts;
+         CREATE TABLE transcriptions_fts (rowid INTEGER PRIMARY KEY);
+         UPDATE transcription_fts_meta SET populated = 1 WHERE name = 'history';",
+    )
+    .expect("seed interrupted FTS setup");
+
+    super::schema::ensure_history_fts(&conn);
+    assert_eq!(
+        conn.query_row(
+            "SELECT populated FROM transcription_fts_meta WHERE name = 'history'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("FTS state"),
+        0
+    );
+    conn.execute(
+        "INSERT INTO transcriptions (raw_text, clean_text, words, duration_ms, api_used)
+         VALUES ('raw', 'clean', 1, 1000, 'test')",
+        [],
+    )
+    .expect("insert without an incomplete FTS trigger");
+    conn.execute("UPDATE transcriptions SET clean_text = 'updated'", [])
+        .expect("update without an incomplete FTS trigger");
+    conn.execute("DELETE FROM transcriptions", [])
+        .expect("delete without an incomplete FTS trigger");
+}
+
+#[test]
+fn fts_repair_rebuilds_updates_made_while_triggers_were_missing() {
+    let db = test_db();
+    let conn = lock_conn(&db).expect("lock");
+    conn.execute_batch(
+        "INSERT INTO transcriptions (raw_text, clean_text, words)
+         VALUES ('synthetic', 'beforemarker', 1);
+         DROP TRIGGER trg_transcriptions_fts_upd;
+         UPDATE transcriptions SET clean_text = 'aftermarker';",
+    ).expect("simulate an interrupted index installation");
+    assert!(!super::transcriptions::history_fts_available(&conn));
+
+    super::schema::ensure_history_fts(&conn);
+    assert!(super::transcriptions::history_fts_available(&conn));
+    for (term, expected) in [("beforemarker", 0), ("aftermarker", 1)] {
+        let matches: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH ?1",
+            [term], |row| row.get(0),
+        ).expect("indexed search without LIKE fallback");
+        assert_eq!(matches, expected);
+    }
+    // Reopening a healthy index must not duplicate its postings.
+    super::schema::ensure_history_fts(&conn);
+    conn.execute(
+        "INSERT INTO transcriptions_fts(transcriptions_fts, rank) VALUES ('integrity-check', 1)",
+        [],
+    ).expect("index agrees with external content");
+}
+
+#[test]
 fn open_repairs_legacy_cleanup_cache_missing_epoch_columns() {
     let path = temp_db_path("legacy_cleanup_cache");
     {
@@ -141,8 +246,11 @@ fn open_backfills_legacy_spoken_words_column() {
                created_at DATETIME NOT NULL DEFAULT (datetime('now'))
              );
              INSERT INTO snippets (trigger, expansion) VALUES ('sig', 'signature');
+             WITH RECURSIVE rows(n) AS (
+               SELECT 1 UNION ALL SELECT n + 1 FROM rows WHERE n < 600
+             )
              INSERT INTO transcriptions (raw_text, clean_text, words, duration_ms, api_used)
-               VALUES ('hello sig world', 'clean', 3, 1000, 'test');
+               SELECT 'hello sig world', 'clean', 3, 1000, 'test' FROM rows;
              PRAGMA user_version = 6;",
         )
         .expect("seed legacy db");
@@ -156,6 +264,25 @@ fn open_backfills_legacy_spoken_words_column() {
         })
         .expect("spoken words");
     assert_eq!(spoken_words, 2);
+    let backfilled: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transcriptions WHERE spoken_words = 2",
+            [],
+            |r| r.get(0),
+        )
+        .expect("all legacy rows backfilled in batches");
+    assert_eq!(backfilled, 600);
+    assert!(table_exists(&conn, "transcription_daily_stats").expect("daily summary table"));
+    assert!(table_exists(&conn, "transcriptions_fts").expect("history FTS table"));
+    assert!(!table_exists(&conn, "transcriptions_vocab").expect("legacy vocabulary FTS removed"));
+    let wpm_count: i64 = conn
+        .query_row(
+            "SELECT wpm_count FROM lifetime_stats WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("wpm summary");
+    assert_eq!(wpm_count, 600);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -320,7 +447,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 24);
+    assert_eq!(version, 25);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -820,6 +947,15 @@ fn cleanup_cache_prunes_expired_only() {
     assert!(cleanup_cache_get_active(&db, "live")
         .expect("query live")
         .is_some());
+}
+
+#[test]
+fn cleanup_cache_enforces_a_byte_budget_opportunistically() {
+    let db = test_db();
+    let oversized = "x".repeat((CLEANUP_CACHE_MAX_BYTES + 1) as usize);
+    cleanup_cache_insert_new(&db, "oversized", &oversized, "2999-01-01 00:00:00", false)
+        .expect("insert oversized cache entry");
+    assert_eq!(cleanup_cache_count(&db).expect("count"), 0);
 }
 
 #[test]

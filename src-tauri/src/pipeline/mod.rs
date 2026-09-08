@@ -20,7 +20,48 @@ mod finalize;
 #[cfg(any(test, debug_assertions))]
 mod fixture;
 mod gates;
+#[cfg(not(target_os = "android"))]
 mod pill;
+#[cfg(target_os = "android")]
+mod pill {
+    use tauri::{AppHandle, Emitter};
+
+    // Android renders the pill in Kotlin. Keep the shared pipeline calls
+    // intact while mirroring the state through the authenticated bridge.
+    pub(crate) fn queue_pill_context(_context: &str) {}
+
+    pub(crate) fn show_pill(_app: &AppHandle, _state: &str) {}
+
+    pub(crate) fn update_pill_state(_app: &AppHandle, _state: &str) {}
+
+    pub(crate) fn hide_pill(_app: &AppHandle) {}
+
+    pub(crate) fn show_copied_pill(_app: &AppHandle, _msg: &str) {}
+
+    pub(crate) fn emit_pill_stage(_app: &AppHandle, stage: &str) {
+        crate::android::bridge::note_pill_stage(stage);
+    }
+
+    pub(crate) fn emit_pill_context(_app: &AppHandle, _context: &str) {}
+
+    pub(crate) async fn show_error_pill(app: &AppHandle, msg: &str) {
+        crate::android::bridge::note_bridge_error(msg);
+        app.emit("verenu:error", msg).ok();
+    }
+
+    pub(crate) fn show_clipboard_warning_pill(_app: &AppHandle, _msg: &str) {}
+
+    pub(crate) fn reject_with_pill(app: &AppHandle, msg: &str) {
+        crate::android::bridge::note_bridge_error(msg);
+        app.emit("verenu:error", msg).ok();
+    }
+
+    pub(crate) fn show_cancelled_pill(_app: &AppHandle) {}
+
+    pub(crate) fn show_interrupted_pill(_app: &AppHandle) {}
+
+    pub(crate) fn show_paste_failed_pill(_app: &AppHandle) {}
+}
 mod pill_animation;
 mod pill_position;
 mod session;
@@ -44,8 +85,8 @@ use gates::{
     MIN_RECORDING_MS, MIN_RECORDING_RMS,
 };
 pub(crate) use pill::{
-    emit_pill_context, emit_pill_stage, hide_pill,
-    show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
+    emit_pill_context, emit_pill_stage, hide_pill, show_clipboard_warning_pill, show_copied_pill,
+    show_pill, update_pill_state,
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
@@ -62,10 +103,49 @@ pub use state::*;
 
 #[derive(Clone, Debug)]
 pub struct CapturedAudio {
-    pub wav: bytes::Bytes,
+    wav_cache: Arc<Mutex<Option<bytes::Bytes>>>,
     pub samples_16k: Arc<Vec<f32>>,
     pub sample_rate: u32,
     pub duration_ms: u64,
+}
+
+impl CapturedAudio {
+    pub fn from_samples(samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
+        Self {
+            wav_cache: Arc::new(Mutex::new(None)),
+            samples_16k: Arc::new(samples),
+            sample_rate,
+            duration_ms,
+        }
+    }
+
+    pub fn wav_bytes(&self) -> anyhow::Result<bytes::Bytes> {
+        let mut cache = self
+            .wav_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audio WAV cache lock poisoned"))?;
+        if let Some(wav) = cache.as_ref() {
+            return Ok(wav.clone());
+        }
+        let wav = audio::encode_wav(&self.samples_16k, self.sample_rate, 1)?;
+        let wav = bytes::Bytes::from(wav);
+        *cache = Some(wav.clone());
+        Ok(wav)
+    }
+
+    pub fn wav_len(&self) -> usize {
+        self.wav_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.as_ref().map(bytes::Bytes::len))
+            .unwrap_or(0)
+    }
+
+    pub fn clear_wav_cache(&mut self) {
+        if let Ok(mut cache) = self.wav_cache.lock() {
+            *cache = None;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -220,18 +300,16 @@ fn merge_prepend_audio(
     next: CapturedAudio,
     active_gain: f32,
 ) -> anyhow::Result<(CapturedAudio, f32, f32)> {
-    let mut samples = (*prev.samples_16k).clone();
+    let prev_duration_ms = prev.duration_ms;
+    let mut samples =
+        Arc::try_unwrap(prev.samples_16k).unwrap_or_else(|samples| (*samples).clone());
+    if samples.len().saturating_add(next.samples_16k.len()) > audio::MAX_RECORDING_SAMPLES {
+        anyhow::bail!("combined recording exceeds the duration cap");
+    }
     samples.extend_from_slice(&next.samples_16k);
-    let wav = audio::encode_wav(&samples, 16_000, 1)
-        .map_err(|e| anyhow::anyhow!("failed to re-encode merged (prepend) audio: {e}"))?;
     let merged_rms = audio::rms_f32(&samples);
-    let duration_ms = prev.duration_ms + next.duration_ms;
-    let merged = CapturedAudio {
-        wav: bytes::Bytes::from(wav),
-        samples_16k: Arc::new(samples),
-        sample_rate: 16_000,
-        duration_ms,
-    };
+    let duration_ms = prev_duration_ms + next.duration_ms;
+    let merged = CapturedAudio::from_samples(samples, 16_000, duration_ms);
     let merged_raw_rms = if active_gain > 0.0 {
         merged_rms / active_gain
     } else {
@@ -334,9 +412,8 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     let Some((mut captured_audio, mut rms, mut raw_rms)) =
         stop_and_capture_audio(&app, session, exclusive_mic_session_id).await
     else {
-        // stop_and_capture_audio already abandons live on its own failure
-        // paths; call again so a future None return cannot leave a spool.
-        failover::abandon_live();
+        // Stop/capture failures retain any durable prefix for crash recovery;
+        // the duration-limit branch handles its deliberate cleanup itself.
         state::leave_stopping_if_owned(&state, generation);
         return;
     };
@@ -382,7 +459,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     log::debug!(
         "pipeline: audio accepted duration_ms={} wav_bytes={} stage_ms={}",
         captured_audio.duration_ms,
-        captured_audio.wav.len(),
+        44 + captured_audio.samples_16k.len() * 2,
         stage_audio.elapsed().as_millis()
     );
 

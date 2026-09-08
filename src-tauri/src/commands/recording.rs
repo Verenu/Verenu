@@ -337,11 +337,11 @@ pub async fn stop_recording(
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
     crate::core::hotkey::set_handless_active(false);
-    let taken = pipeline::take_recording_plain(state.inner());
+    let taken = pipeline::take_recording_plain_with_prepend(state.inner());
     if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
         manager.set_recording_active(false);
     }
-    if let Some((session, exclusive_mic_session_id)) = taken {
+    if let Some((session, exclusive_mic_session_id, prepend_audio)) = taken {
         let app_for_cancel = app.clone();
         let state_for_cancel = state.inner().clone();
         let handle = tauri::async_runtime::spawn(async move {
@@ -350,6 +350,7 @@ pub async fn stop_recording(
                 &state_for_cancel,
                 session,
                 exclusive_mic_session_id,
+                prepend_audio,
             )
             .await;
         });

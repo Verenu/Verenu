@@ -71,7 +71,7 @@ pub fn migrate_deprecated_model_id(id: &str) -> String {
     if provider == GROQ
         && matches!(
             model.as_str(),
-                DEPRECATED_GROQ_LLAMA_8B_MODEL
+            DEPRECATED_GROQ_LLAMA_8B_MODEL
                 | DEPRECATED_GROQ_LLAMA_70B_MODEL
                 | GROQ_GPT_OSS_20B_MODEL
                 | "openai/gpt-oss-120b"
