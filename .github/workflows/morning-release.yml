@@ -38,8 +38,6 @@ jobs:
       - name: Find changes since the previous nightly release
         id: changes
         shell: bash
-        env:
-          NIGHTLY_START_VERSION: '0.16.0'
         run: |
           set -euo pipefail
 
@@ -68,23 +66,37 @@ jobs:
             fi
           done < <(git tag --list 'Verenu-*-nightly.*')
 
-          # Nightlies keep the latest stable release as their numeric version
-          # base. The fallback is used only before the first reachable stable
-          # tag exists in the master history.
-          nightly_base_version="$NIGHTLY_START_VERSION"
-          nightly_base_tag="$(git tag --merged "$master_sha" --list 'Verenu-*' | grep -E '^Verenu-[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
-          if [[ -n "$nightly_base_tag" ]]; then
-            nightly_base_version="${nightly_base_tag#Verenu-}"
-          fi
+          # Nightlies use the version currently declared by master. Stable
+          # release tags are not a reliable source here: a release may be
+          # published without a matching stable tag, while an older tag can
+          # still be reachable from the branch.
+          nightly_base_version="$(node <<'NODE'
+          const fs = require('node:fs');
+
+          const packageVersion = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          const tauriVersion = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version;
+          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+          const cargoVersion = cargo.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1];
+          const versions = { packageVersion, tauriVersion, cargoVersion };
+
+          if (!packageVersion || !tauriVersion || !cargoVersion || new Set(Object.values(versions)).size !== 1) {
+            console.error(`Master version files disagree: ${JSON.stringify(versions)}`);
+            process.exit(1);
+          }
+          if (!/^\d+\.\d+\.\d+$/.test(packageVersion)) {
+            console.error(`Master package.json version is not a stable numeric version: ${packageVersion}`);
+            process.exit(1);
+          }
+
+          process.stdout.write(packageVersion);
+          NODE
+          )"
 
           # Before the first nightly, use the newest release tag reachable
           # from master. Tags are branch-agnostic, so reachability is the branch
           # association we can verify safely.
           if [[ -z "$baseline_sha" ]]; then
-            baseline_tag="$nightly_base_tag"
-            if [[ -z "$baseline_tag" ]]; then
-              baseline_tag="$(git tag --merged "$master_sha" --list 'Verenu-*' | sort -V | tail -n 1 || true)"
-            fi
+            baseline_tag="$(git tag --merged "$master_sha" --list 'Verenu-*' | sort -V | tail -n 1 || true)"
             if [[ -z "$baseline_tag" ]]; then
               echo 'No release tag reachable from master; refusing to guess a baseline.' >&2
               exit 1
@@ -106,7 +118,7 @@ jobs:
 
           echo "Baseline: $baseline_tag ($baseline_sha)"
           echo "Master:   $master_sha"
-          echo "Nightly base: $nightly_base_version"
+          echo "Nightly base: $nightly_base_version (from master version files)"
           echo "Changed lines: $changed_lines"
           git diff --stat "$baseline_sha..$master_sha" -- . ':(exclude)package-lock.json'
 
