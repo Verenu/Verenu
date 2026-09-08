@@ -370,12 +370,20 @@ fn current_span_from_surrounding_context<'a>(
     anchor: TextAnchor,
 ) -> Option<&'a str> {
     const CONTEXT_CHARS: usize = 128;
-    let left_start = baseline[..anchor.start]
+    let baseline_left = baseline.get(..anchor.start)?;
+    let baseline_right = baseline.get(anchor.end..)?;
+    if anchor.start > anchor.end
+        || !baseline.is_char_boundary(anchor.start)
+        || !baseline.is_char_boundary(anchor.end)
+    {
+        return None;
+    }
+    let left_start = baseline_left
         .char_indices()
         .rev()
         .nth(CONTEXT_CHARS)
         .map_or(0, |(index, _)| index);
-    let right_end = baseline[anchor.end..]
+    let right_end = baseline_right
         .char_indices()
         .nth(CONTEXT_CHARS)
         .map_or(baseline.len(), |(index, _)| anchor.end + index);

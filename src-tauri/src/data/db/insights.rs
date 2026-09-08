@@ -770,24 +770,26 @@ fn query_text_metrics(
     }
 
     let unique_words = counts.len() as i64;
-    let mut top = Vec::with_capacity(TOP_WORDS_LIMIT);
-    for (word, count) in counts {
-        top.push(InsightsWordCount { word, count });
-        top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
-        if top.len() > TOP_WORDS_LIMIT {
-            top.pop();
-        }
-    }
-    Ok((InsightsWords {
-        top,
-        unique_words,
-        longest_word: longest,
-        avg_word_length: if length_count > 0 {
-            length_sum as f64 / length_count as f64
-        } else {
-            0.0
+    let mut top: Vec<_> = counts
+        .into_iter()
+        .map(|(word, count)| InsightsWordCount { word, count })
+        .collect();
+    top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
+    top.truncate(TOP_WORDS_LIMIT);
+    Ok((
+        InsightsWords {
+            top,
+            unique_words,
+            longest_word: longest,
+            avg_word_length: if length_count > 0 {
+                length_sum as f64 / length_count as f64
+            } else {
+                0.0
+            },
         },
-    }, raw_words, clean_words))
+        raw_words,
+        clean_words,
+    ))
 }
 
 /// Lowercases and strips punctuation, keeping only alphanumeric characters.
@@ -1258,15 +1260,22 @@ mod tests {
             "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words)
              VALUES ('synthetic', ?1, 4, NULL)",
             ["re-enter reenter café café foo !!!"],
-        ).expect("insert");
+        )
+        .expect("insert");
         let range = range_bounds(&conn, 0, None).expect("range");
         let (words, raw, clean) = query_text_metrics(&conn, &range, None).expect("metrics");
         assert_eq!((raw, clean), (4, 6));
         assert_eq!(words.unique_words, 3);
         assert_eq!(words.longest_word.as_deref(), Some("reenter"));
         assert_eq!(words.avg_word_length, 5.0);
-        assert!(words.top.iter().any(|word| word.word == "café" && word.count == 2));
-        assert!(words.top.iter().any(|word| word.word == "reenter" && word.count == 2));
+        assert!(words
+            .top
+            .iter()
+            .any(|word| word.word == "café" && word.count == 2));
+        assert!(words
+            .top
+            .iter()
+            .any(|word| word.word == "reenter" && word.count == 2));
     }
 
     #[test]
