@@ -26,7 +26,7 @@ Verenu rejects recordings that are too short or too quiet, and the pill reports 
 - **Too short**: the recording is under about 0.7 seconds.
 - **Too quiet**: the recording is near silence, often because the hotkey was triggered accidentally or the microphone level is low.
 
-If this happens repeatedly, open **Settings -> Audio**, check the selected microphone, and run microphone calibration.
+If this happens repeatedly, open **Settings -> Audio** and check the selected microphone, microphone gain, and noise reduction settings.
 
 ## macOS permissions
 
