@@ -459,7 +459,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     log::debug!(
         "pipeline: audio accepted duration_ms={} wav_bytes={} stage_ms={}",
         captured_audio.duration_ms,
-        captured_audio.wav_len(),
+        44 + captured_audio.samples_16k.len() * 2,
         stage_audio.elapsed().as_millis()
     );
 

@@ -743,28 +743,25 @@ pub fn collect_ops(
                 )?;
                 let rows = stmt
                     .query_map(params![progress.last_id, chunk], |r| {
-                        Ok(SyncOp {
-                            table: r.get(1)?,
-                            row_uuid: r.get(2)?,
-                            op: "delete".to_string(),
-                            ts_ms: r.get(3)?,
-                            origin: r.get(4)?,
-                            origin_seq: r.get(5)?,
-                            payload: None,
-                        })
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            SyncOp {
+                                table: r.get(1)?,
+                                row_uuid: r.get(2)?,
+                                op: "delete".to_string(),
+                                ts_ms: r.get(3)?,
+                                origin: r.get(4)?,
+                                origin_seq: r.get(5)?,
+                                payload: None,
+                            },
+                        ))
                     })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                    .collect::<rusqlite::Result<Vec<(i64, SyncOp)>>>()?;
                 let fetched = rows.len() as i64;
-                if let Some(last) = rows.last() {
-                    progress.last_id = conn.query_row(
-                        "SELECT seq FROM sync_log
-                         WHERE table_name = ?1 AND row_uuid = ?2 AND op = 'delete'
-                         ORDER BY seq DESC LIMIT 1",
-                        params![&last.table, &last.row_uuid],
-                        |r| r.get(0),
-                    )?;
+                if let Some((last_seq, _)) = rows.last() {
+                    progress.last_id = *last_seq;
                 }
-                ops.extend(rows);
+                ops.extend(rows.into_iter().map(|(_, op)| op));
                 if fetched < chunk {
                     progress.stage = 6;
                     progress.origin_seq = Some(origin_seq);

@@ -241,8 +241,9 @@ pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
     if samples.is_empty() {
         return None;
     }
-    meta.sample_count = usable;
-    meta.duration_ms = usable * 1000 / u64::from(TARGET_RATE);
+    let actual_count = samples.len() as u64;
+    meta.sample_count = actual_count;
+    meta.duration_ms = actual_count * 1000 / u64::from(TARGET_RATE);
     Some(LoadedTake {
         meta,
         samples_16k: samples,
