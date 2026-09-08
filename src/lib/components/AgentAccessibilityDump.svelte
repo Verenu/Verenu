@@ -125,7 +125,9 @@
     inventory = nextInventory;
     dumpTitle = nextTitle;
     dumpText = nextText;
-    applyDumpWindowTitle(nextTitle);
+    // The pill window is content-fit and uses an empty title. Rewriting
+    // document.title here has no SnapShot value and can disturb native sizing.
+    if (windowKind === 'main') applyDumpWindowTitle(nextTitle);
     annotateAccessibilityDump();
   }
 
@@ -147,7 +149,7 @@
       dumpText = '';
       dumpTitle = '';
       restoreAccessibilityDump();
-      restoreDumpWindowTitle();
+      if (windowKind === 'main') restoreDumpWindowTitle();
       return;
     }
     await loadSettings();
@@ -271,7 +273,7 @@
       unlistenPillState?.();
       unlistenPillStage?.();
       restoreAccessibilityDump();
-      restoreDumpWindowTitle();
+      if (windowKind === 'main') restoreDumpWindowTitle();
     };
   });
 
@@ -304,11 +306,15 @@
 
 <style>
   .agent-ax-dump {
-    position: absolute;
+    position: fixed;
+    left: 0;
+    top: 0;
     width: 1px;
     height: 1px;
+    margin: 0;
     overflow: hidden;
     clip-path: inset(50%);
+    contain: strict;
     white-space: nowrap;
     pointer-events: none;
   }
