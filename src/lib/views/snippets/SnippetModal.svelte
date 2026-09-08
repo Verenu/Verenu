@@ -134,7 +134,7 @@
         }
       }
       saveError = conflictContexts.length > 0
-        ? `"${t}" already exists inside of ${conflictLocation()}. Move it here?`
+        ? `"${t}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
         : msg.includes('UNIQUE')
           ? 'A snippet with that trigger already exists.'
           : msg;

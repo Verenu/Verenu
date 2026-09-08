@@ -473,6 +473,7 @@
       try {
         if (context.color) {
           await invoke('update_context_color', { contextId: duplicate.id, color: context.color });
+          duplicate.color = context.color;
         }
         await Promise.all([
           ...dictionary.map((entry) => invoke('set_dictionary_context_assignment', {

@@ -132,7 +132,7 @@
         }
       }
       saveError = conflictContexts.length > 0
-        ? `"${term}" already exists inside of ${conflictLocation()}. Move it here?`
+        ? `"${term}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
         : msg.includes('UNIQUE') ? 'That term already exists.' : msg;
     } finally { saving = false; }
   }
