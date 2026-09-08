@@ -347,12 +347,27 @@ pub async fn cancel_recording_with_resume(
     crate::media::sound::coordinated_unmute();
     crate::system::media_control::end_dictation_media_pause();
 
-    let Some((mut captured_audio, mut rms, mut raw_rms)) =
+    let Some(stopped_capture) =
         stop_and_capture_audio(app, session, exclusive_mic_session_id).await
     else {
         // stop_and_capture_audio already hid the pill on failure.
         return;
     };
+    if stopped_capture.recovery_write_failed {
+        // The take is still valid in memory, but a cancelled capture cannot
+        // be resumed safely once its recovery spool has failed.
+        log::warn!("recording: cancelled capture not offered for resume after recovery failure");
+        if state_is_idle(state) {
+            hide_pill(app);
+        }
+        return;
+    }
+    let StoppedCapture {
+        audio: mut captured_audio,
+        mut rms,
+        mut raw_rms,
+        ..
+    } = stopped_capture;
 
     let active_gain = store::settings_snapshot(app)
         .map(|s| store::load_audio_config(&s).mic_gain)

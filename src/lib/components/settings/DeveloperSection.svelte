@@ -261,6 +261,11 @@
     simulationMessage = 'Offline state previewed.';
   }
 
+  function simulateStorageFullNotice() {
+    appStore.recoveryStorageWarning = true;
+    simulationMessage = 'Drive-full notice previewed.';
+  }
+
   async function toggleStorageFullSimulation(enabled: boolean) {
     const previous = storageFullSimulation;
     storageFullSimulation = enabled;
@@ -292,6 +297,7 @@
     appStore.providerStatusSimulation = false;
     appStore.globalMessage = null;
     appStore.globalMessageSimulation = false;
+    appStore.recoveryStorageWarning = false;
     appStore.isOnline = true;
     try {
       await invoke('set_storage_full_simulation', { enabled: false });
@@ -524,6 +530,7 @@
     <button class="btn-ghost" onclick={simulateProviderDown}>Provider Down</button>
     <button class="btn-ghost" onclick={simulateWifiOffline}>Wi-Fi Offline</button>
     <button class="btn-ghost" onclick={simulateGlobalMessage}>Global Message</button>
+    <button class="btn-ghost" onclick={simulateStorageFullNotice}>Drive Full</button>
     <button class="btn-ghost" onclick={clearSimulations}>Clear</button>
   </div>
 </div>

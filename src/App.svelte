@@ -180,6 +180,7 @@
     let cleanupFn: (() => void) | undefined;
     let stopNotificationClickListener: (() => void) | undefined;
     let stopConnectivityRecheckListener: (() => void) | undefined;
+    let stopRecoveryWriteListener: (() => void) | undefined;
     let stopSettingsImportedListener: (() => void) | undefined;
     let stopAutomaticUpdateChecks: (() => void) | undefined;
     let stopLocalSttListeners: (() => void) | undefined;
@@ -287,6 +288,18 @@
       })
       .catch((error) => { console.warn('Failed to listen for connectivity rechecks:', error); });
 
+    listen('verenu:storage-full', () => {
+      appStore.recoveryStorageWarning = true;
+    })
+      .then((unlisten) => {
+        if (!mounted) {
+          unlisten();
+          return;
+        }
+        stopRecoveryWriteListener = unlisten;
+      })
+      .catch((error) => { console.warn('Failed to listen for storage-full events:', error); });
+
     // Synchronous: startAutomaticUpdateChecks fires its first check in the
     // background and returns the cleanup immediately, so there's no unmount
     // race to guard and the interval is always registered before we return.
@@ -327,6 +340,7 @@
       if (cleanupFn) cleanupFn();
       if (stopNotificationClickListener) stopNotificationClickListener();
       if (stopConnectivityRecheckListener) stopConnectivityRecheckListener();
+      if (stopRecoveryWriteListener) stopRecoveryWriteListener();
       if (stopSettingsImportedListener) stopSettingsImportedListener();
       if (stopAutomaticUpdateChecks) stopAutomaticUpdateChecks();
       if (stopLocalSttListeners) stopLocalSttListeners();
