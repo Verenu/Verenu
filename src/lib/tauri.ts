@@ -3,6 +3,10 @@ import { emit as tauriEmit, listen as tauriListen } from '@tauri-apps/api/event'
 import { defaultHotkey } from './platform';
 
 declare const __APP_VERSION__: string;
+declare const __VERENU_GIT_SHA__: string;
+declare const __VERENU_GIT_BRANCH__: string;
+declare const __VERENU_GIT_DIRTY__: boolean;
+declare const __VERENU_BUILD_TIME__: string;
 
 type CommandArgs = Record<string, unknown>;
 type EventEnvelope<T> = {
@@ -223,6 +227,7 @@ const defaultCleanupModels = {
 const defaultSettings: Record<string, unknown> = {
   setup_complete: true,
   force_setup_on_launch: false,
+  ruin_accessibility: false,
   appearance_mode: 'system',
   transcription_provider: 'groq',
   transcription_language: 'en',
@@ -1169,6 +1174,9 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
         throw new Error('STORAGE_FULL: simulated settings write failure');
       }
       writeDevSetting(args.key, args?.value);
+      if (args.key === 'ruin_accessibility') {
+        emitDevTauriEvent('verenu:ruin-accessibility-changed', Boolean(args.value));
+      }
       return undefined as T;
     case 'get_all_settings':
       return { ...defaultSettings, ...readDevSettings() } as T;

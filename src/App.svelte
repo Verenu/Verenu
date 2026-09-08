@@ -5,6 +5,7 @@
   import { isWindows } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
+  import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import Insights from './lib/views/Insights.svelte';
   import Contexts from './lib/views/Contexts.svelte';
   import Dictionary from './lib/views/Dictionary.svelte';
@@ -207,7 +208,7 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        const [done, appearance, accentColor, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled] = await Promise.all([
+        const [done, appearance, accentColor, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility] = await Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<'system' | 'light' | 'dark' | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
@@ -216,6 +217,7 @@
           invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
+          invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
         ]);
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
         if (appearance === 'light' || appearance === 'dark' || appearance === 'system') {
@@ -226,6 +228,8 @@
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
         appStore.syncEnabled = syncEnabled ?? false;
+        appStore.ruinAccessibility = ruinAccessibility ?? false;
+        if (appStore.ruinAccessibility) appStore.devModeEnabled = true;
       } catch {
         appStore.setupComplete = false;
       }
@@ -384,6 +388,7 @@
     <SyncPairModal />
   {/if}
   <DictationPill />
+  <AgentAccessibilityDump windowKind="main" />
 
   {#if errorToast}
     <div

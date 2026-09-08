@@ -51,6 +51,7 @@ type SettingsValueMap = {
   mic_gain: number;
   setup_complete: boolean;
   force_setup_on_launch: boolean;
+  ruin_accessibility: boolean;
   app_context_hint: boolean;
   auto_learn_enabled: boolean;
   contextual_formatting_enabled: boolean;
