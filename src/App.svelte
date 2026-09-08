@@ -490,9 +490,9 @@
     position: relative;
     /* Edge-to-edge: draw behind system bars; children consume safe-area
        insets individually so desktop (where env() is 0) is unaffected. */
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
+    padding-top: var(--safe-top);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
   }
 
   /* The native Windows caption is non-client chrome, so it does not consume
@@ -526,6 +526,41 @@
     padding-bottom: 0;
   }
 
+  /* The rail is gone, so nothing should offset for its width anymore, and
+     any full-bleed overlay (Settings, modals, toasts) needs to know how much
+     room the sticky bottom nav actually takes so its content isn't hidden
+     behind it. */
+  .app[data-compact-nav='true'] {
+    --sidebar-w: 0px;
+    --mobile-nav-h: calc(60px + var(--safe-bottom));
+  }
+
+  /* MainActivity applies the real Android WindowInsets to the WebView content
+     root. Do not add the WebView's CSS env() values again on Android, since
+     some devices expose them inconsistently and would otherwise double-pad. */
+  .app[data-android='true'] {
+    --safe-top: 0px;
+    --safe-bottom: 0px;
+    --safe-left: 0px;
+    --safe-right: 0px;
+  }
+
+  /*
+   * The scroll fades are cut to the desktop shell: inset from the left for the
+   * rail, from the right for the scrollbar gutter, and lifted off the bottom by
+   * --app-gutter. None of those exist in the compact layout, which left the
+   * bottom fade hanging in mid-air above the nav bar with unfaded content on
+   * either side of it. Run them edge to edge and flush to the bar instead.
+   */
+  .app[data-compact-nav='true'] .content-fade {
+    left: 0;
+    right: 0;
+  }
+
+  .app[data-compact-nav='true'] .content-fade-bottom {
+    bottom: 0;
+  }
+
   /* Compact windows (phones, narrow foldables, snapped split-screen):
      tighten page rhythm and keep the gesture bar clear of content. */
   .app[data-width-class='compact'] {
@@ -539,6 +574,17 @@
 
   .app[data-width-class='compact'] .page-wrapper {
     padding-right: 0;
+  }
+
+  /*
+   * Phones get a full-height page column so views can distribute themselves
+   * down the screen instead of stacking into the top third and leaving the
+   * rest of a tall display empty. .page-wrapper already resolves a definite
+   * min-height against the content grid area, so flex children can claim it.
+   */
+  .app[data-compact-nav='true'] .page-wrapper {
+    display: flex;
+    flex-direction: column;
   }
 
   /*
