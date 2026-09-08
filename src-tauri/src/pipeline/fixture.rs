@@ -65,7 +65,7 @@ async fn transcribe_fixture_provider(
     }
 
     transcription::transcribe(
-        audio.wav.clone(),
+        audio.wav_bytes()?,
         ProviderId::from_str(provider_id),
         config.key_for(provider_id),
         &config.transcription_language,
