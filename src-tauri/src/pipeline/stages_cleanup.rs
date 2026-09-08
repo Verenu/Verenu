@@ -637,7 +637,8 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         );
     }
 
-    // Fast path: entire transcription was a single snippet trigger — skip the LLM.
+    // Fast path: an exact snippet trigger can skip the LLM unless a later
+    // cleanup instruction needs the expanded text to reach the model.
     let pure_expansion = if snippet_instructions.is_empty() {
         snippets::try_pure_snippet_expand_from(raw, &db_snippets, db_handle)
     } else {
@@ -671,6 +672,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     .copied()
     .collect::<Vec<_>>()
     .join("\n\n");
+    let has_user_overrides = !user_overrides.trim().is_empty();
     log::debug!(
         "pipeline: cleanup prompt inputs overrides_chars={} evidence_chars={} override_lines={} evidence_lines={}",
         user_overrides.chars().count(),
@@ -685,7 +687,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     let final_text = if should_run_cleanup_llm(
         cfg.cleanup_enabled,
         has_cleanup_key_in_chain(cfg),
-        pure_expansion.is_none(),
+        pure_expansion.is_none() || has_user_overrides,
         &cfg.cleanup_intensity,
         profile,
         needs_transcript_fusion,
