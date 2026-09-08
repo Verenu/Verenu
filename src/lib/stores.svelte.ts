@@ -92,6 +92,9 @@ export const appStore = $state({
   settingsAnimDir: 1 as 1 | -1,
   appVersion: '',
   devModeEnabled: false,
+  // Developer-only: dump diagnostics into the OS accessibility tree for agent
+  // SnapShots. Off by default. Real screen-reader use is unusable while on.
+  ruinAccessibility: false,
   appearanceMode: 'system' as AppearanceMode,
   accentColor: null as string | null,
   // Mirrors the `cleanup_enabled` setting. Shared here (rather than owned

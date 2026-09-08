@@ -174,6 +174,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
     ),
     setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
     setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
+    setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
     setting_spec(store::ADVANCED_MODEL_UI, SettingKind::Bool, true, true),
     setting_spec(
         store::CLEANUP_PROMPT_OVERRIDE,
@@ -507,6 +508,11 @@ pub async fn save_setting(
     } else {
         None
     };
+    let ruin_accessibility = if key == store::RUIN_ACCESSIBILITY {
+        value.as_bool()
+    } else {
+        None
+    };
     let settings = store::settings_handle(&app)?;
     let key_clone = key.clone();
     let save_result = run_blocking("save_setting", move || {
@@ -574,6 +580,10 @@ pub async fn save_setting(
         crate::media::mic_mute_trigger::reload(&app);
     }
 
+    if let Some(enabled) = ruin_accessibility {
+        let _ = app.emit("verenu:ruin-accessibility-changed", enabled);
+    }
+
     if let Some(days) = history_prune_days {
         let db = app.state::<DbHandle>().inner().clone();
         let deleted =
@@ -603,6 +613,7 @@ pub struct AllSettings {
     pub clipboard_phrase_enabled: Option<bool>,
     pub legacy_features_enabled: Option<bool>,
     pub sync_enabled: Option<bool>,
+    pub ruin_accessibility: Option<bool>,
     pub transcription_provider: Option<String>,
     pub transcription_model: Option<String>,
     pub transcription_language: Option<String>,
@@ -674,6 +685,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         clipboard_phrase_enabled: bool_val(store::CLIPBOARD_PHRASE_ENABLED),
         legacy_features_enabled: bool_val(store::LEGACY_FEATURES_ENABLED),
         sync_enabled: bool_val(store::SYNC_ENABLED),
+        ruin_accessibility: bool_val(store::RUIN_ACCESSIBILITY),
         transcription_provider: str_val(store::TRANSCRIPTION_PROVIDER),
         transcription_model: str_val(store::TRANSCRIPTION_MODEL),
         transcription_language: str_val(store::TRANSCRIPTION_LANGUAGE),

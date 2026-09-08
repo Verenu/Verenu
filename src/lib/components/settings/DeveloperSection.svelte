@@ -20,6 +20,7 @@
   let logViewport: HTMLDivElement | null = null;
   let verboseEnabled = $state(false);
   let forceSetupOnLaunch = $state(false);
+  let ruinAccessibility = $state(false);
   let copied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   let providerStatusRaw = $state('');
@@ -147,17 +148,21 @@
 
   async function loadDevFlags() {
     try {
-      const [force, verbose, betaUpdates, sync] = await Promise.all([
+      const [force, verbose, betaUpdates, sync, ruin] = await Promise.all([
         invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }),
         invoke<boolean>('get_dev_logging_enabled'),
         invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
+        invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
       ]);
       forceSetupOnLaunch = force ?? false;
       verboseEnabled = verbose ?? false;
       appStore.betaUpdatesEnabled = betaUpdates ?? false;
       syncEnabled = sync ?? false;
       appStore.syncEnabled = sync ?? false;
+      ruinAccessibility = ruin ?? false;
+      appStore.ruinAccessibility = ruinAccessibility;
+      if (ruinAccessibility) appStore.devModeEnabled = true;
       storageFullSimulation = await invoke<boolean>('get_storage_full_simulation');
     } catch (err) {
       console.error('Failed to load dev flags:', err);
@@ -221,6 +226,19 @@
     } catch (err) {
       forceSetupOnLaunch = !value;
       console.error('Failed to save force_setup_on_launch:', err);
+    }
+  }
+
+  async function handleRuinAccessibility(value: boolean) {
+    ruinAccessibility = value;
+    appStore.ruinAccessibility = value;
+    if (value) appStore.devModeEnabled = true;
+    try {
+      await saveSetting('ruin_accessibility', value);
+    } catch (err) {
+      ruinAccessibility = !value;
+      appStore.ruinAccessibility = !value;
+      console.error('Failed to save ruin_accessibility:', err);
     }
   }
 
@@ -332,7 +350,21 @@
 <svelte:window onkeydown={handleSyncApprovalKeydown} />
 
 <h2 class="settings-h">Developer</h2>
-<p class="panel-note">Session log stream from backend runtime. Dev mode resets after app restart.</p>
+<p class="panel-note">Session log stream from backend runtime. Dev mode resets after app restart. Ruin accessibility is the first toggle on this page.</p>
+<div class="setting-row" data-setting-target="developer-ruin-accessibility">
+  <div>
+    <div class="label">Ruin accessibility</div>
+    <div class="desc">
+      Stuff a diagnostics dump into the OS accessibility tree so T3 Code SnapShots can read version, settings, pipeline state, and page structure. Screen readers will speak this dump. Persists across restarts. Off by default.
+    </div>
+  </div>
+  <Toggle checked={ruinAccessibility} onchange={handleRuinAccessibility} label="Ruin accessibility" />
+</div>
+<div class="privacy-warn" role="note">
+  <strong>Agent dump:</strong> while this is on, any process with accessibility permission can read the dump.
+  API keys, clipboard phrase, cleanup prompt text, logs, and dictated history stay out of it.
+  Turn it off before using Verenu with a screen reader.
+</div>
 <div class="setting-row beta-setting-row" data-setting-target="developer-sync">
   <div>
     <div class="label">LAN Device Sync</div>
