@@ -30,19 +30,6 @@ pub struct Context {
     pub updated_at: String,
 }
 
-/// A context that currently contains a dictionary entry or snippet.
-///
-/// The library rows themselves are globally unique, while these assignments
-/// determine which context groups use them. Keeping this small location shape
-/// separate lets the UI explain a duplicate precisely without exposing the
-/// join tables.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ContextAssignment {
-    pub id: i64,
-    pub name: String,
-    pub is_everywhere: bool,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContextTarget {
     pub id: i64,
@@ -186,52 +173,6 @@ pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
     query_context_conn(&conn, context_id)
 }
 
-pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<ContextAssignment>> {
-    let normalized_term = require_nonempty_trimmed("Term", term)?;
-    let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.is_everywhere
-         FROM contexts c
-         INNER JOIN dictionary_contexts dc ON dc.context_id = c.id
-         INNER JOIN dictionary d ON d.id = dc.dictionary_id
-         WHERE d.term = ?1
-         ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_term], |row| {
-            Ok(ContextAssignment {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                is_everywhere: row.get::<_, i64>(2)? != 0,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<ContextAssignment>> {
-    let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
-    let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.is_everywhere
-         FROM contexts c
-         INNER JOIN snippet_contexts sc ON sc.context_id = c.id
-         INNER JOIN snippets s ON s.id = sc.snippet_id
-         WHERE s.trigger = ?1
-         ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_trigger], |row| {
-            Ok(ContextAssignment {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                is_everywhere: row.get::<_, i64>(2)? != 0,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
 fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
         "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at
@@ -279,83 +220,6 @@ pub fn insert_context_returning(
     )?;
     let id = conn.last_insert_rowid();
     query_context_conn(&conn, id)
-}
-
-fn context_name_exists(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM contexts WHERE name = ?1)",
-        params![name],
-        |row| row.get(0),
-    )?)
-}
-
-fn duplicate_context_name(conn: &Connection, source_name: &str) -> Result<String> {
-    for copy_number in 1..10_000 {
-        let suffix = if copy_number == 1 {
-            " copy".to_string()
-        } else {
-            format!(" copy {copy_number}")
-        };
-        let base_len = CONTEXT_NAME_CHAR_LIMIT.saturating_sub(suffix.chars().count());
-        let base: String = source_name.chars().take(base_len).collect();
-        let candidate = format!("{base}{suffix}");
-        if !context_name_exists(conn, &candidate)? {
-            return Ok(candidate);
-        }
-    }
-    anyhow::bail!("Could not find an available name for the duplicated context")
-}
-
-/// Copies a user context's behavior and assigned library content into a new
-/// unpinned context. App and website targets are deliberately not copied:
-/// each target resolves to one context, so copying one would silently move it
-/// away from the original group.
-pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
-    let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
-    let source = query_context_conn(&tx, context_id)?;
-    if source.is_everywhere {
-        anyhow::bail!("The Everywhere context cannot be duplicated");
-    }
-
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM contexts WHERE is_everywhere = 0",
-        [],
-        |row| row.get(0),
-    )?;
-    if count >= MAX_USER_CONTEXTS {
-        anyhow::bail!("You've reached the limit of {MAX_USER_CONTEXTS} context groups");
-    }
-
-    let name = duplicate_context_name(&tx, &source.name)?;
-    tx.execute(
-        "INSERT INTO contexts (
-           name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            name,
-            source.icon,
-            source.tone,
-            source.cleanup_intensity,
-            source.color,
-            source.custom_instructions,
-            source.contextual_formatting_disabled,
-        ],
-    )?;
-    let duplicate_id = tx.last_insert_rowid();
-    tx.execute(
-        "INSERT INTO dictionary_contexts (context_id, dictionary_id)
-         SELECT ?1, dictionary_id FROM dictionary_contexts WHERE context_id = ?2",
-        params![duplicate_id, context_id],
-    )?;
-    tx.execute(
-        "INSERT INTO snippet_contexts (context_id, snippet_id)
-         SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
-        params![duplicate_id, context_id],
-    )?;
-    tx.commit()?;
-    query_context_conn(&conn, duplicate_id)
 }
 
 /// Everywhere is editable like any other context — it is only undeletable.
