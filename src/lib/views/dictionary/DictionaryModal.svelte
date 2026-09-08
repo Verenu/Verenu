@@ -2,7 +2,7 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
-  import { formatIpcError, type DictionaryEntry } from '../../stores';
+  import { formatIpcError, type Context, type DictionaryEntry } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
@@ -57,6 +57,26 @@
     return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
   }
 
+  async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([1, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const entries = await invoke<DictionaryEntry[]>('get_context_dictionary', { contextId: context.id });
+      return entries.some((entry) => entry.term === term)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
+
   async function saveModal() {
     // Read directly from DOM elements at click time to bypass WKWebView
     // bind:value paste-sync lag, matching the pattern in Snippets.svelte.
@@ -106,7 +126,7 @@
       const msg = formatIpcError(err);
       if (mode === 'add' && contextId != null && contextId !== 1) {
         try {
-          conflictContexts = await invoke<ContextAssignment[]>('get_dictionary_entry_contexts', { term });
+          conflictContexts = await findConflictContexts(term);
         } catch {
           conflictContexts = [];
         }
@@ -123,11 +143,19 @@
     movingExisting = true;
     saveError = '';
     try {
-      const moved = await invoke<DictionaryEntry>('move_dictionary_entry_to_context', {
-        term,
+      const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
+      if (!existing) throw new Error(`"${term}" was not found`);
+      await invoke('set_dictionary_context_assignment', {
         contextId,
+        dictionaryId: existing.id,
+        assigned: true,
       });
-      onSaved(moved);
+      await invoke('set_dictionary_context_assignment', {
+        contextId: 1,
+        dictionaryId: existing.id,
+        assigned: false,
+      });
+      onSaved(existing);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);

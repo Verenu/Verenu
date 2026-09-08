@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '../../tauri';
-  import { formatIpcError, type Snippet } from '../../stores';
+  import { formatIpcError, type Context, type Snippet } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
@@ -56,6 +56,26 @@
     return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
   }
 
+  async function findConflictContexts(trigger: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([1, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const snippets = await invoke<Snippet[]>('get_context_snippets', { contextId: context.id });
+      return snippets.some((snippet) => snippet.trigger === trigger)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
+
   async function saveModal() {
     // Read straight from the DOM elements. On WKWebView, `bind:value` can fail
     // to propagate a pasted value into reactive state before the click fires.
@@ -108,7 +128,7 @@
       const msg = formatIpcError(err);
       if (mode === 'add' && contextId != null && contextId !== 1) {
         try {
-          conflictContexts = await invoke<ContextAssignment[]>('get_snippet_entry_contexts', { trigger: t });
+          conflictContexts = await findConflictContexts(t);
         } catch {
           conflictContexts = [];
         }
@@ -128,11 +148,19 @@
     movingExisting = true;
     saveError = '';
     try {
-      const moved = await invoke<Snippet>('move_snippet_entry_to_context', {
-        trigger,
+      const existing = (await invoke<Snippet[]>('get_snippets')).find((snippet) => snippet.trigger === trigger);
+      if (!existing) throw new Error(`"${trigger}" was not found`);
+      await invoke('set_snippet_context_assignment', {
         contextId,
+        snippetId: existing.id,
+        assigned: true,
       });
-      onSaved(moved);
+      await invoke('set_snippet_context_assignment', {
+        contextId: 1,
+        snippetId: existing.id,
+        assigned: false,
+      });
+      onSaved(existing);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);
@@ -374,6 +402,9 @@
     border: 1px solid var(--danger-line);
     border-radius: var(--r-sm);
   }
+
+  .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
 
   .field-label {
     font-size: 11.5px;

@@ -30,19 +30,6 @@ pub struct Context {
     pub updated_at: String,
 }
 
-/// A context that currently contains a dictionary entry or snippet.
-///
-/// The library rows themselves are globally unique, while these assignments
-/// determine which context groups use them. Keeping this small location shape
-/// separate lets the UI explain a duplicate precisely without exposing the
-/// join tables.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ContextAssignment {
-    pub id: i64,
-    pub name: String,
-    pub is_everywhere: bool,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContextTarget {
     pub id: i64,
@@ -186,52 +173,6 @@ pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
     query_context_conn(&conn, context_id)
 }
 
-pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<ContextAssignment>> {
-    let normalized_term = require_nonempty_trimmed("Term", term)?;
-    let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.is_everywhere
-         FROM contexts c
-         INNER JOIN dictionary_contexts dc ON dc.context_id = c.id
-         INNER JOIN dictionary d ON d.id = dc.dictionary_id
-         WHERE d.term = ?1
-         ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_term], |row| {
-            Ok(ContextAssignment {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                is_everywhere: row.get::<_, i64>(2)? != 0,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<ContextAssignment>> {
-    let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
-    let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.is_everywhere
-         FROM contexts c
-         INNER JOIN snippet_contexts sc ON sc.context_id = c.id
-         INNER JOIN snippets s ON s.id = sc.snippet_id
-         WHERE s.trigger = ?1
-         ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_trigger], |row| {
-            Ok(ContextAssignment {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                is_everywhere: row.get::<_, i64>(2)? != 0,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
 fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
         "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at
@@ -279,83 +220,6 @@ pub fn insert_context_returning(
     )?;
     let id = conn.last_insert_rowid();
     query_context_conn(&conn, id)
-}
-
-fn context_name_exists(conn: &Connection, name: &str) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM contexts WHERE name = ?1)",
-        params![name],
-        |row| row.get(0),
-    )?)
-}
-
-fn duplicate_context_name(conn: &Connection, source_name: &str) -> Result<String> {
-    for copy_number in 1..10_000 {
-        let suffix = if copy_number == 1 {
-            " copy".to_string()
-        } else {
-            format!(" copy {copy_number}")
-        };
-        let base_len = CONTEXT_NAME_CHAR_LIMIT.saturating_sub(suffix.chars().count());
-        let base: String = source_name.chars().take(base_len).collect();
-        let candidate = format!("{base}{suffix}");
-        if !context_name_exists(conn, &candidate)? {
-            return Ok(candidate);
-        }
-    }
-    anyhow::bail!("Could not find an available name for the duplicated context")
-}
-
-/// Copies a user context's behavior and assigned library content into a new
-/// unpinned context. App and website targets are deliberately not copied:
-/// each target resolves to one context, so copying one would silently move it
-/// away from the original group.
-pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
-    let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
-    let source = query_context_conn(&tx, context_id)?;
-    if source.is_everywhere {
-        anyhow::bail!("The Everywhere context cannot be duplicated");
-    }
-
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM contexts WHERE is_everywhere = 0",
-        [],
-        |row| row.get(0),
-    )?;
-    if count >= MAX_USER_CONTEXTS {
-        anyhow::bail!("You've reached the limit of {MAX_USER_CONTEXTS} context groups");
-    }
-
-    let name = duplicate_context_name(&tx, &source.name)?;
-    tx.execute(
-        "INSERT INTO contexts (
-           name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            name,
-            source.icon,
-            source.tone,
-            source.cleanup_intensity,
-            source.color,
-            source.custom_instructions,
-            source.contextual_formatting_disabled,
-        ],
-    )?;
-    let duplicate_id = tx.last_insert_rowid();
-    tx.execute(
-        "INSERT INTO dictionary_contexts (context_id, dictionary_id)
-         SELECT ?1, dictionary_id FROM dictionary_contexts WHERE context_id = ?2",
-        params![duplicate_id, context_id],
-    )?;
-    tx.execute(
-        "INSERT INTO snippet_contexts (context_id, snippet_id)
-         SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
-        params![duplicate_id, context_id],
-    )?;
-    tx.commit()?;
-    query_context_conn(&conn, duplicate_id)
 }
 
 /// Everywhere is editable like any other context — it is only undeletable.
@@ -1221,122 +1085,6 @@ mod tests {
                 .len(),
             1
         );
-    }
-
-    #[test]
-    fn conflicting_content_reports_and_moves_from_everywhere() {
-        let db = open(":memory:").expect("db");
-        let context =
-            insert_context_returning(&db, "Work", None, None, None, None, false).expect("context");
-        let dictionary = insert_dictionary_entry_returning(&db, "Grok", Some("Glock"), None)
-            .expect("dictionary");
-        let snippet =
-            insert_snippet_returning(&db, "sig", "Best regards", "", None).expect("snippet");
-
-        let dictionary_locations = query_dictionary_entry_contexts(&db, "Grok").expect("locations");
-        assert_eq!(dictionary_locations.len(), 1);
-        assert_eq!(dictionary_locations[0].id, EVERYWHERE_CONTEXT_ID);
-        assert!(dictionary_locations[0].is_everywhere);
-
-        let snippet_locations = query_snippet_entry_contexts(&db, "sig").expect("locations");
-        assert_eq!(snippet_locations.len(), 1);
-        assert_eq!(snippet_locations[0].id, EVERYWHERE_CONTEXT_ID);
-        assert!(snippet_locations[0].is_everywhere);
-
-        let moved_dictionary =
-            move_dictionary_entry_to_context(&db, "Grok", context.id).expect("move dictionary");
-        assert_eq!(moved_dictionary.id, dictionary.id);
-        assert_eq!(moved_dictionary.mistake.as_deref(), Some("Glock"));
-        assert!(query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.id != dictionary.id));
-        assert!(query_dictionary_for_context(&db, context.id)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.id == dictionary.id));
-
-        let moved_snippet =
-            move_snippet_entry_to_context(&db, "sig", context.id).expect("move snippet");
-        assert_eq!(moved_snippet.id, snippet.id);
-        assert_eq!(moved_snippet.expansion, "Best regards");
-        assert!(query_snippets_for_context(&db, EVERYWHERE_CONTEXT_ID)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.id != snippet.id));
-        assert!(query_snippets_for_context(&db, context.id)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.id == snippet.id));
-    }
-
-    #[test]
-    fn duplicating_context_copies_settings_and_content_without_targets() {
-        let db = open(":memory:").expect("db");
-        let source = insert_context_returning(
-            &db,
-            "Development",
-            Some("code"),
-            Some("casual"),
-            Some("high"),
-            Some("Use concise technical language."),
-            true,
-        )
-        .expect("source context");
-        update_context_color(&db, source.id, Some("oklch(0.65 0.09 250)")).expect("source color");
-        let dictionary = insert_dictionary_entry_returning(&db, "Tauri", Some("Tory"), None)
-            .expect("dictionary");
-        let snippet =
-            insert_snippet_returning(&db, "sig", "Best regards", "", None).expect("snippet");
-        set_dictionary_context_assignment(&db, source.id, dictionary.id, true)
-            .expect("dictionary assignment");
-        set_snippet_context_assignment(&db, source.id, snippet.id, true)
-            .expect("snippet assignment");
-        assign_context_target(&db, source.id, "code.exe").expect("app target");
-        assign_context_website(&db, source.id, "docs.example.com").expect("website target");
-
-        let duplicate = duplicate_context(&db, source.id).expect("duplicate context");
-
-        assert_eq!(duplicate.name, "Development copy");
-        assert_eq!(duplicate.icon.as_deref(), Some("code"));
-        assert_eq!(duplicate.tone.as_deref(), Some("casual"));
-        assert_eq!(duplicate.cleanup_intensity.as_deref(), Some("high"));
-        assert_eq!(
-            duplicate.custom_instructions.as_deref(),
-            Some("Use concise technical language.")
-        );
-        assert_eq!(duplicate.color.as_deref(), Some("oklch(0.65 0.09 250)"));
-        assert!(query_dictionary_for_context(&db, duplicate.id)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.id == dictionary.id));
-        assert!(query_snippets_for_context(&db, duplicate.id)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.id == snippet.id));
-        assert!(query_context_targets(&db, Some(duplicate.id))
-            .unwrap()
-            .is_empty());
-        assert!(query_context_website_targets(&db, Some(duplicate.id))
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn duplicated_context_names_are_unique() {
-        let db = open(":memory:").expect("db");
-        let source = insert_context_returning(&db, "Writing", None, None, None, None, false)
-            .expect("source");
-        insert_context_returning(&db, "Writing copy", None, None, None, None, false).expect("copy");
-
-        let duplicate = duplicate_context(&db, source.id).expect("numbered copy");
-        assert_eq!(duplicate.name, "Writing copy 2");
-    }
-
-    #[test]
-    fn everywhere_context_cannot_be_duplicated() {
-        let db = open(":memory:").expect("db");
-        assert!(duplicate_context(&db, EVERYWHERE_CONTEXT_ID).is_err());
     }
 
     #[test]

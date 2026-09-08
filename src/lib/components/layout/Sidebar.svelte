@@ -443,11 +443,53 @@
     if (context) editContext(context);
   }
 
+  function duplicateContextName(sourceName: string) {
+    const names = new Set(contextsStore.contexts.map((context) => context.name.toLowerCase()));
+    for (let copyNumber = 1; copyNumber < 10_000; copyNumber += 1) {
+      const suffix = copyNumber === 1 ? ' copy' : ` copy ${copyNumber}`;
+      const base = [...sourceName].slice(0, Math.max(0, 30 - [...suffix].length)).join('');
+      const candidate = `${base}${suffix}`;
+      if (!names.has(candidate.toLowerCase())) return candidate;
+    }
+    throw new Error('Could not find an available name for the duplicated context');
+  }
+
   async function duplicateContext(context: Context) {
     if (context.is_everywhere) return;
     closeContextMenu();
     try {
-      const duplicate = await invoke<Context>('duplicate_context', { contextId: context.id });
+      const [dictionary, snippets] = await Promise.all([
+        invoke<{ id: number }[]>('get_context_dictionary', { contextId: context.id }),
+        invoke<{ id: number }[]>('get_context_snippets', { contextId: context.id }),
+      ]);
+      const duplicate = await invoke<Context>('create_context', {
+        name: duplicateContextName(context.name),
+        icon: context.icon,
+        tone: context.tone,
+        cleanupIntensity: context.cleanup_intensity,
+        customInstructions: context.custom_instructions,
+        contextualFormattingDisabled: context.contextual_formatting_disabled,
+      });
+      try {
+        if (context.color) {
+          await invoke('update_context_color', { contextId: duplicate.id, color: context.color });
+        }
+        await Promise.all([
+          ...dictionary.map((entry) => invoke('set_dictionary_context_assignment', {
+            contextId: duplicate.id,
+            dictionaryId: entry.id,
+            assigned: true,
+          })),
+          ...snippets.map((snippet) => invoke('set_snippet_context_assignment', {
+            contextId: duplicate.id,
+            snippetId: snippet.id,
+            assigned: true,
+          })),
+        ]);
+      } catch (error) {
+        await invoke('delete_context', { contextId: duplicate.id }).catch(() => undefined);
+        throw error;
+      }
       contextsStore.contexts = [...contextsStore.contexts, duplicate];
       selectContext(duplicate.id);
       appStore.currentPage = 'contexts';
