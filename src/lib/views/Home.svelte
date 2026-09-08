@@ -319,6 +319,10 @@
         <GlobalMessageBanner message={appStore.globalMessage.message} />
       {/if}
 
+      {#if appStore.recoveryStorageWarning}
+        <GlobalMessageBanner message="Your drive is full. Some features won't work properly." />
+      {/if}
+
       {#if appStore.providerStatusAlerts.length > 0}
         <ProviderStatusBanner alerts={appStore.providerStatusAlerts} />
       {:else if appStore.updateInfo}
