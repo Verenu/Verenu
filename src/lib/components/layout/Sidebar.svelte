@@ -443,6 +443,19 @@
     if (context) editContext(context);
   }
 
+  async function duplicateContext(context: Context) {
+    if (context.is_everywhere) return;
+    closeContextMenu();
+    try {
+      const duplicate = await invoke<Context>('duplicate_context', { contextId: context.id });
+      contextsStore.contexts = [...contextsStore.contexts, duplicate];
+      selectContext(duplicate.id);
+      appStore.currentPage = 'contexts';
+    } catch (error) {
+      contextError = classifyIpcError(error).message;
+    }
+  }
+
   async function togglePin(context: Context) {
     const pinned = !context.pinned_at;
     closeContextMenu();
@@ -842,6 +855,9 @@
     out:fly={{ y: motionPx(4), duration: motionMs(120) }}
   >
     <button class="ui-dropdown-option" type="button" role="menuitem" onclick={() => editContextById(menuContext.id)}>Edit</button>
+    {#if !menuContext.is_everywhere}
+      <button class="ui-dropdown-option" type="button" role="menuitem" onclick={() => void duplicateContext(menuContext)}>Duplicate</button>
+    {/if}
     <button class="ui-dropdown-option" type="button" role="menuitem" onclick={() => void togglePin(menuContext)}>
       {menuContext.pinned_at ? 'Unpin' : 'Pin'}
     </button>

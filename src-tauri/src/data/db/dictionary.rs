@@ -18,6 +18,19 @@ pub struct DictionaryEntry {
     pub created_at: String,
 }
 
+fn dictionary_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DictionaryEntry> {
+    Ok(DictionaryEntry {
+        id: row.get(0)?,
+        term: row.get(1)?,
+        mistake: row.get(2)?,
+        auto_learned: row.get::<_, i64>(3)? != 0,
+        correction_count: row.get(4)?,
+        confidence_tier: row.get(5)?,
+        last_seen_at: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoLearnEvent {
     pub id: i64,
@@ -182,6 +195,67 @@ pub fn insert_dictionary_entry_returning(
     )?;
     tx.commit()?;
     Ok(CreatedRecordMeta { id, created_at })
+}
+
+/// Removes a dictionary entry from Everywhere and assigns the existing row
+/// to a specific context. The correction and all learning metadata stay
+/// attached to the same global row.
+pub fn move_dictionary_entry_to_context(
+    db: &Db,
+    term: &str,
+    target_context_id: i64,
+) -> Result<DictionaryEntry> {
+    let normalized_term = require_nonempty_trimmed("Term", term)?;
+    validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
+
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+    if target_context_id == everywhere_id {
+        anyhow::bail!("The Everywhere context cannot be the move destination");
+    }
+    let target_is_everywhere: Option<bool> = tx
+        .query_row(
+            "SELECT is_everywhere FROM contexts WHERE id = ?1",
+            params![target_context_id],
+            |row| Ok(row.get::<_, i64>(0)? != 0),
+        )
+        .optional()?;
+    match target_is_everywhere {
+        Some(false) => {}
+        Some(true) => anyhow::bail!("The Everywhere context cannot be the move destination"),
+        None => anyhow::bail!("Context {target_context_id} was not found"),
+    }
+
+    let dictionary_id: i64 = tx
+        .query_row(
+            "SELECT id FROM dictionary WHERE term = ?1",
+            params![normalized_term],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("\"{normalized_term}\" was not found"))?;
+    let removed = tx.execute(
+        "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
+        params![everywhere_id, dictionary_id],
+    )?;
+    if removed == 0 {
+        anyhow::bail!("\"{normalized_term}\" is not assigned to Everywhere");
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+         VALUES (?1, ?2)",
+        params![target_context_id, dictionary_id],
+    )?;
+    let entry = tx.query_row(
+        "SELECT id, term, mistake, auto_learned, correction_count, confidence_tier,
+                last_seen_at, created_at
+         FROM dictionary WHERE id = ?1",
+        params![dictionary_id],
+        dictionary_entry_from_row,
+    )?;
+    tx.commit()?;
+    Ok(entry)
 }
 
 /// Ensures the dictionary's "Verenu" entry (if any) lists every known

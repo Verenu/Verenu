@@ -9,11 +9,13 @@
   let {
     mode,
     snippet,
+    contextId,
     onClose,
     onSaved,
   }: {
     mode: 'add' | 'edit';
     snippet?: Snippet;
+    contextId?: number | null;
     onClose: () => void;
     onSaved: (snippet: Snippet) => void;
   } = $props();
@@ -28,9 +30,31 @@
   let draftInstructions = $state(snippet?.instructions ?? '');
   let saving = $state(false);
   let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
   let triggerInput = $state<HTMLInputElement | null>(null);
   let expansionEl = $state<HTMLTextAreaElement | null>(null);
   let instructionsEl = $state<HTMLTextAreaElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== 1
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
 
   async function saveModal() {
     // Read straight from the DOM elements. On WKWebView, `bind:value` can fail
@@ -53,12 +77,14 @@
     }
     saving = true;
     saveError = '';
+    conflictContexts = [];
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(await invoke<unknown>('create_snippet', {
           trigger: t,
           expansion: e,
           instructions: i,
+          contextId: contextId ?? null,
         }));
         onSaved({
           id: created.id,
@@ -80,11 +106,39 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      saveError = msg.includes('UNIQUE')
-        ? 'A snippet with that trigger already exists.'
-        : msg;
+      if (mode === 'add' && contextId != null && contextId !== 1) {
+        try {
+          conflictContexts = await invoke<ContextAssignment[]>('get_snippet_entry_contexts', { trigger: t });
+        } catch {
+          conflictContexts = [];
+        }
+      }
+      saveError = conflictContexts.length > 0
+        ? `"${t}" already exists inside of ${conflictLocation()}. Move it here?`
+        : msg.includes('UNIQUE')
+          ? 'A snippet with that trigger already exists.'
+          : msg;
     }
     finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === 1) return;
+    const trigger = (triggerInput?.value ?? draftTrigger).trim();
+    movingExisting = true;
+    saveError = '';
+    try {
+      const moved = await invoke<Snippet>('move_snippet_entry_to_context', {
+        trigger,
+        contextId,
+      });
+      onSaved(moved);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -182,7 +236,17 @@
 
   <div class="modal-footer">
     {#if saveError}
-      <p class="save-error">{saveError}</p>
+      <div class="save-error" role="alert">
+        <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
+      </div>
     {/if}
     <div class="footer-actions">
       <button class="btn-ghost" onclick={onClose}>Cancel</button>
@@ -297,6 +361,11 @@
   }
 
   .save-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
     font-size: 11.5px;
     color: var(--danger);
     margin: 0;

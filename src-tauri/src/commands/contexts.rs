@@ -38,6 +38,15 @@ pub async fn create_context(
 }
 
 #[tauri::command]
+pub async fn duplicate_context(app: AppHandle, context_id: i64) -> Result<db::Context, String> {
+    let db = db_state(&app);
+    run_blocking("duplicate_context", move || {
+        db::duplicate_context(&db, context_id).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Result<(), String> {
     let db = db_state(&app);
     run_blocking("update_context", move || {
@@ -249,6 +258,56 @@ pub async fn get_context_snippets(
     let db = db_state(&app);
     run_blocking("get_context_snippets", move || {
         db::query_snippets_for_context(&db, context_id).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_dictionary_entry_contexts(
+    app: AppHandle,
+    term: String,
+) -> Result<Vec<db::ContextAssignment>, String> {
+    let db = db_state(&app);
+    run_blocking("get_dictionary_entry_contexts", move || {
+        db::query_dictionary_entry_contexts(&db, &term).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_snippet_entry_contexts(
+    app: AppHandle,
+    trigger: String,
+) -> Result<Vec<db::ContextAssignment>, String> {
+    let db = db_state(&app);
+    run_blocking("get_snippet_entry_contexts", move || {
+        db::query_snippet_entry_contexts(&db, &trigger).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn move_dictionary_entry_to_context(
+    app: AppHandle,
+    term: String,
+    context_id: i64,
+) -> Result<db::DictionaryEntry, String> {
+    let db = db_state(&app);
+    run_blocking("move_dictionary_entry_to_context", move || {
+        db::move_dictionary_entry_to_context(&db, &term, context_id).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn move_snippet_entry_to_context(
+    app: AppHandle,
+    trigger: String,
+    context_id: i64,
+) -> Result<db::Snippet, String> {
+    let db = db_state(&app);
+    run_blocking("move_snippet_entry_to_context", move || {
+        db::move_snippet_entry_to_context(&db, &trigger, context_id).map_err(|e| e.to_string())
     })
     .await
 }
