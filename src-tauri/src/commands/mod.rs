@@ -179,6 +179,7 @@ mod tests {
             crate::data::store::AUTO_SPACING,
             crate::data::store::CONTEXTUAL_FORMATTING,
             crate::data::store::DUAL_TRANSCRIPTION_ENABLED,
+            crate::data::store::RUIN_ACCESSIBILITY,
         ] {
             assert!(
                 validate_setting(key, &json!("yes")).is_err(),

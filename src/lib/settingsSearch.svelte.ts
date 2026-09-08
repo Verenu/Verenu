@@ -99,6 +99,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
 
   { id: 'developer-sync', section: 'developer', label: 'LAN device sync', description: 'Enable experimental device-to-device sync', target: 'developer-sync', keywords: ['network', 'pairing'] },
   { id: 'developer-setup', section: 'developer', label: 'Force setup on launch', description: 'Show onboarding every time Verenu starts', target: 'developer-setup', keywords: ['onboarding', 'startup'] },
+  { id: 'developer-ruin-accessibility', section: 'developer', label: 'Ruin accessibility', description: 'Dump diagnostics into the accessibility tree for agent SnapShots', target: 'developer-ruin-accessibility', keywords: ['a11y', 'snapshot', 'debug', 'agent', 't3'] },
   { id: 'developer-logs', section: 'developer', label: 'Real-time logs', description: 'View the current diagnostic log stream', target: 'developer-logs', keywords: ['debug', 'logging'] },
   { id: 'developer-download-logs', section: 'developer', label: 'Download logs', description: 'Save session logs to the Downloads folder', target: 'developer-download-logs', keywords: ['debug', 'export'] },
   { id: 'developer-status', section: 'developer', label: 'Provider status check', description: 'Fetch and inspect the provider status response', target: 'developer-status', keywords: ['api', 'health'] },
