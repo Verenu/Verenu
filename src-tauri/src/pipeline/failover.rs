@@ -11,6 +11,7 @@ use super::state::{
 };
 use super::{state, CapturedAudio};
 use crate::core::window_geometry::WindowTarget;
+use crate::data::store;
 use crate::media::audio::{self, DurableSink, DurableSinkError, DurableSinkResult};
 use chrono::{SecondsFormat, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -594,6 +595,7 @@ pub struct LiveWriter {
     pending: Vec<f32>,
     rms_sum_sq: f64,
     failed: bool,
+    storage_full: bool,
     last_checkpoint: Instant,
     superseded: bool,
     app: Option<AppHandle>,
@@ -645,6 +647,7 @@ impl LiveWriter {
                         state,
                         meta,
                         failed: false,
+                        storage_full: false,
                     });
                 }
             }
@@ -694,7 +697,12 @@ impl LiveWriter {
             superseded: false,
             app,
             state,
+            storage_full: false,
         })
+    }
+
+    fn mark_storage_full(&mut self, error: &impl std::fmt::Display) {
+        self.storage_full |= store::is_storage_full_error(&error.to_string());
     }
 
     fn checkpoint(&mut self, finish: bool) {
@@ -705,11 +713,13 @@ impl LiveWriter {
             let pcm = samples_to_pcm(&self.pending);
             if let Err(e) = self.file.write_all(&pcm).and_then(|_| self.file.flush()) {
                 log::warn!("failover: live pcm write failed: {e}");
+                self.mark_storage_full(&e);
                 self.failed = true;
                 return;
             }
             if let Err(e) = self.file.sync_data() {
                 log::warn!("failover: live pcm sync failed: {e}");
+                self.mark_storage_full(&e);
                 self.failed = true;
                 return;
             }
@@ -724,6 +734,7 @@ impl LiveWriter {
             let session_path = slot_dir(&self.root, true).join(SESSION_FILE);
             if let Err(e) = write_session_atomic(&session_path, &self.meta) {
                 log::warn!("failover: live sidecar write failed: {e}");
+                self.mark_storage_full(&e);
                 self.failed = true;
             }
             self.pending.clear();
@@ -758,6 +769,17 @@ impl LiveWriter {
             id_prefix(&self.meta.id),
             self.meta.duration_ms
         );
+    }
+
+    fn invalidate_recovery(&self) {
+        delete_live(&self.root);
+        if let Some(state) = &self.state {
+            if let Ok(mut st) = lock_state(state) {
+                st.failover_session_id = None;
+                st.failover_reuse_id = false;
+                st.failover_started_at_unix = 0;
+            }
+        }
     }
 }
 
@@ -803,6 +825,7 @@ impl DurableSink for LiveWriter {
         self.checkpoint(true);
         if let Err(e) = self.file.flush().and_then(|_| self.file.sync_all()) {
             log::warn!("failover: final live pcm sync failed: {e}");
+            self.mark_storage_full(&e);
             self.failed = true;
         }
         if self.failed {
@@ -909,11 +932,23 @@ pub fn open_live_writer(
                                 failed_thread.store(true, Ordering::Release);
                                 break;
                             }
+                            if failed_thread.load(Ordering::Acquire) {
+                                writer.invalidate_recovery();
+                                break;
+                            }
                         }
                         WriterMessage::Finish => break,
                     }
                 }
                 let _ = writer.finish();
+                if writer.storage_full {
+                    if let Some(app) = &writer.app {
+                        app.emit("verenu:storage-full", ()).ok();
+                    }
+                }
+                if writer.failed || failed_thread.load(Ordering::Acquire) {
+                    writer.invalidate_recovery();
+                }
                 if writer.failed {
                     failed_thread.store(true, Ordering::Release);
                 }
@@ -926,6 +961,15 @@ pub fn open_live_writer(
         }
         Err(e) => {
             log::warn!("failover: live writer open failed: {e}");
+            abandon_live();
+            if let Ok(mut st) = lock_state(state) {
+                st.failover_session_id = None;
+                st.failover_reuse_id = false;
+                st.failover_started_at_unix = 0;
+            }
+            if store::is_storage_full_error(&e.to_string()) {
+                app.emit("verenu:storage-full", ()).ok();
+            }
             None
         }
     }
@@ -939,22 +983,22 @@ pub fn flush_on_exit(app: &AppHandle) {
     let Some(state) = app.try_state::<SharedState>() else {
         return;
     };
-    let (id, started) = match lock_state(state.inner()) {
-        Ok(st) => (
-            st.failover_session_id.clone(),
-            if st.failover_started_at_unix != 0 {
-                st.failover_started_at_unix
-            } else {
-                now_unix()
-            },
-        ),
-        Err(_) => return,
-    };
     let Some((session, mic_id)) = state::take_recording_plain(state.inner()) else {
         return;
     };
     match session.stop() {
         Ok(result) => {
+            let (id, started) = match lock_state(state.inner()) {
+                Ok(st) => (
+                    st.failover_session_id.clone(),
+                    if st.failover_started_at_unix != 0 {
+                        st.failover_started_at_unix
+                    } else {
+                        now_unix()
+                    },
+                ),
+                Err(_) => (None, now_unix()),
+            };
             if let Some(id) = id {
                 if result.duration_ms >= MIN_RECORDING_MS {
                     let audio = CapturedAudio::from_samples(

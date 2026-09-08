@@ -18,11 +18,29 @@ impl Drop for ExclusiveMicReleaseGuard {
     }
 }
 
+pub(crate) struct StoppedCapture {
+    pub(crate) audio: CapturedAudio,
+    pub(crate) rms: f32,
+    pub(crate) raw_rms: f32,
+    pub(crate) recovery_write_failed: bool,
+}
+
+fn disable_recovery_after_write_failure(app: &AppHandle) {
+    super::failover::abandon_live();
+    if let Some(state) = app.try_state::<SharedState>() {
+        if let Ok(mut st) = lock_state(state.inner()) {
+            st.failover_session_id = None;
+            st.failover_reuse_id = false;
+            st.failover_started_at_unix = 0;
+        }
+    }
+}
+
 pub(super) async fn stop_and_capture_audio(
     app: &AppHandle,
     session: audio::RecordingSession,
     exclusive_mic_session_id: Option<u64>,
-) -> Option<(CapturedAudio, f32, f32)> {
+) -> Option<StoppedCapture> {
     let stop_result = tokio::task::spawn_blocking(move || {
         let _mic_release = ExclusiveMicReleaseGuard(exclusive_mic_session_id);
         session.stop()
@@ -82,21 +100,18 @@ pub(super) async fn stop_and_capture_audio(
         }
         audio::RecordingTermination::RecoveryWriteFailed => {
             log::warn!("pipeline: recovery recording could not be kept durable");
-            show_error_pill(
-                app,
-                "Recording could not be saved for recovery. Check available disk space and try again.",
-            )
-            .await;
-            // The live spool contains the last known durable prefix. Do not
-            // delete it just because the current take hit a disk/queue error.
-            return None;
+            // Recovery is optional. Keep the complete in-memory take for the
+            // normal transcription path, but discard the incomplete spool so
+            // it cannot later appear as a misleading continuation prompt.
+            disable_recovery_after_write_failure(app);
         }
     }
-    Some((
-        CapturedAudio::from_samples(samples_16k, sample_rate, duration_ms),
+    Some(StoppedCapture {
+        audio: CapturedAudio::from_samples(samples_16k, sample_rate, duration_ms),
         rms,
         raw_rms,
-    ))
+        recovery_write_failed: termination == audio::RecordingTermination::RecoveryWriteFailed,
+    })
 }
 
 /// Quality gate (min duration / near-silence RMS) against already-captured

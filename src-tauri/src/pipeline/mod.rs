@@ -181,11 +181,17 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     let min_rms = recording_gate_rms(active_gain);
     log::debug!("pipeline: input gate active_gain={active_gain:.2} min_rms={min_rms:.6}");
 
-    let Some((captured_audio, rms, raw_rms)) =
+    let Some(stopped_capture) =
         stop_and_capture_audio(&app, session, exclusive_mic_session_id).await
     else {
         return Err(anyhow::anyhow!("Failed to stop recording"));
     };
+    let StoppedCapture {
+        audio: captured_audio,
+        rms,
+        raw_rms,
+        ..
+    } = stopped_capture;
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
         hide_pill(&app);
@@ -409,7 +415,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // Capture first, gate second: a resumed/prepended recording needs to be
     // merged with the previous session's audio before the quality gate runs,
     // so a short-but-valid continuation isn't rejected on its own merits.
-    let Some((mut captured_audio, mut rms, mut raw_rms)) =
+    let Some(stopped_capture) =
         stop_and_capture_audio(&app, session, exclusive_mic_session_id).await
     else {
         // Stop/capture failures retain any durable prefix for crash recovery;
@@ -417,6 +423,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         state::leave_stopping_if_owned(&state, generation);
         return;
     };
+    let StoppedCapture {
+        audio: mut captured_audio,
+        mut rms,
+        mut raw_rms,
+        ..
+    } = stopped_capture;
     if let Some(prev) = prepend_audio {
         let (merged, merged_rms, merged_raw_rms) =
             match merge_prepend_audio(prev, captured_audio, active_gain) {
