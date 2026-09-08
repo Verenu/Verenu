@@ -263,8 +263,8 @@ pub fn clear_cancelled_capture(state: &SharedState) {
 /// Arc/Bytes handles, so an in-flight pipeline is unaffected.
 pub fn release_expired_capture_audio(state: &SharedState) {
     fn release(audio: &mut CapturedAudio) {
-        if !audio.wav.is_empty() || !audio.samples_16k.is_empty() {
-            audio.wav = bytes::Bytes::new();
+        if audio.wav_len() != 0 || !audio.samples_16k.is_empty() {
+            audio.clear_wav_cache();
             audio.samples_16k = Arc::new(Vec::new());
         }
     }
@@ -397,15 +397,22 @@ pub fn take_active_pipeline_for_escape(state: &SharedState) -> Option<ActivePipe
 /// pipeline: the in-app mic button, calibration, a discarded quick-tap, or
 /// Escape while still actively recording (pre-`Release`).
 pub fn take_recording_plain(state: &SharedState) -> Option<(audio::RecordingSession, Option<u64>)> {
+    take_recording_plain_with_prepend(state).map(|(session, mic_id, _prepend)| (session, mic_id))
+}
+
+pub fn take_recording_plain_with_prepend(
+    state: &SharedState,
+) -> Option<(audio::RecordingSession, Option<u64>, Option<CapturedAudio>)> {
     let mut st = lock_state(state).ok()?;
     match std::mem::replace(&mut st.lifecycle, DictationLifecycle::Idle) {
         DictationLifecycle::Recording {
             session,
             exclusive_mic_session_id,
+            prepend_audio,
             ..
         } => {
             log::info!("lifecycle: recording -> idle (plain cancel/discard)");
-            Some((session, exclusive_mic_session_id))
+            Some((session, exclusive_mic_session_id, prepend_audio))
         }
         DictationLifecycle::Starting { .. } => {
             // Cancelling a start must consume the reservation atomically. If
@@ -755,7 +762,7 @@ mod tests {
 
     fn fake_audio(duration_ms: u64) -> CapturedAudio {
         CapturedAudio {
-            wav: bytes::Bytes::new(),
+            wav_cache: Arc::new(Mutex::new(None)),
             samples_16k: Arc::new(vec![0.0; 16]),
             sample_rate: 16_000,
             duration_ms,
