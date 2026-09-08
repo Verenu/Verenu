@@ -1,14 +1,32 @@
 fn main() {
-    #[cfg(target_os = "windows")]
-    build_windows_titlebar();
+    // Build scripts themselves run for the host, so `cfg(target_os =
+    // "windows")` describes this machine rather than Cargo's Android target.
+    // Read CARGO_CFG_TARGET_OS for cross-compiles and keep desktop-only native
+    // bridges out of mobile builds.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "windows" {
+        #[cfg(target_os = "windows")]
+        build_windows_titlebar();
+    }
 
-    #[cfg(target_os = "macos")]
-    {
-        println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
-        cc::Build::new()
-            .file("src/system/macos_ax_text_marker.m")
-            .flag("-fobjc-arc")
-            .compile("verenu_macos_ax_text_marker");
+    if target_os == "macos" {
+        #[cfg(target_os = "macos")]
+        {
+            println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
+            cc::Build::new()
+                .file("src/system/macos_ax_text_marker.m")
+                .flag("-fobjc-arc")
+                .compile("verenu_macos_ax_text_marker");
+        }
+    }
+
+    // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
+    // runtime as a real Cargo link dependency so the final cdylib retains a
+    // DT_NEEDED entry for libc++_shared.so. Rustflags alone can be reordered
+    // behind the linker’s --as-needed default and silently drop it.
+    if target_os == "android" {
+        println!("cargo:rustc-link-lib=dylib=c++_shared");
+        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
     }
 
     println!("cargo:rerun-if-changed=Info.plist");
