@@ -33,8 +33,30 @@
   let draftMistake = $state(entry?.mistake ?? '');
   let saving = $state(false);
   let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
   let termInput = $state<HTMLInputElement | null>(null);
   let mistakeInput = $state<HTMLInputElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== 1
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
 
   async function saveModal() {
     // Read directly from DOM elements at click time to bypass WKWebView
@@ -55,10 +77,19 @@
       return;
     }
     saving = true; saveError = '';
+    conflictContexts = [];
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(
+<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
           await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
+||||||| Common ancestor
+          await invoke<unknown>('create_dictionary_entry', { term, mistake }),
+          'create_dictionary_entry',
+=======
+          await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
+          'create_dictionary_entry',
+>>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
         );
         onSaved({
           id: created.id,
@@ -90,11 +121,45 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
+<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
       const normalizedMessage = msg.toLowerCase();
       saveError = normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
         ? 'That term already exists.'
         : msg;
+||||||| Common ancestor
+      saveError = msg.includes('UNIQUE') ? 'That term already exists.' : msg;
+=======
+      if (mode === 'add' && contextId != null && contextId !== 1) {
+        try {
+          conflictContexts = await invoke<ContextAssignment[]>('get_dictionary_entry_contexts', { term });
+        } catch {
+          conflictContexts = [];
+        }
+      }
+      saveError = conflictContexts.length > 0
+        ? `"${term}" already exists inside of ${conflictLocation()}. Move it here?`
+        : msg.includes('UNIQUE') ? 'That term already exists.' : msg;
+>>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
     } finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === 1) return;
+    const term = (termInput?.value ?? draftTerm).trim();
+    movingExisting = true;
+    saveError = '';
+    try {
+      const moved = await invoke<DictionaryEntry>('move_dictionary_entry_to_context', {
+        term,
+        contextId,
+      });
+      onSaved(moved);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -170,9 +235,25 @@
 
   <div class="modal-footer">
     {#if saveError}
+<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
       <div class="save-error" role="alert">
         <span>{saveError}</span>
       </div>
+||||||| Common ancestor
+      <p class="save-error">{saveError}</p>
+=======
+      <div class="save-error" role="alert">
+        <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
+      </div>
+>>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
     {/if}
     {#if draftTerm.length >= TERM_LIMIT}
       <button
@@ -351,8 +432,15 @@
     border-radius: var(--r-sm);
   }
 
+<<<<<<< New base: Fix inflated word totals with spoken-word counting (#403)
   .save-error > span { min-width: 0; }
 
+||||||| Common ancestor
+=======
+  .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
+
+>>>>>>> Current commit: Support duplicating contexts and moving conflicting library items
   .spinner {
     display: inline-block;
     width: 11px; height: 11px;
