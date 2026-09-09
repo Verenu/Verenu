@@ -81,7 +81,9 @@ pub use fixture::{
 use gates::{
     effective_recording_rms, has_spoken_content, is_transcription_hallucination,
     normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
-    silence_floor_gate_rms, strip_hallucinated_suffix, strip_trailing_hallucination,
+    recording_gate_rms_for_sensitivity, silence_floor_gate_rms_for_sensitivity,
+    strip_hallucinated_suffix,
+    strip_trailing_hallucination,
     MIN_RECORDING_MS, MIN_RECORDING_RMS,
 };
 pub(crate) use pill::{
@@ -100,6 +102,23 @@ use stages_cleanup::*;
 use stages_style::*;
 use stages_transcription::*;
 pub use state::*;
+
+/// Bounded, process-local sensitivity levels used after a rejected capture.
+/// Each fresh attempt can become more permissive without changing the user's
+/// saved microphone gain or making the relaxed thresholds permanent.
+pub(crate) const MAX_ADAPTIVE_SENSITIVITY: u8 = 4;
+pub(crate) const ADAPTIVE_SENSITIVITY_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(3);
+
+pub(crate) fn adaptive_sensitivity_scale(level: u8) -> f32 {
+    match level.min(MAX_ADAPTIVE_SENSITIVITY) {
+        0 => 1.0,
+        1 => 0.82,
+        2 => 0.67,
+        3 => 0.54,
+        _ => 0.43,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CapturedAudio {
@@ -178,8 +197,11 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
         }
     };
     let active_gain = store::load_audio_config(&settings_store).mic_gain;
-    let min_rms = recording_gate_rms(active_gain);
-    log::debug!("pipeline: input gate active_gain={active_gain:.2} min_rms={min_rms:.6}");
+    let sensitivity_level = state::current_sensitivity_level(&state);
+    let min_rms = recording_gate_rms_for_sensitivity(active_gain, sensitivity_level);
+    log::debug!(
+        "pipeline: input gate active_gain={active_gain:.2} sensitivity_level={sensitivity_level} min_rms={min_rms:.6}"
+    );
 
     let Some(stopped_capture) =
         stop_and_capture_audio(&app, session, exclusive_mic_session_id).await
@@ -262,9 +284,11 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
             let normalized = strip_trailing_hallucination(&strip_hallucinated_suffix(&normalized));
             let normalized = crate::system::text::collapse_degenerate_word_runs(&normalized);
             if !has_spoken_content(&normalized) || is_transcription_hallucination(&normalized) {
+                state::note_sensitivity_rejection(&state);
                 hide_pill(&app);
                 anyhow::bail!("Recording was too quiet — nothing was transcribed");
             }
+            state::note_sensitivity_success(&state);
             Ok(normalized)
         }
         None => Err(last_err.unwrap_or_else(|| {
@@ -408,8 +432,11 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         }
     };
     let active_gain = audio_cfg.mic_gain;
-    let min_rms = recording_gate_rms(active_gain);
-    log::debug!("pipeline: audio gate active_gain={active_gain:.2} min_rms={min_rms:.6}");
+    let sensitivity_level = state::current_sensitivity_level(&state);
+    let min_rms = recording_gate_rms_for_sensitivity(active_gain, sensitivity_level);
+    log::debug!(
+        "pipeline: audio gate active_gain={active_gain:.2} sensitivity_level={sensitivity_level} min_rms={min_rms:.6}"
+    );
 
     let stage_audio = std::time::Instant::now();
     // Capture first, gate second: a resumed/prepended recording needs to be
@@ -451,7 +478,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // below, before any transcription request — this early gate deliberately
     // stays permissive so quiet/distant speech gets a fair chance at VAD
     // instead of being rejected on RMS alone.
-    let silence_floor = silence_floor_gate_rms(active_gain);
+    let silence_floor = silence_floor_gate_rms_for_sensitivity(active_gain, sensitivity_level);
     if !validate_captured_audio(
         &app,
         &captured_audio,
@@ -460,6 +487,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         silence_floor,
         active_gain,
     ) {
+        state::note_sensitivity_rejection(&state);
         failover::abandon_live();
         state::leave_stopping_if_owned(&state, generation);
         return;
@@ -574,7 +602,11 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // the RMS threshold only in that case.
     let vad_samples = captured_audio.samples_16k.clone();
     let vad_handle = tokio::task::spawn_blocking(move || {
-        crate::media::vad::analyze_speech(&vad_samples, active_gain)
+        crate::media::vad::analyze_speech_with_sensitivity(
+            &vad_samples,
+            active_gain,
+            sensitivity_level,
+        )
     });
 
     let vad_result = tokio::select! {
@@ -603,6 +635,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         active_gain,
         vad_result.as_ref(),
     ) {
+        state::note_sensitivity_rejection(&state);
         state::leave_processing_if_owned(&state, generation);
         return;
     }
@@ -797,6 +830,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         return;
     }
     state::leave_finalizing(&state, generation);
+    state::note_sensitivity_success(&state);
 
     log::info!(
         "pipeline: completed gen={generation} words={} duration_ms={} elapsed_ms={}",
@@ -859,6 +893,10 @@ pub async fn retry_transcription_impl(
 ) -> anyhow::Result<db::RecentEntry> {
     state::reserve_starting(state).map_err(anyhow::Error::msg)?;
     let _retry_reservation = RetryReservation { state };
+    // Count the pill's Retry action even when the original capture was
+    // rejected before retry metadata could be stashed (for example, the
+    // early near-silence gate). The boost applies to the next fresh take.
+    state::note_sensitivity_retry(state);
     let mut retry_expired = false;
     let capture = {
         let mut st = lock_state(state)?;
