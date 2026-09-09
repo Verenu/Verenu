@@ -735,6 +735,26 @@ pub fn frontmost_app_name() -> Option<String> {
     })
 }
 
+/// Localized display name of the application owning a captured PID.
+/// Keeping this lookup tied to the captured process avoids re-reading the
+/// current frontmost application after focus has moved during processing.
+pub fn app_name_for_pid(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    autoreleasepool(|_| unsafe {
+        let app: *mut AnyObject = msg_send![
+            class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        if app.is_null() {
+            return None;
+        }
+        let name: *mut AnyObject = msg_send![app, localizedName];
+        nsstring_to_string(name)
+    })
+}
+
 /// Bring the application owning `pid` to the foreground, so a subsequent
 /// synthetic Cmd+V lands in the window the user was dictating into.
 pub fn activate_pid(pid: i32) -> bool {

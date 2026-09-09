@@ -792,7 +792,6 @@ fn import_contextual_library_conn(
         for target in &context.targets {
             let executable = target.executable.trim().to_lowercase();
             if executable.is_empty() {
-                stats.contexts_skipped += 1;
                 continue;
             }
             conn.execute(
@@ -817,7 +816,6 @@ fn import_contextual_library_conn(
         for target in &context.website_targets {
             let domain = target.domain.trim().to_lowercase();
             if domain.is_empty() {
-                stats.contexts_skipped += 1;
                 continue;
             }
             conn.execute(
@@ -834,8 +832,12 @@ fn import_contextual_library_conn(
                 continue;
             }
             let existing: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM snippets WHERE trigger = ?1)",
-                params![snippet.trigger.trim()],
+                "SELECT EXISTS(
+                   SELECT 1 FROM snippets s
+                   INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
+                    WHERE s.trigger = ?1 AND sc.context_id = ?2
+                 )",
+                params![snippet.trigger.trim(), context_id],
                 |row| row.get(0),
             )?;
             match db::insert_snippet_returning_conn(
@@ -932,24 +934,48 @@ fn import_context_conn(
     let existing: Option<i64> = existing_by_uuid.or(existing_by_name);
 
     if let Some(id) = existing {
-        conn.execute(
-            "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
-                    cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
-                    contextual_formatting_disabled = ?7, pinned_at = ?8,
-                    updated_at = datetime('now')
-              WHERE id = ?9",
-            params![
-                name,
-                source.icon,
-                source.tone,
-                source.cleanup_intensity,
-                source.color,
-                source.custom_instructions,
-                source.contextual_formatting_disabled as i64,
-                source.pinned_at,
-                id,
-            ],
-        )?;
+        // A UUID identifies the local Context even when another local Context
+        // already owns the imported name. Preserve that stable identity and
+        // local name rather than aborting the whole import on the UNIQUE name
+        // constraint; the remaining settings still import deterministically.
+        if existing_by_name.is_none() || existing_by_name == Some(id) {
+            conn.execute(
+                "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
+                        cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
+                        contextual_formatting_disabled = ?7, pinned_at = ?8,
+                        updated_at = datetime('now')
+                  WHERE id = ?9",
+                params![
+                    name,
+                    source.icon,
+                    source.tone,
+                    source.cleanup_intensity,
+                    source.color,
+                    source.custom_instructions,
+                    source.contextual_formatting_disabled as i64,
+                    source.pinned_at,
+                    id,
+                ],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE contexts SET icon = ?1, tone = ?2,
+                        cleanup_intensity = ?3, color = ?4, custom_instructions = ?5,
+                        contextual_formatting_disabled = ?6, pinned_at = ?7,
+                        updated_at = datetime('now')
+                  WHERE id = ?8",
+                params![
+                    source.icon,
+                    source.tone,
+                    source.cleanup_intensity,
+                    source.color,
+                    source.custom_instructions,
+                    source.contextual_formatting_disabled as i64,
+                    source.pinned_at,
+                    id,
+                ],
+            )?;
+        }
         stats.contexts_already_existed += 1;
         return Ok(Some(id));
     }

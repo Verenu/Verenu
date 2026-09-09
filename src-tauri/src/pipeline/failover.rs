@@ -1077,7 +1077,9 @@ pub fn flush_on_exit(app: &AppHandle) {
     let Some(state) = app.try_state::<SharedState>() else {
         return;
     };
-    let Some((session, mic_id)) = state::take_recording_plain(state.inner()) else {
+    let Some((session, mic_id, _prepend_audio, recording_context)) =
+        state::take_recording_plain_with_prepend(state.inner())
+    else {
         return;
     };
     match session.stop() {
@@ -1100,7 +1102,15 @@ pub fn flush_on_exit(app: &AppHandle) {
                         result.sample_rate,
                         result.duration_ms,
                     );
-                    commit_capture(&audio, &id, FailoverKind::Recording, started);
+                    // Exit flush must preserve the Context captured when the
+                    // recording started; focus may already have changed.
+                    commit_capture_with_context(
+                        &audio,
+                        &id,
+                        FailoverKind::Recording,
+                        started,
+                        Some(recording_context.id),
+                    );
                 }
             }
         }

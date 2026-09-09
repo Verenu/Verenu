@@ -493,7 +493,7 @@
   function handleDictionarySaved(entry: DictionaryEntry) {
     const contextId = dictionaryModalContextId ?? selectedContextId;
     if (contextId !== selectedContextId) return;
-    dictionary = [entry, ...dictionary.filter((item) => item.id !== entry.id)];
+    dictionary = [entry, ...dictionary.filter((item) => dictionaryEntryId(item) !== dictionaryEntryId(entry))];
     selectedDictionary = entry;
     // The create/edit response is metadata-only on some backends.  Reload the
     // scoped row so the mapping id, confidence, and effective mistake shown

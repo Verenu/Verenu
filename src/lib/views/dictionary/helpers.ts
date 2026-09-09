@@ -42,7 +42,7 @@ export function confidenceLabel(tier?: string | null): string {
 
 export const countCodePoints = (value: string): number => [...value].length;
 
-export function requireCreatedRecordMeta(value: unknown, command: string): CreatedRecordMeta {
+export function requireCreatedRecordMeta(value: unknown): CreatedRecordMeta {
   if (typeof value !== 'object' || value === null) {
     throw new Error('Save returned no record metadata. Relaunch the Tauri app and try again.');
   }

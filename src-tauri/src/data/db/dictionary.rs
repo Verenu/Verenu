@@ -1186,10 +1186,6 @@ pub fn upsert_auto_learn_candidate_for_context(
     .map_err(Into::into)
 }
 
-/// Compatibility wrapper for the legacy monitor API. The Context-aware
-/// runtime uses [`upsert_auto_learn_candidate_for_context`]; callers that do
-/// not yet capture a Context retain the historical Everywhere scope until
-/// they are migrated.
 /// Outcome of an [`auto_learn_promote_for_context`] attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoLearnPromoteResult {
@@ -1386,9 +1382,6 @@ pub fn auto_learn_promote_for_context(
     Ok(AutoLearnPromoteResult::Promoted)
 }
 
-/// Compatibility wrapper for legacy callers that do not carry the resolved
-/// Context. New code must use [`auto_learn_promote_for_context`] so evidence
-/// and persistent mappings retain their originating Context.
 pub fn get_auto_learn_status_summary(db: &Db) -> Result<AutoLearnStatusSummary> {
     let conn = lock_conn(db)?;
     let count_by = |event_type: &str, reason_code: &str| -> Result<i64> {

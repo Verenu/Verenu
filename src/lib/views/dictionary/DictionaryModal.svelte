@@ -59,7 +59,6 @@
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(
           await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
-          'create_dictionary_entry',
         );
         onSaved({
           id: created.id,

@@ -986,9 +986,13 @@ fn apply_rank(op: &SyncOp) -> u8 {
     match (op.table.as_str(), op.is_delete()) {
         ("contexts", true)
         | ("dictionary", true)
-        | (NATURAL_KEY_TOMBSTONE_TABLE, true)
         | ("snippets", true) => 0,
         ("dictionary", false) => 10,
+        // Apply a canonical upsert first so its natural-key replacement can
+        // capture/reparent children before an anti-entropy tombstone removes
+        // the losing UUID. If the upsert is absent, this still behaves as a
+        // normal deferred loser cleanup.
+        (NATURAL_KEY_TOMBSTONE_TABLE, true) => 15,
         ("snippets", false) => 11,
         ("contexts", false) => 20,
         ("dictionary_corrections", _) => 30,

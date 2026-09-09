@@ -555,19 +555,6 @@ pub fn start_monitor(
     }
 
     let event_mode = auto_learn_event_mode_enabled(&app);
-    log_context_event(
-        &db,
-        &context,
-        "monitor",
-        if event_mode {
-            "event_mode"
-        } else {
-            "poll_mode"
-        },
-        "",
-        "",
-        0.0,
-    );
     let request = MonitorRequest {
         key,
         injected_text,

@@ -462,10 +462,12 @@ function setDevDictionaryCorrection(
   rows[index] = {
     ...rows[index],
     mistake,
-    auto_learned: metadata.auto_learned ?? false,
-    correction_count: metadata.correction_count ?? 0,
-    confidence_tier: metadata.confidence_tier ?? 'manual',
-    last_seen_at: metadata.last_seen_at ?? null,
+    auto_learned: metadata.auto_learned ?? rows[index].auto_learned,
+    correction_count: metadata.correction_count ?? rows[index].correction_count,
+    confidence_tier: metadata.confidence_tier ?? rows[index].confidence_tier,
+    last_seen_at: metadata.last_seen_at !== undefined
+      ? metadata.last_seen_at
+      : rows[index].last_seen_at,
   };
   writeDevDictionaryCorrections(rows);
   return rows[index].id;
@@ -518,6 +520,11 @@ function devContextDictionaryRows(contextId: number) {
           dictionary_id: row.id,
           context_id: contextId,
           correction_id: null,
+          mistake: null,
+          auto_learned: false,
+          correction_count: 0,
+          confidence_tier: 'manual',
+          last_seen_at: null,
           corrections: [],
         };
   });
@@ -1458,8 +1465,10 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
     }
     case 'get_context_targets': {
       const rawContextId = args?.contextId ?? args?.context_id;
-      const contextId = rawContextId == null ? null : Number(rawContextId);
-      return readDevContextTargets().filter((target) => contextId == null || target.context_id === contextId) as T;
+      const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
+      return readDevContextTargets().filter(
+        (target) => contextId === null || target.context_id === contextId,
+      ) as T;
     }
     case 'assign_context_target': {
       const contextId = Number(args?.contextId ?? args?.context_id);
@@ -1494,8 +1503,10 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
     }
     case 'get_context_websites': {
       const rawContextId = args?.contextId ?? args?.context_id;
-      const contextId = rawContextId == null ? null : Number(rawContextId);
-      return readDevContextWebsiteTargets().filter((target) => contextId == null || target.context_id === contextId) as T;
+      const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
+      return readDevContextWebsiteTargets().filter(
+        (target) => contextId === null || target.context_id === contextId,
+      ) as T;
     }
     case 'check_domain_exists': {
       const domain = String(args?.domain ?? '').trim().toLowerCase();
@@ -2138,10 +2149,12 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
       }
 
       const contextIdArg = args?.contextId ?? args?.context_id;
-      const parsedContextId = contextIdArg == null ? DEV_EVERYWHERE_CONTEXT_ID : Number(contextIdArg);
+      const parsedContextId = contextIdArg === null || contextIdArg === undefined
+        ? DEV_EVERYWHERE_CONTEXT_ID
+        : Number(contextIdArg);
       if (!Number.isFinite(parsedContextId)) throw new Error('Context id is invalid.');
       const targetContext = parsedContextId;
-      const scopedContext = contextIdArg != null;
+      const scopedContext = contextIdArg !== null && contextIdArg !== undefined;
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       const existing = rows.find((row) => row.term === term);
       const dictionaryAssignments = readDevContextAssignments();
@@ -2176,7 +2189,7 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
         created_at: created.created_at,
       });
       writeDevList(DEV_DICTIONARY_KEY, rows);
-      ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows.slice(1));
+      ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
       const bucket = (dictionaryAssignments.dictionary[String(targetContext)] ??= []);
       bucket.push(id);
       writeDevContextAssignments(dictionaryAssignments);
@@ -2199,8 +2212,8 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
       }
 
       const contextIdArg = args?.contextId ?? args?.context_id;
-      const contextId = contextIdArg == null ? null : Number(contextIdArg);
-      if (contextIdArg != null && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
+      const contextId = contextIdArg === null || contextIdArg === undefined ? null : Number(contextIdArg);
+      if (contextIdArg !== null && contextIdArg !== undefined && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       if (rows.some((row) => row.id !== id && row.term === term)) {
         throw new Error('UNIQUE constraint failed: dictionary.term');
@@ -2226,8 +2239,8 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       if (!rows.some((row) => row.id === id)) throw new Error(`Dictionary entry ${id} was not found`);
       const contextIdArg = args?.contextId ?? args?.context_id;
-      const contextId = contextIdArg == null ? null : Number(contextIdArg);
-      if (contextIdArg != null && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
+      const contextId = contextIdArg === null || contextIdArg === undefined ? null : Number(contextIdArg);
+      if (contextIdArg !== null && contextIdArg !== undefined && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
       if (contextId !== null) {
         const assignments = readDevContextAssignments();
         removeDevDictionaryAssignment(assignments, rows, contextId, id);

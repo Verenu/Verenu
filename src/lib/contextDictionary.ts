@@ -117,7 +117,9 @@ export function normalizeContextDictionaryEntry(value: unknown, contextId: numbe
 
   const nestedCorrections = Array.isArray(row.corrections)
     ? row.corrections
-    : [row.correction ?? row.mapping].filter((candidate) => candidate != null);
+    : [row.correction ?? row.mapping].filter(
+        (candidate) => candidate !== null && candidate !== undefined,
+      );
   const corrections = nestedCorrections
     .map((correction) => normalizeCorrection(correction, dictionaryId, contextId))
     .filter((correction): correction is DictionaryCorrection => correction !== null);
@@ -185,7 +187,9 @@ export function dictionaryEntryId(entry: Pick<DictionaryEntry, 'id' | 'dictionar
 export function dictionaryEntryCorrectionIds(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections'>): number[] {
   if (entry.correction_ids?.length) return [...entry.correction_ids];
   if (entry.corrections?.length) return entry.corrections.map((correction) => correction.id);
-  return entry.correction_id == null ? [] : [entry.correction_id];
+  return entry.correction_id === null || entry.correction_id === undefined
+    ? []
+    : [entry.correction_id];
 }
 
 export function dictionaryEntryCorrectionId(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections'>): number | null {
