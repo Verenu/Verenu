@@ -1115,7 +1115,6 @@ pub fn insert_dictionary_entry_auto_learned_for_context(
 /// Context-aware event writer. The legacy wrapper above remains for old
 /// telemetry callers; new monitor paths should always provide the immutable
 /// originating Context id.
-#[expect(dead_code, reason = "Consumed by the Context-aware monitor in the stacked runtime change")]
 pub fn log_auto_learn_event_for_context(
     db: &Db,
     context_id: i64,
@@ -1696,7 +1695,6 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
 /// This is the Contexts-surface counterpart to the legacy global delete. An
 /// automatically-created canonical row is removed only when this was its last
 /// assignment and no correction mapping remains anywhere.
-#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn remove_dictionary_entry_from_context(
     db: &Db,
     context_id: i64,
@@ -1729,7 +1727,6 @@ pub fn remove_dictionary_entry_from_context(
 /// shared item, moving is an explicit transfer: its Context-owned correction
 /// mappings follow the assignment, while any unpromoted evidence in the source
 /// Context is discarded because it has no safe destination.
-#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn move_dictionary_entry_to_context(
     db: &Db,
     dictionary_id: i64,
