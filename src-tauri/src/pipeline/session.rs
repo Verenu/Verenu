@@ -656,10 +656,10 @@ pub fn spawn_level_emitter(
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
         let emit_raw_level = |raw_level_val: f32| {
-            if !emit_globally {
-                if let Some(pill) = app.get_webview_window("pill") {
-                    pill.emit("audio-level-raw", raw_level_val).ok();
-                }
+            if emit_globally {
+                let _ = app.emit("audio-level-raw", raw_level_val);
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("audio-level-raw", raw_level_val).ok();
             }
         };
 
