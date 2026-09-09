@@ -365,7 +365,7 @@ fn open_repairs_db_stuck_at_v7_without_spoken_words_column() {
 #[test]
 fn open_alone_does_not_seed_the_dictionary() {
     // seed_default_dictionary_entries is deliberately NOT part of the
-    // generic migration chain (see its doc comment) — open() alone must
+    // generic migration chain (see its doc comment) â€” open() alone must
     // leave test/fixture databases pristine.
     let db = test_db();
     let entries = query_dictionary(&db).expect("query dictionary");
@@ -378,7 +378,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     // non-transactional v2 migration keep the old `wrong`/`correct`
     // dictionary shape (and may also lack `snippets.instructions` and
     // `pending_corrections`). Without the self-heal, every dictionary
-    // query fails with `no such column: term` — and v7's spoken-words
+    // query fails with `no such column: term` â€” and v7's spoken-words
     // backfill would fail on the missing `instructions` column.
     let path = temp_db_path("v2_legacy_dictionary");
     {
@@ -505,10 +505,10 @@ fn open_with_recovery_quarantines_a_corrupt_database_and_opens_fresh() {
     std::fs::write(&path, b"this is not a sqlite database at all").expect("write garbage");
 
     // Plain open must fail (the corrupt file is a real error, not something
-    // to silently paper over)…
+    // to silently paper over)â€¦
     assert!(open(&path).is_err());
 
-    // …but the startup path must recover: quarantine + fresh database.
+    // â€¦but the startup path must recover: quarantine + fresh database.
     let db = open_with_recovery(&path).expect("recovery opens a fresh database");
     insert_transcription_returning(&db, "fresh", "fresh", 1, 1000, "test", None, None)
         .expect("fresh db is writable");
@@ -645,7 +645,7 @@ fn seed_default_dictionary_entries_does_not_resurrect_a_deleted_entry() {
             .id;
         delete_dictionary_entry(&db, verenu_id).expect("user deletes the default entry");
     }
-    // Reopening and re-seeding must not resurrect it — the marker table
+    // Reopening and re-seeding must not resurrect it â€” the marker table
     // makes this a no-op after the first successful seed, regardless of
     // whether the user has since deleted the row.
     let db = open(path.to_str().expect("path string")).expect("second open");
@@ -664,7 +664,7 @@ fn seed_default_dictionary_entries_merges_into_a_preexisting_manual_verenu_entry
     // The actual observed bug: a user who'd already hand-added a
     // "Verenu" -> "Vernu" correction weeks before this feature existed
     // hit the dictionary's UNIQUE(term) constraint, silently dropping
-    // every known variant from the original INSERT OR IGNORE — leaving
+    // every known variant from the original INSERT OR IGNORE â€” leaving
     // only "Vernu", which doesn't match "Varino"/"Varinu" and so never
     // fired. Merging into the existing row instead must add every known
     // variant while preserving the user's own "Vernu".
@@ -761,9 +761,9 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     let db = test_db();
 
     // Session 1: pending count reaches 1, below the default threshold of 2.
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
-    let first = auto_learn_promote(
+    let first = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
         "Koobernetes",
@@ -779,8 +779,8 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     );
     assert!(query_dictionary(&db).expect("dictionary").is_empty());
 
-    // Session 2: pending count reaches 2 — the pair promotes.
-    let second = auto_learn_promote(
+    // Session 2: pending count reaches 2 â€” the pair promotes.
+    let second = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
         "Koobernetes",
@@ -803,15 +803,15 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
 fn auto_learn_promote_is_atomic_against_double_promotion() {
     // Two concurrent monitors both observe the pair and both believe the
     // pending count has crossed the threshold (two prior sessions already
-    // recorded pending rows). Only ONE may actually promote — the second
+    // recorded pending rows). Only ONE may actually promote â€” the second
     // caller's atomic `promoted_at` claim must be refused.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 2");
 
-    let first = auto_learn_promote(
+    let first = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
         "Koobernetes",
@@ -823,7 +823,7 @@ fn auto_learn_promote_is_atomic_against_double_promotion() {
     .expect("first");
     assert_eq!(first, AutoLearnPromoteResult::Promoted);
 
-    let second = auto_learn_promote(
+    let second = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
         "Koobernetes",
@@ -853,11 +853,11 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
     // rows. An in-flight promotion for that pair must not re-create it: the
     // `promoted_at` claim no-ops against a purged candidate.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
@@ -884,7 +884,7 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
     // Its count is re-evaluated inside the SAME transaction as the claim
     // and dict insert, against post-rejection state: the pending rows are
     // gone, so it lands BelowThreshold and must NOT re-create the entry.
-    let stale = auto_learn_promote(
+    let stale = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
         "Koobernetes",
@@ -912,11 +912,11 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     // After a rejection fully purges the candidate, a genuinely new learning
     // window (a fresh candidate row with promoted_at IS NULL) can promote.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
@@ -937,10 +937,10 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
 
     // New learning episode: fresh candidate (promoted_at NULL), two sessions.
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate again");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
@@ -953,7 +953,7 @@ fn auto_learn_promote_can_relearn_after_rejection() {
         AutoLearnPromoteResult::BelowThreshold { pending_count: 1 }
     );
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
@@ -974,7 +974,7 @@ fn auto_learn_promote_can_relearn_after_rejection() {
 fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     let db = test_db();
     insert_dictionary_entry(&db, "Kubernetes", Some("Koobernetes")).expect("manual");
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 2");
@@ -983,7 +983,7 @@ fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     // every attempt (and records the pending rows for later sessions).
     for _ in 0..2 {
         assert_eq!(
-            auto_learn_promote(
+            auto_learn_promote_for_context(
                 &db,
                 EVERYWHERE_CONTEXT_ID,
                 "Koobernetes",
@@ -1155,7 +1155,7 @@ fn cache_rejection_delete_removes_entry() {
     // Simulate rejection monitor firing.
     cleanup_cache_delete_by_key(&db, "key1").expect("delete");
 
-    // Entry must be gone — next dictation will hit the LLM.
+    // Entry must be gone â€” next dictation will hit the LLM.
     assert!(cleanup_cache_get_active(&db, "key1")
         .expect("get after")
         .is_none());
@@ -1208,7 +1208,7 @@ fn cache_rejection_after_hit_removes_entry() {
         .expect("exists");
     assert_eq!(hit.hit_count, 2);
 
-    // User deletes output → rejection monitor fires.
+    // User deletes output â†’ rejection monitor fires.
     cleanup_cache_delete_by_key(&db, "k").expect("delete");
 
     assert!(cleanup_cache_get_active(&db, "k")
@@ -1268,9 +1268,9 @@ fn pruning_history_removes_orphaned_api_cost_rows() {
 #[test]
 fn auto_learn_retention_prunes_only_stale_rows() {
     let db = test_db();
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
         .expect("candidate");
     log_auto_learn_event(&db, "monitor", "started", "", "", "", 0.0).expect("event");
     {
@@ -1319,12 +1319,12 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
     let db = test_db();
 
     // Promote a first pair for the term.
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
@@ -1340,12 +1340,12 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
     // A second pair for the same canonical term is independently represented
     // by a child mapping in this Context; the old global mistake field could
     // not express this without overwriting the first pair.
-    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Kubernetz", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Kubernetz", "Kubernetes", 0.6)
         .expect("candidate");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             EVERYWHERE_CONTEXT_ID,
             "Kubernetz",
@@ -1556,7 +1556,7 @@ fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
 fn dict_rejection_only_removes_auto_learned_entries() {
     let db = test_db();
 
-    // Manual entry — must survive rejection.
+    // Manual entry â€” must survive rejection.
     insert_dictionary_entry(&db, "groq", Some("grog")).expect("manual");
     let manual_id = query_dictionary(&db)
         .expect("query")
@@ -1565,7 +1565,7 @@ fn dict_rejection_only_removes_auto_learned_entries() {
         .expect("find")
         .id;
 
-    // Auto-learned entry — must be removed.
+    // Auto-learned entry â€” must be removed.
     insert_dictionary_entry_auto_learned(&db, "Tauri", Some("Tari"), "high").expect("auto");
     let auto_id = query_dictionary(&db)
         .expect("query")
@@ -1607,7 +1607,7 @@ fn dict_rejection_cleans_up_pending_corrections() {
 
     // Dictionary entry gone.
     assert_eq!(query_dictionary(&db).expect("query after").len(), 0);
-    // Pending corrections also purged — prevents immediate re-promotion.
+    // Pending corrections also purged â€” prevents immediate re-promotion.
     assert_eq!(
         count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7,)
             .expect("count after"),
@@ -1617,7 +1617,7 @@ fn dict_rejection_cleans_up_pending_corrections() {
 
 #[test]
 fn cache_rejection_full_lifecycle() {
-    // End-to-end: insert → hit (cache serves stale) → reject → miss (LLM runs again).
+    // End-to-end: insert â†’ hit (cache serves stale) â†’ reject â†’ miss (LLM runs again).
     let db = test_db();
     let key = "chromium-is-a-web-browser-base";
     let bad_answer = "bad cached answer";
@@ -1642,7 +1642,7 @@ fn cache_rejection_full_lifecycle() {
     )
     .expect("touch");
 
-    // User deletes output within 10s → monitor fires.
+    // User deletes output within 10s â†’ monitor fires.
     cleanup_cache_delete_by_key(&db, key).expect("delete");
 
     // Third dictation: cache miss, LLM runs again with fresh context.

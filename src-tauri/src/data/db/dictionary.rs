@@ -1189,7 +1189,7 @@ fn log_auto_learn_event_with_context(
 /// the running average confidence across all observations of that pair in one
 /// Context. Context is part of the natural key; observations from another
 /// Context cannot contribute to this average.
-pub fn upsert_auto_learn_candidate(
+pub fn upsert_auto_learn_candidate_for_context(
     db: &Db,
     context_id: i64,
     wrong: &str,
@@ -1219,6 +1219,19 @@ pub fn upsert_auto_learn_candidate(
         |r| r.get(0),
     )
     .map_err(Into::into)
+}
+
+/// Compatibility wrapper for the legacy monitor API. The Context-aware
+/// runtime uses [`upsert_auto_learn_candidate_for_context`]; callers that do
+/// not yet capture a Context retain the historical Everywhere scope until
+/// they are migrated.
+pub fn upsert_auto_learn_candidate(
+    db: &Db,
+    wrong: &str,
+    correct: &str,
+    confidence: f64,
+) -> Result<f64> {
+    upsert_auto_learn_candidate_for_context(db, EVERYWHERE_CONTEXT_ID, wrong, correct, confidence)
 }
 
 /// Outcome of an [`auto_learn_promote`] attempt.
@@ -1253,7 +1266,7 @@ pub enum AutoLearnPromoteResult {
 /// rejected entry. `promoted_at` is the single promotion gate: it is claimed
 /// here (atomically, `IS NULL` guard) and only cleared by the rejection /
 /// manual-delete paths, which purge the candidate row entirely.
-pub fn auto_learn_promote(
+pub fn auto_learn_promote_for_context(
     db: &Db,
     context_id: i64,
     wrong: &str,
@@ -1415,6 +1428,28 @@ pub fn auto_learn_promote(
 
     tx.commit()?;
     Ok(AutoLearnPromoteResult::Promoted)
+}
+
+/// Compatibility wrapper for legacy callers that do not carry the resolved
+/// Context. New code must use [`auto_learn_promote_for_context`] so evidence
+/// and persistent mappings retain their originating Context.
+pub fn auto_learn_promote(
+    db: &Db,
+    wrong: &str,
+    correct: &str,
+    confidence_tier: &str,
+    pending_retention_days: i64,
+    threshold: i64,
+) -> Result<AutoLearnPromoteResult> {
+    auto_learn_promote_for_context(
+        db,
+        EVERYWHERE_CONTEXT_ID,
+        wrong,
+        correct,
+        confidence_tier,
+        pending_retention_days,
+        threshold,
+    )
 }
 
 pub fn get_auto_learn_status_summary(db: &Db) -> Result<AutoLearnStatusSummary> {
