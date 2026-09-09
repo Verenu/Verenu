@@ -546,12 +546,14 @@ fn context_event_and_backup_helpers_keep_child_mapping_metadata() {
     log_auto_learn_event_for_context(
         &db,
         context.id,
-        "candidate",
-        "test",
-        "Development",
-        "mistake-hash",
-        "correction-hash",
-        0.8,
+        AutoLearnEventFields {
+            event_type: "candidate",
+            reason_code: "test",
+            app_context: "Development",
+            mistake_hash: "mistake-hash",
+            correction_hash: "correction-hash",
+            confidence: 0.8,
+        },
     )
     .expect("context event");
     let event = get_recent_auto_learn_activity(&db, 1)

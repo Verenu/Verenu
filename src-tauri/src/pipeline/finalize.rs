@@ -403,6 +403,7 @@ mod tests {
             confidence_tier: "confirmed".to_string(),
             last_seen_at: None,
             created_at: String::new(),
+            corrections: Vec::new(),
         }
     }
 

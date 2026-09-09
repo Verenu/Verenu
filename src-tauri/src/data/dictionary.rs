@@ -395,6 +395,7 @@ mod tests {
             confidence_tier: "manual".to_string(),
             last_seen_at: None,
             created_at: "now".to_string(),
+            corrections: Vec::new(),
         }
     }
 
