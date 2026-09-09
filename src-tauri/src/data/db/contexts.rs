@@ -1491,6 +1491,40 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_context_moves_its_correction_mapping_to_everywhere() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Temporary", None, None, None, None, false)
+            .expect("context");
+        let dictionary = insert_dictionary_entry_returning(
+            &db,
+            "Kubernetes",
+            Some("kubernetez"),
+            Some(context.id),
+        )
+        .expect("dictionary");
+
+        let before = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary.id)
+            .expect("context entry");
+        assert_eq!(before.corrections.len(), 1);
+        assert_eq!(before.corrections[0].context_id, context.id);
+
+        delete_context(&db, context.id).expect("delete context");
+
+        let after = query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID)
+            .expect("Everywhere dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary.id)
+            .expect("moved entry");
+        assert_eq!(after.mistake.as_deref(), Some("kubernetez"));
+        assert_eq!(after.corrections.len(), 1);
+        assert_eq!(after.corrections[0].context_id, EVERYWHERE_CONTEXT_ID);
+        assert_eq!(after.corrections[0].mistake, "kubernetez");
+    }
+
+    #[test]
     fn adding_existing_content_to_a_context_does_not_overwrite_everywhere() {
         let db = open(":memory:").expect("db");
         let context = insert_context_returning(&db, "Writing", None, None, None, None, false)
