@@ -599,15 +599,8 @@ pub fn spawn_level_emitter(
         // "recording" state event before we flood the IPC with 16ms updates.
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-        let emit_level = |level_val: f32| {
-            if emit_globally {
-                let _ = app.emit("audio-level", level_val);
-            } else if let Some(pill) = app.get_webview_window("pill") {
-                pill.emit("audio-level", level_val).ok();
-            }
-        };
-
-        let emit_raw_level = |raw_level_val: f32| {
+        let emit_raw_level = || {
+            let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
             if emit_globally {
                 let _ = app.emit("audio-level-raw", raw_level_val);
             } else if let Some(pill) = app.get_webview_window("pill") {
@@ -621,6 +614,20 @@ pub fn spawn_level_emitter(
             } else if let Some(pill) = app.get_webview_window("pill") {
                 pill.emit("pill-speech-detected", ()).ok();
             }
+        };
+
+        let mut speech_emitted = false;
+        let mut emit_level = |level_val: f32| {
+            if !speech_emitted && speech_detected.load(Ordering::Acquire) {
+                emit_speech_detected();
+                speech_emitted = true;
+            }
+            if emit_globally {
+                let _ = app.emit("audio-level", level_val);
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("audio-level", level_val).ok();
+            }
+            emit_raw_level();
         };
 
         // The pill is the only consumer of the envelope, so this never goes out
