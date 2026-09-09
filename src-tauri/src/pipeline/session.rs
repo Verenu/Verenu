@@ -206,6 +206,7 @@ pub fn start_recording_session_ex(
             let raw_level_arc = session.raw_level.clone();
             let envelope_arc = session.envelope.clone();
             let active_arc = session.active.clone();
+            let speech_detected_arc = session.speech_detected.clone();
             let stream_error_arc = session.stream_error.clone();
             let start_cue_active = session.active.clone();
             {
@@ -294,6 +295,7 @@ pub fn start_recording_session_ex(
                 raw_level_arc,
                 envelope_arc,
                 active_arc,
+                speech_detected_arc,
                 options.emit_globally,
             );
             if let Some(session_id) = exclusive_mic_session_id {
@@ -589,6 +591,7 @@ pub fn spawn_level_emitter(
     raw_level: Arc<std::sync::atomic::AtomicU32>,
     envelope: Arc<crate::media::audio::EnvelopeTap>,
     active: Arc<std::sync::atomic::AtomicBool>,
+    speech_detected: Arc<std::sync::atomic::AtomicBool>,
     emit_globally: bool,
 ) {
     tauri::async_runtime::spawn(async move {
