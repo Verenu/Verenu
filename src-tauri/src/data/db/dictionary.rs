@@ -67,6 +67,36 @@ pub struct AutoLearnStatusSummary {
     pub timeout_finishes: i64,
 }
 
+#[derive(Debug)]
+struct LegacyDictionaryFields {
+    term: String,
+    mistake: Option<String>,
+    auto_learned: bool,
+    correction_count: i64,
+    confidence_tier: String,
+    last_seen_at: Option<String>,
+    created_at: String,
+}
+
+struct CorrectionMappingSeed<'a> {
+    mistake: Option<&'a str>,
+    auto_learned: bool,
+    correction_count: i64,
+    confidence_tier: &'a str,
+    last_seen_at: Option<&'a str>,
+}
+
+pub struct AutoLearnEventFields<'a> {
+    pub event_type: &'a str,
+    pub reason_code: &'a str,
+    pub app_context: &'a str,
+    pub mistake_hash: &'a str,
+    pub correction_hash: &'a str,
+    pub confidence: f64,
+}
+
+type CorrectionTransferRow = (i64, i64, String, bool, i64, String, Option<String>);
+
 pub fn query_dictionary(db: &Db) -> Result<Vec<DictionaryEntry>> {
     let conn = lock_conn(db)?;
     query_dictionary_conn(&conn, None)
@@ -95,27 +125,20 @@ fn query_dictionary_conn(
           WHERE ?1 IS NULL
           ORDER BY created_at DESC"
     };
-    let canonical_rows: Vec<(
-        i64,
-        String,
-        Option<String>,
-        bool,
-        i64,
-        String,
-        Option<String>,
-        String,
-    )> = conn
+    let canonical_rows: Vec<(i64, LegacyDictionaryFields)> = conn
         .prepare(canonical_sql)?
         .query_map(params![context_id], |row| {
             Ok((
                 row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get::<_, i64>(3)? != 0,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
+                LegacyDictionaryFields {
+                    term: row.get(1)?,
+                    mistake: row.get(2)?,
+                    auto_learned: row.get::<_, i64>(3)? != 0,
+                    correction_count: row.get(4)?,
+                    confidence_tier: row.get(5)?,
+                    last_seen_at: row.get(6)?,
+                    created_at: row.get(7)?,
+                },
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -159,51 +182,21 @@ fn query_dictionary_conn(
 
     Ok(canonical_rows
         .into_iter()
-        .map(
-            |(
-                id,
-                term,
-                legacy_mistake,
-                legacy_auto_learned,
-                legacy_correction_count,
-                legacy_confidence_tier,
-                legacy_last_seen_at,
-                created_at,
-            )| {
+        .map(|(id, mut legacy)| {
                 let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
                 // A scoped query must never fall back to the old global
                 // projection.  v26 migrates it into child rows and clears
                 // `dictionary.mistake`; ignoring the projection here also
                 // keeps a stale value from an interrupted/remote legacy write
                 // from leaking a correction learned in another Context.
-                let (
-                    legacy_mistake,
-                    legacy_auto_learned,
-                    legacy_correction_count,
-                    legacy_confidence_tier,
-                    legacy_last_seen_at,
-                ) = if context_id.is_some() {
-                    (None, false, 0, "manual".to_string(), None)
-                } else {
-                    (
-                        legacy_mistake,
-                        legacy_auto_learned,
-                        legacy_correction_count,
-                        legacy_confidence_tier,
-                        legacy_last_seen_at,
-                    )
-                };
-                materialize_dictionary_entry(
-                    id,
-                    term,
-                    legacy_mistake,
-                    legacy_auto_learned,
-                    legacy_correction_count,
-                    legacy_confidence_tier,
-                    legacy_last_seen_at,
-                    created_at,
-                    corrections,
-                )
+                if context_id.is_some() {
+                    legacy.mistake = None;
+                    legacy.auto_learned = false;
+                    legacy.correction_count = 0;
+                    legacy.confidence_tier = "manual".to_string();
+                    legacy.last_seen_at = None;
+                }
+                materialize_dictionary_entry(id, legacy, corrections)
             },
         )
         .collect())
@@ -211,13 +204,7 @@ fn query_dictionary_conn(
 
 fn materialize_dictionary_entry(
     id: i64,
-    term: String,
-    legacy_mistake: Option<String>,
-    legacy_auto_learned: bool,
-    legacy_correction_count: i64,
-    legacy_confidence_tier: String,
-    legacy_last_seen_at: Option<String>,
-    created_at: String,
+    legacy: LegacyDictionaryFields,
     corrections: Vec<DictionaryCorrection>,
 ) -> DictionaryEntry {
     if corrections.is_empty() {
@@ -226,13 +213,13 @@ fn materialize_dictionary_entry(
         // child table, so a healthy database cannot leak it into a Context.
         return DictionaryEntry {
             id,
-            term,
-            mistake: legacy_mistake,
-            auto_learned: legacy_auto_learned,
-            correction_count: legacy_correction_count,
-            confidence_tier: legacy_confidence_tier,
-            last_seen_at: legacy_last_seen_at,
-            created_at,
+            term: legacy.term,
+            mistake: legacy.mistake,
+            auto_learned: legacy.auto_learned,
+            correction_count: legacy.correction_count,
+            confidence_tier: legacy.confidence_tier,
+            last_seen_at: legacy.last_seen_at,
+            created_at: legacy.created_at,
             corrections,
         };
     }
@@ -262,13 +249,13 @@ fn materialize_dictionary_entry(
 
     DictionaryEntry {
         id,
-        term,
+        term: legacy.term,
         mistake: (!mistake.is_empty()).then_some(mistake),
         auto_learned,
         correction_count,
         confidence_tier,
         last_seen_at,
-        created_at,
+        created_at: legacy.created_at,
         corrections,
     }
 }
@@ -300,7 +287,7 @@ pub fn move_dictionary_corrections_conn(
         return Ok(0);
     }
 
-    let source_rows: Vec<(i64, i64, String, bool, i64, String, Option<String>)> = conn
+    let source_rows: Vec<CorrectionTransferRow> = conn
         .prepare(
             "SELECT id, dictionary_id, mistake, auto_learned, correction_count,
                     confidence_tier, last_seen_at
@@ -604,10 +591,8 @@ fn normalized_mistake_list(mistake: Option<&str>) -> Vec<String> {
     mistake
         .into_iter()
         .flat_map(dictionary_mistake_variants)
-        .filter_map(|variant| {
-            seen.insert(variant.to_lowercase())
-                .then(|| variant.to_owned())
-        })
+        .filter(|variant| seen.insert(variant.to_lowercase()))
+        .map(str::to_owned)
         .collect()
 }
 
@@ -619,13 +604,9 @@ fn insert_correction_mappings_conn(
     conn: &rusqlite::Connection,
     context_id: i64,
     dictionary_id: i64,
-    mistake: Option<&str>,
-    auto_learned: bool,
-    correction_count: i64,
-    confidence_tier: &str,
-    last_seen_at: Option<&str>,
+    seed: CorrectionMappingSeed<'_>,
 ) -> Result<usize> {
-    let variants = normalized_mistake_list(mistake);
+    let variants = normalized_mistake_list(seed.mistake);
     let mut inserted = 0;
     for (index, variant) in variants.iter().enumerate() {
         let changed = conn.execute(
@@ -638,10 +619,10 @@ fn insert_correction_mappings_conn(
                 context_id,
                 dictionary_id,
                 variant,
-                auto_learned as i64,
-                if index == 0 { correction_count } else { 0 },
-                confidence_tier,
-                last_seen_at,
+                seed.auto_learned as i64,
+                if index == 0 { seed.correction_count } else { 0 },
+                seed.confidence_tier,
+                seed.last_seen_at,
             ],
         )?;
         inserted += changed;
@@ -731,11 +712,13 @@ pub fn insert_dictionary_entry_returning(
                 &tx,
                 target_context,
                 id,
-                normalized_mistake.as_deref(),
-                false,
-                0,
-                "manual",
-                None,
+                CorrectionMappingSeed {
+                    mistake: normalized_mistake.as_deref(),
+                    auto_learned: false,
+                    correction_count: 0,
+                    confidence_tier: "manual",
+                    last_seen_at: None,
+                },
             )?;
             purge_auto_learn_evidence_for_mistake_list_conn(
                 &tx,
@@ -767,11 +750,13 @@ pub fn insert_dictionary_entry_returning(
         &tx,
         target_context,
         id,
-        normalized_mistake.as_deref(),
-        false,
-        0,
-        "manual",
-        None,
+        CorrectionMappingSeed {
+            mistake: normalized_mistake.as_deref(),
+            auto_learned: false,
+            correction_count: 0,
+            confidence_tier: "manual",
+            last_seen_at: None,
+        },
     )?;
     purge_auto_learn_evidence_for_mistake_list_conn(
         &tx,
@@ -920,11 +905,13 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
                 &tx,
                 everywhere_id,
                 id,
-                Some(&KNOWN_VARIANTS.join(", ")),
-                false,
-                0,
-                "manual",
-                None,
+                CorrectionMappingSeed {
+                    mistake: Some(&KNOWN_VARIANTS.join(", ")),
+                    auto_learned: false,
+                    correction_count: 0,
+                    confidence_tier: "manual",
+                    last_seen_at: None,
+                },
             )?;
             tx.execute(
                 "INSERT INTO seeded_defaults (key) VALUES (?1)",
@@ -968,11 +955,13 @@ pub fn insert_dictionary_entry_from_backup_conn(
         conn,
         everywhere_id,
         id,
-        normalized_mistake.as_deref(),
-        auto_learned,
-        correction_count,
-        confidence_tier,
-        None,
+        CorrectionMappingSeed {
+            mistake: normalized_mistake.as_deref(),
+            auto_learned,
+            correction_count,
+            confidence_tier,
+            last_seen_at: None,
+        },
     )?;
     Ok(())
 }
@@ -1123,49 +1112,37 @@ pub fn log_auto_learn_event(
     log_auto_learn_event_with_context(
         db,
         None,
-        event_type,
-        reason_code,
-        app_context,
-        mistake_hash,
-        correction_hash,
-        confidence,
+        AutoLearnEventFields {
+            event_type,
+            reason_code,
+            app_context,
+            mistake_hash,
+            correction_hash,
+            confidence,
+        },
     )
 }
 
 /// Context-aware event writer. The legacy wrapper above remains for old
 /// telemetry callers; new monitor paths should always provide the immutable
 /// originating Context id.
+#[expect(dead_code, reason = "Consumed by the Context-aware monitor in the stacked runtime change")]
 pub fn log_auto_learn_event_for_context(
     db: &Db,
     context_id: i64,
-    event_type: &str,
-    reason_code: &str,
-    app_context: &str,
-    mistake_hash: &str,
-    correction_hash: &str,
-    confidence: f64,
+    event: AutoLearnEventFields<'_>,
 ) -> Result<()> {
     log_auto_learn_event_with_context(
         db,
         Some(context_id),
-        event_type,
-        reason_code,
-        app_context,
-        mistake_hash,
-        correction_hash,
-        confidence,
+        event,
     )
 }
 
 fn log_auto_learn_event_with_context(
     db: &Db,
     context_id: Option<i64>,
-    event_type: &str,
-    reason_code: &str,
-    app_context: &str,
-    mistake_hash: &str,
-    correction_hash: &str,
-    confidence: f64,
+    event: AutoLearnEventFields<'_>,
 ) -> Result<()> {
     let conn = lock_conn(db)?;
     conn.execute(
@@ -1173,13 +1150,13 @@ fn log_auto_learn_event_with_context(
          (event_type, reason_code, context_id, app_context, mistake_hash, correction_hash, confidence)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            event_type,
-            reason_code,
+            event.event_type,
+            event.reason_code,
             context_id,
-            app_context,
-            mistake_hash,
-            correction_hash,
-            confidence
+            event.app_context,
+            event.mistake_hash,
+            event.correction_hash,
+            event.confidence
         ],
     )?;
     Ok(())
@@ -1681,11 +1658,13 @@ fn update_dictionary_entry_for_context_conn(
         conn,
         context_id,
         id,
-        normalized_mistake,
-        false,
-        0,
-        "manual",
-        None,
+        CorrectionMappingSeed {
+            mistake: normalized_mistake,
+            auto_learned: false,
+            correction_count: 0,
+            confidence_tier: "manual",
+            last_seen_at: None,
+        },
     )?;
     purge_auto_learn_evidence_for_mistake_list_conn(
         conn,
@@ -1720,6 +1699,7 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
 /// This is the Contexts-surface counterpart to the legacy global delete. An
 /// automatically-created canonical row is removed only when this was its last
 /// assignment and no correction mapping remains anywhere.
+#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn remove_dictionary_entry_from_context(
     db: &Db,
     context_id: i64,
@@ -1752,6 +1732,7 @@ pub fn remove_dictionary_entry_from_context(
 /// shared item, moving is an explicit transfer: its Context-owned correction
 /// mappings follow the assignment, while any unpromoted evidence in the source
 /// Context is discarded because it has no safe destination.
+#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn move_dictionary_entry_to_context(
     db: &Db,
     dictionary_id: i64,
@@ -2031,6 +2012,7 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
 /// immediately re-promote. Manual mappings, other Contexts, and the shared
 /// canonical term remain untouched unless the canonical row is an auto-learned
 /// orphan with no remaining Context assignment.
+#[expect(dead_code, reason = "Consumed by the rejection monitor in the stacked runtime change")]
 pub fn delete_auto_learned_corrections_by_ids(
     db: &Db,
     context_id: i64,

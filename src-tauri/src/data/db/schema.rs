@@ -1124,15 +1124,17 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
     // automatic rows so a malformed legacy database cannot let an automatic
     // mapping displace a manual correction when both claim the same variant.
     // Within one authority tier, the stable dictionary id is the tie-breaker.
-    let legacy_rows: Vec<(
-        i64,
-        Option<String>,
-        i64,
-        i64,
-        String,
-        Option<String>,
-        String,
-    )> = conn
+    struct LegacyDictionaryMigrationRow {
+        dictionary_id: i64,
+        mistake: Option<String>,
+        auto_learned: i64,
+        correction_count: i64,
+        confidence_tier: String,
+        last_seen_at: Option<String>,
+        created_at: String,
+    }
+
+    let legacy_rows: Vec<LegacyDictionaryMigrationRow> = conn
         .prepare(
             "SELECT id, mistake, auto_learned, correction_count, confidence_tier,
                     last_seen_at, created_at
@@ -1140,28 +1142,28 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
               ORDER BY auto_learned ASC, id ASC",
         )?
         .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
+            Ok(LegacyDictionaryMigrationRow {
+                dictionary_id: row.get(0)?,
+                mistake: row.get(1)?,
+                auto_learned: row.get(2)?,
+                correction_count: row.get(3)?,
+                confidence_tier: row.get(4)?,
+                last_seen_at: row.get(5)?,
+                created_at: row.get(6)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    for (
-        dictionary_id,
-        mistake,
-        auto_learned,
-        correction_count,
-        confidence_tier,
-        last_seen_at,
-        created_at,
-    ) in legacy_rows
-    {
+    for row in legacy_rows {
+        let LegacyDictionaryMigrationRow {
+            dictionary_id,
+            mistake,
+            auto_learned,
+            correction_count,
+            confidence_tier,
+            last_seen_at,
+            created_at,
+        } = row;
         let Some(mistake) = mistake else { continue };
         let variants = mistake
             .split(',')
