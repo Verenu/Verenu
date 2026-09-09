@@ -112,43 +112,93 @@ fn parse_dictionary_mistakes(mistake: &str) -> impl Iterator<Item = &str> {
     db::dictionary_mistake_variants(mistake)
 }
 
+/// One context-effective mistranscription variant.
+///
+/// `DictionaryEntry::id` identifies the shared canonical term. A correction
+/// mapping has its own ID, because the same canonical term can be used by
+/// several Contexts with different mistranscriptions. The context query is
+/// responsible for populating `DictionaryEntry::corrections`; the fallback
+/// below keeps old/legacy dictionary rows readable while that API is migrated.
+#[derive(Clone, Copy)]
+struct EffectiveCorrection<'a> {
+    id: i64,
+    mistake: &'a str,
+}
+
+fn effective_correction_variants<'a>(
+    entry: &'a db::DictionaryEntry,
+) -> Vec<EffectiveCorrection<'a>> {
+    if entry.corrections.is_empty() {
+        return entry
+            .mistake
+            .as_deref()
+            .into_iter()
+            .flat_map(parse_dictionary_mistakes)
+            .map(|variant| EffectiveCorrection {
+                id: entry.id,
+                mistake: variant,
+            })
+            .collect();
+    }
+
+    // Manual mappings win over an automatic mapping for the same variant in
+    // this Context. Normally the DB uniqueness rule prevents two effective
+    // mappings from competing, but doing the precedence check here keeps
+    // prompt evidence and deterministic substitutions safe while older rows
+    // are being migrated or when a shared canonical row has mixed metadata.
+    let manual_variants: HashSet<String> = entry
+        .corrections
+        .iter()
+        .filter(|correction| !correction.auto_learned)
+        .flat_map(|correction| parse_dictionary_mistakes(&correction.mistake))
+        .map(|variant| variant.to_lowercase())
+        .collect();
+
+    entry
+        .corrections
+        .iter()
+        .flat_map(|correction| {
+            let manual_variants = &manual_variants;
+            parse_dictionary_mistakes(&correction.mistake).filter_map(move |variant| {
+                if correction.auto_learned && manual_variants.contains(&variant.to_lowercase()) {
+                    return None;
+                }
+                Some(EffectiveCorrection {
+                    id: correction.id,
+                    mistake: variant,
+                })
+            })
+        })
+        .collect()
+}
+
 fn entry_match_score(
     entry: &db::DictionaryEntry,
     source_lower: &str,
     source_tokens: &[String],
 ) -> Option<u16> {
-    let source_tokens: Vec<&str> = source_tokens
-        .iter()
-        .map(String::as_str)
-        .filter(|token| token.chars().count() >= 4)
-        .collect();
-    let sources = std::iter::once(entry.term.as_str()).chain(
-        entry
-            .mistake
-            .as_deref()
-            .into_iter()
-            .flat_map(parse_dictionary_mistakes),
-    );
     let mut best = 0u16;
-    for candidate in sources {
-        if contains_term(source_lower, candidate) {
+    for candidate in std::iter::once(entry.term.as_str()).chain(
+        effective_correction_variants(entry)
+            .into_iter()
+            .map(|c| c.mistake),
+    ) {
+        if contains_term(source_lower, source_tokens, candidate) {
             best = best.max(100);
-        } else if matches_source_tokens(candidate, &source_tokens) {
+        } else if matches_source_tokens(candidate, source_tokens) {
             best = best.max(70);
         }
     }
     (best > 0).then_some(best)
 }
 
-fn contains_term(haystack: &str, needle: &str) -> bool {
+fn contains_term(haystack: &str, haystack_tokens: &[String], needle: &str) -> bool {
     let needle = needle.trim().to_lowercase();
     if needle.is_empty() {
         return false;
     }
     if needle.chars().all(char::is_alphanumeric) {
-        return tokenize_lower_alnum(haystack)
-            .iter()
-            .any(|token| token == &needle);
+        return haystack_tokens.iter().any(|token| token == &needle);
     }
     haystack.contains(&needle)
 }
@@ -156,11 +206,12 @@ fn contains_term(haystack: &str, needle: &str) -> bool {
 fn entry_has_fallback_signal(entry: &db::DictionaryEntry) -> bool {
     has_distinctive_features(&entry.term)
         || looks_like_proper_or_brand_name(&entry.term)
-        || entry.mistake.as_deref().is_some_and(|mistake| {
-            parse_dictionary_mistakes(mistake).any(|variant| {
-                has_distinctive_features(variant) || looks_like_proper_or_brand_name(variant)
+        || effective_correction_variants(entry)
+            .into_iter()
+            .any(|correction| {
+                has_distinctive_features(correction.mistake)
+                    || looks_like_proper_or_brand_name(correction.mistake)
             })
-        })
 }
 
 fn looks_like_proper_or_brand_name(value: &str) -> bool {
@@ -169,7 +220,7 @@ fn looks_like_proper_or_brand_name(value: &str) -> bool {
         && chars.any(|character| character.is_lowercase())
 }
 
-fn matches_source_tokens(source: &str, raw_tokens: &[&str]) -> bool {
+fn matches_source_tokens(source: &str, raw_tokens: &[String]) -> bool {
     for token in source
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|t| !t.is_empty())
@@ -179,6 +230,9 @@ fn matches_source_tokens(source: &str, raw_tokens: &[&str]) -> bool {
             continue;
         }
         for raw in raw_tokens {
+            if raw.chars().count() < 4 {
+                continue;
+            }
             if candidate == *raw || candidate.starts_with(raw) || raw.starts_with(&candidate) {
                 return true;
             }
@@ -266,26 +320,23 @@ fn format_dictionary_entry(
     entry: &db::DictionaryEntry,
     seen_mistakes: &mut HashSet<String>,
 ) -> String {
-    match &entry.mistake {
-        Some(mistake) => {
-            let variants: Vec<&str> = parse_dictionary_mistakes(mistake)
-                .filter(|variant| seen_mistakes.insert(variant.to_lowercase()))
-                .collect();
-            if variants.is_empty() {
-                return format!("- known term: \"{}\"", entry.term);
-            }
-            let quoted = variants
-                .iter()
-                .map(|v| format!("\"{v}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "- preferred: \"{}\"; possible STT variants: {}",
-                entry.term, quoted
-            )
-        }
-        None => format!("- known term: \"{}\"", entry.term),
+    let variants: Vec<&str> = effective_correction_variants(entry)
+        .into_iter()
+        .map(|correction| correction.mistake)
+        .filter(|variant| seen_mistakes.insert(variant.to_lowercase()))
+        .collect();
+    if variants.is_empty() {
+        return format!("- known term: \"{}\"", entry.term);
     }
+    let quoted = variants
+        .iter()
+        .map(|v| format!("\"{v}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "- preferred: \"{}\"; possible STT variants: {}",
+        entry.term, quoted
+    )
 }
 
 pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>) {
@@ -299,18 +350,12 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
     // known mistranscriptions for a single correct spelling.
     let mut replaceable: Vec<(i64, &str, &str)> = entries
         .iter()
-        .filter_map(|e| {
-            e.mistake.as_deref().map(|mistake| {
-                parse_dictionary_mistakes(mistake)
-                    // The LLM gets all relevant vocabulary as evidence. Only
-                    // mechanically fix a variant with a distinctive technical
-                    // shape; common-word pairs (for example clawed/Claude or
-                    // rock/Groq) must remain context-dependent.
-                    .filter(|variant| has_distinctive_features(variant))
-                    .map(|variant| (e.id, variant, e.term.as_str()))
-            })
+        .flat_map(|entry| {
+            effective_correction_variants(entry)
+                .into_iter()
+                .filter(|correction| has_distinctive_features(correction.mistake))
+                .map(|correction| (correction.id, correction.mistake, entry.term.as_str()))
         })
-        .flatten()
         .collect();
     replaceable.sort_by_key(|(_, mistake, _)| std::cmp::Reverse(mistake.len()));
 
@@ -369,7 +414,11 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
         if positions.is_empty() {
             continue;
         }
-        applied_ids.push(*id);
+        if !applied_ids.contains(id) {
+            // The same mapping may contain several comma-separated variants;
+            // rejection must target the mapping once, not once per variant.
+            applied_ids.push(*id);
+        }
         for pos in positions.into_iter().rev() {
             result.replace_range(pos..pos + mistake.len(), term);
         }
@@ -383,7 +432,7 @@ mod tests {
         apply_substitutions_from, build_dictionary_prompt_limited,
         build_relevant_dictionary_prompt_from, build_relevant_dictionary_prompt_from_sources,
     };
-    use crate::data::db::DictionaryEntry;
+    use crate::data::db::{DictionaryCorrection, DictionaryEntry};
 
     fn entry(id: i64, term: &str, mistake: Option<&str>) -> DictionaryEntry {
         DictionaryEntry {
@@ -396,6 +445,38 @@ mod tests {
             last_seen_at: None,
             created_at: "now".to_string(),
             corrections: Vec::new(),
+        }
+    }
+
+    fn context_entry(
+        dictionary_id: i64,
+        term: &str,
+        context_id: i64,
+        correction_id: i64,
+        mistake: &str,
+        auto_learned: bool,
+    ) -> DictionaryEntry {
+        let confidence_tier = if auto_learned { "medium" } else { "manual" };
+        DictionaryEntry {
+            id: dictionary_id,
+            term: term.to_string(),
+            mistake: None,
+            auto_learned,
+            correction_count: 0,
+            confidence_tier: confidence_tier.to_string(),
+            last_seen_at: None,
+            created_at: "now".to_string(),
+            corrections: vec![DictionaryCorrection {
+                id: correction_id,
+                dictionary_id,
+                context_id,
+                mistake: mistake.to_string(),
+                auto_learned,
+                correction_count: 0,
+                confidence_tier: confidence_tier.to_string(),
+                last_seen_at: None,
+                created_at: "now".to_string(),
+            }],
         }
     }
 
@@ -599,5 +680,62 @@ mod tests {
         let (out, applied) = apply_substitutions_from("I love rock music", &entries);
         assert_eq!(out, "I love rock music");
         assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn context_materialization_uses_only_the_supplied_correction_mapping() {
+        let development = context_entry(7, "Groq", 11, 701, "grockx", true);
+        let writing = context_entry(7, "Groq", 12, 702, "rockz", true);
+
+        let (development_text, development_ids) =
+            apply_substitutions_from("use rockz", &[development]);
+        let (writing_text, writing_ids) = apply_substitutions_from("use rockz", &[writing]);
+
+        assert_eq!(development_text, "use rockz");
+        assert!(development_ids.is_empty());
+        assert_eq!(writing_text, "use Groq");
+        assert_eq!(writing_ids, vec![702]);
+    }
+
+    #[test]
+    fn applied_substitution_ids_are_context_correction_ids_not_canonical_ids() {
+        let entry = context_entry(7, "Kubernetes", 11, 701, "kubernetez", true);
+        let (text, applied_ids) = apply_substitutions_from("open kubernetez", &[entry]);
+
+        assert_eq!(text, "open Kubernetes");
+        assert_eq!(applied_ids, vec![701]);
+    }
+
+    #[test]
+    fn manual_correction_wins_over_an_automatic_duplicate_variant() {
+        let mut entry = context_entry(7, "Kubernetes", 11, 701, "kubernetez", false);
+        entry.corrections.push(DictionaryCorrection {
+            id: 702,
+            dictionary_id: 7,
+            context_id: 11,
+            mistake: "kubernetez".to_string(),
+            auto_learned: true,
+            correction_count: 0,
+            confidence_tier: "high".to_string(),
+            last_seen_at: None,
+            created_at: "now".to_string(),
+        });
+
+        let prompt = build_dictionary_prompt_limited([&entry].into_iter());
+        assert_eq!(prompt.matches("kubernetez").count(), 1);
+
+        let (text, applied_ids) = apply_substitutions_from("open kubernetez", &[entry]);
+        assert_eq!(text, "open Kubernetes");
+        assert_eq!(applied_ids, vec![701]);
+    }
+
+    #[test]
+    fn typed_context_mapping_preserves_all_comma_separated_prompt_variants() {
+        let entry = context_entry(7, "Verenu", 11, 701, "Varinu, Verena, Virinu", true);
+        let prompt = build_dictionary_prompt_limited([&entry].into_iter());
+
+        assert!(prompt.contains("\"Varinu\""));
+        assert!(prompt.contains("\"Verena\""));
+        assert!(prompt.contains("\"Virinu\""));
     }
 }

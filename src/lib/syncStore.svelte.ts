@@ -92,7 +92,10 @@ export function startSyncListeners(): () => void {
     }),
     listen<{ tables: string[] }>('verenu:sync-data-changed', (event) => {
       const tables = event.payload.tables ?? [];
-      if (tables.includes('dictionary')) void fetchDictionary();
+      // A promoted/context-specific correction is persisted in its own table
+      // on newer backends, while the legacy dictionary view still materializes
+      // that state through get_dictionary.
+      if (tables.includes('dictionary') || tables.includes('dictionary_corrections')) void fetchDictionary();
       if (tables.includes('snippets')) void fetchSnippets();
       if (tables.includes('contexts')) void loadContexts(true);
       poll.request();

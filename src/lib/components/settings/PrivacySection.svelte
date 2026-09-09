@@ -185,6 +185,10 @@
     dictionary_inserted: number;
     dictionary_skipped: number;
     dictionary_already_existed: number;
+    contexts_inserted?: number;
+    contexts_already_existed?: number;
+    dictionary_corrections_inserted?: number;
+    dictionary_corrections_skipped?: number;
     snippets_inserted: number;
     snippets_skipped: number;
     snippets_already_existed: number;
@@ -235,7 +239,18 @@
         s.snippets_already_existed > 0 ? `${s.snippets_already_existed} already on device` : '',
         s.snippets_skipped > 0 ? `${s.snippets_skipped} skipped` : '',
       ].filter(Boolean).join(', ') || 'none';
-      importMsg = `Applied ${s.settings_applied} settings. Dictionary: ${dictParts}. Snippets: ${snipParts}.`;
+      const contextTotal = (s.contexts_inserted ?? 0) + (s.contexts_already_existed ?? 0);
+      const correctionParts = [
+        s.dictionary_corrections_inserted && s.dictionary_corrections_inserted > 0
+          ? `${s.dictionary_corrections_inserted} added`
+          : '',
+        s.dictionary_corrections_skipped && s.dictionary_corrections_skipped > 0
+          ? `${s.dictionary_corrections_skipped} skipped`
+          : '',
+      ].filter(Boolean).join(', ');
+      const contextParts = contextTotal > 0 ? ` Contexts: ${contextTotal}.` : '';
+      const correctionSummary = correctionParts ? ` Corrections: ${correctionParts}.` : '';
+      importMsg = `Applied ${s.settings_applied} settings.${contextParts} Dictionary: ${dictParts}.${correctionSummary} Snippets: ${snipParts}.`;
       importMsgKind = 'ok';
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

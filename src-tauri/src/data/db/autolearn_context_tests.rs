@@ -376,6 +376,115 @@ fn scoped_promotion_and_rejection_preserve_shared_canonical_identity() {
 }
 
 #[test]
+fn concurrent_promotions_in_different_contexts_keep_independent_mapping_state() {
+    let db = open(":memory:").expect("db");
+    let development = insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("development");
+    let writing =
+        insert_context_returning(&db, "Writing", None, None, None, None, false).expect("writing");
+
+    let development_db = db.clone();
+    let development_id = development.id;
+    let first = std::thread::spawn(move || {
+        upsert_auto_learn_candidate(
+            &development_db,
+            development_id,
+            "Kubernetez",
+            "Kubernetes",
+            0.95,
+        )
+        .expect("development candidate");
+        auto_learn_promote(
+            &development_db,
+            development_id,
+            "Kubernetez",
+            "Kubernetes",
+            "high",
+            2,
+            1,
+        )
+        .expect("development promotion")
+    });
+    let writing_db = db.clone();
+    let writing_id = writing.id;
+    let second = std::thread::spawn(move || {
+        upsert_auto_learn_candidate(&writing_db, writing_id, "Kubernetez", "Kubernetes", 0.95)
+            .expect("writing candidate");
+        auto_learn_promote(
+            &writing_db,
+            writing_id,
+            "Kubernetez",
+            "Kubernetes",
+            "high",
+            2,
+            1,
+        )
+        .expect("writing promotion")
+    });
+
+    assert_eq!(
+        first.join().expect("development thread"),
+        AutoLearnPromoteResult::Promoted
+    );
+    assert_eq!(
+        second.join().expect("writing thread"),
+        AutoLearnPromoteResult::Promoted
+    );
+
+    for context_id in [development.id, writing.id] {
+        let entry = query_dictionary_for_context(&db, context_id)
+            .expect("context dictionary")
+            .into_iter()
+            .find(|entry| entry.term == "Kubernetes")
+            .expect("context mapping");
+        assert_eq!(entry.corrections.len(), 1);
+        assert_eq!(entry.corrections[0].correction_count, 1);
+        assert_eq!(entry.corrections[0].context_id, context_id);
+    }
+    let conn = lock_conn(&db).expect("lock");
+    let candidates: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM auto_learn_candidates
+              WHERE wrong_word = 'Kubernetez' AND correct_word = 'Kubernetes'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("candidate rows");
+    assert_eq!(candidates, 2);
+}
+
+#[test]
+fn moving_a_dictionary_assignment_transfers_only_its_context_mapping() {
+    let db = open(":memory:").expect("db");
+    let development = insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("development");
+    let writing =
+        insert_context_returning(&db, "Writing", None, None, None, None, false).expect("writing");
+    let entry = insert_dictionary_entry_returning(
+        &db,
+        "Kubernetes",
+        Some("Kubernetez"),
+        Some(development.id),
+    )
+    .expect("entry");
+
+    move_dictionary_entry_to_context(&db, entry.id, development.id, writing.id)
+        .expect("move assignment");
+
+    assert!(!query_dictionary_for_context(&db, development.id)
+        .expect("development dictionary")
+        .iter()
+        .any(|item| item.id == entry.id));
+    let moved = query_dictionary_for_context(&db, writing.id)
+        .expect("writing dictionary")
+        .into_iter()
+        .find(|item| item.id == entry.id)
+        .expect("moved entry");
+    assert_eq!(moved.mistake.as_deref(), Some("Kubernetez"));
+    assert_eq!(moved.corrections[0].context_id, writing.id);
+}
+
+#[test]
 fn correction_rows_capture_stable_sync_identity_and_delete_events() {
     let db = open(":memory:").expect("db");
     let context = insert_context_returning(&db, "Development", None, None, None, None, false)

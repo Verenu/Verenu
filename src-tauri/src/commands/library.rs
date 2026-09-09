@@ -167,24 +167,116 @@ pub async fn create_dictionary_entry(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn edit_dictionary_entry(
     app: AppHandle,
     id: i64,
     term: String,
     mistake: Option<String>,
+    dictionary_id: Option<i64>,
+    context_id: Option<i64>,
+    correction_id: Option<i64>,
+    correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
     let db = db_state(&app);
     run_blocking("edit_dictionary_entry", move || {
-        db::update_dictionary_entry(&db, id, &term, mistake.as_deref()).map_err(|e| e.to_string())
+        // The mapping ids are accepted for forward/backward IPC compatibility
+        // and diagnostics, but the canonical row plus Context is the actual
+        // edit target. The backend re-reads authoritative child mappings in a
+        // transaction so stale frontend ids cannot widen the edit scope.
+        let _ = (dictionary_id, correction_id, correction_ids);
+        let result = match context_id {
+            Some(context_id) => db::update_dictionary_entry_for_context(
+                &db,
+                context_id,
+                id,
+                &term,
+                mistake.as_deref(),
+            ),
+            None => db::update_dictionary_entry(&db, id, &term, mistake.as_deref()),
+        };
+        if result.is_ok() {
+            app.emit(
+                "verenu:dictionary-updated",
+                serde_json::json!({
+                    "context_id": context_id,
+                    "dictionary_id": id,
+                }),
+            )
+            .ok();
+        }
+        result.map_err(|e| e.to_string())
     })
     .await
 }
 
 #[tauri::command]
-pub async fn remove_dictionary_entry(app: AppHandle, id: i64) -> Result<(), String> {
+pub async fn remove_dictionary_entry(
+    app: AppHandle,
+    id: i64,
+    dictionary_id: Option<i64>,
+    context_id: Option<i64>,
+    correction_id: Option<i64>,
+    correction_ids: Option<Vec<i64>>,
+) -> Result<(), String> {
     let db = db_state(&app);
     run_blocking("remove_dictionary_entry", move || {
-        db::delete_dictionary_entry(&db, id).map_err(|e| e.to_string())
+        let _ = (dictionary_id, correction_id, correction_ids);
+        let result = match context_id {
+            Some(context_id) => db::remove_dictionary_entry_from_context(&db, context_id, id),
+            None => db::delete_dictionary_entry(&db, id),
+        };
+        if result.is_ok() {
+            app.emit(
+                "verenu:dictionary-updated",
+                serde_json::json!({
+                    "context_id": context_id,
+                    "dictionary_id": id,
+                }),
+            )
+            .ok();
+        }
+        result.map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn move_dictionary_entry_to_context(
+    app: AppHandle,
+    dictionary_id: i64,
+    source_context_id: i64,
+    target_context_id: i64,
+    correction_id: Option<i64>,
+    correction_ids: Option<Vec<i64>>,
+) -> Result<(), String> {
+    let db = db_state(&app);
+    run_blocking("move_dictionary_entry_to_context", move || {
+        let _ = (correction_id, correction_ids);
+        db::move_dictionary_entry_to_context(
+            &db,
+            dictionary_id,
+            source_context_id,
+            target_context_id,
+        )
+        .map_err(|e| e.to_string())?;
+        app.emit(
+            "verenu:dictionary-updated",
+            serde_json::json!({
+                "context_id": source_context_id,
+                "dictionary_id": dictionary_id,
+            }),
+        )
+        .ok();
+        app.emit(
+            "verenu:dictionary-updated",
+            serde_json::json!({
+                "context_id": target_context_id,
+                "dictionary_id": dictionary_id,
+            }),
+        )
+        .ok();
+        Ok(())
     })
     .await
 }

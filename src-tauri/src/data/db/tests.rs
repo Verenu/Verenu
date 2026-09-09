@@ -1272,7 +1272,18 @@ fn auto_learn_retention_prunes_only_stale_rows() {
         .expect("candidate");
     upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
         .expect("candidate");
-    log_auto_learn_event(&db, "monitor", "started", "", "", "", 0.0).expect("event");
+    log_auto_learn_event(
+        &db,
+        AutoLearnEventFields {
+            event_type: "monitor",
+            reason_code: "started",
+            app_context: "",
+            mistake_hash: "",
+            correction_hash: "",
+            confidence: 0.0,
+        },
+    )
+    .expect("event");
     {
         let conn = lock_conn(&db).expect("lock");
         conn.execute(

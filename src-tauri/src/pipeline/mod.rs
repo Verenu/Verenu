@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api::{auto_learn, cleanup, prompts, transcription, ProviderId};
-use crate::core::{browser_probe, context, injection, window_context};
+use crate::core::{browser_probe, injection, window_context};
 use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
 use crate::system::apps::AppMapping;
@@ -356,8 +356,14 @@ fn merge_prepend_audio(
 
 async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_only: bool) {
     let started_at = std::time::Instant::now();
-    let Some((session, target, exclusive_mic_session_id, generation, prepend_audio)) =
-        state::take_recording_for_stopping(&state)
+    let Some((
+        session,
+        target,
+        exclusive_mic_session_id,
+        generation,
+        prepend_audio,
+        resolved_context_identity,
+    )) = state::take_recording_for_stopping(&state)
     else {
         log::debug!("pipeline: no session - recording never started or was already consumed");
         return;
@@ -369,7 +375,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // typing (toggling Caps Lock) while it runs.
     let caps_lock_on = crate::core::hotkey::caps_lock_is_on();
 
-    // Resolve the app identity from the window text will actually be injected
+    // Resolve app metadata from the target that will actually receive text
     // into (captured at record-start), not the live foreground at release — the
     // two can diverge (handsfree, focus shifts) and that divergence let one
     // app's mapping style leak into another app. Issue #144. Falls back to the
@@ -381,35 +387,18 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     let db_handle = app.state::<DbHandle>().inner().clone();
     // Only probe the address bar when the foreground app is actually a
     // browser — the UIA tree walk is comparatively costly and meaningless
-    // for any other window. Best-effort: a probe failure just means the
-    // context resolves by exe alone, same as before this feature existed.
+    // for any other window. This metadata is only used for the cleanup prompt;
+    // the Context identity itself was captured before recording began.
     let browser_domain = if window_context::is_browser_exe(&process_name) {
         browser_probe::read_browser_domain_for_window(target.id)
     } else {
         None
     };
-    let resolved_context =
-        match context::resolve_context(&db_handle, &process_name, browser_domain.as_deref()) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                log::warn!("pipeline: context resolution failed, using Everywhere error={error}");
-                db::Context {
-                    id: db::EVERYWHERE_CONTEXT_ID,
-                    name: "Everywhere".to_string(),
-                    is_everywhere: true,
-                    icon: None,
-                    tone: None,
-                    cleanup_intensity: None,
-                    color: None,
-                    custom_instructions: None,
-                    contextual_formatting_disabled: false,
-                    pinned_at: None,
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                }
-            }
-        };
-    let context_id = resolved_context.id;
+    // Rehydrate only the settings needed by the cleanup/profile stage. A
+    // deleted Context must not cause a second foreground resolution or leak
+    // the dictation into whichever Context now matches the active window.
+    let resolved_context = db::query_context(&db_handle, resolved_context_identity.id).ok();
+    let context_id = resolved_context_identity.id;
     log::info!("pipeline: start gen={generation} target_id={}", target.id);
 
     // Mark the session inactive before unmuting or waiting on stop() so the
@@ -521,6 +510,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         generation,
         cancel_tx,
         captured_audio: captured_audio.clone(),
+        context: resolved_context_identity.clone(),
         target,
     };
     {
@@ -537,11 +527,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0)
             };
-            failover::commit_capture(
+            failover::commit_capture_with_context(
                 &captured_audio,
                 &id,
                 failover::FailoverKind::Processing,
                 started,
+                Some(resolved_context_identity.id),
             );
         }
     }
@@ -559,7 +550,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         &process_name,
         target.id,
         browser_domain.as_deref(),
-        Some(&resolved_context),
+        resolved_context.as_ref(),
     )
     .await
     else {
@@ -571,7 +562,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     };
     // Surface the resolved context so the pill can show where this dictation
     // is going (same value emitted at record start, now domain-refined).
-    emit_pill_context(&app, &resolved_context.name);
+    emit_pill_context(&app, &resolved_context_identity.label);
     log::debug!(
         "pipeline: config t_provider={} c_provider={} t_model={} c_model={} cleanup_enabled={} intensity={} app_context_hint={} profile={}",
         cfg.transcription_provider,
@@ -601,7 +592,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
             captured_at: retry_captured_at,
             target,
             process_name: process_name.clone(),
-            context_id,
+            context: resolved_context_identity.clone(),
             profile: profile.clone(),
             app_context: app_context.clone(),
             caps_lock_on,
@@ -833,7 +824,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
             captured_at: retry_captured_at,
             event_only,
             caps_lock_on,
-            context: Some(&resolved_context),
+            context: resolved_context_identity,
         },
     )
     .await
@@ -957,11 +948,9 @@ pub async fn retry_transcription_impl(
 
     let mapping = resolve_app_mapping(Some(&settings_store), &capture.process_name);
     let db_handle = app.state::<DbHandle>().inner().clone();
-    let context = db::query_context(&db_handle, capture.context_id).ok();
+    let context = db::query_context(&db_handle, capture.context.id).ok();
     capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref());
-    if let Some(name) = context.as_ref().map(|c| c.name.as_str()) {
-        emit_pill_context(app, name);
-    }
+    emit_pill_context(app, &capture.context.label);
 
     emit_pill_stage(app, "transcribing");
     let Some((raw_unorm, api_used, alternate)) =
@@ -1011,7 +1000,7 @@ pub async fn retry_transcription_impl(
             &cfg,
             &capture.profile,
             capture.app_context.as_deref(),
-            capture.context_id,
+            capture.context.id,
             clipboard_instruction.as_deref(),
             0,
         )
@@ -1042,7 +1031,7 @@ pub async fn retry_transcription_impl(
             captured_at: capture.captured_at,
             event_only: false,
             caps_lock_on: capture.caps_lock_on,
-            context: None,
+            context: capture.context,
         },
     )
     .await?;

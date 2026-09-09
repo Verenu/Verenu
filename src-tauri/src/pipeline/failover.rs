@@ -10,6 +10,7 @@ use super::state::{
     lock_state, CancelledCapture, CaptureOrigin, SharedState, CANCEL_RESUME_WINDOW,
 };
 use super::{state, CapturedAudio};
+use crate::core::context::ResolvedContextIdentity;
 use crate::core::window_geometry::WindowTarget;
 use crate::data::store;
 use crate::media::audio::{self, DurableSink, DurableSinkError, DurableSinkResult};
@@ -51,6 +52,11 @@ pub struct SessionMeta {
     pub duration_ms: u64,
     #[serde(default)]
     pub rms: f32,
+    /// Stable local Context identity captured when this durable take began.
+    /// Old sidecars omit it and are intentionally treated as Everywhere on
+    /// recovery because their originating Context cannot be inferred safely.
+    #[serde(default)]
+    pub context_id: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -324,12 +330,25 @@ fn samples_to_pcm(samples: &[f32]) -> Vec<u8> {
     out
 }
 
+#[cfg(test)]
 fn write_slot(
     root: &Path,
     live: bool,
     id: &str,
     kind: FailoverKind,
     started_at_unix: i64,
+    samples_16k: &[f32],
+) -> anyhow::Result<()> {
+    write_slot_with_context(root, live, id, kind, started_at_unix, None, samples_16k)
+}
+
+fn write_slot_with_context(
+    root: &Path,
+    live: bool,
+    id: &str,
+    kind: FailoverKind,
+    started_at_unix: i64,
+    context_id: Option<i64>,
     samples_16k: &[f32],
 ) -> anyhow::Result<()> {
     if samples_16k.is_empty() {
@@ -365,11 +384,13 @@ fn write_slot(
         sample_count,
         duration_ms: sample_count * 1000 / u64::from(TARGET_RATE),
         rms: audio::rms_f32(samples_16k),
+        context_id,
     };
     write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
     Ok(())
 }
 
+#[cfg(test)]
 pub fn write_committed(
     root: &Path,
     id: &str,
@@ -377,7 +398,26 @@ pub fn write_committed(
     started_at_unix: i64,
     samples_16k: &[f32],
 ) -> anyhow::Result<()> {
-    write_slot(root, false, id, kind, started_at_unix, samples_16k)?;
+    write_committed_with_context(root, id, kind, started_at_unix, None, samples_16k)
+}
+
+pub fn write_committed_with_context(
+    root: &Path,
+    id: &str,
+    kind: FailoverKind,
+    started_at_unix: i64,
+    context_id: Option<i64>,
+    samples_16k: &[f32],
+) -> anyhow::Result<()> {
+    write_slot_with_context(
+        root,
+        false,
+        id,
+        kind,
+        started_at_unix,
+        context_id,
+        samples_16k,
+    )?;
     delete_live(root);
     log::info!(
         "failover: committed id_prefix={} kind={:?} samples={} duration_ms={}",
@@ -477,6 +517,19 @@ fn loaded_to_capture(take: LoadedTake) -> Option<CancelledCapture> {
         // resume_cancelled_capture path, which re-captures the (now current)
         // foreground window whenever the stored target is the zero default.
         target: WindowTarget::default(),
+        // Older crash-recovery sidecars did not persist the originating
+        // Context. Use the safe fallback rather than resolving a new Context
+        // from whatever window happens to be focused during recovery. New
+        // sidecars carry only the stable local ID; the label is diagnostic
+        // because restore runs before the database is opened.
+        context: take
+            .meta
+            .context_id
+            .map(|id| ResolvedContextIdentity {
+                id,
+                label: "Recovered context".to_string(),
+            })
+            .unwrap_or_else(ResolvedContextIdentity::everywhere),
     })
 }
 
@@ -539,11 +592,28 @@ pub fn emit_cancelled_payload(app: &AppHandle, created_at: &str, kind: &str) {
 }
 
 pub fn commit_capture(audio: &CapturedAudio, id: &str, kind: FailoverKind, started_at_unix: i64) {
+    commit_capture_with_context(audio, id, kind, started_at_unix, None);
+}
+
+pub fn commit_capture_with_context(
+    audio: &CapturedAudio,
+    id: &str,
+    kind: FailoverKind,
+    started_at_unix: i64,
+    context_id: Option<i64>,
+) {
     let root = failover_dir();
-    if promote_live(&root, id, kind, started_at_unix).is_ok() {
+    if promote_live(&root, id, kind, started_at_unix, context_id).is_ok() {
         return;
     }
-    if let Err(e) = write_committed(&root, id, kind, started_at_unix, &audio.samples_16k) {
+    if let Err(e) = write_committed_with_context(
+        &root,
+        id,
+        kind,
+        started_at_unix,
+        context_id,
+        &audio.samples_16k,
+    ) {
         log::warn!(
             "failover: commit failed id_prefix={} samples={}: {e}",
             id_prefix(id),
@@ -560,6 +630,7 @@ fn promote_live(
     id: &str,
     kind: FailoverKind,
     started_at_unix: i64,
+    context_id: Option<i64>,
 ) -> anyhow::Result<()> {
     let dir = slot_dir(root, true);
     let mut meta = load_session(&dir.join(SESSION_FILE))
@@ -569,6 +640,9 @@ fn promote_live(
     }
     meta.kind = kind;
     meta.started_at_unix = started_at_unix;
+    if context_id.is_some() {
+        meta.context_id = context_id;
+    }
     write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
     let committed = slot_dir(root, false);
     delete_committed(root);
@@ -603,10 +677,22 @@ pub struct LiveWriter {
 }
 
 impl LiveWriter {
+    #[cfg(test)]
     pub fn open(
         root: PathBuf,
         id: String,
         prepend_16k: Option<&[f32]>,
+        app: Option<AppHandle>,
+        state: Option<SharedState>,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_context(root, id, prepend_16k, None, app, state)
+    }
+
+    pub fn open_with_context(
+        root: PathBuf,
+        id: String,
+        prepend_16k: Option<&[f32]>,
+        context_id: Option<i64>,
         app: Option<AppHandle>,
         state: Option<SharedState>,
     ) -> anyhow::Result<Self> {
@@ -629,6 +715,9 @@ impl LiveWriter {
                 {
                     fs::rename(&committed_dir, &dir)?;
                     meta.kind = FailoverKind::Recording;
+                    if context_id.is_some() {
+                        meta.context_id = context_id;
+                    }
                     write_session_atomic(&dir.join(SESSION_FILE), &meta)?;
                     let file = OpenOptions::new()
                         .create(true)
@@ -671,6 +760,7 @@ impl LiveWriter {
             sample_count: 0,
             duration_ms: 0,
             rms: 0.0,
+            context_id,
         };
         if let Some(prepend) = prepend_16k {
             if !prepend.is_empty() {
@@ -911,10 +1001,14 @@ pub fn open_live_writer(
     app: &AppHandle,
     state: &SharedState,
 ) -> Option<Box<dyn DurableSink>> {
-    match LiveWriter::open(
+    let context_id = lock_state(state)
+        .ok()
+        .and_then(|st| st.recording_context.as_ref().map(|context| context.id));
+    match LiveWriter::open_with_context(
         failover_dir(),
         id,
         prepend_16k,
+        context_id,
         Some(app.clone()),
         Some(state.clone()),
     ) {
@@ -1117,6 +1211,26 @@ mod tests {
     }
 
     #[test]
+    fn recovered_take_retains_originating_context_id() {
+        let root = test_root();
+        let samples = loud_ms(800);
+        write_committed_with_context(
+            &root,
+            "contextual-recovery",
+            FailoverKind::Cancelled,
+            now_unix(),
+            Some(42),
+            &samples,
+        )
+        .unwrap();
+        let loaded = restore_choice(&root, now_unix()).unwrap();
+        assert_eq!(loaded.meta.context_id, Some(42));
+        let capture = loaded_to_capture(loaded).unwrap();
+        assert_eq!(capture.context.id, 42);
+        delete_all(&root);
+    }
+
+    #[test]
     fn pcm_ahead_of_sidecar_uses_published_count() {
         let root = test_root();
         let samples = loud_ms(800);
@@ -1176,6 +1290,7 @@ mod tests {
                 sample_count: MAX_RECOVERY_SAMPLES + 1,
                 duration_ms: u64::MAX,
                 rms: 1.0,
+                context_id: None,
             },
         )
         .unwrap();
@@ -1328,7 +1443,14 @@ mod tests {
         )
         .unwrap();
         let before = fs::read(slot_dir(&root, true).join(AUDIO_FILE)).unwrap();
-        promote_live(&root, "promote-id", FailoverKind::Processing, now_unix()).unwrap();
+        promote_live(
+            &root,
+            "promote-id",
+            FailoverKind::Processing,
+            now_unix(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             fs::read(slot_dir(&root, false).join(AUDIO_FILE)).unwrap(),
             before

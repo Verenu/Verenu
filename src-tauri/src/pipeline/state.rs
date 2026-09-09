@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::context::ResolvedContextIdentity;
 use crate::core::window_geometry::WindowTarget;
 use crate::pipeline::pill_position::PillPlacement;
 use std::sync::atomic::AtomicU64;
@@ -51,6 +52,9 @@ pub struct AppState {
     /// profile label floating above the capsule; the window grows upward so
     /// the pill itself stays visually pinned.
     pub pill_height_points: f64,
+    /// Context resolved from the original recording target before focus can
+    /// change. It is consumed when recording moves into the pipeline.
+    pub recording_context: Option<ResolvedContextIdentity>,
     pub retry_capture: Option<RetryCapture>,
     pub cancelled_capture: Option<CancelledCapture>,
     pub paste_failure: Option<PasteFailure>,
@@ -140,6 +144,10 @@ pub struct ActivePipeline {
     pub generation: u64,
     pub cancel_tx: tokio::sync::watch::Sender<bool>,
     pub captured_audio: CapturedAudio,
+    /// The Context selected before this capture entered asynchronous
+    /// processing. Escape cancellation must retain it if the audio is put
+    /// back into the resumable cancelled-capture slot.
+    pub context: ResolvedContextIdentity,
     // Not currently read back out — the pipeline task that owns this
     // generation already has its own copy of `target`. Kept for state
     // completeness/observability.
@@ -155,7 +163,9 @@ pub struct RetryCapture {
     pub captured_at: std::time::Instant,
     pub target: WindowTarget,
     pub process_name: String,
-    pub context_id: i64,
+    /// The exact Context selected for the original capture.  It is copied
+    /// into retry/finalize work rather than resolved again from focus later.
+    pub context: ResolvedContextIdentity,
     pub profile: String,
     pub app_context: Option<String>,
     pub caps_lock_on: bool,
@@ -198,6 +208,10 @@ pub struct CancelledCapture {
     // that self-target, tripping finalize.rs's self-inject guard and
     // clipboard-only fallback on every resume.
     pub target: WindowTarget,
+    /// The exact Context selected for the original capture. Undo/resume must
+    /// reuse this identity instead of resolving whichever window is focused
+    /// when the user clicks the pill.
+    pub context: ResolvedContextIdentity,
 }
 
 /// Final injected text from a dictation whose paste couldn't be confirmed
@@ -315,6 +329,7 @@ pub fn reserve_starting(state: &SharedState) -> Result<(), String> {
     st.lifecycle = DictationLifecycle::Starting {
         prepend_audio: None,
     };
+    st.recording_context = None;
     Ok(())
 }
 
@@ -387,6 +402,7 @@ pub fn take_active_pipeline_for_interrupt(state: &SharedState) -> Option<ActiveP
         DictationLifecycle::Processing(active) => {
             crate::core::hotkey::clear_processing_generation(active.generation);
             let prepend_audio = Some(active.captured_audio.clone());
+            st.recording_context = Some(active.context.clone());
             log::debug!(
                 "lifecycle: processing -> starting gen={} (interrupt, audio prepended)",
                 active.generation
@@ -480,12 +496,18 @@ pub fn take_active_pipeline_for_escape(state: &SharedState) -> Option<ActivePipe
 /// pipeline: the in-app mic button, a discarded quick-tap, or
 /// Escape while still actively recording (pre-`Release`).
 pub fn take_recording_plain(state: &SharedState) -> Option<(audio::RecordingSession, Option<u64>)> {
-    take_recording_plain_with_prepend(state).map(|(session, mic_id, _prepend)| (session, mic_id))
+    take_recording_plain_with_prepend(state)
+        .map(|(session, mic_id, _prepend, _context)| (session, mic_id))
 }
 
 pub fn take_recording_plain_with_prepend(
     state: &SharedState,
-) -> Option<(audio::RecordingSession, Option<u64>, Option<CapturedAudio>)> {
+) -> Option<(
+    audio::RecordingSession,
+    Option<u64>,
+    Option<CapturedAudio>,
+    ResolvedContextIdentity,
+)> {
     let mut st = lock_state(state).ok()?;
     match std::mem::replace(&mut st.lifecycle, DictationLifecycle::Idle) {
         DictationLifecycle::Recording {
@@ -494,13 +516,18 @@ pub fn take_recording_plain_with_prepend(
             prepend_audio,
             ..
         } => {
+            let context = st
+                .recording_context
+                .take()
+                .unwrap_or_else(ResolvedContextIdentity::everywhere);
             log::info!("lifecycle: recording -> idle (plain cancel/discard)");
-            Some((session, exclusive_mic_session_id, prepend_audio))
+            Some((session, exclusive_mic_session_id, prepend_audio, context))
         }
         DictationLifecycle::Starting { .. } => {
             // Cancelling a start must consume the reservation atomically. If
             // the microphone task has not installed Recording yet, it will
             // observe Idle and stop the session instead of resurrecting it.
+            st.recording_context = None;
             None
         }
         other => {
@@ -520,6 +547,7 @@ pub fn cancel_starting_reservation(state: &SharedState) -> bool {
     if matches!(st.lifecycle, DictationLifecycle::Starting { .. }) {
         log::info!("lifecycle: starting -> idle (start reservation cancelled)");
         st.lifecycle = DictationLifecycle::Idle;
+        st.recording_context = None;
         true
     } else {
         false
@@ -593,6 +621,7 @@ pub(super) type StoppingHandoff = (
     Option<u64>,
     u64,
     Option<CapturedAudio>,
+    ResolvedContextIdentity,
 );
 
 /// `Recording { .. } -> Stopping { generation, prepend_audio }`, atomically.
@@ -616,6 +645,10 @@ pub(super) fn take_recording_for_stopping(state: &SharedState) -> Option<Stoppin
             prepend_audio,
             ..
         } => {
+            let recording_context = st
+                .recording_context
+                .take()
+                .unwrap_or_else(ResolvedContextIdentity::everywhere);
             let generation = next_pipeline_generation();
             log::info!("lifecycle: recording -> stopping gen={generation}");
             st.lifecycle = DictationLifecycle::Stopping {
@@ -628,12 +661,14 @@ pub(super) fn take_recording_for_stopping(state: &SharedState) -> Option<Stoppin
                 exclusive_mic_session_id,
                 generation,
                 prepend_audio,
+                recording_context,
             ))
         }
         DictationLifecycle::Starting { .. } => {
             // A release can race the microphone opening. Consume the start
             // reservation so the late opener cannot install a recording after
             // the user has already released the hotkey.
+            st.recording_context = None;
             None
         }
         other => {
@@ -834,6 +869,7 @@ mod tests {
             pill_placement_stale: false,
             pill_width_points: DEFAULT_PILL_WIDTH_POINTS,
             pill_height_points: DEFAULT_PILL_HEIGHT_POINTS,
+            recording_context: None,
             retry_capture: None,
             cancelled_capture: None,
             paste_failure: None,
@@ -861,6 +897,7 @@ mod tests {
             generation,
             cancel_tx,
             captured_audio: fake_audio(1000),
+            context: ResolvedContextIdentity::everywhere(),
             target: WindowTarget::default(),
         }
     }
@@ -871,6 +908,24 @@ mod tests {
         assert!(reserve_starting(&state).is_ok());
         // Already Starting now — a second reservation must fail.
         assert!(reserve_starting(&state).is_err());
+    }
+
+    #[test]
+    fn starting_reservation_clears_stale_recording_context() {
+        let state = fresh_state();
+        {
+            let mut st = lock_state(&state).expect("state lock");
+            st.recording_context = Some(ResolvedContextIdentity {
+                id: 42,
+                label: "Old context".into(),
+            });
+        }
+
+        reserve_starting(&state).expect("reserve starting");
+        assert!(lock_state(&state)
+            .expect("state lock")
+            .recording_context
+            .is_none());
     }
 
     #[test]
@@ -916,6 +971,10 @@ mod tests {
     #[test]
     fn peek_cancelled_capture_does_not_consume() {
         let state = fresh_state();
+        let context = ResolvedContextIdentity {
+            id: 7,
+            label: "Development".into(),
+        };
         {
             let mut st = lock_state(&state).unwrap();
             st.cancelled_capture = Some(CancelledCapture {
@@ -926,16 +985,13 @@ mod tests {
                 created_at_rfc3339: "2026-01-01T00:00:00Z".into(),
                 started_at_unix: 0,
                 target: WindowTarget::default(),
+                context: context.clone(),
             });
         }
         // Peeking clones — the slot must survive for the later clear.
-        assert_eq!(
-            peek_cancelled_capture_if_fresh(&state)
-                .unwrap()
-                .audio
-                .duration_ms,
-            500
-        );
+        let peeked = peek_cancelled_capture_if_fresh(&state).unwrap();
+        assert_eq!(peeked.audio.duration_ms, 500);
+        assert_eq!(peeked.context, context);
         assert!(lock_state(&state).unwrap().cancelled_capture.is_some());
     }
 
@@ -952,6 +1008,7 @@ mod tests {
                 created_at_rfc3339: "2026-01-01T00:00:00Z".into(),
                 started_at_unix: 0,
                 target: WindowTarget::default(),
+                context: ResolvedContextIdentity::everywhere(),
             });
         }
         clear_cancelled_capture(&state);
@@ -973,6 +1030,7 @@ mod tests {
                 created_at_rfc3339: "2026-01-01T00:00:00Z".into(),
                 started_at_unix: 0,
                 target: WindowTarget::default(),
+                context: ResolvedContextIdentity::everywhere(),
             });
             st.retry_capture = Some(RetryCapture {
                 audio,
@@ -981,7 +1039,10 @@ mod tests {
                     - std::time::Duration::from_secs(1),
                 target: WindowTarget::default(),
                 process_name: String::new(),
-                context_id: 1,
+                context: ResolvedContextIdentity {
+                    id: 1,
+                    label: "Everywhere".into(),
+                },
                 profile: String::new(),
                 app_context: None,
                 caps_lock_on: false,
@@ -1086,12 +1147,19 @@ mod tests {
     #[test]
     fn interrupt_takes_processing_and_installs_starting_with_prepend_audio() {
         let state = fresh_state();
+        let context = ResolvedContextIdentity {
+            id: 8,
+            label: "Development".into(),
+        };
         {
             let mut st = lock_state(&state).unwrap();
-            st.lifecycle = DictationLifecycle::Processing(fake_active(1));
+            let mut active = fake_active(1);
+            active.context = context.clone();
+            st.lifecycle = DictationLifecycle::Processing(active);
         }
         let taken = take_active_pipeline_for_interrupt(&state);
         assert!(taken.is_some());
+        assert_eq!(lock_state(&state).unwrap().recording_context, Some(context));
         let st = lock_state(&state).unwrap();
         match &st.lifecycle {
             DictationLifecycle::Starting { prepend_audio } => {
@@ -1112,12 +1180,18 @@ mod tests {
     #[test]
     fn escape_takes_processing_and_discards_audio_into_idle() {
         let state = fresh_state();
+        let context = ResolvedContextIdentity {
+            id: 9,
+            label: "Writing".into(),
+        };
         {
             let mut st = lock_state(&state).unwrap();
-            st.lifecycle = DictationLifecycle::Processing(fake_active(1));
+            let mut active = fake_active(1);
+            active.context = context.clone();
+            st.lifecycle = DictationLifecycle::Processing(active);
         }
         let taken = take_active_pipeline_for_escape(&state);
-        assert!(taken.is_some());
+        assert_eq!(taken.as_ref().map(|active| &active.context), Some(&context));
         let st = lock_state(&state).unwrap();
         assert!(st.lifecycle.is_idle());
     }

@@ -11,8 +11,9 @@ use tokio::time::{timeout, Duration};
 
 /// Bump when the message set or op payloads change incompatibly. Devices on
 /// different versions refuse to sync with a clear error instead of corrupting
-/// each other's data.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// each other's data. Version 2 adds Context-scoped dictionary correction
+/// records to deltas and snapshots.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hard cap on one framed message. Batches are chunked well below this; the
 /// cap exists so a hostile peer can't make us allocate unbounded memory.
@@ -65,6 +66,35 @@ pub struct DeviceStatsDto {
     pub device_id: String,
     pub total_words: i64,
     pub dictionary_fixes: i64,
+}
+
+/// The payload for one persistent, Context-owned correction mapping.
+///
+/// The row UUID is carried by [`SyncOp::row_uuid`]. Context and dictionary
+/// references deliberately use their stable wire UUIDs instead of local
+/// SQLite ids. `dictionary_term` is a natural-key fallback for the short
+/// window in which two devices independently created the same canonical term
+/// and the losing dictionary UUID has already been reparented locally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictionaryCorrectionRow {
+    pub context_uuid: String,
+    pub dictionary_uuid: String,
+    #[serde(default)]
+    pub dictionary_term: String,
+    pub mistake: String,
+    #[serde(default)]
+    pub auto_learned: bool,
+    #[serde(default)]
+    pub correction_count: i64,
+    #[serde(default = "default_correction_confidence_tier")]
+    pub confidence_tier: String,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    pub created_at: String,
+}
+
+fn default_correction_confidence_tier() -> String {
+    "low".to_string()
 }
 
 /// One synced setting: the value plus the LWW stamp from `sync_setting_meta`.

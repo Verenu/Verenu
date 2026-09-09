@@ -113,8 +113,11 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        // Match the AppMapping key convention: "<localized name>.app", lowercased.
-        crate::system::mac_app::frontmost_app_name().map(|n| format!("{}.app", n.to_lowercase()))
+        // On macOS WindowTarget stores a PID. Resolve that PID directly so a
+        // later pipeline stage cannot accidentally inspect the current
+        // frontmost app after focus has moved.
+        crate::system::mac_app::app_name_for_pid(hwnd as i32)
+            .map(|n| format!("{}.app", n.to_lowercase()))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     None

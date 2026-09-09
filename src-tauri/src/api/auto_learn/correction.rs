@@ -224,8 +224,15 @@ pub(super) fn pair_hash(left: &str, right: &str) -> (String, String) {
     (hash_str(left), hash_str(right))
 }
 
-pub(super) fn monitor_key(injected_text: &str, app_context: &str) -> String {
-    let (lhs, rhs) = pair_hash(injected_text, app_context);
+pub(super) fn monitor_key(
+    injected_text: &str,
+    context: &crate::core::context::ResolvedContextIdentity,
+) -> String {
+    // The monitor key is process-global, so the immutable resolved Context ID
+    // must be part of it. A process/app label is not sufficient: a website
+    // Context can override the browser's app Context while both share the
+    // same executable and injected phrase.
+    let (lhs, rhs) = pair_hash(injected_text, &context.id.to_string());
     format!("{rhs}:{lhs}")
 }
 

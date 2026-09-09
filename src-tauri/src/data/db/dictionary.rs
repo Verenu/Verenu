@@ -183,22 +183,21 @@ fn query_dictionary_conn(
     Ok(canonical_rows
         .into_iter()
         .map(|(id, mut legacy)| {
-                let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
-                // A scoped query must never fall back to the old global
-                // projection.  v26 migrates it into child rows and clears
-                // `dictionary.mistake`; ignoring the projection here also
-                // keeps a stale value from an interrupted/remote legacy write
-                // from leaking a correction learned in another Context.
-                if context_id.is_some() {
-                    legacy.mistake = None;
-                    legacy.auto_learned = false;
-                    legacy.correction_count = 0;
-                    legacy.confidence_tier = "manual".to_string();
-                    legacy.last_seen_at = None;
-                }
-                materialize_dictionary_entry(id, legacy, corrections)
-            },
-        )
+            let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
+            // A scoped query must never fall back to the old global
+            // projection.  v26 migrates it into child rows and clears
+            // `dictionary.mistake`; ignoring the projection here also
+            // keeps a stale value from an interrupted/remote legacy write
+            // from leaking a correction learned in another Context.
+            if context_id.is_some() {
+                legacy.mistake = None;
+                legacy.auto_learned = false;
+                legacy.correction_count = 0;
+                legacy.confidence_tier = "manual".to_string();
+                legacy.last_seen_at = None;
+            }
+            materialize_dictionary_entry(id, legacy, corrections)
+        })
         .collect())
 }
 
@@ -2130,11 +2129,12 @@ pub fn delete_auto_learned_corrections_by_ids(
     Ok(deleted)
 }
 
-/// Compatibility wrapper for the legacy rejection caller, whose IDs are
+/// Test-only compatibility wrapper for the legacy rejection caller, whose IDs are
 /// canonical dictionary ids and whose historical behavior only ever learned
 /// into Everywhere. New callers must use
 /// `delete_auto_learned_corrections_by_ids` with child mapping ids and an
 /// originating Context.
+#[cfg(test)]
 pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());

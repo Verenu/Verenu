@@ -5,6 +5,14 @@
   import { flip } from 'svelte/animate';
   import { cubicOut, expoOut } from 'svelte/easing';
   import { emit, invoke, listen } from '../tauri';
+  import {
+    dictionaryEntryId,
+    moveContextDictionaryEntry,
+    normalizeContextDictionary,
+    removeContextDictionaryEntry,
+    shouldRefreshContextDictionary,
+    type DictionaryUpdatedPayload,
+  } from '../contextDictionary';
   import { modalBackdrop, modalCard, MOTION_MS, MOTION_PX, motionMs, motionPx, pageSwap, directionFromOrder } from '../motion';
   import { modalFocusTrap } from '../modalFocus';
   import { classifyIpcError } from '../errors';
@@ -102,6 +110,10 @@
   let rowMenuDeleteArmed = $state(false);
   let rowMenuShowMove = $state(false);
   let modal = $state<'context' | 'dictionary' | 'snippet' | null>(null);
+  // Capture the originating Context when a dictionary modal opens.  The
+  // selected Context can change while the modal is open; edits must never
+  // follow that later selection.
+  let dictionaryModalContextId = $state<number | null>(null);
   let contextModalMode = $state<'create' | 'edit'>('create');
   let contextName = $state('');
   let contextError = $state('');
@@ -224,11 +236,11 @@
     contextErrorMessage = '';
     try {
       const [nextDictionary, nextSnippets] = await Promise.all([
-        invoke<DictionaryEntry[]>('get_context_dictionary', { contextId }),
+        invoke<unknown>('get_context_dictionary', { contextId }),
         invoke<Snippet[]>('get_context_snippets', { contextId }),
       ]);
       if (token !== loadToken) return;
-      dictionary = nextDictionary ?? [];
+      dictionary = normalizeContextDictionary(nextDictionary, contextId);
       snippets = nextSnippets ?? [];
       void loadContextStats(contextId);
       selectedDictionary = null;
@@ -264,17 +276,54 @@
   }
 
   onMount(() => {
+    let mounted = true;
+    const stops: Array<() => void> = [];
+    const registrations = [
+      listen<DictionaryUpdatedPayload>('verenu:dictionary-updated', (event) => {
+        const contextId = selectedContextId;
+        if (shouldRefreshContextDictionary(event.payload, contextId)) void loadContextItems(contextId);
+      }),
+      listen<DictionaryUpdatedPayload>('verenu:dictionary-entry-rejected', (event) => {
+        const contextId = selectedContextId;
+        if (shouldRefreshContextDictionary(event.payload, contextId)) void loadContextItems(contextId);
+      }),
+      // A promoted mapping can arrive from another device without emitting the
+      // local dictionary event.  Refresh only the selected Context's materialized
+      // view; the fetch token still rejects an older response after a selection
+      // change.
+      listen<{ tables?: string[] }>('verenu:sync-data-changed', (event) => {
+        if ((event.payload?.tables ?? []).some((table) => table === 'dictionary' || table === 'dictionary_corrections')) {
+          void loadContextItems(selectedContextId);
+        }
+      }),
+    ];
+    for (const registration of registrations) {
+      void registration.then((unlisten) => {
+        if (mounted) stops.push(unlisten);
+        else unlisten();
+      }).catch(() => {});
+    }
     void loadContexts();
-    let stop: (() => void) | undefined;
-    listen('verenu:dictionary-updated', () => void loadContextItems(selectedContextId))
-      .then((unlisten) => { stop = unlisten; })
-      .catch(() => {});
-    return () => stop?.();
+    return () => {
+      mounted = false;
+      for (const stop of stops) stop();
+    };
   });
 
   $effect(() => {
-    selectedContextId;
-    if (contexts.length > 0) void loadContextItems(selectedContextId);
+    const contextId = selectedContextId;
+    if (contexts.length > 0) {
+      // Do not leave the previous Context's rows interactive during the fetch
+      // for a newly selected Context.  The request token protects assignment
+      // from stale responses; clearing here also protects edit/delete actions
+      // during the transition from using the old row with the new Context id.
+      dictionary = [];
+      snippets = [];
+      selectedDictionary = null;
+      selectedSnippet = null;
+      closeRowMenu();
+      void loadContextItems(contextId);
+    }
   });
 
   // The sidebar owns the context list but not the context form, so it asks
@@ -375,15 +424,18 @@
 
   async function moveRowItem(kind: 'dictionary' | 'snippet', id: number, targetContextId: number) {
     try {
-      const assignmentCommand = kind === 'dictionary'
-        ? 'set_dictionary_context_assignment'
-        : 'set_snippet_context_assignment';
-      const idKey = kind === 'dictionary' ? 'dictionaryId' : 'snippetId';
-      await invoke(assignmentCommand, { contextId: targetContextId, [idKey]: id, assigned: true });
-      await invoke(assignmentCommand, { contextId: selectedContextId, [idKey]: id, assigned: false });
       if (kind === 'dictionary') {
-        dictionary = dictionary.filter((entry) => entry.id !== id);
+        const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
+        if (!entry) throw new Error('The dictionary entry is no longer in this context.');
+        // Moving transfers the Context-owned mapping.  Sharing remains the
+        // explicit assignment operation used elsewhere (for example when
+        // duplicating a Context), so a private learned correction is not copied
+        // accidentally.
+        await moveContextDictionaryEntry(entry, selectedContextId, targetContextId);
+        dictionary = dictionary.filter((candidate) => dictionaryEntryId(candidate) !== id);
       } else {
+        await invoke('set_snippet_context_assignment', { contextId: targetContextId, snippetId: id, assigned: true });
+        await invoke('set_snippet_context_assignment', { contextId: selectedContextId, snippetId: id, assigned: false });
         snippets = snippets.filter((snippet) => snippet.id !== id);
       }
     } catch (error) {
@@ -428,6 +480,7 @@
   function openAddDictionary() {
     selectedDictionary = null;
     selectedSnippet = null;
+    dictionaryModalContextId = selectedContextId;
     modal = 'dictionary';
   }
 
@@ -438,30 +491,29 @@
   }
 
   function handleDictionarySaved(entry: DictionaryEntry) {
+    const contextId = dictionaryModalContextId ?? selectedContextId;
+    if (contextId !== selectedContextId) return;
     dictionary = [entry, ...dictionary.filter((item) => item.id !== entry.id)];
     selectedDictionary = entry;
-    void finishNewAssignment('dictionary', entry.id);
+    // The create/edit response is metadata-only on some backends.  Reload the
+    // scoped row so the mapping id, confidence, and effective mistake shown
+    // by the Contexts UI are authoritative without an app restart.
+    void loadContextItems(contextId);
   }
 
   function handleSnippetSaved(snippet: Snippet) {
     snippets = [snippet, ...snippets.filter((item) => item.id !== snippet.id)];
     selectedSnippet = snippet;
-    void finishNewAssignment('snippet', snippet.id);
+    void finishNewAssignment(snippet.id);
   }
 
-  // On create, the backend already assigns the new (or found-and-reused)
-  // entry to `selectedContextId` directly — this only covers the edit path,
-  // ensuring an entry edited while viewing a context stays linked to it.
-  // Unlike the old version, it no longer strips other context assignments:
-  // a term can belong to more than one context at once.
-  async function finishNewAssignment(kind: 'dictionary' | 'snippet', id: number) {
-    if (selectedContextId === EVERYWHERE_ID) return;
+  // Context-scoped dictionary create/edit owns assignment atomically. Shared
+  // canonical rows remain assignable to more than one context, while
+  // their correction mappings stay scoped to the active context.
+  async function finishNewAssignment(id: number, contextId = selectedContextId) {
+    if (contextId === EVERYWHERE_ID) return;
     try {
-      const assignmentCommand = kind === 'dictionary'
-        ? 'set_dictionary_context_assignment'
-        : 'set_snippet_context_assignment';
-      const idKey = kind === 'dictionary' ? 'dictionaryId' : 'snippetId';
-      await invoke(assignmentCommand, { contextId: selectedContextId, [idKey]: id, assigned: true });
+      await invoke('set_snippet_context_assignment', { contextId, snippetId: id, assigned: true });
     } catch (error) {
       contextErrorMessage = classifyIpcError(error).message;
     }
@@ -470,6 +522,7 @@
   function editDictionary(entry: DictionaryEntry) {
     closeRowMenu();
     selectedDictionary = entry;
+    dictionaryModalContextId = selectedContextId;
     modal = 'dictionary';
   }
 
@@ -485,10 +538,13 @@
       return;
     }
     try {
-      await invoke(kind === 'dictionary' ? 'remove_dictionary_entry' : 'remove_snippet', { id });
       if (kind === 'dictionary') {
-        dictionary = dictionary.filter((entry) => entry.id !== id);
+        const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
+        if (!entry) throw new Error('The dictionary entry is no longer in this context.');
+        await removeContextDictionaryEntry(entry, selectedContextId);
+        dictionary = dictionary.filter((candidate) => dictionaryEntryId(candidate) !== id);
       } else {
+        await invoke('remove_snippet', { id });
         snippets = snippets.filter((snippet) => snippet.id !== id);
       }
     } catch (error) {
@@ -893,6 +949,7 @@
   function closeModal() {
     modal = null;
     contextError = '';
+    dictionaryModalContextId = null;
     closeModalColorPicker();
   }
 
@@ -1308,8 +1365,8 @@
   <DictionaryModal
     mode={selectedDictionary ? 'edit' : 'add'}
     entry={selectedDictionary ?? undefined}
-    contextId={selectedContextId}
-    onClose={() => modal = null}
+    contextId={dictionaryModalContextId ?? selectedContextId}
+    onClose={closeModal}
     onSaved={handleDictionarySaved}
     onGoToSnippets={() => modal = 'snippet'}
   />
