@@ -112,6 +112,13 @@
     }
   });
 
+  // The legacy step constants still include the removed calibration slot so
+  // the Android onboarding branch can share its numbering. The visible wizard
+  // skips that slot entirely.
+  const onboardingTotalSteps = TOTAL_STEPS - 1;
+  const onboardingTryItStep = tryItStep - 1;
+  const onboardingDoneStep = doneStep - 1;
+
   function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
   // Slide direction follows travel: going forward, the old step leaves to the
@@ -334,7 +341,7 @@
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
-    if (s === tryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
+    if (s === onboardingTryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
     return null;
   }
 
@@ -363,7 +370,7 @@
 
   let actionBar = $derived.by((): ActionBarConfig => {
     if (step === 0) return bar({ rightLabel: 'Get Started', rightLg: true, onRight: goNext });
-    if (step === doneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
+    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
       if (provider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
@@ -392,13 +399,13 @@
         onRight: goNext,
       });
     }
-    if (step === tryItStep) return bar({ leftLabel: 'Skip for now', rightLabel: 'Next', onRight: goNext });
+    if (step === onboardingTryItStep) return bar({ leftLabel: 'Skip for now', rightLabel: 'Next', onRight: goNext });
     // Writing style, language and audio all have a working default already —
     // "Skip for now" next to "Next" would be two words for the same action.
     return bar({ rightLabel: 'Next', onRight: goNext });
   });
 
-  const canGoBack = $derived(step > 0 && step <= TOTAL_STEPS);
+  const canGoBack = $derived(step > 0 && step <= onboardingTotalSteps);
 
   // Landing focus for keyboard users: on wizard open and on every step change,
   // move focus to the new step's heading (falling back to its first focusable
@@ -440,7 +447,7 @@
 
 <SetupShell
   {step}
-  totalSteps={TOTAL_STEPS}
+  totalSteps={onboardingTotalSteps}
   header={headerFor(step)}
   onDotClick={jumpToStep}
 >
@@ -497,9 +504,9 @@
       <LanguageStep bind:language />
     {:else if step === audioEnvStep}
       <AudioEnvironmentStep bind:usesHeadphones />
-    {:else if step === tryItStep}
+    {:else if step === onboardingTryItStep}
       <TryItStep />
-    {:else if step === doneStep}
+    {:else if step === onboardingDoneStep}
       <DoneStep
         providerName={providerDisplayName}
         cleanupName={effectiveCleanupName}
