@@ -1684,7 +1684,10 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
         .prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1 ORDER BY context_id")?
         .query_map(params![id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if context_ids.len() != 1 {
+    if context_ids.is_empty() {
+        anyhow::bail!("Dictionary entry {id} was not found");
+    }
+    if context_ids.len() > 1 {
         anyhow::bail!(
             "Dictionary entry {id} is shared by multiple contexts; edit it from the active Context"
         );
