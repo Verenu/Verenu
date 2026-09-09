@@ -1112,29 +1112,6 @@ pub fn insert_dictionary_entry_auto_learned_for_context(
     Ok(changed)
 }
 
-pub fn log_auto_learn_event(
-    db: &Db,
-    event_type: &str,
-    reason_code: &str,
-    app_context: &str,
-    mistake_hash: &str,
-    correction_hash: &str,
-    confidence: f64,
-) -> Result<()> {
-    log_auto_learn_event_with_context(
-        db,
-        None,
-        AutoLearnEventFields {
-            event_type,
-            reason_code,
-            app_context,
-            mistake_hash,
-            correction_hash,
-            confidence,
-        },
-    )
-}
-
 /// Context-aware event writer. The legacy wrapper above remains for old
 /// telemetry callers; new monitor paths should always provide the immutable
 /// originating Context id.
@@ -1214,16 +1191,7 @@ pub fn upsert_auto_learn_candidate_for_context(
 /// runtime uses [`upsert_auto_learn_candidate_for_context`]; callers that do
 /// not yet capture a Context retain the historical Everywhere scope until
 /// they are migrated.
-pub fn upsert_auto_learn_candidate(
-    db: &Db,
-    wrong: &str,
-    correct: &str,
-    confidence: f64,
-) -> Result<f64> {
-    upsert_auto_learn_candidate_for_context(db, EVERYWHERE_CONTEXT_ID, wrong, correct, confidence)
-}
-
-/// Outcome of an [`auto_learn_promote`] attempt.
+/// Outcome of an [`auto_learn_promote_for_context`] attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoLearnPromoteResult {
     /// The pair was promoted to the dictionary (or its existing auto-learned
@@ -1422,25 +1390,6 @@ pub fn auto_learn_promote_for_context(
 /// Compatibility wrapper for legacy callers that do not carry the resolved
 /// Context. New code must use [`auto_learn_promote_for_context`] so evidence
 /// and persistent mappings retain their originating Context.
-pub fn auto_learn_promote(
-    db: &Db,
-    wrong: &str,
-    correct: &str,
-    confidence_tier: &str,
-    pending_retention_days: i64,
-    threshold: i64,
-) -> Result<AutoLearnPromoteResult> {
-    auto_learn_promote_for_context(
-        db,
-        EVERYWHERE_CONTEXT_ID,
-        wrong,
-        correct,
-        confidence_tier,
-        pending_retention_days,
-        threshold,
-    )
-}
-
 pub fn get_auto_learn_status_summary(db: &Db) -> Result<AutoLearnStatusSummary> {
     let conn = lock_conn(db)?;
     let count_by = |event_type: &str, reason_code: &str| -> Result<i64> {

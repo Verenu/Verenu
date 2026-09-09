@@ -386,7 +386,7 @@ fn concurrent_promotions_in_different_contexts_keep_independent_mapping_state() 
     let development_db = db.clone();
     let development_id = development.id;
     let first = std::thread::spawn(move || {
-        upsert_auto_learn_candidate(
+        upsert_auto_learn_candidate_for_context(
             &development_db,
             development_id,
             "Kubernetez",
@@ -394,7 +394,7 @@ fn concurrent_promotions_in_different_contexts_keep_independent_mapping_state() 
             0.95,
         )
         .expect("development candidate");
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &development_db,
             development_id,
             "Kubernetez",
@@ -408,9 +408,9 @@ fn concurrent_promotions_in_different_contexts_keep_independent_mapping_state() 
     let writing_db = db.clone();
     let writing_id = writing.id;
     let second = std::thread::spawn(move || {
-        upsert_auto_learn_candidate(&writing_db, writing_id, "Kubernetez", "Kubernetes", 0.95)
+        upsert_auto_learn_candidate_for_context(&writing_db, writing_id, "Kubernetez", "Kubernetes", 0.95)
             .expect("writing candidate");
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &writing_db,
             writing_id,
             "Kubernetez",
