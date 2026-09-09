@@ -37,7 +37,6 @@ pub fn start_recording_session(
         state,
         pill_state,
         handless,
-        None,
         RecordingStartOptions {
             show_recording_pill: true,
             emit_globally: false,
@@ -58,14 +57,13 @@ pub fn start_recording_session(
     }
 }
 
-/// Generalized recording session function supporting calibration overrides.
+/// Generalized recording session function for normal dictation and recovery.
 /// The caller must already have reserved `DictationLifecycle::Starting`.
 pub fn start_recording_session_ex(
     app: &AppHandle,
     state: &SharedState,
     pill_state: &str,
     handless: bool,
-    gain_override: Option<f32>,
     options: RecordingStartOptions,
 ) -> Result<(), String> {
     let settings = store::settings_snapshot(app);
@@ -117,12 +115,11 @@ pub fn start_recording_session_ex(
     let noise_reduction = audio_config.noise_reduction;
     let mute_audio = audio_config.mute_audio;
     let exclusive_mic = audio_config.exclusive_mic;
-    let pause_media = audio_config.pause_media_during_dictation && gain_override.is_none();
-    let mic_gain = gain_override.unwrap_or(audio_config.mic_gain);
+    let pause_media = audio_config.pause_media_during_dictation;
+    let mic_gain = audio_config.mic_gain;
     let exclusive_mic_session_id = if cfg!(target_os = "macos")
         && exclusive_mic
         && use_default_input_device
-        && gain_override.is_none()
     {
         Some(crate::system::volume::register_session())
     } else {
@@ -250,6 +247,7 @@ pub fn start_recording_session_ex(
                     prepend_audio: prepend_for_lifecycle.clone(),
                 };
             }
+            state::note_sensitivity_for_new_recording(state);
             if options.durable
                 && prepend_for_lifecycle
                     .as_ref()
@@ -300,7 +298,7 @@ pub fn start_recording_session_ex(
                 crate::system::media_control::begin_dictation_media_pause();
             }
             if let Some(delay_ms) = options.start_cue_delay_ms {
-                if mute_audio && gain_override.is_none() {
+                if mute_audio {
                     crate::media::sound::play_start_delayed_then(delay_ms, move || {
                         if start_cue_active.load(Ordering::Relaxed) {
                             crate::media::sound::coordinated_mute(start_cue_active);
@@ -309,7 +307,7 @@ pub fn start_recording_session_ex(
                 } else {
                     crate::media::sound::play_start_delayed(delay_ms);
                 }
-            } else if mute_audio && gain_override.is_none() {
+            } else if mute_audio {
                 tauri::async_runtime::spawn_blocking(crate::system::volume::mute);
             }
             Ok(())
