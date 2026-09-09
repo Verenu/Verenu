@@ -650,6 +650,17 @@ pub fn set_dictionary_context_assignment(
         anyhow::bail!("Dictionary entry {dictionary_id} was not found");
     }
     if assigned {
+        let mistake: Option<String> = conn.query_row(
+            "SELECT mistake FROM dictionary WHERE id = ?1",
+            params![dictionary_id],
+            |row| row.get(0),
+        )?;
+        check_dictionary_mistake_conflicts(
+            &conn,
+            context_id,
+            Some(dictionary_id),
+            mistake.as_deref(),
+        )?;
         conn.execute(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
              VALUES (?1, ?2)",
@@ -1122,6 +1133,78 @@ mod tests {
         );
         assert_eq!(
             query_snippets_for_context(&db, context.id).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn context_rejects_duplicate_mistranscription_variants() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "AI tools", None, None, None, None, false)
+            .expect("context");
+
+        insert_dictionary_entry_returning(&db, "@bot", Some("grok bot"), Some(context.id))
+            .expect("first dictionary entry");
+        let error =
+            insert_dictionary_entry_returning(&db, "Boot", Some("Grok Bot, bot"), Some(context.id))
+                .expect_err("duplicate variant should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("Often mistranscribed as"));
+        assert!(message.contains("@bot"));
+        assert_eq!(
+            query_dictionary_for_context(&db, context.id).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn editing_an_entry_checks_all_contexts_for_duplicate_variants() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "AI tools", None, None, None, None, false)
+            .expect("context");
+        let first =
+            insert_dictionary_entry_returning(&db, "@bot", Some("grok bot"), Some(context.id))
+                .expect("first dictionary entry");
+        let second =
+            insert_dictionary_entry_returning(&db, "Boot", Some("boot bot"), Some(context.id))
+                .expect("second dictionary entry");
+
+        let error = update_dictionary_entry(&db, second.id, "Boot", Some("GROK BOT"))
+            .expect_err("edit should reject duplicate variant");
+        assert!(error.to_string().contains("@bot"));
+        assert_eq!(
+            query_dictionary(&db)
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.id == first.id)
+                .and_then(|entry| entry.mistake),
+            Some("grok bot".to_string())
+        );
+    }
+
+    #[test]
+    fn assigning_an_existing_entry_checks_the_target_context() {
+        let db = open(":memory:").expect("db");
+        let source =
+            insert_context_returning(&db, "Source", None, None, None, None, false).expect("source");
+        let target =
+            insert_context_returning(&db, "Target", None, None, None, None, false).expect("target");
+        insert_dictionary_entry_returning(&db, "@bot", Some("grok bot"), Some(target.id))
+            .expect("target dictionary entry");
+        let second =
+            insert_dictionary_entry_returning(&db, "Boot", Some("grok bot"), Some(source.id))
+                .expect("source dictionary entry");
+
+        let error = set_dictionary_context_assignment(&db, target.id, second.id, true)
+            .expect_err("assignment should reject duplicate variant");
+        assert!(error.to_string().contains("@bot"));
+        assert_eq!(
+            query_dictionary_for_context(&db, target.id).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            query_dictionary_for_context(&db, source.id).unwrap().len(),
             1
         );
     }

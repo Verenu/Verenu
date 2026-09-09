@@ -3,6 +3,7 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use super::*;
 
@@ -90,6 +91,68 @@ pub fn query_dictionary_for_context(db: &Db, context_id: i64) -> Result<Vec<Dict
     Ok(rows)
 }
 
+/// Returns the comma-separated mistranscription variants in a dictionary
+/// field. Variants are compared after trimming and case-folding, but their
+/// stored spelling is preserved for display and prompt evidence.
+pub fn dictionary_mistake_variants(mistake: &str) -> impl Iterator<Item = &str> {
+    mistake
+        .split(',')
+        .map(str::trim)
+        .filter(|variant| !variant.is_empty())
+}
+
+fn normalized_mistake_variants(mistake: Option<&str>) -> HashSet<String> {
+    mistake
+        .into_iter()
+        .flat_map(dictionary_mistake_variants)
+        .map(|variant| variant.to_lowercase())
+        .collect()
+}
+
+/// Rejects a dictionary entry when one of its mistranscription variants is
+/// already mapped to a different term in the same context group. This is
+/// intentionally checked at the database boundary because entries can enter a
+/// context through create, edit, or assignment paths.
+pub fn check_dictionary_mistake_conflicts(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+    dictionary_id: Option<i64>,
+    mistake: Option<&str>,
+) -> Result<()> {
+    let candidate_variants = normalized_mistake_variants(mistake);
+    if candidate_variants.is_empty() {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.term, d.mistake
+         FROM dictionary d
+         INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
+         WHERE dc.context_id = ?1
+           AND (?2 IS NULL OR d.id != ?2)",
+    )?;
+    let rows = stmt.query_map(params![context_id, dictionary_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (_id, term, existing_mistake) = row?;
+        for variant in dictionary_mistake_variants(existing_mistake.as_deref().unwrap_or("")) {
+            if candidate_variants.contains(&variant.to_lowercase()) {
+                anyhow::bail!(
+                    "Often mistranscribed as \"{variant}\" already belongs to \"{term}\" in this context"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 pub fn insert_dictionary_entry(db: &Db, term: &str, mistake: Option<&str>) -> Result<()> {
     insert_dictionary_entry_returning(db, term, mistake, None)?;
@@ -152,6 +215,12 @@ pub fn insert_dictionary_entry_returning(
             if existing_mistake != normalized_mistake {
                 anyhow::bail!("\"{normalized_term}\" already exists with a different correction");
             }
+            check_dictionary_mistake_conflicts(
+                &tx,
+                target_context,
+                Some(id),
+                normalized_mistake.as_deref(),
+            )?;
             tx.execute(
                 "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)",
                 params![target_context, id],
@@ -166,6 +235,12 @@ pub fn insert_dictionary_entry_returning(
         }
     }
 
+    check_dictionary_mistake_conflicts(
+        &tx,
+        target_context.unwrap_or(everywhere_id),
+        None,
+        normalized_mistake.as_deref(),
+    )?;
     tx.execute(
         "INSERT INTO dictionary (term, mistake, confidence_tier, last_seen_at) VALUES (?1, ?2, 'manual', datetime('now'))",
         params![normalized_term, normalized_mistake],
@@ -698,6 +773,18 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
     }
 
     let conn = lock_conn(db)?;
+    let context_ids: Vec<i64> = conn
+        .prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1")?
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for context_id in context_ids {
+        check_dictionary_mistake_conflicts(
+            &conn,
+            context_id,
+            Some(id),
+            normalized_mistake.as_deref(),
+        )?;
+    }
     let changed = conn.execute(
         "UPDATE dictionary SET term=?2, mistake=?3 WHERE id=?1",
         params![id, normalized_term, normalized_mistake],
