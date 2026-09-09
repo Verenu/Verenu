@@ -602,11 +602,18 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // the RMS threshold only in that case.
     let vad_samples = captured_audio.samples_16k.clone();
     let vad_handle = tokio::task::spawn_blocking(move || {
-        crate::media::vad::analyze_speech_with_sensitivity(
-            &vad_samples,
-            active_gain,
-            sensitivity_level,
-        )
+        #[cfg(target_os = "android")]
+        {
+            crate::media::vad::analyze_speech(&vad_samples, active_gain)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            crate::media::vad::analyze_speech_with_sensitivity(
+                &vad_samples,
+                active_gain,
+                sensitivity_level,
+            )
+        }
     });
 
     let vad_result = tokio::select! {
