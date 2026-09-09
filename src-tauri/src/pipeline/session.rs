@@ -601,10 +601,10 @@ pub fn spawn_level_emitter(
 
         let emit_raw_level = || {
             let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
-            if emit_globally {
-                let _ = app.emit("audio-level-raw", raw_level_val);
-            } else if let Some(pill) = app.get_webview_window("pill") {
-                pill.emit("audio-level-raw", raw_level_val).ok();
+            if !emit_globally {
+                if let Some(pill) = app.get_webview_window("pill") {
+                    pill.emit("audio-level-raw", raw_level_val).ok();
+                }
             }
         };
 
