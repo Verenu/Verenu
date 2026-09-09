@@ -209,6 +209,7 @@ pub fn start_recording_session_ex(
             let raw_level_arc = session.raw_level.clone();
             let envelope_arc = session.envelope.clone();
             let active_arc = session.active.clone();
+            let stream_error_arc = session.stream_error.clone();
             let start_cue_active = session.active.clone();
             {
                 let mut st = match lock_state(state) {
@@ -283,6 +284,12 @@ pub fn start_recording_session_ex(
                 emit_context_for_window(app, target_hwnd);
                 show_pill(app, pill_state);
             }
+            spawn_stream_error_watcher(
+                app.clone(),
+                state.clone(),
+                stream_error_arc,
+                active_arc.clone(),
+            );
             spawn_level_emitter(
                 app.clone(),
                 level_arc,
@@ -366,8 +373,17 @@ pub async fn cancel_recording_with_resume(
         audio: mut captured_audio,
         mut rms,
         mut raw_rms,
+        stream_error,
         ..
     } = stopped_capture;
+    if stream_error {
+        super::failover::abandon_live();
+        if state_is_idle(state) {
+            super::show_error_pill(app, super::stages_transcription::AUDIO_STREAM_ERROR_MESSAGE)
+                .await;
+        }
+        return;
+    }
 
     let active_gain = store::settings_snapshot(app)
         .map(|s| store::load_audio_config(&s).mic_gain)
@@ -535,6 +551,28 @@ pub(crate) fn release_starting_reservation(state: &SharedState) {
     if matches!(st.lifecycle, DictationLifecycle::Starting { .. }) {
         st.lifecycle = DictationLifecycle::Idle;
     }
+}
+
+fn spawn_stream_error_watcher(
+    app: AppHandle,
+    state: SharedState,
+    stream_error: Arc<std::sync::atomic::AtomicBool>,
+    active: Arc<std::sync::atomic::AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if stream_error.load(Ordering::Acquire) {
+                log::warn!("pipeline: input stream ended unexpectedly; stopping the active dictation");
+                crate::core::hotkey::set_handless_active(false);
+                super::run_pipeline(app, state).await;
+                break;
+            }
+            if !active.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
 }
 
 /// Spawns a Tokio task that emits `audio-level` events to the pill every 50ms

@@ -196,6 +196,10 @@ pub struct RecordingSession {
     pub raw_level: Arc<AtomicU32>,
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
+    /// Set by CPAL's stream-error callback. The callback must not block or
+    /// touch lifecycle state; the pill/session watcher consumes this flag on
+    /// the async side and ends the recording cleanly.
+    pub stream_error: Arc<AtomicBool>,
 }
 
 pub struct RecordingResult {
@@ -212,6 +216,9 @@ pub enum RecordingTermination {
     Complete,
     DurationLimit,
     DroppedSamples,
+    /// The input stream stopped unexpectedly. The captured prefix may be
+    /// usable, but must not be misreported as a normal short recording.
+    StreamError,
     /// The optional recovery spool failed, but the in-memory take is intact.
     RecoveryWriteFailed,
 }
@@ -383,12 +390,14 @@ impl RecordingSession {
         let raw_level = Arc::new(AtomicU32::new(0f32.to_bits()));
         let envelope = Arc::new(EnvelopeTap::new());
         let active = Arc::new(AtomicBool::new(true));
+        let stream_error = Arc::new(AtomicBool::new(false));
         let display_gain = (DISPLAY_GAIN * gain).max(0.0);
 
         let level_w = Arc::clone(&level);
         let raw_level_w = Arc::clone(&raw_level);
         let envelope_w = Arc::clone(&envelope);
         let active_w = Arc::clone(&active);
+        let stream_error_w = Arc::clone(&stream_error);
         envelope_w.set_sample_rate(sample_rate);
         // `processed` already contains the configured microphone gain. Keep
         // the remaining display multiplier explicit so the envelope and the
@@ -543,7 +552,16 @@ impl RecordingSession {
             let queue_cb = Arc::clone(&queue);
             let dropped_cb = Arc::clone(&dropped_samples);
             let raw_level_cb = Arc::clone(&raw_level_w);
-            let err_fn = |e| log::error!("Audio stream error: {e}");
+            let stream_error_cb = Arc::clone(&stream_error_w);
+            let active_cb = Arc::clone(&active_w);
+            let err_fn = move |e| {
+                // CPAL may invoke this from an audio-related thread. Keep the
+                // callback allocation-free and nonblocking: a failed stream
+                // must be observed by the session owner, not handled here.
+                log::error!("Audio stream error: {e}");
+                stream_error_cb.store(true, Ordering::Release);
+                active_cb.store(false, Ordering::Release);
+            };
 
             let stream = match config.sample_format() {
                 cpal::SampleFormat::F32 => device.build_input_stream(
@@ -632,18 +650,26 @@ impl RecordingSession {
 
             let dur_ms = samples_16k.len() as u64 * 1000 / TARGET_SAMPLE_RATE as u64;
             let overall_rms = rms_f32(&samples_16k);
-            let result = if samples_16k.is_empty() {
-                Err(anyhow::anyhow!("No audio captured"))
+            let termination = if stream_error_w.load(Ordering::Acquire)
+                && termination == RecordingTermination::Complete
+            {
+                RecordingTermination::StreamError
             } else {
-                Ok(RecordingResult {
-                    samples_16k,
-                    sample_rate: TARGET_SAMPLE_RATE,
-                    duration_ms: dur_ms,
-                    rms: overall_rms,
-                    raw_rms,
-                    termination,
-                })
+                termination
             };
+            let result =
+                if samples_16k.is_empty() && termination != RecordingTermination::StreamError {
+                    Err(anyhow::anyhow!("No audio captured"))
+                } else {
+                    Ok(RecordingResult {
+                        samples_16k,
+                        sample_rate: TARGET_SAMPLE_RATE,
+                        duration_ms: dur_ms,
+                        rms: overall_rms,
+                        raw_rms,
+                        termination,
+                    })
+                };
 
             let _ = result_tx.send(result);
         });
@@ -659,6 +685,7 @@ impl RecordingSession {
             raw_level,
             envelope,
             active,
+            stream_error,
         })
     }
 

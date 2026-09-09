@@ -23,7 +23,11 @@ pub(crate) struct StoppedCapture {
     pub(crate) rms: f32,
     pub(crate) raw_rms: f32,
     pub(crate) recovery_write_failed: bool,
+    pub(crate) stream_error: bool,
 }
+
+pub(crate) const AUDIO_STREAM_ERROR_MESSAGE: &str =
+    "Microphone input stopped unexpectedly. Check that your microphone is connected, then try again.";
 
 fn disable_recovery_after_write_failure(app: &AppHandle) {
     super::failover::abandon_live();
@@ -71,6 +75,9 @@ pub(super) async fn stop_and_capture_audio(
     };
     match termination {
         audio::RecordingTermination::Complete => {}
+        audio::RecordingTermination::StreamError => {
+            log::warn!("pipeline: microphone input stream stopped unexpectedly");
+        }
         audio::RecordingTermination::DurationLimit => {
             log::warn!(
                 "pipeline: rejected recording that exceeded max duration limit max_seconds={}",
@@ -111,6 +118,7 @@ pub(super) async fn stop_and_capture_audio(
         rms,
         raw_rms,
         recovery_write_failed: termination == audio::RecordingTermination::RecoveryWriteFailed,
+        stream_error: termination == audio::RecordingTermination::StreamError,
     })
 }
 
