@@ -2348,7 +2348,7 @@ fn reconcile_context_members(
     // Do not prune on an unresolved reference: the parent may be in a later
     // batch, and pruning now would erase a valid local assignment. Once every
     // reference resolves, record correction tombstones before the junction
-    // delete (the FK trigger removes child mappings under ApplyingGuard).
+    // delete (the dictionary_contexts delete trigger removes child mappings).
     if !unresolved_dictionary {
         let correction_uuids =
             correction_uuids_for_pruned_dictionary_members(conn, context_id, &resolved_dictionary)?;
