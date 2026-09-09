@@ -199,7 +199,6 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     }
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
-        state::note_sensitivity_rejection(&state);
         hide_pill(&app);
         if captured_audio.duration_ms < MIN_RECORDING_MS {
             anyhow::bail!("Recording too short");
