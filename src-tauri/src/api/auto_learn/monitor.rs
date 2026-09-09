@@ -1,5 +1,4 @@
 use super::*;
-use crate::db::EVERYWHERE_CONTEXT_ID;
 
 static ACTIVE_MONITORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -71,13 +70,7 @@ pub(super) fn record_candidate(
     }
 
     let confidence_avg =
-        match db::upsert_auto_learn_candidate_for_context(
-            db,
-            EVERYWHERE_CONTEXT_ID,
-            &mistake,
-            &correction,
-            confidence,
-        ) {
+        match db::upsert_auto_learn_candidate(db, &mistake, &correction, confidence) {
             Ok(confidence_avg) => confidence_avg,
             Err(e) => {
                 log::warn!("auto-learn candidate upsert failed: {e}");
@@ -113,9 +106,8 @@ pub(super) fn record_candidate(
     // "promote" it (double events / inflated correction_count), and a rejection
     // that purges the candidate mid-flight can no longer be undone by an
     // in-flight promotion recreating the rejected row.
-    match db::auto_learn_promote_for_context(
+    match db::auto_learn_promote(
         db,
-        EVERYWHERE_CONTEXT_ID,
         &mistake,
         &correction,
         tier,
