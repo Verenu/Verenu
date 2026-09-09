@@ -1,0 +1,452 @@
+<script lang="ts">
+  import { fly, fade } from 'svelte/transition';
+  import { expoOut } from 'svelte/easing';
+  import { invoke } from '../../tauri';
+  import { formatIpcError, type Context, type DictionaryEntry } from '../../stores';
+  import { modalFocusTrap } from '../../modalFocus';
+  import MicInputButton from '../../components/MicInputButton.svelte';
+  import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
+  import { countCodePoints, MISTAKE_LIMIT, requireCreatedRecordMeta, TERM_LIMIT } from './helpers';
+
+  let {
+    mode,
+    entry,
+    contextId,
+    onClose,
+    onSaved,
+    onGoToSnippets,
+  }: {
+    mode: 'add' | 'edit';
+    entry?: DictionaryEntry;
+    contextId?: number | null;
+    onClose: () => void;
+    onSaved: (entry: DictionaryEntry) => void;
+    onGoToSnippets: () => void;
+  } = $props();
+
+  // The modal mounts fresh each time it opens, so capturing the initial entry
+  // values once here is exactly the desired behavior.
+  // svelte-ignore state_referenced_locally
+  let draftTerm = $state(entry?.term ?? '');
+  // svelte-ignore state_referenced_locally
+  let draftMistake = $state(entry?.mistake ?? '');
+  let saving = $state(false);
+  let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
+  let termInput = $state<HTMLInputElement | null>(null);
+  let mistakeInput = $state<HTMLInputElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== EVERYWHERE_ID
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
+
+  async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    const contexts = await invoke<Context[]>('get_contexts');
+    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
+    const priority = contexts.filter((context) => priorityIds.has(context.id));
+    const checked = new Set(priority.map((context) => context.id));
+    const findIn = async (context: Context) => {
+      const entries = await invoke<DictionaryEntry[]>('get_context_dictionary', { contextId: context.id });
+      return entries.some((entry) => entry.term === term)
+        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
+        : null;
+    };
+    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
+      (location): location is ContextAssignment => location !== null,
+    );
+    if (priorityLocations.length > 0) return priorityLocations;
+    return (await Promise.all(
+      contexts.filter((context) => !checked.has(context.id)).map(findIn),
+    )).filter((location): location is ContextAssignment => location !== null);
+  }
+
+  async function saveModal() {
+    // Read directly from DOM elements at click time to bypass WKWebView
+    // bind:value paste-sync lag, matching the pattern in Snippets.svelte.
+    if (termInput) draftTerm = termInput.value;
+    if (mistakeInput) draftMistake = mistakeInput.value;
+
+    const term = draftTerm.trim();
+    const mistakeValue = draftMistake.trim();
+    const mistake = mistakeValue || null;
+    if (!term) { saveError = 'Term is required.'; return; }
+    if (countCodePoints(term) > TERM_LIMIT) {
+      saveError = `Term must be ${TERM_LIMIT} characters or fewer.`;
+      return;
+    }
+    if (mistake && countCodePoints(mistake) > MISTAKE_LIMIT) {
+      saveError = `"Often mistranscribed as" must be ${MISTAKE_LIMIT} characters or fewer.`;
+      return;
+    }
+    saving = true; saveError = '';
+    conflictContexts = [];
+    try {
+      if (mode === 'add') {
+        const created = requireCreatedRecordMeta(
+          await invoke<unknown>('create_dictionary_entry', { term, mistake, contextId: contextId ?? null }),
+          'create_dictionary_entry',
+        );
+        onSaved({
+          id: created.id,
+          term,
+          mistake,
+          auto_learned: false,
+          correction_count: 0,
+          confidence_tier: 'manual',
+          last_seen_at: null,
+          created_at: created.created_at,
+        });
+      } else if (mode === 'edit' && entry) {
+        await invoke('edit_dictionary_entry', { id: entry.id, term, mistake });
+        onSaved({
+          ...entry,
+          term,
+          mistake,
+        });
+      }
+      onClose();
+    } catch (err) {
+      const msg = formatIpcError(err);
+      const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
+        try {
+          conflictContexts = await findConflictContexts(term);
+        } catch {
+          conflictContexts = [];
+        }
+      }
+      saveError = conflictContexts.length > 0
+        ? `"${term}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
+        : msg.includes('UNIQUE') ? 'That term already exists.' : msg;
+    } finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
+    const term = (termInput?.value ?? draftTerm).trim();
+    movingExisting = true;
+    saveError = '';
+    try {
+      const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
+      if (!existing) throw new Error(`"${term}" was not found`);
+      const mistake = (mistakeInput?.value ?? draftMistake).trim() || null;
+      await invoke('set_dictionary_context_assignment', {
+        contextId,
+        dictionaryId: existing.id,
+        assigned: true,
+      });
+      let movedEntry = existing;
+      if (mistake !== existing.mistake) {
+        await invoke('edit_dictionary_entry', { id: existing.id, term: existing.term, mistake });
+        movedEntry = { ...existing, mistake };
+      }
+      await invoke('set_dictionary_context_assignment', {
+        contextId: EVERYWHERE_ID,
+        dictionaryId: existing.id,
+        assigned: false,
+      });
+      onSaved(movedEntry);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') onClose();
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveModal();
+  }
+
+  $effect(() => {
+    if (termInput) setTimeout(() => termInput?.focus(), 50);
+  });
+</script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<button class="modal-backdrop" aria-label="Close dialog" onclick={onClose} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
+<div
+  class="modal-card"
+  use:modalFocusTrap={{ active: true, initialFocus: () => termInput }}
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="dictionary-modal-title"
+  tabindex="-1"
+  in:modalCard={{ duration: 220, distance: motionPx(MOTION_PX.panel), scaleFrom: 0.97 }}
+  out:modalCard={{ duration: 160, distance: motionPx(MOTION_PX.nudge), scaleFrom: 0.985 }}
+>
+  <div class="modal-header">
+    <h2 id="dictionary-modal-title" class="modal-title">{mode === 'add' ? 'Add term' : 'Edit term'}</h2>
+    <button class="icon-btn" onclick={onClose} aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+
+  <div class="modal-body">
+    <label class="field-label" for="dict-term">
+      Term
+      <span class="char-count" class:over={countCodePoints(draftTerm) >= TERM_LIMIT}>{countCodePoints(draftTerm)}/{TERM_LIMIT}</span>
+    </label>
+    <div class="input-row">
+      <input
+        id="dict-term"
+        class="field-input"
+        type="text"
+        placeholder="e.g. Kubernetes, Björk, ChatGPT"
+        bind:value={draftTerm}
+        bind:this={termInput}
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <MicInputButton onResult={(t) => draftTerm = t} />
+    </div>
+    <p class="field-hint">The exact word or phrase you want the AI to use.</p>
+
+    <label class="field-label" for="dict-mistake">
+      Often mistranscribed as <span class="field-optional">optional</span>
+      <span class="char-count" class:over={countCodePoints(draftMistake) >= MISTAKE_LIMIT}>{countCodePoints(draftMistake)}/{MISTAKE_LIMIT}</span>
+    </label>
+    <div class="input-row">
+      <input
+        id="dict-mistake"
+        class="field-input"
+        type="text"
+        placeholder="e.g. koobernetes, koobernettis"
+        bind:value={draftMistake}
+        bind:this={mistakeInput}
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <MicInputButton onResult={(t) => draftMistake = t} />
+    </div>
+    <p class="field-hint">What the transcription model typically writes instead. Separate multiple mistranscriptions with commas. Skip if the term just needs to be in the AI's awareness.</p>
+  </div>
+
+  <div class="modal-footer">
+    {#if saveError}
+      <div class="save-error" role="alert">
+        <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
+      </div>
+    {/if}
+    {#if draftTerm.length >= TERM_LIMIT}
+      <button
+        class="snippet-nudge"
+        onclick={onGoToSnippets}
+        in:fly={{ y: 5, duration: 220, easing: expoOut }}
+        out:fade={{ duration: 100 }}
+      >Maybe this would be better as a snippet.</button>
+    {/if}
+    <div class="footer-actions">
+      <button class="btn-ghost" onclick={onClose}>Cancel</button>
+      <button
+        class="btn-primary"
+        onclick={saveModal}
+        disabled={saving}
+      >
+        {#if saving}<span class="spinner"></span>{/if}
+        {mode === 'add' ? 'Add term' : 'Save changes'}
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    appearance: none;
+    background: var(--overlay);
+    z-index: 50;
+    outline: none;
+  }
+
+  .modal-card {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    translate: -50% -50%;
+    z-index: 51;
+    isolation: isolate;
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    width: min(460px, calc(100vw - 40px));
+    box-shadow: var(--shadow-elev);
+    overflow: hidden;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .modal-title {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+    margin: 0;
+  }
+
+  .icon-btn {
+    width: 26px; height: 26px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    color: var(--ink-mute);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .icon-btn:hover { background: var(--control-active); color: var(--ink-strong); }
+
+  .modal-body {
+    padding: 18px 20px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .modal-footer {
+    padding: 12px 20px 16px;
+    border-top: 1px solid var(--line-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .footer-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .field-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    margin-bottom: 5px;
+  }
+  .field-label:first-child { margin-top: 0; }
+
+  .field-optional {
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  .input-row { display: flex; align-items: center; gap: 6px; }
+
+  .field-input {
+    width: 100%;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    padding: 8px 11px;
+    font-size: 13px;
+    font-family: var(--sans);
+    color: var(--ink-strong);
+    outline: none;
+    transition: border-color 0.15s;
+    box-sizing: border-box;
+    line-height: 1.5;
+  }
+  .input-row .field-input { flex: 1; width: auto; min-width: 0; }
+  .field-input:focus { border-color: var(--arm-400); }
+
+  .field-hint { font-size: 11px; color: var(--ink-mute); margin: 4px 0 0; }
+
+  .char-count { font-size: 10.5px; color: var(--ink-mute); font-weight: 400; margin-left: auto; }
+  .char-count.over { color: var(--danger); }
+
+  .snippet-nudge {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--accent-ink);
+    font-family: var(--sans);
+    cursor: pointer;
+    text-align: left;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: color-mix(in oklab, var(--accent-ink) 40%, transparent);
+    transition: text-decoration-color 0.15s, color 0.15s;
+  }
+  .snippet-nudge:hover {
+    text-decoration-color: var(--accent-ink);
+  }
+
+  .save-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11.5px;
+    color: var(--danger);
+    margin: 0;
+    padding: 6px 10px;
+    background: var(--danger-bg);
+    border: 1px solid var(--danger-line);
+    border-radius: var(--r-sm);
+  }
+
+  .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
+
+  .spinner {
+    display: inline-block;
+    width: 11px; height: 11px;
+    border: 1.5px solid rgba(249,247,243,0.3);
+    border-top-color: var(--amber-50);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+</style>
