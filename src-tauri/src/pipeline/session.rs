@@ -604,6 +604,22 @@ pub fn spawn_level_emitter(
             }
         };
 
+        let emit_raw_level = |raw_level_val: f32| {
+            if emit_globally {
+                let _ = app.emit("audio-level-raw", raw_level_val);
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("audio-level-raw", raw_level_val).ok();
+            }
+        };
+
+        let emit_speech_detected = || {
+            if emit_globally {
+                let _ = app.emit("pill-speech-detected", ());
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("pill-speech-detected", ()).ok();
+            }
+        };
+
         // The pill is the only consumer of the envelope, so this never goes out
         // globally even when the level does -- no other window needs 100
         // floats a second.
