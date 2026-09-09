@@ -20,6 +20,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Switched the default accent from terracotta to theme-neutral black in light mode and white in dark mode. Custom accents still override the full accent scale; the Home hotkey tile keeps colored accents exact and only lifts near-black neutrals to white for contrast.
 
 - Context group app targets now survive versioned/nightly app updates by matching a close replacement name with publisher/developer evidence on Windows and macOS.
+- Prevented the same "Often mistranscribed as" variant from mapping to multiple terms in one context group, with prompt filtering for older conflicting data.
 - Reworked cleanup prompting around one default shared by every model, with explicit rule priority, conservative ambiguity handling, multilingual preservation, self-corrections and repair commands, spoken symbols and spelling, technical-token reconstruction, restrained formatting, safer number treatment, and context-assisted disambiguation.
 - **The cleanup prompt is now a single template used by every model**, edited from Clean-up → Edit prompt. It used to be stored per model, so an edit made on your default was silently ignored the moment a fallback model took over. An existing per-model edit is carried over.
 - Fixed Gemini 3 requests failing with `Thinking level MINIMAL is not supported for this model` — affected both cleanup and transcription on newer Gemini 3 flash models, which accept `low` but not `minimal`.
