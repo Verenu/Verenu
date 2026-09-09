@@ -1612,6 +1612,16 @@ mod tests {
     }
 
     #[test]
+    fn legacy_edit_reports_missing_dictionary_entry() {
+        let db = open(":memory:").expect("db");
+
+        let error = update_dictionary_entry(&db, 999, "Missing", None)
+            .expect_err("editing a missing entry should fail");
+
+        assert_eq!(error.to_string(), "Dictionary entry 999 was not found");
+    }
+
+    #[test]
     fn assigning_an_existing_entry_shares_only_canonical_identity() {
         let db = open(":memory:").expect("db");
         let source =
