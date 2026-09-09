@@ -65,7 +65,10 @@ pub(super) fn apply_app_style_overrides(
 /// live foreground window. Browser domains are read from the captured target
 /// too, making website-only groups available before recording begins; an
 /// unresolved context remains hidden until processing resolves one.
-pub(super) fn emit_context_for_window(app: &AppHandle, hwnd: usize) {
+pub(super) fn resolve_context_for_window(
+    app: &AppHandle,
+    hwnd: usize,
+) -> Option<crate::core::context::ResolvedContextIdentity> {
     let process_name = if hwnd != 0 {
         window_context::get_process_name_for_hwnd(hwnd)
     } else {
@@ -82,11 +85,21 @@ pub(super) fn emit_context_for_window(app: &AppHandle, hwnd: usize) {
         None
     };
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
-    if let Ok(context) =
+    let context =
         crate::core::context::resolve_context(&db_handle, &process_name, browser_domain.as_deref())
-    {
-        crate::pipeline::pill::queue_pill_context(&context.name);
-    }
+            .ok()?;
+    Some(crate::core::context::ResolvedContextIdentity::from_context(
+        &context,
+    ))
+}
+
+pub(super) fn emit_context_for_window(
+    app: &AppHandle,
+    hwnd: usize,
+) -> Option<crate::core::context::ResolvedContextIdentity> {
+    let context = resolve_context_for_window(app, hwnd)?;
+    crate::pipeline::pill::queue_pill_context(&context.label);
+    Some(context)
 }
 
 /// Casual/formal cleanup sometimes omits a closing period on short utterances.
