@@ -1566,6 +1566,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_insert_reports_duplicate_canonical_term() {
+        let db = open(":memory:").expect("db");
+        insert_dictionary_entry_returning(&db, "Verenu", None, None).expect("dictionary");
+
+        let error = insert_dictionary_entry_returning(&db, "Verenu", None, None)
+            .expect_err("duplicate legacy term should fail cleanly");
+
+        assert_eq!(error.to_string(), "\"Verenu\" is already in the dictionary");
+        assert_eq!(query_dictionary(&db).expect("dictionary").len(), 1);
+    }
+
+    #[test]
     fn context_rejects_duplicate_mistranscription_variants() {
         let db = open(":memory:").expect("db");
         let context = insert_context_returning(&db, "AI tools", None, None, None, None, false)

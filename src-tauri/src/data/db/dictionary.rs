@@ -666,83 +666,84 @@ pub fn insert_dictionary_entry_returning(
     let tx = conn.transaction()?;
     let everywhere_id = ensure_everywhere_context_conn(&tx)?;
     let target_context = context_id.unwrap_or(everywhere_id);
-    if context_id.is_some() {
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
-            params![target_context],
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
+        params![target_context],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        anyhow::bail!("Context {target_context} was not found");
+    }
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM dictionary WHERE term = ?1",
+            params![normalized_term],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        if context_id.is_none() {
+            anyhow::bail!("\"{normalized_term}\" is already in the dictionary");
+        }
+        let already_in_context: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2)",
+            params![target_context, id],
             |row| row.get(0),
         )?;
-        if !exists {
-            anyhow::bail!("Context {target_context} was not found");
+        if already_in_context {
+            anyhow::bail!("\"{normalized_term}\" is already in this context");
         }
-        let existing: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM dictionary WHERE term = ?1",
-                params![normalized_term],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(id) = existing {
-            let already_in_context: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2)",
-                params![target_context, id],
-                |row| row.get(0),
-            )?;
-            if already_in_context {
-                anyhow::bail!("\"{normalized_term}\" is already in this context");
-            }
-            check_dictionary_mistake_conflicts(
-                &tx,
-                target_context,
-                Some(id),
-                normalized_mistake.as_deref(),
-            )?;
+        check_dictionary_mistake_conflicts(
+            &tx,
+            target_context,
+            Some(id),
+            normalized_mistake.as_deref(),
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)",
+            params![target_context, id],
+        )?;
+        // The legacy projection is no longer authoritative. Clear it
+        // when an existing row is touched so later legacy consumers
+        // cannot observe a stale correction that has no scoped owner.
+        tx.execute(
+            "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
+            params![id],
+        )?;
+        insert_correction_mappings_conn(
+            &tx,
+            target_context,
+            id,
+            CorrectionMappingSeed {
+                mistake: normalized_mistake.as_deref(),
+                auto_learned: false,
+                correction_count: 0,
+                confidence_tier: "manual",
+                last_seen_at: None,
+            },
+        )?;
+        // Keep the legacy global field as a compatibility projection for
+        // the standalone pre-Context sync path. Context-aware consumers
+        // use dictionary_corrections as the source of truth and ignore it.
+        if target_context == everywhere_id {
             tx.execute(
-                "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)",
-                params![target_context, id],
+                "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
+                params![id, normalized_mistake],
             )?;
-            // The legacy projection is no longer authoritative. Clear it
-            // when an existing row is touched so later legacy consumers
-            // cannot observe a stale correction that has no scoped owner.
-            tx.execute(
-                "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
-                params![id],
-            )?;
-            insert_correction_mappings_conn(
-                &tx,
-                target_context,
-                id,
-                CorrectionMappingSeed {
-                    mistake: normalized_mistake.as_deref(),
-                    auto_learned: false,
-                    correction_count: 0,
-                    confidence_tier: "manual",
-                    last_seen_at: None,
-                },
-            )?;
-            // Keep the legacy global field as a compatibility projection for
-            // the standalone pre-Context sync path. Context-aware consumers
-            // use dictionary_corrections as the source of truth and ignore it.
-            if target_context == everywhere_id {
-                tx.execute(
-                    "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
-                    params![id, normalized_mistake],
-                )?;
-            }
-            purge_auto_learn_evidence_for_mistake_list_conn(
-                &tx,
-                target_context,
-                normalized_mistake.as_deref(),
-                &normalized_term,
-            )?;
-            let created_at = tx.query_row(
-                "SELECT created_at FROM dictionary WHERE id=?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            tx.commit()?;
-            return Ok(CreatedRecordMeta { id, created_at });
         }
+        purge_auto_learn_evidence_for_mistake_list_conn(
+            &tx,
+            target_context,
+            normalized_mistake.as_deref(),
+            &normalized_term,
+        )?;
+        let created_at = tx.query_row(
+            "SELECT created_at FROM dictionary WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        return Ok(CreatedRecordMeta { id, created_at });
     }
 
     check_dictionary_mistake_conflicts(&tx, target_context, None, normalized_mistake.as_deref())?;
@@ -2065,10 +2066,6 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
 /// immediately re-promote. Manual mappings, other Contexts, and the shared
 /// canonical term remain untouched unless the canonical row is an auto-learned
 /// orphan with no remaining Context assignment.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Consumed by the rejection monitor in the stacked runtime change")
-)]
 pub fn delete_auto_learned_corrections_by_ids(
     db: &Db,
     context_id: i64,
