@@ -2,13 +2,11 @@
   import { invoke } from '../tauri';
   import { onMount } from 'svelte';
   import { appStore } from '../stores';
-  import { getSetupCalibrationCopy } from '../calibrationCopy';
   import { saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
   import { getTranscriptionLanguageLabel, transcriptionLanguages, type TranscriptionLanguageCode } from '../transcriptionLanguages';
   import { isMac } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
-  import { isCalibrating, calibratedGain } from '../calibration';
   import { providers, cleanupCards, toneCards, SETUP_APPEARANCE_MODE } from '../setup/setupData';
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
@@ -21,7 +19,6 @@
   import WritingStyleStep from '../setup/steps/WritingStyleStep.svelte';
   import LanguageStep from '../setup/steps/LanguageStep.svelte';
   import AudioEnvironmentStep from '../setup/steps/AudioEnvironmentStep.svelte';
-  import CalibrationStep from '../setup/steps/CalibrationStep.svelte';
   import TryItStep from '../setup/steps/TryItStep.svelte';
   import DoneStep from '../setup/steps/DoneStep.svelte';
 
@@ -70,7 +67,6 @@
   let finishing = $state(false);
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
-  const setupCalibrationCopy = getSetupCalibrationCopy();
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
@@ -115,6 +111,13 @@
       keyValidation = { status: 'idle', message: '' };
     }
   });
+
+  // The legacy step constants still include the removed calibration slot so
+  // the Android onboarding branch can share its numbering. The visible wizard
+  // skips that slot entirely.
+  const onboardingTotalSteps = TOTAL_STEPS - 1;
+  const onboardingTryItStep = tryItStep - 1;
+  const onboardingDoneStep = doneStep - 1;
 
   function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -338,8 +341,7 @@
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
-    if (s === calibrationStep) return { name: 'Microphone', title: setupCalibrationCopy.title, subtitle: setupCalibrationCopy.subtitle };
-    if (s === tryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
+    if (s === onboardingTryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
     return null;
   }
 
@@ -368,7 +370,7 @@
 
   let actionBar = $derived.by((): ActionBarConfig => {
     if (step === 0) return bar({ rightLabel: 'Get Started', rightLg: true, onRight: goNext });
-    if (step === doneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
+    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
       if (provider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
@@ -397,23 +399,13 @@
         onRight: goNext,
       });
     }
-    if (step === calibrationStep) {
-      const calibrated = $calibratedGain !== null;
-      return bar({
-        leftLabel: setupCalibrationCopy.skipButton,
-        leftDisabled: $isCalibrating,
-        rightLabel: calibrated ? setupCalibrationCopy.continueButton : 'Next',
-        rightDisabled: $isCalibrating,
-        onRight: goNext,
-      });
-    }
-    if (step === tryItStep) return bar({ leftLabel: 'Skip for now', rightLabel: 'Next', onRight: goNext });
+    if (step === onboardingTryItStep) return bar({ leftLabel: 'Skip for now', rightLabel: 'Next', onRight: goNext });
     // Writing style, language and audio all have a working default already —
     // "Skip for now" next to "Next" would be two words for the same action.
     return bar({ rightLabel: 'Next', onRight: goNext });
   });
 
-  const canGoBack = $derived(step > 0 && step <= TOTAL_STEPS);
+  const canGoBack = $derived(step > 0 && step <= onboardingTotalSteps);
 
   // Landing focus for keyboard users: on wizard open and on every step change,
   // move focus to the new step's heading (falling back to its first focusable
@@ -455,13 +447,13 @@
 
 <SetupShell
   {step}
-  totalSteps={TOTAL_STEPS}
+  totalSteps={onboardingTotalSteps}
   header={headerFor(step)}
   onDotClick={jumpToStep}
 >
   {#snippet left()}
     {#if canGoBack}
-      <button class="btn-back ui-focus-ring" onclick={goBack} disabled={animating || $isCalibrating}>
+      <button class="btn-back ui-focus-ring" onclick={goBack} disabled={animating}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
         Back
       </button>
@@ -512,18 +504,15 @@
       <LanguageStep bind:language />
     {:else if step === audioEnvStep}
       <AudioEnvironmentStep bind:usesHeadphones />
-    {:else if step === calibrationStep}
-      <CalibrationStep />
-    {:else if step === tryItStep}
+    {:else if step === onboardingTryItStep}
       <TryItStep />
-    {:else if step === doneStep}
+    {:else if step === onboardingDoneStep}
       <DoneStep
         providerName={providerDisplayName}
         cleanupName={effectiveCleanupName}
         {toneName}
         {languageLabel}
         {usesHeadphones}
-        micGain={$calibratedGain}
         hasKey={keySaved}
         presetName={modelPreset?.name ?? ''}
       />

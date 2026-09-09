@@ -54,6 +54,14 @@ pub struct AppState {
     pub retry_capture: Option<RetryCapture>,
     pub cancelled_capture: Option<CancelledCapture>,
     pub paste_failure: Option<PasteFailure>,
+    /// Current process-local sensitivity boost. It is intentionally not
+    /// persisted: adaptive sensitivity is a short-lived response to a missed
+    /// capture, not a replacement for the user's manual microphone gain.
+    pub adaptive_sensitivity_level: u8,
+    /// A rejected capture can make the next fresh dictation more sensitive if
+    /// it starts within `ADAPTIVE_SENSITIVITY_WINDOW`.
+    pub sensitivity_retry_available: bool,
+    pub sensitivity_rejected_at: Option<std::time::Instant>,
     /// Id of the in-flight durable dictation, if any.
     pub failover_session_id: Option<String>,
     /// When true, the next durable start reuses `failover_session_id` (resume).
@@ -206,6 +214,81 @@ pub(super) fn lock_state(state: &SharedState) -> anyhow::Result<MutexGuard<'_, A
     state
         .lock()
         .map_err(|_| anyhow::anyhow!("Recording state lock was poisoned"))
+}
+
+fn bump_sensitivity_level(st: &mut AppState) {
+    st.adaptive_sensitivity_level = st
+        .adaptive_sensitivity_level
+        .saturating_add(1)
+        .min(MAX_ADAPTIVE_SENSITIVITY);
+}
+
+/// Returns the sensitivity level that should be used for a new recording.
+/// Starting within three seconds of a rejected capture consumes that retry
+/// opportunity and increases the level by one, matching an explicit Retry.
+pub fn note_sensitivity_for_new_recording(state: &SharedState) -> u8 {
+    let Ok(mut st) = lock_state(state) else {
+        return 0;
+    };
+
+    if st.sensitivity_retry_available {
+        let within_window = st
+            .sensitivity_rejected_at
+            .is_some_and(|rejected_at| rejected_at.elapsed() <= ADAPTIVE_SENSITIVITY_WINDOW);
+        if within_window {
+            bump_sensitivity_level(&mut st);
+            log::debug!(
+                "audio sensitivity: fresh recording counted as retry level={}",
+                st.adaptive_sensitivity_level
+            );
+        } else {
+            st.adaptive_sensitivity_level = 0;
+        }
+        st.sensitivity_retry_available = false;
+        st.sensitivity_rejected_at = None;
+    }
+
+    st.adaptive_sensitivity_level
+}
+
+/// Records a quality/VAD rejection so a quick follow-up dictation can be
+/// treated like an explicit retry.
+pub fn note_sensitivity_rejection(state: &SharedState) {
+    if let Ok(mut st) = lock_state(state) {
+        st.sensitivity_retry_available = true;
+        st.sensitivity_rejected_at = Some(std::time::Instant::now());
+    }
+}
+
+/// Applies the same bounded boost as an explicit Retry action. The boost is
+/// kept for the next fresh dictation; a successful fresh dictation resets it.
+pub fn note_sensitivity_retry(state: &SharedState) -> bool {
+    let Ok(mut st) = lock_state(state) else {
+        return false;
+    };
+    bump_sensitivity_level(&mut st);
+    st.sensitivity_retry_available = false;
+    st.sensitivity_rejected_at = None;
+    log::debug!(
+        "audio sensitivity: explicit retry counted level={}",
+        st.adaptive_sensitivity_level
+    );
+    true
+}
+
+pub fn current_sensitivity_level(state: &SharedState) -> u8 {
+    lock_state(state)
+        .map(|st| st.adaptive_sensitivity_level)
+        .unwrap_or(0)
+}
+
+/// A successful fresh dictation proves the current sensitivity is sufficient.
+pub fn note_sensitivity_success(state: &SharedState) {
+    if let Ok(mut st) = lock_state(state) {
+        st.adaptive_sensitivity_level = 0;
+        st.sensitivity_retry_available = false;
+        st.sensitivity_rejected_at = None;
+    }
 }
 
 static PIPELINE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -394,7 +477,7 @@ pub fn take_active_pipeline_for_escape(state: &SharedState) -> Option<ActivePipe
 
 /// `Recording { .. } -> Idle`, discarding handless/prepend_audio state.
 /// Used by plain cancel paths that never go through the transcribe/finalize
-/// pipeline: the in-app mic button, calibration, a discarded quick-tap, or
+/// pipeline: the in-app mic button, a discarded quick-tap, or
 /// Escape while still actively recording (pre-`Release`).
 pub fn take_recording_plain(state: &SharedState) -> Option<(audio::RecordingSession, Option<u64>)> {
     take_recording_plain_with_prepend(state).map(|(session, mic_id, _prepend)| (session, mic_id))
@@ -754,6 +837,9 @@ mod tests {
             retry_capture: None,
             cancelled_capture: None,
             paste_failure: None,
+            adaptive_sensitivity_level: 0,
+            sensitivity_retry_available: false,
+            sensitivity_rejected_at: None,
             failover_session_id: None,
             failover_reuse_id: false,
             failover_started_at_unix: 0,
@@ -785,6 +871,46 @@ mod tests {
         assert!(reserve_starting(&state).is_ok());
         // Already Starting now — a second reservation must fail.
         assert!(reserve_starting(&state).is_err());
+    }
+
+    #[test]
+    fn quick_follow_up_recording_counts_as_a_sensitivity_retry() {
+        let state = fresh_state();
+        note_sensitivity_rejection(&state);
+        assert_eq!(note_sensitivity_for_new_recording(&state), 1);
+
+        note_sensitivity_rejection(&state);
+        assert_eq!(note_sensitivity_for_new_recording(&state), 2);
+        assert_eq!(current_sensitivity_level(&state), 2);
+
+        note_sensitivity_success(&state);
+        assert_eq!(current_sensitivity_level(&state), 0);
+    }
+
+    #[test]
+    fn explicit_retry_increases_sensitivity_and_is_bounded() {
+        let state = fresh_state();
+        for expected in 1..=MAX_ADAPTIVE_SENSITIVITY {
+            assert!(note_sensitivity_retry(&state));
+            assert_eq!(current_sensitivity_level(&state), expected);
+        }
+        assert_eq!(current_sensitivity_level(&state), MAX_ADAPTIVE_SENSITIVITY);
+    }
+
+    #[test]
+    fn late_follow_up_recording_drops_the_pending_boost() {
+        let state = fresh_state();
+        {
+            let mut st = lock_state(&state).unwrap();
+            st.adaptive_sensitivity_level = 2;
+            st.sensitivity_retry_available = true;
+            st.sensitivity_rejected_at = Some(
+                std::time::Instant::now()
+                    - ADAPTIVE_SENSITIVITY_WINDOW
+                    - std::time::Duration::from_millis(1),
+            );
+        }
+        assert_eq!(note_sensitivity_for_new_recording(&state), 0);
     }
 
     #[test]

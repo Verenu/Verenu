@@ -14,17 +14,11 @@ use crate::data::store;
 
 /// Aggregate result of running VAD across an entire recording.
 ///
-/// `contains_speech` drives `pipeline::passes_speech_gate`; the remaining
-/// fields are surfaced to the setup wizard's mic calibration (via
-/// `commands::recording::CalibrationResult`) and logged at both call sites, so
-/// a rejection is diagnosable without carrying any dictated content.
+/// `contains_speech` drives `pipeline::passes_speech_gate` without carrying
+/// any dictated content across the VAD boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct SpeechDetectionResult {
     pub contains_speech: bool,
-    pub speech_ms: u64,
-    pub speech_ratio: f32,
-    pub peak_probability: f32,
-    pub longest_segment_ms: u64,
 }
 
 /// Silero's fixed frame size for its v4 ONNX graph: 30ms at 16kHz.
@@ -155,18 +149,20 @@ fn gain_leniency_scale(active_gain: f32) -> f32 {
 /// concurrently with the transcription API call so it adds no wall-clock
 /// latency of its own.
 #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
-pub fn analyze_speech(
+pub fn analyze_speech_with_sensitivity(
     samples_16k: &[f32],
     active_gain: f32,
+    sensitivity_level: u8,
 ) -> anyhow::Result<SpeechDetectionResult> {
+    let adaptive_scale = crate::pipeline::adaptive_sensitivity_scale(sensitivity_level);
+    let probability_threshold = (SPEECH_PROBABILITY_THRESHOLD * adaptive_scale).max(0.16);
     let model_path = staged_model_path()?;
-    let mut vad = transcribe_rs::vad::SileroVad::new(&model_path, SPEECH_PROBABILITY_THRESHOLD)
+    let mut vad = transcribe_rs::vad::SileroVad::new(&model_path, probability_threshold)
         .map_err(|e| anyhow::anyhow!("failed to load Silero VAD model: {e}"))?;
 
     let mut speech_ms: u64 = 0;
     let mut longest_run_ms: u64 = 0;
     let mut current_run_ms: u64 = 0;
-    let mut peak_probability: f32 = 0.0;
     let mut frame_count: u64 = 0;
 
     for frame in samples_16k.chunks_exact(FRAME_SAMPLES) {
@@ -174,8 +170,7 @@ pub fn analyze_speech(
         let probability = vad
             .speech_probability(frame)
             .map_err(|e| anyhow::anyhow!("Silero VAD inference failed: {e}"))?;
-        peak_probability = peak_probability.max(probability);
-        if probability >= SPEECH_PROBABILITY_THRESHOLD {
+        if probability >= probability_threshold {
             speech_ms += FRAME_MS;
             current_run_ms += FRAME_MS;
             longest_run_ms = longest_run_ms.max(current_run_ms);
@@ -191,7 +186,7 @@ pub fn analyze_speech(
         0.0
     };
 
-    let scale = gain_leniency_scale(active_gain);
+    let scale = gain_leniency_scale(active_gain) * adaptive_scale;
     let min_speech_ms = (MIN_SPEECH_MS_BASE as f32 * scale) as u64;
     let min_ratio = MIN_SPEECH_RATIO_BASE * scale;
     let min_longest_run_ms = (MIN_LONGEST_RUN_MS_BASE as f32 * scale) as u64;
@@ -201,10 +196,6 @@ pub fn analyze_speech(
 
     Ok(SpeechDetectionResult {
         contains_speech,
-        speech_ms,
-        speech_ratio,
-        peak_probability,
-        longest_segment_ms: longest_run_ms,
     })
 }
 
@@ -234,9 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn calibration_gain_of_one_uses_unscaled_thresholds() {
-        // `stop_calibration_monitoring` passes 1.0 because calibration forces
-        // gain 1.0 at capture, so VAD must judge the raw signal on the full
+    fn minimum_gain_uses_unscaled_thresholds() {
+        // At minimum gain, VAD must judge the raw signal on the full
         // thresholds rather than the relaxed ones meant for boosted mics.
         assert_eq!(gain_leniency_scale(1.0), 1.0);
     }
@@ -244,9 +234,8 @@ mod tests {
     #[test]
     fn analyze_speech_on_digital_silence_finds_no_speech() {
         let silence = vec![0.0f32; 16_000]; // 1s of exact silence
-        let result = analyze_speech(&silence, store::DEFAULT_MIC_GAIN)
+        let result = analyze_speech_with_sensitivity(&silence, store::DEFAULT_MIC_GAIN, 0)
             .expect("model should load and run on staged path");
         assert!(!result.contains_speech);
-        assert_eq!(result.speech_ms, 0);
     }
 }

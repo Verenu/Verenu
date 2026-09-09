@@ -27,7 +27,7 @@ Verenu intentionally rejects recordings that are too short or too quiet. The pil
 
 - Hold the hotkey for more than about 0.7 seconds.
 - Check the microphone input device.
-- Open Settings -> Audio and run microphone calibration.
+- Open Settings -> Audio and check the selected microphone, microphone gain, and noise reduction settings.
 - Watch the floating pill bars while speaking. No movement usually means the app is not receiving usable audio.
 
 ## macOS Permissions

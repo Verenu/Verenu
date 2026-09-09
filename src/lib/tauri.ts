@@ -1892,8 +1892,6 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
     case 'dismiss_cancelled_capture':
     case 'copy_paste_failure_to_clipboard':
     case 'install_update':
-    case 'start_calibration_monitoring':
-    case 'stop_calibration_monitoring':
       return undefined as T;
     case 'create_snippet': {
       const trigger = assertDevText(args?.trigger, 'Trigger').trim();
