@@ -597,3 +597,36 @@ fn context_event_and_backup_helpers_keep_child_mapping_metadata() {
         .expect("backup legacy projection");
     assert!(legacy_projection.is_none());
 }
+
+#[test]
+fn auto_learn_conflict_returns_blocked_without_claiming_candidate() {
+    let db = open(":memory:").expect("db");
+    let context = insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    insert_dictionary_entry_returning(&db, "ExistingTerm", Some("shared typo"), Some(context.id))
+        .expect("manual mapping");
+    upsert_auto_learn_candidate(&db, context.id, "shared typo", "NewTerm", 0.95)
+        .expect("candidate");
+
+    assert_eq!(
+        auto_learn_promote(&db, context.id, "shared typo", "NewTerm", "high", 2, 1)
+            .expect("promotion result"),
+        AutoLearnPromoteResult::Blocked
+    );
+
+    let conn = lock_conn(&db).expect("verification lock");
+    let promoted_at: Option<String> = conn
+        .query_row(
+            "SELECT promoted_at FROM auto_learn_candidates
+              WHERE context_id = ?1 AND wrong_word = 'shared typo' AND correct_word = 'NewTerm'",
+            params![context.id],
+            |row| row.get(0),
+        )
+        .expect("candidate row");
+    assert!(promoted_at.is_none());
+    drop(conn);
+    assert!(!query_dictionary_for_context(&db, context.id)
+        .expect("context dictionary")
+        .iter()
+        .any(|entry| entry.term == "NewTerm"));
+}

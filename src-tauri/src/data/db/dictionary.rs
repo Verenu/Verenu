@@ -1333,6 +1333,27 @@ pub fn auto_learn_promote(
         return Ok(AutoLearnPromoteResult::Blocked);
     }
 
+    // A Context may already use this mistranscription for another canonical
+    // term. Treat that as a normal AutoLearn block, before claiming the
+    // candidate gate, so the candidate remains eligible only if the competing
+    // mapping is later removed. Database failures still propagate normally.
+    let existing_dictionary_id: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM dictionary WHERE term = ?1",
+            params![correct],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Err(error) =
+        check_dictionary_mistake_conflicts(&tx, context_id, existing_dictionary_id, Some(wrong))
+    {
+        if error.to_string().starts_with("Often mistranscribed as ") {
+            tx.commit()?;
+            return Ok(AutoLearnPromoteResult::Blocked);
+        }
+        return Err(error);
+    }
+
     // Atomic claim on the candidate. 0 rows means the candidate is already
     // promoted (a concurrent monitor won the race) or was purged by a
     // rejection / manual delete — either way this pair must not promote again.
@@ -1373,7 +1394,6 @@ pub fn auto_learn_promote(
         params![context_id, dictionary_id],
     )?;
 
-    check_dictionary_mistake_conflicts(&tx, context_id, Some(dictionary_id), Some(wrong))?;
     tx.execute(
         "INSERT INTO dictionary_corrections
            (uuid, context_id, dictionary_id, mistake, auto_learned,
