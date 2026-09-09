@@ -190,8 +190,13 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
         audio: captured_audio,
         rms,
         raw_rms,
+        stream_error,
         ..
     } = stopped_capture;
+    if stream_error {
+        show_error_pill(&app, AUDIO_STREAM_ERROR_MESSAGE).await;
+        return Err(anyhow::anyhow!(AUDIO_STREAM_ERROR_MESSAGE));
+    }
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
         hide_pill(&app);
@@ -427,8 +432,15 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         audio: mut captured_audio,
         mut rms,
         mut raw_rms,
+        stream_error,
         ..
     } = stopped_capture;
+    if stream_error {
+        failover::abandon_live();
+        show_error_pill(&app, AUDIO_STREAM_ERROR_MESSAGE).await;
+        state::leave_stopping_if_owned(&state, generation);
+        return;
+    }
     if let Some(prev) = prepend_audio {
         let (merged, merged_rms, merged_raw_rms) =
             match merge_prepend_audio(prev, captured_audio, active_gain) {
