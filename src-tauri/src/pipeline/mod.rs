@@ -216,6 +216,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     } = stopped_capture;
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
+        state::note_sensitivity_rejection(&state);
         hide_pill(&app);
         if captured_audio.duration_ms < MIN_RECORDING_MS {
             anyhow::bail!("Recording too short");
@@ -900,10 +901,6 @@ pub async fn retry_transcription_impl(
 ) -> anyhow::Result<db::RecentEntry> {
     state::reserve_starting(state).map_err(anyhow::Error::msg)?;
     let _retry_reservation = RetryReservation { state };
-    // Count the pill's Retry action even when the original capture was
-    // rejected before retry metadata could be stashed (for example, the
-    // early near-silence gate). The boost applies to the next fresh take.
-    state::note_sensitivity_retry(state);
     let mut retry_expired = false;
     let capture = {
         let mut st = lock_state(state)?;
@@ -928,7 +925,10 @@ pub async fn retry_transcription_impl(
         hide_pill(app);
         anyhow::bail!("No retry available");
     };
-
+    // Count only a real Retry action with a still-available capture. The boost
+    // applies to the next fresh take; a missing or expired retry must not
+    // change microphone sensitivity.
+    state::note_sensitivity_retry(state);
     capture.target = capture.target.refreshed();
     if let Ok(mut st) = lock_state(state) {
         st.target = capture.target;
@@ -1018,7 +1018,7 @@ pub async fn retry_transcription_impl(
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
 
     emit_pill_stage(app, "pasting");
-    finalize_pipeline_completion(
+    let result = finalize_pipeline_completion(
         app,
         state,
         PipelineCompletionContext {
@@ -1040,7 +1040,9 @@ pub async fn retry_transcription_impl(
             context: None,
         },
     )
-    .await
+    .await?;
+    state::note_sensitivity_success(state);
+    Ok(result)
 }
 
 struct RetryReservation<'a> {
