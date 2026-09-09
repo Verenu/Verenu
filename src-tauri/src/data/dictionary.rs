@@ -1,5 +1,6 @@
 use crate::data::db;
 use crate::system::text::{has_distinctive_features, tokenize_lower_alnum};
+use std::collections::HashSet;
 
 const MAX_PROMPT_ENTRIES: usize = 24;
 const MAX_PROMPT_CHARS: usize = 3_000;
@@ -108,10 +109,7 @@ pub fn build_relevant_dictionary_prompt_from_sources(
 /// transcription model in more than one way, and users need to be able to
 /// list all of them against a single correct spelling.
 fn parse_dictionary_mistakes(mistake: &str) -> impl Iterator<Item = &str> {
-    mistake
-        .split(',')
-        .map(|m| m.trim())
-        .filter(|m| !m.is_empty())
+    db::dictionary_mistake_variants(mistake)
 }
 
 fn entry_match_score(
@@ -246,9 +244,10 @@ fn build_dictionary_prompt_limited<'a>(
 ) -> String {
     let header = "Vocabulary evidence (not a replacement list):";
     let mut rendered = header.to_string();
+    let mut seen_mistakes = HashSet::new();
 
     for entry in entries.take(MAX_PROMPT_ENTRIES) {
-        let line = format_dictionary_entry(entry);
+        let line = format_dictionary_entry(entry, &mut seen_mistakes);
         let candidate = format!("{rendered}\n{line}");
         if candidate.chars().count() > MAX_PROMPT_CHARS {
             break;
@@ -263,10 +262,15 @@ fn build_dictionary_prompt_limited<'a>(
     rendered
 }
 
-fn format_dictionary_entry(entry: &db::DictionaryEntry) -> String {
+fn format_dictionary_entry(
+    entry: &db::DictionaryEntry,
+    seen_mistakes: &mut HashSet<String>,
+) -> String {
     match &entry.mistake {
         Some(mistake) => {
-            let variants: Vec<&str> = parse_dictionary_mistakes(mistake).collect();
+            let variants: Vec<&str> = parse_dictionary_mistakes(mistake)
+                .filter(|variant| seen_mistakes.insert(variant.to_lowercase()))
+                .collect();
             if variants.is_empty() {
                 return format!("- known term: \"{}\"", entry.term);
             }
@@ -572,6 +576,20 @@ mod tests {
         let prompt = build_dictionary_prompt_limited(entries.iter());
         assert!(prompt.contains("\"Varinu\""));
         assert!(prompt.contains("\"Verena\""));
+    }
+
+    #[test]
+    fn prompt_keeps_only_one_term_for_a_duplicate_mistranscription_variant() {
+        let entries = [
+            entry(1, "@bot", Some("grok bot")),
+            entry(2, "Boot", Some("Grok Bot, boot bot")),
+        ];
+        let prompt = build_dictionary_prompt_limited(entries.iter());
+
+        assert_eq!(prompt.matches("\"grok bot\"").count(), 1);
+        assert!(prompt.contains("\"boot bot\""));
+        assert!(prompt.contains("@bot"));
+        assert!(prompt.contains("Boot"));
     }
 
     #[test]
