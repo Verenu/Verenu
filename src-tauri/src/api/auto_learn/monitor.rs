@@ -115,13 +115,14 @@ pub(super) fn record_candidate(
         return false;
     }
 
-    let confidence_avg = match db::upsert_auto_learn_candidate_for_context(
-        db,
-        context.id,
-        &mistake,
-        &correction,
-        confidence,
-    ) {
+    let confidence_avg =
+        match db::upsert_auto_learn_candidate_for_context(
+            db,
+            context.id,
+            &mistake,
+            &correction,
+            confidence,
+        ) {
             Ok(confidence_avg) => confidence_avg,
             Err(e) => {
                 log::warn!("auto-learn candidate upsert failed: {e}");
@@ -154,8 +155,10 @@ pub(super) fn record_candidate(
     // The pending insert, threshold count, `promoted_at`, and dictionary upsert
     // happen in ONE transaction inside the DB layer. Concurrent monitors
     // observing the same pair in this Context can no longer both pass the
-    // threshold and both "promote" it, and a rejection that purges the
-    // Context-scoped candidate cannot be undone by an in-flight promotion.
+    // threshold and both "promote" it (double events / inflated
+    // correction_count), and a rejection that purges the Context-scoped
+    // candidate mid-flight can no longer be undone by an in-flight promotion
+    // recreating the rejected row.
     match db::auto_learn_promote_for_context(
         db,
         context.id,
