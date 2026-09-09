@@ -40,13 +40,26 @@ fn gain_scaled_rms(base: f32, active_gain: f32) -> f32 {
 /// stays consistent whether the user is amplifying a quiet mic or attenuating
 /// a hot one. Used as the fallback gate when local VAD is unavailable.
 pub(super) fn recording_gate_rms(active_gain: f32) -> f32 {
-    gain_scaled_rms(MIN_RECORDING_RMS, active_gain)
+    recording_gate_rms_for_sensitivity(active_gain, 0)
 }
 
-/// Gain-scaled version of `SILENCE_FLOOR_RMS` — the cheap pre-transcription
-/// "is this obviously digital silence" check.
-pub(super) fn silence_floor_gate_rms(active_gain: f32) -> f32 {
-    gain_scaled_rms(SILENCE_FLOOR_RMS, active_gain)
+/// Adaptive version of the recording gate. A rejected capture can lower the
+/// threshold for the next attempt without changing the saved mic gain.
+pub(super) fn recording_gate_rms_for_sensitivity(active_gain: f32, sensitivity_level: u8) -> f32 {
+    gain_scaled_rms(
+        MIN_RECORDING_RMS * crate::pipeline::adaptive_sensitivity_scale(sensitivity_level),
+        active_gain,
+    )
+}
+
+pub(super) fn silence_floor_gate_rms_for_sensitivity(
+    active_gain: f32,
+    sensitivity_level: u8,
+) -> f32 {
+    gain_scaled_rms(
+        SILENCE_FLOOR_RMS * crate::pipeline::adaptive_sensitivity_scale(sensitivity_level),
+        active_gain,
+    )
 }
 
 /// Use the post-processed RMS for normal validation, but keep a quiet voice

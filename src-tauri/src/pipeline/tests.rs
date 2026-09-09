@@ -4,7 +4,8 @@ use super::stages_transcription::speech_gate_accepts;
 use super::{
     append_cleanup_api_used, apply_app_style_overrides, effective_recording_rms,
     ensure_terminal_punctuation, has_spoken_content, is_transcription_hallucination,
-    normalize_transcription_math_artifacts, preview_text, recording_gate_rms, resolve_app_mapping,
+    normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
+    recording_gate_rms_for_sensitivity, resolve_app_mapping,
     run_pipeline_fixture, should_run_cleanup_llm, should_use_cleanup_cache,
     strip_hallucinated_suffix, style_scoped_cleanup_cache_key, PipelineTestDictionaryEntry,
     PipelineTestRequest, PipelineTestSnippet,
@@ -320,13 +321,20 @@ fn recording_gate_gets_more_permissive_at_high_gain() {
 }
 
 #[test]
+fn adaptive_sensitivity_lowers_recording_gate_without_changing_gain() {
+    let normal = recording_gate_rms_for_sensitivity(store::DEFAULT_MIC_GAIN, 0);
+    let more_sensitive = recording_gate_rms_for_sensitivity(store::DEFAULT_MIC_GAIN, 3);
+    let max_sensitive = recording_gate_rms_for_sensitivity(store::DEFAULT_MIC_GAIN, 99);
+
+    assert_eq!(normal, 0.005);
+    assert!(more_sensitive < normal);
+    assert!(max_sensitive < more_sensitive);
+}
+
+#[test]
 fn speech_gate_does_not_let_loud_rms_bypass_a_vad_rejection() {
     let vad_rejected = crate::media::vad::SpeechDetectionResult {
         contains_speech: false,
-        speech_ms: 0,
-        speech_ratio: 0.0,
-        peak_probability: 0.9,
-        longest_segment_ms: 0,
     };
 
     assert!(!speech_gate_accepts(Some(&vad_rejected), 1.0, 0.001));
