@@ -304,6 +304,21 @@ pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
 pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+    // Vocabulary assignments move to Everywhere when a Context is deleted;
+    // move the Context-owned correction mappings in the same transaction so
+    // learned substitutions do not disappear or remain orphaned.
+    move_dictionary_corrections_conn(&tx, context_id, everywhere_id)?;
+    // Evidence is transient and its original Context is being removed. Drop
+    // it rather than allowing a later promotion to invent an Everywhere
+    // origin after the source Context no longer exists.
+    tx.execute(
+        "DELETE FROM pending_corrections WHERE context_id = ?1",
+        params![context_id],
+    )?;
+    tx.execute(
+        "DELETE FROM auto_learn_candidates WHERE context_id = ?1",
+        params![context_id],
+    )?;
     tx.execute(
         "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
          SELECT ?1, dictionary_id FROM dictionary_contexts WHERE context_id = ?2",
@@ -650,16 +665,12 @@ pub fn set_dictionary_context_assignment(
         anyhow::bail!("Dictionary entry {dictionary_id} was not found");
     }
     if assigned {
-        let mistake: Option<String> = conn.query_row(
-            "SELECT mistake FROM dictionary WHERE id = ?1",
+        // Sharing a canonical vocabulary item intentionally shares only the
+        // canonical identity. Context-specific correction mappings are not
+        // copied; callers can create an explicit mapping in this Context.
+        conn.execute(
+            "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![dictionary_id],
-            |row| row.get(0),
-        )?;
-        check_dictionary_mistake_conflicts(
-            &conn,
-            context_id,
-            Some(dictionary_id),
-            mistake.as_deref(),
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
@@ -667,10 +678,12 @@ pub fn set_dictionary_context_assignment(
             params![context_id, dictionary_id],
         )?;
     } else {
+        remove_dictionary_corrections_for_context_conn(&conn, context_id, dictionary_id)?;
         conn.execute(
             "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
             params![context_id, dictionary_id],
         )?;
+        cleanup_orphaned_auto_dictionary_conn(&conn, context_id, dictionary_id)?;
     }
     Ok(())
 }
@@ -877,6 +890,16 @@ mod tests {
             query_dictionary_for_context(&db, context.id).unwrap().len(),
             1
         );
+        let context_entry = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .next()
+            .expect("shared canonical entry");
+        assert!(
+            context_entry.corrections.is_empty(),
+            "sharing a canonical term must not copy another Context's correction mapping"
+        );
+        assert!(context_entry.mistake.is_none());
         assert_eq!(
             query_snippets_for_context(&db, context.id).unwrap().len(),
             1
@@ -1106,25 +1129,27 @@ mod tests {
         insert_dictionary_entry_returning(&db, "Verenu", Some("Vernu"), None).expect("dictionary");
         insert_snippet_returning(&db, "sig", "signature", "", None).expect("snippet");
 
-        assert!(
-            insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
-                .is_err()
-        );
+        insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
+            .expect("assign existing canonical with a Context-specific correction");
         assert!(insert_snippet_returning(&db, "sig", "different", "", Some(context.id)).is_err());
 
         let dictionary = query_dictionary(&db).expect("dictionary");
-        assert_eq!(dictionary[0].mistake.as_deref(), Some("Vernu"));
+        assert_eq!(dictionary[0].mistake.as_deref(), Some("Vernu, Verano"));
         let snippets = query_snippets(&db).expect("snippets");
         assert_eq!(snippets[0].expansion, "signature");
-        assert!(query_dictionary_for_context(&db, context.id)
-            .unwrap()
-            .is_empty());
+        let context_dictionary =
+            query_dictionary_for_context(&db, context.id).expect("context dictionary");
+        assert_eq!(context_dictionary.len(), 1);
+        assert_eq!(context_dictionary[0].mistake.as_deref(), Some("Verano"));
         assert!(query_snippets_for_context(&db, context.id)
             .unwrap()
             .is_empty());
 
-        insert_dictionary_entry_returning(&db, "Verenu", Some("Vernu"), Some(context.id))
-            .expect("assign existing dictionary entry");
+        assert!(
+            insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
+                .is_err(),
+            "the same Context cannot add a duplicate canonical mapping"
+        );
         insert_snippet_returning(&db, "sig", "signature", "", Some(context.id))
             .expect("assign existing snippet");
         assert_eq!(
@@ -1184,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn assigning_an_existing_entry_checks_the_target_context() {
+    fn assigning_an_existing_entry_shares_only_canonical_identity() {
         let db = open(":memory:").expect("db");
         let source =
             insert_context_returning(&db, "Source", None, None, None, None, false).expect("source");
@@ -1196,17 +1221,26 @@ mod tests {
             insert_dictionary_entry_returning(&db, "Boot", Some("grok bot"), Some(source.id))
                 .expect("source dictionary entry");
 
-        let error = set_dictionary_context_assignment(&db, target.id, second.id, true)
-            .expect_err("assignment should reject duplicate variant");
-        assert!(error.to_string().contains("@bot"));
+        // Assignment is explicit sharing of the canonical term. It must not
+        // copy the source Context's private correction into the target, so a
+        // same spelling in the target can remain owned by its existing term.
+        set_dictionary_context_assignment(&db, target.id, second.id, true)
+            .expect("canonical assignment should not copy source mapping");
         assert_eq!(
             query_dictionary_for_context(&db, target.id).unwrap().len(),
-            1
+            2
         );
         assert_eq!(
             query_dictionary_for_context(&db, source.id).unwrap().len(),
             1
         );
+        let target_entry = query_dictionary_for_context(&db, target.id)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id == second.id)
+            .expect("shared canonical entry");
+        assert!(target_entry.corrections.is_empty());
+        assert!(target_entry.mistake.is_none());
     }
 }
 

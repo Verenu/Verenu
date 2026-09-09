@@ -163,16 +163,20 @@ fn fts_repair_rebuilds_updates_made_while_triggers_were_missing() {
          VALUES ('synthetic', 'beforemarker', 1);
          DROP TRIGGER trg_transcriptions_fts_upd;
          UPDATE transcriptions SET clean_text = 'aftermarker';",
-    ).expect("simulate an interrupted index installation");
+    )
+    .expect("simulate an interrupted index installation");
     assert!(!super::transcriptions::history_fts_available(&conn));
 
     super::schema::ensure_history_fts(&conn);
     assert!(super::transcriptions::history_fts_available(&conn));
     for (term, expected) in [("beforemarker", 0), ("aftermarker", 1)] {
-        let matches: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH ?1",
-            [term], |row| row.get(0),
-        ).expect("indexed search without LIKE fallback");
+        let matches: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH ?1",
+                [term],
+                |row| row.get(0),
+            )
+            .expect("indexed search without LIKE fallback");
         assert_eq!(matches, expected);
     }
     // Reopening a healthy index must not duplicate its postings.
@@ -180,7 +184,8 @@ fn fts_repair_rebuilds_updates_made_while_triggers_were_missing() {
     conn.execute(
         "INSERT INTO transcriptions_fts(transcriptions_fts, rank) VALUES ('integrity-check', 1)",
         [],
-    ).expect("index agrees with external content");
+    )
+    .expect("index agrees with external content");
 }
 
 #[test]
@@ -447,7 +452,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 25);
+    assert_eq!(version, 26);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -712,7 +717,7 @@ fn auto_learn_does_not_overwrite_manual_dictionary_entry() {
 
     insert_dictionary_entry(&db, "Kubernetes", Some("manual typo")).expect("manual insert");
     let promoted =
-        insert_dictionary_entry_auto_learned(&db, "Kubernetes", Some("Koobernetes"), "high")
+        insert_dictionary_entry_auto_learned(&db, "Kubernetes", Some("manual typo"), "high")
             .expect("auto insert");
 
     assert!(!promoted);
@@ -725,7 +730,7 @@ fn auto_learn_does_not_overwrite_manual_dictionary_entry() {
 }
 
 #[test]
-fn auto_learn_updates_only_exact_existing_pair() {
+fn auto_learn_updates_and_keeps_context_owned_pairs_independent() {
     let db = test_db();
 
     assert!(
@@ -737,14 +742,18 @@ fn auto_learn_updates_only_exact_existing_pair() {
             .expect("same pair")
     );
     assert!(
-        !insert_dictionary_entry_auto_learned(&db, "Kubernetes", Some("Kubernetties"), "low",)
+        insert_dictionary_entry_auto_learned(&db, "Kubernetes", Some("Kubernetties"), "low",)
             .expect("different pair")
     );
 
     let entries = query_dictionary(&db).expect("dictionary");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].mistake.as_deref(), Some("Koobernetes"));
-    assert_eq!(entries[0].correction_count, 2);
+    assert_eq!(
+        entries[0].mistake.as_deref(),
+        Some("Koobernetes, Kubernetties")
+    );
+    assert_eq!(entries[0].correction_count, 3);
+    assert_eq!(entries[0].corrections.len(), 2);
 }
 
 #[test]
@@ -752,9 +761,18 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     let db = test_db();
 
     // Session 1: pending count reaches 1, below the default threshold of 2.
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
-    let first = auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2)
-        .expect("first promote call");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
+    let first = auto_learn_promote(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        "medium",
+        2,
+        2,
+    )
+    .expect("first promote call");
     assert_eq!(
         first,
         AutoLearnPromoteResult::BelowThreshold { pending_count: 1 }
@@ -762,8 +780,16 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     assert!(query_dictionary(&db).expect("dictionary").is_empty());
 
     // Session 2: pending count reaches 2 — the pair promotes.
-    let second = auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2)
-        .expect("second promote call");
+    let second = auto_learn_promote(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        "medium",
+        2,
+        2,
+    )
+    .expect("second promote call");
     assert_eq!(second, AutoLearnPromoteResult::Promoted);
 
     let entries = query_dictionary(&db).expect("dictionary");
@@ -780,16 +806,33 @@ fn auto_learn_promote_is_atomic_against_double_promotion() {
     // recorded pending rows). Only ONE may actually promote — the second
     // caller's atomic `promoted_at` claim must be refused.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 2");
 
-    let first =
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("first");
+    let first = auto_learn_promote(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        "medium",
+        2,
+        2,
+    )
+    .expect("first");
     assert_eq!(first, AutoLearnPromoteResult::Promoted);
 
-    let second =
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("second");
+    let second = auto_learn_promote(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        "medium",
+        2,
+        2,
+    )
+    .expect("second");
     assert_eq!(
         second,
         AutoLearnPromoteResult::AlreadyPromoted,
@@ -810,10 +853,20 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
     // rows. An in-flight promotion for that pair must not re-create it: the
     // `promoted_at` claim no-ops against a purged candidate.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("promote"),
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Koobernetes",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("promote"),
         AutoLearnPromoteResult::Promoted
     );
     let id = query_dictionary(&db)
@@ -831,8 +884,16 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
     // Its count is re-evaluated inside the SAME transaction as the claim
     // and dict insert, against post-rejection state: the pending rows are
     // gone, so it lands BelowThreshold and must NOT re-create the entry.
-    let stale =
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("stale");
+    let stale = auto_learn_promote(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        "medium",
+        2,
+        2,
+    )
+    .expect("stale");
     assert_ne!(
         stale,
         AutoLearnPromoteResult::Promoted,
@@ -851,10 +912,20 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     // After a rejection fully purges the candidate, a genuinely new learning
     // window (a fresh candidate row with promoted_at IS NULL) can promote.
     let db = test_db();
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("promote"),
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Koobernetes",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("promote"),
         AutoLearnPromoteResult::Promoted
     );
     let id = query_dictionary(&db)
@@ -866,13 +937,32 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
 
     // New learning episode: fresh candidate (promoted_at NULL), two sessions.
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate again");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate again");
     assert_eq!(
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("s1"),
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Koobernetes",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("s1"),
         AutoLearnPromoteResult::BelowThreshold { pending_count: 1 }
     );
     assert_eq!(
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("s2"),
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Koobernetes",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("s2"),
         AutoLearnPromoteResult::Promoted
     );
     let entries = query_dictionary(&db).expect("dictionary");
@@ -883,8 +973,9 @@ fn auto_learn_promote_can_relearn_after_rejection() {
 #[test]
 fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     let db = test_db();
-    insert_dictionary_entry(&db, "Kubernetes", Some("user typo")).expect("manual");
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
+    insert_dictionary_entry(&db, "Kubernetes", Some("Koobernetes")).expect("manual");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 2");
 
@@ -892,14 +983,23 @@ fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     // every attempt (and records the pending rows for later sessions).
     for _ in 0..2 {
         assert_eq!(
-            auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("promote"),
+            auto_learn_promote(
+                &db,
+                EVERYWHERE_CONTEXT_ID,
+                "Koobernetes",
+                "Kubernetes",
+                "medium",
+                2,
+                2,
+            )
+            .expect("promote"),
             AutoLearnPromoteResult::Blocked
         );
     }
     let entries = query_dictionary(&db).expect("dictionary");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].term, "Kubernetes");
-    assert_eq!(entries[0].mistake.as_deref(), Some("user typo"));
+    assert_eq!(entries[0].mistake.as_deref(), Some("Koobernetes"));
     assert!(!entries[0].auto_learned);
 
     // The candidate was NOT claimed, so removing the manual entry later
@@ -1168,8 +1268,10 @@ fn pruning_history_removes_orphaned_api_cost_rows() {
 #[test]
 fn auto_learn_retention_prunes_only_stale_rows() {
     let db = test_db();
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
-    upsert_auto_learn_candidate(&db, "Tari", "Tauri", 0.6).expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
+        .expect("candidate");
     log_auto_learn_event(&db, "monitor", "started", "", "", "", 0.0).expect("event");
     {
         let conn = lock_conn(&db).expect("lock");
@@ -1213,29 +1315,50 @@ fn auto_learn_retention_prunes_only_stale_rows() {
 }
 
 #[test]
-fn auto_learn_promote_different_mistake_releases_the_gate() {
+fn auto_learn_promote_keeps_different_mistakes_independent() {
     let db = test_db();
 
     // Promote a first pair for the term.
-    upsert_auto_learn_candidate(&db, "Koobernetes", "Kubernetes", 0.6).expect("candidate");
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     assert_eq!(
-        auto_learn_promote(&db, "Koobernetes", "Kubernetes", "medium", 2, 2).expect("promote"),
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Koobernetes",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("promote"),
         AutoLearnPromoteResult::Promoted
     );
 
-    // A second pair for the same term with a different mistake is blocked
-    // by the existing auto-learned entry.
-    upsert_auto_learn_candidate(&db, "Kubernetz", "Kubernetes", 0.6).expect("candidate");
+    // A second pair for the same canonical term is independently represented
+    // by a child mapping in this Context; the old global mistake field could
+    // not express this without overwriting the first pair.
+    upsert_auto_learn_candidate(&db, EVERYWHERE_CONTEXT_ID, "Kubernetz", "Kubernetes", 0.6)
+        .expect("candidate");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     assert_eq!(
-        auto_learn_promote(&db, "Kubernetz", "Kubernetes", "medium", 2, 2).expect("blocked"),
-        AutoLearnPromoteResult::Blocked
+        auto_learn_promote(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            "Kubernetz",
+            "Kubernetes",
+            "medium",
+            2,
+            2,
+        )
+        .expect("second promote"),
+        AutoLearnPromoteResult::Promoted
     );
 
-    // …but the gate must not be burned: the candidate is still claimable.
+    // The second candidate has its own promotion gate.
     let conn = lock_conn(&db).expect("lock");
     let promoted_at: Option<String> = conn
         .query_row(
@@ -1245,28 +1368,19 @@ fn auto_learn_promote_different_mistake_releases_the_gate() {
         )
         .expect("gate");
     assert!(
-        promoted_at.is_none(),
-        "different-mistake block must release the promoted_at claim"
+        promoted_at.is_some(),
+        "an independently valid mapping must claim its own gate"
     );
     drop(conn);
 
-    // Removing the conflicting entry lets the pair be learned after all.
-    let entries = query_dictionary(&db).expect("dictionary");
-    let id = entries
-        .iter()
-        .find(|e| e.term == "Kubernetes")
-        .expect("entry")
-        .id;
-    delete_dictionary_entry(&db, id).expect("delete conflicting entry");
-
-    assert_eq!(
-        auto_learn_promote(&db, "Kubernetz", "Kubernetes", "medium", 2, 2).expect("relearn"),
-        AutoLearnPromoteResult::Promoted
-    );
     let entries = query_dictionary(&db).expect("dictionary");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].term, "Kubernetes");
-    assert_eq!(entries[0].mistake.as_deref(), Some("Kubernetz"));
+    assert_eq!(
+        entries[0].mistake.as_deref(),
+        Some("Koobernetes, Kubernetz")
+    );
+    assert_eq!(entries[0].corrections.len(), 2);
 }
 
 #[test]
@@ -1483,7 +1597,8 @@ fn dict_rejection_cleans_up_pending_corrections() {
     insert_pending_correction(&db, "Tari", "Tauri").expect("pending 1");
     insert_pending_correction(&db, "Tari", "Tauri").expect("pending 2");
     assert_eq!(
-        count_pending_corrections_recent(&db, "Tari", "Tauri", 7).expect("count"),
+        count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7)
+            .expect("count"),
         2
     );
 
@@ -1494,7 +1609,8 @@ fn dict_rejection_cleans_up_pending_corrections() {
     assert_eq!(query_dictionary(&db).expect("query after").len(), 0);
     // Pending corrections also purged — prevents immediate re-promotion.
     assert_eq!(
-        count_pending_corrections_recent(&db, "Tari", "Tauri", 7).expect("count after"),
+        count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7,)
+            .expect("count after"),
         0
     );
 }
@@ -1641,7 +1757,8 @@ fn manual_delete_of_auto_learned_entry_purges_pending_corrections() {
 
     insert_pending_correction(&db, "Tari", "Tauri").expect("pending");
     assert_eq!(
-        count_pending_corrections_recent(&db, "Tari", "Tauri", 7).expect("count before"),
+        count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7)
+            .expect("count before"),
         1
     );
 
@@ -1649,7 +1766,8 @@ fn manual_delete_of_auto_learned_entry_purges_pending_corrections() {
 
     assert_eq!(query_dictionary(&db).expect("query after").len(), 0);
     assert_eq!(
-        count_pending_corrections_recent(&db, "Tari", "Tauri", 7).expect("count after"),
+        count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7,)
+            .expect("count after"),
         0,
         "pending corrections must be purged when the auto-learned entry is manually deleted"
     );

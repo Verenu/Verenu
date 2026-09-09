@@ -95,6 +95,34 @@ CREATE TABLE IF NOT EXISTS dictionary_contexts (
 );
 CREATE INDEX IF NOT EXISTS idx_dictionary_contexts_dictionary_id
   ON dictionary_contexts(dictionary_id);
+-- A canonical dictionary term may be shared by many contexts, but the
+-- mistranscription that produces it is context-specific.  Keep one row per
+-- effective variant so a rejection can identify exactly the mapping that
+-- fired instead of deleting the shared canonical row.
+CREATE TABLE IF NOT EXISTS dictionary_corrections (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid             TEXT,
+  context_id       INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+  dictionary_id    INTEGER NOT NULL REFERENCES dictionary(id) ON DELETE CASCADE,
+  mistake          TEXT NOT NULL COLLATE NOCASE,
+  auto_learned     INTEGER NOT NULL DEFAULT 0 CHECK (auto_learned IN (0, 1)),
+  correction_count INTEGER NOT NULL DEFAULT 0,
+  confidence_tier  TEXT NOT NULL DEFAULT 'low',
+  last_seen_at     DATETIME,
+  created_at       DATETIME NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(context_id, dictionary_id, mistake)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_uuid
+  ON dictionary_corrections(uuid) WHERE uuid IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
+  ON dictionary_corrections(context_id, mistake);
+CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_dictionary
+  ON dictionary_corrections(context_id, dictionary_id);
+CREATE TRIGGER IF NOT EXISTS trg_dictionary_contexts_delete_corrections
+AFTER DELETE ON dictionary_contexts BEGIN
+  DELETE FROM dictionary_corrections
+   WHERE context_id = OLD.context_id AND dictionary_id = OLD.dictionary_id;
+END;
 CREATE TABLE IF NOT EXISTS snippet_contexts (
   context_id INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
   snippet_id INTEGER NOT NULL REFERENCES snippets(id) ON DELETE CASCADE,
@@ -104,16 +132,19 @@ CREATE INDEX IF NOT EXISTS idx_snippet_contexts_snippet_id
   ON snippet_contexts(snippet_id);
 CREATE TABLE IF NOT EXISTS pending_corrections (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  context_id   INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
   wrong_word   TEXT    NOT NULL,
   correct_word TEXT    NOT NULL,
   created_at   DATETIME NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_pending_words
-  ON pending_corrections(wrong_word, correct_word);
+-- This index is created after the v26 shape migration. Do not create it here:
+-- SCHEMA runs before migrations and an existing pre-v26 table has no
+-- context_id column yet.
 CREATE TABLE IF NOT EXISTS auto_learn_events (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type     TEXT    NOT NULL,
   reason_code    TEXT    NOT NULL DEFAULT '',
+  context_id     INTEGER REFERENCES contexts(id) ON DELETE SET NULL,
   app_context    TEXT    NOT NULL DEFAULT '',
   mistake_hash   TEXT    NOT NULL DEFAULT '',
   correction_hash TEXT   NOT NULL DEFAULT '',
@@ -124,6 +155,7 @@ CREATE INDEX IF NOT EXISTS idx_auto_learn_events_event_type
   ON auto_learn_events(event_type, created_at);
 CREATE TABLE IF NOT EXISTS auto_learn_candidates (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  context_id         INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
   wrong_word         TEXT    NOT NULL,
   correct_word       TEXT    NOT NULL,
   confidence_sum     REAL    NOT NULL DEFAULT 0.0,
@@ -132,10 +164,11 @@ CREATE TABLE IF NOT EXISTS auto_learn_candidates (
   last_seen_at       DATETIME NOT NULL DEFAULT (datetime('now')),
   cooldown_until     DATETIME,
   promoted_at        DATETIME,
-  UNIQUE(wrong_word, correct_word)
+  UNIQUE(context_id, wrong_word, correct_word)
 );
-CREATE INDEX IF NOT EXISTS idx_auto_learn_candidates_seen
-  ON auto_learn_candidates(last_seen_at);
+-- This index is created after the v26 shape migration. Do not create it here:
+-- SCHEMA runs before migrations and an existing pre-v26 table has no
+-- context_id column yet.
 CREATE TABLE IF NOT EXISTS cleanup_cache (
   key         TEXT PRIMARY KEY,
   clean_text  TEXT NOT NULL,
@@ -265,6 +298,10 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // new install) and a pointless db.bak gets created on first launch.
     let db_existed_before_open = db_path.exists();
     let mut conn = Connection::open(db_path)?;
+    // SQLite keeps foreign-key enforcement disabled per connection by
+    // default. Context-owned correction/evidence rows use cascading foreign
+    // keys, so enable enforcement before schema work or application queries.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     // user_version lives in the file header, so it's readable before SCHEMA
     // is applied. Read it here (and take the pre-migration backup) before any
     // statement touches the file, so db.bak is a true snapshot of what the
@@ -795,6 +832,26 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 26 {
+        log::info!("db: migrating schema {user_version} -> 26");
+        run_migration(&mut conn, |conn| {
+            apply_v26_autolearn_context_migration(conn)?;
+            conn.execute_batch("PRAGMA user_version = 26;")?;
+            Ok(())
+        })?;
+    }
+    // SCHEMA executes before migrations so it can safely create missing
+    // tables, but it cannot create a context-aware index against a legacy
+    // pre-v26 table. The v26 rebuild above installs these indexes for an
+    // upgrade, and this idempotent check keeps fresh and already-v26 files
+    // equally healthy on every reopen.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_pending_words
+           ON pending_corrections(context_id, wrong_word, correct_word, created_at);
+         CREATE INDEX IF NOT EXISTS idx_auto_learn_candidates_seen
+           ON auto_learn_candidates(context_id, last_seen_at);",
+    )?;
+    ensure_dictionary_correction_membership_trigger(&conn)?;
     // Early v20 development databases created sync_peers before receive and
     // send cursors were split. Their version marker is already 20, so the
     // migration above will not run again. Repair that partial v20 shape on
@@ -809,6 +866,13 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keychain identity. Keep a provisional UUID in place so early writes are
     // captured; initialize() replaces it with the durable identity UUID.
     ensure_sync_identity_placeholder(&conn)?;
+    // A partially completed v26 install may have created correction rows but
+    // not reached the trigger bundle before its process stopped. Repair their
+    // stable identities before re-installing the idempotent trigger set. The
+    // UUID backfill intentionally precedes the triggers so repair itself does
+    // not create a user-visible sync edit.
+    backfill_canonical_uuids(&conn, "dictionary_corrections")?;
+    conn.execute_batch(SYNC_TRIGGER_SQL)?;
     ensure_cleanup_cache_schema(&conn)?;
     // Index only needed by existing databases: the SCHEMA above declares it
     // for fresh installs, and the v10 migration block adds it for databases
@@ -989,6 +1053,281 @@ fn apply_v20_sync_migration(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migrate AutoLearn's formerly-global state to the current Context model.
+///
+/// The canonical `dictionary` row remains shared and keeps its stable identity.
+/// Explicit manual mappings are copied to each existing Context assignment;
+/// legacy automatic mappings are retained only in an existing Everywhere
+/// assignment because their originating Context was never persisted. Candidate
+/// and pending rows are deliberately not copied: pre-v26 rows have no
+/// originating Context, so retaining them would let ambiguous history promote a
+/// correction into an arbitrary Context.  They are short-lived learning state,
+/// unlike already-promoted dictionary data, which is migrated to Everywhere
+/// when that is the historical assignment.
+fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO contexts (id, name, is_everywhere)
+           VALUES (1, 'Everywhere', 1);
+         CREATE TABLE IF NOT EXISTS dictionary_corrections (
+           id               INTEGER PRIMARY KEY AUTOINCREMENT,
+           uuid             TEXT,
+           context_id       INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+           dictionary_id    INTEGER NOT NULL REFERENCES dictionary(id) ON DELETE CASCADE,
+           mistake          TEXT NOT NULL COLLATE NOCASE,
+           auto_learned     INTEGER NOT NULL DEFAULT 0 CHECK (auto_learned IN (0, 1)),
+           correction_count INTEGER NOT NULL DEFAULT 0,
+           confidence_tier  TEXT NOT NULL DEFAULT 'low',
+           last_seen_at     DATETIME,
+           created_at       DATETIME NOT NULL DEFAULT (datetime('now')),
+           UNIQUE(context_id, dictionary_id, mistake)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_uuid
+           ON dictionary_corrections(uuid) WHERE uuid IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
+           ON dictionary_corrections(context_id, mistake);
+         CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_dictionary
+           ON dictionary_corrections(context_id, dictionary_id);",
+    )?;
+
+    // Existing installs have the old tables, whose rows cannot be attributed to
+    // a Context. Rename-and-recreate is required instead of ALTER TABLE because
+    // both the foreign key and the candidate uniqueness constraint changed.
+    rebuild_scoped_pending_corrections(conn)?;
+    rebuild_scoped_auto_learn_candidates(conn)?;
+    ensure_table_column(
+        conn,
+        "auto_learn_events",
+        "context_id",
+        "ALTER TABLE auto_learn_events ADD COLUMN context_id INTEGER REFERENCES contexts(id) ON DELETE SET NULL;",
+    )?;
+
+    // v12 assigned all pre-Contexts dictionary rows to Everywhere. Heal any
+    // partially migrated database with an unassigned canonical row before
+    // copying its old global correction field, preserving the old behavior.
+    let everywhere_id: i64 = conn.query_row(
+        "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+         SELECT ?1, d.id
+           FROM dictionary d
+          WHERE NOT EXISTS (
+                SELECT 1 FROM dictionary_contexts dc WHERE dc.dictionary_id = d.id
+          )",
+        params![everywhere_id],
+    )?;
+
+    // `dictionary.mistake` was one comma-separated value for every assignment.
+    // Expand it once per assigned Context. Manual rows are processed before old
+    // automatic rows so a malformed legacy database cannot let an automatic
+    // mapping displace a manual correction when both claim the same variant.
+    // Within one authority tier, the stable dictionary id is the tie-breaker.
+    let legacy_rows: Vec<(
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        String,
+        Option<String>,
+        String,
+    )> = conn
+        .prepare(
+            "SELECT id, mistake, auto_learned, correction_count, confidence_tier,
+                    last_seen_at, created_at
+               FROM dictionary
+              ORDER BY auto_learned ASC, id ASC",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for (
+        dictionary_id,
+        mistake,
+        auto_learned,
+        correction_count,
+        confidence_tier,
+        last_seen_at,
+        created_at,
+    ) in legacy_rows
+    {
+        let Some(mistake) = mistake else { continue };
+        let variants = mistake
+            .split(',')
+            .map(str::trim)
+            .filter(|variant| !variant.is_empty())
+            .collect::<Vec<_>>();
+        if variants.is_empty() {
+            continue;
+        }
+        let context_sql = if auto_learned != 0 {
+            // A pre-v26 automatic correction has no persisted originating
+            // Context. Historically AutoLearn promoted into Everywhere, so
+            // retain it there when that assignment exists; never guess that
+            // an unrelated targeted assignment was its origin.
+            "SELECT dc.context_id
+               FROM dictionary_contexts dc
+               INNER JOIN contexts c ON c.id = dc.context_id
+              WHERE dc.dictionary_id = ?1 AND c.is_everywhere = 1
+              ORDER BY dc.context_id"
+        } else {
+            // Manual sharing is explicit in dictionary_contexts, so preserve
+            // the old mapping in every Context to which the user assigned it.
+            "SELECT context_id FROM dictionary_contexts
+              WHERE dictionary_id = ?1 ORDER BY context_id"
+        };
+        let context_ids: Vec<i64> = conn
+            .prepare(context_sql)?
+            .query_map(params![dictionary_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        for context_id in context_ids {
+            for (index, variant) in variants.iter().enumerate() {
+                // The old counter represented the whole comma-separated entry.
+                // Keep it on one deterministic child row rather than multiplying
+                // lifetime counts by the number of variants.
+                let child_count = if index == 0 { correction_count } else { 0 };
+                let inserted = conn.execute(
+                    "INSERT OR IGNORE INTO dictionary_corrections
+                       (context_id, dictionary_id, mistake, auto_learned,
+                        correction_count, confidence_tier, last_seen_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        context_id,
+                        dictionary_id,
+                        variant,
+                        auto_learned,
+                        child_count,
+                        confidence_tier,
+                        last_seen_at,
+                        created_at,
+                    ],
+                )?;
+                if inserted == 0 {
+                    log::warn!(
+                        "db: skipped an ambiguous legacy AutoLearn correction while scoping it to Contexts"
+                    );
+                }
+            }
+        }
+    }
+
+    // From v26 onward the child table is the only mutable source of correction
+    // mappings.  Leaving the old global projection populated would allow a
+    // legacy query to leak one Context's correction into another.
+    conn.execute("UPDATE dictionary SET mistake = NULL", [])?;
+    backfill_canonical_uuids(conn, "dictionary_corrections")?;
+    // v20-created databases already have the older trigger set. Re-run the
+    // idempotent bundle so upgrades install the correction-row triggers too.
+    conn.execute_batch(SYNC_TRIGGER_SQL)?;
+    ensure_dictionary_correction_membership_trigger(conn)?;
+    Ok(())
+}
+
+fn ensure_dictionary_correction_membership_trigger(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_dictionary_contexts_delete_corrections
+         AFTER DELETE ON dictionary_contexts BEGIN
+           DELETE FROM dictionary_corrections
+            WHERE context_id = OLD.context_id AND dictionary_id = OLD.dictionary_id;
+         END;",
+    )?;
+    Ok(())
+}
+
+fn rebuild_scoped_pending_corrections(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "pending_corrections")?
+        && !table_has_column(conn, "pending_corrections", "context_id")?
+    {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_pending_words;
+             ALTER TABLE pending_corrections RENAME TO pending_corrections_legacy_v26;
+             CREATE TABLE pending_corrections (
+               id         INTEGER PRIMARY KEY AUTOINCREMENT,
+               context_id INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+               wrong_word TEXT NOT NULL,
+               correct_word TEXT NOT NULL,
+               created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE INDEX idx_pending_words
+               ON pending_corrections(context_id, wrong_word, correct_word, created_at);
+             DROP TABLE pending_corrections_legacy_v26;",
+        )?;
+    } else {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_corrections (
+               id         INTEGER PRIMARY KEY AUTOINCREMENT,
+               context_id INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+               wrong_word TEXT NOT NULL,
+               correct_word TEXT NOT NULL,
+               created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+             );
+             DROP INDEX IF EXISTS idx_pending_words;
+             CREATE INDEX IF NOT EXISTS idx_pending_words
+               ON pending_corrections(context_id, wrong_word, correct_word, created_at);",
+        )?;
+    }
+    Ok(())
+}
+
+fn rebuild_scoped_auto_learn_candidates(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "auto_learn_candidates")?
+        && !table_has_column(conn, "auto_learn_candidates", "context_id")?
+    {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_auto_learn_candidates_seen;
+             ALTER TABLE auto_learn_candidates RENAME TO auto_learn_candidates_legacy_v26;
+             CREATE TABLE auto_learn_candidates (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               context_id INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+               wrong_word TEXT NOT NULL,
+               correct_word TEXT NOT NULL,
+               confidence_sum REAL NOT NULL DEFAULT 0.0,
+               confidence_avg REAL NOT NULL DEFAULT 0.0,
+               seen_count INTEGER NOT NULL DEFAULT 0,
+               last_seen_at DATETIME NOT NULL DEFAULT (datetime('now')),
+               cooldown_until DATETIME,
+               promoted_at DATETIME,
+               UNIQUE(context_id, wrong_word, correct_word)
+             );
+             CREATE INDEX idx_auto_learn_candidates_seen
+               ON auto_learn_candidates(context_id, last_seen_at);
+             DROP TABLE auto_learn_candidates_legacy_v26;",
+        )?;
+    } else {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS auto_learn_candidates (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               context_id INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+               wrong_word TEXT NOT NULL,
+               correct_word TEXT NOT NULL,
+               confidence_sum REAL NOT NULL DEFAULT 0.0,
+               confidence_avg REAL NOT NULL DEFAULT 0.0,
+               seen_count INTEGER NOT NULL DEFAULT 0,
+               last_seen_at DATETIME NOT NULL DEFAULT (datetime('now')),
+               cooldown_until DATETIME,
+               promoted_at DATETIME,
+               UNIQUE(context_id, wrong_word, correct_word)
+             );
+             DROP INDEX IF EXISTS idx_auto_learn_candidates_seen;
+             CREATE INDEX IF NOT EXISTS idx_auto_learn_candidates_seen
+               ON auto_learn_candidates(context_id, last_seen_at);",
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_sync_identity_placeholder(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT INTO sync_identity (uuid, name)
@@ -1084,6 +1423,51 @@ CREATE TRIGGER IF NOT EXISTS trg_sync_dictionary_del AFTER DELETE ON dictionary 
                    WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
   WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+END;
+-- Correction mappings are independent sync rows. Their payload carries the
+-- stable mapping UUID; the sync engine resolves the local Context and
+-- canonical dictionary UUIDs when it applies the row. The Context aggregate
+-- still captures membership changes through dictionary_contexts.
+CREATE TRIGGER IF NOT EXISTS trg_sync_dictionary_corrections_ins
+AFTER INSERT ON dictionary_corrections BEGIN
+  UPDATE dictionary_corrections
+     SET uuid = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' ||
+                lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' ||
+                lower(hex(randomblob(6)))
+   WHERE id = NEW.id AND uuid IS NULL;
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'dictionary_corrections',
+         (SELECT uuid FROM dictionary_corrections WHERE id = NEW.id),
+         'upsert',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                    WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+   WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_sync_dictionary_corrections_upd
+AFTER UPDATE ON dictionary_corrections
+  WHEN NEW.uuid IS OLD.uuid BEGIN
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'dictionary_corrections', NEW.uuid, 'upsert',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                    WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+   WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_sync_dictionary_corrections_del
+AFTER DELETE ON dictionary_corrections BEGIN
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'dictionary_corrections', OLD.uuid, 'delete',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                    WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+   WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_sync_snippets_ins AFTER INSERT ON snippets BEGIN
   UPDATE snippets SET uuid = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(6))) WHERE id = NEW.id AND uuid IS NULL;
