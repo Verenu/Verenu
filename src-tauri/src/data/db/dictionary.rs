@@ -2061,10 +2061,6 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
 /// immediately re-promote. Manual mappings, other Contexts, and the shared
 /// canonical term remain untouched unless the canonical row is an auto-learned
 /// orphan with no remaining Context assignment.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Consumed by the rejection monitor in the stacked runtime change")
-)]
 pub fn delete_auto_learned_corrections_by_ids(
     db: &Db,
     context_id: i64,
