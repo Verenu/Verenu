@@ -1,3 +1,0 @@
-ancestorEntries = ["src-tauri/src/data/db/dictionary.rs"]
-ourEntries = ["src-tauri/src/data/db/dictionary.rs"]
-theirEntries = ["src-tauri/src/data/db/dictionary.rs"]
