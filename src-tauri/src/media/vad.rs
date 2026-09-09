@@ -36,6 +36,23 @@ const MIN_SPEECH_MS_BASE: u64 = 300;
 const MIN_SPEECH_RATIO_BASE: f32 = 0.12;
 const MIN_LONGEST_RUN_MS_BASE: u64 = 250;
 
+fn speech_evidence_passes(
+    speech_ms: u64,
+    total_ms: u64,
+    longest_run_ms: u64,
+    min_speech_ms: u64,
+    min_speech_ratio: f32,
+    min_longest_run_ms: u64,
+) -> bool {
+    if total_ms == 0 {
+        return false;
+    }
+
+    let speech_ratio = speech_ms as f32 / total_ms as f32;
+    speech_ms >= min_speech_ms
+        && (speech_ratio >= min_speech_ratio || longest_run_ms >= min_longest_run_ms)
+}
+
 /// The Silero v4 ONNX model, bundled directly into the binary. At ~1.8MB
 /// this is small enough that shipping it as a Tauri bundle resource (with
 /// its own resource-path resolution at runtime) isn't worth the extra
@@ -127,6 +144,128 @@ fn staged_model_matches(path: &std::path::Path) -> bool {
     bytes.as_slice() == MODEL_BYTES
 }
 
+/// Streaming speech detector for the active recording. It shares the same
+/// Silero model, frame size, and evidence thresholds as the final
+/// recording-wide VAD, but evaluates them incrementally so the pill can
+/// acknowledge speech without waiting for the recording to stop. Requiring
+/// the aggregate gate here is intentional: a monitor bump or a hard breath
+/// can look speech-like for one frame, but should not earn a checkmark.
+pub struct LiveSpeechDetector {
+    #[cfg(not(target_os = "android"))]
+    vad: Option<transcribe_rs::vad::SileroVad>,
+    frame: Vec<f32>,
+    fallback_rms: f32,
+    total_ms: u64,
+    speech_ms: u64,
+    current_run_ms: u64,
+    longest_run_ms: u64,
+    min_speech_ms: u64,
+    min_speech_ratio: f32,
+    min_longest_run_ms: u64,
+}
+
+impl LiveSpeechDetector {
+    pub fn new(active_gain: f32) -> Self {
+        #[cfg(not(target_os = "android"))]
+        let vad = match staged_model_path() {
+            Ok(path) => {
+                match transcribe_rs::vad::SileroVad::new(&path, SPEECH_PROBABILITY_THRESHOLD) {
+                    Ok(vad) => Some(vad),
+                    Err(error) => {
+                        log::warn!("live VAD unavailable, using the RMS fallback: {error}");
+                        None
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("live VAD model unavailable, using the RMS fallback: {error}");
+                None
+            }
+        };
+
+        let scale = gain_leniency_scale(active_gain);
+
+        Self {
+            #[cfg(not(target_os = "android"))]
+            vad,
+            frame: Vec::with_capacity(FRAME_SAMPLES * 2),
+            fallback_rms: live_fallback_rms(active_gain),
+            total_ms: 0,
+            speech_ms: 0,
+            current_run_ms: 0,
+            longest_run_ms: 0,
+            min_speech_ms: (MIN_SPEECH_MS_BASE as f32 * scale) as u64,
+            min_speech_ratio: MIN_SPEECH_RATIO_BASE * scale,
+            min_longest_run_ms: (MIN_LONGEST_RUN_MS_BASE as f32 * scale) as u64,
+        }
+    }
+
+    /// Feeds processed 16 kHz samples and returns true once the same evidence
+    /// gate used after recording has passed. The caller can keep the result
+    /// latched for the rest of the recording.
+    pub fn push(&mut self, samples_16k: &[f32]) -> bool {
+        self.frame.extend_from_slice(samples_16k);
+        while self.frame.len() >= FRAME_SAMPLES {
+            let frame = &self.frame[..FRAME_SAMPLES];
+            let fallback_detected = crate::media::audio::rms_f32(frame) >= self.fallback_rms;
+
+            #[cfg(not(target_os = "android"))]
+            let detected = {
+                let probability = self.vad.as_mut().map(|vad| vad.speech_probability(frame));
+                match probability {
+                    Some(Ok(probability)) => probability >= SPEECH_PROBABILITY_THRESHOLD,
+                    Some(Err(error)) => {
+                        log::warn!(
+                            "live VAD inference failed, switching to the RMS fallback: {error}"
+                        );
+                        self.vad = None;
+                        fallback_detected
+                    }
+                    None => fallback_detected,
+                }
+            };
+
+            #[cfg(target_os = "android")]
+            let detected = fallback_detected;
+
+            self.frame.drain(..FRAME_SAMPLES);
+            self.total_ms += FRAME_MS;
+            if detected {
+                self.speech_ms += FRAME_MS;
+                self.current_run_ms += FRAME_MS;
+                self.longest_run_ms = self.longest_run_ms.max(self.current_run_ms);
+            } else {
+                self.current_run_ms = 0;
+            }
+
+            if speech_evidence_passes(
+                self.speech_ms,
+                self.total_ms,
+                self.longest_run_ms,
+                self.min_speech_ms,
+                self.min_speech_ratio,
+                self.min_longest_run_ms,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Mirrors the recording gate's gain normalization for the live fallback.
+/// The processed samples already include the configured gain, so the fallback
+/// threshold must move with that gain to avoid penalizing a quiet microphone.
+fn live_fallback_rms(active_gain: f32) -> f32 {
+    const BASE_RMS: f32 = 0.005;
+    let gain = active_gain.clamp(store::MIN_MIC_GAIN, store::MAX_MIC_GAIN);
+    if gain <= store::DEFAULT_MIC_GAIN {
+        BASE_RMS * gain / store::DEFAULT_MIC_GAIN
+    } else {
+        BASE_RMS * store::DEFAULT_MIC_GAIN / gain
+    }
+}
+
 /// Scales how lenient the speech thresholds are with the active mic gain,
 /// mirroring `pipeline::gates::recording_gate_rms`'s normalization: a user
 /// who raised gain for a quiet voice or a distant mic already told the app
@@ -180,23 +319,21 @@ pub fn analyze_speech_with_sensitivity(
     }
 
     let total_ms = frame_count * FRAME_MS;
-    let speech_ratio = if total_ms > 0 {
-        speech_ms as f32 / total_ms as f32
-    } else {
-        0.0
-    };
-
     let scale = gain_leniency_scale(active_gain) * adaptive_scale;
     let min_speech_ms = (MIN_SPEECH_MS_BASE as f32 * scale) as u64;
     let min_ratio = MIN_SPEECH_RATIO_BASE * scale;
     let min_longest_run_ms = (MIN_LONGEST_RUN_MS_BASE as f32 * scale) as u64;
 
-    let contains_speech = speech_ms >= min_speech_ms
-        && (speech_ratio >= min_ratio || longest_run_ms >= min_longest_run_ms);
+    let contains_speech = speech_evidence_passes(
+        speech_ms,
+        total_ms,
+        longest_run_ms,
+        min_speech_ms,
+        min_ratio,
+        min_longest_run_ms,
+    );
 
-    Ok(SpeechDetectionResult {
-        contains_speech,
-    })
+    Ok(SpeechDetectionResult { contains_speech })
 }
 
 #[cfg(test)]
