@@ -654,9 +654,10 @@ pub fn set_dictionary_context_assignment(
     dictionary_id: i64,
     assigned: bool,
 ) -> Result<()> {
-    let conn = lock_conn(db)?;
-    query_context_conn(&conn, context_id)?;
-    let exists: bool = conn.query_row(
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    query_context_conn(&tx, context_id)?;
+    let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM dictionary WHERE id = ?1)",
         params![dictionary_id],
         |row| row.get(0),
@@ -668,23 +669,24 @@ pub fn set_dictionary_context_assignment(
         // Sharing a canonical vocabulary item intentionally shares only the
         // canonical identity. Context-specific correction mappings are not
         // copied; callers can create an explicit mapping in this Context.
-        conn.execute(
+        tx.execute(
             "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![dictionary_id],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
              VALUES (?1, ?2)",
             params![context_id, dictionary_id],
         )?;
     } else {
-        remove_dictionary_corrections_for_context_conn(&conn, context_id, dictionary_id)?;
-        conn.execute(
+        remove_dictionary_corrections_for_context_conn(&tx, context_id, dictionary_id)?;
+        tx.execute(
             "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
             params![context_id, dictionary_id],
         )?;
-        cleanup_orphaned_auto_dictionary_conn(&conn, context_id, dictionary_id)?;
+        cleanup_orphaned_auto_dictionary_conn(&tx, context_id, dictionary_id)?;
     }
+    tx.commit()?;
     Ok(())
 }
 

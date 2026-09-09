@@ -346,21 +346,14 @@ pub fn move_dictionary_corrections_conn(
                     params![target_id, source_count, source_last_seen_at],
                 )?;
             } else if source_auto_learned && target_auto_learned {
-                let target_count: i64 = conn.query_row(
-                    "SELECT correction_count FROM dictionary_corrections WHERE id = ?1",
-                    params![target_id],
-                    |row| row.get(0),
-                )?;
-                let target_tier: String = conn.query_row(
-                    "SELECT confidence_tier FROM dictionary_corrections WHERE id = ?1",
-                    params![target_id],
-                    |row| row.get(0),
-                )?;
-                let target_last_seen_at: Option<String> = conn.query_row(
-                    "SELECT last_seen_at FROM dictionary_corrections WHERE id = ?1",
-                    params![target_id],
-                    |row| row.get(0),
-                )?;
+                let (target_count, target_tier, target_last_seen_at):
+                    (i64, String, Option<String>) = conn.query_row(
+                        "SELECT correction_count, confidence_tier, last_seen_at
+                           FROM dictionary_corrections
+                          WHERE id = ?1",
+                        params![target_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )?;
                 let last_seen_at = match (target_last_seen_at, source_last_seen_at) {
                     (Some(target), Some(source)) => Some(target.max(source)),
                     (target, source) => target.or(source),
@@ -854,14 +847,15 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
 
     match existing {
         Some(id) => {
-            let everywhere_id = ensure_everywhere_context_conn(&conn)?;
-            conn.execute(
+            let tx = conn.transaction()?;
+            let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+            tx.execute(
                 "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
                  VALUES (?1, ?2)",
                 params![everywhere_id, id],
             )?;
             for known in KNOWN_VARIANTS {
-                let already_mapped: bool = conn.query_row(
+                let already_mapped: bool = tx.query_row(
                     "SELECT EXISTS(
                        SELECT 1 FROM dictionary_corrections
                         WHERE context_id = ?1 AND dictionary_id = ?2 AND mistake = ?3
@@ -872,7 +866,7 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
                 if already_mapped {
                     continue;
                 }
-                let conflicting: bool = conn.query_row(
+                let conflicting: bool = tx.query_row(
                     "SELECT EXISTS(
                        SELECT 1 FROM dictionary_corrections
                         WHERE context_id = ?1 AND mistake = ?2 AND dictionary_id != ?3
@@ -881,7 +875,7 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
                     |row| row.get(0),
                 )?;
                 if !conflicting {
-                    conn.execute(
+                    tx.execute(
                         "INSERT INTO dictionary_corrections
                            (uuid, context_id, dictionary_id, mistake, confidence_tier)
                          VALUES (?1, ?2, ?3, ?4, 'manual')",
@@ -889,14 +883,15 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
                     )?;
                 }
             }
-            conn.execute(
+            tx.execute(
                 "UPDATE dictionary SET mistake = NULL WHERE id = ?1",
                 params![id],
             )?;
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO seeded_defaults (key) VALUES (?1)",
                 params![MARKER],
             )?;
+            tx.commit()?;
         }
         None => {
             let already_seeded: i64 = conn.query_row(
@@ -2154,13 +2149,13 @@ pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
         // rusqlite does not expose a portable array parameter. The small
         // compatibility path can safely inspect each requested id.
         let mut result = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT c.id
+               FROM dictionary_corrections c
+              WHERE c.context_id = ?1 AND c.dictionary_id = ?2 AND c.auto_learned = 1",
+        )?;
         for id in ids {
-            let rows = conn
-                .prepare(
-                    "SELECT c.id
-                       FROM dictionary_corrections c
-                      WHERE c.context_id = ?1 AND c.dictionary_id = ?2 AND c.auto_learned = 1",
-                )?
+            let rows = stmt
                 .query_map(params![everywhere_id, id], |row| row.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             result.extend(rows);
