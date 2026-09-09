@@ -642,7 +642,6 @@ pub fn spawn_level_emitter(
             }
         };
 
-        let _speech_emitted = false;
         loop {
             if !active.load(Ordering::Relaxed) {
                 break;
