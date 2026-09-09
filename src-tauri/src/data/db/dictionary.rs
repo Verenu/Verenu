@@ -720,6 +720,15 @@ pub fn insert_dictionary_entry_returning(
                     last_seen_at: None,
                 },
             )?;
+            // Keep the legacy global field as a compatibility projection for
+            // the standalone pre-Context sync path. Context-aware consumers
+            // use dictionary_corrections as the source of truth and ignore it.
+            if target_context == everywhere_id {
+                tx.execute(
+                    "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
+                    params![id, normalized_mistake],
+                )?;
+            }
             purge_auto_learn_evidence_for_mistake_list_conn(
                 &tx,
                 target_context,
@@ -758,6 +767,14 @@ pub fn insert_dictionary_entry_returning(
             last_seen_at: None,
         },
     )?;
+    // See the compatibility projection note above. This is only populated for
+    // Everywhere, never for a targeted Context.
+    if target_context == everywhere_id {
+        tx.execute(
+            "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
+            params![id, normalized_mistake],
+        )?;
+    }
     purge_auto_learn_evidence_for_mistake_list_conn(
         &tx,
         target_context,
@@ -1666,6 +1683,17 @@ fn update_dictionary_entry_for_context_conn(
             last_seen_at: None,
         },
     )?;
+    // Lower-stack compatibility: the old dictionary sync payload only knows
+    // about dictionary.mistake. The Context-aware runtime ignores this
+    // projection and reads the child mapping instead.
+    conn.execute(
+        "UPDATE dictionary
+            SET mistake = CASE WHEN EXISTS(
+                SELECT 1 FROM contexts WHERE id = ?2 AND is_everywhere = 1
+            ) THEN ?3 ELSE NULL END
+          WHERE id = ?1",
+        params![id, context_id, normalized_mistake],
+    )?;
     purge_auto_learn_evidence_for_mistake_list_conn(
         conn,
         context_id,
@@ -1684,16 +1712,38 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
         .prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1 ORDER BY context_id")?
         .query_map(params![id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if context_ids.is_empty() {
-        anyhow::bail!("Dictionary entry {id} was not found");
-    }
-    if context_ids.len() > 1 {
+    let context_id = if context_ids.is_empty() {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary WHERE id = ?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("Dictionary entry {id} was not found");
+        }
+        // The lower-stack legacy sync path can deliver a canonical dictionary
+        // row before its Context aggregate. Preserve the old Dictionary-page
+        // behavior by treating an unassigned existing row as Everywhere.
+        let everywhere_id: i64 = conn.query_row(
+            "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+             VALUES (?1, ?2)",
+            params![everywhere_id, id],
+        )?;
+        everywhere_id
+    } else if context_ids.len() > 1 {
         anyhow::bail!(
             "Dictionary entry {id} is shared by multiple contexts; edit it from the active Context"
         );
-    }
+    } else {
+        context_ids[0]
+    };
     drop(conn);
-    update_dictionary_entry_for_context(db, context_ids[0], id, term, mistake)
+    update_dictionary_entry_for_context(db, context_id, id, term, mistake)
 }
 
 /// Remove a canonical dictionary assignment from one Context without deleting
@@ -2094,76 +2144,30 @@ pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
-    let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
-    let everywhere_id: i64 = tx.query_row(
+    let conn = lock_conn(db)?;
+    let everywhere_id: i64 = conn.query_row(
         "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
         [],
         |row| row.get(0),
     )?;
-    let mappings: Vec<(i64, String, String)> = {
+    let mapping_ids: Vec<i64> = {
         // rusqlite does not expose a portable array parameter. The small
         // compatibility path can safely inspect each requested id.
         let mut result = Vec::new();
         for id in ids {
-            let rows = tx
+            let rows = conn
                 .prepare(
-                    "SELECT c.dictionary_id, c.mistake, d.term
+                    "SELECT c.id
                        FROM dictionary_corrections c
-                       INNER JOIN dictionary d ON d.id = c.dictionary_id
                       WHERE c.context_id = ?1 AND c.dictionary_id = ?2 AND c.auto_learned = 1",
                 )?
-                .query_map(params![everywhere_id, id], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                })?
+                .query_map(params![everywhere_id, id], |row| row.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             result.extend(rows);
         }
         result
     };
-    for (dictionary_id, mistake, term) in mappings {
-        tx.execute(
-            "DELETE FROM dictionary_corrections
-              WHERE context_id = ?1 AND dictionary_id = ?2 AND auto_learned = 1
-                AND mistake = ?3",
-            params![everywhere_id, dictionary_id, mistake],
-        )?;
-        tx.execute(
-            "DELETE FROM pending_corrections
-              WHERE context_id = ?1 AND lower(wrong_word) = lower(?2)
-                AND lower(correct_word) = lower(?3)",
-            params![everywhere_id, mistake, term],
-        )?;
-        tx.execute(
-            "DELETE FROM auto_learn_candidates
-              WHERE context_id = ?1 AND lower(wrong_word) = lower(?2)
-                AND lower(correct_word) = lower(?3)",
-            params![everywhere_id, mistake, term],
-        )?;
-    }
-    for id in ids {
-        let orphaned: bool = tx
-            .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM dictionary_corrections WHERE dictionary_id = ?1)
-                    AND NOT EXISTS(
-                        SELECT 1 FROM dictionary_contexts WHERE dictionary_id = ?1
-                         AND context_id != ?2
-                    )
-                    AND auto_learned = 1
-               FROM dictionary WHERE id = ?1",
-                params![id, everywhere_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(false);
-        if orphaned {
-            tx.execute(
-                "DELETE FROM dictionary_contexts WHERE dictionary_id = ?1",
-                params![id],
-            )?;
-            tx.execute("DELETE FROM dictionary WHERE id = ?1", params![id])?;
-        }
-    }
-    tx.commit()?;
+    drop(conn);
+    delete_auto_learned_corrections_by_ids(db, everywhere_id, &mapping_ids)?;
     Ok(())
 }
