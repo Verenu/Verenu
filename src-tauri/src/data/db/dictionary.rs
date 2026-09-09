@@ -540,9 +540,25 @@ pub fn check_dictionary_mistake_conflicts(
     dictionary_id: Option<i64>,
     mistake: Option<&str>,
 ) -> Result<()> {
+    if let Some((variant, term)) =
+        find_dictionary_mistake_conflict(conn, context_id, dictionary_id, mistake)?
+    {
+        anyhow::bail!(
+            "Often mistranscribed as \"{variant}\" already belongs to \"{term}\" in this context"
+        );
+    }
+    Ok(())
+}
+
+fn find_dictionary_mistake_conflict(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+    dictionary_id: Option<i64>,
+    mistake: Option<&str>,
+) -> Result<Option<(String, String)>> {
     let candidate_variants = normalized_mistake_variants(mistake);
     if candidate_variants.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     // v26 makes child rows the only Context-aware source of corrections.
@@ -568,14 +584,12 @@ pub fn check_dictionary_mistake_conflicts(
         let (_id, term, existing_mistake) = row?;
         for variant in dictionary_mistake_variants(existing_mistake.as_deref().unwrap_or("")) {
             if candidate_variants.contains(&variant.to_lowercase()) {
-                anyhow::bail!(
-                    "Often mistranscribed as \"{variant}\" already belongs to \"{term}\" in this context"
-                );
+                return Ok(Some((variant.to_string(), term)));
             }
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn normalized_mistake_list(mistake: Option<&str>) -> Vec<String> {
@@ -1309,14 +1323,11 @@ pub fn auto_learn_promote_for_context(
             |r| r.get(0),
         )
         .optional()?;
-    if let Err(error) =
-        check_dictionary_mistake_conflicts(&tx, context_id, existing_dictionary_id, Some(wrong))
+    if find_dictionary_mistake_conflict(&tx, context_id, existing_dictionary_id, Some(wrong))?
+        .is_some()
     {
-        if error.to_string().starts_with("Often mistranscribed as ") {
-            tx.commit()?;
-            return Ok(AutoLearnPromoteResult::Blocked);
-        }
-        return Err(error);
+        tx.commit()?;
+        return Ok(AutoLearnPromoteResult::Blocked);
     }
 
     // Atomic claim on the candidate. 0 rows means the candidate is already
