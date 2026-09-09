@@ -1017,6 +1017,10 @@ pub async fn retry_transcription_impl(
 ) -> anyhow::Result<db::RecentEntry> {
     state::reserve_starting(state).map_err(anyhow::Error::msg)?;
     let _retry_reservation = RetryReservation { state };
+    // Count the pill's Retry action even when the original capture was
+    // rejected before retry metadata could be stashed (for example, the
+    // early near-silence gate). The boost applies to the next fresh take.
+    state::note_sensitivity_retry(state);
     let mut retry_expired = false;
     let capture = {
         let mut st = lock_state(state)?;
