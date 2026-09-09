@@ -223,6 +223,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     }
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
+        state::note_sensitivity_rejection(&state);
         hide_pill(&app);
         if captured_audio.duration_ms < MIN_RECORDING_MS {
             anyhow::bail!("Recording too short");
@@ -1024,10 +1025,6 @@ pub async fn retry_transcription_impl(
 ) -> anyhow::Result<db::RecentEntry> {
     state::reserve_starting(state).map_err(anyhow::Error::msg)?;
     let _retry_reservation = RetryReservation { state };
-    // Count the pill's Retry action even when the original capture was
-    // rejected before retry metadata could be stashed (for example, the
-    // early near-silence gate). The boost applies to the next fresh take.
-    state::note_sensitivity_retry(state);
     let mut retry_expired = false;
     let capture = {
         let mut st = lock_state(state)?;
@@ -1166,6 +1163,7 @@ pub async fn retry_transcription_impl(
         },
     )
     .await?;
+    state::note_sensitivity_success(state);
     Ok(result)
 }
 
