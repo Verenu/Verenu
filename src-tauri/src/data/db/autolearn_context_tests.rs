@@ -273,10 +273,10 @@ fn scoped_promotion_and_rejection_preserve_shared_canonical_identity() {
         insert_context_returning(&db, "Writing", None, None, None, None, false).expect("writing");
 
     for context_id in [development.id, writing.id] {
-        upsert_auto_learn_candidate(&db, context_id, "Kubernetez", "Kubernetes", 0.6)
+        upsert_auto_learn_candidate_for_context(&db, context_id, "Kubernetez", "Kubernetes", 0.6)
             .expect("candidate");
         assert_eq!(
-            auto_learn_promote(&db, context_id, "Kubernetez", "Kubernetes", "medium", 2, 2)
+            auto_learn_promote_for_context(&db, context_id, "Kubernetez", "Kubernetes", "medium", 2, 2)
                 .expect("first observation"),
             AutoLearnPromoteResult::BelowThreshold { pending_count: 1 }
         );
@@ -299,10 +299,10 @@ fn scoped_promotion_and_rejection_preserve_shared_canonical_identity() {
         1
     );
 
-    upsert_auto_learn_candidate(&db, development.id, "Kubernetez", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, development.id, "Kubernetez", "Kubernetes", 0.6)
         .expect("development second candidate");
     assert_eq!(
-        auto_learn_promote(
+        auto_learn_promote_for_context(
             &db,
             development.id,
             "Kubernetez",
@@ -325,10 +325,10 @@ fn scoped_promotion_and_rejection_preserve_shared_canonical_identity() {
         .expect("writing remains isolated")
         .is_empty());
 
-    upsert_auto_learn_candidate(&db, writing.id, "Kubernetez", "Kubernetes", 0.6)
+    upsert_auto_learn_candidate_for_context(&db, writing.id, "Kubernetez", "Kubernetes", 0.6)
         .expect("writing second candidate");
     assert_eq!(
-        auto_learn_promote(&db, writing.id, "Kubernetez", "Kubernetes", "medium", 2, 2,)
+        auto_learn_promote_for_context(&db, writing.id, "Kubernetez", "Kubernetes", "medium", 2, 2,)
             .expect("writing promotion"),
         AutoLearnPromoteResult::Promoted
     );
@@ -605,11 +605,11 @@ fn auto_learn_conflict_returns_blocked_without_claiming_candidate() {
         .expect("context");
     insert_dictionary_entry_returning(&db, "ExistingTerm", Some("shared typo"), Some(context.id))
         .expect("manual mapping");
-    upsert_auto_learn_candidate(&db, context.id, "shared typo", "NewTerm", 0.95)
+    upsert_auto_learn_candidate_for_context(&db, context.id, "shared typo", "NewTerm", 0.95)
         .expect("candidate");
 
     assert_eq!(
-        auto_learn_promote(&db, context.id, "shared typo", "NewTerm", "high", 2, 1)
+        auto_learn_promote_for_context(&db, context.id, "shared typo", "NewTerm", "high", 2, 1)
             .expect("promotion result"),
         AutoLearnPromoteResult::Blocked
     );
