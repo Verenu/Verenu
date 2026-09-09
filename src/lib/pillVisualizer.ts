@@ -372,7 +372,7 @@ export function createPillVisualizer(): PillVisualizer {
             // Preserve the acquisition window when the first qualifying sample
             // only barely clears the floor. Seeding directly to that sample
             // makes later syllables spend seconds raising the reference, which
-            // visibly shrinks a continuous utterance as calibration catches up.
+            // visibly shrinks a continuous utterance as the visualizer catches up.
             refDb = Math.max(db, loDb + MIN_WINDOW_DB - HEADROOM_DB);
             refSeeded = true;
             justSeeded = true;

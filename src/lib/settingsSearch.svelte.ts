@@ -74,7 +74,6 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'privacy-import', section: 'privacy', label: 'Import backup', description: 'Restore Verenu data from a backup', target: 'privacy-import', keywords: ['backup', 'restore', 'data'] },
 
   { id: 'audio-gain', section: 'advanced', label: 'Microphone gain', description: 'Boost the microphone signal before transcription', target: 'audio-gain', keywords: ['mic', 'volume', 'input'] },
-  { id: 'audio-calibration', section: 'advanced', label: 'Auto calibration', description: 'Automatically set microphone gain', target: 'audio-calibration', keywords: ['mic', 'gain', 'level'] },
   { id: 'audio-system-mute', section: 'advanced', label: 'Mute system audio', description: 'Mute computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'sound'] },
   { id: 'audio-exclusive', section: 'advanced', label: 'Exclusive microphone access', description: 'Reserve the microphone for Verenu while dictating', target: 'audio-exclusive', keywords: ['mic', 'input', 'other apps'] },
   { id: 'audio-pause-media', section: 'advanced', label: 'Pause media while dictating', description: 'Pause and resume active media around dictation', target: 'audio-pause-media', keywords: ['music', 'video', 'windows'] },
