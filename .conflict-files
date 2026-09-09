@@ -1,3 +1,0 @@
-ancestorEntries = ["src-tauri/src/data/db/autolearn_context_tests.rs"]
-ourEntries = ["src-tauri/src/data/db/autolearn_context_tests.rs"]
-theirEntries = ["src-tauri/src/data/db/autolearn_context_tests.rs"]
