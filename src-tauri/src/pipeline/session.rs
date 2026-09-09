@@ -206,6 +206,7 @@ pub fn start_recording_session_ex(
             let raw_level_arc = session.raw_level.clone();
             let envelope_arc = session.envelope.clone();
             let active_arc = session.active.clone();
+            let speech_detected_arc = session.speech_detected.clone();
             let stream_error_arc = session.stream_error.clone();
             let start_cue_active = session.active.clone();
             {
@@ -294,6 +295,7 @@ pub fn start_recording_session_ex(
                 raw_level_arc,
                 envelope_arc,
                 active_arc,
+                speech_detected_arc,
                 options.emit_globally,
             );
             if let Some(session_id) = exclusive_mic_session_id {
@@ -589,6 +591,7 @@ pub fn spawn_level_emitter(
     raw_level: Arc<std::sync::atomic::AtomicU32>,
     envelope: Arc<crate::media::audio::EnvelopeTap>,
     active: Arc<std::sync::atomic::AtomicBool>,
+    speech_detected: Arc<std::sync::atomic::AtomicBool>,
     emit_globally: bool,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -596,12 +599,35 @@ pub fn spawn_level_emitter(
         // "recording" state event before we flood the IPC with 16ms updates.
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-        let emit_level = |level_val: f32| {
+        let emit_raw_level = || {
+            let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
+            if !emit_globally {
+                if let Some(pill) = app.get_webview_window("pill") {
+                    pill.emit("audio-level-raw", raw_level_val).ok();
+                }
+            }
+        };
+
+        let emit_speech_detected = || {
+            if emit_globally {
+                let _ = app.emit("pill-speech-detected", ());
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("pill-speech-detected", ()).ok();
+            }
+        };
+
+        let mut speech_emitted = false;
+        let mut emit_level = |level_val: f32| {
+            if !speech_emitted && speech_detected.load(Ordering::Acquire) {
+                emit_speech_detected();
+                speech_emitted = true;
+            }
             if emit_globally {
                 let _ = app.emit("audio-level", level_val);
             } else if let Some(pill) = app.get_webview_window("pill") {
                 pill.emit("audio-level", level_val).ok();
             }
+            emit_raw_level();
         };
 
         // The pill is the only consumer of the envelope, so this never goes out

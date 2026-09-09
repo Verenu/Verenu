@@ -196,6 +196,9 @@ pub struct RecordingSession {
     pub raw_level: Arc<AtomicU32>,
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
+    /// Latched by the audio worker when live VAD or its RMS fallback hears
+    /// speech in the current recording.
+    pub speech_detected: Arc<AtomicBool>,
     /// Set by CPAL's stream-error callback. The callback must not block or
     /// touch lifecycle state; the pill/session watcher consumes this flag on
     /// the async side and ends the recording cleanly.
@@ -390,6 +393,7 @@ impl RecordingSession {
         let raw_level = Arc::new(AtomicU32::new(0f32.to_bits()));
         let envelope = Arc::new(EnvelopeTap::new());
         let active = Arc::new(AtomicBool::new(true));
+        let speech_detected = Arc::new(AtomicBool::new(false));
         let stream_error = Arc::new(AtomicBool::new(false));
         let display_gain = (DISPLAY_GAIN * gain).max(0.0);
 
@@ -397,6 +401,7 @@ impl RecordingSession {
         let raw_level_w = Arc::clone(&raw_level);
         let envelope_w = Arc::clone(&envelope);
         let active_w = Arc::clone(&active);
+        let speech_detected_w = Arc::clone(&speech_detected);
         let stream_error_w = Arc::clone(&stream_error);
         envelope_w.set_sample_rate(sample_rate);
         // `processed` already contains the configured microphone gain. Keep
@@ -435,6 +440,13 @@ impl RecordingSession {
                 } else {
                     None
                 };
+                let mut live_vad = crate::media::vad::LiveSpeechDetector::new(gain);
+                let speech_detected_worker = Arc::clone(&speech_detected_w);
+                let mut update_live_speech = |samples: &[f32]| {
+                    if !speech_detected_worker.load(Ordering::Acquire) && live_vad.push(samples) {
+                        speech_detected_worker.store(true, Ordering::Release);
+                    }
+                };
 
                 let mut observed_wake = worker_wake.sequence.load(Ordering::Acquire);
                 loop {
@@ -465,6 +477,7 @@ impl RecordingSession {
                         let before_len = samples_16k.len();
                         let duration_limit =
                             resampler.push(&processed_batch, &mut samples_16k, max_output_samples);
+                        update_live_speech(&samples_16k[before_len..]);
                         if duration_limit {
                             termination = RecordingTermination::DurationLimit;
                         }
@@ -515,10 +528,13 @@ impl RecordingSession {
                     {
                         termination = RecordingTermination::DurationLimit;
                     }
-                    if termination == RecordingTermination::Complete
-                        && resampler.finish(&mut samples_16k, max_output_samples)
-                    {
-                        termination = RecordingTermination::DurationLimit;
+                    update_live_speech(&samples_16k[before_len..]);
+                    if termination == RecordingTermination::Complete {
+                        let before_len = samples_16k.len();
+                        if resampler.finish(&mut samples_16k, max_output_samples) {
+                            termination = RecordingTermination::DurationLimit;
+                        }
+                        update_live_speech(&samples_16k[before_len..]);
                     }
                     if let Some(sink) = durable.as_mut() {
                         if sink.extend(&samples_16k[before_len..]).is_err() {
@@ -685,6 +701,7 @@ impl RecordingSession {
             raw_level,
             envelope,
             active,
+            speech_detected,
             stream_error,
         })
     }

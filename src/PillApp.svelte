@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
 
@@ -35,12 +36,241 @@
   // Delayed notification controls enable cursor events when they mount.
   async function setPillInteractive(interactive: boolean) {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().setIgnoreCursorEvents(!interactive).catch(() => {});
+    const pillWindow = getCurrentWindow();
+    await pillWindow.setIgnoreCursorEvents(!interactive).catch(() => {});
+    // The pill is always a borderless overlay. Reassert this after changing
+    // hit-testing because WebView2/tao can restore the native frame while the
+    // window is being switched back to an interactive surface.
+    await pillWindow.setDecorations(false).catch(() => {});
   }
 
   // Resolved context for the current dictation (e.g. "Slack", "Everywhere") —
   // where the text is headed, emitted by the backend's own resolution.
   let contextLabel: string | null = null;
+
+  type AudioStatus = 'starting' | 'healthy' | 'weak' | 'unheard' | 'muted';
+  const AUDIO_START_GRACE_MS = 800;
+  const AUDIO_ZERO_DEBOUNCE_MS = 600;
+  // A candidate status (weak/unheard, mainly) must stay the desired value for
+  // this whole window before it's shown — not just "500ms since the last
+  // switch". The old cooldown only rate-limited commits, so a level hovering
+  // near the weak/unheard threshold still flipped the icon every time the
+  // cooldown expired. Requiring the SAME candidate to persist the full
+  // duration kills that chatter outright. Healthy (via `immediate`) and muted
+  // exit still bypass this — see requestAudioStatus.
+  const AUDIO_STATUS_STABLE_MS = 900;
+  const AUDIO_ZERO_RMS = 0.00001;
+  const AUDIO_MIN_SIGNAL_RMS = 0.0008;
+  const AUDIO_NOISE_SEED_RMS = 0.0002;
+  const AUDIO_NOISE_MULTIPLIER = 2.5;
+
+  let audioStatus: AudioStatus = 'starting';
+  let speechDetected = false;
+  let audioIconEverShown = false;
+  let rawAudioLevel = 0;
+  let zeroInputConfirmed = false;
+  let audioNoiseFloor = AUDIO_NOISE_SEED_RMS;
+  let audioSessionStartedAt = 0;
+  let audioGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  let audioZeroTimer: ReturnType<typeof setTimeout> | null = null;
+  let audioStatusCooldownTimer: ReturnType<typeof setTimeout> | null = null;
+  // The status a non-immediate switch is waiting to confirm, and when it
+  // first became the desired value — reset whenever the desired value
+  // changes, so only a value that holds steady for AUDIO_STATUS_STABLE_MS
+  // straight ever gets shown.
+  let audioStatusCandidate: AudioStatus | null = null;
+  let audioStatusCandidateAt = 0;
+
+  const isAudioState = (value: PillState) => value === 'recording' || value === 'handsfree';
+
+  // Checked fresh per-transition (Svelte re-evaluates a `duration` function at
+  // the moment a transition starts), not cached — the user can flip the OS
+  // setting while the pill is open.
+  const reducedMotion = () =>
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Matches the rest of the pill's motion language (see pillIn/audioStatusRoll)
+  // rather than fly's default linear ease, so the icon roll doesn't feel like
+  // a different animation system from everything around it.
+  const rollEase = (t: number) => 1 - Math.pow(1 - t, 3);
+
+  function clearAudioStatusTimers() {
+    if (audioGraceTimer) {
+      clearTimeout(audioGraceTimer);
+      audioGraceTimer = null;
+    }
+    if (audioZeroTimer) {
+      clearTimeout(audioZeroTimer);
+      audioZeroTimer = null;
+    }
+    if (audioStatusCooldownTimer) {
+      clearTimeout(audioStatusCooldownTimer);
+      audioStatusCooldownTimer = null;
+    }
+  }
+
+  function resetAudioStatus() {
+    clearAudioStatusTimers();
+    audioStatus = 'starting';
+    speechDetected = false;
+    rawAudioLevel = 0;
+    zeroInputConfirmed = false;
+    audioNoiseFloor = AUDIO_NOISE_SEED_RMS;
+    audioSessionStartedAt = performance.now();
+    audioStatusCandidate = null;
+    audioGraceTimer = setTimeout(() => {
+      audioGraceTimer = null;
+      refreshAudioStatus();
+    }, AUDIO_START_GRACE_MS);
+  }
+
+  function clearAudioStatus() {
+    clearAudioStatusTimers();
+    audioStatus = 'starting';
+    speechDetected = false;
+    rawAudioLevel = 0;
+    zeroInputConfirmed = false;
+    audioNoiseFloor = AUDIO_NOISE_SEED_RMS;
+    audioSessionStartedAt = 0;
+    audioStatusCandidate = null;
+  }
+
+  function updateNoiseFloor(level: number) {
+    const followRate = level < audioNoiseFloor ? 0.25 : 0.03;
+    audioNoiseFloor += (level - audioNoiseFloor) * followRate;
+  }
+
+  function meaningfulAudioLevel(level: number) {
+    return level >= Math.max(AUDIO_MIN_SIGNAL_RMS, audioNoiseFloor * AUDIO_NOISE_MULTIPLIER);
+  }
+
+  function desiredAudioStatus(now = performance.now()): AudioStatus {
+    if (!speechDetected && audioSessionStartedAt > 0 && now - audioSessionStartedAt < AUDIO_START_GRACE_MS) {
+      return 'starting';
+    }
+    if (zeroInputConfirmed) return 'muted';
+    if (speechDetected) return 'healthy';
+    return meaningfulAudioLevel(rawAudioLevel) ? 'weak' : 'unheard';
+  }
+
+  function commitAudioStatus(next: AudioStatus) {
+    audioStatusCandidate = null;
+    if (audioStatusCooldownTimer) {
+      clearTimeout(audioStatusCooldownTimer);
+      audioStatusCooldownTimer = null;
+    }
+    if (audioStatus === next) return;
+    audioStatus = next;
+  }
+
+  function requestAudioStatus(next: AudioStatus, immediate = false) {
+    if (!isAudioState(state) || next === audioStatus) {
+      audioStatusCandidate = null;
+      if (audioStatusCooldownTimer) {
+        clearTimeout(audioStatusCooldownTimer);
+        audioStatusCooldownTimer = null;
+      }
+      return;
+    }
+
+    if (immediate) {
+      commitAudioStatus(next);
+      return;
+    }
+
+    const now = performance.now();
+    if (audioStatusCandidate !== next) {
+      // The desired value just changed — restart the stability window rather
+      // than crediting time the PREVIOUS candidate accrued.
+      audioStatusCandidate = next;
+      audioStatusCandidateAt = now;
+    }
+    const elapsed = now - audioStatusCandidateAt;
+    if (elapsed >= AUDIO_STATUS_STABLE_MS) {
+      commitAudioStatus(next);
+      return;
+    }
+
+    if (audioStatusCooldownTimer) return;
+    audioStatusCooldownTimer = setTimeout(() => {
+      audioStatusCooldownTimer = null;
+      refreshAudioStatus();
+    }, AUDIO_STATUS_STABLE_MS - elapsed);
+  }
+
+  function refreshAudioStatus(immediate = false) {
+    if (!isAudioState(state)) return;
+    requestAudioStatus(desiredAudioStatus(), immediate);
+  }
+
+  function onRawAudioLevel(level: number) {
+    if (!isAudioState(state)) return;
+    const nextLevel = Number.isFinite(level) ? Math.max(0, level) : 0;
+    rawAudioLevel = nextLevel;
+
+    if (nextLevel <= AUDIO_ZERO_RMS) {
+      if (!audioZeroTimer) {
+        audioZeroTimer = setTimeout(() => {
+          audioZeroTimer = null;
+          if (isAudioState(state) && rawAudioLevel <= AUDIO_ZERO_RMS) {
+            zeroInputConfirmed = true;
+            // AUDIO_ZERO_DEBOUNCE_MS already confirmed this is a real mute,
+            // not a dip — showing it promptly (rather than queueing behind
+            // the weak/unheard stability window too) is the point of a mute
+            // indicator: the user needs to know their mic went silent now.
+            refreshAudioStatus(true);
+          }
+        }, AUDIO_ZERO_DEBOUNCE_MS);
+      }
+      return;
+    }
+
+    if (audioZeroTimer) {
+      clearTimeout(audioZeroTimer);
+      audioZeroTimer = null;
+    }
+    zeroInputConfirmed = false;
+    if (!speechDetected) updateNoiseFloor(nextLevel);
+
+    // A confirmed utterance remains healthy through normal pauses, but a
+    // previously muted microphone should recover immediately when signal
+    // returns. The general status cooldown still protects the other states
+    // from rapid level/VAD chatter.
+    refreshAudioStatus(speechDetected && audioStatus === 'muted');
+  }
+
+  function onSpeechDetected() {
+    if (!isAudioState(state)) return;
+    if (audioZeroTimer) {
+      clearTimeout(audioZeroTimer);
+      audioZeroTimer = null;
+    }
+    zeroInputConfirmed = false;
+    speechDetected = true;
+    refreshAudioStatus(true);
+  }
+
+  function audioStatusDescription(status: AudioStatus) {
+    switch (status) {
+      case 'healthy': return 'Speech detected';
+      case 'weak': return 'Audio is present, but speech detection is marginal';
+      case 'unheard': return 'Speech has not been detected';
+      case 'muted': return 'No microphone input';
+      default: return 'Listening for speech';
+    }
+  }
+
+  $: recordingAudioActive = isAudioState(state);
+  // Sticky once true for the rest of this dictation, so the audio-status
+  // track stays mounted (and can play its width-collapse transition) through
+  // recording -> processing/loading, instead of the `{#if recordingAudioActive}`
+  // block simply unmounting it the instant recording ends. Never explicitly
+  // reset — the next dictation sets it again the moment it starts recording,
+  // and a stale `true` between dictations is harmless (the track only
+  // renders inside the context chip, which needs its own condition to show).
+  $: if (recordingAudioActive) audioIconEverShown = true;
+  $: pillContextTitle = recordingAudioActive
+    ? `${contextLabel ? `${contextLabel}. ` : ''}${audioStatusDescription(audioStatus)}`
+    : contextLabel ?? '';
 
   // Processing sub-stage ("Transcribing…" / "Cleaning…" / "Pasting…"), driven
   // by real `pill-stage` events from the pipeline. Rows for the stages that
@@ -414,6 +644,7 @@
       state = 'idle';
       clearStage();
       contextLabel = null;
+      clearAudioStatus();
       resetVisualizer();
       errOpen = false;
       errWidth = 0;
@@ -587,6 +818,9 @@
         }
         if (incoming === 'recording') {
           contextLabel = null;
+          if (!isAudioState(state)) resetAudioStatus();
+        } else if (incoming === 'handsfree') {
+          if (!isAudioState(state)) resetAudioStatus();
         } else if (
           incoming === 'error' ||
           incoming === 'cancelled' ||
@@ -596,6 +830,9 @@
         ) {
           clearStage();
           contextLabel = null;
+        }
+        if (incoming !== 'recording' && incoming !== 'handsfree' && incoming !== 'idle') {
+          clearAudioStatus();
         }
 
         if (incoming === 'idle' && state !== 'idle') {
@@ -767,6 +1004,18 @@
       if (!mounted) { l3(); return; }
       unlisteners.push(l3);
 
+      const l7 = await listen<number>('audio-level-raw', (ev) => {
+        onRawAudioLevel(ev.payload ?? 0);
+      });
+      if (!mounted) { l7(); return; }
+      unlisteners.push(l7);
+
+      const l8 = await listen('pill-speech-detected', () => {
+        onSpeechDetected();
+      });
+      if (!mounted) { l8(); return; }
+      unlisteners.push(l8);
+
       const l5 = await listen<string>('pill-context', (ev) => {
         const name = ev.payload?.trim();
         contextLabel = name ? name : null;
@@ -811,6 +1060,7 @@
       if (pasteFailedDismissTimer) clearTimeout(pasteFailedDismissTimer);
       if (copiedTimer) clearTimeout(copiedTimer);
       if (copiedPillTimer) clearTimeout(copiedPillTimer);
+      clearAudioStatusTimers();
       unlisteners.forEach(u => u());
     };
   });
@@ -905,6 +1155,8 @@
     prevState,
     errorMsg,
     contextLabel,
+    audioStatus,
+    speechDetected,
     stageIndex,
     seenStages,
     errOpen,
@@ -923,8 +1175,70 @@
        class:steady-width-hf={state === 'handsfree'}
        class:steady-width-cancel={isCancelLike(state)}
        bind:this={clusterEl}>
-  {#if contextLabel && (state === 'recording' || state === 'processing' || state === 'handsfree' || state === 'loading_local_model')}
-      <span class="pill-context" title={contextLabel}>{contextLabel}</span>
+  {#if recordingAudioActive || (contextLabel && (state === 'recording' || state === 'processing' || state === 'handsfree' || state === 'loading_local_model'))}
+      <span
+        class="pill-context"
+        class:status-only={recordingAudioActive && !contextLabel}
+        class:audio-healthy={recordingAudioActive && audioStatus === 'healthy'}
+        class:audio-weak={recordingAudioActive && audioStatus === 'weak'}
+        class:audio-unheard={recordingAudioActive && audioStatus === 'unheard'}
+        class:audio-muted={recordingAudioActive && audioStatus === 'muted'}
+        title={pillContextTitle}
+        aria-label={pillContextTitle}
+        out:fly={{ y: -4, duration: reducedMotion() ? 0 : 160 }}
+      >
+        <!-- Always mounted (once the icon has appeared once) instead of
+             gated by `{#if recordingAudioActive}` — leaving recording for
+             processing while a context label is still showing (the common
+             case) doesn't destroy this chip at all, only this condition
+             flips, so an enter/leave transition on the icon's own element
+             never got a chance to play; the icon just vanished the instant
+             the block unmounted. Collapsing its WIDTH via a class instead
+             keeps it in the DOM through the whole animation, sliding the
+             icon out to the left as its track shrinks to nothing — which
+             also reflows the label leftward over the same transition,
+             instead of the chip snapping to its new width the instant the
+             icon disappears. -->
+        {#if recordingAudioActive || audioIconEverShown}
+          <span class="pill-audio-status-track" class:audio-collapsed={!recordingAudioActive} aria-hidden="true">
+            {#key audioStatus}
+              <span
+                class="pill-audio-status"
+                in:fly={{ y: -7, duration: reducedMotion() ? 0 : 190, easing: rollEase }}
+                out:fly={{ y: 7, duration: reducedMotion() ? 0 : 150, easing: rollEase }}
+              >
+                {#if audioStatus === 'healthy'}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                {:else if audioStatus === 'weak'}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 8v4M12 16h.01"/>
+                  </svg>
+                {:else if audioStatus === 'muted'}
+                  <!-- Compacted into the same y4-20 band the other three icons
+                       occupy (rather than the old y3-22 with a gap before a
+                       dangling foot): that gap put most of the glyph's ink
+                       above center, so it read as off-center even though its
+                       bounding box was technically balanced. -->
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="4" width="6" height="9" rx="3"/>
+                    <path d="M5 11a7 7 0 0 0 14 0M12 18v2M9 20h6M4 4l16 16"/>
+                  </svg>
+                {:else if audioStatus === 'unheard'}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
+                    <path d="M18 6 6 18M6 6l12 12"/>
+                  </svg>
+                {:else}
+                  <span class="pill-audio-dot"></span>
+                {/if}
+              </span>
+            {/key}
+          </span>
+        {/if}
+        {#if contextLabel}<span class="pill-context-label">{contextLabel}</span>{/if}
+      </span>
     {/if}
 
   {#if state === 'recording'}
@@ -1221,23 +1535,121 @@
      dictation's destination stays legible without crowding or offsetting
      the pill capsule itself. Fades in softly so its appearance
      reads as the pill growing, not a new element popping in. */
-  .pill-context {
-    font-size: 10.5px;
-    font-weight: 500;
+   .pill-context {
+     display: inline-flex;
+     align-items: center;
+     justify-content: center;
+     /* No `gap` — the space between the icon track and the label is the
+        track's own margin-right instead (see .pill-audio-status-track), so
+        that space can collapse to zero in step with the track's width when
+        the icon leaves. A flex `gap` can't be transitioned per-item. */
+     font-size: 10.5px;
+     font-weight: 500;
+     /* Default (~1.4) line-height pads the text's line box with descender
+        room the icon doesn't have, so flex-centering the two against their
+        own box heights put the icon visibly higher than the text's inked
+        glyphs. A tight line-height shrinks the text box down near its actual
+        ink, so both land on the same optical center. */
+     line-height: 1;
     letter-spacing: 0.02em;
     color: var(--pill-context-fg);
     background: var(--pill-context-bg);
     box-shadow: 0 0 0 1px var(--pill-context-line) inset;
     border-radius: 999px;
-    padding: 2px 8px;
+    padding: 3px 7px;
     white-space: nowrap;
     /* Context names are user-authored and can run long — cap the chip so it
        never widens the native window (which is sized to .pill-cluster). */
     max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    animation: chipIn 0.18s ease-out both;
-  }
+     overflow: hidden;
+     text-overflow: ellipsis;
+     animation: chipIn 0.18s ease-out both;
+     transition: color var(--ui-duration-fast, 150ms), background-color var(--ui-duration-fast, 150ms), box-shadow var(--ui-duration-fast, 150ms);
+   }
+   .pill-context.status-only {
+     min-width: 10px;
+     padding-inline: 5px;
+   }
+   .pill-context-label {
+     min-width: 0;
+     overflow: hidden;
+     text-overflow: ellipsis;
+   }
+   /* Fixed-size clipped viewport the icon rolls through. Sized and centered
+      once here so every icon variant (healthy/weak/muted/unheard, each a
+      differently-shaped SVG) sits in exactly the same box instead of each
+      contributing its own width/height to the flex row — that per-icon size
+      drift is what read as the chip being "uneven" as it changed status. */
+   .pill-audio-status-track {
+     position: relative;
+     width: 10px;
+     height: 10px;
+     margin-right: 2px;
+     overflow: hidden;
+     /* Width (not the {#if recordingAudioActive} block it used to live
+        behind) is what now drives the icon leaving: collapsing it to 0
+        reflows the label leftward over the same transition instead of the
+        chip snapping to its new width the instant the icon's block
+        unmounts. margin-right collapses in step so no gap is left behind. */
+     transition: width 0.24s cubic-bezier(0.22, 1, 0.36, 1), margin-right 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+   }
+   .pill-audio-status-track.audio-collapsed {
+     width: 0;
+     margin-right: 0;
+   }
+   /* Absolutely positioned so the outgoing and incoming icon can overlap
+      in-place during the roll (see in:fly/out:fly on the template) instead
+      of the incoming one shifting the row's layout as it enters. */
+   .pill-audio-status {
+     position: absolute;
+     inset: 0;
+     display: flex;
+     align-items: center;
+     justify-content: center;
+     color: var(--accent);
+     transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+   }
+   /* Slides left as its track collapses around it, instead of just fading —
+      reads as the icon sliding under the label taking its place, matching
+      the direction the whole chip is shrinking in. */
+   .pill-audio-status-track.audio-collapsed .pill-audio-status {
+     transform: translateX(-100%);
+     opacity: 0;
+   }
+   .pill-audio-status svg {
+     display: block;
+   }
+   .pill-audio-dot {
+     width: 4px;
+     height: 4px;
+     border-radius: 50%;
+     background: currentColor;
+   }
+   .pill-context.audio-healthy .pill-audio-status {
+     color: var(--accent);
+   }
+   .pill-context.audio-weak .pill-audio-status {
+     color: var(--warning);
+   }
+   .pill-context.audio-unheard .pill-audio-status {
+     color: var(--danger);
+   }
+   .pill-context.audio-muted {
+     color: var(--danger);
+     background: var(--danger-bg);
+     box-shadow: 0 0 0 1px var(--danger-line) inset;
+   }
+   .pill-context.audio-muted .pill-audio-status {
+     color: currentColor;
+   }
+   @media (prefers-reduced-motion: reduce) {
+     .pill-context,
+     .pill-audio-status-track,
+     .pill-audio-status {
+       animation: none !important;
+       transition: none !important;
+     }
+   }
   @keyframes chipIn {
     from { opacity: 0; transform: translateY(-3px); }
     to   { opacity: 1; transform: translateY(0); }

@@ -102,9 +102,10 @@ fn harden_pill_window<R: Runtime>(pill: &WebviewWindow<R>) {
             DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
         },
         UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
-            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+            HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION,
+            WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+            WS_SYSMENU, WS_THICKFRAME,
         },
     };
 
@@ -139,6 +140,29 @@ fn harden_pill_window<R: Runtime>(pill: &WebviewWindow<R>) {
 
         if desired != current {
             let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
+        }
+
+        // Tauri creates this window borderless, but a later WebView2 hit-test
+        // transition can make tao reapply caption styles. Remove every native
+        // frame bit defensively so clicking the transparent area can never
+        // expose a title bar, close button, or resize border around the pill.
+        SetLastError(WIN32_ERROR(0));
+        let current_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if current_style == 0 {
+            let err = GetLastError();
+            if err != WIN32_ERROR(0) {
+                log::warn!("Failed to read pill window styles: {err:?}");
+            }
+        } else {
+            let frame_bits = WS_CAPTION.0 as isize
+                | WS_THICKFRAME.0 as isize
+                | WS_SYSMENU.0 as isize
+                | WS_MINIMIZEBOX.0 as isize
+                | WS_MAXIMIZEBOX.0 as isize;
+            let desired_style = current_style & !frame_bits;
+            if desired_style != current_style {
+                let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, desired_style);
+            }
         }
 
         let _ = SetWindowPos(
@@ -276,6 +300,8 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     // Keep this list limited to states that actually render a live control.
     let has_clickable_buttons = pill_state_has_clickable_buttons(state);
     pill.set_ignore_cursor_events(!has_clickable_buttons).ok();
+    pill.set_decorations(false).ok();
+    harden_pill_window(pill);
     // Re-assert every reveal, not just once at window creation: WebView2 has
     // been observed repainting its surface opaque again when the window
     // flips between click-through and interactive (exactly what toggling
@@ -425,6 +451,8 @@ pub(crate) fn hide_pill(app: &AppHandle) {
         // before WebView2 wakes up, causing only "processing" to appear.
         // The pill window is transparent + click-through in idle state, so
         // leaving it visible has no user-visible effect.
+        pill.set_decorations(false).ok();
+        harden_pill_window(&pill);
     }
 }
 
