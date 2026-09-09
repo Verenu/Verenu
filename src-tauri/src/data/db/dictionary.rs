@@ -835,7 +835,7 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
         "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu",
     ];
 
-    let conn = lock_conn(db)?;
+    let mut conn = lock_conn(db)?;
     let existing: Option<i64> = {
         let mut stmt = conn.prepare("SELECT id FROM dictionary WHERE term = 'Verenu' LIMIT 1")?;
         let mut rows = stmt.query([])?;
