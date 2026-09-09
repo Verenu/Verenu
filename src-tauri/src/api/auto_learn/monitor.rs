@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::EVERYWHERE_CONTEXT_ID;
 
 static ACTIVE_MONITORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
