@@ -202,7 +202,7 @@
   }
   .figures dd {
     margin: 0;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 18px;
     font-weight: 500;
     color: var(--ink);
@@ -231,7 +231,7 @@
   .word-toggle-text {
     min-width: 0;
     flex: 1;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 15px;
     font-weight: 500;
     color: inherit;
@@ -257,7 +257,7 @@
     padding-right: 6px;
     max-height: 130px;
     overflow-y: auto;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 14px;
     font-weight: 500;
     color: var(--ink);

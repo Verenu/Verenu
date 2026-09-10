@@ -1127,6 +1127,7 @@ function devPermissionSnapshot(provider?: unknown) {
  */
 function devInsights(days: number, contextId: number | null): unknown {
   const span = days > 0 ? days : 120;
+  const lifetimeSpan = 365;
   // Deterministic per-context scaling: enough for the filter to visibly change
   // the page in browser dev mode without inventing a second fake dataset.
   const scale = contextId === null ? 1 : 1 / (1 + (contextId % 5));
@@ -1134,9 +1135,9 @@ function devInsights(days: number, contextId: number | null): unknown {
     ((Math.sin((n + (contextId ?? 0) * 7) * 12.9898) * 43758.5453) % 1 + 1) % 1;
 
   const today = new Date();
-  const daily = Array.from({ length: span }, (_, i) => {
+  const lifetimeDaily = Array.from({ length: lifetimeSpan }, (_, i) => {
     const date = new Date(today);
-    date.setDate(today.getDate() - (span - 1 - i));
+    date.setDate(today.getDate() - (lifetimeSpan - 1 - i));
     const weekend = date.getDay() === 0 || date.getDay() === 6;
     const r = noise(i + 1);
     const idle = r < (weekend ? 0.45 : 0.12);
@@ -1171,11 +1172,15 @@ function devInsights(days: number, contextId: number | null): unknown {
     };
   });
 
-  for (const d of daily) {
+  for (const d of lifetimeDaily) {
     d.words = Math.round(d.words * scale);
     d.transcriptions = d.words === 0 ? 0 : Math.max(1, Math.round(d.transcriptions * scale));
     d.speaking_ms = Math.round(d.speaking_ms * scale);
   }
+
+  const daily = lifetimeDaily.slice(-span);
+  const lifetimeWords = lifetimeDaily.reduce((sum, d) => sum + d.words, 0) + 218_400;
+  const contextLifetimeWords = lifetimeDaily.reduce((sum, d) => sum + d.words, 0);
 
   const wordsInRange = daily.reduce((sum, d) => sum + d.words, 0);
   const transcriptions = daily.reduce((sum, d) => sum + d.transcriptions, 0);
@@ -1213,7 +1218,7 @@ function devInsights(days: number, contextId: number | null): unknown {
     range_days: days,
     generated_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
     totals: {
-      total_words: contextId === null ? wordsInRange + 218_400 : wordsInRange,
+      total_words: contextId === null ? lifetimeWords : contextLifetimeWords,
       total_transcriptions: transcriptions,
       total_speaking_ms: speakingMs,
       avg_words_per_transcription: transcriptions ? Math.round(wordsInRange / transcriptions) : 0,
