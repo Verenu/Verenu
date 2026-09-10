@@ -70,7 +70,9 @@ function nonNegativeCount(value: unknown): number {
     : 0;
 }
 
-function confidenceTier(value: unknown, autoLearned: boolean): DictionaryEntry['confidence_tier'] {
+type ConfidenceTier = NonNullable<DictionaryEntry['confidence_tier']>;
+
+function confidenceTier(value: unknown, autoLearned: boolean): ConfidenceTier {
   if (value === 'manual' || value === 'low' || value === 'medium' || value === 'high') return value;
   return autoLearned ? 'low' : 'manual';
 }
