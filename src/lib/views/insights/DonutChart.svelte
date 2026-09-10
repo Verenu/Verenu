@@ -124,7 +124,33 @@
     return p;
   }
 
-  /** Exact annular sector, no fillet — the fallback for slices too thin for the corner treatment. */
+  /**
+   * Keep the rounded treatment on slices that are too narrow for the full
+   * corner radius. The gap and radius are scaled together so a tiny slice
+   * still gets soft corners without the two ends folding back over each
+   * other.
+   */
+  function adaptiveDonutSegmentPath(
+    cx: number, cy: number, startBoundary: number, endBoundary: number,
+    radius: number, width: number, gap: number, corner: number,
+  ): Path2D | null {
+    const sweep = endBoundary - startBoundary;
+    const innerRadius = Math.max(1, radius - width / 2);
+    const adaptiveGap = Math.min(gap, innerRadius * sweep * 0.1);
+    const adaptiveCorner = Math.min(corner, innerRadius * sweep * 0.42);
+    return donutSegmentPath(
+      cx,
+      cy,
+      startBoundary,
+      endBoundary,
+      radius,
+      width,
+      Math.max(0, adaptiveGap),
+      Math.max(0, adaptiveCorner),
+    );
+  }
+
+  /** Exact annular sector, no fillet — only a last-resort geometry fallback. */
   function sectorPath(cx: number, cy: number, startBoundary: number, endBoundary: number, radius: number, width: number): Path2D {
     const outerRadius = radius + width / 2;
     const innerRadius = radius - width / 2;
@@ -311,17 +337,15 @@
         const segRadius = radius + HOVER_POP * widenT;
 
         const sweep = end - start;
-        const minSweepForFillet = ((GAP + CORNER * 2) / radius) * 1.4;
-        // For sub-fillet sweeps, shrink the arc bounds by a tiny amount so
-        // the exact-annulus fallback never draws over its own boundary — but
-        // never so much that start passes end (that would invert the arc and
-        // sweep nearly 360 degrees).
-        const inset = Math.min(0.01, sweep / 3);
+        const minSweepForFillet = ((GAP + CORNER * 2) / segRadius) * 1.4;
+        // Narrow slices use a proportionally smaller fillet instead of
+        // dropping to square-ended annular sectors. This is especially
+        // important for the small model-cost slices in the Insights ring.
         const filletPath =
           sweep > minSweepForFillet
             ? donutSegmentPath(cx, cy, start, end, segRadius, width, GAP, CORNER)
-            : null;
-        const path = filletPath ?? sectorPath(cx, cy, start + inset, end - inset, segRadius, width);
+            : adaptiveDonutSegmentPath(cx, cy, start, end, segRadius, width, GAP, CORNER);
+        const path = filletPath ?? sectorPath(cx, cy, start, end, segRadius, width);
 
         ctx!.globalAlpha = dimmed ? dimAlpha : 1;
         ctx!.fillStyle = resolvedColors.get(seg.id) ?? seg.color;
