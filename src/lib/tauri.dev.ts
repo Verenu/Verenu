@@ -1406,6 +1406,16 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return [] as T;
     case 'get_cancelled_capture':
       return null as T;
+    case 'android_get_platform_info':
+      return { localAiSupported: true, localAiUnsupportedReason: '' } as T;
+    case 'android_permission_rationale':
+      return [] as T;
+    case 'android_read_permissions':
+      return { microphone: 'granted', accessibility_service: 'granted', battery_exemption: 'granted', notifications: 'granted' } as T;
+    case 'android_evaluate_permissions':
+      return { functional: true } as T;
+    case 'android_request_permission':
+      return undefined as T;
     case 'get_diagnostics_snapshot':
       return {
         generated_at_ms: Date.now(), profiler_enabled: false, profiling_recording: false,
