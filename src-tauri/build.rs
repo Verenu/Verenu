@@ -10,17 +10,14 @@ fn main() {
     }
 
     if target_os == "macos" {
-        #[cfg(target_os = "macos")]
-        {
-            println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
-            cc::Build::new()
-                .file("src/system/macos_ax_text_marker.m")
-                .flag("-fobjc-arc")
-                .compile("verenu_macos_ax_text_marker");
-            // Keep the FFI shim explicit in the final link. This is needed
-            // when Tauri's custom build metadata is emitted after cc-rs.
-            println!("cargo:rustc-link-lib=static=verenu_macos_ax_text_marker");
-        }
+        println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
+        cc::Build::new()
+            .file("src/system/macos_ax_text_marker.m")
+            .flag("-fobjc-arc")
+            .compile("verenu_macos_ax_text_marker");
+        // Keep the FFI shim explicit in the final link. This is needed
+        // when Tauri's custom build metadata is emitted after cc-rs.
+        println!("cargo:rustc-link-lib=static=verenu_macos_ax_text_marker");
     }
 
     // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
