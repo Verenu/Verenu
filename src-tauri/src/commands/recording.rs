@@ -204,7 +204,7 @@ pub async fn stop_recording(
     if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
         manager.set_recording_active(false);
     }
-    if let Some((session, exclusive_mic_session_id, prepend_audio)) = taken {
+    if let Some((session, exclusive_mic_session_id, prepend_audio, recording_context)) = taken {
         let app_for_cancel = app.clone();
         let state_for_cancel = state.inner().clone();
         let handle = tauri::async_runtime::spawn(async move {
@@ -214,6 +214,7 @@ pub async fn stop_recording(
                 session,
                 exclusive_mic_session_id,
                 prepend_audio,
+                recording_context,
             )
             .await;
         });
@@ -301,7 +302,7 @@ pub async fn resume_cancelled_capture(
         st.failover_reuse_id = true;
         st.failover_started_at_unix = capture.started_at_unix;
     }
-    let start_result = pipeline::start_recording_session_ex(
+    let start_result = pipeline::start_recording_session_ex_with_context(
         &app,
         state.inner(),
         "handsfree",
@@ -316,6 +317,7 @@ pub async fn resume_cancelled_capture(
             },
             durable: true,
         },
+        Some(capture.context.clone()),
     );
     match start_result {
         Ok(()) => {

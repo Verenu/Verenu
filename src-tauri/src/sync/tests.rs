@@ -327,7 +327,743 @@ fn test_dictionary_op(term: &str, ts_ms: i64) -> super::protocol::SyncOp {
     }
 }
 
+fn correction_row_uuid(conn: &rusqlite::Connection, context_id: i64, dictionary_id: i64) -> String {
+    conn.query_row(
+        "SELECT uuid FROM dictionary_corrections
+          WHERE context_id = ?1 AND dictionary_id = ?2
+          ORDER BY id LIMIT 1",
+        rusqlite::params![context_id, dictionary_id],
+        |r| r.get(0),
+    )
+    .expect("correction uuid")
+}
+
+fn context_uuid(conn: &rusqlite::Connection, context_id: i64) -> String {
+    conn.query_row(
+        "SELECT uuid FROM contexts WHERE id = ?1",
+        rusqlite::params![context_id],
+        |r| r.get(0),
+    )
+    .expect("context uuid")
+}
+
+fn dictionary_op_with_uuid(row_uuid: &str, term: &str, ts_ms: i64) -> super::protocol::SyncOp {
+    super::protocol::SyncOp {
+        table: "dictionary".to_string(),
+        row_uuid: row_uuid.to_string(),
+        op: "upsert".to_string(),
+        ts_ms,
+        origin: uuid("remote-dictionary"),
+        origin_seq: ts_ms,
+        payload: Some(json!({
+            "term": term,
+            "mistake": null,
+            "auto_learned": false,
+            "correction_count": 0,
+            "confidence_tier": "manual",
+            "last_seen_at": null,
+            "created_at": "2026-01-01 00:00:00",
+        })),
+    }
+}
+
+fn dictionary_correction_op(
+    row_uuid: &str,
+    context_uuid: &str,
+    dictionary_uuid: &str,
+    dictionary_term: &str,
+    mistake: &str,
+    ts_ms: i64,
+) -> super::protocol::SyncOp {
+    super::protocol::SyncOp {
+        table: "dictionary_corrections".to_string(),
+        row_uuid: row_uuid.to_string(),
+        op: "upsert".to_string(),
+        ts_ms,
+        origin: uuid("remote-correction"),
+        origin_seq: ts_ms,
+        payload: Some(json!({
+            "context_uuid": context_uuid,
+            "dictionary_uuid": dictionary_uuid,
+            "dictionary_term": dictionary_term,
+            "mistake": mistake,
+            "auto_learned": true,
+            "correction_count": 1,
+            "confidence_tier": "high",
+            "last_seen_at": null,
+            "created_at": "2026-01-01 00:00:00",
+        })),
+    }
+}
+
 // ---- bidirectional merge ----
+
+#[test]
+fn context_correction_delta_roundtrip_preserves_scope_and_identity() {
+    let a = test_db(&uuid("correction-a"));
+    let b = test_db(&uuid("correction-b"));
+    let context = db::insert_context_returning(&a, "Development", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &a,
+        "Kubernetes",
+        Some("Koobernetes"),
+        Some(context.id),
+    )
+    .expect("dictionary entry");
+    let (source_context_uuid, source_correction_uuid) = {
+        let conn = a.lock().expect("lock");
+        (
+            context_uuid(&conn, context.id),
+            correction_row_uuid(&conn, context.id, entry.id),
+        )
+    };
+
+    exchange(&a, &b);
+
+    let conn = b.lock().expect("lock");
+    let target_context_id: i64 = conn
+        .query_row(
+            "SELECT id FROM contexts WHERE uuid = ?1",
+            rusqlite::params![source_context_uuid],
+            |r| r.get(0),
+        )
+        .expect("synced context");
+    let targeted_mapping_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_corrections WHERE context_id = ?1",
+            rusqlite::params![target_context_id],
+            |r| r.get(0),
+        )
+        .expect("targeted mapping count");
+    assert_eq!(targeted_mapping_count, 1);
+    let mapping: (String, String, String, i64) = conn
+        .query_row(
+            "SELECT c.uuid, d.term, c.mistake, c.auto_learned
+               FROM dictionary_corrections c
+               INNER JOIN dictionary d ON d.id = c.dictionary_id
+              WHERE c.context_id = ?1",
+            rusqlite::params![target_context_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("synced correction");
+    assert_eq!(mapping.0, source_correction_uuid);
+    assert_eq!(mapping.1, "Kubernetes");
+    assert_eq!(mapping.2, "Koobernetes");
+    assert_eq!(mapping.3, 0, "manual mapping stays manual over sync");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM dictionary_corrections
+              WHERE context_id = (SELECT id FROM contexts WHERE is_everywhere = 1)"
+        ),
+        0,
+        "a targeted correction must not be copied to Everywhere"
+    );
+}
+
+#[test]
+fn correction_snapshot_is_dependency_ordered_and_refreshes_dictionary() {
+    let a = test_db(&uuid("correction-snapshot-a"));
+    let b = test_db(&uuid("correction-snapshot-b"));
+    let context = db::insert_context_returning(&a, "Writing", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &a,
+        "PostgreSQL",
+        Some("PostgresQL"),
+        Some(context.id),
+    )
+    .expect("dictionary entry");
+    let conn_a = a.lock().expect("lock");
+    let mut progress = engine::SnapshotProgress::default();
+    let (ops, cursor, done) =
+        engine::collect_ops(&conn_a, 0, true, 10_000, &mut progress).expect("snapshot");
+    assert!(done);
+    assert!(cursor > 0);
+    let correction_index = ops
+        .iter()
+        .position(|op| op.table == "dictionary_corrections")
+        .expect("correction snapshot op");
+    let dictionary_index = ops
+        .iter()
+        .position(|op| op.table == "dictionary")
+        .expect("dictionary snapshot op");
+    let context_index = ops
+        .iter()
+        .position(|op| op.table == "contexts" && op.row_uuid == context_uuid(&conn_a, context.id))
+        .expect("context snapshot op");
+    assert!(dictionary_index < correction_index);
+    assert!(context_index < correction_index);
+    drop(conn_a);
+
+    let summary = {
+        let conn_b = b.lock().expect("lock");
+        engine::apply_ops(&conn_b, &ops).expect("apply snapshot")
+    };
+    assert!(summary.dictionary);
+    assert!(summary.dictionary_corrections);
+    assert!(summary.touched_tables().contains(&"dictionary_corrections"));
+    let conn_b = b.lock().expect("lock");
+    assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM dictionary"), 1);
+    assert_eq!(
+        count(&conn_b, "SELECT COUNT(*) FROM dictionary_corrections"),
+        1
+    );
+    assert_eq!(
+        count(&conn_b, "SELECT COUNT(*) FROM dictionary_contexts"),
+        1
+    );
+    let _ = entry;
+}
+
+#[test]
+fn correction_apply_waits_for_both_parents_even_when_batch_is_reversed() {
+    let db = test_db(&uuid("correction-dependencies"));
+    let context_name = "Scoped Context";
+    let context_uuid = uuid(context_name);
+    let dictionary_uuid = uuid("scoped-canonical");
+    let correction_uuid = uuid("scoped-correction");
+    let context_op = test_context_op(context_name, 100, "editor.exe", None);
+    let dictionary_op = dictionary_op_with_uuid(&dictionary_uuid, "ScopedTerm", 101);
+    let correction_op = dictionary_correction_op(
+        &correction_uuid,
+        &context_uuid,
+        &dictionary_uuid,
+        "ScopedTerm",
+        "ScopedMistake",
+        102,
+    );
+
+    let summary = {
+        let conn = db.lock().expect("lock");
+        engine::apply_ops(&conn, &[correction_op, context_op, dictionary_op])
+            .expect("apply reversed dependency batch")
+    };
+    assert_eq!(summary.applied, 3);
+    let conn = db.lock().expect("lock");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        1
+    );
+    let stored: (String, String) = conn
+        .query_row(
+            "SELECT d.term, c.mistake
+               FROM dictionary_corrections c
+               INNER JOIN dictionary d ON d.id = c.dictionary_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("stored correction");
+    assert_eq!(
+        stored,
+        ("ScopedTerm".to_string(), "ScopedMistake".to_string())
+    );
+}
+
+#[test]
+fn correction_dependency_is_retried_when_parent_arrives_in_a_later_batch() {
+    let db = test_db(&uuid("correction-deferred"));
+    let context =
+        db::insert_context_returning(&db, "Deferred Context", None, None, None, None, false)
+            .expect("context");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let dictionary_uuid = uuid("deferred-canonical");
+    let correction_uuid = uuid("deferred-correction");
+    let correction = dictionary_correction_op(
+        &correction_uuid,
+        &context_uuid,
+        &dictionary_uuid,
+        "DeferredTerm",
+        "DeferredMistake",
+        200,
+    );
+
+    let first = engine::apply_ops(&conn, &[correction.clone()]).expect("defer correction");
+    assert!(first.deferred);
+    assert_eq!(first.applied, 0);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        0
+    );
+
+    let dictionary = dictionary_op_with_uuid(&dictionary_uuid, "DeferredTerm", 201);
+    let second = engine::apply_ops(&conn, &[dictionary, correction]).expect("retry correction");
+    assert!(!second.deferred);
+    assert_eq!(second.applied, 2);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        1
+    );
+}
+
+#[test]
+fn stale_correction_cannot_restore_removed_context_membership() {
+    let db = test_db(&uuid("correction-membership-tombstone"));
+    let context =
+        db::insert_context_returning(&db, "Removed Mapping", None, None, None, None, false)
+            .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &db,
+        "MembershipTerm",
+        Some("MembershipMistake"),
+        Some(context.id),
+    )
+    .expect("entry");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let dictionary_uuid = row_uuid(&conn, "dictionary", entry.id);
+    let correction_uuid = correction_row_uuid(&conn, context.id, entry.id);
+
+    let mut progress = engine::SnapshotProgress::default();
+    let (mut context_ops, _, _) =
+        engine::collect_ops(&conn, 0, true, 10_000, &mut progress).expect("context snapshot");
+    let context_op = context_ops
+        .iter_mut()
+        .find(|op| op.table == "contexts" && op.row_uuid == context_uuid)
+        .expect("context aggregate")
+        .clone();
+    let mut context_op = context_op;
+    context_op.ts_ms = sync_store::now_ms() + 10_000;
+    context_op.origin = uuid("membership-removal");
+    context_op.origin_seq = 1;
+    let payload = context_op.payload.as_mut().expect("context payload");
+    payload["dictionary_uuids"] = json!([]);
+    payload["dictionary_entries"] = json!([]);
+
+    let stale = dictionary_correction_op(
+        &correction_uuid,
+        &context_uuid,
+        &dictionary_uuid,
+        "MembershipTerm",
+        "MembershipMistake",
+        1,
+    );
+    let summary = engine::apply_ops(&conn, &[stale, context_op]).expect("remove membership");
+    assert!(summary.contexts);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        0
+    );
+    let assigned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_contexts WHERE context_id = ?1",
+            rusqlite::params![context.id],
+            |r| r.get(0),
+        )
+        .expect("membership count");
+    assert_eq!(assigned, 0);
+}
+
+#[test]
+fn correction_does_not_fallback_after_canonical_delete_tombstone() {
+    let db = test_db(&uuid("correction-deleted-parent"));
+    let context =
+        db::insert_context_returning(&db, "Deleted Parent", None, None, None, None, false)
+            .expect("context");
+    let old =
+        db::insert_dictionary_entry_returning(&db, "DeletedCanonical", None, Some(context.id))
+            .expect("old canonical");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let old_dictionary_uuid = row_uuid(&conn, "dictionary", old.id);
+    let delete = super::protocol::SyncOp {
+        table: "dictionary".to_string(),
+        row_uuid: old_dictionary_uuid.clone(),
+        op: "delete".to_string(),
+        ts_ms: sync_store::now_ms() + 10_000,
+        origin: uuid("canonical-delete"),
+        origin_seq: 1,
+        payload: None,
+    };
+    engine::apply_ops(&conn, &[delete]).expect("delete canonical");
+    drop(conn);
+    let replacement =
+        db::insert_dictionary_entry_returning(&db, "DeletedCanonical", None, Some(context.id))
+            .expect("replacement canonical");
+    let conn = db.lock().expect("lock");
+    let replacement_uuid = row_uuid(&conn, "dictionary", replacement.id);
+    assert_ne!(old_dictionary_uuid, replacement_uuid);
+
+    let stale = dictionary_correction_op(
+        &uuid("stale-deleted-correction"),
+        &context_uuid,
+        &old_dictionary_uuid,
+        "DeletedCanonical",
+        "StaleMistake",
+        sync_store::now_ms() + 20_000,
+    );
+    let summary = engine::apply_ops(&conn, &[stale]).expect("ignore deleted-parent child");
+    assert_eq!(summary.applied, 0);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        0
+    );
+}
+
+#[test]
+fn context_membership_follows_local_canonical_natural_key_winner() {
+    let db = test_db(&uuid("local-canonical-winner"));
+    let context =
+        db::insert_context_returning(&db, "Natural Key Context", None, None, None, None, false)
+            .expect("context");
+    let local = db::insert_dictionary_entry_returning(&db, "NaturalTerm", None, Some(context.id))
+        .expect("local canonical");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let remote_dictionary_uuid = uuid("losing-remote-canonical");
+    let remote_dictionary = dictionary_op_with_uuid(&remote_dictionary_uuid, "NaturalTerm", 1);
+    engine::apply_ops(&conn, &[remote_dictionary]).expect("keep local canonical");
+    let local_dictionary_uuid = row_uuid(&conn, "dictionary", local.id);
+    assert_ne!(local_dictionary_uuid, remote_dictionary_uuid);
+
+    let context_op = super::protocol::SyncOp {
+        table: "contexts".to_string(),
+        row_uuid: context_uuid.clone(),
+        op: "upsert".to_string(),
+        ts_ms: sync_store::now_ms() + 20_000,
+        origin: uuid("remote-context-membership"),
+        origin_seq: 1,
+        payload: Some(json!({
+            "name": "Natural Key Context",
+            "is_everywhere": false,
+            "icon": null,
+            "tone": null,
+            "cleanup_intensity": null,
+            "color": null,
+            "custom_instructions": null,
+            "contextual_formatting_disabled": false,
+            "pinned_at": null,
+            "created_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-01 00:00:00",
+            "targets": [],
+            "websites": [],
+            "dictionary_uuids": [remote_dictionary_uuid],
+            "dictionary_entries": [{"uuid": remote_dictionary_uuid, "term": "NaturalTerm"}],
+            "snippet_uuids": [],
+        })),
+    };
+    engine::apply_ops(&conn, &[context_op]).expect("resolve membership natural key");
+    let assigned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
+            rusqlite::params![context.id, local.id],
+            |r| r.get(0),
+        )
+        .expect("membership count");
+    assert_eq!(assigned, 1);
+}
+
+#[test]
+fn correction_follows_natural_key_loser_tombstone() {
+    let db = test_db(&uuid("natural-key-child-follow"));
+    let context =
+        db::insert_context_returning(&db, "Natural Child Context", None, None, None, None, false)
+            .expect("context");
+    let local =
+        db::insert_dictionary_entry_returning(&db, "NaturalChildTerm", None, Some(context.id))
+            .expect("local canonical");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let remote_dictionary_uuid = uuid("natural-child-loser");
+    engine::apply_ops(
+        &conn,
+        &[dictionary_op_with_uuid(
+            &remote_dictionary_uuid,
+            "NaturalChildTerm",
+            1,
+        )],
+    )
+    .expect("record natural-key loser");
+    let correction = dictionary_correction_op(
+        &uuid("natural-child-correction"),
+        &context_uuid,
+        &remote_dictionary_uuid,
+        "NaturalChildTerm",
+        "NaturalChildMistake",
+        sync_store::now_ms() + 1,
+    );
+    let summary = engine::apply_ops(&conn, &[correction]).expect("follow natural-key loser");
+    assert_eq!(summary.applied, 1);
+    let stored_dictionary_id: i64 = conn
+        .query_row(
+            "SELECT dictionary_id FROM dictionary_corrections WHERE context_id = ?1",
+            rusqlite::params![context.id],
+            |r| r.get(0),
+        )
+        .expect("mapping dictionary id");
+    assert_eq!(stored_dictionary_id, local.id);
+}
+
+#[test]
+fn dictionary_natural_key_winner_reparents_child_corrections() {
+    let db = test_db(&uuid("reparent-target"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let local = db::insert_dictionary_entry_returning(
+        &db,
+        "SharedTerm",
+        Some("SharedMistake"),
+        Some(context.id),
+    )
+    .expect("local dictionary entry");
+    let conn = db.lock().expect("lock");
+    let local_correction_uuid = correction_row_uuid(&conn, context.id, local.id);
+    let remote_uuid = uuid("remote-shared-term");
+    let remote = dictionary_op_with_uuid(&remote_uuid, "SharedTerm", sync_store::now_ms() + 10_000);
+    let summary = engine::apply_ops(&conn, &[remote]).expect("apply remote winner");
+    assert_eq!(summary.applied, 1);
+    let (dictionary_id, stored_uuid): (i64, String) = conn
+        .query_row(
+            "SELECT id, uuid FROM dictionary WHERE term = 'SharedTerm'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("winning dictionary row");
+    assert_eq!(stored_uuid, remote_uuid);
+    let mapping: (String, String) = conn
+        .query_row(
+            "SELECT c.uuid, c.mistake FROM dictionary_corrections c
+              WHERE c.context_id = ?1 AND c.dictionary_id = ?2",
+            rusqlite::params![context.id, dictionary_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reparented correction");
+    assert_eq!(mapping.0, local_correction_uuid);
+    assert_eq!(mapping.1, "SharedMistake");
+}
+
+#[test]
+fn correction_delta_falls_back_to_canonical_term_after_uuid_conflict() {
+    let db = test_db(&uuid("correction-natural-key"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(&db, "SharedTerm", None, Some(context.id))
+        .expect("canonical entry");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let local_dictionary_uuid = row_uuid(&conn, "dictionary", entry.id);
+    let remote_dictionary_uuid = uuid("losing-canonical");
+    let correction = dictionary_correction_op(
+        &uuid("in-flight-correction"),
+        &context_uuid,
+        &remote_dictionary_uuid,
+        "SharedTerm",
+        "DifferentMistake",
+        sync_store::now_ms() + 10_000,
+    );
+    assert_ne!(local_dictionary_uuid, remote_dictionary_uuid);
+    let summary = engine::apply_ops(&conn, &[correction]).expect("apply natural-key fallback");
+    assert_eq!(summary.applied, 1);
+    let stored: (String, String) = conn
+        .query_row(
+            "SELECT d.uuid, c.mistake
+               FROM dictionary_corrections c
+               INNER JOIN dictionary d ON d.id = c.dictionary_id
+              WHERE c.context_id = ?1",
+            rusqlite::params![context.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("fallback correction");
+    assert_eq!(stored.0, local_dictionary_uuid);
+    assert_eq!(stored.1, "DifferentMistake");
+}
+
+#[test]
+fn rejected_remote_auto_correction_gets_a_tombstone() {
+    let db = test_db(&uuid("manual-correction-wins"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &db,
+        "SharedTerm",
+        Some("SharedMistake"),
+        Some(context.id),
+    )
+    .expect("manual correction");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let dictionary_uuid = row_uuid(&conn, "dictionary", entry.id);
+    let remote_uuid = uuid("rejected-auto-correction");
+    let summary = engine::apply_ops(
+        &conn,
+        &[dictionary_correction_op(
+            &remote_uuid,
+            &context_uuid,
+            &dictionary_uuid,
+            "SharedTerm",
+            "SharedMistake",
+            sync_store::now_ms() + 10_000,
+        )],
+    )
+    .expect("apply rejected correction");
+
+    assert_eq!(summary.applied, 0);
+    let retained_manual: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_corrections
+              WHERE context_id = ?1 AND mistake = 'SharedMistake' AND auto_learned = 0",
+            rusqlite::params![context.id],
+            |r| r.get(0),
+        )
+        .expect("retained manual correction");
+    assert_eq!(retained_manual, 1);
+    let tombstone: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_log
+              WHERE table_name = 'dictionary_corrections'
+                AND row_uuid = ?1 AND op = 'delete'",
+            rusqlite::params![remote_uuid],
+            |r| r.get(0),
+        )
+        .expect("rejected correction tombstone");
+    assert_eq!(tombstone, 1);
+}
+
+#[test]
+fn natural_key_tombstone_does_not_drop_children_before_winner_arrives() {
+    let db = test_db(&uuid("natural-tombstone-children"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let local = db::insert_dictionary_entry_returning(
+        &db,
+        "SharedTerm",
+        Some("SharedMistake"),
+        Some(context.id),
+    )
+    .expect("local canonical");
+    let conn = db.lock().expect("lock");
+    let context_id_uuid = context_uuid(&conn, context.id);
+    let local_uuid = row_uuid(&conn, "dictionary", local.id);
+    let tombstone = super::protocol::SyncOp {
+        table: "dictionary_natural_key".to_string(),
+        row_uuid: local_uuid.clone(),
+        op: "delete".to_string(),
+        ts_ms: sync_store::now_ms() + 10_000,
+        origin: uuid("natural-tombstone-origin"),
+        origin_seq: 1,
+        payload: None,
+    };
+    engine::apply_ops(&conn, &[tombstone]).expect("apply natural-key tombstone");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"), 1);
+
+    let winner = dictionary_op_with_uuid(
+        &uuid("natural-tombstone-winner"),
+        "SharedTerm",
+        sync_store::now_ms() + 20_000,
+    );
+    engine::apply_ops(&conn, &[winner]).expect("apply canonical winner");
+    let stored: (String, String) = conn
+        .query_row(
+            "SELECT d.uuid, c.mistake
+               FROM dictionary_corrections c
+               INNER JOIN dictionary d ON d.id = c.dictionary_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reparented correction");
+    assert_ne!(stored.0, local_uuid);
+    assert_eq!(stored.1, "SharedMistake");
+    assert_eq!(context_uuid(&conn, context.id), context_id_uuid);
+}
+
+#[test]
+fn correction_delete_is_scoped_and_leaves_canonical_dictionary_row() {
+    let db = test_db(&uuid("correction-delete"));
+    let context =
+        db::insert_context_returning(&db, "Work", None, None, None, None, false).expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &db,
+        "TechnicalTerm",
+        Some("TechnikalTerm"),
+        Some(context.id),
+    )
+    .expect("entry");
+    let conn = db.lock().expect("lock");
+    let correction_uuid = correction_row_uuid(&conn, context.id, entry.id);
+    let op = super::protocol::SyncOp {
+        table: "dictionary_corrections".to_string(),
+        row_uuid: correction_uuid.clone(),
+        op: "delete".to_string(),
+        ts_ms: sync_store::now_ms() + 10_000,
+        origin: uuid("remote-delete"),
+        origin_seq: 1,
+        payload: None,
+    };
+    let summary = engine::apply_ops(&conn, &[op]).expect("delete correction");
+    assert!(summary.dictionary);
+    assert!(summary.dictionary_corrections);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_corrections WHERE uuid = ?1",
+            rusqlite::params![correction_uuid],
+            |r| r.get(0),
+        )
+        .expect("remaining correction count");
+    assert_eq!(
+        remaining, 0,
+        "the row is removed without deleting the canonical term"
+    );
+}
+
+#[test]
+fn remote_context_delete_moves_corrections_to_everywhere() {
+    let db = test_db(&uuid("context-delete"));
+    let context = db::insert_context_returning(&db, "Temporary", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &db,
+        "RetainedTerm",
+        Some("RetainedMistake"),
+        Some(context.id),
+    )
+    .expect("entry");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let correction_uuid = correction_row_uuid(&conn, context.id, entry.id);
+    let delete = super::protocol::SyncOp {
+        table: "contexts".to_string(),
+        row_uuid: context_uuid,
+        op: "delete".to_string(),
+        ts_ms: sync_store::now_ms() + 10_000,
+        origin: uuid("remote-context-delete"),
+        origin_seq: 1,
+        payload: None,
+    };
+    engine::apply_ops(&conn, &[delete]).expect("delete Context");
+    let everywhere_id: i64 = conn
+        .query_row("SELECT id FROM contexts WHERE is_everywhere = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("Everywhere");
+    let moved_context_id: i64 = conn
+        .query_row(
+            "SELECT context_id FROM dictionary_corrections WHERE uuid = ?1",
+            rusqlite::params![correction_uuid],
+            |r| r.get(0),
+        )
+        .expect("moved correction");
+    assert_eq!(moved_context_id, everywhere_id);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM contexts WHERE name = 'Temporary'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM dictionary_contexts
+              WHERE context_id = (SELECT id FROM contexts WHERE is_everywhere = 1)"
+        ),
+        1
+    );
+}
 
 #[test]
 fn content_syncs_both_directions_without_duplicates() {
@@ -359,7 +1095,8 @@ fn content_syncs_both_directions_without_duplicates() {
     assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM context_targets"), 1);
     assert_eq!(
         count(&conn_b, "SELECT COUNT(*) FROM dictionary_contexts"),
-        1
+        2,
+        "the canonical row remains assigned to Everywhere and is additionally shared with Work"
     );
     drop(conn_b);
 
@@ -405,7 +1142,10 @@ fn edits_and_deletes_propagate() {
         let conn = a.lock().expect("lock");
         let mistake: String = conn
             .query_row(
-                "SELECT mistake FROM dictionary WHERE id = ?1",
+                "SELECT c.mistake
+                   FROM dictionary_corrections c
+                  WHERE c.dictionary_id = ?1
+                    AND c.context_id = (SELECT id FROM contexts WHERE is_everywhere = 1)",
                 rusqlite::params![entry.id],
                 |r| r.get(0),
             )
@@ -685,8 +1425,9 @@ fn re_pairing_an_old_snapshot_does_not_restore_a_deleted_dictionary_entry() {
     let peer_uuid = uuid("re-pair-stale");
     let source = test_db(&source_uuid);
     let stale = test_db(&peer_uuid);
-    let entry = db::insert_dictionary_entry_returning(&source, "synthetic-deleted-term", None, None)
-        .expect("entry");
+    let entry =
+        db::insert_dictionary_entry_returning(&source, "synthetic-deleted-term", None, None)
+            .expect("entry");
     exchange(&source, &stale);
     db::delete_dictionary_entry(&source, entry.id).expect("delete while peer is offline");
 
@@ -694,30 +1435,41 @@ fn re_pairing_an_old_snapshot_does_not_restore_a_deleted_dictionary_entry() {
     // preserving the original upsert-before-delete ordering on both devices.
     let year = 365 * 24 * 60 * 60 * 1000i64;
     for db in [&source, &stale] {
-        db.lock().expect("lock").execute(
-            "UPDATE sync_log SET ts_ms = ts_ms - ?1", [year],
-        ).expect("age operations");
+        db.lock()
+            .expect("lock")
+            .execute("UPDATE sync_log SET ts_ms = ts_ms - ?1", [year])
+            .expect("age operations");
     }
     {
         let conn = source.lock().expect("source lock");
         sync_store::compact_log(&conn).expect("compact with no connected peer");
-        sync_store::upsert_peer(&conn, &peer_uuid, "Repaired device", "synthetic-fingerprint")
-            .expect("re-pair stale device");
+        sync_store::upsert_peer(
+            &conn,
+            &peer_uuid,
+            "Repaired device",
+            "synthetic-fingerprint",
+        )
+        .expect("re-pair stale device");
     }
 
     // Exercise the actual snapshot producer and apply path, stale side first.
     for (from, to) in [(&stale, &source), (&source, &stale)] {
         let mut progress = engine::SnapshotProgress::default();
         loop {
-            let (ops, _, done) = engine::collect_ops(
-                &from.lock().expect("sender"), 0, true, 10, &mut progress,
-            ).expect("snapshot");
+            let (ops, _, done) =
+                engine::collect_ops(&from.lock().expect("sender"), 0, true, 10, &mut progress)
+                    .expect("snapshot");
             engine::apply_ops(&to.lock().expect("receiver"), &ops).expect("apply snapshot");
-            if done { break; }
+            if done {
+                break;
+            }
         }
     }
     for db in [&source, &stale] {
-        assert_eq!(count(&db.lock().expect("lock"), "SELECT COUNT(*) FROM dictionary"), 0);
+        assert_eq!(
+            count(&db.lock().expect("lock"), "SELECT COUNT(*) FROM dictionary"),
+            0
+        );
     }
 }
 

@@ -17,8 +17,30 @@ export interface Snippet {
   created_at: string;
 }
 
+export interface DictionaryCorrection {
+  id: number;
+  dictionary_id: number;
+  context_id: number;
+  mistake: string;
+  auto_learned: boolean;
+  correction_count: number;
+  confidence_tier: 'manual' | 'low' | 'medium' | 'high' | string;
+  last_seen_at: string | null;
+  created_at: string;
+}
+
 export interface DictionaryEntry {
   id: number;
+  /** Canonical dictionary row id for Context-scoped DTOs. */
+  dictionary_id?: number;
+  /** Context that supplies the effective row, when returned by a Context API. */
+  context_id?: number | null;
+  /** Context-owned correction mapping id used by rejection/deletion paths. */
+  correction_id?: number | null;
+  /** Context-owned mapping ids, preserving all comma-separated mistake variants. */
+  correction_ids?: number[];
+  /** All effective Context-owned mappings, in deterministic backend order. */
+  corrections?: DictionaryCorrection[];
   term: string;
   mistake: string | null;
   auto_learned: boolean;
