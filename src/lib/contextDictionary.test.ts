@@ -69,6 +69,23 @@ describe('Context dictionary DTO compatibility', () => {
     expect(entry.correction_id).toBeNull();
     expect(entry.mistake).toBe('Ackme');
   });
+
+  it('normalizes unknown correction confidence tiers to a safe value', () => {
+    const [entry] = normalizeContextDictionary([{
+      id: 4,
+      term: 'Acme',
+      corrections: [{
+        id: 8,
+        mistake: 'Ackme',
+        auto_learned: true,
+        confidence_tier: 'unexpected',
+        created_at: '2026-01-01T00:00:00Z',
+      }],
+      created_at: '2026-01-01T00:00:00Z',
+    }], 1);
+
+    expect(entry.corrections[0].confidence_tier).toBe('low');
+  });
 });
 
 describe('Context dictionary update events', () => {

@@ -89,9 +89,7 @@ function normalizeCorrection(value: unknown, dictionaryId: number, contextId: nu
     mistake,
     auto_learned: autoLearned,
     correction_count: nonNegativeCount(row.correction_count),
-    confidence_tier: typeof row.confidence_tier === 'string'
-      ? row.confidence_tier
-      : confidenceTier(row.confidence_tier, autoLearned) ?? 'manual',
+    confidence_tier: confidenceTier(row.confidence_tier, autoLearned),
     last_seen_at: nullableText(row.last_seen_at),
     created_at: requiredText(row.created_at, 'correction.created_at'),
   };

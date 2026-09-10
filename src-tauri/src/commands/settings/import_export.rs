@@ -840,6 +840,14 @@ fn import_contextual_library_conn(
                 params![snippet.trigger.trim(), context_id],
                 |row| row.get(0),
             )?;
+            if existing {
+                // The contextual import is idempotent. Avoid calling the
+                // insert helper for an assignment that is already present:
+                // it intentionally rejects duplicate Context membership and
+                // would otherwise misclassify a successful no-op as skipped.
+                stats.snippets_already_existed += 1;
+                continue;
+            }
             match db::insert_snippet_returning_conn(
                 conn,
                 &snippet.trigger,
@@ -847,13 +855,7 @@ fn import_contextual_library_conn(
                 &snippet.instructions,
                 Some(context_id),
             ) {
-                Ok(_) => {
-                    if existing {
-                        stats.snippets_already_existed += 1;
-                    } else {
-                        stats.snippets_inserted += 1;
-                    }
-                }
+                Ok(_) => stats.snippets_inserted += 1,
                 Err(error) => {
                     log::warn!(
                         "import_data: contextual snippet import failed trigger_chars={} error={error}",
@@ -1416,5 +1418,7 @@ mod tests {
             .corrections
             .len();
         assert_eq!(before, after);
+        assert_eq!(second_stats.snippets_already_existed, 1);
+        assert_eq!(second_stats.snippets_skipped, 0);
     }
 }

@@ -872,6 +872,57 @@ fn correction_delta_falls_back_to_canonical_term_after_uuid_conflict() {
 }
 
 #[test]
+fn rejected_remote_auto_correction_gets_a_tombstone() {
+    let db = test_db(&uuid("manual-correction-wins"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let entry = db::insert_dictionary_entry_returning(
+        &db,
+        "SharedTerm",
+        Some("SharedMistake"),
+        Some(context.id),
+    )
+    .expect("manual correction");
+    let conn = db.lock().expect("lock");
+    let context_uuid = context_uuid(&conn, context.id);
+    let dictionary_uuid = row_uuid(&conn, "dictionary", entry.id);
+    let remote_uuid = uuid("rejected-auto-correction");
+    let summary = engine::apply_ops(
+        &conn,
+        &[dictionary_correction_op(
+            &remote_uuid,
+            &context_uuid,
+            &dictionary_uuid,
+            "SharedTerm",
+            "SharedMistake",
+            sync_store::now_ms() + 10_000,
+        )],
+    )
+    .expect("apply rejected correction");
+
+    assert_eq!(summary.applied, 0);
+    let retained_manual: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dictionary_corrections
+              WHERE context_id = ?1 AND mistake = 'SharedMistake' AND auto_learned = 0",
+            rusqlite::params![context.id],
+            |r| r.get(0),
+        )
+        .expect("retained manual correction");
+    assert_eq!(retained_manual, 1);
+    let tombstone: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_log
+              WHERE table_name = 'dictionary_corrections'
+                AND row_uuid = ?1 AND op = 'delete'",
+            rusqlite::params![remote_uuid],
+            |r| r.get(0),
+        )
+        .expect("rejected correction tombstone");
+    assert_eq!(tombstone, 1);
+}
+
+#[test]
 fn correction_delete_is_scoped_and_leaves_canonical_dictionary_row() {
     let db = test_db(&uuid("correction-delete"));
     let context =

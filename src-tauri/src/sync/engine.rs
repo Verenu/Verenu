@@ -1742,7 +1742,10 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
             )?
             .unwrap_or((0, String::new(), 0));
             if !remote_correction_wins(row.auto_learned, conflict.3, op.stamp(), conflict_stamp) {
-                append_self_log(conn, "dictionary_corrections", &op.row_uuid, "upsert")?;
+                // The remote mapping lost a natural-key conflict. Publish a
+                // tombstone for its UUID so the sender and any peers remove
+                // that rejected row instead of replaying it as an upsert.
+                log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
                 return Ok(Applied::Skipped);
             }
             delete_local_correction_for_remote_winner(conn, conflict.0, conflict.1.as_deref())?;
