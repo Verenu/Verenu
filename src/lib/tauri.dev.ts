@@ -1406,6 +1406,19 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return [] as T;
     case 'get_cancelled_capture':
       return null as T;
+    case 'get_diagnostics_snapshot':
+      return {
+        generated_at_ms: Date.now(), profiler_enabled: false, profiling_recording: false,
+        current_resource: null, resource_samples: [], latest_failures: [], failure_groups: [],
+        active_pipelines: [], recent_pipelines: [], logs: [], operations: [], runtime: {},
+        health: { initialized: true, profiler_enabled: false, retained_log_count: 0,
+          retained_failure_count: 0, retained_trace_count: 0, retained_operation_count: 0,
+          retained_resource_sample_count: 0, active_trace_count: 0, active_span_count: 0,
+          total_logs_recorded: 0, total_failures_recorded: 0, total_traces_started: 0,
+          total_traces_completed: 0, total_operations_recorded: 0, dropped_logs: 0,
+          dropped_failures: 0, dropped_traces: 0, dropped_spans: 0, collector_samples: 0,
+          collector_duration_us_total: 0 },
+      } as T;
     case 'get_recent_auto_learn_activity':
     case 'get_microphones':
     case 'get_recent_logs':
