@@ -249,6 +249,7 @@ pub async fn android_request_permission(
 /// Read the native Android permission state when the app regains focus. This
 /// catches changes made in Accessibility, battery, notification, and app-info
 /// settings without requiring a restart.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 #[tauri::command]
 pub async fn android_read_permissions(app: AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(target_os = "android")]
