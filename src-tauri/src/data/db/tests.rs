@@ -1272,8 +1272,9 @@ fn auto_learn_retention_prunes_only_stale_rows() {
         .expect("candidate");
     upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
         .expect("candidate");
-    log_auto_learn_event(
+    log_auto_learn_event_for_context(
         &db,
+        EVERYWHERE_CONTEXT_ID,
         AutoLearnEventFields {
             event_type: "monitor",
             reason_code: "started",
