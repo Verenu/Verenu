@@ -591,10 +591,6 @@ pub fn emit_cancelled_payload(app: &AppHandle, created_at: &str, kind: &str) {
     .ok();
 }
 
-pub fn commit_capture(audio: &CapturedAudio, id: &str, kind: FailoverKind, started_at_unix: i64) {
-    commit_capture_with_context(audio, id, kind, started_at_unix, None);
-}
-
 pub fn commit_capture_with_context(
     audio: &CapturedAudio,
     id: &str,

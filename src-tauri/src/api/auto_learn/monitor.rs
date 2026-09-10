@@ -254,6 +254,7 @@ pub(super) fn event_mode_poll_sleep_duration(hook_ready: bool) -> std::time::Dur
 /// Event mode only gates reads while it is waiting for the first notification
 /// about a change. Once an event has started an observation, later reads must
 /// continue so the stable-text gate can see inactivity as a second sample.
+#[cfg(any(windows, test))]
 pub(super) fn event_mode_should_read(
     hook_ready: bool,
     observation_pending: bool,
@@ -384,7 +385,10 @@ impl MonitorTask {
         }
 
         if self.event_mode {
+            #[cfg(windows)]
             let mut should_read = true;
+            #[cfg(not(windows))]
+            let should_read = true;
             #[cfg(windows)]
             {
                 if ensure_value_change_hook() {

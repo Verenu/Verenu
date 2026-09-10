@@ -719,22 +719,6 @@ pub fn frontmost_pid() -> Option<i32> {
     })
 }
 
-/// Localized display name of the frontmost application (e.g. "Google Chrome").
-pub fn frontmost_app_name() -> Option<String> {
-    autoreleasepool(|_| unsafe {
-        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace.is_null() {
-            return None;
-        }
-        let app: *mut AnyObject = msg_send![workspace, frontmostApplication];
-        if app.is_null() {
-            return None;
-        }
-        let name: *mut AnyObject = msg_send![app, localizedName];
-        nsstring_to_string(name)
-    })
-}
-
 /// Localized display name of the application owning a captured PID.
 /// Keeping this lookup tied to the captured process avoids re-reading the
 /// current frontmost application after focus has moved during processing.
