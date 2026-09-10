@@ -1,5 +1,12 @@
 export type SortKey = 'newest' | 'oldest' | 'alpha' | 'most_corrected';
-export type CreatedRecordMeta = { id: number; created_at: string };
+export type CreatedRecordMeta = {
+  /** Canonical dictionary id; `id` remains the legacy response field. */
+  id: number;
+  dictionary_id?: number;
+  correction_id?: number | null;
+  context_id?: number | null;
+  created_at: string;
+};
 
 export const TERM_LIMIT = 120;
 export const MISTAKE_LIMIT = 120;
@@ -35,14 +42,26 @@ export function confidenceLabel(tier?: string | null): string {
 
 export const countCodePoints = (value: string): number => [...value].length;
 
-export function requireCreatedRecordMeta(value: unknown, command: string): CreatedRecordMeta {
-  console.info(`${command} result:`, value);
+export function requireCreatedRecordMeta(value: unknown): CreatedRecordMeta {
   if (typeof value !== 'object' || value === null) {
     throw new Error('Save returned no record metadata. Relaunch the Tauri app and try again.');
   }
   const meta = value as Partial<CreatedRecordMeta>;
-  if (typeof meta.id !== 'number' || !Number.isFinite(meta.id) || typeof meta.created_at !== 'string' || !meta.created_at.trim()) {
+  const canonicalId = typeof meta.dictionary_id === 'number' && Number.isFinite(meta.dictionary_id)
+    ? meta.dictionary_id
+    : meta.id;
+  if (typeof canonicalId !== 'number' || !Number.isFinite(canonicalId) || typeof meta.created_at !== 'string' || !meta.created_at.trim()) {
     throw new Error('Save returned invalid record metadata. Check the app logs before retrying.');
   }
-  return { id: meta.id, created_at: meta.created_at };
+  return {
+    id: canonicalId,
+    dictionary_id: canonicalId,
+    correction_id: typeof meta.correction_id === 'number' && Number.isFinite(meta.correction_id)
+      ? meta.correction_id
+      : null,
+    context_id: typeof meta.context_id === 'number' && Number.isFinite(meta.context_id)
+      ? meta.context_id
+      : meta.context_id === null ? null : undefined,
+    created_at: meta.created_at,
+  };
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::context::ResolvedContextIdentity;
 
 pub(super) struct PipelineCompletionContext<'a> {
     pub(super) raw: &'a str,
@@ -16,7 +17,10 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) captured_at: std::time::Instant,
     pub(super) event_only: bool,
     pub(super) caps_lock_on: bool,
-    pub(super) context: Option<&'a db::Context>,
+    /// The exact Context selected before asynchronous transcription/cleanup.
+    /// This is an owned identity snapshot so retry and AutoLearn cannot
+    /// silently resolve a different foreground target later.
+    pub(super) context: ResolvedContextIdentity,
 }
 
 fn dictionary_protects_initial_case(text: &str, entries: &[db::DictionaryEntry]) -> bool {
@@ -155,9 +159,9 @@ pub(super) async fn finalize_pipeline_completion(
     let api_used_for_insert = ctx.api_used.to_string();
     let duration_for_insert = ctx.duration_ms as i64;
     let dictionary_fixes_applied = applied_dict_ids.len() as i64;
-    // Attributes the dictation to whichever context resolved for it, so the
-    // context page can show real totals. `None` when resolution failed.
-    let context_for_insert = ctx.context.map(|context| context.id);
+    // Attributes the dictation to the exact Context captured for this take, so
+    // the context page can show real totals without a late foreground lookup.
+    let context_for_insert = Some(ctx.context.id);
     let entry = match tokio::task::spawn_blocking(move || -> anyhow::Result<db::RecentEntry> {
         let entry = db::insert_transcription_returning(
             &db_for_insert,
@@ -373,13 +377,14 @@ pub(super) async fn finalize_pipeline_completion(
                     private_text.clone(),
                     applied_dict_ids,
                     ctx.target_hwnd,
+                    ctx.context.clone(),
                     db_handle.inner().clone(),
                     app.clone(),
                 );
             }
             auto_learn::start_monitor(
                 private_text,
-                ctx.process_name,
+                ctx.context.clone(),
                 db_handle.inner().clone(),
                 app.clone(),
             );

@@ -48,7 +48,11 @@ Each context has two tabs:
 
 You can assign the same vocabulary entry or snippet to more than one context. Use a row's menu and choose **Move to...** when you want to remove it from the current context and place it in another one.
 
-Deleting a context removes its app and website targets. Its vocabulary and snippets are returned to Everywhere so they are not orphaned.
+Deleting a context removes its app and website targets. Its vocabulary and
+snippets are returned to Everywhere so they are not orphaned. Context-specific
+AutoLearn correction mappings follow the same move; transient AutoLearn
+candidate and pending evidence is discarded because it cannot safely be
+re-attributed to Everywhere.
 
 ## Change an existing context
 

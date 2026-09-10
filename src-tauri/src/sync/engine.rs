@@ -14,6 +14,12 @@
 //! - Contexts sync as aggregates (row + targets + memberships); the whole
 //!   aggregate is LWW, so two devices editing the same context concurrently
 //!   converge on the later edit wholesale.
+//! - Context-owned dictionary corrections sync as independent child rows,
+//!   keyed by their own UUID and carrying Context/canonical UUID references;
+//!   transient AutoLearn candidates and pending evidence remain local-only.
+//! - Natural-key loser tombstones use a reserved sync-log namespace so an
+//!   in-flight child can distinguish canonical replacement from explicit
+//!   deletion without adding another database schema column.
 //! - Settings are LWW per key using `sync_setting_meta` stamps.
 //! - Lifetime counters are summed per device (each dictation is counted by
 //!   exactly the device it happened on), so totals merge without double-count.
@@ -21,13 +27,15 @@
 use anyhow::{anyhow, Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::data::{db, store};
 use crate::DbHandle;
 
 use super::protocol::{
-    read_message, send_message, DeviceStatsDto, Hello, Message, OpsBatch, PullRequest,
-    SettingRecord, StatsExchange, SyncOp, OPS_PER_BATCH, PROTOCOL_VERSION, SNAPSHOT_ROW_CHUNK,
+    read_message, send_message, DeviceStatsDto, DictionaryCorrectionRow, Hello, Message, OpsBatch,
+    PullRequest, SettingRecord, StatsExchange, SyncOp, OPS_PER_BATCH, PROTOCOL_VERSION,
+    SNAPSHOT_ROW_CHUNK,
 };
 use super::store as sync_store;
 use super::store::SyncPeer;
@@ -35,8 +43,8 @@ use super::store::SyncPeer;
 /// Where a snapshot send has gotten to. Held by the sender across batches.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SnapshotProgress {
-    /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = transcriptions,
-    /// 4 = api_calls, 5 = retained tombstones, 6 = done.
+    /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = dictionary corrections,
+    /// 4 = transcriptions, 5 = api_calls, 6 = retained tombstones, 7 = done.
     pub stage: u8,
     pub last_id: i64,
     /// Sequence namespace for synthesized snapshot stamps. Snapshot rows are
@@ -76,6 +84,11 @@ pub const SYNCABLE_SETTINGS: &[&str] = &[
 ];
 
 const UNRESOLVED_APP_PREFIX: &str = "?::";
+const NATURAL_KEY_TOMBSTONE_TABLE: &str = "dictionary_natural_key";
+
+type ExistingCorrection = (i64, Option<String>, bool, i64, String, Option<String>);
+type CorrectionTarget = (i64, Option<String>, i64, bool);
+type CorrectionIdentity = (i64, i64, i64, String, bool);
 
 /// The environment the engine needs beyond the database. The Tauri manager
 /// implements it against the real app; tests use an in-memory stand-in so the
@@ -306,8 +319,20 @@ pub struct ContextAggregate {
     pub websites: Vec<String>,
     #[serde(default)]
     pub dictionary_uuids: Vec<String>,
+    /// Dictionary references retain the natural term alongside the stable
+    /// UUID. This lets a Context membership follow a canonical dictionary
+    /// natural-key conflict after the losing UUID has been reparented.
+    #[serde(default)]
+    pub dictionary_entries: Vec<DictionaryReference>,
     #[serde(default)]
     pub snippet_uuids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DictionaryReference {
+    pub uuid: String,
+    #[serde(default)]
+    pub term: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -353,11 +378,20 @@ pub struct ApiCallRow {
 #[derive(Debug, Default, Clone)]
 pub struct ApplySummary {
     pub dictionary: bool,
+    /// Persistent Context-scoped correction mappings are separate sync rows,
+    /// but also set `dictionary` so older consumers refresh their dictionary
+    /// cache. The distinct flag lets Context-aware consumers refresh their
+    /// materialized view without guessing from the canonical table.
+    pub dictionary_corrections: bool,
     pub snippets: bool,
     pub contexts: bool,
     pub history: bool,
     pub settings: bool,
     pub stats: bool,
+    /// At least one mapping referenced a parent that was not available in
+    /// this batch. The puller keeps its receive cursor unchanged so the
+    /// operation is retried after a later dependency batch or snapshot.
+    pub deferred: bool,
     pub applied: usize,
     pub skipped: usize,
 }
@@ -367,6 +401,9 @@ impl ApplySummary {
         let mut tables = Vec::new();
         if self.dictionary {
             tables.push("dictionary");
+        }
+        if self.dictionary_corrections {
+            tables.push("dictionary_corrections");
         }
         if self.snippets {
             tables.push("snippets");
@@ -450,6 +487,34 @@ fn latest_stamp(
     sync_store::latest_op_stamp(conn, table, row_uuid)
 }
 
+fn latest_op_name(conn: &Connection, table: &str, row_uuid: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT op FROM sync_log
+          WHERE table_name = ?1 AND row_uuid = ?2
+          ORDER BY seq DESC LIMIT 1",
+        params![table, row_uuid],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn latest_is_delete(conn: &Connection, table: &str, row_uuid: &str) -> Result<bool> {
+    Ok(latest_op_name(conn, table, row_uuid)?.as_deref() == Some("delete"))
+}
+
+fn latest_dictionary_stamp(
+    conn: &Connection,
+    row_uuid: &str,
+) -> Result<Option<(i64, String, i64)>> {
+    let regular = latest_stamp(conn, "dictionary", row_uuid)?;
+    let natural_key = latest_stamp(conn, NATURAL_KEY_TOMBSTONE_TABLE, row_uuid)?;
+    Ok(match (regular, natural_key) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Send side: resolving log entries and snapshots into wire ops
 // ---------------------------------------------------------------------------
@@ -463,7 +528,11 @@ fn dictionary_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json
             |r| {
                 Ok(DictionaryRow {
                     term: r.get(0)?,
-                    mistake: r.get(1)?,
+                    // Context-specific mistakes are carried by
+                    // dictionary_corrections. Do not put the legacy global
+                    // projection on the wire, even if a partially migrated
+                    // database still has it populated.
+                    mistake: None,
                     auto_learned: r.get::<_, i64>(2)? != 0,
                     correction_count: r.get(3)?,
                     confidence_tier: r.get(4)?,
@@ -474,6 +543,37 @@ fn dictionary_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json
         )
         .optional()?;
     Ok(row.map(|row| serde_json::to_value(row).expect("serialize dictionary row")))
+}
+
+fn dictionary_correction_payload(
+    conn: &Connection,
+    uuid: &str,
+) -> Result<Option<serde_json::Value>> {
+    let row = conn
+        .query_row(
+            "SELECT COALESCE(ctx.uuid, ''), COALESCE(d.uuid, ''), d.term, c.mistake, c.auto_learned,
+                    c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at
+               FROM dictionary_corrections c
+               INNER JOIN contexts ctx ON ctx.id = c.context_id
+               INNER JOIN dictionary d ON d.id = c.dictionary_id
+              WHERE c.uuid = ?1",
+            params![uuid],
+            |r| {
+                Ok(DictionaryCorrectionRow {
+                    context_uuid: r.get(0)?,
+                    dictionary_uuid: r.get(1)?,
+                    dictionary_term: r.get(2)?,
+                    mistake: r.get(3)?,
+                    auto_learned: r.get::<_, i64>(4)? != 0,
+                    correction_count: r.get(5)?,
+                    confidence_tier: r.get(6)?,
+                    last_seen_at: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row.map(|row| serde_json::to_value(row).expect("serialize dictionary correction row")))
 }
 
 fn snippet_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
@@ -529,6 +629,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
                     targets: Vec::new(),
                     websites: Vec::new(),
                     dictionary_uuids: Vec::new(),
+                    dictionary_entries: Vec::new(),
                     snippet_uuids: Vec::new(),
                 })
             },
@@ -559,12 +660,25 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
         .query_map(params![context_id], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut stmt = conn.prepare(
-        "SELECT d.uuid FROM dictionary_contexts dc JOIN dictionary d ON d.id = dc.dictionary_id
-         WHERE dc.context_id = ?1 ORDER BY d.id",
+        "SELECT d.uuid, d.term
+           FROM dictionary_contexts dc
+           JOIN dictionary d ON d.id = dc.dictionary_id
+          WHERE dc.context_id = ?1 AND d.uuid IS NOT NULL
+          ORDER BY d.id",
     )?;
-    aggregate.dictionary_uuids = stmt
-        .query_map(params![context_id], |r| r.get::<_, String>(0))?
+    let dictionary_entries = stmt
+        .query_map(params![context_id], |r| {
+            Ok(DictionaryReference {
+                uuid: r.get(0)?,
+                term: r.get(1)?,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    aggregate.dictionary_uuids = dictionary_entries
+        .iter()
+        .map(|entry| entry.uuid.clone())
+        .collect();
+    aggregate.dictionary_entries = dictionary_entries;
     let mut stmt = conn.prepare(
         "SELECT s.uuid FROM snippet_contexts sc JOIN snippets s ON s.id = sc.snippet_id
          WHERE sc.context_id = ?1 ORDER BY s.id",
@@ -636,6 +750,9 @@ fn resolve_entry(conn: &Connection, entry: &sync_store::LogEntry) -> Result<Opti
     }
     let payload = match entry.table_name.as_str() {
         "dictionary" if entry.op == "upsert" => dictionary_payload(conn, &entry.row_uuid)?,
+        "dictionary_corrections" if entry.op == "upsert" => {
+            dictionary_correction_payload(conn, &entry.row_uuid)?
+        }
         "snippets" if entry.op == "upsert" => snippet_payload(conn, &entry.row_uuid)?,
         "contexts" if entry.op == "upsert" => context_aggregate(conn, &entry.row_uuid)?,
         "transcriptions" if entry.op == "upsert" => transcription_payload(conn, &entry.row_uuid)?,
@@ -715,7 +832,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 5 {
+        while (ops.len() as i64) < limit && progress.stage <= 6 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -723,12 +840,13 @@ pub fn collect_ops(
                 0 => "dictionary",
                 1 => "snippets",
                 2 => "contexts",
-                3 => "transcriptions",
-                4 => "api_calls",
-                5 => "tombstones",
+                3 => "dictionary_corrections",
+                4 => "transcriptions",
+                5 => "api_calls",
+                6 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
-            if stage == 5 {
+            if stage == 6 {
                 let mut stmt = conn.prepare(
                     "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
                      FROM sync_log AS current
@@ -771,9 +889,21 @@ pub fn collect_ops(
                 progress.origin_seq = Some(origin_seq);
                 return Ok((ops, 0, false));
             }
-            let mut stmt = conn.prepare(&format!(
-                "SELECT id, uuid FROM {table} WHERE id > ?1 ORDER BY id LIMIT ?2"
-            ))?;
+            // A correction row created on an incompletely migrated database
+            // can temporarily have a NULL UUID. It cannot be represented as a
+            // stable sync row, so omit it until the database's UUID backfill
+            // repairs it. All current writes and healthy migrations provide a
+            // UUID.
+            let row_query = if table == "dictionary_corrections" {
+                format!(
+                    "SELECT id, uuid FROM {table}
+                      WHERE id > ?1 AND uuid IS NOT NULL
+                      ORDER BY id LIMIT ?2"
+                )
+            } else {
+                format!("SELECT id, uuid FROM {table} WHERE id > ?1 ORDER BY id LIMIT ?2")
+            };
+            let mut stmt = conn.prepare(&row_query)?;
             let rows = stmt
                 .query_map(params![progress.last_id, chunk], |r| {
                     Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -784,6 +914,7 @@ pub fn collect_ops(
                 progress.last_id = id;
                 let payload = match table {
                     "dictionary" => dictionary_payload(conn, &uuid)?,
+                    "dictionary_corrections" => dictionary_correction_payload(conn, &uuid)?,
                     "snippets" => snippet_payload(conn, &uuid)?,
                     "contexts" => context_aggregate(conn, &uuid)?,
                     "transcriptions" => transcription_payload(conn, &uuid)?,
@@ -797,7 +928,7 @@ pub fn collect_ops(
                 // This table is exhausted; move to the next stage.
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 5 {
+                if progress.stage > 6 {
                     progress.origin_seq = Some(origin_seq);
                     let cursor = sync_store::max_log_seq(conn)?;
                     return Ok((ops, cursor, true));
@@ -808,7 +939,7 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 5 {
+        if progress.stage <= 6 {
             // Capacity exhausted mid-stream.
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
@@ -843,6 +974,33 @@ pub fn collect_ops(
 enum Applied {
     Yes,
     Skipped,
+    Deferred,
+}
+
+/// A pull is normally already ordered by the sender, but delta log
+/// compaction and snapshot pagination mean the receiver must not rely on that
+/// incidental order. Parent deletes run first so a stale child upsert cannot
+/// recreate a deleted Context or canonical dictionary row. Parent upserts run
+/// before correction mappings, whose payloads reference both parents by UUID.
+fn apply_rank(op: &SyncOp) -> u8 {
+    match (op.table.as_str(), op.is_delete()) {
+        ("contexts", true)
+        | ("dictionary", true)
+        | ("snippets", true) => 0,
+        ("dictionary", false) => 10,
+        // Apply a canonical upsert first so its natural-key replacement can
+        // capture/reparent children before an anti-entropy tombstone removes
+        // the losing UUID. If the upsert is absent, this still behaves as a
+        // normal deferred loser cleanup.
+        (NATURAL_KEY_TOMBSTONE_TABLE, true) => 15,
+        ("snippets", false) => 11,
+        ("contexts", false) => 20,
+        ("dictionary_corrections", _) => 30,
+        ("transcriptions", false) => 40,
+        ("api_calls", false) => 41,
+        ("transcriptions", true) | ("api_calls", true) => 50,
+        _ => 60,
+    }
 }
 
 /// Applies a batch of remote ops inside one applying-guard window. Idempotent:
@@ -851,11 +1009,14 @@ enum Applied {
 pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
     let _guard = ApplyingGuard::new(conn)?;
     let mut summary = ApplySummary::default();
-    // Apply in dependency order: content first, then contexts (which reference
-    // content uuids), then history (which references contexts).
-    for op in ops {
+    // Apply in dependency order rather than trusting the order in a delta
+    // batch. Snapshot batches are naturally ordered too, but this explicit
+    // sort makes hand-built batches and compacted logs safe as well.
+    let mut ordered: Vec<(usize, &SyncOp)> = ops.iter().enumerate().collect();
+    ordered.sort_by_key(|(index, op)| (apply_rank(op), *index));
+    for (_, op) in ordered {
         match op.table.as_str() {
-            "dictionary" => {
+            "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
                 if apply_dictionary_op(conn, op)? == Applied::Yes {
                     summary.dictionary = true;
                     summary.applied += 1;
@@ -877,6 +1038,24 @@ pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
                     summary.applied += 1;
                 } else {
                     summary.skipped += 1;
+                }
+            }
+            "dictionary_corrections" => {
+                match apply_dictionary_correction_op(conn, op)? {
+                    Applied::Yes => {
+                        // Keep the legacy dictionary refresh bit set as well
+                        // as a precise flag. Existing desktop clients listen
+                        // only for "dictionary"; Context-aware clients can
+                        // use the more specific table name.
+                        summary.dictionary = true;
+                        summary.dictionary_corrections = true;
+                        summary.applied += 1;
+                    }
+                    Applied::Skipped => summary.skipped += 1,
+                    Applied::Deferred => {
+                        summary.deferred = true;
+                        summary.skipped += 1;
+                    }
                 }
             }
             "transcriptions" => {
@@ -915,6 +1094,13 @@ fn log_applied(conn: &Connection, op: &SyncOp) -> Result<()> {
 /// eventually vanish everywhere. Log an anti-entropy tombstone for it.
 fn log_anti_entropy_delete(conn: &Connection, table: &str, row_uuid: &str) -> Result<()> {
     append_self_log(conn, table, row_uuid, "delete")
+}
+
+fn log_natural_key_delete(conn: &Connection, row_uuid: &str) -> Result<()> {
+    // `table_name` is intentionally a sync-log namespace, not a SQLite
+    // table. The schema only permits upsert/delete, so the namespace carries
+    // the distinction needed by child natural-key fallback.
+    append_self_log(conn, NATURAL_KEY_TOMBSTONE_TABLE, row_uuid, "delete")
 }
 
 /// Contexts whose junction rows referenced a dictionary/snippet row that is
@@ -964,11 +1150,327 @@ fn log_context_upserts(conn: &Connection, context_ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct DictionaryCorrectionSnapshot {
+    /// `None` is possible only on a partially migrated database. Such a row
+    /// receives a fresh UUID if it can be safely restored.
+    uuid: Option<String>,
+    context_id: i64,
+    mistake: String,
+    auto_learned: bool,
+    correction_count: i64,
+    confidence_tier: String,
+    last_seen_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Default)]
+struct DictionaryChildrenSnapshot {
+    context_ids: Vec<i64>,
+    corrections: Vec<DictionaryCorrectionSnapshot>,
+}
+
+fn capture_dictionary_children(
+    conn: &Connection,
+    dictionary_uuid: &str,
+) -> Result<DictionaryChildrenSnapshot> {
+    let Some(dictionary_id) = conn
+        .query_row(
+            "SELECT id FROM dictionary WHERE uuid = ?1",
+            params![dictionary_uuid],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    else {
+        return Ok(DictionaryChildrenSnapshot::default());
+    };
+
+    let mut context_ids: Vec<i64> = conn
+        .prepare(
+            "SELECT context_id FROM dictionary_contexts
+              WHERE dictionary_id = ?1 ORDER BY context_id",
+        )?
+        .query_map(params![dictionary_id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let corrections = conn
+        .prepare(
+            "SELECT uuid, context_id, mistake, auto_learned, correction_count,
+                    confidence_tier, last_seen_at, created_at
+               FROM dictionary_corrections
+              WHERE dictionary_id = ?1 ORDER BY id",
+        )?
+        .query_map(params![dictionary_id], |r| {
+            Ok(DictionaryCorrectionSnapshot {
+                uuid: r.get(0)?,
+                context_id: r.get(1)?,
+                mistake: r.get(2)?,
+                auto_learned: r.get::<_, i64>(3)? != 0,
+                correction_count: r.get(4)?,
+                confidence_tier: r.get(5)?,
+                last_seen_at: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // A malformed or partially migrated database may have a mapping without
+    // its junction row. Preserve the mapping's Context too, then let the
+    // restore path repair the missing assignment.
+    for correction in &corrections {
+        if !context_ids.contains(&correction.context_id) {
+            context_ids.push(correction.context_id);
+        }
+    }
+
+    Ok(DictionaryChildrenSnapshot {
+        context_ids,
+        corrections,
+    })
+}
+
+fn correction_confidence_rank(tier: &str) -> u8 {
+    match tier {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn later_timestamp(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    }
+}
+
+/// Reattaches the children of a locally losing canonical dictionary row to
+/// the remote winner. The canonical term is globally unique, so keeping the
+/// shared row while dropping all of its Context mappings would silently lose
+/// user vocabulary. Mapping natural-key conflicts are handled conservatively:
+/// a pre-existing mapping for another canonical term wins, while identical
+/// mappings merge their safe metadata.
+fn restore_dictionary_children(
+    conn: &Connection,
+    children: &DictionaryChildrenSnapshot,
+    winner_dictionary_id: i64,
+) -> Result<()> {
+    let mut touched_contexts = Vec::new();
+    for context_id in &children.context_ids {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
+            params![context_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+             VALUES (?1, ?2)",
+            params![context_id, winner_dictionary_id],
+        )?;
+        if inserted > 0 {
+            touched_contexts.push(*context_id);
+        }
+    }
+
+    for source in &children.corrections {
+        let context_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
+            params![source.context_id],
+            |r| r.get(0),
+        )?;
+        if !context_exists {
+            // The source Context was deleted independently. Do not recreate
+            // it from a child row whose parent no longer exists.
+            if let Some(uuid) = source.uuid.as_deref() {
+                log_anti_entropy_delete(conn, "dictionary_corrections", uuid)?;
+            }
+            continue;
+        }
+
+        let other_mapping: Option<(i64, Option<String>)> = conn
+            .query_row(
+                "SELECT dictionary_id, uuid FROM dictionary_corrections
+                  WHERE context_id = ?1 AND mistake = ?2
+                    AND dictionary_id != ?3
+                  ORDER BY id LIMIT 1",
+                params![source.context_id, source.mistake, winner_dictionary_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if other_mapping.is_some() {
+            // Two canonical terms cannot safely claim the same wrong spelling
+            // in one Context. Preserve the already-effective mapping rather
+            // than changing what the user will receive.
+            if let Some(uuid) = source.uuid.as_deref() {
+                log_anti_entropy_delete(conn, "dictionary_corrections", uuid)?;
+            }
+            continue;
+        }
+
+        let existing: Option<ExistingCorrection> = conn
+            .query_row(
+                "SELECT id, uuid, auto_learned, correction_count,
+                        confidence_tier, last_seen_at
+                   FROM dictionary_corrections
+                  WHERE context_id = ?1 AND dictionary_id = ?2 AND mistake = ?3
+                  LIMIT 1",
+                params![source.context_id, winner_dictionary_id, source.mistake],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get::<_, i64>(2)? != 0,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((target_id, target_uuid, target_auto, target_count, target_tier, target_last)) =
+            existing
+        {
+            let target_is_manual = !target_auto;
+            let source_is_manual = !source.auto_learned;
+            let (auto_learned, correction_count, confidence_tier, last_seen_at) =
+                if source_is_manual || target_is_manual {
+                    // Manual authority wins. Retain the manual row's count and
+                    // tier unless the source itself is the manual authority.
+                    if source_is_manual && !target_is_manual {
+                        (
+                            false,
+                            source.correction_count,
+                            "manual".to_string(),
+                            source.last_seen_at.clone(),
+                        )
+                    } else {
+                        (
+                            false,
+                            target_count,
+                            "manual".to_string(),
+                            target_last.clone(),
+                        )
+                    }
+                } else {
+                    (
+                        true,
+                        target_count + source.correction_count,
+                        if correction_confidence_rank(&source.confidence_tier)
+                            > correction_confidence_rank(&target_tier)
+                        {
+                            source.confidence_tier.clone()
+                        } else {
+                            target_tier.clone()
+                        },
+                        later_timestamp(target_last.clone(), source.last_seen_at.clone()),
+                    )
+                };
+            conn.execute(
+                "UPDATE dictionary_corrections
+                    SET auto_learned = ?2, correction_count = ?3,
+                        confidence_tier = ?4, last_seen_at = ?5
+                  WHERE id = ?1",
+                params![
+                    target_id,
+                    auto_learned as i64,
+                    correction_count,
+                    confidence_tier,
+                    last_seen_at
+                ],
+            )?;
+            if let Some(target_uuid) = target_uuid.as_deref() {
+                append_self_log(conn, "dictionary_corrections", target_uuid, "upsert")?;
+            }
+            if let Some(source_uuid) = source.uuid.as_deref() {
+                if Some(source_uuid) != target_uuid.as_deref() {
+                    log_anti_entropy_delete(conn, "dictionary_corrections", source_uuid)?;
+                }
+            }
+            continue;
+        }
+
+        let mapping_uuid = source
+            .uuid
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let inserted = conn.execute(
+            "INSERT INTO dictionary_corrections
+               (uuid, context_id, dictionary_id, mistake, auto_learned,
+                correction_count, confidence_tier, last_seen_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                mapping_uuid,
+                source.context_id,
+                winner_dictionary_id,
+                source.mistake,
+                source.auto_learned as i64,
+                source.correction_count,
+                source.confidence_tier,
+                source.last_seen_at,
+                source.created_at,
+            ],
+        );
+        match inserted {
+            Ok(_) => {
+                append_self_log(conn, "dictionary_corrections", &mapping_uuid, "upsert")?;
+                if !touched_contexts.contains(&source.context_id) {
+                    touched_contexts.push(source.context_id);
+                }
+            }
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                // A UUID collision is exceptionally unlikely, but a safe
+                // fresh identity is preferable to overwriting an unrelated
+                // mapping. The original identity is tombstoned below when it
+                // came from a real row.
+                let fresh_uuid = Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO dictionary_corrections
+                       (uuid, context_id, dictionary_id, mistake, auto_learned,
+                        correction_count, confidence_tier, last_seen_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        fresh_uuid,
+                        source.context_id,
+                        winner_dictionary_id,
+                        source.mistake,
+                        source.auto_learned as i64,
+                        source.correction_count,
+                        source.confidence_tier,
+                        source.last_seen_at,
+                        source.created_at,
+                    ],
+                )?;
+                append_self_log(conn, "dictionary_corrections", &fresh_uuid, "upsert")?;
+                if let Some(source_uuid) = source.uuid.as_deref() {
+                    log_anti_entropy_delete(conn, "dictionary_corrections", source_uuid)?;
+                }
+            }
+            Err(err) => {
+                return Err(anyhow!(
+                    "sync: restoring dictionary correction failed: {err}"
+                ))
+            }
+        }
+    }
+    log_context_upserts(conn, &touched_contexts)?;
+    Ok(())
+}
+
 fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.table == NATURAL_KEY_TOMBSTONE_TABLE {
+        return apply_dictionary_natural_key_delete(conn, op);
+    }
     if op.is_delete() {
         return apply_simple_delete(conn, op, "dictionary", "dictionary");
     }
-    if let Some(stamp) = latest_stamp(conn, "dictionary", &op.row_uuid)? {
+    if let Some(stamp) = latest_dictionary_stamp(conn, &op.row_uuid)? {
         if !op.newer_than(&stamp) {
             return Ok(Applied::Skipped);
         }
@@ -985,7 +1487,7 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             "INSERT INTO dictionary (uuid, term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(uuid) DO UPDATE SET
-               term = excluded.term, mistake = excluded.mistake,
+               term = excluded.term, mistake = NULL,
                auto_learned = excluded.auto_learned,
                correction_count = excluded.correction_count,
                confidence_tier = excluded.confidence_tier,
@@ -993,7 +1495,7 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             params![
                 op.row_uuid,
                 row.term,
-                row.mistake,
+                Option::<String>::None,
                 row.auto_learned as i64,
                 row.correction_count,
                 row.confidence_tier,
@@ -1005,6 +1507,335 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     apply_with_natural_key_resolution(conn, op, "dictionary", insert, &|conn| {
         conflicting_uuid(conn, "dictionary", "term", &row.term, &op.row_uuid)
     })
+}
+
+fn resolve_correction_dictionary_id(
+    conn: &Connection,
+    row: &DictionaryCorrectionRow,
+) -> Result<Option<i64>> {
+    let by_uuid = conn
+        .query_row(
+            "SELECT id FROM dictionary WHERE uuid = ?1",
+            params![row.dictionary_uuid],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    if by_uuid.is_some() {
+        return Ok(by_uuid);
+    }
+
+    // A canonical UUID can legitimately differ on two devices when both
+    // created the same term offline. The dictionary conflict path keeps the
+    // higher-stamped canonical row and re-parents its children; this fallback
+    // lets a child op that was already in flight follow that natural key too.
+    let term = row.dictionary_term.trim();
+    if term.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT id FROM dictionary WHERE term = ?1",
+        params![term],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Runs a parent/child replacement under a SQLite savepoint. Applying a
+/// remote batch is intentionally not one large transaction because some
+/// existing helpers open their own transaction, but a canonical natural-key
+/// replacement must be all-or-nothing or a failed child restore would lose
+/// the loser's mappings permanently.
+fn with_sync_savepoint<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
+    conn.execute_batch("SAVEPOINT sync_dictionary_reparent")?;
+    match f(conn) {
+        Ok(value) => {
+            conn.execute_batch("RELEASE sync_dictionary_reparent")?;
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(rollback_error) = conn.execute_batch("ROLLBACK TO sync_dictionary_reparent")
+            {
+                log::error!(
+                    "sync: failed to roll back dictionary reparent savepoint: {rollback_error}"
+                );
+            }
+            if let Err(release_error) = conn.execute_batch("RELEASE sync_dictionary_reparent") {
+                log::error!(
+                    "sync: failed to release dictionary reparent savepoint: {release_error}"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn correction_target_for_natural_key(
+    conn: &Connection,
+    context_id: i64,
+    mistake: &str,
+    exclude_id: Option<i64>,
+) -> Result<Option<CorrectionTarget>> {
+    conn.query_row(
+        "SELECT id, uuid, dictionary_id, auto_learned
+           FROM dictionary_corrections
+          WHERE context_id = ?1 AND mistake = ?2
+            AND (?3 IS NULL OR id != ?3)
+          ORDER BY id LIMIT 1",
+        params![context_id, mistake, exclude_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn correction_uuid_exists(conn: &Connection, uuid: &str) -> Result<Option<CorrectionIdentity>> {
+    conn.query_row(
+        "SELECT id, context_id, dictionary_id, mistake, auto_learned
+           FROM dictionary_corrections WHERE uuid = ?1",
+        params![uuid],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get::<_, i64>(4)? != 0,
+            ))
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Manual mappings have priority over automatic mappings regardless of the
+/// arrival order or wall-clock stamp. Two mappings with the same authority
+/// use the normal total LWW stamp.
+fn remote_correction_wins(
+    remote_auto_learned: bool,
+    local_auto_learned: bool,
+    remote_stamp: (i64, &str, i64),
+    local_stamp: (i64, String, i64),
+) -> bool {
+    match (remote_auto_learned, local_auto_learned) {
+        (false, true) => true,
+        (true, false) => false,
+        _ => remote_stamp > (local_stamp.0, local_stamp.1.as_str(), local_stamp.2),
+    }
+}
+
+fn delete_local_correction_for_remote_winner(
+    conn: &Connection,
+    correction_id: i64,
+    correction_uuid: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM dictionary_corrections WHERE id = ?1",
+        params![correction_id],
+    )?;
+    if let Some(uuid) = correction_uuid {
+        append_self_log(conn, "dictionary_corrections", uuid, "delete")?;
+    }
+    Ok(())
+}
+
+fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() {
+        if let Some(stamp) = latest_stamp(conn, "dictionary_corrections", &op.row_uuid)? {
+            if !op.newer_than(&stamp) {
+                return Ok(Applied::Skipped);
+            }
+        }
+        let context_id: Option<i64> = conn
+            .query_row(
+                "SELECT context_id FROM dictionary_corrections WHERE uuid = ?1",
+                params![op.row_uuid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let deleted = conn.execute(
+            "DELETE FROM dictionary_corrections WHERE uuid = ?1",
+            params![op.row_uuid],
+        )?;
+        log_applied(conn, op)?;
+        if deleted > 0 {
+            if let Some(context_id) = context_id {
+                log_context_upserts(conn, &[context_id])?;
+            }
+        }
+        return Ok(Applied::Yes);
+    }
+
+    if let Some(stamp) = latest_stamp(conn, "dictionary_corrections", &op.row_uuid)? {
+        if !op.newer_than(&stamp) {
+            return Ok(Applied::Skipped);
+        }
+    }
+    let row: DictionaryCorrectionRow = serde_json::from_value(
+        op.payload
+            .clone()
+            .ok_or_else(|| anyhow!("dictionary correction upsert missing payload"))?,
+    )
+    .context("invalid dictionary correction payload")?;
+
+    let Some(context_id) = conn
+        .query_row(
+            "SELECT id FROM contexts WHERE uuid = ?1",
+            params![row.context_uuid],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    else {
+        // Never recreate a deleted Context from a child mapping. If a
+        // tombstone proves that the Context was deliberately removed, make
+        // the child tombstone durable too; otherwise retain the operation for
+        // a later batch in which the parent may arrive.
+        if latest_is_delete(conn, "contexts", &row.context_uuid)? {
+            log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+            return Ok(Applied::Skipped);
+        }
+        return Ok(Applied::Deferred);
+    };
+    let dictionary_is_deleted = latest_is_delete(conn, "dictionary", &row.dictionary_uuid)?;
+    if dictionary_is_deleted {
+        // Do not use the term fallback after an explicit canonical delete. A
+        // later row with the same term may be a new canonical identity, and
+        // attaching that stale child would resurrect deleted vocabulary. A
+        // natural-key loser uses the separate sync-log namespace below and is
+        // intentionally allowed to follow the surviving canonical row.
+        log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+        return Ok(Applied::Skipped);
+    }
+    let Some(dictionary_id) = resolve_correction_dictionary_id(conn, &row)? else {
+        // The sender's canonical row may be in a later batch. Never
+        // manufacture a canonical term or attach the mapping to Everywhere;
+        // the puller will retry this batch after the dependency arrives.
+        return Ok(Applied::Deferred);
+    };
+
+    let existing_by_uuid = correction_uuid_exists(conn, &op.row_uuid)?;
+    if let Some((
+        existing_id,
+        _existing_context_id,
+        _existing_dictionary_id,
+        _existing_mistake,
+        existing_auto,
+    )) = existing_by_uuid.as_ref()
+    {
+        // A persistent mapping UUID is allowed to move when Context deletion
+        // moves it to Everywhere. Treat that as an update, but protect a
+        // manual row from an automatic remote overwrite.
+        if !*existing_auto && row.auto_learned {
+            append_self_log(conn, "dictionary_corrections", &op.row_uuid, "upsert")?;
+            return Ok(Applied::Skipped);
+        }
+        if let Some(conflict) =
+            correction_target_for_natural_key(conn, context_id, &row.mistake, Some(*existing_id))?
+        {
+            let conflict_stamp = latest_stamp(
+                conn,
+                "dictionary_corrections",
+                conflict.1.as_deref().unwrap_or_default(),
+            )?
+            .unwrap_or((0, String::new(), 0));
+            if !remote_correction_wins(row.auto_learned, conflict.3, op.stamp(), conflict_stamp) {
+                // The remote mapping lost a natural-key conflict. Publish a
+                // tombstone for its UUID so the sender and any peers remove
+                // that rejected row instead of replaying it as an upsert.
+                log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+                return Ok(Applied::Skipped);
+            }
+            delete_local_correction_for_remote_winner(conn, conflict.0, conflict.1.as_deref())?;
+        }
+        conn.execute(
+            "UPDATE dictionary_corrections
+                SET context_id = ?2, dictionary_id = ?3, mistake = ?4,
+                    auto_learned = ?5, correction_count = ?6,
+                    confidence_tier = ?7, last_seen_at = ?8, created_at = ?9
+              WHERE id = ?1",
+            params![
+                existing_id,
+                context_id,
+                dictionary_id,
+                row.mistake,
+                row.auto_learned as i64,
+                row.correction_count,
+                row.confidence_tier,
+                row.last_seen_at,
+                row.created_at,
+            ],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+             VALUES (?1, ?2)",
+            params![context_id, dictionary_id],
+        )?;
+        // The child mapping is the only authoritative correction projection.
+        // Clear a stale legacy value if this row came from a partially
+        // migrated database or an older local write.
+        conn.execute(
+            "UPDATE dictionary SET mistake = NULL WHERE id = ?1",
+            params![dictionary_id],
+        )?;
+        log_applied(conn, op)?;
+        log_context_upserts(conn, &[context_id])?;
+        return Ok(Applied::Yes);
+    }
+
+    if let Some(conflict) = correction_target_for_natural_key(conn, context_id, &row.mistake, None)?
+    {
+        let conflict_stamp = conflict
+            .1
+            .as_deref()
+            .map(|uuid| latest_stamp(conn, "dictionary_corrections", uuid))
+            .transpose()?
+            .flatten()
+            .unwrap_or((0, String::new(), 0));
+        if !remote_correction_wins(row.auto_learned, conflict.3, op.stamp(), conflict_stamp) {
+            // The remote mapping is the loser. Keep the local row and make
+            // the decision durable on the sender through a tombstone for the
+            // losing UUID.
+            log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+            return Ok(Applied::Skipped);
+        }
+        delete_local_correction_for_remote_winner(conn, conflict.0, conflict.1.as_deref())?;
+    }
+
+    // A correction implies that its canonical item is assigned to the same
+    // Context. This repairs a batch where the independent child delta arrives
+    // after a Context aggregate that did not yet contain the membership.
+    conn.execute(
+        "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+         VALUES (?1, ?2)",
+        params![context_id, dictionary_id],
+    )?;
+    conn.execute(
+        "UPDATE dictionary SET mistake = NULL WHERE id = ?1",
+        params![dictionary_id],
+    )?;
+    conn.execute(
+        "INSERT INTO dictionary_corrections
+           (uuid, context_id, dictionary_id, mistake, auto_learned,
+            correction_count, confidence_tier, last_seen_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            op.row_uuid,
+            context_id,
+            dictionary_id,
+            row.mistake,
+            row.auto_learned as i64,
+            row.correction_count,
+            row.confidence_tier,
+            row.last_seen_at,
+            row.created_at,
+        ],
+    )?;
+    log_applied(conn, op)?;
+    log_context_upserts(conn, &[context_id])?;
+    Ok(Applied::Yes)
 }
 
 fn apply_snippet_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
@@ -1086,8 +1917,33 @@ fn apply_with_natural_key_resolution(
                 // Remote row wins: remove the local loser (with its cascades)
                 // and retry the insert.
                 if table == "dictionary" {
-                    log_contexts_referencing_dictionary(conn, &conflict_uuid)?;
-                } else if table == "snippets" {
+                    // Capture before the parent delete, because the foreign
+                    // key cascade would otherwise erase the mappings and
+                    // memberships attached to the losing canonical UUID.
+                    let dictionary_children = capture_dictionary_children(conn, &conflict_uuid)?;
+                    return with_sync_savepoint(conn, |conn| {
+                        log_contexts_referencing_dictionary(conn, &conflict_uuid)?;
+                        conn.execute(
+                            "DELETE FROM dictionary WHERE uuid = ?1",
+                            params![conflict_uuid],
+                        )?;
+                        insert(conn).map_err(|e| anyhow!("sync: retry insert failed: {e}"))?;
+                        let winner_id: i64 = conn.query_row(
+                            "SELECT id FROM dictionary WHERE uuid = ?1",
+                            params![op.row_uuid],
+                            |r| r.get(0),
+                        )?;
+                        restore_dictionary_children(conn, &dictionary_children, winner_id)?;
+                        // Retain a durable tombstone for the local loser so
+                        // peers that have not seen the winning UUID cannot
+                        // resurrect the old canonical row later.
+                        log_natural_key_delete(conn, &conflict_uuid)?;
+                        log_applied(conn, op)?;
+                        Ok(Applied::Yes)
+                    });
+                }
+
+                if table == "snippets" {
                     log_contexts_referencing_snippet(conn, &conflict_uuid)?;
                 }
                 conn.execute(
@@ -1099,7 +1955,11 @@ fn apply_with_natural_key_resolution(
                 Ok(Applied::Yes)
             } else {
                 // Local row wins: tell the peer (eventually) to drop its loser.
-                log_anti_entropy_delete(conn, table, &op.row_uuid)?;
+                if table == "dictionary" {
+                    log_natural_key_delete(conn, &op.row_uuid)?;
+                } else {
+                    log_anti_entropy_delete(conn, table, &op.row_uuid)?;
+                }
                 Ok(Applied::Skipped)
             }
         }
@@ -1164,6 +2024,27 @@ fn apply_simple_delete(
         log::debug!("sync: delete for absent {} row {}", table, op.row_uuid);
     }
     Ok(Applied::Yes)
+}
+
+fn apply_dictionary_natural_key_delete(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if let Some(stamp) = latest_stamp(conn, NATURAL_KEY_TOMBSTONE_TABLE, &op.row_uuid)? {
+        if !op.newer_than(&stamp) {
+            return Ok(Applied::Skipped);
+        }
+    }
+
+    // A natural-key tombstone can arrive separately from the winning
+    // canonical upsert. Keep the losing row while it still owns Context
+    // children; the later winner upsert will atomically reparent those
+    // children before removing the loser. Deleting it here would make the
+    // correction/membership data unrecoverable on this peer.
+    let children = capture_dictionary_children(conn, &op.row_uuid)?;
+    if !children.context_ids.is_empty() || !children.corrections.is_empty() {
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+
+    apply_simple_delete(conn, op, "dictionary", NATURAL_KEY_TOMBSTONE_TABLE)
 }
 
 fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
@@ -1297,10 +2178,44 @@ fn delete_context_by_uuid(conn: &Connection, uuid: &str) -> Result<()> {
     else {
         return Ok(());
     };
+    let is_everywhere: bool = conn.query_row(
+        "SELECT is_everywhere != 0 FROM contexts WHERE id = ?1",
+        params![context_id],
+        |r| r.get(0),
+    )?;
+    if is_everywhere {
+        // The built-in fallback Context is undeletable locally and must not
+        // be removed by a malformed or stale remote tombstone either.
+        return Ok(());
+    }
+    let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
+    let correction_uuids: Vec<String> = conn
+        .prepare(
+            "SELECT uuid FROM dictionary_corrections
+              WHERE context_id = ?1 AND uuid IS NOT NULL ORDER BY id",
+        )?
+        .query_map(params![context_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     // Reuse the app's delete semantics: junction rows move to Everywhere so
     // vocabulary is never orphaned. Trigger-suppressed; the delete op itself
-    // is logged by the caller.
+    // is logged by the caller. Because this is a remote apply, the local
+    // triggers are intentionally silent; explicitly log the moved mappings
+    // and the new Everywhere aggregate below so this device can relay the
+    // same deletion semantics to its other peers.
     db::delete_context_conn(conn, context_id)?;
+    for correction_uuid in correction_uuids {
+        let still_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary_corrections WHERE uuid = ?1)",
+            params![correction_uuid],
+            |r| r.get(0),
+        )?;
+        if still_exists {
+            append_self_log(conn, "dictionary_corrections", &correction_uuid, "upsert")?;
+        } else {
+            log_anti_entropy_delete(conn, "dictionary_corrections", &correction_uuid)?;
+        }
+    }
+    log_context_upserts(conn, &[everywhere_id])?;
     Ok(())
 }
 
@@ -1401,21 +2316,50 @@ fn reconcile_context_children(
 }
 
 /// Junction membership reconcile: add everything in the payload that resolves
-/// locally, remove everything currently present that the payload lacks.
+/// locally, remove everything currently present that the payload lacks. A
+/// dictionary reference carries its natural term as well as its UUID so a
+/// canonical loser can still resolve to the surviving shared row.
 fn reconcile_context_members(
     conn: &Connection,
     context_id: i64,
     aggregate: &ContextAggregate,
 ) -> Result<()> {
-    let mut resolved_dictionary: Vec<i64> = Vec::with_capacity(aggregate.dictionary_uuids.len());
+    let dictionary_entries = if aggregate.dictionary_entries.is_empty() {
+        aggregate
+            .dictionary_uuids
+            .iter()
+            .map(|uuid| DictionaryReference {
+                uuid: uuid.clone(),
+                term: String::new(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        aggregate.dictionary_entries.clone()
+    };
+    let mut resolved_dictionary: Vec<i64> = Vec::with_capacity(dictionary_entries.len());
+    let mut unresolved_dictionary = false;
     {
         let mut stmt = conn.prepare("SELECT id FROM dictionary WHERE uuid = ?1")?;
-        for uuid in &aggregate.dictionary_uuids {
-            if let Some(id) = stmt
-                .query_row(params![uuid], |r| r.get::<_, i64>(0))
+        for entry in &dictionary_entries {
+            let by_uuid = stmt
+                .query_row(params![entry.uuid], |r| r.get::<_, i64>(0))
+                .optional()?;
+            let by_term = if by_uuid.is_none() && !entry.term.trim().is_empty() {
+                conn.query_row(
+                    "SELECT id FROM dictionary WHERE term = ?1",
+                    params![entry.term.trim()],
+                    |r| r.get::<_, i64>(0),
+                )
                 .optional()?
-            {
-                resolved_dictionary.push(id);
+            } else {
+                None
+            };
+            if let Some(id) = by_uuid.or(by_term) {
+                if !resolved_dictionary.contains(&id) {
+                    resolved_dictionary.push(id);
+                }
+            } else {
+                unresolved_dictionary = true;
             }
         }
     }
@@ -1425,13 +2369,24 @@ fn reconcile_context_members(
             params![context_id, dictionary_id],
         )?;
     }
-    delete_members_not_in(
-        conn,
-        "dictionary_contexts",
-        "dictionary_id",
-        context_id,
-        &resolved_dictionary,
-    )?;
+    // Do not prune on an unresolved reference: the parent may be in a later
+    // batch, and pruning now would erase a valid local assignment. Once every
+    // reference resolves, record correction tombstones before the junction
+    // delete (the dictionary_contexts delete trigger removes child mappings).
+    if !unresolved_dictionary {
+        let correction_uuids =
+            correction_uuids_for_pruned_dictionary_members(conn, context_id, &resolved_dictionary)?;
+        delete_members_not_in(
+            conn,
+            "dictionary_contexts",
+            "dictionary_id",
+            context_id,
+            &resolved_dictionary,
+        )?;
+        for correction_uuid in correction_uuids {
+            append_self_log(conn, "dictionary_corrections", &correction_uuid, "delete")?;
+        }
+    }
 
     let mut resolved_snippets: Vec<i64> = Vec::with_capacity(aggregate.snippet_uuids.len());
     {
@@ -1459,6 +2414,24 @@ fn reconcile_context_members(
         &resolved_snippets,
     )?;
     Ok(())
+}
+
+fn correction_uuids_for_pruned_dictionary_members(
+    conn: &Connection,
+    context_id: i64,
+    keep_ids: &[i64],
+) -> Result<Vec<String>> {
+    let keep_json = serde_json::to_string(keep_ids)?;
+    conn.prepare(
+        "SELECT c.uuid
+           FROM dictionary_corrections c
+          WHERE c.context_id = ?1
+            AND c.uuid IS NOT NULL
+            AND c.dictionary_id NOT IN (SELECT value FROM json_each(?2))",
+    )?
+    .query_map(params![context_id, keep_json], |r| r.get::<_, String>(0))?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(Into::into)
 }
 
 fn delete_members_not_in(
@@ -1965,9 +2938,18 @@ where
                 send_message(stream, &Message::Ack { seq: acked }).await?;
                 if batch.done {
                     // Final batch: remember the position so the next session
-                    // pulls only fresh changes.
-                    let conn = lock(db)?;
-                    sync_store::set_peer_recv_cursor(&conn, &peer.device_uuid, acked)?;
+                    // pulls only fresh changes. A deferred correction keeps
+                    // the old cursor, causing the sender to replay the
+                    // dependency and child rather than permanently dropping
+                    // the child when it was in an earlier batch.
+                    if !summary.deferred {
+                        let conn = lock(db)?;
+                        sync_store::set_peer_recv_cursor(&conn, &peer.device_uuid, acked)?;
+                    } else {
+                        log::warn!(
+                            "sync: retaining peer cursor because a correction dependency was deferred"
+                        );
+                    }
                     break;
                 }
             }
@@ -2062,11 +3044,13 @@ where
 impl ApplySummary {
     fn merge(&mut self, other: ApplySummary) {
         self.dictionary |= other.dictionary;
+        self.dictionary_corrections |= other.dictionary_corrections;
         self.snippets |= other.snippets;
         self.contexts |= other.contexts;
         self.history |= other.history;
         self.settings |= other.settings;
         self.stats |= other.stats;
+        self.deferred |= other.deferred;
         self.applied += other.applied;
         self.skipped += other.skipped;
     }

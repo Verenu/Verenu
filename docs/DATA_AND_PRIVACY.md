@@ -48,8 +48,13 @@ Manual export and import stay local unless you choose to move the file elsewhere
 Current backup export includes:
 
 - Settings
-- Context groups, vocabulary, and snippets
+- Context groups, app/website targets, context assignments, context-specific
+  vocabulary and AutoLearn correction mappings, and snippets
 - Derived stats
+
+Short-lived AutoLearn candidate/pending evidence is intentionally local-only
+and is not exported or synchronized. Persistent promoted mappings retain their
+originating Context during backup restore and LAN sync.
 
 Current backup export does not include full transcription history.
 

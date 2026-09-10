@@ -30,7 +30,8 @@ use correction::*;
 use focused_text::*;
 #[allow(unused_imports)]
 pub use focused_text::{
-    read_focused_text, read_focused_text_probe, read_injection_context_probe, FocusedTextProbe,
+    read_focused_text, read_focused_text_around, read_focused_text_near_caret,
+    read_focused_text_probe, read_injection_context_probe, FocusedTextProbe,
 };
 pub use monitor::start_monitor;
 use monitor::*;
@@ -127,8 +128,16 @@ impl StableTextGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::context::ResolvedContextIdentity;
     use crate::core::text_context::SentenceContext;
     use crate::data::db;
+
+    fn test_context(id: i64) -> ResolvedContextIdentity {
+        ResolvedContextIdentity {
+            id,
+            label: format!("Context {id}"),
+        }
+    }
 
     #[derive(Debug, serde::Deserialize)]
     struct AutoLearnCase {
@@ -155,6 +164,88 @@ mod tests {
         assert_eq!(diffs[0].mistake, "Koobernetes");
         assert_eq!(diffs[0].correction, "Kubernetes");
         assert!(diffs[0].confidence > 0.0);
+    }
+
+    #[test]
+    fn reversed_surrounding_context_is_rejected_without_panicking() {
+        let injected = "Ask about Koobernetes";
+        let baseline = format!("left-boundary {injected} right-boundary");
+        let current = " right-boundary Ask about Kubernetesleft-boundary ";
+        assert!(detect_corrections_from_anchored_text(injected, &baseline, current).is_empty());
+    }
+
+    #[test]
+    fn long_document_windows_with_one_origin_keep_correction_aligned() {
+        let prefix = "earlier context ".repeat(400);
+        let suffix = " later context".repeat(400);
+        let injected = "Ask me about Koobernetes today";
+        let baseline = format!("{prefix}{injected}{suffix}");
+        let current = format!("{prefix}Ask me about Kubernetes today{suffix}");
+
+        let diffs = detect_corrections_from_anchored_text(injected, &baseline, &current);
+        assert_eq!(
+            diffs
+                .into_iter()
+                .map(|candidate| (candidate.mistake, candidate.correction))
+                .collect::<Vec<_>>(),
+            vec![("Koobernetes".to_string(), "Kubernetes".to_string())]
+        );
+    }
+
+    #[test]
+    fn shifted_windows_keep_a_length_changing_correction_anchored() {
+        let before = format!(
+            "start {}",
+            (0..180)
+                .map(|index| format!("left{index} "))
+                .collect::<String>()
+        );
+        let after = format!(
+            "{} end",
+            (0..180)
+                .map(|index| format!("right{index} "))
+                .collect::<String>()
+        );
+        let injected = "Ask me about Koobernetes today";
+        let baseline = format!("{before}{injected}{after}");
+        let current = format!("{}Ask me about Kubernetes today{}", &before[48..], after);
+
+        let diffs = detect_corrections_from_anchored_text(injected, &baseline, &current);
+        assert_eq!(
+            diffs
+                .into_iter()
+                .map(|candidate| (candidate.mistake, candidate.correction))
+                .collect::<Vec<_>>(),
+            vec![("Koobernetes".to_string(), "Kubernetes".to_string())]
+        );
+    }
+
+    #[test]
+    fn long_injection_is_not_lost_when_the_window_moves() {
+        let before = format!(
+            "begin {}",
+            (0..200)
+                .map(|index| format!("left{index} "))
+                .collect::<String>()
+        );
+        let injected = format!("{} Koobernetes", "dictated ".repeat(350));
+        let corrected = format!("{} Kubernetes", "dictated ".repeat(350));
+        let after = format!(
+            "{} finish",
+            (0..200)
+                .map(|index| format!("right{index} "))
+                .collect::<String>()
+        );
+        let baseline = format!("{before}{injected}{after}");
+        let current = format!("{}{}{}", &before[48..], corrected, after);
+
+        assert_eq!(
+            detect_corrections_from_anchored_text(&injected, &baseline, &current)
+                .into_iter()
+                .map(|candidate| (candidate.mistake, candidate.correction))
+                .collect::<Vec<_>>(),
+            vec![("Koobernetes".to_string(), "Kubernetes".to_string())]
+        );
     }
 
     #[test]
@@ -204,6 +295,21 @@ mod tests {
     }
 
     #[test]
+    fn long_dictations_with_a_local_correction_stay_bounded() {
+        let prefix = (0..20_000)
+            .map(|index| format!("word{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let original = format!("{prefix} Koobernetes today");
+        let corrected = format!("{prefix} Kubernetes today");
+
+        assert_eq!(
+            diff_words(&original, &corrected),
+            vec![("Koobernetes".to_string(), "Kubernetes".to_string())]
+        );
+    }
+
+    #[test]
     fn short_common_word_swaps_are_rejected() {
         assert!(diff_words("as me later", "ask me later").is_empty());
     }
@@ -243,7 +349,7 @@ mod tests {
         assert!(!record_candidate(
             &db,
             &mut recorded,
-            "test-app",
+            &test_context(1),
             "Koobernetes".to_string(),
             "Kubernetes".to_string(),
             0.6,
@@ -251,7 +357,7 @@ mod tests {
         assert!(!record_candidate(
             &db,
             &mut recorded,
-            "test-app",
+            &test_context(1),
             "Koobernetes".to_string(),
             "Kubernetes".to_string(),
             0.6,
@@ -278,7 +384,7 @@ mod tests {
                 record_candidate(
                     &db,
                     &mut recorded,
-                    "test-app",
+                    &test_context(1),
                     "Koobernetes".to_string(),
                     "Kubernetes".to_string(),
                     0.6,
@@ -304,7 +410,7 @@ mod tests {
                 record_candidate(
                     &db,
                     &mut recorded,
-                    "test-app",
+                    &test_context(1),
                     "rock".to_string(),
                     "qroq".to_string(),
                     0.6,
@@ -328,7 +434,7 @@ mod tests {
         assert!(record_candidate(
             &db,
             &mut recorded,
-            "test-app",
+            &test_context(1),
             "vsc0de".to_string(),
             "vscode".to_string(),
             0.75,
@@ -340,6 +446,36 @@ mod tests {
         assert_eq!(entries[0].mistake.as_deref(), Some("vsc0de"));
         assert!(entries[0].auto_learned);
         assert_eq!(entries[0].confidence_tier, "high");
+    }
+
+    #[test]
+    fn monitor_keys_are_scoped_to_the_resolved_context() {
+        let development = test_context(2);
+        let writing = test_context(3);
+
+        assert_eq!(
+            monitor_key("same injected phrase", &development),
+            monitor_key("same injected phrase", &development)
+        );
+        assert_ne!(
+            monitor_key("same injected phrase", &development),
+            monitor_key("same injected phrase", &writing)
+        );
+    }
+
+    #[test]
+    fn candidate_session_keys_are_scoped_to_the_resolved_context() {
+        let development = test_context(2);
+        let writing = test_context(3);
+
+        assert_eq!(
+            candidate_session_key(&development, "Koobernetes", "Kubernetes"),
+            candidate_session_key(&development, "Koobernetes", "Kubernetes")
+        );
+        assert_ne!(
+            candidate_session_key(&development, "Koobernetes", "Kubernetes"),
+            candidate_session_key(&writing, "Koobernetes", "Kubernetes")
+        );
     }
 
     #[test]
@@ -435,6 +571,18 @@ mod tests {
     }
 
     #[test]
+    fn event_mode_fallback_reads_without_a_hook() {
+        assert!(event_mode_should_read(false, false, false));
+    }
+
+    #[test]
+    fn event_mode_reads_again_after_one_edit_to_reach_stability() {
+        assert!(event_mode_should_read(true, false, true));
+        assert!(event_mode_should_read(true, true, false));
+        assert!(!event_mode_should_read(true, false, false));
+    }
+
+    #[test]
     fn auto_learn_regression_matrix() {
         let raw = include_str!("../../testdata/auto_learn_cases.json");
         let cases: Vec<AutoLearnCase> = serde_json::from_str(raw).expect("valid cases");
@@ -470,7 +618,7 @@ mod tests {
                     let promoted = record_candidate(
                         &db,
                         &mut recorded,
-                        "test-app",
+                        &test_context(1),
                         mistake.clone(),
                         correction.clone(),
                         confidence,

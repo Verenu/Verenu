@@ -183,22 +183,21 @@ fn query_dictionary_conn(
     Ok(canonical_rows
         .into_iter()
         .map(|(id, mut legacy)| {
-                let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
-                // A scoped query must never fall back to the old global
-                // projection.  v26 migrates it into child rows and clears
-                // `dictionary.mistake`; ignoring the projection here also
-                // keeps a stale value from an interrupted/remote legacy write
-                // from leaking a correction learned in another Context.
-                if context_id.is_some() {
-                    legacy.mistake = None;
-                    legacy.auto_learned = false;
-                    legacy.correction_count = 0;
-                    legacy.confidence_tier = "manual".to_string();
-                    legacy.last_seen_at = None;
-                }
-                materialize_dictionary_entry(id, legacy, corrections)
-            },
-        )
+            let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
+            // A scoped query must never fall back to the old global
+            // projection.  v26 migrates it into child rows and clears
+            // `dictionary.mistake`; ignoring the projection here also
+            // keeps a stale value from an interrupted/remote legacy write
+            // from leaking a correction learned in another Context.
+            if context_id.is_some() {
+                legacy.mistake = None;
+                legacy.auto_learned = false;
+                legacy.correction_count = 0;
+                legacy.confidence_tier = "manual".to_string();
+                legacy.last_seen_at = None;
+            }
+            materialize_dictionary_entry(id, legacy, corrections)
+        })
         .collect())
 }
 
@@ -541,9 +540,25 @@ pub fn check_dictionary_mistake_conflicts(
     dictionary_id: Option<i64>,
     mistake: Option<&str>,
 ) -> Result<()> {
+    if let Some((variant, term)) =
+        find_dictionary_mistake_conflict(conn, context_id, dictionary_id, mistake)?
+    {
+        anyhow::bail!(
+            "Often mistranscribed as \"{variant}\" already belongs to \"{term}\" in this context"
+        );
+    }
+    Ok(())
+}
+
+fn find_dictionary_mistake_conflict(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+    dictionary_id: Option<i64>,
+    mistake: Option<&str>,
+) -> Result<Option<(String, String)>> {
     let candidate_variants = normalized_mistake_variants(mistake);
     if candidate_variants.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     // v26 makes child rows the only Context-aware source of corrections.
@@ -569,14 +584,12 @@ pub fn check_dictionary_mistake_conflicts(
         let (_id, term, existing_mistake) = row?;
         for variant in dictionary_mistake_variants(existing_mistake.as_deref().unwrap_or("")) {
             if candidate_variants.contains(&variant.to_lowercase()) {
-                anyhow::bail!(
-                    "Often mistranscribed as \"{variant}\" already belongs to \"{term}\" in this context"
-                );
+                return Ok(Some((variant.to_string(), term)));
             }
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn normalized_mistake_list(mistake: Option<&str>) -> Vec<String> {
@@ -1113,33 +1126,9 @@ pub fn insert_dictionary_entry_auto_learned_for_context(
     Ok(changed)
 }
 
-pub fn log_auto_learn_event(
-    db: &Db,
-    event_type: &str,
-    reason_code: &str,
-    app_context: &str,
-    mistake_hash: &str,
-    correction_hash: &str,
-    confidence: f64,
-) -> Result<()> {
-    log_auto_learn_event_with_context(
-        db,
-        None,
-        AutoLearnEventFields {
-            event_type,
-            reason_code,
-            app_context,
-            mistake_hash,
-            correction_hash,
-            confidence,
-        },
-    )
-}
-
 /// Context-aware event writer. The legacy wrapper above remains for old
 /// telemetry callers; new monitor paths should always provide the immutable
 /// originating Context id.
-#[expect(dead_code, reason = "Consumed by the Context-aware monitor in the stacked runtime change")]
 pub fn log_auto_learn_event_for_context(
     db: &Db,
     context_id: i64,
@@ -1211,20 +1200,7 @@ pub fn upsert_auto_learn_candidate_for_context(
     .map_err(Into::into)
 }
 
-/// Compatibility wrapper for the legacy monitor API. The Context-aware
-/// runtime uses [`upsert_auto_learn_candidate_for_context`]; callers that do
-/// not yet capture a Context retain the historical Everywhere scope until
-/// they are migrated.
-pub fn upsert_auto_learn_candidate(
-    db: &Db,
-    wrong: &str,
-    correct: &str,
-    confidence: f64,
-) -> Result<f64> {
-    upsert_auto_learn_candidate_for_context(db, EVERYWHERE_CONTEXT_ID, wrong, correct, confidence)
-}
-
-/// Outcome of an [`auto_learn_promote`] attempt.
+/// Outcome of an [`auto_learn_promote_for_context`] attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoLearnPromoteResult {
     /// The pair was promoted to the dictionary (or its existing auto-learned
@@ -1347,14 +1323,11 @@ pub fn auto_learn_promote_for_context(
             |r| r.get(0),
         )
         .optional()?;
-    if let Err(error) =
-        check_dictionary_mistake_conflicts(&tx, context_id, existing_dictionary_id, Some(wrong))
+    if find_dictionary_mistake_conflict(&tx, context_id, existing_dictionary_id, Some(wrong))?
+        .is_some()
     {
-        if error.to_string().starts_with("Often mistranscribed as ") {
-            tx.commit()?;
-            return Ok(AutoLearnPromoteResult::Blocked);
-        }
-        return Err(error);
+        tx.commit()?;
+        return Ok(AutoLearnPromoteResult::Blocked);
     }
 
     // Atomic claim on the candidate. 0 rows means the candidate is already
@@ -1418,28 +1391,6 @@ pub fn auto_learn_promote_for_context(
 
     tx.commit()?;
     Ok(AutoLearnPromoteResult::Promoted)
-}
-
-/// Compatibility wrapper for legacy callers that do not carry the resolved
-/// Context. New code must use [`auto_learn_promote_for_context`] so evidence
-/// and persistent mappings retain their originating Context.
-pub fn auto_learn_promote(
-    db: &Db,
-    wrong: &str,
-    correct: &str,
-    confidence_tier: &str,
-    pending_retention_days: i64,
-    threshold: i64,
-) -> Result<AutoLearnPromoteResult> {
-    auto_learn_promote_for_context(
-        db,
-        EVERYWHERE_CONTEXT_ID,
-        wrong,
-        correct,
-        confidence_tier,
-        pending_retention_days,
-        threshold,
-    )
 }
 
 pub fn get_auto_learn_status_summary(db: &Db) -> Result<AutoLearnStatusSummary> {
@@ -1748,7 +1699,6 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
 /// This is the Contexts-surface counterpart to the legacy global delete. An
 /// automatically-created canonical row is removed only when this was its last
 /// assignment and no correction mapping remains anywhere.
-#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn remove_dictionary_entry_from_context(
     db: &Db,
     context_id: i64,
@@ -1781,7 +1731,6 @@ pub fn remove_dictionary_entry_from_context(
 /// shared item, moving is an explicit transfer: its Context-owned correction
 /// mappings follow the assignment, while any unpromoted evidence in the source
 /// Context is discarded because it has no safe destination.
-#[expect(dead_code, reason = "Consumed by the Contexts library command in the stacked runtime change")]
 pub fn move_dictionary_entry_to_context(
     db: &Db,
     dictionary_id: i64,
@@ -2130,11 +2079,12 @@ pub fn delete_auto_learned_corrections_by_ids(
     Ok(deleted)
 }
 
-/// Compatibility wrapper for the legacy rejection caller, whose IDs are
+/// Test-only compatibility wrapper for the legacy rejection caller, whose IDs are
 /// canonical dictionary ids and whose historical behavior only ever learned
 /// into Everywhere. New callers must use
 /// `delete_auto_learned_corrections_by_ids` with child mapping ids and an
 /// originating Context.
+#[cfg(test)]
 pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
