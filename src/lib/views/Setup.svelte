@@ -81,7 +81,12 @@
 
   onMount(async () => {
     void loadHotkey();
-    if (isAndroid) {
+    if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
+      // Browser-dev runs can exercise the Android-shaped wizard at a narrow
+      // viewport, but have no native capability probe. Keep the local option
+      // visible so the layout and download flow remain testable.
+      localAiSupported = true;
+    } else if (isAndroid) {
       void invoke<{ localAiSupported?: boolean; localAiUnsupportedReason?: string }>('android_get_platform_info')
         .then((info) => {
           localAiSupported = info.localAiSupported !== false;

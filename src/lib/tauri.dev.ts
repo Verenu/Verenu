@@ -1439,6 +1439,10 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         { name: 'Discord', exe: 'discord.exe', developer: 'Discord Inc.' },
         { name: 'Windows Terminal', exe: 'wt.exe', developer: 'Microsoft Corporation' },
       ] as T;
+    case 'download_diagnostics_bundle':
+      return (args?.format === 'text'
+        ? 'browser-dev://verenu-logs.txt'
+        : 'browser-dev://verenu-diagnostics.json') as T;
     case 'get_stats':
       return { total_words: 0, avg_wpm: 0, day_streak: 0 } as T;
     case 'get_insights': {
