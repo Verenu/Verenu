@@ -1465,7 +1465,7 @@ fn restore_dictionary_children(
 
 fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.table == NATURAL_KEY_TOMBSTONE_TABLE {
-        return apply_simple_delete(conn, op, "dictionary", NATURAL_KEY_TOMBSTONE_TABLE);
+        return apply_dictionary_natural_key_delete(conn, op);
     }
     if op.is_delete() {
         return apply_simple_delete(conn, op, "dictionary", "dictionary");
@@ -2024,6 +2024,27 @@ fn apply_simple_delete(
         log::debug!("sync: delete for absent {} row {}", table, op.row_uuid);
     }
     Ok(Applied::Yes)
+}
+
+fn apply_dictionary_natural_key_delete(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if let Some(stamp) = latest_stamp(conn, NATURAL_KEY_TOMBSTONE_TABLE, &op.row_uuid)? {
+        if !op.newer_than(&stamp) {
+            return Ok(Applied::Skipped);
+        }
+    }
+
+    // A natural-key tombstone can arrive separately from the winning
+    // canonical upsert. Keep the losing row while it still owns Context
+    // children; the later winner upsert will atomically reparent those
+    // children before removing the loser. Deleting it here would make the
+    // correction/membership data unrecoverable on this peer.
+    let children = capture_dictionary_children(conn, &op.row_uuid)?;
+    if !children.context_ids.is_empty() || !children.corrections.is_empty() {
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+
+    apply_simple_delete(conn, op, "dictionary", NATURAL_KEY_TOMBSTONE_TABLE)
 }
 
 fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {

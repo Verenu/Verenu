@@ -2,6 +2,8 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 
 static ACTIVE_MONITORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static LAST_RETENTION_PRUNE: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
+const RETENTION_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub(super) struct CandidateSessionKey {
@@ -46,6 +48,31 @@ fn log_context_event(
             confidence,
         },
     );
+}
+
+fn prune_retention_if_due(db: &DbHandle) {
+    let now = std::time::Instant::now();
+    let should_prune = {
+        let mut last_prune = LAST_RETENTION_PRUNE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .expect("AutoLearn retention-prune lock poisoned");
+        if last_prune.is_some_and(|last| now.duration_since(last) < RETENTION_PRUNE_INTERVAL) {
+            false
+        } else {
+            *last_prune = Some(now);
+            true
+        }
+    };
+    if !should_prune {
+        return;
+    }
+    if let Err(e) = db::prune_pending_corrections(db, PENDING_RETENTION_DAYS) {
+        log::warn!("auto-learn prune failed: {e}");
+    }
+    if let Err(e) = db::prune_auto_learn_retention(db) {
+        log::warn!("auto-learn bookkeeping retention failed: {e}");
+    }
 }
 
 pub(super) fn active_monitors() -> &'static Mutex<HashSet<String>> {
@@ -301,12 +328,7 @@ struct MonitorTask {
 impl MonitorTask {
     fn new(request: MonitorRequest) -> Self {
         let now = std::time::Instant::now();
-        if let Err(e) = db::prune_pending_corrections(&request.db, PENDING_RETENTION_DAYS) {
-            log::warn!("auto-learn prune failed: {e}");
-        }
-        if let Err(e) = db::prune_auto_learn_retention(&request.db) {
-            log::warn!("auto-learn bookkeeping retention failed: {e}");
-        }
+        prune_retention_if_due(&request.db);
         log_context_event(
             &request.db,
             &request.context,
@@ -522,10 +544,22 @@ fn run_coordinator(receiver: std::sync::mpsc::Receiver<MonitorRequest>) {
 
         let mut index = 0;
         while index < tasks.len() {
-            if tasks[index].step() {
-                tasks.swap_remove(index);
-            } else {
-                index += 1;
+            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tasks[index].step()
+            }));
+            match step {
+                Ok(true) => {
+                    tasks.swap_remove(index);
+                }
+                Ok(false) => index += 1,
+                Err(_) => {
+                    // A malformed accessibility response or native API
+                    // failure must retire only this session. Do not let an
+                    // unwind permanently disconnect the coordinator and
+                    // disable AutoLearn for every later dictation.
+                    log::error!("auto-learn monitor task panicked; retiring task");
+                    tasks.swap_remove(index);
+                }
             }
         }
         match receiver.recv_timeout(std::time::Duration::from_millis(50)) {

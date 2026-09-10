@@ -923,6 +923,54 @@ fn rejected_remote_auto_correction_gets_a_tombstone() {
 }
 
 #[test]
+fn natural_key_tombstone_does_not_drop_children_before_winner_arrives() {
+    let db = test_db(&uuid("natural-tombstone-children"));
+    let context = db::insert_context_returning(&db, "Development", None, None, None, None, false)
+        .expect("context");
+    let local = db::insert_dictionary_entry_returning(
+        &db,
+        "SharedTerm",
+        Some("SharedMistake"),
+        Some(context.id),
+    )
+    .expect("local canonical");
+    let conn = db.lock().expect("lock");
+    let context_id_uuid = context_uuid(&conn, context.id);
+    let local_uuid = row_uuid(&conn, "dictionary", local.id);
+    let tombstone = super::protocol::SyncOp {
+        table: "dictionary_natural_key".to_string(),
+        row_uuid: local_uuid.clone(),
+        op: "delete".to_string(),
+        ts_ms: sync_store::now_ms() + 10_000,
+        origin: uuid("natural-tombstone-origin"),
+        origin_seq: 1,
+        payload: None,
+    };
+    engine::apply_ops(&conn, &[tombstone]).expect("apply natural-key tombstone");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"), 1);
+
+    let winner = dictionary_op_with_uuid(
+        &uuid("natural-tombstone-winner"),
+        "SharedTerm",
+        sync_store::now_ms() + 20_000,
+    );
+    engine::apply_ops(&conn, &[winner]).expect("apply canonical winner");
+    let stored: (String, String) = conn
+        .query_row(
+            "SELECT d.uuid, c.mistake
+               FROM dictionary_corrections c
+               INNER JOIN dictionary d ON d.id = c.dictionary_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reparented correction");
+    assert_ne!(stored.0, local_uuid);
+    assert_eq!(stored.1, "SharedMistake");
+    assert_eq!(context_uuid(&conn, context.id), context_id_uuid);
+}
+
+#[test]
 fn correction_delete_is_scoped_and_leaves_canonical_dictionary_row() {
     let db = test_db(&uuid("correction-delete"));
     let context =

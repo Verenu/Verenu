@@ -1452,7 +1452,10 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
           nextCorrections.push(correction);
           continue;
         }
-        const alreadyEverywhere = nextCorrections.some(
+        const alreadyEverywhere = corrections.some(
+          (candidate) => candidate.context_id === DEV_EVERYWHERE_CONTEXT_ID
+            && candidate.dictionary_id === correction.dictionary_id,
+        ) || nextCorrections.some(
           (candidate) => candidate.context_id === DEV_EVERYWHERE_CONTEXT_ID
             && candidate.dictionary_id === correction.dictionary_id,
         );
