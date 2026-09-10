@@ -4,21 +4,18 @@ fn main() {
     // Read CARGO_CFG_TARGET_OS for cross-compiles and keep desktop-only native
     // bridges out of mobile builds.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target = std::env::var("TARGET").unwrap_or_default();
     if target_os == "windows" {
         #[cfg(target_os = "windows")]
         build_windows_titlebar();
     }
 
-    if target_os == "macos" || target.contains("-apple-darwin") {
+    #[cfg(target_os = "macos")]
+    {
         println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
         cc::Build::new()
             .file("src/system/macos_ax_text_marker.m")
             .flag("-fobjc-arc")
             .compile("verenu_macos_ax_text_marker");
-        // Keep the FFI shim explicit in the final link. This is needed
-        // when Tauri's custom build metadata is emitted after cc-rs.
-        println!("cargo:rustc-link-lib=static=verenu_macos_ax_text_marker");
     }
 
     // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
