@@ -12,6 +12,38 @@ fn unique_tmp_path() -> PathBuf {
     p
 }
 
+#[test]
+fn migrate_legacy_settings_prefers_production_copy() {
+    let root = std::env::temp_dir().join(format!(
+        "verenu_settings_migrate_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let production = root.join("com.verenu.app").join("settings.json");
+    let development = root.join("com.verenu.app.dev").join("settings.json");
+    let shared = root.join("Verenu").join("settings.json");
+    std::fs::create_dir_all(production.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(development.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+    std::fs::write(&production, r#"{"transcription_provider":"groq"}"#).unwrap();
+    std::fs::write(&development, r#"{"transcription_provider":"openai"}"#).unwrap();
+
+    // Simulate the Windows candidate order used by migrate_legacy_settings_file.
+    for candidate in [&production, &development] {
+        if shared.exists() {
+            break;
+        }
+        std::fs::copy(candidate, &shared).unwrap();
+    }
+
+    let migrated = std::fs::read_to_string(&shared).unwrap();
+    assert!(migrated.contains("groq"));
+    assert!(!migrated.contains("openai"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // Regression test: the atomic write must overwrite an existing settings.json
 // on every platform (std::fs::rename replaces the destination, including on
 // Windows). A second save to the same path must succeed, not fail.

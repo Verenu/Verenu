@@ -39,6 +39,7 @@
   let errors = $state<string[]>([]);
   let inventory = $state<string[]>([]);
   let version = $state('');
+  let diagnosticsSummary = $state<Record<string, unknown>>({});
 
   const ERRORS_CAP = 8;
 
@@ -70,6 +71,7 @@
       devModeEnabled: appStore.devModeEnabled,
       platform: { isWindows, isMac },
       reducedMotion: reducedMotionEnabled(),
+      diagnostics: diagnosticsSummary,
       localStt: {
         current: localSttStore.state.current_model_id,
         loaded: localSttStore.state.is_loaded,
@@ -139,6 +141,24 @@
     }
   }
 
+  async function loadDiagnosticsSummary() {
+    try {
+      const snapshot = await invoke<Record<string, unknown>>('get_diagnostics_snapshot');
+      const health = snapshot.health && typeof snapshot.health === 'object' ? snapshot.health as Record<string, unknown> : {};
+      const resource = snapshot.current_resource && typeof snapshot.current_resource === 'object' ? snapshot.current_resource as Record<string, unknown> : {};
+      const groups = Array.isArray(snapshot.failure_groups) ? snapshot.failure_groups : [];
+      const operations = Array.isArray(snapshot.operations) ? snapshot.operations : [];
+      diagnosticsSummary = {
+        cpu: resource.cpu_percent ?? null, residentBytes: resource.resident_bytes ?? null,
+        activeTraces: health.active_trace_count ?? 0, recentFailures: health.retained_failure_count ?? 0,
+        failureFingerprints: groups.slice(-3).map((item) => { const group = item && typeof item === 'object' ? item as Record<string, unknown> : {}; return `${String(group.fingerprint ?? 'unknown')}:${String(group.count ?? 0)}`; }),
+        hottestOperations: operations.slice(0, 3).map((item) => { const operation = item && typeof item === 'object' ? item as Record<string, unknown> : {}; return `${String(operation.operation ?? 'unknown')}:${String(operation.calls ?? 0)}`; }),
+        profiler: snapshot.profiler_enabled === true || snapshot.profiling_recording === true,
+        dropped: Number(health.dropped_logs ?? 0) + Number(health.dropped_failures ?? 0) + Number(health.dropped_traces ?? 0),
+      };
+    } catch { diagnosticsSummary = { unavailable: true }; }
+  }
+
   async function setEnabled(next: boolean) {
     enabled = next;
     if (windowKind === 'main') {
@@ -153,6 +173,7 @@
       return;
     }
     await loadSettings();
+    await loadDiagnosticsSummary();
     rebuild();
   }
 
@@ -170,7 +191,7 @@
       if (rebuildTimer) return;
       rebuildTimer = setTimeout(() => {
         rebuildTimer = null;
-        if (active && enabled) rebuild();
+      if (active && enabled) rebuild();
       }, 250);
     };
 
@@ -258,7 +279,7 @@
 
     const interval = setInterval(() => {
       if (!active || !enabled) return;
-      void loadSettings().then(() => {
+      void Promise.all([loadSettings(), loadDiagnosticsSummary()]).then(() => {
         if (active && enabled) rebuild();
       });
     }, 4000);

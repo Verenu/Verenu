@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
+  import { isAndroid } from '../../platform';
   import { getProviderLogo } from '../../setup/ProviderLogos';
 
   type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai';
@@ -28,7 +29,20 @@
 
   async function loadKeyStatus() {
     try {
-      const status = await invoke<KeyStatus>('get_api_key_status');
+      let status = await invoke<KeyStatus>('get_api_key_status');
+      if (isAndroid) {
+        try {
+          // Rust's Android cache is intentionally memory-only and may be empty
+          // until AccessibilityService reconnects. Ask the native Keystore for
+          // booleans only so a durable key does not look lost in Settings.
+          const durable = await invoke<Partial<KeyStatus>>('plugin:verenu-security|getCredentialStatus');
+          status = { ...status, ...durable };
+        } catch (err) {
+          // The Rust status is still useful if an older build lacks the native
+          // command or the Keystore is temporarily unavailable.
+          console.warn('native credential status unavailable:', err);
+        }
+      }
       keyStatus = status;
       return status;
     } catch (err) {
@@ -59,7 +73,18 @@
         return;
       }
 
+      if (isAndroid) {
+        // Persist directly through the native Keystore plugin so this does
+        // not depend on AccessibilityService being enabled and connected.
+        // Rust's Android command remains the memory-only pipeline cache.
+        try {
+          await invoke('plugin:verenu-security|saveCredential', { provider, key });
+        } catch (error) {
+          console.warn('direct Android credential save unavailable; using bridge fallback', error);
+        }
+      }
       await invoke('save_api_key', { provider, key });
+      if (isAndroid) await invoke('android_keystore_save', { provider, key });
       const status = await loadKeyStatus();
       if (!status[provider]) {
         keyValidation[provider] = { status: 'idle', message: '' };
@@ -91,7 +116,18 @@
     keyErrors[provider] = '';
     keySaving[provider] = true;
     try {
+      if (isAndroid) {
+        try {
+          await invoke('plugin:verenu-security|saveCredential', { provider, key: '' });
+        } catch (error) {
+          console.warn('direct Android credential delete unavailable; using bridge fallback', error);
+        }
+      }
       await invoke('delete_api_key', { provider });
+      if (isAndroid) {
+        // Rotate the deletion through Rust's memory cache too.
+        await invoke('android_keystore_save', { provider, key: '' });
+      }
       await loadKeyStatus();
       draftKeys[provider] = '';
       keyValidation[provider] = { status: 'idle', message: '' };
@@ -109,7 +145,7 @@
 </script>
 
 <h2 class="settings-h">API Keys</h2>
-<p class="panel-note">Keys are stored locally and never readable from the UI after saving.</p>
+<p class="panel-note">{isAndroid ? 'Keys are stored encrypted in the Android Keystore and never readable from the UI after saving.' : 'Keys are stored locally and never readable from the UI after saving.'}</p>
 
 {#each keyProviders as item}
   <div class="setting-row key-row" data-setting-target={`api-key-${item.id}`}>
@@ -319,6 +355,23 @@
     margin: 4px 0 0;
     font-size: 11px;
     color: var(--danger);
+  }
+
+  @container settings-panel (max-width: 520px) {
+    .key-row {
+      align-items: flex-start;
+    }
+
+    .key-right {
+      width: 100%;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .key-input {
+      width: min(100%, 320px);
+      flex: 1 1 220px;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

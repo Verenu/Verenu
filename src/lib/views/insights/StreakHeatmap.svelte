@@ -469,6 +469,20 @@
      widths where the hero band stays 3-up. */
   @container insights (max-width: 540px) {
     .heat-layout { flex-direction: column; }
+    /*
+     * .heat-layout's base align-items: flex-start only stretches children on
+     * the row's cross axis (vertical) in desktop's row layout. Stacked to a
+     * column, "cross axis" becomes horizontal — without an explicit stretch,
+     * .heat-main shrink-wraps to its content's natural width instead of the
+     * card's actual width. And that content width is exactly the bug: the
+     * calendar sizes itself from gridHost.clientWidth, which was free to grow
+     * to fit an unclamped grid — a feedback loop that settled on "however
+     * wide the full calendar wants to be" instead of the card's real width,
+     * rendering it at desktop scale (and clipped) on a phone regardless of
+     * viewport. .heat-side already stretched explicitly; .heat-main needs the
+     * same so the resize observer measures the real, narrow container.
+     */
+    .heat-main { align-self: stretch; width: 100%; }
     .heat-side {
       flex: 1 1 auto;
       align-self: stretch;

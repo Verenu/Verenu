@@ -1,6 +1,7 @@
 use crate::data::db::{self, Db};
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone)]
 struct Match {
@@ -68,33 +69,103 @@ fn parse_triggers(trigger: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-fn collect_trigger_matches(text: &str, snippets: &[db::Snippet]) -> Vec<Match> {
-    struct TriggerTarget {
-        needle: String,
-        snippet_idx: usize,
+#[derive(Clone)]
+struct PreparedAlias {
+    needle: String,
+    normalized: String,
+}
+
+struct PreparedSnippetTriggers {
+    aliases_by_snippet: Vec<Vec<PreparedAlias>>,
+    targets: Vec<PreparedTarget>,
+}
+
+struct PreparedTarget {
+    needle: String,
+    snippet_idx: usize,
+}
+
+struct PreparedSnippetCache {
+    entries: Vec<(u64, Arc<PreparedSnippetTriggers>)>,
+}
+
+const PREPARED_SNIPPET_CACHE_CAPACITY: usize = 8;
+
+fn snippets_fingerprint(snippets: &[db::Snippet]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for snippet in snippets {
+        hash ^= snippet.trigger.len() as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        for byte in snippet.trigger.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
+}
+
+fn prepare_snippets(snippets: &[db::Snippet]) -> Arc<PreparedSnippetTriggers> {
+    static CACHE: OnceLock<Mutex<PreparedSnippetCache>> = OnceLock::new();
+
+    let fingerprint = snippets_fingerprint(snippets);
+    let mut cache = CACHE
+        .get_or_init(|| {
+            Mutex::new(PreparedSnippetCache {
+                entries: Vec::new(),
+            })
+        })
+        .lock()
+        .expect("prepared snippet cache lock");
+    if let Some((_, prepared)) = cache
+        .entries
+        .iter()
+        .find(|(cached, _)| *cached == fingerprint)
+    {
+        return Arc::clone(prepared);
     }
 
+    let mut aliases_by_snippet = Vec::with_capacity(snippets.len());
+    let mut targets = Vec::new();
+    for (snippet_idx, snippet) in snippets.iter().enumerate() {
+        let aliases = parse_triggers(&snippet.trigger)
+            .map(|trigger| {
+                let needle = trigger.to_lowercase();
+                PreparedAlias {
+                    normalized: strip_punctuation_for_matching(&needle),
+                    needle,
+                }
+            })
+            .filter(|alias| !alias.needle.is_empty())
+            .collect::<Vec<_>>();
+        targets.extend(aliases.iter().map(|alias| PreparedTarget {
+            needle: alias.needle.clone(),
+            snippet_idx,
+        }));
+        aliases_by_snippet.push(aliases);
+    }
+    targets.sort_by_key(|target| Reverse(target.needle.len()));
+
+    let prepared = Arc::new(PreparedSnippetTriggers {
+        aliases_by_snippet,
+        targets,
+    });
+    if cache.entries.len() >= PREPARED_SNIPPET_CACHE_CAPACITY {
+        cache.entries.remove(0);
+    }
+    cache.entries.push((fingerprint, Arc::clone(&prepared)));
+    prepared
+}
+
+fn collect_trigger_matches(text: &str, prepared: &PreparedSnippetTriggers) -> Vec<Match> {
     // Flatten all aliases into individual targets sorted by needle length descending.
     // This prevents a shorter alias from one snippet shadowing a longer trigger from another
     // snippet, which snippet-level sorting by max-length cannot guarantee.
-    let mut targets: Vec<TriggerTarget> = Vec::new();
-    for (snippet_idx, snippet) in snippets.iter().enumerate() {
-        for t in parse_triggers(&snippet.trigger) {
-            let needle = t.to_lowercase();
-            if !needle.is_empty() {
-                targets.push(TriggerTarget {
-                    needle,
-                    snippet_idx,
-                });
-            }
-        }
-    }
-    targets.sort_by_key(|t| Reverse(t.needle.len()));
-
     let (haystack, source_map) = lowercase_with_source_map(text);
     let mut all_matches: Vec<Match> = Vec::new();
 
-    for target in &targets {
+    for target in &prepared.targets {
         let needle = &target.needle;
         let snippet_idx = target.snippet_idx;
 
@@ -156,7 +227,8 @@ fn collect_trigger_matches(text: &str, snippets: &[db::Snippet]) -> Vec<Match> {
 }
 
 pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]) -> i64 {
-    let matches = collect_trigger_matches(text, snippets);
+    let prepared = prepare_snippets(snippets);
+    let matches = collect_trigger_matches(text, &prepared);
     let mut count = 0_i64;
 
     for (start, word) in text.split_whitespace().scan(0usize, |search_from, word| {
@@ -189,10 +261,19 @@ pub fn try_pure_snippet_expand_from(
     db: &Db,
 ) -> Option<String> {
     let normalized = strip_punctuation_for_matching(&text.to_lowercase());
-    let matched = snippets.iter().find(|s| {
-        parse_triggers(&s.trigger)
-            .any(|t| strip_punctuation_for_matching(&t.to_lowercase()) == normalized)
-    })?;
+    let prepared = prepare_snippets(snippets);
+    let (snippet_idx, _) =
+        prepared
+            .aliases_by_snippet
+            .iter()
+            .enumerate()
+            .find_map(|(snippet_idx, aliases)| {
+                aliases
+                    .iter()
+                    .find(|alias| alias.normalized == normalized)
+                    .map(|alias| (snippet_idx, alias))
+            })?;
+    let matched = &snippets[snippet_idx];
     let _ = db::increment_snippet_use(db, matched.id);
     Some(matched.expansion.clone())
 }
@@ -200,15 +281,16 @@ pub fn try_pure_snippet_expand_from(
 pub fn collect_snippet_instructions_from(text: &str, snippets: &[db::Snippet]) -> String {
     let text_lower = text.to_lowercase();
     let text_stripped = strip_punctuation_for_matching(&text_lower);
+    let prepared = prepare_snippets(snippets);
     let mut active_instructions: Vec<String> = Vec::new();
 
-    for snippet in snippets.iter() {
-        let found = parse_triggers(&snippet.trigger).any(|t| {
-            let needle = t.to_lowercase();
-            let needle_stripped = strip_punctuation_for_matching(&needle);
-            text_lower.contains(&needle)
-                || (!needle_stripped.is_empty() && text_stripped.contains(&needle_stripped))
-        });
+    for (snippet_idx, snippet) in snippets.iter().enumerate() {
+        let found = prepared.aliases_by_snippet[snippet_idx]
+            .iter()
+            .any(|alias| {
+                text_lower.contains(&alias.needle)
+                    || (!alias.normalized.is_empty() && text_stripped.contains(&alias.normalized))
+            });
         if found && !snippet.instructions.is_empty() {
             active_instructions.push(snippet.instructions.clone());
         }
@@ -223,7 +305,8 @@ pub fn collect_snippet_instructions_from(text: &str, snippets: &[db::Snippet]) -
 
 pub fn expand_snippets_from(text: &str, snippets: &mut [db::Snippet], db: &Db) -> String {
     let mut result = text.to_string();
-    let selected = collect_trigger_matches(&result, snippets);
+    let prepared = prepare_snippets(snippets);
+    let selected = collect_trigger_matches(&result, &prepared);
     let mut usage_counts: HashMap<i64, i64> = HashMap::new();
 
     for m in selected.iter().rev() {
@@ -365,7 +448,7 @@ fn ensure_final_exclamation(text: &str) -> String {
 mod tests {
     use super::{
         apply_cleanup_instruction_overrides, count_words_without_snippet_triggers,
-        expand_snippets_from,
+        expand_snippets_from, prepare_snippets,
     };
     use crate::data::db;
 
@@ -375,6 +458,22 @@ mod tests {
             apply_cleanup_instruction_overrides("Hello from Verenu.", "use all capital letters");
 
         assert_eq!(output, "HELLO FROM VERENU.");
+    }
+
+    #[test]
+    fn prepared_trigger_cache_reuses_alias_search_structures() {
+        let snippets = vec![db::Snippet {
+            id: 1,
+            trigger: "email sig, signature".to_string(),
+            expansion: "Best regards".to_string(),
+            instructions: String::new(),
+            use_count: 0,
+            created_at: String::new(),
+        }];
+
+        let first = prepare_snippets(&snippets);
+        let second = prepare_snippets(&snippets);
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
     }
 
     #[test]

@@ -1,11 +1,12 @@
 use super::model::LocalSttModelManifest;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LocalSttDownloadProgressPayload {
@@ -405,11 +406,13 @@ pub async fn download_model(
     let url = manifest
         .url
         .ok_or_else(|| anyhow::anyhow!("{} does not have a download URL", manifest.name))?;
-    std::fs::create_dir_all(root)?;
-    cleanup_incomplete_artifacts(root);
+    tokio::fs::create_dir_all(root).await?;
+    let cleanup_root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || cleanup_incomplete_artifacts(&cleanup_root)).await?;
 
     let partial_path = manifest.partial_download_path(root);
-    let mut partial_size = std::fs::metadata(&partial_path)
+    let mut partial_size = tokio::fs::metadata(&partial_path)
+        .await
         .map(|meta| meta.len())
         .unwrap_or(0);
     if partial_size > 0 {
@@ -456,7 +459,7 @@ pub async fn download_model(
                     manifest.id,
                     status
                 );
-                let _ = std::fs::remove_file(&partial_path);
+                let _ = tokio::fs::remove_file(&partial_path).await;
                 partial_size = 0;
                 response = Some(probe);
             }
@@ -518,19 +521,20 @@ pub async fn download_model(
 
     if !already_complete {
         let mut response = response.expect("response is set whenever already_complete is false");
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(partial_size > 0)
             .write(true)
             .truncate(partial_size == 0)
-            .open(&partial_path)?;
+            .open(&partial_path)
+            .await?;
 
         loop {
             ensure_not_cancelled(&cancel)?;
             let Some(chunk) = response.chunk().await? else {
                 break;
             };
-            file.write_all(&chunk)?;
+            file.write_all(&chunk).await?;
             downloaded_bytes += chunk.len() as u64;
             if last_emit.elapsed() >= Duration::from_millis(150) {
                 emit_progress(app, manifest.id, downloaded_bytes, total_bytes);
@@ -551,7 +555,7 @@ pub async fn download_model(
                 }
             }
         }
-        file.flush()?;
+        file.flush().await?;
         ensure_not_cancelled(&cancel)?;
     }
     emit_progress(app, manifest.id, downloaded_bytes, total_bytes);
@@ -590,13 +594,13 @@ pub async fn download_model(
             })
             .await??;
         }
-        let _ = std::fs::remove_file(&partial_path);
+        let _ = tokio::fs::remove_file(&partial_path).await;
     } else {
         let final_path = manifest.final_path(root);
-        if final_path.exists() {
-            let _ = std::fs::remove_file(&final_path);
+        if tokio::fs::metadata(&final_path).await.is_ok() {
+            let _ = tokio::fs::remove_file(&final_path).await;
         }
-        std::fs::rename(&partial_path, &final_path)?;
+        tokio::fs::rename(&partial_path, &final_path).await?;
     }
 
     // NOTE: the `local-stt-model-download-complete` event is intentionally NOT
@@ -631,7 +635,7 @@ pub fn cleanup_failed_download_artifacts(
 
 #[cfg(test)]
 mod tests {
-    use super::flatten_single_nested_dir;
+    use super::{cleanup_incomplete_artifacts, flatten_single_nested_dir};
     use std::fs;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -726,6 +730,24 @@ mod tests {
         assert!(!dir.join("._encoder-model.int8.onnx").exists());
         assert!(!dir.join(".DS_Store").exists());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_removes_incomplete_extraction_directories() {
+        let dir = temp_dir("cleanup-incomplete");
+        fs::create_dir_all(dir.join("parakeet-v3.extracting")).unwrap();
+        fs::write(
+            dir.join("parakeet-v3.extracting").join("partial.bin"),
+            b"partial",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("keep-me")).unwrap();
+
+        cleanup_incomplete_artifacts(&dir);
+
+        assert!(!dir.join("parakeet-v3.extracting").exists());
+        assert!(dir.join("keep-me").is_dir());
         let _ = fs::remove_dir_all(&dir);
     }
 }

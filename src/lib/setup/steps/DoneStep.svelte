@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { hotkeyLabels } from '../../hotkey.svelte';
+  import { isAndroid } from '../../platform';
   import { reducedMotionEnabled } from '../../motion';
 
   let {
@@ -73,7 +74,7 @@
     </svg>
   </div>
   <h2 class="done-title">You're all set.</h2>
-  <p class="done-sub">Verenu is ready in your system tray. Use the same three-step rhythm anywhere you can type.</p>
+  <p class="done-sub">{isAndroid ? 'Verenu is ready. Open any text field and use the pill above your keyboard.' : 'Verenu is ready in your system tray. Use the same three-step rhythm anywhere you can type.'}</p>
 
   {#if !hasKey}
     <div class="done-warning">No API key set — add one in Settings → API Keys before dictating.</div>
@@ -82,12 +83,16 @@
   <div class="done-quickstart" aria-label="How to dictate">
     <div class="quick-step">
       <span class="quick-number"><span>1</span></span>
-      <span><strong>Hold</strong><small>{#each keyLabels as k, i}{#if i > 0}<span class="done-plus"> + </span>{/if}<kbd>{k}</kbd>{/each}</small></span>
+      {#if isAndroid}
+        <span><strong>Focus</strong><small>Open a text field</small></span>
+      {:else}
+        <span><strong>Hold</strong><small>{#each keyLabels as k, i}{#if i > 0}<span class="done-plus"> + </span>{/if}<kbd>{k}</kbd>{/each}</small></span>
+      {/if}
     </div>
     <div class="quick-arrow" aria-hidden="true">→</div>
-    <div class="quick-step"><span class="quick-number"><span>2</span></span><span><strong>Speak</strong><small>Keep holding</small></span></div>
+    <div class="quick-step"><span class="quick-number"><span>2</span></span><span><strong>{isAndroid ? 'Tap the pill' : 'Speak'}</strong><small>{isAndroid ? 'Above the keyboard' : 'Keep holding'}</small></span></div>
     <div class="quick-arrow" aria-hidden="true">→</div>
-    <div class="quick-step"><span class="quick-number"><span>3</span></span><span><strong>Release</strong><small>Text appears</small></span></div>
+    <div class="quick-step"><span class="quick-number"><span>3</span></span><span><strong>{isAndroid ? 'Tap Stop' : 'Release'}</strong><small>Text appears</small></span></div>
   </div>
 
   <div class="done-summary" aria-label="Your setup">

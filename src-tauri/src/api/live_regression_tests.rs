@@ -39,27 +39,49 @@ struct LiveCase {
 }
 
 fn settings_path() -> Option<PathBuf> {
+    // Prefer the shared Verenu data dir, then fall back to legacy
+    // identifier-scoped AppData copies from older builds.
     #[cfg(windows)]
     {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .map(|path| path.join("com.verenu.app").join("settings.json"))
+        let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
+        let shared = appdata.join("Verenu").join("settings.json");
+        if shared.exists() {
+            return Some(shared);
+        }
+        let production = appdata.join("com.verenu.app").join("settings.json");
+        if production.exists() {
+            return Some(production);
+        }
+        Some(shared)
     }
     #[cfg(target_os = "macos")]
     {
-        std::env::var_os("HOME").map(PathBuf::from).map(|path| {
-            path.join("Library")
-                .join("Application Support")
-                .join("com.verenu.app")
-                .join("settings.json")
-        })
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let support = home.join("Library").join("Application Support");
+        let shared = support.join("Verenu").join("settings.json");
+        if shared.exists() {
+            return Some(shared);
+        }
+        let production = support.join("com.verenu.app").join("settings.json");
+        if production.exists() {
+            return Some(production);
+        }
+        Some(shared)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|path| PathBuf::from(path).join(".config")))?;
-        Some(base.join("com.verenu.app").join("settings.json"))
+        let shared = base.join("Verenu").join("settings.json");
+        if shared.exists() {
+            return Some(shared);
+        }
+        let production = base.join("com.verenu.app").join("settings.json");
+        if production.exists() {
+            return Some(production);
+        }
+        Some(shared)
     }
 }
 

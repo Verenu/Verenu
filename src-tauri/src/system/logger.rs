@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::Local;
@@ -34,6 +34,7 @@ static LOG_BUFFER: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static LOGGER: SessionLogger = SessionLogger;
 static VERBOSE_MODE: AtomicBool = AtomicBool::new(false);
+static LOG_SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Initializes the in-memory log buffer and installs the session logger.
 ///
@@ -42,6 +43,7 @@ static VERBOSE_MODE: AtomicBool = AtomicBool::new(false);
 /// instead of vanishing into the default no-op logger. The `AppHandle` is
 /// attached later by [`attach_app`], which enables `verenu:log` emission.
 pub fn init_early() {
+    crate::system::diagnostics::init();
     let _ = LOG_BUFFER.set(Mutex::new(VecDeque::with_capacity(MAX_LOG_LINES)));
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(LevelFilter::Debug);
@@ -88,6 +90,16 @@ pub fn is_verbose() -> bool {
     VERBOSE_MODE.load(Ordering::Relaxed)
 }
 
+pub fn subscribe_log_stream() {
+    LOG_SUBSCRIBERS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn unsubscribe_log_stream() {
+    let _ = LOG_SUBSCRIBERS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        Some(count.saturating_sub(1))
+    });
+}
+
 /// Header for exported diagnostics. Metadata only — version, platform, and
 /// export time; never settings, keys, paths, or user content. Kept pure so
 /// the export path is testable without touching the filesystem.
@@ -123,6 +135,28 @@ pub fn export_to_downloads(app: &AppHandle) -> Result<String, String> {
 }
 
 fn redact_message(input: &str) -> String {
+    // Most accepted log lines contain only metadata. Avoid cloning and running
+    // every redaction pass for those lines while keeping the same redaction
+    // passes for anything that contains a sensitive marker.
+    const MARKERS: &[&str] = &[
+        "authorization:",
+        "bearer ",
+        "api_key=",
+        "x-api-key:",
+        "x-goog-api-key:",
+        "?key=",
+        "&key=",
+        "\"api_key\":",
+        "\"authorization\":",
+    ];
+    if !MARKERS
+        .iter()
+        .chain(REDACTED_TEXT_FIELD_TOKENS.iter())
+        .any(|marker| find_ascii_case_insensitive_from(input, marker, 0).is_some())
+    {
+        return input.to_owned();
+    }
+
     let mut out = input.to_string();
     out = redact_after_token_ci(&out, "authorization:");
     out = redact_after_token_ci(&out, "bearer ");
@@ -300,24 +334,46 @@ impl Log for SessionLogger {
         }
         let msg = record.args().to_string();
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let line = format!(
-            "[{}] {:<5} {}",
-            timestamp,
-            record.level(),
-            redact_message(&msg)
+        let redacted = redact_message(&msg);
+        let line = format!("[{}] {:<5} {}", timestamp, record.level(), redacted);
+        let structured = crate::system::diagnostics::record_log(
+            record.level().as_str(),
+            record.target(),
+            &redacted,
         );
+        if record.level() == log::Level::Error {
+            let _ = crate::system::diagnostics::record_failure(
+                crate::system::diagnostics::FailureInput {
+                    subsystem: record.target().to_owned(),
+                    cause: redacted.clone(),
+                    error_category: Some("log.error".to_owned()),
+                    ..Default::default()
+                },
+            );
+        }
 
-        if let Some(buffer) = LOG_BUFFER.get() {
+        if LOG_SUBSCRIBERS.load(Ordering::Relaxed) > 0 {
+            if let Some(buffer) = LOG_BUFFER.get() {
+                if let Ok(mut guard) = buffer.lock() {
+                    guard.push_back(line.clone());
+                    if guard.len() > MAX_LOG_LINES {
+                        let _ = guard.pop_front();
+                    }
+                }
+            }
+            if let Some(app) = APP_HANDLE.get() {
+                let _ = app.emit(LOG_EVENT, line);
+                if let Some(entry) = structured {
+                    let _ = app.emit("verenu:diagnostics", entry);
+                }
+            }
+        } else if let Some(buffer) = LOG_BUFFER.get() {
             if let Ok(mut guard) = buffer.lock() {
-                guard.push_back(line.clone());
+                guard.push_back(line);
                 if guard.len() > MAX_LOG_LINES {
                     let _ = guard.pop_front();
                 }
             }
-        }
-
-        if let Some(app) = APP_HANDLE.get() {
-            let _ = app.emit(LOG_EVENT, line);
         }
     }
 
@@ -537,5 +593,30 @@ mod tests {
         drop(guard);
 
         assert_eq!(recent(Some(2)), vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn log_stream_subscriptions_are_reference_counted() {
+        let _guard = LOGGER_TEST_LOCK.lock().expect("lock");
+        while super::LOG_SUBSCRIBERS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+            super::unsubscribe_log_stream();
+        }
+        super::subscribe_log_stream();
+        super::subscribe_log_stream();
+        assert_eq!(
+            super::LOG_SUBSCRIBERS.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        super::unsubscribe_log_stream();
+        assert_eq!(
+            super::LOG_SUBSCRIBERS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        super::unsubscribe_log_stream();
+        super::unsubscribe_log_stream();
+        assert_eq!(
+            super::LOG_SUBSCRIBERS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 }

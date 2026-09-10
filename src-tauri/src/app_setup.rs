@@ -37,6 +37,7 @@ impl FrontendReadiness {
 
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        #[cfg(desktop)]
         if w.is_minimized().unwrap_or(false) {
             w.unminimize().ok();
         }
@@ -63,11 +64,12 @@ pub(crate) fn hide_main_window(app: &AppHandle) {
 /// Canonical per-user data directory for Verenu, following each OS's convention.
 ///
 /// This is the single source of truth for where Verenu stores its SQLite
-/// database. Everything that touches the DB — startup `open`, the in-app
-/// updater's pre-update backup, etc. — MUST derive its path from here (via
-/// [`app_db_path`]). Do NOT use Tauri's `app.path().app_data_dir()` for the
-/// database: that resolves against the bundle identifier and is not guaranteed
-/// to equal this path, so backups would silently target a different file.
+/// database and `settings.json`. Everything that touches the DB — startup
+/// `open`, the in-app updater's pre-update backup, etc. — MUST derive its path
+/// from here (via [`app_db_path`]). Do NOT use Tauri's
+/// `app.path().app_data_dir()` for the database or settings: that resolves
+/// against the bundle identifier, so Windows `tauri dev` (`com.verenu.app.dev`)
+/// would otherwise fork state away from production.
 fn app_data_dir_override() -> Option<std::path::PathBuf> {
     std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE").map(std::path::PathBuf::from)
 }

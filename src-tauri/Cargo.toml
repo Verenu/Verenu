@@ -9,6 +9,14 @@ edition = "2021"
 name = "verenu"
 path = "src/main.rs"
 
+[lib]
+name = "verenu"
+path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 cc = "1"
 tauri-build = { version = "2", features = [] }
@@ -23,7 +31,9 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
-reqwest     = { version = "0.12", default-features = false, features = ["json", "multipart", "native-tls", "charset"] }
+# OpenSSL cannot be cross-compiled from the NDK as part of a normal Tauri
+# build. Keep the desktop native-tls path, but use rustls on Android.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "charset"] }
 # LAN device sync: mDNS discovery (pure Rust, no system daemon) + a TLS
 # transport with self-signed per-device certificates. rustls uses the ring
 # provider so Windows builds don't need aws-lc-rs's NASM/CMake toolchain.
@@ -55,9 +65,24 @@ zip         = { version = "2", default-features = false, features = ["deflate"] 
 # (transcribe_rs::vad::SileroVad) on top of the ort/onnxruntime dependency
 # "onnx" already requires — no separate ort dependency or hand-rolled ONNX
 # plumbing needed for local speech detection.
-transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
+#
+# Android has no ONNX Runtime / transcribe-rs build (no ARM64 prebuilts, and
+# multi-hundred-MB model payloads are unrealistic on phones), so this stays a
+# desktop-only dependency — see the target table below, `local_stt/engine.rs`
+# and `media/vad.rs` Android stubs, `crate::android`, and docs/ANDROID.md.
 image       = { version = "0.25", default-features = false, features = ["png"] }
 libc        = "0.2"     # POSIX host/system calls
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# CPAL's Android backend (Oboe) reads the process-wide JNI context through
+# ndk-context. Tauri/tao owns the same activity context, so initialize this
+# small bridge during Android setup before any audio worker can start.
+ndk-context = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 notify-rust = "4.18.0"

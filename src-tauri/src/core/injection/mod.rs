@@ -738,14 +738,39 @@ pub async fn inject_text(
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        log::warn!("inject_text: not on Windows - skipping target_hwnd={target_hwnd}");
+        // Android hands the final text to the Kotlin overlay service through
+        // the loopback bridge outbox (see crate::android::bridge): Kotlin
+        // inserts via accessibility APIs (ACTION_SET_TEXT with cursor
+        // preservation, clipboard fallback where blocked) and acks, which
+        // drives the pill + diagnostics. History was already written by the
+        // pipeline before this call, so the handoff is infallible from the
+        // pipeline's perspective — delivery failures surface via the ack.
+        #[cfg(target_os = "android")]
+        {
+            let seq = crate::android::bridge::publish_android_insertion(text);
+            log::info!(
+                "inject_text(android): handoff seq={seq} target={target_hwnd} chars={}",
+                text.chars().count()
+            );
+            return Ok(InjectionOutcome {
+                text: text.to_string(),
+                context_state: "android",
+                case_decision: "android_accessibility_handoff",
+                probe_source: "android_accessibility",
+                selection_state: "unknown",
+            });
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            log::warn!("inject_text: not on Windows - skipping target_hwnd={target_hwnd}");
 
-        Ok(InjectionOutcome {
-            text: text.to_string(),
-            context_state: "unknown",
-            case_decision: "contextual_caps_disabled",
-            probe_source: "unavailable",
-            selection_state: "unknown",
-        })
+            Ok(InjectionOutcome {
+                text: text.to_string(),
+                context_state: "unknown",
+                case_decision: "contextual_caps_disabled",
+                probe_source: "unavailable",
+                selection_state: "unknown",
+            })
+        }
     }
 }

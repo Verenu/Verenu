@@ -3,9 +3,10 @@
   import { slide } from 'svelte/transition';
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
-  import { isMac, isWindows } from '../../platform';
+  import { isAndroid, isMac, isWindows } from '../../platform';
   import { saveSetting } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
+  import { shouldPersistMicGain } from './audioGain';
 
   let noiseReduction = $state(true);
   let muteAudio = $state(false);
@@ -16,6 +17,7 @@
   let micGain = $state(3.5);
   let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSavedMicGain: number | null = null;
+  let micGainChangedByUser = false;
 
   async function loadSettings() {
     try {
@@ -39,8 +41,10 @@
         : legacySounds === false ? 0 : 100;
       if (savedGain !== null && savedGain !== undefined) {
         micGain = Math.max(1, Math.min(8, savedGain));
+        lastSavedMicGain = micGain;
+      } else {
+        lastSavedMicGain = null;
       }
-      lastSavedMicGain = micGain;
     } catch (err) {
       console.error('AudioSection load failed:', err);
     }
@@ -106,10 +110,13 @@
 
   async function persistMicGain() {
     const value = micGain;
-    if (lastSavedMicGain === value) return;
+    if (!shouldPersistMicGain(value, lastSavedMicGain, micGainChangedByUser)) return;
     lastSavedMicGain = value;
     try {
       await saveSetting('mic_gain', value);
+      if (micGain === value) {
+        micGainChangedByUser = false;
+      }
     } catch (err) {
       lastSavedMicGain = null;
       console.error('saveMicGain failed:', err);
@@ -117,6 +124,7 @@
   }
 
   function scheduleMicGainSave() {
+    micGainChangedByUser = true;
     if (micGainSaveTimer) clearTimeout(micGainSaveTimer);
     micGainSaveTimer = setTimeout(() => {
       micGainSaveTimer = null;
@@ -125,6 +133,7 @@
   }
 
   function saveMicGainOnRelease() {
+    micGainChangedByUser = true;
     if (micGainSaveTimer) {
       clearTimeout(micGainSaveTimer);
       micGainSaveTimer = null;
@@ -183,8 +192,8 @@
 
 <h3 class="settings-subhead">Input</h3>
 <div class="setting-row" data-setting-target="audio-system-mute">
-  <div><div class="label">{isMac ? 'Mute System Audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : 'Mutes Windows volume while dictating to prevent audio interference'}</div></div>
-  <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : 'Mute PC audio'} />
+  <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : 'Mutes Windows volume while dictating to prevent audio interference'}</div></div>
+  <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} />
 </div>
 {#if isMac}
   <div class="setting-row" data-setting-target="audio-exclusive">

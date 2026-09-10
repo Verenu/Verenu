@@ -1,0 +1,19 @@
+# Android's oboe/cpal audio stack uses the NDK C++ ABI. Keep the runtime as a
+# normal APK dependency so the Rust cdylib does not leave __cxa_* unresolved
+# when Android loads it.
+
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,--no-as-needed",
+    "-C", "link-arg=-lc++_shared",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
+
+[target.x86_64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,--no-as-needed",
+    "-C", "link-arg=-lc++_shared",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]

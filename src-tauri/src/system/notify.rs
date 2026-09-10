@@ -10,14 +10,17 @@ use tauri_plugin_notification::NotificationExt;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// User-visible Windows toast branding stays "Verenu" even when the process
+// identifier is com.verenu.app.dev for single-instance isolation.
 #[cfg(windows)]
-const WINDOWS_DEV_APP_ID: &str = "com.verenu.app.dev";
+const WINDOWS_TOAST_APP_ID: &str = "com.verenu.app";
 
 #[cfg(windows)]
-static WINDOWS_DEV_IDENTITY_READY: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)] // written during prepare/refresh; toast AUMID no longer branches on it
+static WINDOWS_TOAST_IDENTITY_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(windows, debug_assertions))]
-static WINDOWS_DEV_SHORTCUT_ICON: std::sync::Mutex<Option<std::path::PathBuf>> =
+static WINDOWS_TOAST_SHORTCUT_ICON: std::sync::Mutex<Option<std::path::PathBuf>> =
     std::sync::Mutex::new(None);
 
 #[derive(Clone, Copy)]
@@ -130,13 +133,11 @@ fn show_windows(
     body: &str,
     destination: NotificationDestination,
 ) -> Result<(), String> {
-    let app_id = if WINDOWS_DEV_IDENTITY_READY.load(Ordering::Acquire) {
-        WINDOWS_DEV_APP_ID
-    } else {
-        "com.verenu.app"
-    };
     let mut notification = notify_rust::Notification::new();
-    notification.summary(title).body(body).app_id(app_id);
+    notification
+        .summary(title)
+        .body(body)
+        .app_id(WINDOWS_TOAST_APP_ID);
 
     let handle = notification.show().map_err(|err| err.to_string())?;
     let app = app.clone();
@@ -158,21 +159,27 @@ fn show_windows(
     Ok(())
 }
 
-/// Prepare a real Windows app identity for development notifications.
+/// Prepare Windows toast attribution for unpackaged development builds.
 ///
-/// Windows toast notifications from unpackaged development executables need a
-/// Start Menu shortcut with an AppUserModelId. Without that shortcut, the
-/// Windows notification stack labels the toast as Windows PowerShell.
+/// Toasts keep the normal "Verenu" Start Menu identity. Process isolation for
+/// `tauri dev` still uses `com.verenu.app.dev` via `tauri.dev.windows.conf.json`,
+/// so we intentionally do not create a "Verenu Development" shortcut.
 #[cfg(target_os = "windows")]
 pub fn prepare_windows_notification_identity(themed_icon: &std::path::Path) {
     #[cfg(all(windows, debug_assertions))]
-    match sync_windows_dev_shortcut_icon(themed_icon) {
-        Ok(()) => WINDOWS_DEV_IDENTITY_READY.store(true, Ordering::Release),
-        Err(err) => log::warn!("Could not register the Windows notification identity: {err}"),
+    {
+        remove_obsolete_windows_dev_branded_shortcut();
+        match sync_windows_toast_shortcut_icon(themed_icon) {
+            Ok(()) => WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release),
+            Err(err) => log::warn!("Could not register the Windows notification identity: {err}"),
+        }
     }
 
     #[cfg(not(all(windows, debug_assertions)))]
-    let _ = themed_icon;
+    {
+        WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release);
+        let _ = themed_icon;
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -181,34 +188,89 @@ pub fn refresh_windows_notification_identity(themed_icon: &std::path::Path) {
     // prepare call may have failed transiently, and without this a later
     // success would still leave notifications on the fallback identity.
     #[cfg(debug_assertions)]
-    match sync_windows_dev_shortcut_icon(themed_icon) {
-        Ok(()) => WINDOWS_DEV_IDENTITY_READY.store(true, Ordering::Release),
-        Err(err) => {
-            log::warn!("Could not refresh the Windows development shortcut icon: {err}")
+    {
+        remove_obsolete_windows_dev_branded_shortcut();
+        match sync_windows_toast_shortcut_icon(themed_icon) {
+            Ok(()) => WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release),
+            Err(err) => {
+                log::warn!("Could not refresh the Windows toast shortcut icon: {err}")
+            }
         }
     }
 
     #[cfg(not(debug_assertions))]
-    let _ = themed_icon;
+    {
+        WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release);
+        let _ = themed_icon;
+    }
 }
 
 #[cfg(all(windows, debug_assertions))]
-fn sync_windows_dev_shortcut_icon(themed_icon: &std::path::Path) -> Result<(), String> {
-    let mut current = WINDOWS_DEV_SHORTCUT_ICON
+fn remove_obsolete_windows_dev_branded_shortcut() {
+    if let Some(path) = obsolete_windows_dev_branded_shortcut_path() {
+        if path.exists() {
+            if let Err(err) = std::fs::remove_file(&path) {
+                log::debug!(
+                    "Could not remove obsolete Windows development shortcut {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(windows, debug_assertions))]
+fn obsolete_windows_dev_branded_shortcut_path() -> Option<std::path::PathBuf> {
+    let app_data = std::env::var_os("APPDATA")?;
+    Some(
+        std::path::PathBuf::from(app_data)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Verenu Development.lnk"),
+    )
+}
+
+#[cfg(all(windows, debug_assertions))]
+fn sync_windows_toast_shortcut_icon(themed_icon: &std::path::Path) -> Result<(), String> {
+    let mut current = WINDOWS_TOAST_SHORTCUT_ICON
         .lock()
-        .map_err(|_| "development shortcut icon lock was poisoned".to_owned())?;
+        .map_err(|_| "toast shortcut icon lock was poisoned".to_owned())?;
     if current.as_deref() == Some(themed_icon) {
         return Ok(());
     }
-    install_windows_dev_shortcut(themed_icon)?;
+    ensure_windows_toast_shortcut(themed_icon)?;
     *current = Some(themed_icon.to_path_buf());
     Ok(())
 }
 
 #[cfg(all(windows, debug_assertions))]
-fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), String> {
+fn ensure_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), String> {
+    let shortcut = toast_shortcut_path()?;
+    // Never rewrite an existing Start Menu shortcut: the installed app's
+    // Verenu.lnk must keep launching production.
+    if shortcut.exists() {
+        return Ok(());
+    }
+    install_windows_toast_shortcut(themed_icon)
+}
+
+#[cfg(all(windows, debug_assertions))]
+fn toast_shortcut_path() -> Result<std::path::PathBuf, String> {
+    let app_data =
+        std::env::var_os("APPDATA").ok_or_else(|| "APPDATA is not available".to_owned())?;
+    Ok(std::path::PathBuf::from(app_data)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("Verenu.lnk"))
+}
+
+#[cfg(all(windows, debug_assertions))]
+fn install_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), String> {
     use std::mem::ManuallyDrop;
-    use std::path::PathBuf;
     use windows::core::{Interface, GUID, PCWSTR, PWSTR};
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
@@ -235,19 +297,8 @@ fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), Str
             .collect()
     }
 
-    fn shortcut_path() -> Result<PathBuf, String> {
-        let app_data =
-            std::env::var_os("APPDATA").ok_or_else(|| "APPDATA is not available".to_owned())?;
-        Ok(PathBuf::from(app_data)
-            .join("Microsoft")
-            .join("Windows")
-            .join("Start Menu")
-            .join("Programs")
-            .join("Verenu Development.lnk"))
-    }
-
     fn app_id_propvariant() -> Result<PROPVARIANT, String> {
-        let value: Vec<u16> = WINDOWS_DEV_APP_ID
+        let value: Vec<u16> = WINDOWS_TOAST_APP_ID
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
@@ -273,7 +324,7 @@ fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), Str
         })
     }
 
-    let shortcut = shortcut_path()?;
+    let shortcut = toast_shortcut_path()?;
     let exe = std::env::current_exe().map_err(|err| err.to_string())?;
     if let Some(parent) = shortcut.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -297,7 +348,7 @@ fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), Str
         };
         let exe_wide = wide(&exe);
         let icon_wide = wide(themed_icon);
-        let description = wide("Verenu development notifications");
+        let description = wide("Verenu notifications");
         unsafe {
             shell_link
                 .SetPath(PCWSTR(exe_wide.as_ptr()))
@@ -383,7 +434,7 @@ fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), Str
             result
         };
         log::info!(
-            "Windows development shortcut saved: target={saved_target}, icon={saved_icon},{icon_index}, aumid={app_id}"
+            "Windows toast shortcut saved: target={saved_target}, icon={saved_icon},{icon_index}, aumid={app_id}"
         );
         // The shell may echo the icon path back with different casing or
         // separators than the path we set, so compare a normalized form
@@ -396,10 +447,10 @@ fn install_windows_dev_shortcut(themed_icon: &std::path::Path) -> Result<(), Str
         };
         if normalize_icon_path(std::path::Path::new(&saved_icon))
             != normalize_icon_path(themed_icon)
-            || app_id != WINDOWS_DEV_APP_ID
+            || app_id != WINDOWS_TOAST_APP_ID
         {
             return Err(format!(
-                "development shortcut verification failed: expected icon={} and aumid={WINDOWS_DEV_APP_ID}, got icon={saved_icon} and aumid={app_id}",
+                "toast shortcut verification failed: expected icon={} and aumid={WINDOWS_TOAST_APP_ID}, got icon={saved_icon} and aumid={app_id}",
                 themed_icon.display()
             ));
         }

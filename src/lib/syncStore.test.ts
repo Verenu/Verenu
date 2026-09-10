@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
+const stores = vi.hoisted(() => ({ fetchSnippets: vi.fn(), fetchDictionary: vi.fn() }));
 vi.mock('./tauri', () => ipc);
-vi.mock('./stores.svelte', () => ({ fetchSnippets: vi.fn(), fetchDictionary: vi.fn() }));
+vi.mock('./stores.svelte', () => stores);
 vi.mock('./contextsStore.svelte', () => ({ loadContexts: vi.fn() }));
 import { startSyncListeners, syncStore } from './syncStore.svelte';
 
-let handlers: Map<string, () => void>;
+type SyncEventHandler = (event?: { payload?: { tables?: string[] } }) => void;
+let handlers: Map<string, SyncEventHandler>;
 let doc: EventTarget & { hidden: boolean };
 let stop: (() => void) | undefined;
 beforeEach(() => {
@@ -36,6 +38,15 @@ it('reconstructs initial state after listeners register and uses two idle polls 
   expect(ipc.invoke).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(60_000);
   expect(ipc.invoke).toHaveBeenCalledTimes(3);
+});
+
+it('refreshes the legacy dictionary store when a mapping-only sync lands', async () => {
+  stop = startSyncListeners();
+  await vi.advanceTimersByTimeAsync(0);
+  stores.fetchDictionary.mockClear();
+
+  handlers.get('verenu:sync-data-changed')!({ payload: { tables: ['dictionary_corrections'] } });
+  expect(stores.fetchDictionary).toHaveBeenCalledTimes(1);
 });
 
 it('reacts to hidden incoming pairing events and retains the missed-event fallback', async () => {

@@ -4,7 +4,7 @@
   import { appStore } from '../stores';
   import { saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
   import { getTranscriptionLanguageLabel, transcriptionLanguages, type TranscriptionLanguageCode } from '../transcriptionLanguages';
-  import { isMac } from '../platform';
+  import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
   import { providers, cleanupCards, toneCards, SETUP_APPEARANCE_MODE } from '../setup/setupData';
@@ -15,6 +15,7 @@
   import ProviderStep from '../setup/steps/ProviderStep.svelte';
   import ApiKeyStep from '../setup/steps/ApiKeyStep.svelte';
   import PermissionsStep from '../setup/steps/PermissionsStep.svelte';
+  import AndroidPermissionsStep from '../setup/steps/AndroidPermissionsStep.svelte';
   import ModelsStep from '../setup/steps/ModelsStep.svelte';
   import WritingStyleStep from '../setup/steps/WritingStyleStep.svelte';
   import LanguageStep from '../setup/steps/LanguageStep.svelte';
@@ -22,16 +23,20 @@
   import TryItStep from '../setup/steps/TryItStep.svelte';
   import DoneStep from '../setup/steps/DoneStep.svelte';
 
-  const TOTAL_STEPS = isMac ? 9 : 8;
+  // macOS and Android both need an OS-permission step at index 3 (macOS:
+  // Accessibility + Microphone; Android: microphone, accessibility service,
+  // battery exemption, notifications). Windows has none.
+  const hasOsPermissionStep = isMac || isAndroid;
+  const TOTAL_STEPS = hasOsPermissionStep ? 9 : 8;
   const providerStep = 1;
   const apiKeyStep = 2;
-  const permissionStep = isMac ? 3 : -1;
-  const modelsStep = isMac ? 4 : 3;
-  const writingStyleStep = isMac ? 5 : 4;
-  const languageStep = isMac ? 6 : 5;
-  const audioEnvStep = isMac ? 7 : 6;
-  const calibrationStep = isMac ? 8 : 7;
-  const tryItStep = isMac ? 9 : 8;
+  const permissionStep = hasOsPermissionStep ? 3 : -1;
+  const modelsStep = hasOsPermissionStep ? 4 : 3;
+  const writingStyleStep = hasOsPermissionStep ? 5 : 4;
+  const languageStep = hasOsPermissionStep ? 6 : 5;
+  const audioEnvStep = hasOsPermissionStep ? 7 : 6;
+  const calibrationStep = hasOsPermissionStep ? 8 : 7;
+  const tryItStep = hasOsPermissionStep ? 9 : 8;
   const doneStep = TOTAL_STEPS + 1;
 
   let step = $state(0);
@@ -40,6 +45,8 @@
   let stepWrapEl = $state<HTMLDivElement | null>(null);
 
   let provider = $state<ProviderId>('groq');
+  let localAiSupported = $state(!isAndroid);
+  let localAiUnsupportedReason = $state('');
   let apiKeyDraft = $state('');
   let apiKeyMode = $state<'fork' | 'tutorial' | 'paste'>('fork');
   let keySaved = $state(false);
@@ -74,6 +81,24 @@
 
   onMount(async () => {
     void loadHotkey();
+    if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
+      // Browser-dev runs can exercise the Android-shaped wizard at a narrow
+      // viewport, but have no native capability probe. Keep the local option
+      // visible so the layout and download flow remain testable.
+      localAiSupported = true;
+    } else if (isAndroid) {
+      void invoke<{ localAiSupported?: boolean; localAiUnsupportedReason?: string }>('android_get_platform_info')
+        .then((info) => {
+          localAiSupported = info.localAiSupported !== false;
+          localAiUnsupportedReason = info.localAiUnsupportedReason ?? '';
+          if (!localAiSupported && provider === 'local') provider = 'groq';
+        })
+        .catch(() => {
+          // Keep the safe Android default: local models stay hidden when the
+          // capability probe is unavailable.
+          localAiSupported = false;
+        });
+    }
     try {
       const [
         savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute,
@@ -86,7 +111,7 @@
         invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
       ]);
       if (savedLanguage && transcriptionLanguages.some((o) => o.code === savedLanguage)) language = savedLanguage;
-      if (savedProvider && providers.some((p) => p.id === savedProvider)) provider = savedProvider;
+      if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider;
       if (savedIntensity && cleanupCards.some((c) => c.id === savedIntensity)) cleanupIntensity = savedIntensity;
       if (savedTone && toneCards.some((t) => t.id === savedTone)) tone = savedTone;
       if (keyStatus) {
@@ -168,7 +193,30 @@
     keyError = '';
     keyValidation = { status: 'idle', message: '' };
     try {
-      await invoke('save_api_key', { provider, key: trimmed });
+      // Android owns durable credential storage in the Keystore. Do this even
+      // when AccessibilityService is disabled: onboarding must not leave a key
+      // only in Rust memory waiting for a service that may never connect.
+      if (isAndroid) {
+        // Prefer the native plugin when available, but do not make onboarding
+        // fail if an OEM/WebView plugin registration is temporarily missing.
+        // The Rust command below stages the same rotation for the connected
+        // AccessibilityService, which owns the durable Keystore sync path.
+        try {
+          await invoke('plugin:verenu-security|saveCredential', { provider, key: trimmed });
+        } catch (error) {
+          console.warn('direct Android credential save unavailable; using bridge rotation', error);
+        }
+      }
+      try {
+        await invoke('save_api_key', { provider, key: trimmed });
+      } catch (error) {
+        // On Android the native Keystore rotation below is authoritative;
+        // keep going if the compatibility cache command is unavailable.
+        console.warn('Android in-memory credential cache unavailable; continuing with rotation', error);
+      }
+      // Also stage the rotation so a connected AccessibilityService can hydrate
+      // Rust immediately without requiring the main activity to stay alive.
+      if (isAndroid) await invoke('android_keystore_save', { provider, key: trimmed });
       providerKeyStatus = { ...providerKeyStatus, [provider]: true };
       keySaved = true;
       apiKeyDraft = '';
@@ -296,12 +344,15 @@
         () => saveSetting('auto_learn_enabled', true),
       ];
       for (const save of settingsToSave) await save();
-      await invoke('set_autostart', { enabled: true });
+      // No autostart API on Android — background reliability comes from the
+      // battery-exemption grant (see AndroidPermissionsStep) instead.
+      if (!isAndroid) await invoke('set_autostart', { enabled: true });
     } catch (err) {
       // Previously this was swallowed, leaving a half-written config behind an
       // apparently successful setup. Stop before marking setup complete.
       console.error('Failed to save setup settings:', err);
-      saveError = 'Some settings could not be saved. Check that Verenu can write to its data folder, then try again.';
+      const detail = err instanceof Error ? err.message : String(err);
+      saveError = `Settings save failed: ${detail}`;
       finishing = false;
       return;
     }
@@ -337,6 +388,7 @@
       return { name: 'API Key', title: `Connect ${providerDisplayName}`, subtitle: 'Verenu needs a key to send audio for transcription.' };
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
+    if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
     if (s === modelsStep) return { name: 'Models', title: 'How should Verenu run?', subtitle: 'Each option picks a transcription and cleanup model for you.' };
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
@@ -384,6 +436,14 @@
       return bar({ leftLabel: 'Skip for now', rightLabel: 'Continue', onRight: goNext });
     }
     if (isMac && step === permissionStep) {
+      return bar({
+        rightLabel: allCoreGranted ? 'Next' : 'Grant permissions to continue',
+        rightDisabled: !allCoreGranted,
+        rightGlow: allCoreGranted,
+        onRight: goNext,
+      });
+    }
+    if (isAndroid && step === permissionStep) {
       return bar({
         rightLabel: allCoreGranted ? 'Next' : 'Grant permissions to continue',
         rightDisabled: !allCoreGranted,
@@ -481,7 +541,11 @@
     {#if step === 0}
       <IntroStep />
     {:else if step === providerStep}
-      <ProviderStep bind:provider />
+      <ProviderStep
+        bind:provider
+        localSupported={localAiSupported}
+        localUnsupportedReason={localAiUnsupportedReason}
+      />
     {:else if step === apiKeyStep}
       <ApiKeyStep
         {provider}
@@ -496,6 +560,8 @@
       />
     {:else if isMac && step === permissionStep}
       <PermissionsStep {provider} bind:allCoreGranted />
+    {:else if isAndroid && step === permissionStep}
+      <AndroidPermissionsStep bind:allCoreGranted />
     {:else if step === modelsStep}
       <ModelsStep apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
     {:else if step === writingStyleStep}

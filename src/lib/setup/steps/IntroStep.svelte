@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { isMac } from '../../platform';
+  import { isAndroid, isMac } from '../../platform';
   import { hotkeyLabels } from '../../hotkey.svelte';
   import LogoMark from '../../components/layout/LogoMark.svelte';
 
-  const platformTagline = isMac ? 'macOS' : 'Windows';
+  const platformTagline = isAndroid ? 'Android' : isMac ? 'macOS' : 'Windows';
   const keyLabels = $derived(hotkeyLabels());
 
   let introReady = $state(false);
@@ -33,22 +33,26 @@
       <div class="how-step">
         <div class="how-num">1</div>
         <div>
-          <strong>Hold {#each keyLabels as k, i}{#if i > 0}<span class="how-plus">+</span>{/if}<kbd>{k}</kbd>{/each}</strong>
-          <p>Start recording. A floating pill shows your audio level.</p>
+          {#if isAndroid}
+            <strong>Tap the Verenu pill</strong>
+          {:else}
+            <strong>Hold {#each keyLabels as k, i}{#if i > 0}<span class="how-plus">+</span>{/if}<kbd>{k}</kbd>{/each}</strong>
+          {/if}
+          <p>{isAndroid ? 'The pill appears above your keyboard when you focus a text field.' : 'Start recording. A floating pill shows your audio level.'}</p>
         </div>
       </div>
       <div class="how-step">
         <div class="how-num">2</div>
         <div>
-          <strong>Release to transcribe</strong>
-          <p>Your speech is sent to the AI provider and converted to text.</p>
+          <strong>{isAndroid ? 'Tap Stop to transcribe' : 'Release to transcribe'}</strong>
+          <p>{isAndroid ? 'The pill stays visible while Verenu listens.' : 'Your speech is sent to the AI provider and converted to text.'}</p>
         </div>
       </div>
       <div class="how-step">
         <div class="how-num">3</div>
         <div>
           <strong>Text appears instantly</strong>
-          <p>Cleaned text is injected into whatever app you're focused on.</p>
+          <p>{isAndroid ? 'The text is inserted into the field you were typing in.' : "Cleaned text is injected into whatever app you're focused on."}</p>
         </div>
       </div>
     </div>

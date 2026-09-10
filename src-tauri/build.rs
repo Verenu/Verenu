@@ -9,15 +9,12 @@ fn main() {
         build_windows_titlebar();
     }
 
-    if target_os == "macos" {
-        #[cfg(target_os = "macos")]
-        {
-            println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
-            cc::Build::new()
-                .file("src/system/macos_ax_text_marker.m")
-                .flag("-fobjc-arc")
-                .compile("verenu_macos_ax_text_marker");
-        }
+    if std::env::consts::OS == "macos" {
+        println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
+        cc::Build::new()
+            .file("src/system/macos_ax_text_marker.m")
+            .flag("-fobjc-arc")
+            .compile("verenu_macos_ax_text_marker");
     }
 
     // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
@@ -30,17 +27,34 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=Info.plist");
+    // Tauri merges this file for `npm run tauri dev`. Its capability rules are
+    // compiled into the executable, so a dev-config-only ACL change must also
+    // rerun this build script instead of leaving the previous authority table
+    // embedded in the debug binary.
+    println!("cargo:rerun-if-changed=tauri.dev.conf.json");
+    println!("cargo:rerun-if-changed=tauri.dev.windows.conf.json");
+    println!("cargo:rerun-if-changed=permissions");
     println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-changed=icons/icon.icns");
     println!("cargo:rerun-if-changed=icons/verenu-mark.svg");
     println!("cargo:rerun-if-changed=src/generated_icon_geometry.rs");
+
+    // Keep Android Keystore commands as a plugin ACL. Putting them in the app
+    // `permissions/` root previously created `__app-acl__` with a narrow
+    // `[default]` set, which forced ACL checks on every custom command and made
+    // `save_setting` fail with "not allowed. Command not found" during
+    // `tauri dev` (Vite is still a local origin relative to `devUrl`).
+    let mut attributes = tauri_build::Attributes::new().plugin(
+        "verenu-security",
+        tauri_build::InlinedPlugin::new(),
+    );
     if target_os == "windows" {
-        let attributes = tauri_build::Attributes::new()
+        attributes = attributes
             .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
         tauri_build::try_build(attributes).expect("failed to run Tauri build script");
         link_windows_manifest();
     } else {
-        tauri_build::build();
+        tauri_build::try_build(attributes).expect("failed to run Tauri build script");
     }
 }
 
