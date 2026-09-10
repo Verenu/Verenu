@@ -33,6 +33,13 @@
   import { expoOut } from 'svelte/easing';
   import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
+  import { isAndroid } from './lib/platform';
+  import MobileNav from './lib/components/layout/MobileNav.svelte';
+  import {
+    snapshotForSize,
+    trackViewport,
+    type ViewportSnapshot,
+  } from './lib/android/viewport';
 
   type EffectiveTheme = 'light' | 'dark';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
@@ -74,6 +81,16 @@
     const accentColor = appStore.accentColor;
     if (typeof document !== 'undefined') applyAccentTheme(document.documentElement, accentColor);
   });
+
+  // Adaptive shell: live window-size class for foldables, rotation,
+  // split-screen, and freeform windows. Defaults to expanded so desktop
+  // first paint is unchanged; the tracker corrects it on mount.
+  let viewport = $state<ViewportSnapshot>(
+    snapshotForSize(1280, 800),
+  );
+  // Compact Android windows collapse the desktop rail to the bottom bar.
+  // Desktop keeps its rail at every width.
+  const compactNav = $derived(isAndroid && viewport.widthClass === 'compact');
 
   // Error toast
   let errorToast = $state('');
@@ -335,6 +352,13 @@
 
     const connectivityPoll = startPolling(pingConnectivity, 60_000);
 
+    // Live window dimensions drive data-width-class (fold/unfold, rotation,
+    // split-screen, freeform). No restart, no lost state on reclassification.
+    const stopViewport = trackViewport(
+      () => ({ width: window.innerWidth, height: window.innerHeight }),
+      (snapshot) => { viewport = snapshot; },
+    );
+
     return () => {
       mounted = false;
       if (cleanupFn) cleanupFn();
@@ -352,16 +376,25 @@
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       media?.removeEventListener?.('change', onSystemThemeChange);
       connectivityPoll.stop();
+      stopViewport();
     };
   });
 </script>
 
-<div class="app" class:app-windows={isWindows}>
+<div
+  class="app"
+  class:app-windows={isWindows}
+  data-android={isAndroid ? 'true' : 'false'}
+  data-width-class={viewport.widthClass}
+  data-compact-nav={compactNav ? 'true' : 'false'}
+>
   {#if appStore.setupComplete === false}
     <Setup />
   {/if}
   <div class="body" inert={appStore.setupComplete === false}>
-    <Sidebar />
+    <div class="rail">
+      <Sidebar />
+    </div>
     <div class="content-fade content-fade-top" class:visible={fadeTop && !appStore.settingsOpen} aria-hidden="true"></div>
     <div class="content-fade content-fade-bottom" class:visible={fadeBottom && !appStore.settingsOpen} aria-hidden="true"></div>
     <div
@@ -402,7 +435,6 @@
     <SyncPairModal />
   {/if}
   <DictationPill />
-  <AgentAccessibilityDump windowKind="main" />
 
   {#if errorToast}
     <div
@@ -428,6 +460,9 @@
       <span class="offline-dot"></span>
       No internet connection
     </div>
+  {/if}
+  {#if compactNav}
+    <MobileNav />
   {/if}
 </div>
 
@@ -460,11 +495,17 @@
   .app {
     width: 100%;
     height: 100vh;
+    height: 100dvh;
     background: var(--paper);
     display: flex;
     flex-direction: column;
     font-family: var(--sans);
     position: relative;
+    /* Edge-to-edge: draw behind system bars; children consume safe-area
+       insets individually so desktop (where env() is 0) is unaffected. */
+    padding-top: var(--safe-top);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
   }
 
   /* The native Windows caption is non-client chrome, so it does not consume
@@ -481,6 +522,82 @@
     padding: 0 0 var(--app-gutter) 0;
     gap: var(--app-gutter);
     position: relative;
+  }
+
+  /* Layout-neutral wrapper so compact Android can hide the desktop rail
+     without touching Sidebar's own layout. */
+  .rail {
+    display: contents;
+  }
+
+  .app[data-compact-nav='true'] .rail {
+    display: none;
+  }
+
+  .app[data-compact-nav='true'] .body {
+    gap: 0;
+    padding-bottom: 0;
+  }
+
+  /* The rail is gone, so nothing should offset for its width anymore, and
+     any full-bleed overlay (Settings, modals, toasts) needs to know how much
+     room the sticky bottom nav actually takes so its content isn't hidden
+     behind it. */
+  .app[data-compact-nav='true'] {
+    --sidebar-w: 0px;
+    --mobile-nav-h: calc(60px + var(--safe-bottom));
+  }
+
+  /* MainActivity applies the real Android WindowInsets to the WebView content
+     root. Do not add the WebView's CSS env() values again on Android, since
+     some devices expose them inconsistently and would otherwise double-pad. */
+  .app[data-android='true'] {
+    --safe-top: 0px;
+    --safe-bottom: 0px;
+    --safe-left: 0px;
+    --safe-right: 0px;
+  }
+
+  /*
+   * The scroll fades are cut to the desktop shell: inset from the left for the
+   * rail, from the right for the scrollbar gutter, and lifted off the bottom by
+   * --app-gutter. None of those exist in the compact layout, which left the
+   * bottom fade hanging in mid-air above the nav bar with unfaded content on
+   * either side of it. Run them edge to edge and flush to the bar instead.
+   */
+  .app[data-compact-nav='true'] .content-fade {
+    left: 0;
+    right: 0;
+  }
+
+  .app[data-compact-nav='true'] .content-fade-bottom {
+    bottom: 0;
+  }
+
+  /* Compact windows (phones, narrow foldables, snapped split-screen):
+     tighten page rhythm and keep the gesture bar clear of content. */
+  .app[data-width-class='compact'] {
+    --page-pad-x: 16px;
+    --page-pad-y: 16px;
+  }
+
+  .app[data-width-class='compact'] .content {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .app[data-width-class='compact'] .page-wrapper {
+    padding-right: 0;
+  }
+
+  /*
+   * Phones get a full-height page column so views can distribute themselves
+   * down the screen instead of stacking into the top third and leaving the
+   * rest of a tall display empty. .page-wrapper already resolves a definite
+   * min-height against the content grid area, so flex children can claim it.
+   */
+  .app[data-compact-nav='true'] .page-wrapper {
+    display: flex;
+    flex-direction: column;
   }
 
   /*

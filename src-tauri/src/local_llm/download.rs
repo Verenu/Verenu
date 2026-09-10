@@ -1,11 +1,12 @@
 use super::model::{LocalLlmArtifact, LocalLlmModelManifest};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LocalLlmDownloadProgressPayload {
@@ -231,7 +232,8 @@ async fn negotiate_total_bytes(
             "https://huggingface.co/{}/resolve/main/{}",
             manifest.repo_id, artifact.filename
         );
-        let partial = std::fs::metadata(partial_file_path(root, manifest, artifact))
+        let partial = tokio::fs::metadata(partial_file_path(root, manifest, artifact))
+            .await
             .map(|meta| meta.len())
             .unwrap_or(0);
         let response = download_client()
@@ -284,9 +286,10 @@ async fn download_one_artifact(
 
     let partial_path = partial_file_path(root, manifest, artifact);
     if let Some(parent) = partial_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    let partial_size = std::fs::metadata(&partial_path)
+    let partial_size = tokio::fs::metadata(&partial_path)
+        .await
         .map(|meta| meta.len())
         .unwrap_or(0);
     let url = format!(
@@ -324,12 +327,13 @@ async fn download_one_artifact(
         return Ok(());
     }
 
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .append(partial_size > 0 && resumed)
         .truncate(partial_size == 0 || !resumed)
-        .open(&partial_path)?;
+        .open(&partial_path)
+        .await?;
 
     if !resumed && partial_size > 0 {
         *aggregate_downloaded = aggregate_downloaded.saturating_sub(partial_size);
@@ -344,14 +348,14 @@ async fn download_one_artifact(
 
     while let Some(chunk) = response.chunk().await? {
         ensure_not_cancelled(cancel)?;
-        file.write_all(&chunk)?;
+        file.write_all(&chunk).await?;
         *aggregate_downloaded = aggregate_downloaded.saturating_add(chunk.len() as u64);
         if last_emit.elapsed() >= Duration::from_millis(150) {
             emit_progress(app, manifest.id, *aggregate_downloaded, aggregate_total);
             last_emit = Instant::now();
         }
     }
-    file.flush()?;
+    file.flush().await?;
     emit_progress(app, manifest.id, *aggregate_downloaded, aggregate_total);
     Ok(())
 }
@@ -362,9 +366,7 @@ pub async fn download_model(
     root: &Path,
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(root)?;
-    let final_dir = manifest.final_path(root);
-
+    tokio::fs::create_dir_all(root).await?;
     let total_bytes = negotiate_total_bytes(manifest, root).await?;
     let mut downloaded_bytes = manifest.partial_size(root);
 
@@ -421,6 +423,19 @@ pub async fn download_model(
     // Only now, after every artifact has downloaded and passed checksum
     // verification, replace whatever was previously in final_dir — so a
     // failed or cancelled download never destroys a working installed model.
+    let install_manifest = manifest.clone();
+    let install_root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || install_downloaded_model(&install_manifest, &install_root))
+        .await??;
+    emit_progress(app, manifest.id, downloaded_bytes, total_bytes);
+    Ok(())
+}
+
+/// Atomically installs verified artifacts. This is intentionally synchronous,
+/// but only runs inside `spawn_blocking`: directory replacement and cleanup can
+/// touch hundreds of MB and must not occupy an async runtime worker.
+fn install_downloaded_model(manifest: &LocalLlmModelManifest, root: &Path) -> anyhow::Result<()> {
+    let final_dir = manifest.final_path(root);
     let partial_dir = manifest.partial_download_path(root);
     let backup_path = root.join(format!(".{}-backup-{}", manifest.id, std::process::id()));
     if backup_path.exists() {
@@ -464,7 +479,6 @@ pub async fn download_model(
         }
     }
     let _ = std::fs::remove_dir_all(partial_dir);
-    emit_progress(app, manifest.id, downloaded_bytes, total_bytes);
     Ok(())
 }
 

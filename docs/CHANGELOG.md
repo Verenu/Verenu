@@ -5,6 +5,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Removed the microphone calibration step and Audio-page calibration controls; manual microphone gain remains available. Rejected quiet or speech-free captures now make a quick follow-up dictation more sensitive for a bounded number of attempts, including explicit retries.
+- Fixed Windows dictation appearing to freeze after CPAL reported that the
+  microphone stream was no longer available; the dead recording now shuts down
+  promptly and shows a microphone error instead of later reporting a misleading
+  "Recording too short" rejection.
 - Added a developer-only **Ruin accessibility** toggle that dumps a compact diagnostics block into the OS accessibility tree for agent SnapShots: git SHA/branch/dirty, pipeline events, providers, mic, and stable `data-debug-id`s. Off by default. It does not include API keys, clipboard phrase, cleanup prompt text, logs, or dictated history.
 - Added an optional Windows Audio setting to toggle hands-free dictation with a mute→unmute pulse on the selected microphone. Matches the selected mic across WASAPI/CPAL name variants, watches the endpoint mute bit plus USB/headset hardware mute controls on the capture path, and uses a digital-silence PCM fallback when those controls are absent — releasing that idle capture client before dictation opens the mic so the pill visualizer is not starved. Mute watching runs only while the setting is on.
 - Removed orange from the native and packaged app icons. Runtime icons now use a pure black-and-white pair that follows light and dark appearance modes instead of the selected accent color.

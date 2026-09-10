@@ -427,6 +427,36 @@ input[type='range'].ui-range:focus-visible {
   justify-content: flex-end;
 }
 
+/*
+ * Compact/Android: every dialog built on the shared modal shell (new context
+ * group, add snippet/word, cleanup prompt, sync pairing, ...) becomes a
+ * bottom sheet instead of a centered desktop card. A ~460px card floating in
+ * the middle of a 400px-wide phone screen leaves dead margins on both sides
+ * and, worse, sits above the keyboard rather than anchored to it — the sheet
+ * is full-width, docked to the bottom edge, and gets far more vertical room
+ * to work with than the desktop card's `calc(100vh - 40px)` allowed for.
+ */
+.app[data-compact-nav='true'] .ui-modal-card,
+.app[data-compact-nav='true'] .modal-card {
+  left: 0;
+  right: 0;
+  top: auto;
+  bottom: 0;
+  translate: 0 0;
+  width: 100%;
+  max-width: none;
+  max-height: min(88vh, calc(100% - 24px));
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.app[data-compact-nav='true'] .ui-modal-foot {
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --ui-duration-fast: 80ms;

@@ -3,7 +3,7 @@
 //! `main.rs` stay stable. Shared imports are re-exported as `pub(crate) use` so
 //! each submodule picks them up via `use super::*`.
 
-pub(crate) use tauri::{AppHandle, Emitter, Manager};
+pub(crate) use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) use crate::data::{db, store};
 pub(crate) use crate::media::audio;
@@ -18,6 +18,7 @@ pub(crate) use crate::DbHandle;
 pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
     "Local on-device models aren't available on Intel Macs yet — this hasn't been tested on Intel hardware. Use a cloud provider (Groq, OpenAI, or Google) for now.";
 
+mod android;
 mod contexts;
 mod history;
 mod library;
@@ -36,15 +37,42 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| format!("{label} task panicked: {e}"))?
+    let operation = crate::system::diagnostics::operation_started(label);
+    let result = tokio::task::spawn_blocking(f).await;
+    match result {
+        Ok(Ok(value)) => {
+            operation.finish(true);
+            Ok(value)
+        }
+        Ok(Err(error)) => {
+            operation.finish(false);
+            crate::system::diagnostics::record_failure(crate::system::diagnostics::FailureInput {
+                subsystem: "tauri".to_owned(),
+                operation: Some(label.to_owned()),
+                cause: error.clone(),
+                ..Default::default()
+            });
+            Err(error)
+        }
+        Err(error) => {
+            operation.finish(false);
+            let message = format!("{label} task panicked: {error}");
+            crate::system::diagnostics::record_failure(crate::system::diagnostics::FailureInput {
+                subsystem: "tauri".to_owned(),
+                operation: Some(label.to_owned()),
+                cause: message.clone(),
+                ..Default::default()
+            });
+            Err(message)
+        }
+    }
 }
 
 fn db_state(app: &AppHandle) -> DbHandle {
     app.state::<DbHandle>().inner().clone()
 }
 
+pub use android::*;
 pub use contexts::*;
 pub use history::*;
 pub use library::*;

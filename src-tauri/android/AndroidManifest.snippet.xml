@@ -1,0 +1,52 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Verenu Android manifest additions. scripts/android-sync.mjs merges these
+    into the Tauri-generated gen/android/app/src/main/AndroidManifest.xml
+    idempotently (each block is wrapped in verenu markers). Do NOT edit the
+    generated manifest by hand — re-run the script after `tauri android init`.
+
+    Rationale per entry:
+    - RECORD_AUDIO: dictation capture (cpal/AAudio in Rust). Runtime prompt.
+    - INTERNET: cloud transcription/cleanup providers + loopback bridge
+      sockets (any socket, including 127.0.0.1, needs this; install-time).
+    - ACCESS_NETWORK_STATE: offline detection for the persistent offline UI.
+    - FOREGROUND_SERVICE / FOREGROUND_SERVICE_MICROPHONE: dictation holder
+      service (microphone type). Both install-time; the microphone TYPE also
+      needs RECORD_AUDIO granted or startForeground throws (handled).
+    - POST_NOTIFICATIONS: recording indicator (API 33+ runtime prompt).
+    - BIND_ACCESSIBILITY_SERVICE: our own service (signature-level, granted
+      by the OS to the service itself, not the user).
+    - USE_BIOMETRIC is intentionally absent: Keystore keys are
+      non-biometric (device-credential class) so dictation works unlocked.
+  -->
+
+  <!-- verenu:permissions:start -->
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <uses-feature android:name="android.hardware.microphone" android:required="false" />
+  <!-- verenu:permissions:end -->
+
+  <application>
+    <!-- verenu:services:start -->
+    <service
+      android:name=".VerenuAccessibilityService"
+      android:exported="true"
+      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+      </intent-filter>
+      <meta-data
+        android:name="android.accessibilityservice"
+        android:resource="@xml/accessibility_service_config" />
+    </service>
+    <service
+      android:name=".VerenuDictationService"
+      android:exported="false"
+      android:foregroundServiceType="microphone" />
+    <!-- verenu:services:end -->
+  </application>
+</manifest>

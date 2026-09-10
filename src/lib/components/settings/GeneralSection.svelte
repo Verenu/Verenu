@@ -3,7 +3,7 @@
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
-  import { isMac, formatKeyLabel, defaultHotkey } from '../../platform';
+  import { isAndroid, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
   import { saveSetting, type AppearanceMode } from '../../settings';
@@ -66,13 +66,13 @@
     const idx = appearanceOptions.findIndex(o => o.id === appStore.appearanceMode);
     if (!segmentEl) return;
 
-      const measure = () => {
-        const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
-        if (!btn) return;
-        // Horizontal only. Vertical inset stays in CSS so the fill remains
-        // centered regardless of font metrics and option padding.
-        indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
-      };
+    const measure = () => {
+      const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
+      if (!btn) return;
+      // Horizontal only — vertical inset is pure CSS so the pill stays
+      // centered in the track regardless of option padding/font metrics.
+      indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
+    };
 
     measure();
     // The settings column is fluid now, so a one-shot measurement goes stale as
@@ -522,24 +522,31 @@
 
 <h2 class="settings-h">General</h2>
 <h3 class="settings-subhead first">Dictation</h3>
-<div class="setting-row" data-setting-target="general-hotkey">
-  <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe</div></div>
-  <button
-    bind:this={keybindEl}
-    class="badge key-badge keybind-btn"
-    onclick={startRecordingHotkey}
-    class:recording={recordingHotkey}
-    class:armed={hotkeyState === 'armed'}
-    class:first={hotkeyState === 'first'}
-    class:saving={hotkeyState === 'saving'}
-    class:success={hotkeyState === 'success'}
-    class:error={hotkeyState === 'error'}
-  >
-    {#key buttonText}
-      <span in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
-    {/key}
-  </button>
-</div>
+{#if isAndroid}
+  <div class="setting-row" data-setting-target="general-hotkey">
+    <div><div class="label">Dictation control</div><div class="desc">Open a text field and use the Verenu pill above your keyboard.</div></div>
+    <span class="badge key-badge">Keyboard pill</span>
+  </div>
+{:else}
+  <div class="setting-row" data-setting-target="general-hotkey">
+    <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe</div></div>
+    <button
+      bind:this={keybindEl}
+      class="badge key-badge keybind-btn"
+      onclick={startRecordingHotkey}
+      class:recording={recordingHotkey}
+      class:armed={hotkeyState === 'armed'}
+      class:first={hotkeyState === 'first'}
+      class:saving={hotkeyState === 'saving'}
+      class:success={hotkeyState === 'success'}
+      class:error={hotkeyState === 'error'}
+    >
+      {#key buttonText}
+        <span in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
+      {/key}
+    </button>
+  </div>
+{/if}
 {#if isMac && hotkey[0] === 'F5'}
   <p class="hotkey-tip">
     F5 is the 🎤 key on Mac keyboards. If pressing it opens macOS Dictation instead of
@@ -547,10 +554,14 @@
     (or hold <strong>Fn</strong> with F5). You can also pick any other key above.
   </p>
 {/if}
-<div class="setting-row" data-setting-target="general-copy-last">
-  <div><div class="label">Copy last dictation</div><div class="desc">Always available — re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
-  <span class="badge key-badge">{isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
-</div>
+<!-- Keyboard chord, OS autostart, and Caps Lock have no phone equivalent —
+     Android hides them rather than showing dead or Windows-worded controls. -->
+{#if !isAndroid}
+  <div class="setting-row" data-setting-target="general-copy-last">
+    <div><div class="label">Copy last dictation</div><div class="desc">Always available — re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
+    <span class="badge key-badge">{isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
+  </div>
+{/if}
 <div class="setting-row" data-setting-target="general-language">
   <div class="lang-setting-text"><div class="label">Spoken Language</div><div class="desc">Tells transcription what language to expect{languageScopeNote}</div></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -638,7 +649,7 @@
 </div>
 <h3 class="settings-subhead">Appearance & System</h3>
 <div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
+  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
   <div class="appearance-segment" role="radiogroup" aria-label="Appearance" bind:this={segmentEl}>
     {#if indicatorStyle}
       <div class="appearance-indicator" style={indicatorStyle} aria-hidden="true"></div>
@@ -658,10 +669,12 @@
   <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
 </div>
-<div class="setting-row" data-setting-target="general-startup">
-  <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : 'Launch Verenu when Windows starts'}</div></div>
-  <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" />
-</div>
+{#if !isAndroid}
+  <div class="setting-row" data-setting-target="general-startup">
+    <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : 'Launch Verenu when Windows starts'}</div></div>
+    <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" />
+  </div>
+{/if}
 <h3 class="settings-subhead">Text processing</h3>
 <div class="setting-row" data-setting-target="general-cleanup">
   <div><div class="label">Cleanup</div><div class="desc">Runs an LLM-powered cleanup pass after transcription for tone and formatting.</div></div>
@@ -671,10 +684,12 @@
   <div><div class="label">Smart spacing &amp; capitalization</div><div class="desc">Adjusts capitalization and spacing around inserted text when the cursor context is clear.</div></div>
   <Toggle checked={contextualFormatting} onchange={handleContextualFormatting} label="Smart spacing and capitalization" />
 </div>
-<div class="setting-row" data-setting-target="general-caps-lock">
-  <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
-  <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" />
-</div>
+{#if !isAndroid}
+  <div class="setting-row" data-setting-target="general-caps-lock">
+    <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
+    <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" />
+  </div>
+{/if}
 <h3 class="settings-subhead">Legacy</h3>
 <div class="setting-row" data-setting-target="general-legacy">
   <div><div class="label">Legacy pages</div><div class="desc">Bring back the standalone App Mappings settings page and the Dictionary/Snippets pages, superseded by Contexts.</div></div>
@@ -837,7 +852,8 @@
     text-transform: uppercase;
   }
   .appearance-segment {
-    /* Keep the indicator clear of the rounded track corners. */
+    /* Same geometry as DictionaryToolbar .sort-pills: equal pad + matching
+       indicator inset/radius so the fill stays clear of the track corners. */
     position: relative;
     display: inline-flex;
     align-items: center;

@@ -175,6 +175,14 @@ export function buildAgentDump(snapshot: AgentDumpSnapshot): string {
     `pipeline=${compactValue(extras.pillState ?? 'idle')} last_error=${lastError}`,
   ];
 
+  const diagnostics = extras.diagnostics && typeof extras.diagnostics === 'object'
+    ? extras.diagnostics as Record<string, unknown>
+    : {};
+  lines.push(
+    `diag.cpu=${compactValue(diagnostics.cpu)} resident=${compactValue(diagnostics.residentBytes)} active_traces=${compactValue(diagnostics.activeTraces)} failures=${compactValue(diagnostics.recentFailures)} profiler=${compactValue(diagnostics.profiler)} dropped=${compactValue(diagnostics.dropped)}`,
+  );
+  lines.push(`diag.hot_ops=${compactValue(diagnostics.hottestOperations)} fingerprints=${compactValue(diagnostics.failureFingerprints)}`);
+
   const stt = extras.localStt && typeof extras.localStt === 'object' ? extras.localStt as Record<string, unknown> : {};
   const llm = extras.localLlm && typeof extras.localLlm === 'object' ? extras.localLlm as Record<string, unknown> : {};
   const sync = extras.sync && typeof extras.sync === 'object' ? extras.sync as Record<string, unknown> : {};

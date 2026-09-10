@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod connectivity;
+pub mod diagnostics;
 pub mod icons;
 pub mod logger;
 #[cfg(target_os = "macos")]

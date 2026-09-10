@@ -192,6 +192,10 @@ static KEY2: AtomicU32 = AtomicU32::new(91); // VK_LWIN / Windows
 
 const CHORD_TAP_MAX_HOLD_MS: u64 = 200;
 const CHORD_DOUBLE_TAP_WINDOW_MS: u64 = 300;
+// A remapping driver can emit Ctrl and Win as back-to-back low-level events
+// before GetAsyncKeyState has reflected the first edge. Do not mistake that
+// short propagation gap for a missed key-up and dissolve the chord mid-press.
+const STALE_KEY_RECONCILIATION_GRACE_MS: u64 = 100;
 
 fn is_menu_trigger_vk(vk: u32) -> bool {
     matches!(vk, 164 | 165 | 18 | 91 | 92)
@@ -265,6 +269,8 @@ enum TapState {
 struct ChordStateMachine {
     key1_down: bool,
     key2_down: bool,
+    key1_down_since_ms: u64,
+    key2_down_since_ms: u64,
     key2_passed_through: bool,
     key1_passed_through: bool,
     key1_was_chord: bool,
@@ -293,6 +299,12 @@ impl ChordStateMachine {
     fn mark_key_passed_through(&mut self, key: ChordKey) {
         *self.key_passed_through_mut(key) = true;
     }
+    fn key_down_since_mut(&mut self, key: ChordKey) -> &mut u64 {
+        match key {
+            ChordKey::Key1 => &mut self.key1_down_since_ms,
+            ChordKey::Key2 => &mut self.key2_down_since_ms,
+        }
+    }
     /// Corrects stale ownership bookkeeping against live OS key state. A
     /// keyup can occasionally never reach this hook (e.g. swallowed by
     /// another low-level hook, or eaten by the OS's own Start-menu handling
@@ -302,11 +314,16 @@ impl ChordStateMachine {
     /// the live `GetAsyncKeyState` read for the *other* key (never the one
     /// whose edge is currently being processed — its own down/up handling
     /// already reconciles itself).
-    fn reconcile_stale_key(&mut self, key: ChordKey, os_held: bool) {
+    fn reconcile_stale_key(&mut self, key: ChordKey, os_held: bool, now_ms: u64) {
         if os_held || !*self.key_down_mut(key) {
             return;
         }
+        if now_ms.saturating_sub(*self.key_down_since_mut(key)) < STALE_KEY_RECONCILIATION_GRACE_MS
+        {
+            return;
+        }
         *self.key_down_mut(key) = false;
+        *self.key_down_since_mut(key) = 0;
         *self.key_passed_through_mut(key) = false;
         self.set_key_was_chord(key, false);
         if !self.key1_down && !self.key2_down {
@@ -368,6 +385,7 @@ impl ChordStateMachine {
                 ChordOutcome::passthrough()
             };
         }
+        *self.key_down_since_mut(key) = now_ms;
 
         if !(self.key1_down && self.key2_down) {
             self.mark_key_passed_through(key);
@@ -464,6 +482,7 @@ impl ChordStateMachine {
 
     fn on_key_up(&mut self, key: ChordKey, now_ms: u64) -> ChordOutcome {
         let _was_down = std::mem::replace(self.key_down_mut(key), false);
+        *self.key_down_since_mut(key) = 0;
         let key_passed_through = std::mem::replace(self.key_passed_through_mut(key), false);
 
         if !self.key_was_chord(key) {
@@ -745,6 +764,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let mut machine = m.borrow_mut();
                 machine.key1_down = false;
                 machine.key2_down = false;
+                machine.key1_down_since_ms = 0;
+                machine.key2_down_since_ms = 0;
                 machine.key1_passed_through = false;
                 machine.key2_passed_through = false;
                 machine.key1_was_chord = false;
@@ -778,7 +799,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let (outcome, key1_was_passed_through, key2_was_passed_through) =
                 CHORD_MACHINE.with(|m| {
                     let mut machine = m.borrow_mut();
-                    machine.reconcile_stale_key(other_key, other_os_held);
+                    machine.reconcile_stale_key(other_key, other_os_held, now);
                     let key1_was_passed_through =
                         key == ChordKey::Key2 && machine.key1_passed_through;
                     let key2_was_passed_through =
@@ -1003,7 +1024,7 @@ mod chord_tests {
         assert_eq!(m.chord_first_down_ms, 5);
 
         // Something reconciles key2's ownership away mid-hold.
-        m.reconcile_stale_key(ChordKey::Key2, false);
+        m.reconcile_stale_key(ChordKey::Key2, false, 3_000);
         // ...and key2 autorepeats, since it is still physically down.
         let repeat = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 3000);
         assert_eq!(
@@ -1216,7 +1237,7 @@ mod chord_tests {
         // Simulate a missed keyup: key1 (e.g. Ctrl) is marked down internally
         // but the OS no longer reports it held.
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
-        m.reconcile_stale_key(ChordKey::Key1, false);
+        m.reconcile_stale_key(ChordKey::Key1, false, 1_000);
         assert!(!m.key1_down);
         // A lone press of key2 must not look like a chord-forming edge.
         let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 100);
@@ -1228,10 +1249,23 @@ mod chord_tests {
     fn reconcile_leaves_genuinely_held_key_untouched() {
         let mut m = fresh();
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
-        m.reconcile_stale_key(ChordKey::Key1, true);
+        m.reconcile_stale_key(ChordKey::Key1, true, 10);
         assert!(m.key1_down);
         let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 10);
         assert_eq!(outcome.action, Some(ChordAction::FirePress));
+    }
+
+    #[test]
+    fn near_simultaneous_modifiers_form_a_chord_before_async_state_catches_up() {
+        let mut m = fresh();
+        m.on_key_event(ChordKey::Key1, KeyEdge::Down, 10);
+
+        // A mouse remapping button can deliver Ctrl's hook event before the
+        // async-state query made while processing Win sees that first edge.
+        m.reconcile_stale_key(ChordKey::Key1, false, 11);
+        let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 11);
+        assert_eq!(outcome.action, Some(ChordAction::FirePress));
+        assert!(m.chord_down);
     }
 
     #[test]

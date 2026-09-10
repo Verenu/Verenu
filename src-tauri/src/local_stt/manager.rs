@@ -18,7 +18,16 @@ pub struct LocalTranscriptionManager {
     pub loading_condvar: Arc<Condvar>,
     pub shutdown_signal: Arc<AtomicBool>,
     pub recording_active: Arc<AtomicBool>,
+    pub transcription_active: Arc<AtomicBool>,
     download_task: Arc<Mutex<Option<DownloadTaskState>>>,
+}
+
+pub struct TranscriptionPermit(Arc<AtomicBool>);
+
+impl Drop for TranscriptionPermit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
@@ -66,6 +75,7 @@ impl LocalTranscriptionManager {
             loading_condvar: Arc::new(Condvar::new()),
             shutdown_signal: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
+            transcription_active: Arc::new(AtomicBool::new(false)),
             download_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -159,6 +169,20 @@ impl LocalTranscriptionManager {
         if active {
             self.touch_activity();
         }
+    }
+
+    /// Local inference runs in a non-cancellable native/ONNX call. Keep one
+    /// call in flight so a timed-out caller cannot stack more blocking jobs
+    /// behind the same engine mutex while the abandoned call unwinds.
+    pub fn try_begin_transcription(&self) -> bool {
+        self.transcription_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    pub fn transcription_permit(&self) -> Option<TranscriptionPermit> {
+        self.try_begin_transcription()
+            .then(|| TranscriptionPermit(Arc::clone(&self.transcription_active)))
     }
 
     pub fn download_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
@@ -270,7 +294,16 @@ impl LocalTranscriptionManager {
                     // An incidental failure (network blip, disk error) keeps the
                     // partial file so the next attempt can resume instead of
                     // re-downloading from scratch.
-                    cleanup_failed_download_artifacts(&manifest, &root, was_cancelled);
+                    let cleanup_manifest = manifest.clone();
+                    let cleanup_root = root.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        cleanup_failed_download_artifacts(
+                            &cleanup_manifest,
+                            &cleanup_root,
+                            was_cancelled,
+                        );
+                    })
+                    .await;
 
                     if !was_cancelled {
                         let _ = app_handle.emit(
@@ -426,7 +459,7 @@ impl LocalTranscriptionManager {
         };
         let last_ms = self.last_activity_ms.load(Ordering::Relaxed);
         let idle_for = Duration::from_millis(now_ms().saturating_sub(last_ms));
-        if idle_for >= idle_limit {
+        if should_unload_if_idle(idle_for, idle_limit) {
             log::info!(
                 "local-stt: unloading idle model policy={} idle_for_ms={}",
                 cfg.local_model_memory_policy,
@@ -607,4 +640,35 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn should_unload_if_idle(idle_for: Duration, idle_limit: Duration) -> bool {
+    idle_for >= idle_limit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_unload_if_idle, LocalTranscriptionManager};
+    use std::time::Duration;
+
+    #[test]
+    fn local_transcription_is_single_flight_until_worker_releases_it() {
+        let manager = LocalTranscriptionManager::new();
+        let permit = manager.transcription_permit().expect("first permit");
+        assert!(manager.transcription_permit().is_none());
+        drop(permit);
+        assert!(manager.transcription_permit().is_some());
+    }
+
+    #[test]
+    fn idle_unload_waits_until_policy_threshold() {
+        assert!(!should_unload_if_idle(
+            Duration::from_secs(299),
+            Duration::from_secs(300)
+        ));
+        assert!(should_unload_if_idle(
+            Duration::from_secs(300),
+            Duration::from_secs(300)
+        ));
+    }
 }

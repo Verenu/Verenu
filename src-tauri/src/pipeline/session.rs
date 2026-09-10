@@ -133,14 +133,12 @@ pub fn start_recording_session_ex_with_context(
     let exclusive_mic = audio_config.exclusive_mic;
     let pause_media = audio_config.pause_media_during_dictation;
     let mic_gain = audio_config.mic_gain;
-    let exclusive_mic_session_id = if cfg!(target_os = "macos")
-        && exclusive_mic
-        && use_default_input_device
-    {
-        Some(crate::system::volume::register_session())
-    } else {
-        None
-    };
+    let exclusive_mic_session_id =
+        if cfg!(target_os = "macos") && exclusive_mic && use_default_input_device {
+            Some(crate::system::volume::register_session())
+        } else {
+            None
+        };
 
     // Resolve the Context while the recording target is still the target the
     // user selected. This identity is immutable for the whole dictation; the
@@ -618,7 +616,9 @@ fn spawn_stream_error_watcher(
     tauri::async_runtime::spawn(async move {
         loop {
             if stream_error.load(Ordering::Acquire) {
-                log::warn!("pipeline: input stream ended unexpectedly; stopping the active dictation");
+                log::warn!(
+                    "pipeline: input stream ended unexpectedly; stopping the active dictation"
+                );
                 crate::core::hotkey::set_handless_active(false);
                 super::run_pipeline(app, state).await;
                 break;
@@ -655,12 +655,11 @@ pub fn spawn_level_emitter(
         // "recording" state event before we flood the IPC with 16ms updates.
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-        let emit_raw_level = || {
-            let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
-            if !emit_globally {
-                if let Some(pill) = app.get_webview_window("pill") {
-                    pill.emit("audio-level-raw", raw_level_val).ok();
-                }
+        let emit_raw_level = |raw_level_val: f32| {
+            if emit_globally {
+                let _ = app.emit("audio-level-raw", raw_level_val);
+            } else if let Some(pill) = app.get_webview_window("pill") {
+                pill.emit("audio-level-raw", raw_level_val).ok();
             }
         };
 
@@ -673,7 +672,7 @@ pub fn spawn_level_emitter(
         };
 
         let mut speech_emitted = false;
-        let mut emit_level = |level_val: f32| {
+        let mut emit_level = |level_val: f32, raw_level_val: f32| {
             if !speech_emitted && speech_detected.load(Ordering::Acquire) {
                 emit_speech_detected();
                 speech_emitted = true;
@@ -683,7 +682,7 @@ pub fn spawn_level_emitter(
             } else if let Some(pill) = app.get_webview_window("pill") {
                 pill.emit("audio-level", level_val).ok();
             }
-            emit_raw_level();
+            emit_raw_level(raw_level_val);
         };
 
         // The pill is the only consumer of the envelope, so this never goes out
@@ -704,20 +703,19 @@ pub fn spawn_level_emitter(
             }
             let level_val = f32::from_bits(level.load(Ordering::Relaxed));
             let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
-            emit_level(level_val);
+            // Mirror for the Android overlay poller (same pattern as the
+            // pill-stage mirror): the native pill can't see WebView events
+            // when the main activity is dead. One atomic store per tick.
+            crate::android::bridge::note_audio_level(level_val);
+            emit_level(level_val, raw_level_val);
             emit_envelope(envelope.drain());
-            if emit_globally {
-                let _ = app.emit("audio-level-raw", raw_level_val);
-            }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         // Emit final reset to ensure level goes to 0 regardless of timing
         emit_envelope(envelope.drain());
-        emit_level(0.0);
-        if emit_globally {
-            let _ = app.emit("audio-level-raw", 0.0f32);
-        }
+        crate::android::bridge::note_audio_level(0.0);
+        emit_level(0.0, 0.0);
     });
 }
 /// Whether dictation start/stop sound cues are enabled (defaults to true when

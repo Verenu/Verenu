@@ -210,13 +210,7 @@ fn refresh_with_dark(window: &WebviewWindow, dark: bool) {
     let Ok(hwnd) = window.hwnd() else { return };
     let mut native = NativeMetrics::default();
     if let Ok(bridge) = bridge() {
-        let hr = unsafe {
-            (bridge.update)(
-                hwnd.0 as isize,
-                i32::from(dark),
-                &mut native,
-            )
-        };
+        let hr = unsafe { (bridge.update)(hwnd.0 as isize, i32::from(dark), &mut native) };
         if hr >= 0 {
             emit_if_changed(window, &native);
         }

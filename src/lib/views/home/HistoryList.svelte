@@ -22,6 +22,7 @@
   export let copiedId: number | null;
   export let hk1: string;
   export let hk2: string;
+  export let android = false;
   export let search = '';
   export let apps: string[] = [];
   export let appFilter: string | null = null;
@@ -420,10 +421,17 @@
   {/if}
 
   {#if recents.length === 0 && !hasBanner}
-    <div class="day-head day-head-row">
-      <span></span>
-      <HistoryToolbar {search} {apps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
-    </div>
+    <!--
+      With nothing to search, this row was an empty label plus a lone search
+      icon adrift on its own line. Keep it only while filters are active, since
+      that is the one case where the row still has a job (clearing them).
+    -->
+    {#if filtersActive}
+      <div class="day-head day-head-row">
+        <span></span>
+        <HistoryToolbar {search} {apps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
+      </div>
+    {/if}
     {#if filtersActive}
       <div class="empty-state">
         <p class="empty-h">No matches</p>
@@ -433,7 +441,11 @@
     {:else}
       <div class="empty-state">
         <p class="empty-h">No dictations yet</p>
-        <p class="empty-sub">Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to start your first dictation.</p>
+        {#if android}
+          <p class="empty-sub">Open a text field and tap the Verenu pill above your keyboard to start dictating.</p>
+        {:else}
+          <p class="empty-sub">Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to start your first dictation.</p>
+        {/if}
       </div>
     {/if}
   {:else}

@@ -15,6 +15,7 @@
   import WordStats from './insights/WordStats.svelte';
   import type { PricingSnapshot } from './insights/pricing';
   import { icons } from '../icons';
+  import { isAndroid } from '../platform';
   import { contextsStore, loadContexts, orderedContexts } from '../contextsStore.svelte';
   import { EMPTY_INSIGHTS, RANGE_OPTIONS, type InsightsPayload, type InsightsRange } from './insights/types';
 
@@ -144,9 +145,18 @@
 
 <div class="content-inner">
   <div class="head">
+    <!--
+      Android drops the explainer paragraph — it's the same "here's what this
+      page does" filler as the equivalent copy on Style/Snippets, and on a
+      phone header it's the difference between the filters being visible
+      without scrolling or not. Desktop keeps it; the wider header has room
+      and first-time users benefit from it there.
+    -->
     <div>
       <h1 class="page-h">Insights</h1>
-      <p class="page-sub">How much you dictate, how fast, and what it costs. Everything here is computed locally from your own history — nothing leaves your machine.</p>
+      {#if !isAndroid}
+        <p class="page-sub">How much you dictate, how fast, and what it costs. Everything here is computed locally from your own history — nothing leaves your machine.</p>
+      {/if}
     </div>
 
     <div class="head-filters">
@@ -250,7 +260,7 @@
         <button type="button" class="btn-ghost" onclick={() => pickContext(null)}>Show all contexts</button>
       {:else}
         <p class="empty-h">No dictations yet</p>
-        <p class="empty-sub">Hold your hotkey and say something. Once you've dictated a few times, your streaks, speed, and cost estimates will show up here.</p>
+        <p class="empty-sub">{isAndroid ? 'Use the Verenu pill above your keyboard to dictate. Once you have a few entries, your streaks, speed, and cost estimates will show up here.' : "Hold your hotkey and say something. Once you've dictated a few times, your streaks, speed, and cost estimates will show up here."}</p>
       {/if}
     </div>
   {:else if data}
@@ -450,7 +460,20 @@
      column actually is. Below ~560px the title and both dropdowns stack and
      left-align instead of squeezing into one row. */
   @container insights (max-width: 560px) {
-    .head { flex-direction: column; align-items: stretch; }
+    /*
+     * Filters lead on a phone header instead of trailing the title: with the
+     * subtitle gone there's nothing to its right for them to visually pair
+     * with, and "here's the scope, here's the page" reads better than the
+     * reverse order in a single narrow column.
+     */
+    .head { flex-direction: column-reverse; align-items: stretch; }
+    /*
+     * flex-basis follows the main axis, so the 240px basis that reserves a
+     * sensible title column in row layout becomes a 240px minimum *height*
+     * once this stacks — which left a screen-eating blank band between the
+     * subtitle and the filters on phones. Reset it for the column case.
+     */
+    .head > div:first-child { flex: 0 0 auto; }
     .head-filters { justify-content: flex-start; }
     .page-sub { max-width: none; }
     .context-picker { max-width: 100%; }
@@ -461,4 +484,3 @@
     .skeleton { animation-duration: 2.6s; }
   }
 </style>
-

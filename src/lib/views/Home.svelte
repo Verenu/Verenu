@@ -3,8 +3,9 @@
   import { invoke, getVersion, listen } from '../tauri';
   import { appStore } from '../stores';
   import { saveSetting } from '../settings';
-  import { formatKeyLabel, defaultHotkey } from '../platform';
+  import { formatKeyLabel, defaultHotkey, isAndroid } from '../platform';
   import { getGreeting, HISTORY_PAGE_SIZE, type Entry, type Stats } from './home/helpers';
+  import { applyHistoryPage, HISTORY_MAX_RETAINED } from './home/historyCache';
   import HomeHero from './home/HomeHero.svelte';
   import UpdateBanner from './home/UpdateBanner.svelte';
   import ProviderStatusBanner from './home/ProviderStatusBanner.svelte';
@@ -34,6 +35,8 @@
   let historyError = '';
   let loadingMore = false;
   let hasMoreHistory = false;
+  let historyCursor: number | null = null;
+  let historyOffset = 0;
 
   // History filters are session-only. Keep the debounce/load sequence here so
   // pagination and filter changes cannot overwrite each other with stale
@@ -52,7 +55,7 @@
       searchTimer = null;
       if (debouncedSearch !== value) {
         debouncedSearch = value;
-        load(true);
+        load(true, false);
       }
     }, 120);
   }
@@ -65,7 +68,7 @@
       debouncedSearch = search;
     }
     appFilter = app;
-    load(true);
+    load(true, false);
   }
 
   function resetHistoryFilters(): boolean {
@@ -82,7 +85,7 @@
   }
 
   function clearHistoryFilters() {
-    if (resetHistoryFilters()) load(true);
+    if (resetHistoryFilters()) load(true, false);
   }
 
   async function retryTranscription() {
@@ -138,30 +141,41 @@
     } catch { /* clipboard not available in dev */ }
   }
 
-  async function load(reset = true) {
+  async function load(reset = true, refreshStats = false) {
     const seq = ++loadSeq;
-    const nextOffset = reset ? 0 : recents.length;
+    const nextOffset = reset ? 0 : historyOffset;
+    const nextCursor = reset ? null : historyCursor;
     try {
       const [r, s] = await Promise.all([
         invoke<Entry[]>('get_recent', {
           limit: HISTORY_PAGE_SIZE,
           offset: nextOffset,
+          beforeId: nextCursor ?? undefined,
           search: debouncedSearch.trim() || undefined,
           appName: appFilter ?? undefined,
         }),
-        reset ? invoke<Stats>('get_stats') : Promise.resolve(stats),
+        refreshStats ? invoke<Stats>('get_stats') : Promise.resolve(null),
       ]);
       if (seq !== loadSeq) return;
-      recents = reset ? (r ?? []) : [...recents, ...(r ?? [])];
-      stats = s;
+      const page = r ?? [];
+      const cached = applyHistoryPage(recents, page, nextOffset, reset);
+      recents = cached.entries;
+      historyOffset = cached.nextOffset;
+      if (page.length > 0) historyCursor = page[page.length - 1].id;
+      else if (reset) historyCursor = null;
+      if (s) {
+        stats = s;
+      }
       if (reset) historyError = '';
-      hasMoreHistory = (r?.length ?? 0) === HISTORY_PAGE_SIZE;
+      hasMoreHistory = cached.hasMore;
     } catch (err) {
       if (seq !== loadSeq) return;
       console.error('Home load failed:', err);
       if (reset) {
         historyError = err instanceof Error ? err.message : String(err);
         recents = [];
+        historyOffset = 0;
+        historyCursor = null;
         stats = { total_words: 0, avg_wpm: 0, day_streak: 0 };
         hasMoreHistory = false;
       }
@@ -207,7 +221,7 @@
     invoke<string[] | null>('get_setting', { key: 'hotkey' })
       .then(hk => { if (hk?.length === 2) hotkey = hk; })
       .catch(() => { /* use platform default if setting unavailable */ });
-    load();
+    load(true, true);
     invoke<{ created_at: string; kind: string } | null>('get_cancelled_capture')
       .then((pending) => {
         if (!pending) return;
@@ -241,17 +255,17 @@
     trackListener(listen('verenu:transcribed', () => {
       failedEntry = null;
       if (failedTimer) { clearTimeout(failedTimer); failedTimer = null; }
-      load(true);
+      load(true, true);
     }));
 
     trackListener(listen<Entry>('verenu:history-updated', (ev) => {
       failedEntry = null;
       if (failedTimer) { clearTimeout(failedTimer); failedTimer = null; }
-      recents = [ev.payload, ...recents.filter((entry) => entry.id !== ev.payload.id)];
+      recents = [ev.payload, ...recents.filter((entry) => entry.id !== ev.payload.id)].slice(0, HISTORY_MAX_RETAINED);
       invoke<Stats>('get_stats').then((nextStats) => { stats = nextStats; }).catch(() => {});
     }));
 
-    trackListener(listen('verenu:history-pruned', () => load(true)));
+    trackListener(listen('verenu:history-pruned', () => load(true, true)));
 
     trackListener(listen<string>('verenu:pipeline-failed', (ev) => {
       failedEntry = { created_at: ev.payload };
@@ -302,7 +316,7 @@
 
   // Settings is an overlay over Home; do not leave filters active behind it.
   $: if (appStore.settingsOpen) {
-    if (resetHistoryFilters()) load(true);
+    if (resetHistoryFilters()) load(true, false);
   }
 </script>
 
@@ -313,7 +327,7 @@
       <h1 class="page-h">Welcome back</h1>
       <p class="page-sub">{greeting}</p>
 
-      <HomeHero {hk1} {hk2} />
+      <HomeHero {hk1} {hk2} android={isAndroid} />
 
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
@@ -349,6 +363,7 @@
         {copiedId}
         {hk1}
         {hk2}
+        android={isAndroid}
         {search}
         {apps}
         {appFilter}
@@ -363,10 +378,12 @@
       />
     </div>
 
-    <!-- Right column — flat stats -->
-    <div class="stat-stack">
-      <StatsCard {stats} />
-    </div>
+    <!-- Right column — flat stats (desktop only, see hero note above) -->
+    {#if !isAndroid}
+      <div class="stat-stack">
+        <StatsCard {stats} />
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -408,5 +425,48 @@
     .home-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  /*
+   * Phone composition: hero at the top, the history (or its empty state) taking
+   * the slack in the middle, stats settling at the foot of the screen. Stacked
+   * at their desktop sizes these three sat in the top third with a screen of
+   * dead space under them.
+   */
+  @media (max-width: 720px) {
+    .content-inner {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding-bottom: 20px;
+    }
+
+    .home-grid {
+      flex: 1;
+      /* The desktop rule pins items to `start`, which keeps the stacked
+         column at content height and stops it claiming the 1fr row. */
+      align-items: stretch;
+      grid-template-rows: 1fr auto;
+      gap: 16px;
+    }
+
+    .home-grid > div:first-child {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    /*
+     * HistoryList renders its states as sibling blocks with no single root, so
+     * the empty/loading/error state itself takes the slack. A populated list
+     * has no .empty-state and fills the column on its own.
+     */
+    .home-grid :global(.empty-state) {
+      flex: 1;
+      justify-content: center;
+      padding-block: 24px;
+    }
+
+    .page-sub { margin-bottom: 16px; }
   }
 </style>

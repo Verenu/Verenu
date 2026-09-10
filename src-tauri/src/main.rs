@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod android;
 mod api;
 mod app_hotkey;
 mod app_setup;
@@ -36,6 +37,59 @@ pub(crate) use app_setup::{
 #[cfg(target_os = "windows")]
 pub(crate) use app_setup::{cleanup_update_helper_if_requested, wait_for_relaunch_parent_exit};
 pub(crate) use app_tray::apply_runtime_icons;
+
+/// Keeps periodic database maintenance on the existing desktop binary's
+/// local crate types. The library target has a matching helper for its own
+/// crate, but the two targets cannot share those concrete types directly.
+fn start_storage_maintenance(
+    app: tauri::AppHandle,
+    db: DbHandle,
+    settings: crate::data::store::SettingsHandle,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            let retention_days = settings
+                .get(crate::data::store::HISTORY_RETENTION)
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .and_then(crate::data::store::history_retention_days)
+                });
+            let db_for_work = db.clone();
+            let app_for_work = app.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                if let Err(err) = db::cleanup_cache_prune_expired(&db_for_work) {
+                    log::warn!("maintenance: cleanup cache prune failed: {err}");
+                }
+                if let Err(err) = db::prune_auto_learn_retention(&db_for_work) {
+                    log::warn!("maintenance: auto-learn retention failed: {err}");
+                }
+                if let Err(err) = db::prune_pending_corrections(&db_for_work, 2) {
+                    log::warn!("maintenance: pending-correction retention failed: {err}");
+                }
+                if let Some(days) = retention_days {
+                    match db::prune_transcriptions_older_than(&db_for_work, days) {
+                        Ok(deleted) if deleted > 0 => {
+                            let _ = app_for_work.emit("verenu:history-pruned", ());
+                        }
+                        Ok(_) => {}
+                        Err(err) => log::warn!("maintenance: history retention failed: {err}"),
+                    }
+                }
+                if let Ok(conn) = db_for_work.lock() {
+                    if let Err(err) = crate::sync::store::compact_log(&conn) {
+                        log::warn!("maintenance: sync-log compaction failed: {err}");
+                    }
+                }
+                if let Err(err) = db::sqlite_disk_maintenance(&db_for_work) {
+                    log::warn!("maintenance: SQLite disk reclamation failed: {err}");
+                }
+            })
+            .await;
+        }
+    });
+}
 
 fn main() {
     #[cfg(target_os = "windows")]
@@ -224,6 +278,22 @@ fn main() {
             } else {
                 log::info!("sync: disabled by setting");
             }
+            // Android overlay service bridge (loopback): the Kotlin
+            // AccessibilityService drives recording and insertion through
+            // this; see crate::android::bridge. Soft-fails like sync —
+            // a bridge failure must never block startup.
+            #[cfg(target_os = "android")]
+            {
+                match crate::android::bridge::start_bridge(app.handle().clone()) {
+                    Ok(addr) => log::info!("android bridge listening on {addr}"),
+                    Err(error) => log::warn!("android bridge failed to start: {error}"),
+                }
+            }
+            start_storage_maintenance(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+                settings.clone(),
+            );
 
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "windows")]
@@ -484,6 +554,13 @@ fn main() {
             commands::get_microphones,
             commands::get_memory_mb,
             commands::get_hardware_capabilities,
+            commands::set_diagnostics_monitoring,
+            commands::set_diagnostics_profiling,
+            commands::clear_diagnostics,
+            commands::get_diagnostics_snapshot,
+            commands::download_diagnostics_bundle,
+            commands::subscribe_log_stream,
+            commands::unsubscribe_log_stream,
             commands::local_models_supported_on_this_platform,
             commands::start_input_recording,
             commands::start_setup_try_recording,
@@ -557,6 +634,20 @@ fn main() {
             commands::sync_remove_device,
             commands::sync_now,
             commands::sync_get_diagnostics,
+            commands::android_get_platform_info,
+            commands::android_on_keyboard_visibility,
+            commands::android_decide_insertion,
+            commands::android_context_for_package,
+            commands::android_provide_credential,
+            commands::android_keystore_save,
+            commands::android_clear_credentials,
+            commands::android_has_credential,
+            commands::android_permission_rationale,
+            commands::android_request_permission,
+            commands::android_evaluate_permissions,
+            commands::android_width_class,
+            commands::android_insert_text_result,
+            commands::android_on_permission_revoked,
         ])
         .build(tauri::generate_context!())
         .expect("error building Verenu")

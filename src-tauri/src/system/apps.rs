@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InstalledApp {
@@ -451,48 +455,116 @@ fn mac_app_developer(path: &std::path::Path) -> Option<String> {
         .map(|value| format!("mac-bundle:{value}"))
 }
 
-/// A cached inventory for the dictation path. Registry/bundle enumeration is
-/// appropriate for the settings UI, but should not happen on every hotkey
-/// release. A short TTL still notices nightly-app replacements promptly.
-pub fn list_installed_apps_cached() -> Vec<InstalledApp> {
-    use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
+struct InstalledAppsCache {
+    refreshed_at: Option<Instant>,
+    apps: Arc<[InstalledApp]>,
+    refreshing: bool,
+}
 
-    struct Cache {
-        at: Option<Instant>,
-        apps: Vec<InstalledApp>,
-    }
+struct InstalledAppsCacheCoordinator {
+    state: Mutex<InstalledAppsCache>,
+    refreshed: Condvar,
+}
 
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| {
-        Mutex::new(Cache {
-            at: None,
-            apps: Vec::new(),
-        })
-    });
-    {
-        let guard = cache.lock().expect("installed-app cache lock");
-        if guard
-            .at
-            .is_some_and(|at| at.elapsed() < Duration::from_secs(15))
+static INSTALLED_APPS_CACHE: OnceLock<InstalledAppsCacheCoordinator> = OnceLock::new();
+const INSTALLED_APPS_CACHE_TTL: Duration = Duration::from_secs(15);
+#[cfg(test)]
+static CACHE_REFRESH_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn installed_apps_cache() -> &'static InstalledAppsCacheCoordinator {
+    INSTALLED_APPS_CACHE.get_or_init(|| InstalledAppsCacheCoordinator {
+        state: Mutex::new(InstalledAppsCache {
+            refreshed_at: None,
+            apps: Arc::from(Vec::<InstalledApp>::new().into_boxed_slice()),
+            refreshing: false,
+        }),
+        refreshed: Condvar::new(),
+    })
+}
+
+/// Returns the cached inventory and whether this caller performed a refresh.
+/// The inventory is shared by `Arc`, so a hotkey cache hit does not clone every
+/// installed-app record. Waiters share one in-flight refresh instead of
+/// walking the registry or bundle directories concurrently.
+pub fn list_installed_apps_cached_with_status() -> (Arc<[InstalledApp]>, bool) {
+    let cache = installed_apps_cache();
+    loop {
+        let mut state = cache.state.lock().expect("installed-app cache lock");
+        if state
+            .refreshed_at
+            .is_some_and(|at| at.elapsed() < INSTALLED_APPS_CACHE_TTL)
         {
-            return guard.apps.clone();
+            return (Arc::clone(&state.apps), false);
         }
+        if state.refreshing {
+            state = cache
+                .refreshed
+                .wait(state)
+                .expect("installed-app cache wait");
+            drop(state);
+            continue;
+        }
+
+        state.refreshing = true;
+        drop(state);
+
+        #[cfg(test)]
+        CACHE_REFRESH_COUNT.fetch_add(1, Ordering::SeqCst);
+        let apps: Arc<[InstalledApp]> = Arc::from(list_installed_apps().into_boxed_slice());
+        let mut state = cache.state.lock().expect("installed-app cache lock");
+        state.apps = apps;
+        state.refreshed_at = Some(Instant::now());
+        state.refreshing = false;
+        let result = Arc::clone(&state.apps);
+        cache.refreshed.notify_all();
+        return (result, true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    fn reset_cache() {
+        let cache = installed_apps_cache();
+        let mut state = cache.state.lock().expect("cache lock");
+        state.refreshed_at = None;
+        state.apps = Arc::from(Vec::<InstalledApp>::new().into_boxed_slice());
+        state.refreshing = false;
+        CACHE_REFRESH_COUNT.store(0, Ordering::SeqCst);
     }
 
-    // Do not hold the mutex while walking the registry/bundle directories.
-    // Multiple callers may refresh concurrently, but none will block behind
-    // the potentially slow inventory operation.
-    let apps = list_installed_apps();
-    let mut guard = cache.lock().expect("installed-app cache lock");
-    if guard
-        .at
-        .is_none_or(|at| at.elapsed() >= Duration::from_secs(15))
-    {
-        guard.apps = apps;
-        guard.at = Some(Instant::now());
+    #[test]
+    fn cache_hits_share_the_inventory_without_cloning_it() {
+        let _test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
+        reset_cache();
+        let first = list_installed_apps_cached_with_status().0;
+        let second = list_installed_apps_cached_with_status().0;
+        assert!(Arc::ptr_eq(&first, &second));
     }
-    guard.apps.clone()
+
+    #[test]
+    fn concurrent_cache_misses_share_one_refresh() {
+        let _test_guard = CACHE_TEST_LOCK.lock().expect("cache test lock");
+        reset_cache();
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    list_installed_apps_cached_with_status().0
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("cache reader");
+        }
+        assert_eq!(CACHE_REFRESH_COUNT.load(Ordering::SeqCst), 1);
+    }
 }
 
 /// Finds a replacement for a target whose executable/name no longer exists.

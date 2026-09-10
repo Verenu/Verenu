@@ -1,0 +1,13 @@
+[[permission]]
+identifier = "allow-save-credential"
+description = "Allow the main window to save or delete provider credentials in Android Keystore-backed storage."
+commands.allow = ["saveCredential"]
+
+[[permission]]
+identifier = "allow-get-credential-status"
+description = "Allow the main window to read provider credential presence without reading key material."
+commands.allow = ["getCredentialStatus"]
+
+[default]
+description = "Android credential storage permissions for the main window."
+permissions = ["allow-save-credential", "allow-get-credential-status"]

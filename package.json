@@ -24,6 +24,7 @@
     "macos:signing-identity": "bash scripts/macos/ensure-signing-identity.sh",
     "macos:verify-identity": "node scripts/macos/verify-app-identity.mjs",
     "tauri:build:signed": "bash scripts/macos/build-signed.sh",
+    "android:sync": "node scripts/android-sync.mjs",
     "tauri": "node scripts/tauri-cli.mjs"
   },
   "keywords": [
