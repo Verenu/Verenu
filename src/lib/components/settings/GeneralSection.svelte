@@ -66,11 +66,13 @@
     const idx = appearanceOptions.findIndex(o => o.id === appStore.appearanceMode);
     if (!segmentEl) return;
 
-    const measure = () => {
-      const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
-      if (!btn) return;
-      indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
-    };
+      const measure = () => {
+        const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
+        if (!btn) return;
+        // Horizontal only. Vertical inset stays in CSS so the fill remains
+        // centered regardless of font metrics and option padding.
+        indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
+      };
 
     measure();
     // The settings column is fluid now, so a one-shot measurement goes stale as
@@ -835,36 +837,44 @@
     text-transform: uppercase;
   }
   .appearance-segment {
+    /* Keep the indicator clear of the rounded track corners. */
     position: relative;
     display: inline-flex;
     align-items: center;
-    padding: 2px;
+    box-sizing: border-box;
+    padding: 3px;
     background: var(--paper);
     border: 1px solid var(--line);
     border-radius: 7px;
     gap: 2px;
+    overflow: hidden;
   }
   .appearance-indicator {
     position: absolute;
-    top: 2px;
-    height: calc(100% - 4px);
+    top: 3px;
+    bottom: 3px;
     background: var(--bg-elev);
-    border-radius: 5px;
-    box-shadow: 0 0 0 1px var(--line-soft);
+    border-radius: 4px;
     pointer-events: none;
     transition: left 180ms cubic-bezier(0.22, 1, 0.36, 1), width 180ms cubic-bezier(0.22, 1, 0.36, 1);
   }
   .appearance-option {
     position: relative;
     z-index: 1;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 22px;
     border: 0;
-    border-radius: 5px;
+    border-radius: 4px;
     background: transparent;
     color: var(--ink-mute);
     font-family: var(--sans);
     font-size: 12px;
     font-weight: 500;
-    padding: 4px 9px;
+    line-height: 1;
+    padding: 0 9px;
     cursor: pointer;
     transition: color 0.12s;
   }
