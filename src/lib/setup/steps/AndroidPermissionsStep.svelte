@@ -100,6 +100,9 @@
 		let disposed = false;
 		const unlisteners: Array<() => void> = [];
 		void refresh();
+		if (import.meta.env.DEV && !(globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+			simulateGranted();
+		}
 		const refreshOnReturn = () => {
 			if (document.visibilityState === 'visible') void refresh();
 		};

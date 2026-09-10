@@ -532,7 +532,19 @@ function tauriMock({ appVersion } = {}) {
       case 'get_memory_mb':      return 75;   // number required — tweened(0) crashes on null
       case 'check_for_update':   return null;
       case 'get_recent_logs':    return ['[2026-05-17 10:00:00.000] INFO  smoke logger'];
-      case 'download_logs':      return 'C:\\Users\\test\\Downloads\\verenu-logs-20260517-100000.txt';
+      case 'download_logs':      return 'browser-dev://verenu-logs.txt';
+      case 'get_diagnostics_snapshot': return {
+        generated_at_ms: Date.now(), profiler_enabled: false, profiling_recording: false,
+        current_resource: null, resource_samples: [], latest_failures: [], failure_groups: [],
+        active_pipelines: [], recent_pipelines: [], logs: [], operations: [], runtime: {},
+        health: { initialized: true, profiler_enabled: false, retained_log_count: 0,
+          retained_failure_count: 0, retained_trace_count: 0, retained_operation_count: 0,
+          retained_resource_sample_count: 0, active_trace_count: 0, active_span_count: 0,
+          total_logs_recorded: 0, total_failures_recorded: 0, total_traces_started: 0,
+          total_traces_completed: 0, total_operations_recorded: 0, dropped_logs: 0,
+          dropped_failures: 0, dropped_traces: 0, dropped_spans: 0, collector_samples: 0,
+          collector_duration_us_total: 0 },
+      };
       case 'get_dev_logging_enabled': return false;
       case 'set_dev_logging_enabled': return null;
       default:                   return null;
