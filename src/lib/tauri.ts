@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit, listen as tauriListen } from '@tauri-apps/api/event';
 import { defaultHotkey } from './platform';
+import { frontendIpcActivity } from './diagnostics';
 
 declare const __APP_VERSION__: string;
 declare const __VERENU_GIT_SHA__: string;
@@ -287,6 +288,8 @@ function hasTauriInternals(): boolean {
 }
 
 let devStorageFullSimulation = false;
+let devDiagnosticsMonitoring = false;
+let devDiagnosticsRecording = false;
 
 function readDevSettings(): Record<string, unknown> {
   if (typeof localStorage === 'undefined') return {};
@@ -1599,6 +1602,46 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
       return [] as T;
     case 'get_cancelled_capture':
       return null as T;
+    case 'set_diagnostics_monitoring':
+      devDiagnosticsMonitoring = Boolean(args?.enabled);
+      return undefined as T;
+    case 'set_diagnostics_profiling':
+      devDiagnosticsRecording = Boolean(args?.enabled);
+      return undefined as T;
+    case 'clear_diagnostics':
+      return undefined as T;
+    case 'subscribe_log_stream':
+    case 'unsubscribe_log_stream':
+      return undefined as T;
+    case 'get_diagnostics_snapshot': {
+      const now = Date.now();
+      return {
+        generated_at_ms: now,
+        profiler_enabled: devDiagnosticsMonitoring,
+        profiling_recording: devDiagnosticsRecording,
+        current_resource: null,
+        resource_samples: [],
+        latest_failures: [],
+        failure_groups: [],
+        active_pipelines: [],
+        recent_pipelines: [],
+        logs: [],
+        operations: [],
+        runtime: {},
+        health: {
+          initialized: true, profiler_enabled: devDiagnosticsMonitoring,
+          retained_log_count: 0, retained_failure_count: 0, retained_trace_count: 0,
+          retained_operation_count: 0, retained_resource_sample_count: 0,
+          active_trace_count: 0, active_span_count: 0, total_logs_recorded: 0,
+          total_failures_recorded: 0, total_traces_started: 0, total_traces_completed: 0,
+          total_operations_recorded: 0, dropped_logs: 0, dropped_failures: 0,
+          dropped_traces: 0, dropped_spans: 0, dropped_resource_samples: 0,
+          collector_samples: 0, collector_duration_us_total: 0,
+        },
+      } as T;
+    }
+    case 'download_diagnostics_bundle':
+      return 'browser-dev/verenu-diagnostics.json' as T;
     case 'get_recent_auto_learn_activity':
     case 'get_microphones':
     case 'get_recent_logs':
@@ -2374,10 +2417,12 @@ export function isTauriRuntime(): boolean {
 }
 
 export function invoke<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
-  if (hasTauriInternals()) {
-    return tauriInvoke<T>(command, args);
-  }
-  return devInvoke<T>(command, args);
+  const started = frontendIpcActivity.start(command);
+  const request = hasTauriInternals() ? tauriInvoke<T>(command, args) : devInvoke<T>(command, args);
+  return request.then(
+    (value) => { frontendIpcActivity.finish(command, started, true); return value; },
+    (error) => { frontendIpcActivity.finish(command, started, false); throw error; },
+  );
 }
 
 export function listen<T>(

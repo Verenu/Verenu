@@ -49,6 +49,7 @@ impl SettingsSnapshot {
 impl SettingsHandle {
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
+        migrate_legacy_settings_file(&path);
         let values = read_settings_file(&path)?;
         Ok(Self {
             path: Arc::new(path),
@@ -146,9 +147,64 @@ impl SettingsHandle {
 }
 
 pub fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .resolve(SETTINGS_FILE, tauri::path::BaseDirectory::AppData)
-        .map_err(|e| e.to_string())
+    // Keep settings next to the SQLite DB under the stable Verenu data dir.
+    // Tauri AppData is bundle-id scoped, so Windows `tauri dev`
+    // (`com.verenu.app.dev`) would otherwise fork settings away from
+    // production while still sharing Credential Manager keys — dictation then
+    // fails with "No configured transcription backend is available".
+    let _ = app;
+    let dir = crate::app_data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create settings dir failed: {e}"))?;
+    Ok(dir.join(SETTINGS_FILE))
+}
+
+fn migrate_legacy_settings_file(dest: &Path) {
+    if dest.exists() {
+        return;
+    }
+
+    for candidate in legacy_settings_candidates() {
+        if !candidate.exists() || candidate == dest {
+            continue;
+        }
+        match std::fs::copy(&candidate, dest) {
+            Ok(_) => {
+                log::info!(
+                    "Migrated settings from {} to {}",
+                    candidate.display(),
+                    dest.display()
+                );
+                return;
+            }
+            Err(err) => {
+                log::warn!(
+                    "Could not migrate settings from {}: {err}",
+                    candidate.display()
+                );
+            }
+        }
+    }
+}
+
+fn legacy_settings_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let root = PathBuf::from(appdata);
+        // Prefer production config when both identifier-scoped copies exist.
+        out.push(root.join("com.verenu.app").join(SETTINGS_FILE));
+        out.push(root.join("com.verenu.app.dev").join(SETTINGS_FILE));
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let support = PathBuf::from(home).join("Library/Application Support");
+        out.push(support.join("com.verenu.app").join(SETTINGS_FILE));
+        out.push(support.join("com.verenu.app.dev").join(SETTINGS_FILE));
+    }
+
+    out
 }
 
 pub fn settings_handle(app: &AppHandle) -> Result<SettingsHandle, String> {
@@ -306,8 +362,6 @@ pub const AUTO_SPACING: &str = "auto_spacing_enabled";
 pub const APPEARANCE_MODE: &str = "appearance_mode";
 pub const ACCENT_COLOR: &str = "accent_color";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
-/// Developer-only: stuff a diagnostics dump into the OS accessibility tree
-/// so agent SnapShots can read it. Off by default. Not for real AT users.
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
 /// One cleanup prompt for every model. Fallback chains made per-model prompts

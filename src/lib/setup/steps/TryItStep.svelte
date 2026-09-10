@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, listen } from '../../tauri';
-  import { isMac } from '../../platform';
+  import { isAndroid, isMac } from '../../platform';
   import { formatIpcError } from '../../stores.svelte';
   import { hotkeyCodes, hotkeyLabels, hotkeyWatchCodes, matchesHotkey } from '../../hotkey.svelte';
 
@@ -23,7 +23,7 @@
       : 'That recording did not go through',
   );
   const errorDetail = $derived(
-    `${errorMessage.replace(/[.!?]+$/, '')}. Check your microphone, then hold the hotkey until you finish speaking.`,
+    `${errorMessage.replace(/[.!?]+$/, '')}. Check your microphone, then ${isAndroid ? 'tap the pill above your keyboard' : 'hold the hotkey until you finish speaking'}.`,
   );
 
   function tryItFieldFocused() {
@@ -147,10 +147,15 @@
 
 <div class="step">
   <div class="tryit-callout">
-    {#each keyLabels as k, i}
-      {#if i > 0}<span>+</span>{/if}<kbd>{k}</kbd>
-    {/each}
-    <p><strong>1.</strong> Focus the field &nbsp; <strong>2.</strong> Hold the hotkey and speak &nbsp; <strong>3.</strong> Release to finish</p>
+    {#if isAndroid}
+      <strong>Focus the field</strong>
+      <p><strong>1.</strong> Focus this field &nbsp; <strong>2.</strong> Tap the Verenu pill above your keyboard &nbsp; <strong>3.</strong> Tap Stop when you finish</p>
+    {:else}
+      {#each keyLabels as k, i}
+        {#if i > 0}<span>+</span>{/if}<kbd>{k}</kbd>
+      {/each}
+      <p><strong>1.</strong> Focus the field &nbsp; <strong>2.</strong> Hold the hotkey and speak &nbsp; <strong>3.</strong> Release to finish</p>
+    {/if}
     {#if isMac && hotkeyCodes()[0] === 'F5'}
       <p class="tryit-note">Nothing happening? F5 may be opening macOS Dictation — turn it off in System Settings → Keyboard → Dictation, or hold Fn with F5.</p>
     {/if}
@@ -161,7 +166,7 @@
     class:filled={status === 'success'}
     bind:value={sampleText}
     bind:this={textareaEl}
-    placeholder="Click here first, then hold the hotkey and speak..."
+    placeholder={isAndroid ? 'Tap here first, then use the Verenu pill above your keyboard...' : 'Click here first, then hold the hotkey and speak...'}
     rows="3"
   ></textarea>
 
@@ -188,7 +193,7 @@
       <button class="btn-ghost btn-compact tryit-reset" onclick={reset}>Try again</button>
     </div>
   {:else}
-    <p class="tryit-hint">Nothing happens until you hold the hotkey; this field doesn't auto-fill.</p>
+    <p class="tryit-hint">{isAndroid ? 'Nothing happens until you tap the Verenu pill; this field does not auto-fill.' : "Nothing happens until you hold the hotkey; this field doesn't auto-fill."}</p>
   {/if}
 </div>
 

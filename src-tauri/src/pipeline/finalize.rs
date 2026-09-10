@@ -344,8 +344,13 @@ pub(super) async fn finalize_pipeline_completion(
     // Don't stomp the "Paste failed" pill (with its Copy button) that
     // show_paste_failed_pill just showed a few lines up — hide_pill would
     // instantly revert it to idle before the button even has a chance to
-    // fade in, let alone be clicked.
-    if injected.case_decision == "inject_failed" || injected.case_decision == "clipboard_fallback" {
+    // fade in, let alone be clicked. The Android handoff likewise keeps its
+    // terminal state: the Kotlin overlay owns the pill there and hides it
+    // when the insertion ack lands (see crate::android::bridge).
+    if injected.case_decision == "inject_failed"
+        || injected.case_decision == "clipboard_fallback"
+        || injected.case_decision == "android_accessibility_handoff"
+    {
         log::debug!(
             "pipeline: preserving terminal pill state case_decision={}",
             injected.case_decision

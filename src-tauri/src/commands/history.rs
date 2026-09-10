@@ -10,6 +10,7 @@ pub async fn get_recent(
     app: AppHandle,
     limit: Option<usize>,
     offset: Option<usize>,
+    before_id: Option<i64>,
     search: Option<String>,
     app_name: Option<String>,
 ) -> Result<Vec<db::RecentEntry>, String> {
@@ -19,8 +20,22 @@ pub async fn get_recent(
     let search = search.filter(|s| !s.trim().is_empty());
     let app_name = app_name.filter(|s| !s.trim().is_empty());
     run_blocking("get_recent", move || {
-        db::query_recent_page(&db, limit, offset, search.as_deref(), app_name.as_deref())
-            .map_err(|e| e.to_string())
+        if before_id.is_some() || offset == 0 {
+            db::query_recent_page_before(
+                &db,
+                limit,
+                before_id,
+                search.as_deref(),
+                app_name.as_deref(),
+            )
+        } else {
+            // Compatibility for older clients. The current Home view always
+            // supplies before_id after its first page, so normal scrolling
+            // never pays the deep-OFFSET cost. The first page also uses this
+            // shape so an app filter can use its index.
+            db::query_recent_page(&db, limit, offset, search.as_deref(), app_name.as_deref())
+        }
+        .map_err(|e| e.to_string())
     })
     .await
 }

@@ -52,6 +52,12 @@ pub(super) fn recording_gate_rms_for_sensitivity(active_gain: f32, sensitivity_l
     )
 }
 
+/// Exposes the already-computed recording gate to diagnostics without
+/// duplicating the quality gate's gain/sensitivity math in a command module.
+pub(crate) fn diagnostic_recording_gate_rms(active_gain: f32, sensitivity_level: u8) -> f32 {
+    recording_gate_rms_for_sensitivity(active_gain, sensitivity_level)
+}
+
 pub(super) fn silence_floor_gate_rms_for_sensitivity(
     active_gain: f32,
     sensitivity_level: u8,
@@ -241,14 +247,8 @@ fn damerau_levenshtein_distance(left: &str, right: &str) -> usize {
 ///      the typical shape of this artifact), or whatever follows looks like
 ///      a glossary echo (an exact vocabulary term, or the same trigger
 ///      phrase repeating) rather than ordinary continued speech.
-// TODO: not yet called from run_pipeline() — appears to belong alongside
-// strip_hallucinated_suffix(&raw) in mod.rs (same signature, same
-// post-transcription cleanup purpose, doc comment below describes a
-// real confirmed case this was written to fix) but wiring it into the live
-// transcription path for all users isn't a call to make while fixing
-// review findings. #[allow(dead_code)] only unblocks `cargo clippy -D
-// warnings`; this still needs a decision, not just a lint suppression.
-#[allow(dead_code)]
+// Applied alongside strip_hallucinated_suffix() at each transcription output
+// boundary in pipeline/mod.rs and stages_transcription.rs.
 pub(super) fn strip_trailing_hallucination(text: &str) -> String {
     // Distinctive multi-word phrases lifted verbatim from the prompt this
     // app actually sends to Whisper-family models (api/prompts/transcription.rs).

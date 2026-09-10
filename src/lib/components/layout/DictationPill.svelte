@@ -144,4 +144,16 @@
   .hf-btn.confirm { color: var(--pill-fg); }
   .hf-btn.cancel:hover  { color: var(--pill-muted-strong); }
   .hf-btn.confirm:hover { color: var(--pill-fg); }
+
+  /* Touch: meet the minimum touch-target size without changing the pill's
+     visual footprint — the hit area grows, the artwork doesn't. */
+  @media (pointer: coarse) {
+    .pill {
+      min-height: var(--touch-target-min);
+    }
+    .hf-btn {
+      width: var(--touch-target-min);
+      height: var(--touch-target-min);
+    }
+  }
 </style>

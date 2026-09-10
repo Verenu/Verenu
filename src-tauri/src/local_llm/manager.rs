@@ -224,7 +224,16 @@ impl LocalLlmManager {
                         started_at.elapsed().as_millis(),
                         was_cancelled
                     );
-                    cleanup_failed_download_artifacts(&manifest, &root, was_cancelled);
+                    let cleanup_manifest = manifest.clone();
+                    let cleanup_root = root.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        cleanup_failed_download_artifacts(
+                            &cleanup_manifest,
+                            &cleanup_root,
+                            was_cancelled,
+                        );
+                    })
+                    .await;
 
                     if !was_cancelled {
                         let _ = app_handle.emit(
@@ -303,7 +312,11 @@ impl LocalLlmManager {
                         started_at.elapsed().as_millis(),
                         was_cancelled
                     );
-                    super::binary::cleanup_failed_runtime_download(&super::binary::runtime_root());
+                    let runtime_root = super::binary::runtime_root();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        super::binary::cleanup_failed_runtime_download(&runtime_root);
+                    })
+                    .await;
 
                     if !was_cancelled {
                         let _ = app_handle.emit(

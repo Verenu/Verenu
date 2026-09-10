@@ -35,7 +35,7 @@ pub fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Resul
     // App bundles/installers commonly replace their executable name on every
     // update. Refresh a target lazily on the dictation path so users do not
     // need to reopen the Contexts screen after a nightly release changes.
-    let installed_apps = crate::system::apps::list_installed_apps_cached();
+    let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
     db::reconcile_context_targets(db, &installed_apps)?;
     db::resolve_context_for_target(db, executable, domain)
 }

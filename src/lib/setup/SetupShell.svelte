@@ -74,6 +74,15 @@
     flex-direction: column;
     align-items: center;
     overflow: hidden;
+    /*
+     * A fixed, inset:0 overlay anchors straight to the physical viewport
+     * edges — it isn't a descendant of .app's padding box the way the rest
+     * of the app is, so .app's own safe-area padding never reaches it. That
+     * left the step dots and header rendering under the status bar and
+     * camera cutout during onboarding. 0 on desktop/no-cutout devices.
+     */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
 
   /* ── Header: stepper + title, fixed spot — never moves between steps ── */

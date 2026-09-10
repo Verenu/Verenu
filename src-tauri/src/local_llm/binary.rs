@@ -348,7 +348,8 @@ pub async fn ensure_llama_server_binary(
         // The runtime is considered installed solely by the presence of its
         // server binary. Remove an incomplete multi-asset extraction so a
         // later attempt cannot mistake one archive for a complete runtime.
-        let _ = std::fs::remove_dir_all(runtime_root());
+        let root = runtime_root();
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(root)).await;
     }
     result
 }
@@ -363,19 +364,19 @@ async fn ensure_llama_server_binary_inner(
     #[cfg(target_os = "macos")]
     if binary_path.is_file() && !root.join("libllama-common.0.dylib").exists() {
         log::warn!("local-llm: local runtime dynamic library libllama-common.0.dylib not found, forcing repair re-download");
-        let _ = std::fs::remove_dir_all(&root);
+        tokio::fs::remove_dir_all(&root).await?;
     }
 
     if binary_path.is_file() {
         return Ok(binary_path);
     }
 
-    std::fs::create_dir_all(&root)?;
+    tokio::fs::create_dir_all(&root).await?;
     let backend = detect_backend();
     let assets = backend.assets();
 
     let tmp_dir = root.join(".download-tmp");
-    std::fs::create_dir_all(&tmp_dir)?;
+    tokio::fs::create_dir_all(&tmp_dir).await?;
 
     let mut downloaded = 0u64;
     for (idx, asset) in assets.iter().enumerate() {
@@ -411,8 +412,8 @@ async fn ensure_llama_server_binary_inner(
                 asset.sha256,
                 actual
             );
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            let _ = std::fs::remove_dir_all(&root);
+            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+            let _ = tokio::fs::remove_dir_all(&root).await;
             anyhow::bail!(
                 "downloaded runtime asset failed checksum verification: {}",
                 asset.url
@@ -424,9 +425,9 @@ async fn ensure_llama_server_binary_inner(
         let extract_root = root.clone();
         tokio::task::spawn_blocking(move || extract_archive(&extract_archive_path, &extract_root))
             .await??;
-        let _ = std::fs::remove_file(&archive_path);
+        let _ = tokio::fs::remove_file(&archive_path).await;
     }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     if !binary_path.is_file() {
         anyhow::bail!(
