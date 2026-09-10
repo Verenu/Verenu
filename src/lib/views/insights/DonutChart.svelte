@@ -21,7 +21,17 @@
     primaryLabel,
     secondaryLabel = '',
     size = 136,
-  }: { segments: DonutSegment[]; primaryLabel: string; secondaryLabel?: string; size?: number } = $props();
+    showLegend = true,
+  }: {
+    segments: DonutSegment[];
+    primaryLabel: string;
+    secondaryLabel?: string;
+    size?: number;
+    /** CostBreakdown's own table repeats every legend row (name + cost) in
+     *  more detail right below the ring on narrow layouts — set false there
+     *  so the same numbers aren't listed twice in a row. */
+    showLegend?: boolean;
+  } = $props();
 
   const TAU = Math.PI * 2;
   const TWEEN_MS = 320;
@@ -467,6 +477,7 @@
     </div>
   </div>
 
+  {#if showLegend}
   <ul class="donut-legend">
     {#each segments as seg}
       <li
@@ -481,6 +492,7 @@
       </li>
     {/each}
   </ul>
+  {/if}
 </div>
 
 <style>
@@ -489,6 +501,12 @@
     align-items: center;
     gap: 18px;
     flex-wrap: wrap;
+  }
+
+  /* Only the ring remains once the legend is hidden — center it as a group
+     rather than leaving it hugging the left edge of the card. */
+  .donut:has(.donut-ring-wrap:only-child) {
+    justify-content: center;
   }
 
   .donut-ring-wrap {

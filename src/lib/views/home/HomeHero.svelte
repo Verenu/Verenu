@@ -1,16 +1,32 @@
 <script lang="ts">
+  import { isAndroid } from '../../platform';
+
   export let hk1: string;
   export let hk2: string;
+  export let android = false;
+
+  // Svelte's legacy prop bridge can briefly supply the default value while
+  // the Android WebView is bootstrapping. Read the platform directly as well
+  // so the primary Android instruction never falls back to desktop copy.
+  $: showAndroid = android || isAndroid;
 </script>
 
 <div class="hero-photo">
   <div class="hero-photo-content">
     <h2 class="hero-photo-title">
-      Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to dictate
+      {#if showAndroid}
+        Tap the Verenu pill to dictate
+      {:else}
+        Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to dictate
+      {/if}
     </h2>
     <p class="hero-photo-sub">
-      Verenu works in any app. Try it in
-      <em class="hero-em">email, messages, docs</em> &mdash; or anywhere else.
+      {#if showAndroid}
+        Open a text field and use the pill above your keyboard.
+      {:else}
+        Verenu works in any app. Try it in
+        <em class="hero-em">email, messages, docs</em> &mdash; or anywhere else.
+      {/if}
     </p>
   </div>
 </div>
@@ -25,12 +41,20 @@
     background: var(--arm-950);
   }
 
+  /*
+   * Covers the whole card and positions the gradient's centre, rather than
+   * being a smaller offset box: a box narrower than its own falloff clips the
+   * glow into a hard-edged rectangle down one side.
+   */
   .hero-photo::before {
     content: '';
     position: absolute;
-    right: -80px; top: -80px;
-    width: 360px; height: 360px;
-    background: radial-gradient(circle, color-mix(in srgb, var(--hero-accent) 22%, transparent) 0%, transparent 60%);
+    inset: 0;
+    background: radial-gradient(
+      120% 180% at 88% -20%,
+      color-mix(in srgb, var(--hero-accent) 22%, transparent) 0%,
+      transparent 62%
+    );
     pointer-events: none;
   }
 
@@ -71,7 +95,19 @@
   }
 
   @media (max-width: 720px) {
-    .hero-photo-content { padding: 18px 20px; }
-    .hero-photo-title { font-size: 18px; }
+    /*
+     * Phones size the card to its text instead of pinning it to a fixed
+     * height: at these widths the subtitle wraps to two or three lines and the
+     * 104px floor clipped it. The glow is scaled to the card so it reads as a
+     * soft corner wash rather than a hard-edged block sitting mid-card.
+     */
+    .hero-photo {
+      height: auto;
+      min-height: 96px;
+    }
+
+    .hero-photo-content { padding: 16px 18px; max-width: 100%; }
+    .hero-photo-title { font-size: 17px; margin-bottom: 6px; }
+    .hero-photo-sub { font-size: 12px; }
   }
 </style>

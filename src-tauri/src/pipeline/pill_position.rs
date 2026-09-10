@@ -160,28 +160,29 @@ pub(super) fn position_changed(current: i32, desired: i32) -> bool {
     current.abs_diff(desired) > 1
 }
 
-/// Whether a cross-monitor pill move should glide via `pill_animation.rs`
-/// rather than jump instantly. Gated on `already_placed` (the pill has had a
-/// real, monitor-resolved placement applied at least once before — not just
-/// its just-created default geometry) so the very first reveal of a process
-/// never pays the tween's latency for an animation nobody can see yet, while
-/// every later reveal still gets the swap-chain-safe glide whenever the
-/// resolved placement actually differs from where the window currently sits
-/// — including a reveal that follows a `hide_pill` idle cycle, whose stale
-/// geometry still belongs to whatever monitor it was last shown on. Only
-/// called from the Windows-only animated branch in `pill.rs`'s
-/// `show_pill_msg`, same as `current_placement` above.
+/// Whether a pill move should glide via `pill_animation.rs` rather than jump.
+///
+/// #197 meant this for mixed-DPI *cross-monitor* hops. Gating on any x/y
+/// delta still tweened same-monitor content-fit resizes, because the pill is
+/// recentered when its width changes (x moves by half the width delta). Treat
+/// a move as a monitor hop only when it is larger than that recenter.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn should_animate_cross_monitor_move(
     already_placed: bool,
     current: PillPlacement,
     target: PillPlacement,
 ) -> bool {
-    already_placed
-        && (position_changed(current.width, target.width)
-            || position_changed(current.height, target.height)
-            || position_changed(current.x, target.x)
-            || position_changed(current.y, target.y))
+    if !already_placed {
+        return false;
+    }
+    let dx = current.x.abs_diff(target.x);
+    let dy = current.y.abs_diff(target.y);
+    let recenter_budget = current
+        .width
+        .abs_diff(target.width)
+        .saturating_add(current.height.abs_diff(target.height))
+        .saturating_add(8);
+    dx > recenter_budget || dy > recenter_budget
 }
 
 /// Moves/resizes the pill to `placement` if it isn't already there. Returns
@@ -409,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn animates_once_placed_when_geometry_differs() {
+    fn animates_once_placed_when_position_differs() {
         let current = placement(0, 1000, 380, 44);
         let target = placement(1920, 1340, 570, 66);
 
@@ -420,6 +421,23 @@ mod tests {
     fn does_not_animate_once_placed_when_geometry_already_matches() {
         let current = placement(0, 1000, 380, 44);
         let target = placement(0, 1000, 380, 44);
+
+        assert!(!should_animate_cross_monitor_move(true, current, target));
+    }
+
+    #[test]
+    fn does_not_animate_same_monitor_size_only_changes() {
+        let current = placement(770, 1000, 380, 44);
+        let target = placement(770, 1000, 480, 54);
+
+        assert!(!should_animate_cross_monitor_move(true, current, target));
+    }
+
+    #[test]
+    fn does_not_animate_same_monitor_recenter_when_width_changes() {
+        // Growing 380→480 recenters x by 50px.
+        let current = placement(770, 1000, 380, 44);
+        let target = placement(720, 1000, 480, 44);
 
         assert!(!should_animate_cross_monitor_move(true, current, target));
     }

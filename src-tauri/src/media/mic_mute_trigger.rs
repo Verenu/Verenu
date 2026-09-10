@@ -900,10 +900,8 @@ mod win {
                 .build_input_stream(
                     &cfg,
                     move |data: &[u16], _| {
-                        let (silent, abs_max) = pcm_stats(
-                            data.iter()
-                                .map(|s| ((*s as f32 - 32768.0) / 32768.0).abs()),
-                        );
+                        let (silent, abs_max) =
+                            pcm_stats(data.iter().map(|s| ((*s as f32 - 32768.0) / 32768.0).abs()));
                         handle_pcm_stats(data.len(), silent, abs_max, &detector_cb, &last_ep);
                     },
                     err_fn,
@@ -960,9 +958,7 @@ mod win {
         let Ok(mut det) = detector.lock() else {
             return;
         };
-        let Some(transition) =
-            det.push_chunk_stats(now, silent, total as u32, abs_max)
-        else {
+        let Some(transition) = det.push_chunk_stats(now, silent, total as u32, abs_max) else {
             return;
         };
         finish_pcm_transition(transition, now, last_endpoint_event);

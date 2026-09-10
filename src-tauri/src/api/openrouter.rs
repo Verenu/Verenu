@@ -100,8 +100,7 @@ fn parse_model_pricing(records: Vec<ModelRecord>) -> Vec<ModelPricing> {
             let existing_plain = existing.0.eq_ignore_ascii_case(base_id);
             let candidate_plain = model_id.eq_ignore_ascii_case(base_id);
             (candidate_plain && !existing_plain)
-                || (candidate_plain == existing_plain
-                    && model_id.as_str() < existing.0.as_str())
+                || (candidate_plain == existing_plain && model_id.as_str() < existing.0.as_str())
         });
         if replace {
             by_base_id.insert(base_id.to_string(), (model_id, candidate));

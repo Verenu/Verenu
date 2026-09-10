@@ -4,7 +4,8 @@
   import { listen } from '../tauri';
   import { fade } from 'svelte/transition';
   import { MOTION_MS, MOTION_PX, SETTINGS_SECTION_ORDER, directionFromOrder, modalBackdrop, motionMs, motionPx, pageSwap, reducedMotionEnabled } from '../motion';
-  import { isSettingsSectionId } from '../settingsSections';
+  import { isSettingsSectionId, visibleSettingsSections } from '../settingsSections';
+  import { icons } from '../icons';
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
   import { clearSettingsSearchNavigation, settingsSearchNavigation } from '../settingsSearch.svelte';
 
@@ -28,6 +29,32 @@
   const section = $derived(appStore.settingsSection);
   const animDir = $derived(appStore.settingsAnimDir);
   const appVersion = $derived(appStore.appVersion);
+
+  /*
+   * Compact (phone) settings navigation. On desktop the section rail lives in
+   * Sidebar.svelte, which morphs into it when settings opens — but that sidebar
+   * is hidden at compact widths, which left every section except General
+   * unreachable on a phone. This flattens the same source list into a
+   * horizontally scrollable tab strip, shown only when the bottom nav is.
+   */
+  const mobileSections = $derived(
+    visibleSettingsSections({
+      isMac,
+      devMode: appStore.devModeEnabled,
+      legacyMode: appStore.legacyFeaturesEnabled,
+      syncEnabled: appStore.syncEnabled,
+    }).flatMap((group) => group.items)
+  );
+
+  function selectSection(next: (typeof mobileSections)[number]['id']) {
+    if (next === appStore.settingsSection) return;
+    appStore.settingsAnimDir = directionFromOrder(
+      appStore.settingsSection,
+      next,
+      SETTINGS_SECTION_ORDER
+    );
+    appStore.settingsSection = next;
+  }
 
   /*
    * The settings page enters and leaves on the vertical axis while the sidebar
@@ -276,6 +303,21 @@
            Closing is handled by the sidebar's "Back to app" button and Esc —
            the old corner ✕ sat right under the window controls and was
            redundant once settings became a page rather than a modal. -->
+      <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+        {#each mobileSections as entry (entry.id)}
+          <button
+            class="settings-tab"
+            class:active={section === entry.id}
+            role="tab"
+            aria-selected={section === entry.id}
+            onclick={() => selectSection(entry.id)}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={section === entry.id ? '2.2' : '1.6'} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html icons[entry.icon]}</svg>
+            {entry.label}
+          </button>
+        {/each}
+      </div>
+
       <div class="settings-body">
         <div class="fade-edge fade-edge-top" class:visible={fadeTop} aria-hidden="true"></div>
         <div class="fade-edge fade-edge-bottom" class:visible={fadeBottom} aria-hidden="true"></div>
@@ -359,8 +401,8 @@
    */
   .settings-page {
     position: absolute;
-    top: 0;
-    bottom: var(--app-gutter);
+    top: var(--safe-top);
+    bottom: max(var(--app-gutter), var(--mobile-nav-h));
     left: calc(var(--sidebar-w) + var(--app-gutter));
     right: 0;
     z-index: 1;
@@ -394,6 +436,58 @@
     font-size: 11px;
     letter-spacing: 0.01em;
     color: var(--ink-faint);
+  }
+
+  /*
+   * Phone-only section switcher. Hidden wherever the sidebar rail is doing this
+   * job; :global on the ancestor because the attribute lives on .app.
+   */
+  .settings-tabs { display: none; }
+
+  :global(.app[data-compact-nav='true']) .settings-tabs {
+    display: flex;
+    flex-shrink: 0;
+    gap: 18px;
+    overflow-x: auto;
+    justify-content: flex-start;
+    align-items: flex-end;
+    scrollbar-width: none;
+    padding: 4px var(--page-pad-x) 0;
+    scroll-padding-inline: var(--page-pad-x);
+    overscroll-behavior-x: contain;
+    border-bottom: 1px solid var(--line);
+  }
+
+  :global(.app[data-compact-nav='true']) .settings-tabs::-webkit-scrollbar { display: none; }
+
+  /* Matches the underline tabs the Contexts page already uses — same measure,
+     same active rule, no extra chrome. */
+  .settings-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    position: relative;
+    min-height: 40px;
+    padding: 0 0 9px;
+    border: 0;
+    background: transparent;
+    color: var(--ink-mute);
+    font-family: var(--sans);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .settings-tab.active { color: var(--ink); font-weight: 500; }
+
+  .settings-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--ink);
   }
 
   /* Panel area */
@@ -553,6 +647,44 @@
   }
 
   .settings-body :global(.setting-row:last-of-type) { border-bottom: 1px solid var(--line); }
+
+  /*
+   * Phone rows stack. Side-by-side label/control only works while the label has
+   * room to breathe; under ~520px the description squeezes into a 3-4 line
+   * ribbon beside a lonely control. Stacking gives the text the full measure and
+   * puts the control on its own line at a comfortable thumb size.
+   */
+  @container settings-panel (max-width: 520px) {
+    .settings-body :global(.setting-row) {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+      gap: 10px;
+      padding: 16px 0;
+    }
+
+    .settings-body :global(.setting-row) > :global(*:last-child) {
+      justify-self: start;
+      margin-left: 0;
+    }
+
+    .settings-body :global(.desc) { max-width: none; }
+
+    .settings-body :global(.notification-test-controls),
+    .settings-body :global(.simulation-actions),
+    .settings-body :global(.actions) {
+      justify-content: flex-start;
+    }
+  }
+
+  /* Dropdowns are left-aligned with their triggers on phones. The shared
+     desktop rule anchors menus by their right edge, which makes a menu opened
+     from a left-aligned mobile control extend off-screen. */
+  :global(.app[data-compact-nav='true']) .settings-body :global(.ui-dropdown-menu),
+  :global(.app[data-compact-nav='true']) .settings-body :global(.mic-menu) {
+    left: 0;
+    right: auto;
+    max-width: calc(100vw - (2 * var(--page-pad-x)));
+  }
 
   .settings-body :global(.label) { font-size: 13px; font-weight: 500; color: var(--ink-strong); }
   .settings-body :global(.desc)  { font-size: 12px; color: var(--ink-mute); margin-top: 4px; max-width: 56ch; line-height: 1.45; }

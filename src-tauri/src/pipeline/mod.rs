@@ -7,6 +7,7 @@ use crate::core::{browser_probe, injection, window_context};
 use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
 use crate::system::apps::AppMapping;
+use crate::system::diagnostics::{self, OperationOutcome, SpanFinish, TraceHandle};
 use crate::system::number_parser;
 use crate::system::text::is_number_word_token;
 use crate::DbHandle;
@@ -78,13 +79,12 @@ pub use fixture::{
     run_pipeline_fixture, PipelineTestDictionaryEntry, PipelineTestRequest, PipelineTestResult,
     PipelineTestSnippet,
 };
+pub(crate) use gates::diagnostic_recording_gate_rms;
 use gates::{
     effective_recording_rms, has_spoken_content, is_transcription_hallucination,
     normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
     recording_gate_rms_for_sensitivity, silence_floor_gate_rms_for_sensitivity,
-    strip_hallucinated_suffix,
-    strip_trailing_hallucination,
-    MIN_RECORDING_MS, MIN_RECORDING_RMS,
+    strip_hallucinated_suffix, strip_trailing_hallucination, MIN_RECORDING_MS, MIN_RECORDING_RMS,
 };
 pub(crate) use pill::{
     emit_pill_context, emit_pill_stage, hide_pill, show_clipboard_warning_pill, show_copied_pill,
@@ -221,7 +221,6 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     }
     let gate_rms = effective_recording_rms(rms, raw_rms, active_gain);
     if captured_audio.duration_ms < MIN_RECORDING_MS || gate_rms < min_rms {
-        state::note_sensitivity_rejection(&state);
         hide_pill(&app);
         if captured_audio.duration_ms < MIN_RECORDING_MS {
             anyhow::bail!("Recording too short");
@@ -368,6 +367,8 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         log::debug!("pipeline: no session - recording never started or was already consumed");
         return;
     };
+    let trace = diagnostics::start_trace("dictation", None);
+    let mut trace_guard = PipelineDiagnosticsGuard::new(trace);
     let _media_pause_guard = crate::system::media_control::DictationMediaPauseGuard::new();
 
     // Read once, synchronously, as close to the hotkey-release moment as
@@ -434,6 +435,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     );
 
     let stage_audio = std::time::Instant::now();
+    let audio_span = diagnostics::start_span(
+        trace_guard.trace_id(),
+        "audio_preparation",
+        Some("capture"),
+        None,
+    );
     // Capture first, gate second: a resumed/prepended recording needs to be
     // merged with the previous session's audio before the quality gate runs,
     // so a short-but-valid continuation isn't rejected on its own merits.
@@ -504,6 +511,9 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         44 + captured_audio.samples_16k.len() * 2,
         stage_audio.elapsed().as_millis()
     );
+    if let Some(span) = audio_span {
+        let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
+    }
 
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
     let active = ActivePipeline {
@@ -545,6 +555,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     }
 
     let stage_config = std::time::Instant::now();
+    let config_span = diagnostics::start_span(
+        trace_guard.trace_id(),
+        "context_resolution",
+        Some("context"),
+        None,
+    );
     let Some((cfg, profile, app_context)) = open_config_and_context(
         &app,
         &process_name,
@@ -574,6 +590,9 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         cfg.app_context_hint,
         profile
     );
+    if let Some(span) = config_span {
+        let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
+    }
     log::debug!(
         "pipeline: context resolved app_context_present={} stage_ms={}",
         app_context.is_some(),
@@ -604,6 +623,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // chance to hallucinate text from noise. A VAD failure (model missing or
     // inference error) never blocks a dictation; the speech gate falls back to
     // the RMS threshold only in that case.
+    let vad_span = diagnostics::start_span(trace_guard.trace_id(), "vad_gate", Some("vad"), None);
     let vad_samples = captured_audio.samples_16k.clone();
     let vad_handle = tokio::task::spawn_blocking(move || {
         crate::media::vad::analyze_speech_with_sensitivity(
@@ -643,10 +663,30 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         state::leave_processing_if_owned(&state, generation);
         return;
     }
+    if let Some(span) = vad_span {
+        let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
+    }
 
     // Stage already emitted right after entering "processing" above (see
     // comment there) — this Instant is purely for the timing log below.
     let stage_transcribe = std::time::Instant::now();
+    let transcription_span =
+        if cfg.dual_transcription_enabled && transcription_model_chain(&cfg).len() > 1 {
+            diagnostics::start_parallel_span(
+                trace_guard.trace_id(),
+                "transcription",
+                Some("transcription"),
+                None,
+                Some("dual-transcription"),
+            )
+        } else {
+            diagnostics::start_span(
+                trace_guard.trace_id(),
+                "transcription",
+                Some("transcription"),
+                None,
+            )
+        };
     let transcribe_race = tokio::select! {
         r = run_transcription(&app, &captured_audio, &cfg, generation) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
@@ -699,6 +739,20 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         raw.chars().count(),
         preview_text(&raw, 140)
     );
+    let raw_words = raw.split_whitespace().count();
+    if let Some(span) = transcription_span {
+        let _ = diagnostics::finish_span_with(
+            &span,
+            SpanFinish {
+                outcome: OperationOutcome::Success,
+                provider: Some(api_used.clone()),
+                measurements: [("raw_words".to_owned(), raw_words as f64)]
+                    .into_iter()
+                    .collect(),
+                ..SpanFinish::default()
+            },
+        );
+    }
     // Diagnostic only, no behavioral effect — counts and a ratio, never the
     // text. Average conversational speech runs ~2-3 words/sec; a ratio well
     // under that on a recording long enough to judge reliably (rules out
@@ -706,7 +760,6 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // having on hand if a future report of "words missing" turns out to be
     // the transcription itself dropping content rather than cleanup, which
     // today has no equivalent completeness check of its own.
-    let raw_words = raw.split_whitespace().count();
     if captured_audio.duration_ms >= 3000 {
         let words_per_sec = raw_words as f64 / (captured_audio.duration_ms as f64 / 1000.0);
         log::debug!(
@@ -748,6 +801,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         .map(clipboard_phrase::cleanup_instruction);
 
     let stage_cleanup = std::time::Instant::now();
+    let cleanup_span = diagnostics::start_span(
+        trace_guard.trace_id(),
+        "cleanup_and_snippets",
+        Some("cleanup"),
+        None,
+    );
     // Only advertise the cleaning stage when the cleanup LLM will actually run
     // (cleanup enabled + intensity + a key in the chain). When cleanup is off
     // the cleanup call resolves to local snippet/dictionary work that is
@@ -788,6 +847,19 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         preview_text(&final_text, 140),
         dict_entries.len()
     );
+    if let Some(span) = cleanup_span {
+        let _ = diagnostics::finish_span_with(
+            &span,
+            SpanFinish {
+                outcome: OperationOutcome::Success,
+                provider: (!cleanup_api_used.is_empty()).then_some(cleanup_api_used.clone()),
+                measurements: [("dictionary_entries".to_owned(), dict_entries.len() as f64)]
+                    .into_iter()
+                    .collect(),
+                ..SpanFinish::default()
+            },
+        );
+    }
     log::debug!(
         "pipeline: cleanup stage_ms={}",
         stage_cleanup.elapsed().as_millis()
@@ -805,6 +877,12 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     }
 
     let words = raw.split_whitespace().count() as i64;
+    let finalize_span = diagnostics::start_span(
+        trace_guard.trace_id(),
+        "finalize_and_inject",
+        Some("injection"),
+        None,
+    );
     if let Err(e) = finalize_pipeline_completion(
         &app,
         &state,
@@ -829,9 +907,15 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     )
     .await
     {
+        if let Some(ref span) = finalize_span {
+            let _ = diagnostics::finish_span(span, OperationOutcome::Failure);
+        }
         log::error!("pipeline finalize failed: {e}");
         state::leave_finalizing(&state, generation);
         return;
+    }
+    if let Some(ref span) = finalize_span {
+        let _ = diagnostics::finish_span(span, OperationOutcome::Success);
     }
     state::leave_finalizing(&state, generation);
     state::note_sensitivity_success(&state);
@@ -842,6 +926,36 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         captured_audio.duration_ms,
         started_at.elapsed().as_millis()
     );
+    trace_guard.success();
+}
+
+/// Finishes a trace on every early-return path. An incomplete stage is marked
+/// cancelled by the diagnostics store, preventing active-trace leaks when a
+/// user cancels during VAD, transcription, or cleanup.
+struct PipelineDiagnosticsGuard {
+    trace: TraceHandle,
+    outcome: OperationOutcome,
+}
+
+impl PipelineDiagnosticsGuard {
+    fn new(trace: TraceHandle) -> Self {
+        Self {
+            trace,
+            outcome: OperationOutcome::Failure,
+        }
+    }
+    fn trace_id(&self) -> &str {
+        &self.trace.trace_id
+    }
+    fn success(&mut self) {
+        self.outcome = OperationOutcome::Success;
+    }
+}
+
+impl Drop for PipelineDiagnosticsGuard {
+    fn drop(&mut self) {
+        let _ = diagnostics::finish_trace(&self.trace.trace_id, self.outcome);
+    }
 }
 
 async fn prepare_clipboard_phrase(

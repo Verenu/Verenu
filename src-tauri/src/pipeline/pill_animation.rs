@@ -164,8 +164,8 @@ pub(super) fn animate_pill_placement<R: Runtime>(
             return;
         };
         unsafe {
-            // Do not use SWP_ASYNCWINDOWPOS for this last frame. `on_complete`
-            // immediately shows the pill, so its client size must be current.
+            // Synchronous last frame: `on_complete` shows the WebView next.
+            // Intermediate frames keep SWP_ASYNCWINDOWPOS.
             let _ = SetWindowPos(
                 hwnd,
                 None,
@@ -173,7 +173,7 @@ pub(super) fn animate_pill_placement<R: Runtime>(
                 final_frame.y,
                 final_frame.width,
                 final_frame.height,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
 

@@ -2,6 +2,7 @@
   import { estimateCost, type PricingSnapshot } from './pricing';
   import { fmtDuration, fmtNumber, fmtUsd } from './helpers';
   import DonutChart, { type DonutSegment } from './DonutChart.svelte';
+  import { isAndroid } from '../../platform';
   import type { InsightsProviderUsage } from './types';
 
   let { providers, rangeLabel, pricing }: {
@@ -62,7 +63,10 @@
     <p class="foot">No API usage recorded in this range.</p>
   {:else}
     {#if segments.length > 0}
-      <DonutChart {segments} primaryLabel={fmtUsd(summary.total)} secondaryLabel="total" />
+      <!-- The table below already lists every model with its cost and
+           share, so the ring's own legend would just repeat those same rows
+           a second time in a narrower, less detailed form. -->
+      <DonutChart {segments} primaryLabel={fmtUsd(summary.total)} secondaryLabel="total" showLegend={!isAndroid} />
     {/if}
 
     <div class="cost-scroll scroll-styled">

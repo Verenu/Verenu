@@ -126,8 +126,11 @@ pub async fn get_context_targets(
 ) -> Result<Vec<db::ContextTarget>, String> {
     let db = db_state(&app);
     run_blocking("get_context_targets", move || {
-        let installed_apps = crate::system::apps::list_installed_apps();
-        db::reconcile_context_targets(&db, &installed_apps).map_err(|e| e.to_string())?;
+        let (installed_apps, refreshed) =
+            crate::system::apps::list_installed_apps_cached_with_status();
+        if refreshed {
+            db::reconcile_context_targets(&db, &installed_apps).map_err(|e| e.to_string())?;
+        }
         db::query_context_targets(&db, context_id).map_err(|e| e.to_string())
     })
     .await

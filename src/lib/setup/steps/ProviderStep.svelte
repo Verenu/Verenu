@@ -3,12 +3,25 @@
   import { providers } from '../setupData';
   import { getProviderLogo } from '../ProviderLogos';
 
-  let { provider = $bindable() }: { provider: ProviderId } = $props();
+  let {
+    provider = $bindable(),
+    localSupported = true,
+    localUnsupportedReason = '',
+  }: { provider: ProviderId; localSupported?: boolean; localUnsupportedReason?: string } = $props();
+
+  const visibleProviders = $derived(providers.filter((candidate) => candidate.id !== 'local' || localSupported));
+
+  function unsupportedCopy(reason: string): string {
+    const detailStart = reason.indexOf('On-device speech and cleanup models');
+    return detailStart >= 0
+      ? reason.slice(detailStart)
+      : reason || 'On-device models are not available on this Android build yet.';
+  }
 </script>
 
 <div class="step provider-step">
   <div class="provider-cards">
-    {#each providers as p}
+    {#each visibleProviders as p}
       <button
         class="pick-card provider-card"
         class:selected={provider === p.id}
@@ -27,6 +40,12 @@
       </button>
     {/each}
   </div>
+
+  {#if !localSupported}
+    <p class="availability-note" role="note">
+      {unsupportedCopy(localUnsupportedReason)}
+    </p>
+  {/if}
 
   <p class="trademark-note">
     The logos above belong to their respective companies. Verenu is not affiliated with, endorsed by, or sponsored by Groq, OpenAI, or Google — they are shown solely to indicate provider compatibility.
@@ -91,5 +110,12 @@
     line-height: 1.5;
     margin: 0;
     opacity: 0.82;
+  }
+
+  .availability-note {
+    font-size: 11.5px;
+    color: var(--ink-mute);
+    line-height: 1.45;
+    margin: 0;
   }
 </style>

@@ -67,6 +67,7 @@ struct MacosContextProbeResult {
     head: [c_char; 512],
 }
 
+#[link(name = "verenu_macos_ax_text_marker", kind = "static")]
 unsafe extern "C" {
     fn verenu_macos_read_context_probe(
         lookbehind_chars: i32,

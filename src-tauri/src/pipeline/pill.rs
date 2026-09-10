@@ -87,7 +87,6 @@ fn create_pill_if_needed(app: &AppHandle) {
             pill.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))
                 .ok();
             harden_pill_window(&pill);
-
         }
         Err(err) => log::warn!("Failed to create dictation pill window: {err}"),
     }
@@ -378,12 +377,7 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
 fn pill_state_has_clickable_buttons(state: &str) -> bool {
     matches!(
         state,
-        "handsfree"
-            | "error"
-            | "cancelled"
-            | "interrupted"
-            | "paste_failed"
-            | "copied"
+        "handsfree" | "error" | "cancelled" | "interrupted" | "paste_failed" | "copied"
     )
 }
 

@@ -11,6 +11,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const tauriCli = path.join(repoRoot, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
 const macDevRunner = path.join(__dirname, 'tauri-macos-dev-runner.mjs');
 const macDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.conf.json');
+const windowsDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.windows.conf.json');
 
 const args = process.argv.slice(2);
 
@@ -26,6 +27,18 @@ if (
 ) {
   const configArgs = hasConfigOption(args.slice(1)) ? [] : ['--config', macDevConfig];
   args.splice(1, 0, ...configArgs, '--runner', macDevRunner);
+}
+
+// Keep Windows development isolated from an installed production app without
+// rebranding the UI as "Verenu Development" (macOS still uses that name).
+// Without this merge, the dev binary uses com.verenu.app and single-instance
+// forwards launches to the installed executable.
+if (
+  process.platform === 'win32' &&
+  args[0] === 'dev' &&
+  !hasConfigOption(args.slice(1))
+) {
+  args.splice(1, 0, '--config', windowsDevConfig);
 }
 
 if (
