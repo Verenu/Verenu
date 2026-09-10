@@ -304,6 +304,21 @@ pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
 pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+    // Vocabulary assignments move to Everywhere when a Context is deleted;
+    // move the Context-owned correction mappings in the same transaction so
+    // learned substitutions do not disappear or remain orphaned.
+    move_dictionary_corrections_conn(&tx, context_id, everywhere_id)?;
+    // Evidence is transient and its original Context is being removed. Drop
+    // it rather than allowing a later promotion to invent an Everywhere
+    // origin after the source Context no longer exists.
+    tx.execute(
+        "DELETE FROM pending_corrections WHERE context_id = ?1",
+        params![context_id],
+    )?;
+    tx.execute(
+        "DELETE FROM auto_learn_candidates WHERE context_id = ?1",
+        params![context_id],
+    )?;
     tx.execute(
         "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
          SELECT ?1, dictionary_id FROM dictionary_contexts WHERE context_id = ?2",
@@ -639,9 +654,10 @@ pub fn set_dictionary_context_assignment(
     dictionary_id: i64,
     assigned: bool,
 ) -> Result<()> {
-    let conn = lock_conn(db)?;
-    query_context_conn(&conn, context_id)?;
-    let exists: bool = conn.query_row(
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    query_context_conn(&tx, context_id)?;
+    let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM dictionary WHERE id = ?1)",
         params![dictionary_id],
         |row| row.get(0),
@@ -650,28 +666,27 @@ pub fn set_dictionary_context_assignment(
         anyhow::bail!("Dictionary entry {dictionary_id} was not found");
     }
     if assigned {
-        let mistake: Option<String> = conn.query_row(
-            "SELECT mistake FROM dictionary WHERE id = ?1",
+        // Sharing a canonical vocabulary item intentionally shares only the
+        // canonical identity. Context-specific correction mappings are not
+        // copied; callers can create an explicit mapping in this Context.
+        tx.execute(
+            "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![dictionary_id],
-            |row| row.get(0),
         )?;
-        check_dictionary_mistake_conflicts(
-            &conn,
-            context_id,
-            Some(dictionary_id),
-            mistake.as_deref(),
-        )?;
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
              VALUES (?1, ?2)",
             params![context_id, dictionary_id],
         )?;
     } else {
-        conn.execute(
+        remove_dictionary_corrections_for_context_conn(&tx, context_id, dictionary_id)?;
+        tx.execute(
             "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
             params![context_id, dictionary_id],
         )?;
+        cleanup_orphaned_auto_dictionary_conn(&tx, context_id, dictionary_id)?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -877,6 +892,16 @@ mod tests {
             query_dictionary_for_context(&db, context.id).unwrap().len(),
             1
         );
+        let context_entry = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .next()
+            .expect("shared canonical entry");
+        assert!(
+            context_entry.corrections.is_empty(),
+            "sharing a canonical term must not copy another Context's correction mapping"
+        );
+        assert!(context_entry.mistake.is_none());
         assert_eq!(
             query_snippets_for_context(&db, context.id).unwrap().len(),
             1
@@ -902,6 +927,375 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn removing_a_dictionary_assignment_purges_only_that_context_mapping_and_evidence() {
+        let db = open(":memory:").expect("db");
+        let first = insert_context_returning(&db, "Development", None, None, None, None, false)
+            .expect("first context");
+        let second = insert_context_returning(&db, "Writing", None, None, None, None, false)
+            .expect("second context");
+
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            first.id,
+            "Kubernetes",
+            Some("kubernetez"),
+            "high",
+        )
+        .expect("first mapping");
+        let dictionary_id = query_dictionary(&db)
+            .expect("dictionary")
+            .into_iter()
+            .find(|entry| entry.term == "Kubernetes")
+            .expect("canonical entry")
+            .id;
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            second.id,
+            "Kubernetes",
+            Some("kubernetez"),
+            "high",
+        )
+        .expect("second mapping");
+
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO pending_corrections (context_id, wrong_word, correct_word)
+                 VALUES (?1, 'kubernetez', 'Kubernetes'), (?2, 'kubernetez', 'Kubernetes')",
+                params![first.id, second.id],
+            )
+            .expect("pending evidence");
+            conn.execute(
+                "INSERT INTO auto_learn_candidates
+                   (context_id, wrong_word, correct_word, confidence_sum, confidence_avg, seen_count)
+                 VALUES (?1, 'kubernetez', 'Kubernetes', 0.9, 0.9, 1),
+                        (?2, 'kubernetez', 'Kubernetes', 0.9, 0.9, 1)",
+                params![first.id, second.id],
+            )
+            .expect("candidate evidence");
+        }
+
+        set_dictionary_context_assignment(&db, first.id, dictionary_id, false)
+            .expect("remove first assignment");
+
+        assert!(query_dictionary_for_context(&db, first.id)
+            .expect("first dictionary")
+            .is_empty());
+        let second_entry = query_dictionary_for_context(&db, second.id)
+            .expect("second dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary_id)
+            .expect("second mapping remains");
+        assert_eq!(second_entry.corrections.len(), 1);
+
+        let conn = lock_conn(&db).expect("lock");
+        let first_pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_corrections WHERE context_id = ?1",
+                params![first.id],
+                |row| row.get(0),
+            )
+            .expect("first pending count");
+        let second_pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_corrections WHERE context_id = ?1",
+                params![second.id],
+                |row| row.get(0),
+            )
+            .expect("second pending count");
+        assert_eq!(first_pending, 0);
+        assert_eq!(second_pending, 1);
+    }
+
+    #[test]
+    fn rejecting_a_mapping_is_scoped_to_its_context_and_mapping_id() {
+        let db = open(":memory:").expect("db");
+        let first = insert_context_returning(&db, "Development", None, None, None, None, false)
+            .expect("first context");
+        let second = insert_context_returning(&db, "Writing", None, None, None, None, false)
+            .expect("second context");
+
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            first.id,
+            "Groq",
+            Some("grockx"),
+            "high",
+        )
+        .expect("first mapping");
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            second.id,
+            "Groq",
+            Some("rockz"),
+            "high",
+        )
+        .expect("second mapping");
+        let dictionary_id = query_dictionary(&db)
+            .expect("dictionary")
+            .into_iter()
+            .find(|entry| entry.term == "Groq")
+            .expect("canonical entry")
+            .id;
+        let first_mapping_id = query_dictionary_for_context(&db, first.id)
+            .expect("first dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary_id)
+            .and_then(|entry| entry.corrections.into_iter().next())
+            .expect("first correction")
+            .id;
+        let second_mapping_id = query_dictionary_for_context(&db, second.id)
+            .expect("second dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary_id)
+            .and_then(|entry| entry.corrections.into_iter().next())
+            .expect("second correction")
+            .id;
+
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO pending_corrections (context_id, wrong_word, correct_word)
+                 VALUES (?1, 'grockx', 'Groq'), (?2, 'rockz', 'Groq')",
+                params![first.id, second.id],
+            )
+            .expect("pending evidence");
+            conn.execute(
+                "INSERT INTO auto_learn_candidates
+                   (context_id, wrong_word, correct_word, confidence_sum, confidence_avg, seen_count)
+                 VALUES (?1, 'grockx', 'Groq', 0.9, 0.9, 1),
+                        (?2, 'rockz', 'Groq', 0.9, 0.9, 1)",
+                params![first.id, second.id],
+            )
+            .expect("candidate evidence");
+        }
+
+        assert_eq!(
+            delete_auto_learned_corrections_by_ids(&db, first.id, &[first_mapping_id])
+                .expect("reject first mapping"),
+            1
+        );
+        assert_eq!(
+            delete_auto_learned_corrections_by_ids(&db, first.id, &[second_mapping_id])
+                .expect("wrong-context rejection is ignored"),
+            0
+        );
+
+        let first_entry = query_dictionary_for_context(&db, first.id)
+            .expect("first dictionary after rejection")
+            .into_iter()
+            .find(|entry| entry.id == dictionary_id)
+            .expect("canonical row remains assigned");
+        assert!(first_entry.corrections.is_empty());
+        assert!(first_entry.mistake.is_none());
+
+        let second_entry = query_dictionary_for_context(&db, second.id)
+            .expect("second dictionary after rejection")
+            .into_iter()
+            .find(|entry| entry.id == dictionary_id)
+            .expect("second mapping remains");
+        assert_eq!(second_entry.corrections.len(), 1);
+        assert_eq!(second_entry.corrections[0].id, second_mapping_id);
+        assert_eq!(second_entry.corrections[0].mistake, "rockz");
+
+        let conn = lock_conn(&db).expect("lock");
+        let first_candidates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM auto_learn_candidates WHERE context_id = ?1",
+                params![first.id],
+                |row| row.get(0),
+            )
+            .expect("first candidates");
+        let second_candidates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM auto_learn_candidates WHERE context_id = ?1",
+                params![second.id],
+                |row| row.get(0),
+            )
+            .expect("second candidates");
+        assert_eq!(first_candidates, 0);
+        assert_eq!(second_candidates, 1);
+    }
+
+    #[test]
+    fn rejecting_the_last_auto_mapping_removes_only_its_orphaned_canonical() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Development", None, None, None, None, false)
+            .expect("context");
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            context.id,
+            "Kubernetes",
+            Some("kubernetez"),
+            "high",
+        )
+        .expect("auto mapping");
+        let entry = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .next()
+            .expect("entry");
+        let correction_id = entry.corrections[0].id;
+
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO pending_corrections (context_id, wrong_word, correct_word)
+                 VALUES (?1, 'kubernetez', 'Kubernetes')",
+                params![context.id],
+            )
+            .expect("pending evidence");
+            conn.execute(
+                "INSERT INTO auto_learn_candidates
+                   (context_id, wrong_word, correct_word, confidence_sum, confidence_avg, seen_count)
+                 VALUES (?1, 'kubernetez', 'Kubernetes', 0.9, 0.9, 1)",
+                params![context.id],
+            )
+            .expect("candidate evidence");
+        }
+
+        assert_eq!(
+            delete_auto_learned_corrections_by_ids(&db, context.id, &[correction_id])
+                .expect("reject mapping"),
+            1
+        );
+        assert!(query_dictionary(&db)
+            .expect("global dictionary")
+            .into_iter()
+            .all(|entry| entry.term != "Kubernetes"));
+
+        let conn = lock_conn(&db).expect("lock");
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_corrections WHERE context_id = ?1",
+                params![context.id],
+                |row| row.get(0),
+            )
+            .expect("pending count");
+        let candidates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM auto_learn_candidates WHERE context_id = ?1",
+                params![context.id],
+                |row| row.get(0),
+            )
+            .expect("candidate count");
+        assert_eq!(pending, 0);
+        assert_eq!(candidates, 0);
+    }
+
+    #[test]
+    fn manual_mapping_is_context_local_and_protected_from_auto_learn() {
+        let db = open(":memory:").expect("db");
+        let manual_context =
+            insert_context_returning(&db, "Writing", None, None, None, None, false)
+                .expect("manual context");
+        let auto_context =
+            insert_context_returning(&db, "Development", None, None, None, None, false)
+                .expect("auto context");
+
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO pending_corrections (context_id, wrong_word, correct_word)
+                 VALUES (?1, 'user typo', 'Kubernetes')",
+                params![manual_context.id],
+            )
+            .expect("pending evidence");
+            conn.execute(
+                "INSERT INTO auto_learn_candidates
+                   (context_id, wrong_word, correct_word, confidence_sum, confidence_avg, seen_count)
+                 VALUES (?1, 'user typo', 'Kubernetes', 0.9, 0.9, 1)",
+                params![manual_context.id],
+            )
+            .expect("candidate evidence");
+        }
+
+        let manual = insert_dictionary_entry_returning(
+            &db,
+            "Kubernetes",
+            Some("user typo"),
+            Some(manual_context.id),
+        )
+        .expect("manual mapping");
+        let conn = lock_conn(&db).expect("lock");
+        let stale_evidence: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM pending_corrections WHERE context_id = ?1)
+                        + (SELECT COUNT(*) FROM auto_learn_candidates WHERE context_id = ?1)",
+                params![manual_context.id],
+                |row| row.get(0),
+            )
+            .expect("stale evidence count");
+        assert_eq!(stale_evidence, 0);
+        drop(conn);
+        assert!(!insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            manual_context.id,
+            "Kubernetes",
+            Some("user typo"),
+            "high",
+        )
+        .expect("same-context auto attempt"));
+        insert_dictionary_entry_auto_learned_for_context(
+            &db,
+            auto_context.id,
+            "Kubernetes",
+            Some("koobernetes"),
+            "high",
+        )
+        .expect("other-context auto mapping");
+
+        let manual_entry = query_dictionary_for_context(&db, manual_context.id)
+            .expect("manual dictionary")
+            .into_iter()
+            .find(|entry| entry.id == manual.id)
+            .expect("manual entry");
+        assert_eq!(manual_entry.corrections.len(), 1);
+        assert!(!manual_entry.corrections[0].auto_learned);
+        assert_eq!(manual_entry.corrections[0].mistake, "user typo");
+        assert_eq!(
+            delete_auto_learned_corrections_by_ids(
+                &db,
+                manual_context.id,
+                &[manual_entry.corrections[0].id],
+            )
+            .expect("manual rejection is ignored"),
+            0
+        );
+
+        let auto_entry = query_dictionary_for_context(&db, auto_context.id)
+            .expect("auto dictionary")
+            .into_iter()
+            .find(|entry| entry.id == manual.id)
+            .expect("shared canonical entry");
+        assert_eq!(auto_entry.corrections.len(), 1);
+        assert!(auto_entry.corrections[0].auto_learned);
+        assert_eq!(auto_entry.corrections[0].mistake, "koobernetes");
+    }
+
+    #[test]
+    fn duplicate_comma_variants_materialize_as_one_mapping() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Development", None, None, None, None, false)
+            .expect("context");
+        let entry = insert_dictionary_entry_returning(
+            &db,
+            "Kubernetes",
+            Some("Kubernetez, kubernetez,  Kubernetez "),
+            Some(context.id),
+        )
+        .expect("dictionary");
+
+        let materialized = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .find(|row| row.id == entry.id)
+            .expect("entry");
+        assert_eq!(materialized.corrections.len(), 1);
+        assert_eq!(materialized.corrections[0].mistake, "Kubernetez");
     }
 
     #[test]
@@ -1099,6 +1493,40 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_context_moves_its_correction_mapping_to_everywhere() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Temporary", None, None, None, None, false)
+            .expect("context");
+        let dictionary = insert_dictionary_entry_returning(
+            &db,
+            "Kubernetes",
+            Some("kubernetez"),
+            Some(context.id),
+        )
+        .expect("dictionary");
+
+        let before = query_dictionary_for_context(&db, context.id)
+            .expect("context dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary.id)
+            .expect("context entry");
+        assert_eq!(before.corrections.len(), 1);
+        assert_eq!(before.corrections[0].context_id, context.id);
+
+        delete_context(&db, context.id).expect("delete context");
+
+        let after = query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID)
+            .expect("Everywhere dictionary")
+            .into_iter()
+            .find(|entry| entry.id == dictionary.id)
+            .expect("moved entry");
+        assert_eq!(after.mistake.as_deref(), Some("kubernetez"));
+        assert_eq!(after.corrections.len(), 1);
+        assert_eq!(after.corrections[0].context_id, EVERYWHERE_CONTEXT_ID);
+        assert_eq!(after.corrections[0].mistake, "kubernetez");
+    }
+
+    #[test]
     fn adding_existing_content_to_a_context_does_not_overwrite_everywhere() {
         let db = open(":memory:").expect("db");
         let context = insert_context_returning(&db, "Writing", None, None, None, None, false)
@@ -1106,25 +1534,27 @@ mod tests {
         insert_dictionary_entry_returning(&db, "Verenu", Some("Vernu"), None).expect("dictionary");
         insert_snippet_returning(&db, "sig", "signature", "", None).expect("snippet");
 
-        assert!(
-            insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
-                .is_err()
-        );
+        insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
+            .expect("assign existing canonical with a Context-specific correction");
         assert!(insert_snippet_returning(&db, "sig", "different", "", Some(context.id)).is_err());
 
         let dictionary = query_dictionary(&db).expect("dictionary");
-        assert_eq!(dictionary[0].mistake.as_deref(), Some("Vernu"));
+        assert_eq!(dictionary[0].mistake.as_deref(), Some("Vernu, Verano"));
         let snippets = query_snippets(&db).expect("snippets");
         assert_eq!(snippets[0].expansion, "signature");
-        assert!(query_dictionary_for_context(&db, context.id)
-            .unwrap()
-            .is_empty());
+        let context_dictionary =
+            query_dictionary_for_context(&db, context.id).expect("context dictionary");
+        assert_eq!(context_dictionary.len(), 1);
+        assert_eq!(context_dictionary[0].mistake.as_deref(), Some("Verano"));
         assert!(query_snippets_for_context(&db, context.id)
             .unwrap()
             .is_empty());
 
-        insert_dictionary_entry_returning(&db, "Verenu", Some("Vernu"), Some(context.id))
-            .expect("assign existing dictionary entry");
+        assert!(
+            insert_dictionary_entry_returning(&db, "Verenu", Some("Verano"), Some(context.id))
+                .is_err(),
+            "the same Context cannot add a duplicate canonical mapping"
+        );
         insert_snippet_returning(&db, "sig", "signature", "", Some(context.id))
             .expect("assign existing snippet");
         assert_eq!(
@@ -1135,6 +1565,18 @@ mod tests {
             query_snippets_for_context(&db, context.id).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn legacy_insert_reports_duplicate_canonical_term() {
+        let db = open(":memory:").expect("db");
+        insert_dictionary_entry_returning(&db, "Verenu", None, None).expect("dictionary");
+
+        let error = insert_dictionary_entry_returning(&db, "Verenu", None, None)
+            .expect_err("duplicate legacy term should fail cleanly");
+
+        assert_eq!(error.to_string(), "\"Verenu\" is already in the dictionary");
+        assert_eq!(query_dictionary(&db).expect("dictionary").len(), 1);
     }
 
     #[test]
@@ -1184,7 +1626,17 @@ mod tests {
     }
 
     #[test]
-    fn assigning_an_existing_entry_checks_the_target_context() {
+    fn legacy_edit_reports_missing_dictionary_entry() {
+        let db = open(":memory:").expect("db");
+
+        let error = update_dictionary_entry(&db, 999, "Missing", None)
+            .expect_err("editing a missing entry should fail");
+
+        assert_eq!(error.to_string(), "Dictionary entry 999 was not found");
+    }
+
+    #[test]
+    fn assigning_an_existing_entry_shares_only_canonical_identity() {
         let db = open(":memory:").expect("db");
         let source =
             insert_context_returning(&db, "Source", None, None, None, None, false).expect("source");
@@ -1196,17 +1648,26 @@ mod tests {
             insert_dictionary_entry_returning(&db, "Boot", Some("grok bot"), Some(source.id))
                 .expect("source dictionary entry");
 
-        let error = set_dictionary_context_assignment(&db, target.id, second.id, true)
-            .expect_err("assignment should reject duplicate variant");
-        assert!(error.to_string().contains("@bot"));
+        // Assignment is explicit sharing of the canonical term. It must not
+        // copy the source Context's private correction into the target, so a
+        // same spelling in the target can remain owned by its existing term.
+        set_dictionary_context_assignment(&db, target.id, second.id, true)
+            .expect("canonical assignment should not copy source mapping");
         assert_eq!(
             query_dictionary_for_context(&db, target.id).unwrap().len(),
-            1
+            2
         );
         assert_eq!(
             query_dictionary_for_context(&db, source.id).unwrap().len(),
             1
         );
+        let target_entry = query_dictionary_for_context(&db, target.id)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id == second.id)
+            .expect("shared canonical entry");
+        assert!(target_entry.corrections.is_empty());
+        assert!(target_entry.mistake.is_none());
     }
 }
 

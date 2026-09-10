@@ -100,6 +100,7 @@ fn rendered_prompt_size_is_measured_with_worst_case_selected_vocabulary() {
             confidence_tier: "manual".to_string(),
             last_seen_at: None,
             created_at: "now".to_string(),
+            corrections: Vec::new(),
         })
         .collect();
     let raw = entries
