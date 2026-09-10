@@ -257,8 +257,9 @@ mod tests {
             0.6,
         ));
 
-        let count = db::count_pending_corrections_recent(
+        let count = db::count_pending_corrections_recent_for_context(
             &db,
+            db::EVERYWHERE_CONTEXT_ID,
             "Koobernetes",
             "Kubernetes",
             PENDING_RETENTION_DAYS,
