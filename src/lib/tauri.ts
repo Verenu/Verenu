@@ -520,7 +520,9 @@ function devContextDictionaryRows(contextId: number) {
           dictionary_id: row.id,
           context_id: contextId,
           correction_id: null,
-          mistake: null,
+          // Keep legacy unscoped entries visible in browser-dev mode. New
+          // Context-owned mappings take precedence through the branch above.
+          mistake: row.mistake,
           auto_learned: false,
           correction_count: 0,
           confidence_tier: 'manual',
