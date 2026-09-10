@@ -37,7 +37,7 @@ const TIMEOUT = 8_000;
     await page.locator('.settings-nav-item:has-text("Developer")').waitFor({ state: 'visible', timeout: TIMEOUT });
     await page.locator('.settings-nav-item:has-text("Developer")').click();
     await page.locator('h2.settings-h:has-text("Developer")').waitFor({ state: 'visible', timeout: TIMEOUT });
-    const verboseButton = page.getByRole('button', { name: 'Verbose: Off' });
+    const verboseButton = page.getByRole('switch', { name: 'Verbose: Off' });
     if (!(await verboseButton.isVisible().catch(() => false))) {
       errors.push('Developer verbose logging should default to off after unlock.');
     }

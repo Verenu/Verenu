@@ -1641,7 +1641,9 @@ async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
       } as T;
     }
     case 'download_diagnostics_bundle':
-      return 'browser-dev/verenu-diagnostics.json' as T;
+      return (args?.format === 'text'
+        ? 'browser-dev://verenu-logs.txt'
+        : 'browser-dev://verenu-diagnostics.json') as T;
     case 'get_recent_auto_learn_activity':
     case 'get_microphones':
     case 'get_recent_logs':
