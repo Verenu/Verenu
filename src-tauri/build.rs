@@ -4,13 +4,12 @@ fn main() {
     // Read CARGO_CFG_TARGET_OS for cross-compiles and keep desktop-only native
     // bridges out of mobile builds.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let host = std::env::var("HOST").unwrap_or_default();
     if target_os == "windows" {
         #[cfg(target_os = "windows")]
         build_windows_titlebar();
     }
 
-    if target_os == "macos" || host.contains("-apple-darwin") {
+    if std::env::consts::OS == "macos" {
         println!("cargo:rerun-if-changed=src/system/macos_ax_text_marker.m");
         cc::Build::new()
             .file("src/system/macos_ax_text_marker.m")
