@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::context::ResolvedContextIdentity;
 use chrono::{SecondsFormat, Utc};
 
 // ---------- recording session helpers ----------
@@ -66,6 +67,21 @@ pub fn start_recording_session_ex(
     handless: bool,
     options: RecordingStartOptions,
 ) -> Result<(), String> {
+    start_recording_session_ex_with_context(app, state, pill_state, handless, options, None)
+}
+
+/// Starts a recording with an already-resolved Context identity. Resume paths
+/// use this entry point because focus may belong to Verenu's own pill by the
+/// time the user clicks Continue. The supplied identity is authoritative for
+/// the whole resumed dictation.
+pub fn start_recording_session_ex_with_context(
+    app: &AppHandle,
+    state: &SharedState,
+    pill_state: &str,
+    handless: bool,
+    options: RecordingStartOptions,
+    captured_context: Option<ResolvedContextIdentity>,
+) -> Result<(), String> {
     let settings = store::settings_snapshot(app);
     let audio_config = match settings {
         Ok(ref settings) => store::load_audio_config(settings),
@@ -126,6 +142,32 @@ pub fn start_recording_session_ex(
         None
     };
 
+    // Resolve the Context while the recording target is still the target the
+    // user selected. This identity is immutable for the whole dictation; the
+    // processing path must not infer it again from whichever window happens
+    // to be focused after recording or while AutoLearn is monitoring.
+    let target_hwnd = lock_state(state).map(|st| st.target.id).unwrap_or(0);
+    // An interrupted processing task hands its audio to a replacement
+    // recording through `recording_context`. Prefer that state handoff when
+    // no explicit resume payload was supplied. Fresh reservations clear the
+    // slot, so ordinary recordings still resolve against their start target.
+    let captured_context = captured_context.or_else(|| {
+        lock_state(state)
+            .ok()
+            .and_then(|st| st.recording_context.clone())
+    });
+    let has_captured_context = captured_context.is_some();
+    let recording_context = captured_context.unwrap_or_else(|| {
+        emit_context_for_window(app, target_hwnd).unwrap_or_else(|| {
+            let context = ResolvedContextIdentity::everywhere();
+            crate::pipeline::pill::queue_pill_context(&context.label);
+            context
+        })
+    });
+    if has_captured_context {
+        crate::pipeline::pill::queue_pill_context(&recording_context.label);
+    }
+
     let (durable_id, prepend_for_lifecycle) = {
         let mut st = match lock_state(state) {
             Ok(st) => st,
@@ -153,6 +195,7 @@ pub fn start_recording_session_ex(
                 );
             }
         };
+        st.recording_context = Some(recording_context.clone());
         let durable_id = if options.durable {
             let id = if st.failover_reuse_id {
                 st.failover_reuse_id = false;
@@ -279,8 +322,6 @@ pub fn start_recording_session_ex(
                 // is what makes the profile available in time regardless of
                 // which reveal path this particular call takes (see
                 // PENDING_PILL_CONTEXT for the full ordering rationale).
-                let target_hwnd = lock_state(state).map(|st| st.target.id).unwrap_or(0);
-                emit_context_for_window(app, target_hwnd);
                 show_pill(app, pill_state);
             }
             spawn_stream_error_watcher(
@@ -350,6 +391,7 @@ pub async fn cancel_recording_with_resume(
     session: audio::RecordingSession,
     exclusive_mic_session_id: Option<u64>,
     prepend_audio: Option<CapturedAudio>,
+    recording_context: ResolvedContextIdentity,
 ) {
     crate::media::sound::coordinated_unmute();
     crate::system::media_control::end_dictation_media_pause();
@@ -422,7 +464,13 @@ pub async fn cancel_recording_with_resume(
     }
 
     log::info!("recording: cancelled — capture stashed for resume");
-    stash_cancelled_capture(app, state, captured_audio, CaptureOrigin::UserCancelled);
+    stash_cancelled_capture(
+        app,
+        state,
+        captured_audio,
+        CaptureOrigin::UserCancelled,
+        recording_context,
+    );
 }
 
 /// True when the recording lifecycle is currently `Idle`.
@@ -441,6 +489,7 @@ pub fn stash_cancelled_capture(
     state: &SharedState,
     audio: CapturedAudio,
     origin: CaptureOrigin,
+    context: ResolvedContextIdentity,
 ) {
     enum StashOutcome {
         Stashed(CancelledCapture),
@@ -482,7 +531,13 @@ pub fn stash_cancelled_capture(
                 // Drop the state lock before disk I/O so hotkey/UI paths are
                 // not stalled on fsync.
                 drop(st);
-                super::failover::commit_capture(&audio, &id, kind, started_at_unix);
+                super::failover::commit_capture_with_context(
+                    &audio,
+                    &id,
+                    kind,
+                    started_at_unix,
+                    Some(context.id),
+                );
                 let capture = CancelledCapture {
                     audio,
                     captured_at: std::time::Instant::now(),
@@ -491,6 +546,7 @@ pub fn stash_cancelled_capture(
                     created_at_rfc3339: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
                     started_at_unix,
                     target,
+                    context,
                 };
                 match lock_state(state) {
                     Ok(mut st) => {

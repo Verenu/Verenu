@@ -25,6 +25,13 @@ When a context is active, Verenu uses its vocabulary while preparing and cleanin
 
 An entry can belong to several contexts. To reuse one, add it to another context rather than creating a duplicate. To remove it from the current context without deleting it, open the row menu and choose **Move to...**.
 
+The canonical term can therefore be shared while its mistranscription mappings
+remain context-specific. Adding a shared term to another context does not copy
+AutoLearn mappings or evidence into that context; a mapping becomes effective
+there only when it is explicitly entered, intentionally moved, or learned
+there. **Everywhere** is the fallback context when no targeted context matches,
+not a parent whose vocabulary is inherited by every targeted context.
+
 Deleting the entry removes it from every context. Deleting a context moves its entries to Everywhere instead.
 
 ## Auto-learned vocabulary
@@ -34,6 +41,10 @@ When Auto-learn is enabled, Verenu watches the focused text field for correction
 - Distinctive terms, such as brand names and technical words, can be promoted after one high-confidence correction.
 - Ordinary words need repeated corrections before Verenu promotes them.
 - Auto-learned entries show an indicator and confidence information in the Vocabulary list.
+
+The short-lived candidate and pending-observation records stay on the device.
+Once promoted, the persistent correction is stored with the originating
+context, survives restart, and is included in context-aware backup/sync data.
 
 Auto-learn monitors the text field after insertion. It does not send the monitoring data to a Verenu server.
 

@@ -1,34 +1,85 @@
 use super::*;
+use crate::core::context::ResolvedContextIdentity;
+use serde::Serialize;
+
+#[derive(Clone, Serialize)]
+struct DictionaryRejectionEvent {
+    context_id: i64,
+    deleted: usize,
+}
 
 #[derive(Debug)]
 enum RejectionTarget {
-    DictEntries { ids: Vec<i64> },
-    CacheKey { key: String },
+    DictionaryCorrections {
+        correction_ids: Vec<i64>,
+        context: ResolvedContextIdentity,
+    },
+    CacheKey {
+        key: String,
+    },
 }
 
 impl RejectionTarget {
     fn monitor_key_prefix(&self) -> &'static str {
         match self {
-            RejectionTarget::DictEntries { .. } => "rejection",
+            RejectionTarget::DictionaryCorrections { .. } => "rejection",
             RejectionTarget::CacheKey { .. } => "cache_rejection",
         }
     }
 
     fn window_secs(&self) -> u64 {
         match self {
-            RejectionTarget::DictEntries { .. } => REJECTION_WINDOW_SECS,
+            RejectionTarget::DictionaryCorrections { .. } => REJECTION_WINDOW_SECS,
             RejectionTarget::CacheKey { .. } => CACHE_REJECTION_WINDOW_SECS,
+        }
+    }
+
+    fn context_id(&self) -> Option<i64> {
+        match self {
+            RejectionTarget::DictionaryCorrections { context, .. } => Some(context.id),
+            RejectionTarget::CacheKey { .. } => None,
         }
     }
 }
 
+fn rejection_monitor_key(injected_text: &str, target: &RejectionTarget) -> String {
+    // A global active-monitor set must distinguish identical injected text in
+    // two resolved Contexts. Cache invalidation has no Context scope, while a
+    // dictionary rejection does, so only the latter contributes its stable
+    // Context ID to the key.
+    let prefix = target.monitor_key_prefix();
+    let key_context = target
+        .context_id()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let key_material = format!("{prefix}:{key_context}");
+    let (text_hash, context_hash) = pair_hash(injected_text, &key_material);
+    format!("{prefix}:{context_hash}:{text_hash}")
+}
+
 fn apply_rejection(target: &RejectionTarget, db: &DbHandle, app: &AppHandle, prefix: &str) {
     match target {
-        RejectionTarget::DictEntries { ids } => {
-            if let Err(e) = db::delete_auto_learned_entries_by_ids(db, ids) {
-                log::warn!("{prefix}: delete failed: {e}");
-            } else {
-                app.emit("verenu:dictionary-entry-rejected", ids.len()).ok();
+        RejectionTarget::DictionaryCorrections {
+            correction_ids,
+            context,
+        } => {
+            let deleted =
+                match db::delete_auto_learned_corrections_by_ids(db, context.id, correction_ids) {
+                    Ok(deleted) => deleted,
+                    Err(e) => {
+                        log::warn!("{prefix}: delete failed: {e}");
+                        return;
+                    }
+                };
+            if deleted > 0 {
+                app.emit(
+                    "verenu:dictionary-entry-rejected",
+                    DictionaryRejectionEvent {
+                        context_id: context.id,
+                        deleted,
+                    },
+                )
+                .ok();
             }
         }
         RejectionTarget::CacheKey { key } => {
@@ -59,9 +110,7 @@ fn run_rejection_monitor(
     db: DbHandle,
     app: AppHandle,
 ) {
-    let prefix = target.monitor_key_prefix();
-    let (key_hash, _) = pair_hash(&injected_text, prefix);
-    let key = format!("{prefix}:{key_hash}");
+    let key = rejection_monitor_key(&injected_text, &target);
     let inserted = match active_monitors().lock() {
         Ok(mut active) => active.insert(key.clone()),
         Err(_) => false,
@@ -166,18 +215,20 @@ fn run_rejection_monitor(
 
 pub fn start_rejection_monitor(
     injected_text: String,
-    applied_entry_ids: Vec<i64>,
+    applied_correction_ids: Vec<i64>,
     target_hwnd: usize,
+    context: ResolvedContextIdentity,
     db: DbHandle,
     app: AppHandle,
 ) {
-    if applied_entry_ids.is_empty() {
+    if applied_correction_ids.is_empty() {
         return;
     }
     run_rejection_monitor(
         injected_text,
-        RejectionTarget::DictEntries {
-            ids: applied_entry_ids,
+        RejectionTarget::DictionaryCorrections {
+            correction_ids: applied_correction_ids,
+            context,
         },
         target_hwnd,
         db,
@@ -199,4 +250,48 @@ pub fn start_cache_rejection_monitor(
         db,
         app,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RejectionTarget, ResolvedContextIdentity};
+
+    #[test]
+    fn dictionary_rejection_target_keeps_mapping_ids_and_context_scope() {
+        let target = RejectionTarget::DictionaryCorrections {
+            correction_ids: vec![701, 702],
+            context: ResolvedContextIdentity {
+                id: 11,
+                label: "Development".to_string(),
+            },
+        };
+
+        assert_eq!(target.context_id(), Some(11));
+        match target {
+            RejectionTarget::DictionaryCorrections {
+                correction_ids,
+                context,
+            } => {
+                assert_eq!(correction_ids, vec![701, 702]);
+                assert_eq!(context.id, 11);
+            }
+            RejectionTarget::CacheKey { .. } => unreachable!("wrong rejection target"),
+        }
+    }
+
+    #[test]
+    fn dictionary_rejection_monitor_keys_differ_between_contexts() {
+        fn key(context_id: i64) -> String {
+            let target = RejectionTarget::DictionaryCorrections {
+                correction_ids: vec![701],
+                context: ResolvedContextIdentity {
+                    id: context_id,
+                    label: "context".to_string(),
+                },
+            };
+            super::rejection_monitor_key("same injected text", &target)
+        }
+
+        assert_ne!(key(11), key(12));
+    }
 }

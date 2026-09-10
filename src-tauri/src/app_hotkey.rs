@@ -313,7 +313,13 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         // stash its audio (if long/loud enough) so the pill's
                         // Continue button can resume it instead of losing it.
                         let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
-                        if let Some((session, exclusive_mic_session_id, prepend_audio)) = taken {
+                        if let Some((
+                            session,
+                            exclusive_mic_session_id,
+                            prepend_audio,
+                            recording_context,
+                        )) = taken
+                        {
                             let app_for_cancel = app_hk.clone();
                             let state_for_cancel = state_hk.clone();
                             tauri::async_runtime::spawn(async move {
@@ -323,6 +329,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                                     session,
                                     exclusive_mic_session_id,
                                     prepend_audio,
+                                    recording_context,
                                 )
                                 .await;
                             });
@@ -349,6 +356,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             &state_hk,
                             active.captured_audio,
                             pipeline::CaptureOrigin::UserCancelled,
+                            active.context,
                         );
                         continue;
                     }
@@ -357,7 +365,13 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                     // cancel_recording_with_resume/stash_cancelled_capture,
                     // consistently across every cancel path.
                     let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
-                    if let Some((session, exclusive_mic_session_id, prepend_audio)) = taken {
+                    if let Some((
+                        session,
+                        exclusive_mic_session_id,
+                        prepend_audio,
+                        recording_context,
+                    )) = taken
+                    {
                         let app_for_cancel = app_hk.clone();
                         let state_for_cancel = state_hk.clone();
                         tauri::async_runtime::spawn(async move {
@@ -367,6 +381,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                                 session,
                                 exclusive_mic_session_id,
                                 prepend_audio,
+                                recording_context,
                             )
                             .await;
                         });
