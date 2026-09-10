@@ -47,4 +47,6 @@ pub struct CreatedRecordMeta {
 }
 
 #[cfg(test)]
+mod autolearn_context_tests;
+#[cfg(test)]
 mod tests;
