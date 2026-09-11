@@ -98,7 +98,11 @@
   }
 
   function subsystems(): string[] { return [...new Set(snapshot.logs.map((entry) => entry.subsystem))].sort(); }
-  function subsystemOptions() { return [{ value: 'all', label: 'All subsystems' }, ...subsystems().map((s) => ({ value: s, label: s }))]; }
+  function subsystemLabel(value: string): string {
+    if (value === 'all') return 'All subsystems';
+    return value.replace(/^verenu::/, '').split('::').map((part) => part.replace(/_/g, ' ')).join(' / ');
+  }
+  function subsystemOptions() { return [{ value: 'all', label: 'All subsystems' }, ...subsystems().map((s) => ({ value: s, label: subsystemLabel(s) }))]; }
 
   // Runtime stages mirror the real backend span order emitted by the pipeline
   // (see start_span calls in src-tauri/src/pipeline/mod.rs: capture ->
@@ -345,14 +349,14 @@
       <div class="metric"><span>Profiler overhead</span><strong>{snapshot.health.collector_duration_us_average == null ? 'Unavailable' : `${(snapshot.health.collector_duration_us_average / 1000).toFixed(2)} ms`}</strong><small>{snapshot.health.collector_samples} samples</small></div>
     </div>
     <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Current runtime</h3><span class="mono">{shortTime(snapshot.generated_at_ms)}</span></div><div class="key-lines"><div><span>Dictation</span><b>{appStore.pillState || 'idle'}</b></div><div><span>Local STT</span><b>{unknown(snapshot.runtime.local_stt?.current_model_id)}</b></div><div><span>Local cleanup</span><b>{unknown(snapshot.runtime.local_llm?.current_model_id)}</b></div><div><span>Active traces</span><b>{snapshot.health.active_trace_count}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Last pipeline</h3><button class="link-btn" onclick={() => view = 'pipeline'}>Inspect</button></div>{#if latestTrace()}<div class="trace-summary"><span class="mono">{latestTrace()!.trace_id}</span><strong>{formatDuration(latestTrace()!.duration_ms)}</strong><em class:bad={latestTrace()!.outcome === 'failure'}>{latestTrace()!.outcome}</em></div>{:else}<p class="muted">No completed pipeline retained.</p>{/if}</section></div>
-    <div class="toolbar"><button class="btn-ghost btn-compact" onclick={() => void clearDiagnostics()}>Clear retained data</button><button class="btn-ghost btn-compact" onclick={() => void download('json')}>Download diagnostics bundle</button><span data-setting-target="developer-download-logs"><button class="btn-ghost btn-compact" onclick={() => void download('text')}>Download Logs</button></span>{#if exportMessage}<span class="muted export-status">{exportMessage}</span>{/if}</div>
+    <div class="toolbar"><button class="btn-ghost btn-compact" onclick={() => void clearDiagnostics()}>Clear retained data</button><button class="btn-ghost btn-compact" onclick={() => void download('json')}>Download diagnostics bundle</button><span data-setting-target="developer-download-logs"><button class="btn-ghost btn-compact" onclick={() => void download('text')}>Download Logs</button></span>{#if exportMessage}<span class="muted">{exportMessage}</span>{/if}</div>
   {:else if view === 'pipeline'}
     <section class="diag-panel" data-setting-target="developer-pipeline"><div class="panel-title"><h3>Pipeline traces</h3><span class="muted">{snapshot.active_pipelines.length} active · {snapshot.recent_pipelines.length} completed</span></div>{#each [...snapshot.active_pipelines, ...snapshot.recent_pipelines].slice(-8).reverse() as trace}<button class="trace-row" class:selected={selectedTrace === trace.trace_id} onclick={() => selectedTrace = trace.trace_id}><span class="mono">{trace.trace_id}</span><span>{trace.root_operation}</span><span>{trace.spans.length} stages</span><strong>{formatDuration(trace.duration_ms)}</strong><em class:bad={trace.outcome === 'failure'}>{trace.outcome}</em></button>{/each}{#if !snapshot.active_pipelines.length && !snapshot.recent_pipelines.length}<p class="muted">Start a dictation to capture a bounded timeline.</p>{/if}</section>
     {#if selectedTrace}<section class="diag-panel trace-detail"><div class="panel-title"><h3>Waterfall <span class="mono">{selectedTrace}</span></h3><div><button class="link-btn" onclick={() => void copyTrace([...snapshot.active_pipelines, ...snapshot.recent_pipelines].find((item) => item.trace_id === selectedTrace))}>Copy trace</button><button class="link-btn" onclick={() => selectedTrace = null}>Close</button></div></div>{#each [...snapshot.active_pipelines, ...snapshot.recent_pipelines].filter((item) => item.trace_id === selectedTrace) as trace}{#each trace.spans as span}<div class="span-row"><span class="span-label">{span.stage ?? span.operation}</span><div class="waterfall"><i style={`width:${spanWidth(span.duration_ms, trace.duration_ms)}%;`} class:failed={span.outcome === 'failure'}></i></div><span class="mono">{formatDuration(span.duration_ms)}</span><span>{span.provider ?? span.model ?? ''}</span></div>{/each}{/each}</section>{/if}
   {:else if view === 'failures'}
-    <div class="two-col"><section class="diag-panel" data-setting-target="developer-latest-failures"><div class="panel-title"><h3>Latest failures</h3><span>{snapshot.latest_failures.length}</span></div>{#each snapshot.latest_failures.slice(-20).reverse() as failure}<details class="failure-row"><summary><span class="severity-dot"></span><span>{shortTime(failure.timestamp_ms)}</span><b>{failure.subsystem}</b><span>{failure.operation ?? failure.stage ?? 'unknown'}</span><strong>{failure.cause}</strong></summary><div class="detail-grid"><span>fingerprint <code>{failure.fingerprint}</code></span><span>trace <code>{failure.trace_id ?? '—'}</code></span><span>duration {formatDuration(failure.duration_ms)}</span><span>{failure.provider ?? ''} {failure.model ?? ''}</span></div></details>{/each}{#if !snapshot.latest_failures.length}<p class="muted">No failures retained.</p>{/if}</section><section class="diag-panel"><div class="panel-title"><h3>Most common</h3><span>normalized</span></div>{#each [...snapshot.failure_groups].sort((a, b) => b.count - a.count).slice(0, 20) as group}<div class="group-row"><span class="mono">{group.fingerprint}</span><b>{group.count}×</b><span>{group.subsystem} / {group.operation ?? group.stage ?? 'unknown'}</span><small>{group.representative_cause}</small></div>{/each}{#if !snapshot.failure_groups.length}<p class="muted">No grouped failures yet.</p>{/if}</section></div>
+    <div class="two-col"><section class="diag-panel" data-setting-target="developer-latest-failures"><div class="panel-title"><h3>Latest failures</h3><span>{snapshot.latest_failures.length}</span></div>{#each snapshot.latest_failures.slice(-20).reverse() as failure}<details class="failure-row"><summary><span class="severity-dot"></span><span>{shortTime(failure.timestamp_ms)}</span><b>{subsystemLabel(failure.subsystem)}</b><span>{failure.operation ?? failure.stage ?? 'unknown'}</span><strong>{failure.cause}</strong></summary><div class="detail-grid"><span>fingerprint <code>{failure.fingerprint}</code></span><span>trace <code>{failure.trace_id ?? '—'}</code></span><span>duration {formatDuration(failure.duration_ms)}</span><span>{failure.provider ?? ''} {failure.model ?? ''}</span></div></details>{/each}{#if !snapshot.latest_failures.length}<p class="muted">No failures retained.</p>{/if}</section><section class="diag-panel"><div class="panel-title"><h3>Most common</h3><span>normalized</span></div>{#each [...snapshot.failure_groups].sort((a, b) => b.count - a.count).slice(0, 20) as group}<div class="group-row"><span class="mono">{group.fingerprint}</span><b>{group.count}×</b><span>{subsystemLabel(group.subsystem)} / {group.operation ?? group.stage ?? 'unknown'}</span><small>{group.representative_cause}</small></div>{/each}{#if !snapshot.failure_groups.length}<p class="muted">No grouped failures yet.</p>{/if}</section></div>
   {:else if view === 'logs'}
-    <section class="diag-panel" data-setting-target="developer-logs"><div class="panel-title"><h3>Structured logs</h3><span>{filteredLogs().length} / {snapshot.logs.length}</span></div><div class="log-toolbar">
+    <section class="diag-panel" data-setting-target="developer-logs"><div class="panel-title"><h3>Structured logs</h3><span>{filteredLogs().length} / {snapshot.logs.length}</span></div><div class="log-toolbar"><div class="log-filters">
       <input aria-label="Search logs" placeholder="Search message, operation, trace…" bind:value={logQuery} />
       <Dropdown bind:open={logLevelOpen} closeSelector=".log-level-dropdown">
         <div class="ui-dropdown log-level-dropdown">
@@ -370,7 +374,7 @@
       <Dropdown bind:open={logSubsystemOpen} closeSelector=".log-subsystem-dropdown">
         <div class="ui-dropdown log-subsystem-dropdown">
           <button class="btn-ghost ui-dropdown-trigger" aria-haspopup="true" aria-expanded={logSubsystemOpen} aria-label="Log subsystem" onclick={() => logSubsystemOpen = !logSubsystemOpen}>
-            <span class="subsystem-trigger-label">{logSubsystem === 'all' ? 'All subsystems' : logSubsystem}</span>
+            <span class="subsystem-trigger-label">{subsystemLabel(logSubsystem)}</span>
             <svg class:open={logSubsystemOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
           {#if logSubsystemOpen}
@@ -380,12 +384,15 @@
           {/if}
         </div>
       </Dropdown>
-      <input aria-label="Trace filter" placeholder="Trace ID" bind:value={logTrace} />
-      <button class="link-btn" onclick={() => paused = !paused}>{paused ? 'Resume' : 'Pause'}</button>
-      <button class="link-btn" onclick={() => autoScroll = !autoScroll}>{autoScroll ? 'Auto-scroll' : 'Manual scroll'}</button>
-      <button class="link-btn" onclick={() => void copyLogs()}>Copy visible</button>
-      <button class="link-btn" onclick={() => void copyAllLogs()}>Copy all</button>
-    </div><div class="log-table" role="table">{#each filteredLogs().slice(-500).reverse() as entry}<div class="log-row" role="row"><time>{shortTime(entry.timestamp_ms)}</time><b class={`level-${entry.level}`}>{entry.level}</b><span class="subsystem">{entry.subsystem}</span><span>{entry.operation ?? entry.stage ?? ''}</span><span class="message">{entry.message}</span><code>{entry.trace_id ?? ''}</code></div>{/each}</div></section>
+      <input class="trace-filter" aria-label="Trace filter" placeholder="Trace ID" bind:value={logTrace} />
+      </div>
+      <div class="log-actions" aria-label="Log actions">
+        <button class="link-btn" onclick={() => paused = !paused}>{paused ? 'Resume' : 'Pause'}</button>
+        <button class="link-btn" onclick={() => autoScroll = !autoScroll}>{autoScroll ? 'Auto-scroll' : 'Manual scroll'}</button>
+        <button class="link-btn" onclick={() => void copyLogs()}>Copy visible</button>
+        <button class="link-btn" onclick={() => void copyAllLogs()}>Copy all</button>
+      </div>
+    </div><div class="log-table" role="table">{#each filteredLogs().slice(-500).reverse() as entry}<div class="log-row" role="row"><time>{shortTime(entry.timestamp_ms)}</time><b class={`level-${entry.level}`}>{entry.level}</b><span class="subsystem">{subsystemLabel(entry.subsystem)}</span><span>{entry.operation ?? entry.stage ?? ''}</span><span class="message">{entry.message}</span><code>{entry.trace_id ?? ''}</code></div>{/each}</div></section>
   {:else if view === 'runtime'}
     <section class="diag-panel runtime-panel" data-setting-target="developer-runtime"><div class="panel-title"><h3>Live runtime</h3><span class="stage-live" data-state={stageState(null)}><i class="node-dot"></i>{pillLabel()}</span></div><div class="runtime-flow">{#each RUNTIME_STAGES as node, index}<div class="runtime-node" data-state={stageState(node.id)}><span class="node-head"><i class="node-dot"></i>{node.label}</span><small>{stageDetail(node.id)}</small></div>{#if index < RUNTIME_STAGES.length - 1}<span class="flow-arrow">→</span>{/if}{/each}</div><div class="audio-grid"><div><span>Recording state</span><b>{audioActive() ? 'active' : (appStore.pillState || 'idle')}</b></div><div><span>Raw RMS / processed</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.raw_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.processed_level?.toFixed(4) ?? '—'}` : 'Unavailable'}</b></div><div><span>Gate threshold / verdict</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.gate_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.would_pass_gate == null ? 'unknown' : snapshot.runtime.audio.would_pass_gate ? 'pass' : 'below gate'}` : 'Unavailable when idle'}</b></div><div><span>VAD / sensitivity / gain</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.speech_detected ? 'speech' : 'quiet'} / L${snapshot.runtime.audio.adaptive_sensitivity ?? '—'} / ×${snapshot.runtime.audio.microphone_gain?.toFixed(2) ?? '—'}` : 'Unavailable when idle'}</b></div></div>{#if snapshot.runtime.audio?.stream_error}<p class="panel-note bad-note">The capture stream reported an error; the session may be ending.</p>{:else}<p class="panel-note">Audio diagnostics read the existing recording session atomics and the pipeline’s actual gate threshold. No duplicate audio processing or retained audio buffers are created by this view.</p>{/if}</section>
   {:else if view === 'activity'}
@@ -410,7 +417,7 @@
       </Dropdown>
     </div><span data-setting-target="developer-storage-simulation"><Toggle checked={storageFullSimulation} onchange={toggleStorageFault} label="Full Storage Failure" /></span></div>{#if providerStatusRaw}<pre class="status-output">{providerStatusRaw}</pre>{/if}<div class="toolbar"><button class="btn-danger btn-compact" onclick={() => void clearFaults()}>Clear</button>{#if faultMessage}<span class="muted">{faultMessage}</span>{/if}</div></section>
   {:else}
-    <section class="diag-panel" data-setting-target="developer-settings"><div class="panel-title"><h3>Developer settings</h3><span class="muted">explicit opt-in controls</span></div><div class="setting-row" data-setting-target="developer-ruin-accessibility"><div><div class="label">Ruin accessibility</div><div class="desc">Expose a compact, privacy-filtered state dump for T3 Code SnapShots. It never includes logs, transcripts, prompts, or keys.</div></div><Toggle checked={ruinAccessibility} onchange={setRuin} label="Ruin accessibility" /></div><div class="setting-row" data-setting-target="developer-logs"><div><div class="label">Verbose logging</div><div class="desc">{verboseEnabled ? 'Debug logging enabled.' : 'Metadata diagnostics remain useful with verbose logging off.'} <button class="link-btn privacy-link" onclick={() => privacyModalOpen = true}>Privacy details</button></div></div><Toggle checked={verboseEnabled} onchange={setVerbose} label={`Verbose: ${verboseEnabled ? 'On' : 'Off'}`} /></div><div class="setting-row" data-setting-target="developer-setup"><div><div class="label">Force setup on launch</div><div class="desc">Show onboarding without erasing saved settings.</div></div><Toggle checked={forceSetupOnLaunch} onchange={setForceSetup} label="Force setup" /></div><div class="setting-row" data-setting-target="developer-sync"><div><div class="label">LAN Device Sync</div><div class="desc">Experimental encrypted device-to-device sync. Off by default.</div></div><Toggle checked={syncEnabled} onchange={setSync} label="Enable LAN sync" /></div></section>
+    <section class="diag-panel" data-setting-target="developer-settings"><div class="panel-title"><h3>Developer settings</h3><span class="muted">explicit opt-in controls</span></div><div class="setting-row" data-setting-target="developer-ruin-accessibility"><div><div class="label">Ruin accessibility</div><div class="desc">Expose a compact, privacy-filtered state dump for T3 Code SnapShots. It never includes logs, transcripts, prompts, or keys.</div></div><Toggle checked={ruinAccessibility} onchange={setRuin} label="Ruin accessibility" /></div><div class="setting-row" data-setting-target="developer-logs"><div><div class="label">Verbose logging</div><div class="desc">{verboseEnabled ? 'Debug logging enabled.' : 'Metadata diagnostics remain useful with verbose logging off.'} <button class="link-btn privacy-link" onclick={() => privacyModalOpen = true}>Privacy details</button></div></div><Toggle checked={verboseEnabled} onchange={setVerbose} label="Verbose logging" /></div><div class="setting-row" data-setting-target="developer-setup"><div><div class="label">Force setup on launch</div><div class="desc">Show onboarding without erasing saved settings.</div></div><Toggle checked={forceSetupOnLaunch} onchange={setForceSetup} label="Force setup" /></div><div class="setting-row" data-setting-target="developer-sync"><div><div class="label">LAN Device Sync</div><div class="desc">Experimental encrypted device-to-device sync. Off by default.</div></div><Toggle checked={syncEnabled} onchange={setSync} label="Enable LAN sync" /></div></section>
   {/if}
   </div>
   {/key}
@@ -514,14 +521,19 @@
   .group-row { grid-template-columns:100px 34px 1fr; padding:8px 0; border-bottom:1px solid var(--line); font-size:11px; color:var(--ink-soft); }
   .group-row small { grid-column:2 / -1; color:var(--ink-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-  .log-toolbar { flex-wrap:wrap; margin-bottom:12px; }
+  .log-toolbar { justify-content:space-between; flex-wrap:wrap; margin-bottom:12px; gap:8px 12px; }
+  .log-filters, .log-actions { display:flex; align-items:center; gap:8px; min-width:0; }
+  .log-filters { flex:1 1 520px; }
+  .log-actions { flex:0 0 auto; padding-left:4px; }
   input { background:var(--bg-elev); border:1px solid var(--line); color:var(--ink); border-radius:var(--r-sm); padding:6px 8px; font-size:11px; min-width:0; font-family:var(--sans); transition:border-color var(--ui-duration-fast, 150ms) ease; }
   input:focus-visible { outline:none; border-color:var(--ink-strong); }
-  .log-toolbar input:first-child { flex:1 1 180px; }
+  .log-filters input:first-child { flex:1 1 180px; }
+  .log-filters .trace-filter { flex:0 1 110px; width:110px; }
   .log-level-dropdown .ui-dropdown-trigger { min-width:100px; }
-  .log-subsystem-dropdown .ui-dropdown-trigger { max-width:180px; }
+  .log-subsystem-dropdown { min-width:190px; }
+  .log-subsystem-dropdown .ui-dropdown-trigger { width:100%; max-width:220px; }
   .subsystem-trigger-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .subsystem-menu { max-height:260px; }
+  .subsystem-menu { max-height:260px; min-width:250px; }
   .log-table { border-top:1px solid var(--line); }
   .log-row { display:grid; grid-template-columns:70px 45px 105px 110px minmax(180px,1fr) 110px; gap:7px; align-items:center; padding:6px 4px; border-bottom:1px solid var(--line-soft); font:11px var(--mono); }
   .log-row time, .log-row code, .subsystem { color:var(--ink-mute); font-size:10px; }
@@ -589,6 +601,9 @@
     .two-col .diag-panel + .diag-panel { border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:16px; margin-top:16px; }
     .audio-grid { grid-template-columns:repeat(2,1fr); }
     .fault-grid { grid-template-columns:repeat(2,1fr); }
+    .log-filters { flex-basis:100%; flex-wrap:wrap; }
+    .log-filters input:first-child { flex-basis:100%; }
+    .log-actions { width:100%; justify-content:flex-start; padding-left:0; }
     .log-row { grid-template-columns:60px 40px 85px 1fr; }
     .log-row > :nth-child(4), .log-row > code { display:none; }
   }
