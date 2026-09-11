@@ -2130,6 +2130,22 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         params![op.row_uuid],
         |r| r.get(0),
     )?;
+    // Transcriptions can arrive before their Context operation. Reattach
+    // those rows now that the UUID can be resolved so their durable analytics
+    // move out of the unscoped bucket as well.
+    conn.execute(
+        "UPDATE transcriptions
+            SET context_id = ?1
+          WHERE uuid IN (
+            SELECT transcription_uuid FROM pending_transcription_contexts
+             WHERE context_uuid = ?2
+          )",
+        params![context_id, op.row_uuid],
+    )?;
+    conn.execute(
+        "DELETE FROM pending_transcription_contexts WHERE context_uuid = ?1",
+        params![op.row_uuid],
+    )?;
     reconcile_context_children(conn, context_id, &aggregate)?;
     log_applied(conn, op)?;
     Ok(Applied::Yes)
@@ -2545,6 +2561,15 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         ],
     )?;
     if inserted > 0 {
+        if context_id.is_none() {
+            if let Some(context_uuid) = row.context_uuid.as_deref() {
+                conn.execute(
+                    "INSERT OR REPLACE INTO pending_transcription_contexts
+                       (transcription_uuid, context_uuid) VALUES (?1, ?2)",
+                    params![op.row_uuid, context_uuid],
+                )?;
+            }
+        }
         log_applied(conn, op)?;
         Ok(Applied::Yes)
     } else {
