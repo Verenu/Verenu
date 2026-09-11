@@ -329,6 +329,80 @@ pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
          SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
+    // Historical transcription analytics must follow the same reparenting
+    // semantics as the context's other children. Updating raw rows first lets
+    // the context summary triggers move detailed, unpruned history while the
+    // deleted context UUID is still resolvable.
+    tx.execute(
+        "UPDATE transcriptions SET context_id = ?1 WHERE context_id = ?2",
+        params![everywhere_id, context_id],
+    )?;
+    // The raw update above lets the context-daily triggers subtract and add
+    // only the still-detailed rows. Merge the remaining old-UUID buckets now;
+    // those are the already-pruned rows that have no raw trigger to move them.
+    let everywhere_uuid: String = tx.query_row(
+        "SELECT uuid FROM contexts WHERE id = ?1",
+        params![everywhere_id],
+        |r| r.get(0),
+    )?;
+    let deleted_uuid: String = tx.query_row(
+        "SELECT uuid FROM contexts WHERE id = ?1",
+        params![context_id],
+        |r| r.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO transcription_context_daily_stats
+           (day, context_uuid, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
+         SELECT day, ?1, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm
+           FROM transcription_context_daily_stats
+          WHERE context_uuid = ?2
+         ON CONFLICT(day, context_uuid) DO UPDATE SET
+           total_words = total_words + excluded.total_words,
+           total_transcriptions = total_transcriptions + excluded.total_transcriptions,
+           speaking_ms = speaking_ms + excluded.speaking_ms,
+           wpm_sum = wpm_sum + excluded.wpm_sum,
+           wpm_count = wpm_count + excluded.wpm_count,
+           best_wpm = MAX(best_wpm, excluded.best_wpm)",
+        params![everywhere_uuid, deleted_uuid],
+    )?;
+    tx.execute(
+        "DELETE FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+        params![deleted_uuid],
+    )?;
+    // Rollups no longer have a raw transcription to reattribute, so merge
+    // them explicitly into Everywhere before removing the old context.
+    tx.execute(
+        "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
+         SELECT day, hour, ?1, SUM(total_words)
+           FROM transcription_hourly_stats
+          WHERE context_id = ?2
+          GROUP BY day, hour
+         ON CONFLICT(day, hour, context_id) DO UPDATE
+           SET total_words = total_words + excluded.total_words",
+        params![everywhere_id, context_id],
+    )?;
+    tx.execute(
+        "INSERT INTO provider_daily_stats
+           (day, context_id, model, provider, task, calls, audio_ms, input_chars, output_chars)
+         SELECT day, ?1, model, provider, task, SUM(calls), SUM(audio_ms), SUM(input_chars), SUM(output_chars)
+           FROM provider_daily_stats
+          WHERE context_id = ?2
+          GROUP BY day, model, provider, task
+         ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
+           calls = calls + excluded.calls,
+           audio_ms = audio_ms + excluded.audio_ms,
+           input_chars = input_chars + excluded.input_chars,
+           output_chars = output_chars + excluded.output_chars",
+        params![everywhere_id, context_id],
+    )?;
+    tx.execute(
+        "DELETE FROM transcription_hourly_stats WHERE context_id = ?1",
+        params![context_id],
+    )?;
+    tx.execute(
+        "DELETE FROM provider_daily_stats WHERE context_id = ?1",
+        params![context_id],
+    )?;
     tx.execute(
         "DELETE FROM context_targets WHERE context_id = ?1",
         params![context_id],
@@ -1490,6 +1564,91 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn deleting_context_absorbs_pruned_daily_analytics() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Temporary", None, None, None, None, false)
+            .expect("context");
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO transcriptions
+                   (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at)
+                 VALUES ('old-context-row', 'old', 'old', 8, 8, 1000, 0, 'test', ?1, datetime('now', '-40 days'))",
+                params![context.id],
+            )
+            .expect("old transcription");
+        }
+        prune_transcriptions_older_than(&db, 7).expect("prune");
+        let deleted_uuid: String = {
+            let conn = lock_conn(&db).expect("lock");
+            conn.query_row(
+                "SELECT uuid FROM contexts WHERE id = ?1",
+                params![context.id],
+                |r| r.get(0),
+            )
+            .expect("context uuid")
+        };
+
+        delete_context(&db, context.id).expect("delete context");
+
+        let conn = lock_conn(&db).expect("lock");
+        let everywhere_words: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_words), 0)
+                   FROM transcription_context_daily_stats
+                  WHERE context_uuid = (SELECT uuid FROM contexts WHERE id = ?1)",
+                params![EVERYWHERE_CONTEXT_ID],
+                |r| r.get(0),
+            )
+            .expect("Everywhere daily analytics");
+        assert_eq!(everywhere_words, 8);
+        let stranded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+                params![deleted_uuid],
+                |r| r.get(0),
+            )
+            .expect("stranded analytics count");
+        assert_eq!(stranded, 0);
+    }
+
+    #[test]
+    fn deleting_last_context_transcription_removes_zero_daily_bucket() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Temporary", None, None, None, None, false)
+            .expect("context");
+        let transcription = insert_transcription_returning(
+            &db,
+            "temporary",
+            "temporary",
+            1,
+            1_000,
+            "test",
+            None,
+            Some(context.id),
+        )
+        .expect("transcription");
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "DELETE FROM transcriptions WHERE id = ?1",
+                params![transcription.id],
+            )
+            .expect("delete transcription");
+            let buckets: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM transcription_context_daily_stats
+                      WHERE context_uuid = (SELECT uuid FROM contexts WHERE id = ?1)
+                        AND total_transcriptions <= 0",
+                    params![context.id],
+                    |r| r.get(0),
+                )
+                .expect("context daily buckets");
+            assert_eq!(buckets, 0);
+        }
     }
 
     #[test]

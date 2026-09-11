@@ -1,6 +1,7 @@
 //! Transcription history queries and lifetime/derived stats.
 
 use anyhow::Result;
+use chrono::{Duration, Utc};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -415,9 +416,12 @@ pub fn query_stats(db: &Db) -> Result<Stats> {
 
 pub fn count_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<i64> {
     let conn = lock_conn(db)?;
+    let cutoff = (Utc::now().naive_utc() - Duration::days(max_age_days.max(1)))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM transcriptions WHERE created_at < datetime('now', ?1)",
-        params![format!("-{} days", max_age_days.max(1))],
+        "SELECT COUNT(*) FROM transcriptions WHERE created_at < ?1",
+        params![cutoff],
         |r| r.get(0),
     )?;
     Ok(count)
@@ -426,19 +430,56 @@ pub fn count_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<i64
 pub fn prune_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<usize> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
-    let changed = tx.execute(
-        "DELETE FROM transcriptions WHERE created_at < datetime('now', ?1)",
-        params![format!("-{} days", max_age_days.max(1))],
+    // Retention removes only transcript text. Summary triggers must stay
+    // quiet so daily activity, streaks, and lifetime WPM remain intact.
+    tx.execute(
+        "UPDATE stats_maintenance SET retention_prune = 1 WHERE rowid = 1",
+        [],
     )?;
-    if changed > 0 {
-        // History pruning must not orphan the per-call cost rows used by
-        // Insights: rows for deleted transcriptions are unrepresentable in
-        // the UI and would otherwise accumulate forever.
-        tx.execute(
-            "DELETE FROM api_calls WHERE transcription_id NOT IN (SELECT id FROM transcriptions)",
-            [],
-        )?;
-    }
+    let cutoff = (Utc::now().naive_utc() - Duration::days(max_age_days.max(1)))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    tx.execute(
+        "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
+         SELECT date(created_at, 'localtime'), CAST(strftime('%H', created_at, 'localtime') AS INTEGER),
+                COALESCE(context_id, 0), SUM(words)
+           FROM transcriptions
+          WHERE created_at < ?1
+          GROUP BY 1, 2, 3
+         ON CONFLICT(day, hour, context_id) DO UPDATE SET total_words = total_words + excluded.total_words",
+        [&cutoff],
+    )?;
+    tx.execute(
+        "INSERT INTO provider_daily_stats (day, context_id, model, provider, task, calls, audio_ms, input_chars, output_chars)
+         SELECT date(a.created_at, 'localtime'), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
+                COUNT(*), COALESCE(SUM(a.audio_ms), 0), COALESCE(SUM(a.input_chars), 0), COALESCE(SUM(a.output_chars), 0)
+           FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
+          WHERE a.created_at < ?1
+          GROUP BY 1, 2, 3, 4, 5
+         ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
+           calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,
+           input_chars = input_chars + excluded.input_chars, output_chars = output_chars + excluded.output_chars",
+        [&cutoff],
+    )?;
+    let changed = tx.execute(
+        "DELETE FROM transcriptions WHERE created_at < ?1",
+        params![cutoff],
+    )?;
+    tx.execute(
+        "DELETE FROM api_calls
+          WHERE created_at < ?1
+             OR NOT EXISTS (SELECT 1 FROM transcriptions t WHERE t.id = api_calls.transcription_id)",
+        params![cutoff],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_transcription_contexts
+          WHERE transcription_uuid NOT IN (SELECT uuid FROM transcriptions)",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE stats_maintenance SET retention_prune = 0 WHERE rowid = 1",
+        [],
+    )?;
     tx.commit()?;
     Ok(changed)
 }
