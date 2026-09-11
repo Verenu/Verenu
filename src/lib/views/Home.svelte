@@ -328,7 +328,6 @@
       <p class="page-sub">{greeting}</p>
 
       <HomeHero {hk1} {hk2} android={isAndroid} />
-
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
       {/if}
