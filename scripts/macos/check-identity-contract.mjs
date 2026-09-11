@@ -16,7 +16,7 @@ const windowsDevelopment = json('src-tauri/tauri.dev.windows.conf.json');
 const sourcePlist = read('src-tauri/Info.plist');
 const runner = read('scripts/tauri-macos-dev-runner.mjs');
 const cli = read('scripts/tauri-cli.mjs');
-const buildScript = read('src-tauri/build.rs');
+const buildScript = read('src-tauri/build.rs').replace(/\r\n/g, '\n');
 const notify = read('src-tauri/src/system/notify.rs');
 const relaunch = read('src-tauri/src/commands/permissions.rs');
 
