@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use rusqlite::{params, Connection};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -194,16 +194,30 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         let streak_daily = compact_streak_daily(&lifetime_streak_daily);
         // Scoped too, so the heatmap can still tell "before this context
         // existed" apart from "a day you didn't use it".
-        let history_started_on: Option<String> = conn.query_row(
-            "SELECT MIN(created_at) FROM transcriptions
-             WHERE (?1 IS NULL OR context_id = ?1)",
-            params![context_id],
-            |r| r.get(0),
-        )?;
-        let history_started_on = history_started_on
-            .map(|created_at| utc_naive_to_local_date(&created_at))
+        let context_uuid: Option<String> = context_id
+            .map(|id| {
+                conn.query_row(
+                    "SELECT uuid FROM contexts WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
             .transpose()?
-            .map(|day| day.format("%Y-%m-%d").to_string());
+            .flatten();
+        let history_started_on: Option<String> = match (context_id, context_uuid.as_deref()) {
+            (Some(_), Some(uuid)) => conn.query_row(
+                "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+                params![uuid],
+                |r| r.get(0),
+            )?,
+            (Some(_), None) => None,
+            (None, _) => {
+                conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
+                    r.get(0)
+                })?
+            }
+        };
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
         let (words, raw_words, clean_words) = query_text_metrics(&conn, &range, context_id)?;
@@ -388,16 +402,34 @@ fn range_bounds(conn: &Connection, days: i64, context_id: Option<i64>) -> Result
     let start_day = if days > 0 {
         today - Duration::days((days - 1).max(0))
     } else {
-        let first_created_at: Option<String> = conn.query_row(
-            "SELECT MIN(created_at) FROM transcriptions
-             WHERE (?1 IS NULL OR context_id = ?1)",
-            params![context_id],
-            |r| r.get(0),
-        )?;
-        first_created_at
-            .map(|created_at| utc_naive_to_local_date(&created_at))
+        if context_id.is_none() {
+            conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })?
+            .map(|day| NaiveDate::parse_from_str(&day, "%Y-%m-%d"))
             .transpose()?
             .unwrap_or(today)
+        } else {
+            let context_uuid: Option<String> = conn
+                .query_row(
+                    "SELECT uuid FROM contexts WHERE id = ?1",
+                    params![context_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(context_uuid) = context_uuid {
+                conn.query_row(
+                    "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+                    params![context_uuid],
+                    |r| r.get::<_, Option<String>>(0),
+                )?
+                .map(|day| NaiveDate::parse_from_str(&day, "%Y-%m-%d"))
+                .transpose()?
+                .unwrap_or(today)
+            } else {
+                today
+            }
+        }
     };
     Ok(make_date_range(start_day, today))
 }
@@ -450,85 +482,115 @@ fn local_midnight_utc_naive(day: NaiveDate) -> NaiveDateTime {
         })
 }
 
-fn utc_naive_to_local_date(value: &str) -> Result<NaiveDate> {
-    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")?;
-    Ok(DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc)
-        .with_timezone(&Local)
-        .date_naive())
-}
-
 fn query_totals(
     conn: &Connection,
     range: &DateRange,
     previous: Option<&DateRange>,
     context_id: Option<i64>,
 ) -> Result<InsightsTotals> {
-    let previous_start = previous.map(|r| r.start.as_str());
-    let previous_end = previous.map(|r| r.end.as_str());
-    let (
-        total_transcriptions,
-        words_in_range,
-        total_speaking_ms,
-        avg_wpm,
-        best_wpm,
-        words_prev_range,
-    ): (i64, i64, i64, f64, Option<f64>, i64) = conn.query_row(
-        "SELECT
-           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN 1 ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN words ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN duration_ms ELSE 0 END), 0),
-           COALESCE(AVG(CASE WHEN created_at >= ?1 AND created_at < ?2
-                              AND duration_ms > 0 AND spoken_words > 0
-                         THEN CAST(spoken_words AS REAL) * 60000.0 / duration_ms END), 0.0),
-           MAX(CASE WHEN created_at >= ?1 AND created_at < ?2
-                         AND duration_ms > 0 AND spoken_words > 0
-                    THEN CAST(spoken_words AS REAL) * 60000.0 / duration_ms END),
-           COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND created_at >= ?3 AND created_at < ?4
-                         THEN words ELSE 0 END), 0)
-         FROM transcriptions
-         WHERE ((created_at >= ?1 AND created_at < ?2)
-            OR (?3 IS NOT NULL AND created_at >= ?3 AND created_at < ?4))
-           AND (?5 IS NULL OR context_id = ?5)",
-        params![range.start, range.end, previous_start, previous_end, context_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-    )?;
-
-    // Identical definition to query_stats (average of each clip's own wpm)
-    // so the Insights "All time" number matches the Home page exactly;
-    // scoped to the range here. Not total_words/total_duration — that
-    // aggregates differently and makes the two pages disagree.
-    let total_words: i64 = match context_id {
-        None => conn.query_row(
+    if context_id.is_none() {
+        // The daily table is the source of truth for unscoped totals once raw
+        // transcript text has aged out of retention.
+        let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
+        let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
+        let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
+            "SELECT
+               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
+               COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
+             FROM transcription_daily_stats",
+            params![
+                range.start_day.format("%Y-%m-%d").to_string(),
+                range.end_day.format("%Y-%m-%d").to_string(),
+                previous_start,
+                previous_end
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        )?;
+        let total_words: i64 = conn.query_row(
             "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
                   + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
             [],
             |r| r.get(0),
-        )?,
-        // lifetime_stats is a global counter with no context dimension, so a
-        // scoped run sums the context's own history rather than reporting a
-        // number the filter plainly does not apply to. It can read lower than
-        // the unscoped lifetime figure, which never shrinks with retention
-        // pruning — that difference is real, not a bug.
-        Some(id) => conn.query_row(
-            "SELECT COALESCE(SUM(words), 0) FROM transcriptions WHERE context_id = ?1",
-            params![id],
+        )?;
+        return Ok(InsightsTotals {
+            total_words,
+            total_transcriptions,
+            total_speaking_ms,
+            avg_words_per_transcription: if total_transcriptions > 0 {
+                (words_in_range as f64 / total_transcriptions as f64).round() as i64
+            } else {
+                0
+            },
+            avg_wpm: if wpm_count > 0 {
+                wpm_sum / wpm_count as f64
+            } else {
+                0.0
+            },
+            best_wpm: best_wpm as i64,
+            words_in_range,
+            words_prev_range,
+        });
+    }
+    let Some(context_uuid): Option<String> = conn
+        .query_row(
+            "SELECT uuid FROM contexts WHERE id = ?1",
+            params![context_id],
             |r| r.get(0),
-        )?,
+        )
+        .optional()?
+    else {
+        return Ok(InsightsTotals {
+            total_words: 0,
+            avg_words_per_transcription: 0,
+            total_transcriptions: 0,
+            total_speaking_ms: 0,
+            avg_wpm: 0.0,
+            best_wpm: 0,
+            words_in_range: 0,
+            words_prev_range: 0,
+        });
     };
-
-    let avg_words_per_transcription = if total_transcriptions > 0 {
-        (words_in_range as f64 / total_transcriptions as f64).round() as i64
-    } else {
-        0
-    };
-
+    let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
+    let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
+    let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
+           COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
+         FROM transcription_context_daily_stats
+        WHERE context_uuid = ?5",
+        params![range.start_day.to_string(), range.end_day.to_string(), previous_start, previous_end, context_uuid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    )?;
+    let total_words: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(total_words), 0) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+        params![context_uuid],
+        |r| r.get(0),
+    )?;
     Ok(InsightsTotals {
         total_words,
         total_transcriptions,
         total_speaking_ms,
-        avg_words_per_transcription,
-        avg_wpm,
-        best_wpm: best_wpm.unwrap_or(0.0) as i64,
+        avg_words_per_transcription: if total_transcriptions > 0 {
+            (words_in_range as f64 / total_transcriptions as f64).round() as i64
+        } else {
+            0
+        },
+        avg_wpm: if wpm_count > 0 {
+            wpm_sum / wpm_count as f64
+        } else {
+            0.0
+        },
+        best_wpm: best_wpm as i64,
         words_in_range,
         words_prev_range,
     })
@@ -542,14 +604,22 @@ fn query_daily(
 ) -> Result<Vec<InsightsDay>> {
     let mut per_day: HashMap<String, (i64, i64, i64)> = HashMap::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT date(created_at, 'localtime'), SUM(words), COUNT(*), SUM(duration_ms)
-             FROM transcriptions
-             WHERE created_at >= ?1 AND created_at < ?2
-               AND (?3 IS NULL OR context_id = ?3)
-             GROUP BY 1",
-        )?;
-        let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
+        // Retention may remove every raw row for an old day. The unscoped
+        // Insights view must read the durable daily summary in that case.
+        let sql = if context_id.is_none() {
+            "SELECT day, total_words, total_transcriptions, speaking_ms
+               FROM transcription_daily_stats
+              WHERE day >= ?1 AND day <= ?2 AND ?3 IS NULL"
+        } else {
+            "SELECT day, total_words, total_transcriptions, speaking_ms
+               FROM transcription_context_daily_stats
+              WHERE day >= ?1 AND day <= ?2
+                AND context_uuid = (SELECT uuid FROM contexts WHERE id = ?3)"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let start_bound = range.start_day.format("%Y-%m-%d").to_string();
+        let end_bound = range.end_day.format("%Y-%m-%d").to_string();
+        let rows = stmt.query_map(params![start_bound, end_bound, context_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 (
@@ -653,6 +723,27 @@ fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -
             *slot = words;
         }
     }
+    let mut compacted = conn.prepare(
+        "SELECT hour, SUM(total_words)
+           FROM transcription_hourly_stats
+          WHERE day >= ?1 AND day <= ?2
+            AND (?3 IS NULL OR context_id = COALESCE(?3, 0))
+          GROUP BY hour",
+    )?;
+    let rows = compacted.query_map(
+        params![
+            range.start_day.to_string(),
+            range.end_day.to_string(),
+            context_id
+        ],
+        |r| Ok((r.get::<_, usize>(0)?, r.get::<_, i64>(1)?)),
+    )?;
+    for row in rows {
+        let (hour, words) = row?;
+        if let Some(slot) = hourly.get_mut(hour) {
+            *slot += words;
+        }
+    }
     Ok(hourly)
 }
 
@@ -689,7 +780,78 @@ fn query_providers(
             output_chars: r.get(6)?,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut by_key: HashMap<(String, String, String), InsightsProviderUsage> = HashMap::new();
+    for row in rows {
+        let value = row?;
+        let key = (
+            value.model.clone(),
+            value.provider.clone(),
+            value.task.clone(),
+        );
+        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
+            model: value.model.clone(),
+            provider: value.provider.clone(),
+            task: value.task.clone(),
+            calls: 0,
+            audio_ms: 0,
+            input_chars: 0,
+            output_chars: 0,
+        });
+        entry.calls += value.calls;
+        entry.audio_ms += value.audio_ms;
+        entry.input_chars += value.input_chars;
+        entry.output_chars += value.output_chars;
+    }
+    let mut compacted = conn.prepare(
+        "SELECT model, provider, task, SUM(calls), SUM(audio_ms), SUM(input_chars), SUM(output_chars)
+           FROM provider_daily_stats
+          WHERE day >= ?1 AND day <= ?2
+            AND (?3 IS NULL OR context_id = COALESCE(?3, 0))
+          GROUP BY model, provider, task
+          ORDER BY SUM(calls) DESC, model ASC",
+    )?;
+    let rows = compacted.query_map(
+        params![
+            range.start_day.to_string(),
+            range.end_day.to_string(),
+            context_id
+        ],
+        |r| {
+            Ok(InsightsProviderUsage {
+                model: r.get(0)?,
+                provider: r.get(1)?,
+                task: r.get(2)?,
+                calls: r.get(3)?,
+                audio_ms: r.get(4)?,
+                input_chars: r.get(5)?,
+                output_chars: r.get(6)?,
+            })
+        },
+    )?;
+    for row in rows {
+        let value = row?;
+        let key = (
+            value.model.clone(),
+            value.provider.clone(),
+            value.task.clone(),
+        );
+        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
+            model: value.model.clone(),
+            provider: value.provider.clone(),
+            task: value.task.clone(),
+            calls: 0,
+            audio_ms: 0,
+            input_chars: 0,
+            output_chars: 0,
+        });
+        entry.calls += value.calls;
+        entry.audio_ms += value.audio_ms;
+        entry.input_chars += value.input_chars;
+        entry.output_chars += value.output_chars;
+    }
+    let mut usage: Vec<_> = by_key.into_values().collect();
+    usage.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.model.cmp(&b.model)));
+    Ok(usage)
 }
 
 fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<CleanupLifetime> {

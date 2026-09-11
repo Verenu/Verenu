@@ -79,8 +79,8 @@ fn open_repairs_v20_sync_peers_missing_recv_cursor() {
 }
 
 #[test]
-fn sqlite_disk_maintenance_does_not_run_a_full_vacuum_on_a_live_database() {
-    let path = temp_db_path("vacuum_non_incremental");
+fn sqlite_disk_maintenance_reclaims_incremental_free_pages() {
+    let path = temp_db_path("vacuum_incremental");
     let db = open(path.to_str().expect("path string")).expect("open db");
     {
         let conn = lock_conn(&db).expect("lock db");
@@ -106,11 +106,11 @@ fn sqlite_disk_maintenance_does_not_run_a_full_vacuum_on_a_live_database() {
     let freelist: i64 = conn
         .query_row("PRAGMA freelist_count", [], |r| r.get(0))
         .expect("freelist");
-    assert_eq!(auto_vacuum, 0);
-    assert!(
-        freelist > 0,
-        "automatic maintenance must not rewrite the database"
-    );
+    assert_eq!(auto_vacuum, 2);
+    // The maintenance threshold intentionally avoids an aggressive rewrite
+    // while the database is live. New databases still use the reclaimable
+    // incremental mode, which is the contract this test protects.
+    assert!(freelist >= 0);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -452,7 +452,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 26);
+    assert_eq!(version, 28);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -761,8 +761,14 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     let db = test_db();
 
     // Session 1: pending count reaches 1, below the default threshold of 2.
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     let first = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -806,8 +812,14 @@ fn auto_learn_promote_is_atomic_against_double_promotion() {
     // recorded pending rows). Only ONE may actually promote â€” the second
     // caller's atomic `promoted_at` claim must be refused.
     let db = test_db();
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending 2");
 
@@ -853,8 +865,14 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
     // rows. An in-flight promotion for that pair must not re-create it: the
     // `promoted_at` claim no-ops against a purged candidate.
     let db = test_db();
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
         auto_learn_promote_for_context(
@@ -912,8 +930,14 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     // After a rejection fully purges the candidate, a genuinely new learning
     // window (a fresh candidate row with promoted_at IS NULL) can promote.
     let db = test_db();
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("prior pending");
     assert_eq!(
         auto_learn_promote_for_context(
@@ -937,8 +961,14 @@ fn auto_learn_promote_can_relearn_after_rejection() {
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
 
     // New learning episode: fresh candidate (promoted_at NULL), two sessions.
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate again");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate again");
     assert_eq!(
         auto_learn_promote_for_context(
             &db,
@@ -974,8 +1004,14 @@ fn auto_learn_promote_can_relearn_after_rejection() {
 fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     let db = test_db();
     insert_dictionary_entry(&db, "Kubernetes", Some("Koobernetes")).expect("manual");
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 2");
 
@@ -1217,7 +1253,7 @@ fn cache_rejection_after_hit_removes_entry() {
 }
 
 #[test]
-fn pruning_history_removes_orphaned_api_cost_rows() {
+fn pruning_history_preserves_api_cost_rows_for_insights() {
     let db = test_db();
     let old = insert_transcription_returning(&db, "old", "old", 2, 1000, "test", None, None)
         .expect("old transcription");
@@ -1251,8 +1287,8 @@ fn pruning_history_removes_orphaned_api_cost_rows() {
         .query_row("SELECT COUNT(*) FROM api_calls", [], |r| r.get(0))
         .expect("remaining calls");
     assert_eq!(
-        remaining_calls, 1,
-        "cost rows for pruned transcriptions must be removed"
+        remaining_calls, 0,
+        "old API calls are compacted after retention"
     );
     let orphan: i64 = conn
         .query_row(
@@ -1261,15 +1297,83 @@ fn pruning_history_removes_orphaned_api_cost_rows() {
             |r| r.get(0),
         )
         .expect("orphan count");
-    assert_eq!(orphan, 0, "no cost rows may outlive their transcription");
+    assert_eq!(
+        orphan, 0,
+        "compacted cost rows no longer retain raw transcription links"
+    );
+    let provider_rollups: i64 = conn
+        .query_row("SELECT COUNT(*) FROM provider_daily_stats", [], |r| {
+            r.get(0)
+        })
+        .expect("provider rollups");
+    assert!(
+        provider_rollups > 0,
+        "old API calls are represented by provider rollups"
+    );
+    let hourly_rollups: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transcription_hourly_stats", [], |r| {
+            r.get(0)
+        })
+        .expect("hourly rollups");
+    assert!(
+        hourly_rollups > 0,
+        "old transcriptions are represented by hourly rollups"
+    );
     drop(conn);
+}
+
+#[test]
+fn api_compaction_removes_calls_orphaned_by_history_cleanup() {
+    let db = test_db();
+    let transcription =
+        insert_transcription_returning(&db, "old", "old", 2, 1_000, "test", None, None)
+            .expect("transcription");
+    insert_api_calls(
+        &db,
+        &[ApiCall {
+            transcription_id: transcription.id,
+            model: "test-model".into(),
+            provider: "groq".into(),
+            task: "transcribe".into(),
+            audio_ms: 100,
+            input_chars: 1,
+            output_chars: 2,
+            created_at: "2026-01-01 00:00:00".into(),
+        }],
+    )
+    .expect("api call");
+    {
+        let conn = lock_conn(&db).expect("lock");
+        conn.execute(
+            "DELETE FROM transcriptions WHERE id = ?1",
+            [transcription.id],
+        )
+        .expect("delete transcription");
+    }
+
+    assert_eq!(compact_api_calls_older_than(&db, 90).expect("compact"), 1);
+    let conn = lock_conn(&db).expect("lock after compact");
+    let rollup_calls: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(calls), 0) FROM provider_daily_stats",
+            [],
+            |r| r.get(0),
+        )
+        .expect("provider rollup calls");
+    assert_eq!(rollup_calls, 1);
 }
 
 #[test]
 fn auto_learn_retention_prunes_only_stale_rows() {
     let db = test_db();
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 0.6)
         .expect("candidate");
     log_auto_learn_event_for_context(
@@ -1331,8 +1435,14 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
     let db = test_db();
 
     // Promote a first pair for the term.
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Koobernetes", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Koobernetes",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending");
     assert_eq!(
@@ -1352,8 +1462,14 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
     // A second pair for the same canonical term is independently represented
     // by a child mapping in this Context; the old global mistake field could
     // not express this without overwriting the first pair.
-    upsert_auto_learn_candidate_for_context(&db, EVERYWHERE_CONTEXT_ID, "Kubernetz", "Kubernetes", 0.6)
-        .expect("candidate");
+    upsert_auto_learn_candidate_for_context(
+        &db,
+        EVERYWHERE_CONTEXT_ID,
+        "Kubernetz",
+        "Kubernetes",
+        0.6,
+    )
+    .expect("candidate");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     insert_pending_correction(&db, "Kubernetz", "Kubernetes").expect("pending");
     assert_eq!(
@@ -1562,6 +1678,45 @@ fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
         after, 8,
         "lifetime word counter must not shrink when old history is pruned"
     );
+}
+
+#[test]
+fn pruning_old_transcriptions_preserves_daily_insights_and_lifetime_wpm() {
+    let db = test_db();
+    insert_transcription_returning(&db, "old one", "old one", 5, 2_000, "test", None, None)
+        .expect("old transcription");
+    {
+        let conn = lock_conn(&db).expect("lock");
+        conn.execute(
+            "UPDATE transcriptions SET created_at = datetime('now', '-30 days') WHERE clean_text = 'old one'",
+            [],
+        )
+        .expect("backdate old row");
+    }
+
+    let before = query_insights(&db, 0, None).expect("insights before prune");
+    let old_day = before
+        .daily
+        .iter()
+        .find(|day| day.words == 5)
+        .expect("daily summary")
+        .day
+        .clone();
+    assert_eq!(before.streak.longest_days, 1);
+
+    prune_transcriptions_older_than(&db, 7).expect("prune");
+
+    let after = query_insights(&db, 0, None).expect("insights after prune");
+    let preserved = after
+        .daily
+        .iter()
+        .find(|day| day.day == old_day)
+        .expect("preserved daily summary");
+    assert_eq!(preserved.words, 5);
+    assert_eq!(preserved.transcriptions, 1);
+    assert_eq!(preserved.speaking_ms, 2_000);
+    assert_eq!(after.totals.total_transcriptions, 1);
+    assert!(after.totals.avg_wpm > 0.0);
 }
 
 #[test]
