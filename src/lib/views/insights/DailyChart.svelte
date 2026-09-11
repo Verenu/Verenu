@@ -1,14 +1,10 @@
 <script lang="ts">
   import { fmtDayLong, fmtNumber, niceCeiling } from './helpers';
-  import RollingNumber from './RollingNumber.svelte';
+  import AnimatedNumber from './AnimatedNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
 
-  let {
-    daily,
-    rangeLabel,
-    rangeTotal,
-  }: { daily: InsightsDay[]; rangeLabel: string; rangeTotal: number } = $props();
+  let { daily, rangeLabel }: { daily: InsightsDay[]; rangeLabel: string } = $props();
 
   // Unique per instance so multiple charts on the page never share a <mask> id.
   const gradientId = `daily-edge-fade-${Math.random().toString(36).slice(2)}`;
@@ -97,11 +93,12 @@
     hoverPos = { x: px, y: py };
   }
 
+  const total = $derived(daily.reduce((sum, d) => sum + d.words, 0));
   const best = $derived(daily.reduce<InsightsDay | null>((b, d) => (!b || d.words > b.words ? d : b), null));
   const summary = $derived(
     daily.length === 0
       ? 'No daily activity in this range.'
-      : `Words dictated per day, ${rangeLabel.toLowerCase()}. ${fmtNumber(rangeTotal)} words across ${daily.length} days, peaking at ${fmtNumber(best?.words ?? 0)} on ${best ? fmtDayLong(best.day) : '—'}.`
+      : `Words dictated per day, ${rangeLabel.toLowerCase()}. ${fmtNumber(total)} words across ${daily.length} days, peaking at ${fmtNumber(best?.words ?? 0)} on ${best ? fmtDayLong(best.day) : '—'}.`
   );
 </script>
 
@@ -112,11 +109,12 @@
       <p class="card-sub">{rangeLabel}</p>
     </div>
     <div class="readout" aria-live="polite">
-      <span class="readout-num"><RollingNumber value={active?.words ?? rangeTotal} /></span>
       {#if active}
+        <span class="readout-num">{fmtNumber(active.words)}</span>
         <span class="readout-day">{fmtDayLong(active.day)}</span>
       {:else}
-        <span class="readout-day">range total</span>
+        <span class="readout-num"><AnimatedNumber value={total} /></span>
+        <span class="readout-day">total</span>
       {/if}
     </div>
   </header>
@@ -203,7 +201,7 @@
   }
   .readout-num {
     display: block;
-    font-family: var(--sans);
+    font-family: var(--serif);
     font-size: 20px;
     font-weight: 500;
     color: var(--ink);

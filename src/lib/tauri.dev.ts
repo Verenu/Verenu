@@ -1407,15 +1407,72 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'get_cancelled_capture':
       return null as T;
     case 'android_get_platform_info':
-      return { localAiSupported: true, localAiUnsupportedReason: '' } as T;
+      return {
+        isAndroidRuntime: false,
+        minSdk: 26,
+        targetSdk: 34,
+        supportedAbi: 'arm64-v8a',
+        localAiSupported: false,
+        localAiUnsupportedReason: 'On-device models are unavailable in browser dev mode.',
+      } as T;
     case 'android_permission_rationale':
-      return [] as T;
+      return [
+        { id: 'microphone', required: true, rationale: 'Dev preview copy.' },
+        { id: 'accessibility_service', required: true, rationale: 'Dev preview copy.' },
+        { id: 'battery_exemption', required: false, rationale: 'Dev preview copy.' },
+        { id: 'notifications', required: false, rationale: 'Dev preview copy.' },
+      ] as T;
     case 'android_read_permissions':
       return { microphone: 'granted', accessibility_service: 'granted', battery_exemption: 'granted', notifications: 'granted' } as T;
-    case 'android_evaluate_permissions':
-      return { functional: true } as T;
+    case 'android_evaluate_permissions': {
+      const snapshot = (args?.snapshot ?? {}) as Record<string, string>;
+      const functional =
+        snapshot.microphone === 'granted' && snapshot.accessibility_service === 'granted';
+      const missingRequired: string[] = [];
+      if (snapshot.microphone !== 'granted') missingRequired.push('microphone');
+      if (snapshot.accessibility_service !== 'granted') missingRequired.push('accessibility_service');
+      return { functional, missingRequired } as T;
+    }
     case 'android_request_permission':
       return undefined as T;
+    case 'android_on_keyboard_visibility': {
+      const visible = Boolean(args?.keyboardVisible) && Boolean(args?.hasEditableFocus);
+      const current = typeof args?.current === 'string' ? args.current : 'hidden';
+      let state = 'hidden';
+      if (visible) {
+        state = 'visible_idle';
+      } else if (current === 'recording') {
+        state = 'recording';
+      }
+      return { state, visible, dictationActive: state === 'recording' } as T;
+    }
+    case 'android_decide_insertion':
+      return (args?.hasEditableFocus && args?.supportsSetText
+        ? 'direct_accessibility'
+        : 'clipboard_fallback') as T;
+    case 'android_context_for_package': {
+      const pkg = String(args?.package ?? '');
+      const label = pkg.split('.').pop() || 'Everywhere';
+      return { package: pkg, label, isGeneric: true } as T;
+    }
+    case 'android_provide_credential':
+    case 'android_clear_credentials':
+    case 'android_keystore_save':
+    case 'android_on_permission_revoked':
+    case 'android_insert_text_result':
+      return undefined as T;
+    case 'android_has_credential':
+      return false as T;
+    case 'android_width_class': {
+      const width = Number(args?.widthDp ?? 0);
+      let widthClass = 'expanded';
+      if (width < 600) {
+        widthClass = 'compact';
+      } else if (width < 840) {
+        widthClass = 'medium';
+      }
+      return widthClass as T;
+    }
     case 'get_diagnostics_snapshot':
       return {
         generated_at_ms: Date.now(), profiler_enabled: false, profiling_recording: false,
@@ -2098,61 +2155,6 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return undefined as T;
     case 'sync_get_diagnostics':
       return { log_entries: 0, peers: [] } as T;
-    // Android bridge (browser dev runs the desktop backend contract; the
-    // Kotlin service is absent, so these answer from local dev state).
-    case 'android_get_platform_info':
-      return {
-        isAndroidRuntime: false,
-        minSdk: 26,
-        targetSdk: 34,
-        supportedAbi: 'arm64-v8a',
-        localAiSupported: false,
-        localAiUnsupportedReason: 'On-device models are unavailable in browser dev mode.',
-      } as T;
-    case 'android_on_keyboard_visibility': {
-      const visible = Boolean(args?.keyboardVisible) && Boolean(args?.hasEditableFocus);
-      const current = typeof args?.current === 'string' ? args.current : 'hidden';
-      const state = visible ? 'visible_idle' : current === 'recording' ? 'recording' : 'hidden';
-      return { state, visible, dictationActive: state === 'recording' } as T;
-    }
-    case 'android_decide_insertion':
-      return (args?.hasEditableFocus && args?.supportsSetText
-        ? 'direct_accessibility'
-        : 'clipboard_fallback') as T;
-    case 'android_context_for_package': {
-      const pkg = String(args?.package ?? '');
-      const label = pkg.split('.').pop() || 'Everywhere';
-      return { package: pkg, label, isGeneric: true } as T;
-    }
-    case 'android_provide_credential':
-    case 'android_clear_credentials':
-    case 'android_keystore_save':
-    case 'android_request_permission':
-    case 'android_on_permission_revoked':
-    case 'android_insert_text_result':
-      return undefined as T;
-    case 'android_has_credential':
-      return false as T;
-    case 'android_permission_rationale':
-      return [
-        { id: 'microphone', required: true, rationale: 'Dev preview copy.' },
-        { id: 'accessibility_service', required: true, rationale: 'Dev preview copy.' },
-        { id: 'battery_exemption', required: false, rationale: 'Dev preview copy.' },
-        { id: 'notifications', required: false, rationale: 'Dev preview copy.' },
-      ] as T;
-    case 'android_evaluate_permissions': {
-      const snapshot = (args?.snapshot ?? {}) as Record<string, string>;
-      const functional =
-        snapshot.microphone === 'granted' && snapshot.accessibility_service === 'granted';
-      const missingRequired: string[] = [];
-      if (snapshot.microphone !== 'granted') missingRequired.push('microphone');
-      if (snapshot.accessibility_service !== 'granted') missingRequired.push('accessibility_service');
-      return { functional, missingRequired } as T;
-    }
-    case 'android_width_class': {
-      const width = Number(args?.widthDp ?? 0);
-      return (width < 600 ? 'compact' : width < 840 ? 'medium' : 'expanded') as T;
-    }
     default:
       throw new Error(`Tauri command "${command}" is unavailable in browser dev mode.`);
   }

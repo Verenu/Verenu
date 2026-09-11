@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fmtDay, fmtDayLong, fmtNumber, parseLocalDay } from './helpers';
-  import RollingNumber from './RollingNumber.svelte';
+  import AnimatedNumber from './AnimatedNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay, InsightsStreak } from './types';
 
@@ -209,11 +209,11 @@
 <section class="card">
   <header class="card-head">
     <div>
-      <h2 class="card-h"><RollingNumber value={streak.current_days} /> day streak</h2>
+      <h2 class="card-h"><AnimatedNumber value={streak.current_days} /> day streak</h2>
       <p class="card-sub">{fmtNumber(visibleActiveDays)} active days shown · {visibleRangeLabel}</p>
     </div>
     <div class="best">
-      <span class="best-num"><RollingNumber value={streak.longest_days} /></span>
+      <span class="best-num"><AnimatedNumber value={streak.longest_days} /></span>
       <span class="best-label">longest</span>
     </div>
   </header>
@@ -284,7 +284,7 @@
       <div class="streak-stats">
         <div class="stat">
           <span class="stat-label">Longest streak</span>
-          <span class="stat-value"><RollingNumber value={streak.longest_days} /> {streak.longest_days === 1 ? 'day' : 'days'}</span>
+          <span class="stat-value">{streak.longest_days} {streak.longest_days === 1 ? 'day' : 'days'}</span>
           <span class="stat-sub">{fmtNumber(streak.longest_words)} words{#if longestRange} · {longestRange}{/if}</span>
         </div>
         {#if bestWeekday}
@@ -520,7 +520,7 @@
     color: var(--ink-mute);
   }
   .stat-value {
-    font-family: var(--sans);
+    font-family: var(--serif);
     font-size: 15px;
     font-weight: 500;
     color: var(--ink);
