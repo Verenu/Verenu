@@ -38,10 +38,10 @@
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
     const pillWindow = getCurrentWindow();
     await pillWindow.setIgnoreCursorEvents(!interactive).catch(() => {});
-    // The pill is always a borderless overlay. Reassert this after changing
-    // hit-testing because WebView2/tao can restore the native frame while the
-    // window is being switched back to an interactive surface.
-    await pillWindow.setDecorations(false).catch(() => {});
+    // Native frame removal is owned by the backend. Calling setDecorations here
+    // after the backend has hardened the window can make WebView2/tao restore a
+    // caption-sized frame on Windows, which flashes as a pale bar above the
+    // pill after a button is clicked.
   }
 
   // Resolved context for the current dictation (e.g. "Slack", "Everywhere") —
