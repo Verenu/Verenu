@@ -303,7 +303,8 @@
 
 	.perm-badges {
 		display: flex;
-		align-items: center;\tgap: 6px;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.perm-req {

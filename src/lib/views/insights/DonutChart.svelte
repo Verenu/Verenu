@@ -133,8 +133,6 @@
     p.closePath();
     return p;
   }
-    return p;
-  }
 
   /**
    * Keep the rounded treatment on slices that are too narrow for the full
