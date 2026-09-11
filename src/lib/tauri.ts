@@ -2,6 +2,7 @@ import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { emit as tauriEmit, listen as tauriListen } from '@tauri-apps/api/event';
 import { defaultHotkey } from './platform';
 import { frontendIpcActivity } from './diagnostics';
+import { extractIpcErrorMessage } from './errors';
 
 declare const __APP_VERSION__: string;
 declare const __VERENU_GIT_SHA__: string;
@@ -2429,7 +2430,7 @@ export function invoke<T = unknown>(command: string, args?: CommandArgs): Promis
   const request = hasTauriInternals() ? tauriInvoke<T>(command, args) : devInvoke<T>(command, args);
   return request.then(
     (value) => { frontendIpcActivity.finish(command, started, true); return value; },
-    (error) => { frontendIpcActivity.finish(command, started, false); throw error; },
+    (error) => { frontendIpcActivity.finish(command, started, false, extractIpcErrorMessage(error)); throw error; },
   );
 }
 
