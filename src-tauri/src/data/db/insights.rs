@@ -205,16 +205,16 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             })
             .transpose()?
             .flatten();
-        let history_started_on: Option<String> = if let Some(uuid) = context_uuid.as_deref() {
-            conn.query_row(
+        let history_started_on: Option<String> = match (context_id, context_uuid.as_deref()) {
+            (Some(_), Some(uuid)) => conn.query_row(
                 "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
                 params![uuid],
                 |r| r.get(0),
-            )?
-        } else {
-            conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
+            )?,
+            (Some(_), None) => None,
+            (None, _) => conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
                 r.get(0)
-            })?
+            })?,
         };
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
@@ -594,46 +594,6 @@ fn query_totals(
         words_in_range,
         words_prev_range,
     });
-    /* // Legacy raw-row totals implementation retained only in history for reference.
-    // Identical definition to query_stats (average of each clip's own wpm)
-    // so the Insights "All time" number matches the Home page exactly;
-    // scoped to the range here. Not total_words/total_duration — that
-    // aggregates differently and makes the two pages disagree.
-    let total_words: i64 = match context_id {
-        None => conn.query_row(
-            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
-            [],
-            |r| r.get(0),
-        )?,
-        // lifetime_stats is a global counter with no context dimension, so a
-        // scoped run sums the context's own history rather than reporting a
-        // number the filter plainly does not apply to. It can read lower than
-        // the unscoped lifetime figure, which never shrinks with retention
-        // pruning — that difference is real, not a bug.
-        Some(id) => conn.query_row(
-            "SELECT COALESCE(SUM(words), 0) FROM transcriptions WHERE context_id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?,
-    };
-
-    let avg_words_per_transcription = if total_transcriptions > 0 {
-        (words_in_range as f64 / total_transcriptions as f64).round() as i64
-    } else {
-        0
-    };
-
-    Ok(InsightsTotals {
-        total_words,
-        total_transcriptions,
-        total_speaking_ms,
-        avg_words_per_transcription,
-        avg_wpm,
-        best_wpm: best_wpm.unwrap_or(0.0) as i64,
-        words_in_range,
-        words_prev_range,
-    }) */
 }
 
 /// One row per calendar day in the range, ascending, zero-filled for idle days.
@@ -653,20 +613,12 @@ fn query_daily(
         } else {
             "SELECT day, total_words, total_transcriptions, speaking_ms
                FROM transcription_context_daily_stats
-              WHERE day >= date(?1, 'localtime') AND day <= date(?2, 'localtime')
+              WHERE day >= ?1 AND day <= ?2
                 AND context_uuid = (SELECT uuid FROM contexts WHERE id = ?3)"
         };
         let mut stmt = conn.prepare(sql)?;
-        let start_bound = if context_id.is_none() {
-            range.start_day.format("%Y-%m-%d").to_string()
-        } else {
-            range.start.clone()
-        };
-        let end_bound = if context_id.is_none() {
-            range.end_day.format("%Y-%m-%d").to_string()
-        } else {
-            range.end.clone()
-        };
+        let start_bound = range.start_day.format("%Y-%m-%d").to_string();
+        let end_bound = range.end_day.format("%Y-%m-%d").to_string();
         let rows = stmt.query_map(params![start_bound, end_bound, context_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
