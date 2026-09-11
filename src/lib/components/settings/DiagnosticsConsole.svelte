@@ -67,6 +67,7 @@
   let providerStatusRaw = $state('');
   let verboseEnabled = $state(false);
   let ruinAccessibility = $state(false);
+  let devModeOnStartup = $state(false);
   let forceSetupOnLaunch = $state(false);
   let storageFullSimulation = $state(false);
   let syncEnabled = $state(false);
@@ -230,6 +231,16 @@
     await saveSetting('ruin_accessibility', value).catch(() => { ruinAccessibility = !value; appStore.ruinAccessibility = !value; });
   }
 
+  async function setDevModeOnStartup(value: boolean) {
+    const previous = devModeOnStartup;
+    devModeOnStartup = value;
+    appStore.devModeOnStartup = value;
+    await saveSetting('dev_mode_on_startup', value).catch(() => {
+      devModeOnStartup = previous;
+      appStore.devModeOnStartup = previous;
+    });
+  }
+
   async function setForceSetup(value: boolean) {
     forceSetupOnLaunch = value;
     await saveSetting('force_setup_on_launch', value).catch(() => { forceSetupOnLaunch = !value; });
@@ -303,9 +314,10 @@
     }).then((unlisten) => { if (active) unlistenDiagnostics = unlisten; else unlisten(); }).catch(() => {});
     Promise.all([
       invoke<boolean>('get_dev_logging_enabled'), invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
+      invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
       invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }), invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
       invoke<boolean>('get_storage_full_simulation'),
-    ]).then(([verbose, ruin, force, sync, storage]) => { verboseEnabled = verbose; ruinAccessibility = ruin ?? false; forceSetupOnLaunch = force ?? false; syncEnabled = sync ?? false; storageFullSimulation = storage; }).catch(() => {});
+    ]).then(([verbose, ruin, devStartup, force, sync, storage]) => { verboseEnabled = verbose; ruinAccessibility = ruin ?? false; devModeOnStartup = devStartup ?? false; forceSetupOnLaunch = force ?? false; syncEnabled = sync ?? false; storageFullSimulation = storage; }).catch(() => {});
     return () => { active = false; if (pollTimer) clearTimeout(pollTimer); document.removeEventListener('visibilitychange', onVisibility!); if (unlistenDiagnostics) unlistenDiagnostics(); void invoke('unsubscribe_log_stream').catch(() => {}); if (!recording) void invoke('set_diagnostics_monitoring', { enabled: false }).catch(() => {}); };
   });
 </script>
@@ -410,7 +422,7 @@
       </Dropdown>
     </div><span data-setting-target="developer-storage-simulation"><Toggle checked={storageFullSimulation} onchange={toggleStorageFault} label="Full Storage Failure" /></span></div>{#if providerStatusRaw}<pre class="status-output">{providerStatusRaw}</pre>{/if}<div class="toolbar"><button class="btn-danger btn-compact" onclick={() => void clearFaults()}>Clear</button>{#if faultMessage}<span class="muted">{faultMessage}</span>{/if}</div></section>
   {:else}
-    <section class="diag-panel" data-setting-target="developer-settings"><div class="panel-title"><h3>Developer settings</h3><span class="muted">explicit opt-in controls</span></div><div class="setting-row" data-setting-target="developer-ruin-accessibility"><div><div class="label">Ruin accessibility</div><div class="desc">Expose a compact, privacy-filtered state dump for T3 Code SnapShots. It never includes logs, transcripts, prompts, or keys.</div></div><Toggle checked={ruinAccessibility} onchange={setRuin} label="Ruin accessibility" /></div><div class="setting-row" data-setting-target="developer-logs"><div><div class="label">Verbose logging</div><div class="desc">{verboseEnabled ? 'Debug logging enabled.' : 'Metadata diagnostics remain useful with verbose logging off.'} <button class="link-btn privacy-link" onclick={() => privacyModalOpen = true}>Privacy details</button></div></div><Toggle checked={verboseEnabled} onchange={setVerbose} label={`Verbose: ${verboseEnabled ? 'On' : 'Off'}`} /></div><div class="setting-row" data-setting-target="developer-setup"><div><div class="label">Force setup on launch</div><div class="desc">Show onboarding without erasing saved settings.</div></div><Toggle checked={forceSetupOnLaunch} onchange={setForceSetup} label="Force setup" /></div><div class="setting-row" data-setting-target="developer-sync"><div><div class="label">LAN Device Sync</div><div class="desc">Experimental encrypted device-to-device sync. Off by default.</div></div><Toggle checked={syncEnabled} onchange={setSync} label="Enable LAN sync" /></div></section>
+    <section class="diag-panel" data-setting-target="developer-settings"><div class="panel-title"><h3>Developer settings</h3><span class="muted">explicit opt-in controls</span></div><div class="setting-row" data-setting-target="developer-dev-mode-startup"><div><div class="label">Enable dev mode on startup</div><div class="desc">Keep Developer visible automatically whenever Verenu starts.</div></div><Toggle checked={devModeOnStartup} onchange={setDevModeOnStartup} label="Enable dev mode on startup" /></div><div class="setting-row" data-setting-target="developer-ruin-accessibility"><div><div class="label">Ruin accessibility</div><div class="desc">Expose a compact, privacy-filtered state dump for T3 Code SnapShots. It never includes logs, transcripts, prompts, or keys.</div></div><Toggle checked={ruinAccessibility} onchange={setRuin} label="Ruin accessibility" /></div><div class="setting-row" data-setting-target="developer-logs"><div><div class="label">Verbose logging</div><div class="desc">{verboseEnabled ? 'Debug logging enabled.' : 'Metadata diagnostics remain useful with verbose logging off.'} <button class="link-btn privacy-link" onclick={() => privacyModalOpen = true}>Privacy details</button></div></div><Toggle checked={verboseEnabled} onchange={setVerbose} label={`Verbose: ${verboseEnabled ? 'On' : 'Off'}`} /></div><div class="setting-row" data-setting-target="developer-setup"><div><div class="label">Force setup on launch</div><div class="desc">Show onboarding without erasing saved settings.</div></div><Toggle checked={forceSetupOnLaunch} onchange={setForceSetup} label="Force setup" /></div><div class="setting-row" data-setting-target="developer-sync"><div><div class="label">LAN Device Sync</div><div class="desc">Experimental encrypted device-to-device sync. Off by default.</div></div><Toggle checked={syncEnabled} onchange={setSync} label="Enable LAN sync" /></div></section>
   {/if}
   </div>
   {/key}

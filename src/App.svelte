@@ -226,7 +226,7 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        const [done, appearance, accentColor, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility] = await Promise.all([
+        const [done, appearance, accentColor, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup] = await Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<'system' | 'light' | 'dark' | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
@@ -236,6 +236,7 @@
           invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
+          invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
         ]);
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
         if (appearance === 'light' || appearance === 'dark' || appearance === 'system') {
@@ -247,7 +248,8 @@
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
         appStore.syncEnabled = syncEnabled ?? false;
         appStore.ruinAccessibility = ruinAccessibility ?? false;
-        if (appStore.ruinAccessibility) appStore.devModeEnabled = true;
+        appStore.devModeOnStartup = devModeOnStartup ?? false;
+        if (appStore.ruinAccessibility || appStore.devModeOnStartup) appStore.devModeEnabled = true;
       } catch {
         appStore.setupComplete = false;
       }

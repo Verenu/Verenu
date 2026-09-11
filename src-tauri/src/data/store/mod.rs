@@ -363,6 +363,7 @@ pub const APPEARANCE_MODE: &str = "appearance_mode";
 pub const ACCENT_COLOR: &str = "accent_color";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
+pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";
 pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
 /// One cleanup prompt for every model. Fallback chains made per-model prompts
 /// a trap: edit the prompt on your default, fall back to another model, and the
