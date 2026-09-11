@@ -33,7 +33,12 @@ const isTouchOnlyRuntime =
 // native bridge are unavailable during the first cold render.
 const isPhoneViewport =
 	typeof window !== 'undefined' &&
-	Math.min(window.innerWidth, window.innerHeight) <= 600;
+	Math.min(window.innerWidth, window.innerHeight) <= 600 &&
+	(isTouchOnlyRuntime ||
+		/Android/i.test(ua) ||
+		/VerenuAndroid/i.test(ua) ||
+		isNativeAndroidRuntime ||
+		isAndroidWebViewFallback);
 const detectedAndroid =
 	/Android/i.test(ua) ||
 	/Android/i.test(uaDataPlatform) ||
