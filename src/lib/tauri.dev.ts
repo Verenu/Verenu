@@ -1438,7 +1438,12 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'android_on_keyboard_visibility': {
       const visible = Boolean(args?.keyboardVisible) && Boolean(args?.hasEditableFocus);
       const current = typeof args?.current === 'string' ? args.current : 'hidden';
-      const state = visible ? 'visible_idle' : current === 'recording' ? 'recording' : 'hidden';
+      let state = 'hidden';
+      if (visible) {
+        state = 'visible_idle';
+      } else if (current === 'recording') {
+        state = 'recording';
+      }
       return { state, visible, dictationActive: state === 'recording' } as T;
     }
     case 'android_decide_insertion':
@@ -1460,7 +1465,13 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return false as T;
     case 'android_width_class': {
       const width = Number(args?.widthDp ?? 0);
-      return (width < 600 ? 'compact' : width < 840 ? 'medium' : 'expanded') as T;
+      let widthClass = 'expanded';
+      if (width < 600) {
+        widthClass = 'compact';
+      } else if (width < 840) {
+        widthClass = 'medium';
+      }
+      return widthClass as T;
     }
     case 'get_diagnostics_snapshot':
       return {
