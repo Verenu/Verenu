@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { Spring } from 'svelte/motion';
   import { fmtDayLong, fmtNumber, niceCeiling } from './helpers';
-  import AnimatedNumber from './AnimatedNumber.svelte';
+  import { reducedMotionEnabled } from '../../motion';
+  import { buildSegments, pointOnSegments, segmentsToPath } from './chartCurve';
+  import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
 
@@ -37,32 +40,21 @@
     return PAD_TOP + plotH * (1 - words / max);
   }
 
-  function clampY(value: number): number {
-    return Math.max(PAD_TOP, Math.min(H - PAD_BOTTOM, value));
-  }
-
   /* Catmull-Rom control points → cubic bezier, so the area reads as a curve
-     without pulling above the data the way a naive spline does. */
+     without pulling above the data the way a naive spline does. The hover
+     indicator reads these same segments, which is what keeps it on the line. */
+  const segments = $derived(
+    buildSegments(
+      daily.map((d, i) => ({ x: x(i), y: y(d.words) })),
+      PAD_TOP,
+      H - PAD_BOTTOM
+    )
+  );
+
   const linePath = $derived.by(() => {
     if (daily.length === 0) return '';
     if (daily.length === 1) return `M 0 ${y(daily[0].words)} L ${W} ${y(daily[0].words)}`;
-    const pts = daily.map((d, i) => [x(i), y(d.words)] as const);
-    let path = `M ${pts[0][0]} ${pts[0][1]}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] ?? pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] ?? p2;
-      const c1x = p1[0] + (p2[0] - p0[0]) / 6;
-      // Catmull-Rom handles gentle curves well, but its control points can
-      // overshoot between a large spike and a zero-value day. Keeping them in
-      // the plot bounds preserves the curve without inventing negative data.
-      const c1y = clampY(p1[1] + (p2[1] - p0[1]) / 6);
-      const c2x = p2[0] - (p3[0] - p1[0]) / 6;
-      const c2y = clampY(p2[1] - (p3[1] - p1[1]) / 6);
-      path += ` C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2[0]} ${p2[1]}`;
-    }
-    return path;
+    return segmentsToPath(segments);
   });
 
   const areaPath = $derived(
@@ -72,12 +64,41 @@
   const barWidth = $derived(daily.length > 0 ? Math.min(28, (W / daily.length) * 0.55) : 0);
 
   let hover = $state<number | null>(null);
-  let hoverPos = $state<{ x: number; y: number } | null>(null);
+  let plotWidth = $state(0);
   const active = $derived(hover !== null ? daily[hover] : null);
+  /* Held through the fade-out so the tooltip keeps its text on the way out
+     instead of blanking the instant the pointer leaves. */
+  let lastActive = $state<InsightsDay | null>(null);
+  $effect(() => {
+    if (active) lastActive = active;
+  });
+
+  /* The pointer snaps to whole days, so without this the indicator teleports
+     between them. Springing a fractional index — rather than the co-ordinates —
+     is what lets the dot ride the curve instead of cutting across it. */
+  const cursor = new Spring(0, { stiffness: 0.19, damping: 0.82 });
+
+  const cursorPoint = $derived.by(() => {
+    if (daily.length === 0) return { x: 0, y: H - PAD_BOTTOM };
+    const at = Math.max(0, Math.min(daily.length - 1, cursor.current));
+    // Bars have no curve to ride, so the indicator slides straight across.
+    if (asBars || segments.length === 0) {
+      const i = Math.floor(at);
+      const next = daily[Math.min(daily.length - 1, i + 1)];
+      const y0 = y(daily[i].words);
+      return { x: x(at), y: y0 + (y(next.words) - y0) * (at - i) };
+    }
+    return pointOnSegments(segments, at);
+  });
+
+  // The svg's CSS height matches the viewBox height 1:1 and only its width is
+  // fluid, so x scales by the rendered width and y needs no conversion.
+  const cursorLeft = $derived((cursorPoint.x / W) * plotWidth);
 
   function onMove(event: PointerEvent) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (rect.width === 0 || daily.length === 0) return;
+    plotWidth = rect.width;
     const ratio = (event.clientX - rect.left) / rect.width;
     // Bars fill equal-width slots spanning [i/n, (i+1)/n), so floor maps the
     // pointer into its slot; line charts align points at i/(n-1), so round
@@ -85,12 +106,12 @@
     const idx = asBars
       ? Math.min(daily.length - 1, Math.max(0, Math.floor(ratio * daily.length)))
       : Math.min(daily.length - 1, Math.max(0, Math.round(ratio * (daily.length - 1))));
+    // Arriving from outside, place the indicator under the pointer rather than
+    // sliding it in from wherever it was last left — otherwise entering the
+    // card drags a line across the whole chart to meet you.
+    const entering = hover === null;
     hover = idx;
-    // The svg's CSS height matches the viewBox height 1:1, only width is
-    // fluid, so x scales by the rendered width and y needs no conversion.
-    const px = (x(idx) / W) * rect.width;
-    const py = daily[idx].words > 0 ? y(daily[idx].words) : H - PAD_BOTTOM;
-    hoverPos = { x: px, y: py };
+    cursor.set(idx, { instant: entering || reducedMotionEnabled() });
   }
 
   const total = $derived(daily.reduce((sum, d) => sum + d.words, 0));
@@ -110,10 +131,10 @@
     </div>
     <div class="readout" aria-live="polite">
       {#if active}
-        <span class="readout-num">{fmtNumber(active.words)}</span>
+        <span class="readout-num"><RollingNumber value={active.words} format={fmtNumber} /></span>
         <span class="readout-day">{fmtDayLong(active.day)}</span>
       {:else}
-        <span class="readout-num"><AnimatedNumber value={total} /></span>
+        <span class="readout-num"><RollingNumber value={total} format={fmtNumber} /></span>
         <span class="readout-day">total</span>
       {/if}
     </div>
@@ -125,7 +146,7 @@
     role="img"
     aria-label={summary}
     onpointermove={onMove}
-    onpointerleave={() => { hover = null; hoverPos = null; }}
+    onpointerleave={() => (hover = null)}
   >
     <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
       <defs>
@@ -166,25 +187,35 @@
           class="line-path"
         />
       {/if}
-      {#if hover !== null && daily[hover]}
+      {#if daily.length > 0}
         <line
-          x1={x(hover)} y1={PAD_TOP - 6} x2={x(hover)} y2={H - PAD_BOTTOM}
-          stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3" opacity="0.55"
+          class="cursor-line"
+          class:on={hover !== null}
+          x1={cursorPoint.x} y1={PAD_TOP - 6} x2={cursorPoint.x} y2={H - PAD_BOTTOM}
+          stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"
           vector-effect="non-scaling-stroke"
         />
       {/if}
     </svg>
-    {#if hoverPos && !asBars}
-      <span class="hover-dot" style:left="{hoverPos.x}px" style:top="{hoverPos.y}px" aria-hidden="true"></span>
+    {#if !asBars && daily.length > 0}
+      <!-- Positioned as a percentage so it tracks a resize without remeasuring;
+           only the tooltip needs the plot's pixel width. -->
+      <span
+        class="hover-dot"
+        class:on={hover !== null}
+        style:left="{(cursorPoint.x / W) * 100}%"
+        style:top="{cursorPoint.y}px"
+        aria-hidden="true"
+      ></span>
     {/if}
     <div class="axis">
       <span>{daily.length ? fmtDayLong(daily[0].day) : ''}</span>
       <span>{daily.length > 1 ? fmtDayLong(daily[daily.length - 1].day) : ''}</span>
     </div>
-    {#if hoverPos && active}
-      <ChartTooltip x={hoverPos.x} y={hoverPos.y} visible={true}>
-        <strong>{fmtNumber(active.words)}</strong> words
-        <div class="tooltip-dim">{fmtDayLong(active.day)}</div>
+    {#if lastActive}
+      <ChartTooltip x={cursorLeft} y={cursorPoint.y} visible={hover !== null}>
+        <strong>{fmtNumber(lastActive.words)}</strong> words
+        <div class="tooltip-dim">{fmtDayLong(lastActive.day)}</div>
       </ChartTooltip>
     {/if}
   </div>
@@ -201,7 +232,7 @@
   }
   .readout-num {
     display: block;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 20px;
     font-weight: 500;
     color: var(--ink);
@@ -263,6 +294,17 @@
     .line-path { animation: none; }
   }
 
+  /* Only opacity and scale are transitioned. Position is driven by the spring
+     every frame, so a transition on left/top would fight it and lag behind. */
+  .cursor-line {
+    opacity: 0;
+    transition: opacity var(--ui-duration-fast) var(--ui-ease-out);
+  }
+
+  .cursor-line.on {
+    opacity: 0.55;
+  }
+
   .hover-dot {
     position: absolute;
     width: 9px;
@@ -271,8 +313,17 @@
     background: var(--accent);
     border: 2.5px solid var(--bg-elev);
     box-sizing: border-box;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%) scale(0.5);
+    opacity: 0;
     pointer-events: none;
     filter: drop-shadow(0 1px 3px color-mix(in srgb, var(--accent) 55%, transparent));
+    transition:
+      opacity var(--ui-duration-fast) var(--ui-ease-out),
+      transform var(--ui-duration-base) var(--ui-ease-out);
+  }
+
+  .hover-dot.on {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
   }
 </style>
