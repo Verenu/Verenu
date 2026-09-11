@@ -144,7 +144,7 @@ export function formatBytes(bytes: number | null | undefined): string {
 export function unknown(value: unknown): string { if (value == null || value === '') return 'Unavailable'; if (typeof value === 'boolean') return value ? 'Yes' : 'No'; return String(value); }
 export function spanWidth(duration: number | null | undefined, total: number | null | undefined): number { if (!duration || !total || total <= 0) return 0; return Math.min(100, Math.max(1, duration / total * 100)); }
 
-export interface FrontendIpcMetric { command: string; calls: number; failures: number; total_duration_ms: number; average_duration_ms: number | null; p95_duration_ms: number | null; max_duration_ms: number | null; currently_running: number; hidden_calls: number; first_seen: number; last_seen: number; samples: number[]; }
+export interface FrontendIpcMetric { command: string; calls: number; failures: number; total_duration_ms: number; average_duration_ms: number | null; p95_duration_ms: number | null; max_duration_ms: number | null; currently_running: number; hidden_calls: number; first_seen: number; last_seen: number; samples: number[]; last_error: string | null; }
 
 class FrontendIpcActivity {
   private readonly metrics = new Map<string, FrontendIpcMetric>();
@@ -152,15 +152,16 @@ class FrontendIpcActivity {
     const now = Date.now(); let metric = this.metrics.get(command);
     if (!metric) {
       if (this.metrics.size >= MAX_FRONTEND_METRICS) { const oldest = [...this.metrics.values()].sort((a, b) => a.last_seen - b.last_seen)[0]; if (oldest) this.metrics.delete(oldest.command); }
-      metric = { command, calls: 0, failures: 0, total_duration_ms: 0, average_duration_ms: null, p95_duration_ms: null, max_duration_ms: null, currently_running: 0, hidden_calls: 0, first_seen: now, last_seen: now, samples: [] };
+      metric = { command, calls: 0, failures: 0, total_duration_ms: 0, average_duration_ms: null, p95_duration_ms: null, max_duration_ms: null, currently_running: 0, hidden_calls: 0, first_seen: now, last_seen: now, samples: [], last_error: null };
       this.metrics.set(command, metric);
     }
     metric.currently_running += 1; return now;
   }
-  finish(command: string, started: number, success: boolean): void {
+  finish(command: string, started: number, success: boolean, error?: string): void {
     const metric = this.metrics.get(command); if (!metric) return; const duration = Math.max(0, Date.now() - started);
     metric.currently_running = Math.max(0, metric.currently_running - 1); metric.calls += 1; if (!success) metric.failures += 1;
     metric.total_duration_ms += duration; metric.average_duration_ms = metric.total_duration_ms / metric.calls;
+    if (!success) metric.last_error = error ? error.slice(0, 160) : 'Unknown IPC error';
     metric.max_duration_ms = Math.max(metric.max_duration_ms ?? 0, duration); metric.samples = pushBounded(metric.samples, duration, MAX_FRONTEND_SAMPLES); metric.p95_duration_ms = p95(metric.samples); metric.last_seen = Date.now();
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') metric.hidden_calls += 1;
   }
