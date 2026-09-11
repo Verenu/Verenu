@@ -133,7 +133,6 @@ struct DateRange {
 struct CleanupLifetime {
     dictionary_fixes: i64,
     auto_learned_terms: i64,
-    snippet_expansions: i64,
 }
 
 // Filler/function words users don't need to see in their distinctive
@@ -157,9 +156,9 @@ fn is_stopword(word: &str) -> bool {
 /// no transcriptions returns a fully-populated zero payload, never an error.
 /// Aggregates for `days` (`0` = all time), optionally narrowed to one context.
 ///
-/// Every per-dictation figure honours `context_id`; the lifetime counters on
-/// `InsightsCleanup` (`dictionary_fixes`, `auto_learned_terms`, and therefore
-/// `edits_applied`) have no context dimension in the schema and stay global
+/// Every per-dictation figure honours `context_id`. Dictionary and auto-learn
+/// counters have no context dimension in the schema and stay global; the
+/// `edits_applied` headline is the raw-to-final word diff in the selected range.
 /// either way — the UI labels them as such.
 pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Insights> {
     let (
@@ -173,6 +172,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         words,
         raw_words,
         clean_words,
+        changed_words,
         cleanup_lifetime,
     ) = {
         let conn = lock_conn(db)?;
@@ -205,22 +205,21 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             })
             .transpose()?
             .flatten();
-        let history_started_on: Option<String> = match (context_id, context_uuid.as_deref()) {
-            (Some(_), Some(uuid)) => conn.query_row(
+        let history_started_on: Option<String> = if let Some(uuid) = context_uuid.as_deref() {
+            conn.query_row(
                 "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
                 params![uuid],
                 |r| r.get(0),
-            )?,
-            (Some(_), None) => None,
-            (None, _) => {
-                conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
-                    r.get(0)
-                })?
-            }
+            )?
+        } else {
+            conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
+                r.get(0)
+            })?
         };
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
-        let (words, raw_words, clean_words) = query_text_metrics(&conn, &range, context_id)?;
+        let (words, raw_words, clean_words, changed_words) =
+            query_text_metrics(&conn, &range, context_id)?;
         let cleanup_lifetime = query_cleanup_lifetime(&conn, context_id)?;
 
         (
@@ -234,6 +233,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             words,
             raw_words,
             clean_words,
+            changed_words,
             cleanup_lifetime,
         )
     };
@@ -241,7 +241,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
     let cleanup = InsightsCleanup {
         raw_words,
         clean_words,
-        edits_applied: cleanup_lifetime.dictionary_fixes + cleanup_lifetime.snippet_expansions,
+        edits_applied: changed_words,
         dictionary_fixes: cleanup_lifetime.dictionary_fixes,
         auto_learned_terms: cleanup_lifetime.auto_learned_terms,
     };
@@ -576,7 +576,7 @@ fn query_totals(
         params![context_uuid],
         |r| r.get(0),
     )?;
-    Ok(InsightsTotals {
+    return Ok(InsightsTotals {
         total_words,
         total_transcriptions,
         total_speaking_ms,
@@ -593,7 +593,47 @@ fn query_totals(
         best_wpm: best_wpm as i64,
         words_in_range,
         words_prev_range,
-    })
+    });
+    /* // Legacy raw-row totals implementation retained only in history for reference.
+    // Identical definition to query_stats (average of each clip's own wpm)
+    // so the Insights "All time" number matches the Home page exactly;
+    // scoped to the range here. Not total_words/total_duration — that
+    // aggregates differently and makes the two pages disagree.
+    let total_words: i64 = match context_id {
+        None => conn.query_row(
+            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
+                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
+            [],
+            |r| r.get(0),
+        )?,
+        // lifetime_stats is a global counter with no context dimension, so a
+        // scoped run sums the context's own history rather than reporting a
+        // number the filter plainly does not apply to. It can read lower than
+        // the unscoped lifetime figure, which never shrinks with retention
+        // pruning — that difference is real, not a bug.
+        Some(id) => conn.query_row(
+            "SELECT COALESCE(SUM(words), 0) FROM transcriptions WHERE context_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?,
+    };
+
+    let avg_words_per_transcription = if total_transcriptions > 0 {
+        (words_in_range as f64 / total_transcriptions as f64).round() as i64
+    } else {
+        0
+    };
+
+    Ok(InsightsTotals {
+        total_words,
+        total_transcriptions,
+        total_speaking_ms,
+        avg_words_per_transcription,
+        avg_wpm,
+        best_wpm: best_wpm.unwrap_or(0.0) as i64,
+        words_in_range,
+        words_prev_range,
+    }) */
 }
 
 /// One row per calendar day in the range, ascending, zero-filled for idle days.
@@ -613,12 +653,20 @@ fn query_daily(
         } else {
             "SELECT day, total_words, total_transcriptions, speaking_ms
                FROM transcription_context_daily_stats
-              WHERE day >= ?1 AND day <= ?2
+              WHERE day >= date(?1, 'localtime') AND day <= date(?2, 'localtime')
                 AND context_uuid = (SELECT uuid FROM contexts WHERE id = ?3)"
         };
         let mut stmt = conn.prepare(sql)?;
-        let start_bound = range.start_day.format("%Y-%m-%d").to_string();
-        let end_bound = range.end_day.format("%Y-%m-%d").to_string();
+        let start_bound = if context_id.is_none() {
+            range.start_day.format("%Y-%m-%d").to_string()
+        } else {
+            range.start.clone()
+        };
+        let end_bound = if context_id.is_none() {
+            range.end_day.format("%Y-%m-%d").to_string()
+        } else {
+            range.end.clone()
+        };
         let rows = stmt.query_map(params![start_bound, end_bound, context_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -873,16 +921,9 @@ fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<
         [],
         |r| r.get(0),
     )?;
-    let snippet_expansions: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(use_count), 0) FROM snippets",
-        [],
-        |r| r.get(0),
-    )?;
-
     Ok(CleanupLifetime {
         dictionary_fixes,
         auto_learned_terms,
-        snippet_expansions,
     })
 }
 
@@ -892,12 +933,12 @@ fn query_text_metrics(
     conn: &Connection,
     range: &DateRange,
     context_id: Option<i64>,
-) -> Result<(InsightsWords, i64, i64)> {
+) -> Result<(InsightsWords, i64, i64, i64)> {
     // This intentionally uses the same normalization as existing Insights
     // results. SQLite's unicode tokenizer splits `re-enter` and folds `café`,
     // so an FTS vocabulary index would make statistics depend on availability.
     let mut stmt = conn.prepare(
-        "SELECT clean_text, COALESCE(spoken_words, words) FROM transcriptions
+        "SELECT raw_text, clean_text FROM transcriptions
          WHERE created_at >= ?1 AND created_at < ?2
            AND (?3 IS NULL OR context_id = ?3)",
     )?;
@@ -908,10 +949,13 @@ fn query_text_metrics(
     let mut length_count = 0u64;
     let mut raw_words = 0i64;
     let mut clean_words = 0i64;
+    let mut changed_words = 0i64;
 
     while let Some(row) = rows.next()? {
-        let clean_text: String = row.get(0)?;
-        raw_words += row.get::<_, i64>(1)?;
+        let raw_text: String = row.get(0)?;
+        let clean_text: String = row.get(1)?;
+        raw_words += raw_text.split_whitespace().count() as i64;
+        changed_words += count_changed_words(&raw_text, &clean_text);
         for token in clean_text.split_whitespace() {
             clean_words += 1;
             let normalized = normalize_word(token);
@@ -951,7 +995,38 @@ fn query_text_metrics(
         },
         raw_words,
         clean_words,
+        changed_words,
     ))
+}
+
+/// Returns the number of word insertions, deletions, and substitutions needed
+/// to turn the best raw transcript into the final injected text. Comparison is
+/// case- and punctuation-insensitive because this metric is about changed
+/// words, not formatting changes.
+fn count_changed_words(raw: &str, clean: &str) -> i64 {
+    let raw_words: Vec<String> = raw
+        .split_whitespace()
+        .map(normalize_word)
+        .filter(|word| !word.is_empty())
+        .collect();
+    let clean_words: Vec<String> = clean
+        .split_whitespace()
+        .map(normalize_word)
+        .filter(|word| !word.is_empty())
+        .collect();
+
+    let mut previous: Vec<usize> = (0..=clean_words.len()).collect();
+    for (raw_index, raw_word) in raw_words.iter().enumerate() {
+        let mut current = vec![raw_index + 1; clean_words.len() + 1];
+        for (clean_index, clean_word) in clean_words.iter().enumerate() {
+            let substitution = previous[clean_index] + usize::from(raw_word != clean_word);
+            let insertion = current[clean_index] + 1;
+            let deletion = previous[clean_index + 1] + 1;
+            current[clean_index + 1] = substitution.min(insertion).min(deletion);
+        }
+        previous = current;
+    }
+    previous[clean_words.len()] as i64
 }
 
 /// Lowercases and strips punctuation, keeping only alphanumeric characters.
@@ -1420,13 +1495,15 @@ mod tests {
         let conn = lock_conn(&db).expect("lock");
         conn.execute(
             "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words)
-             VALUES ('synthetic', ?1, 4, NULL)",
+             VALUES (?1, ?1, 4, NULL)",
             ["re-enter reenter café café foo !!!"],
         )
         .expect("insert");
         let range = range_bounds(&conn, 0, None).expect("range");
-        let (words, raw, clean) = query_text_metrics(&conn, &range, None).expect("metrics");
-        assert_eq!((raw, clean), (4, 6));
+        let (words, raw, clean, changed) =
+            query_text_metrics(&conn, &range, None).expect("metrics");
+        assert_eq!((raw, clean), (6, 6));
+        assert_eq!(changed, 0);
         assert_eq!(words.unique_words, 3);
         assert_eq!(words.longest_word.as_deref(), Some("reenter"));
         assert_eq!(words.avg_word_length, 5.0);
@@ -1656,24 +1733,37 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_fixes_count_applied_substitutions_and_snippet_expansions() {
+    fn cleanup_headline_counts_changed_words_in_raw_vs_final_text() {
         let db = test_db();
-        insert_snippet(&db, "sig", "signature", "").expect("snippet");
-        {
-            let conn = lock_conn(&db).expect("lock");
-            conn.execute("UPDATE snippets SET use_count = 7", [])
-                .expect("set use count");
-        }
+        insert_transcription_returning(
+            &db,
+            "send the report to accouting tomorrow",
+            "Send the report to accounting tomorrow, please.",
+            7,
+            1000,
+            "test",
+            None,
+            None,
+        )
+        .expect("insert transcription");
         increment_lifetime_dictionary_fixes(&db, 3).expect("increment");
 
         let insights = query_insights(&db, 7, None).expect("insights");
         assert_eq!(insights.cleanup.dictionary_fixes, 3);
-        assert_eq!(insights.cleanup.edits_applied, 10);
+        assert_eq!(insights.cleanup.edits_applied, 2);
 
         increment_lifetime_dictionary_fixes(&db, 2).expect("increment again");
         let insights = query_insights(&db, 7, None).expect("insights");
         assert_eq!(insights.cleanup.dictionary_fixes, 5);
-        assert_eq!(insights.cleanup.edits_applied, 12);
+        assert_eq!(insights.cleanup.edits_applied, 2);
+    }
+
+    #[test]
+    fn changed_word_count_ignores_case_and_punctuation() {
+        assert_eq!(count_changed_words("Hello, world!", "hello world."), 0);
+        assert_eq!(count_changed_words("send the report", "send report"), 1);
+        assert_eq!(count_changed_words("send report", "send the report"), 1);
+        assert_eq!(count_changed_words("send report", "send summary"), 1);
     }
 
     #[test]

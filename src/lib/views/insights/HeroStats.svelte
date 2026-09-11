@@ -40,8 +40,8 @@
   const wpmT = tweened(untrack(() => data.totals.avg_wpm), { duration: motionMs(650), easing: expoOut });
   $effect(() => { wpmT.set(data.totals.avg_wpm); });
 
-  const totalWordsT = tweened(untrack(() => data.totals.total_words), { duration: motionMs(700), easing: expoOut });
-  $effect(() => { totalWordsT.set(data.totals.total_words); });
+  const totalWordsT = tweened(untrack(() => data.totals.words_in_range), { duration: motionMs(700), easing: expoOut });
+  $effect(() => { totalWordsT.set(data.totals.words_in_range); });
 
   const wpm = $derived(Math.round($wpmT));
   // Lit tick count, so the meter fills in discrete steps as the tween runs.
@@ -128,17 +128,17 @@
       {/if}
     </p>
     <p class="tile-note tile-note-dim">
-      {fmtNumber(data.totals.words_in_range)} words · {rangeLabel.toLowerCase()}
+      {fmtNumber(data.totals.total_words)} words all-time
     </p>
   </section>
 
-  <section class="tile" aria-label="Fixes made by Verenu">
+  <section class="tile" aria-label="Words changed by Verenu">
     <div class="tile-head">
       <span class="big"><AnimatedNumber value={data.cleanup.edits_applied} /></span>
     </div>
-    <p class="tile-label">fixes made by Verenu</p>
+    <p class="tile-label">words changed by Verenu</p>
     {#if scoped}
-      <p class="tile-note tile-note-dim">across all contexts</p>
+      <p class="tile-note tile-note-dim">dictionary and learned totals across all contexts</p>
     {/if}
     <div class="sub-rows">
       <div class="stat-line">

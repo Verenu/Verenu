@@ -130,13 +130,8 @@
       <p class="card-sub">{rangeLabel}</p>
     </div>
     <div class="readout" aria-live="polite">
-      {#if active}
-        <span class="readout-num"><RollingNumber value={active.words} format={fmtNumber} /></span>
-        <span class="readout-day">{fmtDayLong(active.day)}</span>
-      {:else}
-        <span class="readout-num"><RollingNumber value={total} format={fmtNumber} /></span>
-        <span class="readout-day">total</span>
-      {/if}
+      <span class="readout-num"><RollingNumber value={active ? active.words : total} format={fmtNumber} /></span>
+      <span class="readout-day">{active ? fmtDayLong(active.day) : 'total'}</span>
     </div>
   </header>
 
