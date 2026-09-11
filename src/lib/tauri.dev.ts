@@ -121,6 +121,7 @@ const defaultSettings: Record<string, unknown> = {
   setup_complete: true,
   force_setup_on_launch: false,
   ruin_accessibility: false,
+  dev_mode_on_startup: false,
   appearance_mode: 'system',
   transcription_provider: 'groq',
   transcription_language: 'en',
