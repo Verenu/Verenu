@@ -36,6 +36,7 @@
 
   let raf = 0;
   let lastFrame = 0;
+  let destroyed = false;
 
   const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
@@ -135,10 +136,13 @@
     // tick() lands after Svelte has written the new digits but before the
     // browser paints, so a roll's opening frame is applied in the same paint as
     // the character swap — otherwise the new digit flashes in place first.
-    tick().then(() => applyChange(next));
+    tick().then(() => {
+      if (!destroyed) applyChange(next);
+    });
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (raf) cancelAnimationFrame(raf);
   });
 </script>
