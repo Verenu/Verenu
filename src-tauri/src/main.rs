@@ -12,6 +12,8 @@ mod local_llm;
 mod local_stt;
 mod media;
 mod pipeline;
+#[cfg(target_os = "windows")]
+mod single_instance;
 mod sync;
 mod system;
 #[cfg(any(test, debug_assertions))]
@@ -108,6 +110,9 @@ fn main() {
     #[cfg(target_os = "windows")]
     wait_for_relaunch_parent_exit();
 
+    #[cfg(target_os = "windows")]
+    let single_instance = crate::single_instance::acquire();
+
     let shared: SharedState = Arc::new(Mutex::new(AppState {
         lifecycle: pipeline::DictationLifecycle::Idle,
         target: WindowTarget::default(),
@@ -148,7 +153,8 @@ fn main() {
     let local_transcription_manager = crate::local_stt::LocalTranscriptionManager::new();
     let frontend_readiness = FrontendReadiness::default();
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -158,8 +164,17 @@ fn main() {
         .manage(db_handle.clone())
         .manage(local_cleanup_manager.clone())
         .manage(local_transcription_manager.clone())
-        .manage(frontend_readiness.clone())
+        .manage(frontend_readiness.clone());
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.manage(single_instance);
+    }
+
+    builder
         .setup(move |app| {
+            #[cfg(target_os = "windows")]
+            crate::single_instance::listen_for_takeover(app.handle());
             crate::system::logger::attach_app(app.handle());
             let build_mode = if cfg!(debug_assertions) {
                 "debug"
