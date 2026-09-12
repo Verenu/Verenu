@@ -588,6 +588,7 @@ fn main() {
             commands::get_cancelled_capture,
             commands::copy_paste_failure_to_clipboard,
             commands::set_pill_size,
+            commands::set_pill_interactive,
             commands::get_installed_apps,
             commands::get_app_icon,
             commands::get_site_icon,

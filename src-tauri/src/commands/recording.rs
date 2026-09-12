@@ -399,6 +399,14 @@ pub async fn copy_paste_failure_to_clipboard(
     Ok(())
 }
 
+/// Flip the floating pill between click-through and interactive without
+/// touching window decorations. Used when delayed controls mount.
+#[tauri::command]
+pub fn set_pill_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
+    crate::pipeline::set_pill_interactive(&app, interactive);
+    Ok(())
+}
+
 /// Resizes the pill window to fit its visible content. The frontend measures
 /// the actual rendered content (pill capsule + profile label above it + error
 /// text) and reports the size in CSS px (== logical points on the pill's
