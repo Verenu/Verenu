@@ -272,7 +272,7 @@
 
     {#key displayVersion}
       <div class="insights-results" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
-        <HeroStats {data} {rangeLabel} />
+        <HeroStats {data} />
 
         <DailyChart daily={data.daily} {rangeLabel} />
         <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
