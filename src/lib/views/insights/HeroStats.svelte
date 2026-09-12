@@ -15,7 +15,7 @@
   import AnimatedNumber from './AnimatedNumber.svelte';
   import type { InsightsPayload } from './types';
 
-  let { data, rangeLabel }: { data: InsightsPayload; rangeLabel: string } = $props();
+  let { data }: { data: InsightsPayload } = $props();
 
   // Dictionary fixes and auto-learned terms are lifetime counters with no
   // context dimension in the schema, so they stay global even when the rest of
