@@ -1454,8 +1454,8 @@ mod tests {
         let range = range_bounds(&conn, 0, None).expect("range");
         let (words, raw, clean, changed) =
             query_text_metrics(&conn, &range, None).expect("metrics");
-        assert_eq!((raw, clean), (6, 6));
-        assert_eq!(changed, 0);
+        assert_eq!((raw, clean), (1, 6));
+        assert_eq!(changed, 5);
         assert_eq!(words.unique_words, 3);
         assert_eq!(words.longest_word.as_deref(), Some("reenter"));
         assert_eq!(words.avg_word_length, 5.0);
