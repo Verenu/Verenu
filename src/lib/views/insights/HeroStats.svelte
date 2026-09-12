@@ -15,7 +15,7 @@
   import AnimatedNumber from './AnimatedNumber.svelte';
   import type { InsightsPayload } from './types';
 
-  let { data, rangeLabel }: { data: InsightsPayload; rangeLabel: string } = $props();
+  let { data }: { data: InsightsPayload } = $props();
 
   // Dictionary fixes and auto-learned terms are lifetime counters with no
   // context dimension in the schema, so they stay global even when the rest of
@@ -40,8 +40,8 @@
   const wpmT = tweened(untrack(() => data.totals.avg_wpm), { duration: motionMs(650), easing: expoOut });
   $effect(() => { wpmT.set(data.totals.avg_wpm); });
 
-  const totalWordsT = tweened(untrack(() => data.totals.total_words), { duration: motionMs(700), easing: expoOut });
-  $effect(() => { totalWordsT.set(data.totals.total_words); });
+  const totalWordsT = tweened(untrack(() => data.totals.words_in_range), { duration: motionMs(700), easing: expoOut });
+  $effect(() => { totalWordsT.set(data.totals.words_in_range); });
 
   const wpm = $derived(Math.round($wpmT));
   // Lit tick count, so the meter fills in discrete steps as the tween runs.
@@ -128,7 +128,7 @@
       {/if}
     </p>
     <p class="tile-note tile-note-dim">
-      {fmtNumber(data.totals.words_in_range)} words · {rangeLabel.toLowerCase()}
+      {fmtNumber(data.totals.total_words)} words all-time
     </p>
   </section>
 
