@@ -65,9 +65,9 @@ export interface InsightsWords {
 export interface InsightsPayload {
   /**
    * Which context group the payload is scoped to, or null for all of them.
-   * Every per-dictation figure honours it; the lifetime counters on
-   * `InsightsCleanup` (dictionary_fixes, auto_learned_terms, and therefore
-   * edits_applied) have no context dimension and stay global.
+   * Every per-dictation figure honours it. Dictionary and auto-learn counters
+   * have no context dimension and stay global; `edits_applied` is the word
+   * diff between raw and final text in the selected range.
    */
   context_id: number | null;
   range_days: number;

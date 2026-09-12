@@ -132,13 +132,13 @@
     </p>
   </section>
 
-  <section class="tile" aria-label="Fixes made by Verenu">
+  <section class="tile" aria-label="Words changed by Verenu">
     <div class="tile-head">
       <span class="big"><AnimatedNumber value={data.cleanup.edits_applied} /></span>
     </div>
-    <p class="tile-label">fixes made by Verenu</p>
+    <p class="tile-label">words changed by Verenu</p>
     {#if scoped}
-      <p class="tile-note tile-note-dim">across all contexts</p>
+      <p class="tile-note tile-note-dim">dictionary and learned totals across all contexts</p>
     {/if}
     <div class="sub-rows">
       <div class="stat-line">
