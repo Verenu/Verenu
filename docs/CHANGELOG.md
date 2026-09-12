@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed multiple Verenu sessions running at once on Windows: a newer launch
+  now asks the older session to shut down cleanly and takes over after it has
+  released its instance lock, including when dev and packaged builds overlap.
 - Added a Developer setting to automatically enable Developer mode on startup.
 - Removed the microphone calibration step and Audio-page calibration controls; manual microphone gain remains available. Rejected quiet or speech-free captures now make a quick follow-up dictation more sensitive for a bounded number of attempts, including explicit retries.
 - Fixed Windows dictation appearing to freeze after CPAL reported that the
