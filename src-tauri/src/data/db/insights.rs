@@ -576,7 +576,7 @@ fn query_totals(
         params![context_uuid],
         |r| r.get(0),
     )?;
-    return Ok(InsightsTotals {
+    Ok(InsightsTotals {
         total_words,
         total_transcriptions,
         total_speaking_ms,
@@ -593,7 +593,7 @@ fn query_totals(
         best_wpm: best_wpm as i64,
         words_in_range,
         words_prev_range,
-    });
+    })
 }
 
 /// One row per calendar day in the range, ascending, zero-filled for idle days.
