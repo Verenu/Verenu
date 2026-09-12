@@ -138,7 +138,7 @@
     </div>
     <p class="tile-label">words changed by Verenu</p>
     {#if scoped}
-      <p class="tile-note tile-note-dim">across all contexts</p>
+      <p class="tile-note tile-note-dim">dictionary and learned totals across all contexts</p>
     {/if}
     <div class="sub-rows">
       <div class="stat-line">
