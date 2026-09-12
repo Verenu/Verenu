@@ -156,9 +156,9 @@ fn is_stopword(word: &str) -> bool {
 /// no transcriptions returns a fully-populated zero payload, never an error.
 /// Aggregates for `days` (`0` = all time), optionally narrowed to one context.
 ///
-/// Every per-dictation figure honours `context_id`. Dictionary and auto-learn
-/// counters have no context dimension in the schema and stay global; the
-/// `edits_applied` headline is the raw-to-final word diff in the selected range.
+/// Every per-dictation figure honours `context_id`; the lifetime counters on
+/// `InsightsCleanup` (`dictionary_fixes`, `auto_learned_terms`, and therefore
+/// `edits_applied`) have no context dimension in the schema and stay global
 /// either way — the UI labels them as such.
 pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Insights> {
     let (
@@ -212,9 +212,11 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
                 |r| r.get(0),
             )?,
             (Some(_), None) => None,
-            (None, _) => conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
-                r.get(0)
-            })?,
+            (None, _) => {
+                conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
+                    r.get(0)
+                })?
+            }
         };
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
@@ -1447,7 +1449,7 @@ mod tests {
         let conn = lock_conn(&db).expect("lock");
         conn.execute(
             "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words)
-             VALUES (?1, ?1, 4, NULL)",
+             VALUES ('synthetic', ?1, 4, NULL)",
             ["re-enter reenter café café foo !!!"],
         )
         .expect("insert");
