@@ -179,6 +179,25 @@ fn harden_pill_window<R: Runtime>(pill: &WebviewWindow<R>) {
 #[cfg(not(target_os = "windows"))]
 fn harden_pill_window<R: Runtime>(_pill: &WebviewWindow<R>) {}
 
+/// Flip pill hit-testing and re-harden the native frame without going through
+/// `set_decorations`. Hit-test transitions can make tao reapply caption styles;
+/// calling `set_decorations(false)` afterward can flash a pale caption-sized
+/// strip along the top of the pill on Windows.
+fn apply_pill_hit_testing<R: Runtime>(pill: &WebviewWindow<R>, interactive: bool) {
+    pill.set_ignore_cursor_events(!interactive).ok();
+    harden_pill_window(pill);
+    pill.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))
+        .ok();
+}
+
+/// Frontend entry point for delayed controls that mount after the state lands.
+pub(crate) fn set_pill_interactive(app: &AppHandle, interactive: bool) {
+    let Some(pill) = app.get_webview_window("pill") else {
+        return;
+    };
+    apply_pill_hit_testing(&pill, interactive);
+}
+
 pub(crate) fn show_pill(app: &AppHandle, state: &str) {
     show_pill_msg(app, state, None);
 }
@@ -297,17 +316,7 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
 
     // Click-through for passive states so nothing behind the pill is blocked.
     // Keep this list limited to states that actually render a live control.
-    let has_clickable_buttons = pill_state_has_clickable_buttons(state);
-    pill.set_ignore_cursor_events(!has_clickable_buttons).ok();
-    pill.set_decorations(false).ok();
-    harden_pill_window(pill);
-    // Re-assert every reveal, not just once at window creation: WebView2 has
-    // been observed repainting its surface opaque again when the window
-    // flips between click-through and interactive (exactly what toggling
-    // set_ignore_cursor_events above does), which showed up as whatever sits
-    // behind the pill flashing through for a frame.
-    pill.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))
-        .ok();
+    apply_pill_hit_testing(pill, pill_state_has_clickable_buttons(state));
 
     // Show the window before emitting state so WebView2 is active when it
     // receives the event. WebView2 suspends event processing while hidden;
@@ -439,14 +448,12 @@ pub(crate) fn hide_pill(app: &AppHandle) {
         // error, cancelled, interrupted, paste_failed) reveal_pill left the window
         // click-capturing. Idle is invisible, so it must never swallow clicks
         // in the pill's zone even though the pill content has disappeared.
-        pill.set_ignore_cursor_events(true).ok();
         // Do not call pill.hide() - hiding the window suspends the WebView2
         // renderer. The next show_pill("recording") emit would then be lost
         // before WebView2 wakes up, causing only "processing" to appear.
         // The pill window is transparent + click-through in idle state, so
         // leaving it visible has no user-visible effect.
-        pill.set_decorations(false).ok();
-        harden_pill_window(&pill);
+        apply_pill_hit_testing(&pill, false);
     }
 }
 

@@ -213,11 +213,18 @@ async function gotoSection(page, label) {
         requestAnimationFrame(f);
       });
       const active = document.querySelector('.settings-nav-item.active');
+      const rail = document.querySelector('.nav-section');
+      // Measure the active item exactly the way Sidebar.movePillTo positions the
+      // pill (item rect minus rail rect). offsetTop is relative to the nearest
+      // positioned ancestor, which became .settings-rail-content in #399, so it
+      // no longer shares the pill's coordinate space.
       return {
         before,
         distinct: seen.size,
         end: Math.round(top()),
-        activeTop: active ? Math.round(active.offsetTop) : null,
+        activeTop: active && rail
+          ? Math.round(active.getBoundingClientRect().top - rail.getBoundingClientRect().top)
+          : null,
       };
     });
     check(pillTravel !== null,
