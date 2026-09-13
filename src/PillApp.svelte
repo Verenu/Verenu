@@ -35,13 +35,8 @@
   // Keep the native pill click-through until a state has a real control.
   // Delayed notification controls enable cursor events when they mount.
   async function setPillInteractive(interactive: boolean) {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    const pillWindow = getCurrentWindow();
-    await pillWindow.setIgnoreCursorEvents(!interactive).catch(() => {});
-    // Native frame removal is owned by the backend. Calling setDecorations here
-    // after the backend has hardened the window can make WebView2/tao restore a
-    // caption-sized frame on Windows, which flashes as a pale bar above the
-    // pill after a button is clicked.
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_pill_interactive', { interactive }).catch(() => {});
   }
 
   // Resolved context for the current dictation (e.g. "Slack", "Everywhere") —

@@ -37,6 +37,8 @@ mod pill {
 
     pub(crate) fn hide_pill(_app: &AppHandle) {}
 
+    pub(crate) fn set_pill_interactive(_app: &AppHandle, _interactive: bool) {}
+
     pub(crate) fn show_copied_pill(_app: &AppHandle, _msg: &str) {}
 
     pub(crate) fn emit_pill_stage(_app: &AppHandle, stage: &str) {
@@ -88,7 +90,7 @@ use gates::{
 };
 pub(crate) use pill::{
     emit_pill_context, emit_pill_stage, hide_pill, show_clipboard_warning_pill, show_copied_pill,
-    show_pill, update_pill_state,
+    set_pill_interactive, show_pill, update_pill_state,
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
