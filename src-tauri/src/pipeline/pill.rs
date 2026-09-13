@@ -173,6 +173,12 @@ fn harden_pill_window<R: Runtime>(pill: &WebviewWindow<R>) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
+
+        // Re-present the transparent overlay after native hit-testing or
+        // frame changes. Windows can leave a WebView-backed overlay hidden
+        // when it switches between click-through and interactive states.
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
 }
 
