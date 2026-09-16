@@ -3,9 +3,9 @@
 </div>
 
 <p align="center">
-  Free, open-source AI dictation for Windows and macOS. Hold a hotkey, talk, release, and cleaned-up text is typed into any app.
+  Free, open-source AI dictation for Windows, macOS, and Linux. Hold a hotkey, talk, release, and cleaned-up text is typed into any app.
   <br/>
-  <em>Local-first. BYOK or local models. No subscriptions. No telemetry. A free, open-source alternative to closed-source dictation apps like Wispr Flow and Superwhisper.</em>
+  <em>Local-first. BYOK or local models. No subscriptions. Optional pseudonymous product analytics, off whenever you want. A free, open-source alternative to closed-source dictation apps like Wispr Flow and Superwhisper.</em>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 
 ## What Verenu Is
 
-Verenu is a free, open source desktop AI dictation app for Windows and macOS, built with Tauri, Svelte, Rust, and SQLite.
+Verenu is a free, open source desktop AI dictation app for Windows, macOS, and Linux, built with Tauri, Svelte, Rust, and SQLite.
 
 It records locally, sends audio and text only to the AI providers you choose, keeps your app data on your machine, and avoids the usual Electron bloat. The goal is simple: fast dictation, predictable formatting, and privacy that is easy to understand.
 
@@ -36,7 +36,7 @@ Appearance can follow the operating system or stay in light or dark mode. Page s
 
 ## Platform Support
 
-Verenu supports both Windows and macOS.
+Verenu supports Windows, macOS, and Linux (with Omarchy Quattro/Hyprland as the primary Linux environment).
 
 ### Windows
 
@@ -57,6 +57,13 @@ Verenu supports both Windows and macOS.
 
 macOS support is not an afterthought anymore. It is part of the normal app flow, and the repo includes macOS-specific hotkey, permissions, injection, updater, and key-storage logic.
 
+### Linux (Wayland)
+
+- Arch Linux with Omarchy Quattro and Hyprland is the primary supported setup
+- Default hold-to-record hotkey: <kbd>Ctrl</kbd> + <kbd>Space</kbd>
+- Global shortcuts use the XDG Desktop Portal; API keys use Freedesktop Secret Service
+- Native Wayland clipboard/focus integration is used for paste and clipboard restoration
+
 For more details: [Install Verenu](docs/INSTALL.md), [Troubleshooting](docs/TROUBLESHOOTING.md), and [macOS code signing](docs/macos-code-signing.md).
 
 ## How It Works
@@ -75,7 +82,7 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 
 ### Stays on your device
 
-- API keys in Windows Credential Manager or macOS Keychain
+- API keys in Windows Credential Manager, macOS Keychain, or Freedesktop Secret Service on Linux
 - Settings in local app storage
 - Transcription history in local SQLite
 - Context groups, vocabulary, snippets, and auto-learn data in local SQLite
@@ -91,6 +98,12 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 - Active app context may be sent if you enable app-context hints
 - Update checks hit GitHub release metadata
 - Provider status and health checks hit `api.verenu.com` (public status only, no dictated content, keys, or history). You can disable these background checks in Settings → Privacy.
+
+### Optional product analytics
+
+Supported builds may use PostHog for privacy-preserving product analytics. Analytics is enabled by default so we can understand coarse feature usage, settings adoption, and reliability, but you can turn it off during onboarding or at any time in **Settings → Privacy**.
+
+Analytics uses temporary randomized pseudonymous identifiers, not accounts or device identifiers. It does not include dictated audio, transcripts, cleaned text, prompts, clipboard contents, window or app contents, URLs, accessibility text, credentials, microphone names, or raw error messages. See the [full privacy breakdown](docs/DATA_AND_PRIVACY.md) for details.
 
 Read the full breakdown in [docs/DATA_AND_PRIVACY.md](docs/DATA_AND_PRIVACY.md).
 

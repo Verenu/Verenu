@@ -34,6 +34,10 @@
 
   // Keep the native pill click-through until a state has a real control.
   // Delayed notification controls enable cursor events when they mount.
+  // Hit-testing + frame harden live in the backend (`set_pill_interactive`):
+  // the pill window ACL does not grant `setIgnoreCursorEvents` /
+  // `setDecorations`, and calling `setDecorations(false)` after harden was
+  // observed to flash a pale caption-sized bar along the top of the pill.
   async function setPillInteractive(interactive: boolean) {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('set_pill_interactive', { interactive }).catch(() => {});
@@ -679,6 +683,9 @@
         clearTimeout(copiedPillTimer);
         copiedPillTimer = null;
       }
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('hide_dictation_pill'))
+        .catch(() => {});
     }, 200);
   }
 
@@ -793,6 +800,10 @@
     if (clusterEl && typeof ResizeObserver !== 'undefined') {
       pillResizeObserver = new ResizeObserver(() => measureAndResize());
       pillResizeObserver.observe(clusterEl);
+      // WebKitGTK can defer ResizeObserver delivery while a transparent
+      // window is hidden. Seed the native size immediately so the first
+      // reveal is not stranded at the 200x200 creation size.
+      measureAndResize();
     }
 
     (async () => {
@@ -1032,6 +1043,18 @@
       });
       if (!mounted) { l4(); return; }
       unlisteners.push(l4);
+
+      // Do not report readiness until every pill listener is installed. The
+      // backend creates this window lazily and can emit `pill-state` in the
+      // same turn as `show()`. Reporting from pill-main immediately after
+      // mount made the first recording event race the async listener setup,
+      // leaving a mapped but transparent 200x200 window on Linux.
+      const { invoke } = await import('@tauri-apps/api/core');
+      if (mounted) {
+        await invoke('frontend_ready').catch((error) => {
+          console.error('Failed to complete pill startup handshake:', error);
+        });
+      }
 
     })();
 

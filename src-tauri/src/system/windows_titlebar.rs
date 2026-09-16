@@ -219,8 +219,22 @@ fn refresh_with_dark(window: &WebviewWindow, dark: bool) {
 
 /// Apply the theme the frontend is actually rendering. The native window theme
 /// can follow the OS while Verenu is explicitly set to the opposite appearance.
+/// The surface/text/border/hover/sidebar tokens are Linux-only (see
+/// `linux_titlebar::apply_theme`); Windows themes its caption via DWM, not
+/// CSS, so they're accepted and ignored here to keep one command signature.
 #[tauri::command]
-pub fn set_native_titlebar_theme(window: WebviewWindow, dark: bool) {
+#[allow(clippy::too_many_arguments)]
+pub fn set_native_titlebar_theme(
+    window: WebviewWindow,
+    dark: bool,
+    surface: Option<String>,
+    text: Option<String>,
+    border: Option<String>,
+    hover: Option<String>,
+    sidebar_surface: Option<String>,
+    sidebar_width: Option<String>,
+) {
+    let _ = (surface, text, border, hover, sidebar_surface, sidebar_width);
     refresh_with_dark(&window, dark);
 }
 

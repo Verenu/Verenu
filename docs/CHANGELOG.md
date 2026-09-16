@@ -4,6 +4,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Linux dictation reliability for hold-to-talk and hands-free: the portal hotkey thread now reconnects with backoff instead of dying silently (a dead thread stranded recordings with no way to stop them), and releasing then quickly double-tapping the chord carries the just-recorded audio into the new hands-free session instead of stranding it behind a Continue offer.
+- Added Escape-to-cancel on Linux: a trigger-less portal cancel action dispatched through a bare-Escape Hyprland bind that is only installed while a chord is held, hands-free is active, or transcription is running — Escape is never swallowed while idle.
+- Made the Linux dictation pill clickable in button-bearing states (hands-free Confirm/Cancel and error/retry controls), so a hands-free dictation can be ended with the mouse. Click-through is still used for passive states and the first-reveal guard keeps the pre-realize Wayland abort impossible.
+- Ported the microphone mute-button dictation toggle to Linux: a mute→unmute pulse on the selected mic (PipeWire source mute via `pactl subscribe` plus a digital-silence PCM fallback for USB buttons that zero samples without flipping a mute flag) toggles hands-free dictation, matching the Windows behavior.
 - Fixed inflated word totals: history, lifetime, and daily counts now use spoken words (snippet triggers and punctuation-only tokens excluded) instead of a raw whitespace split. Existing databases are repaired on open, refunding the overcount from the lifetime total.
 - Fixed multiple Verenu sessions running at once on Windows: a newer launch
   now asks the older session to shut down cleanly and takes over after it has

@@ -729,12 +729,15 @@
     selectModel(type, modelId(parsed.provider, parsed.model));
   }
 
+  let advancedModelUiError = $state(false);
+
   async function handleAdvancedModelUi(value: boolean) {
     advancedModelUi = value;
     try {
       await saveSetting('advanced_model_ui', value);
     } catch (err) {
       advancedModelUi = !value;
+      advancedModelUiError = true;
       console.error('save advanced_model_ui failed:', err);
     }
   }
@@ -836,7 +839,7 @@
     <span class="adv-label">Advanced Models</span>
     <span class="adv-desc">Choose specific models, edit cleanup prompts, and manage downloads</span>
   </div>
-  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced Models" />
+  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced Models" bind:error={advancedModelUiError} />
 </div>
 
 {#if advancedModelUi}

@@ -196,6 +196,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
         false,
     ),
     setting_spec(store::BETA_UPDATES_ENABLED, SettingKind::Bool, true, true),
+    setting_spec(store::ANALYTICS_ENABLED, SettingKind::Bool, true, true),
     setting_spec(
         store::VERENU_SERVICE_CHECKS_ENABLED,
         SettingKind::Bool,

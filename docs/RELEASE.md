@@ -43,6 +43,7 @@ The manual GitHub Actions workflow [`../.github/workflows/build-installers.yml`]
 - Windows MSI installer
 - macOS Apple Silicon DMG
 - macOS Intel DMG
+- Linux x86_64 AppImage (built on Ubuntu 22.04 for conservative glibc compatibility)
 
 The release folder should contain:
 
