@@ -243,6 +243,17 @@ pub fn start_recording_session_ex_with_context(
         max_output_samples,
     ) {
         Ok(session) => {
+            let analytics_run_id: Option<String> = {
+                #[cfg(desktop)]
+                {
+                    app.try_state::<crate::analytics::Analytics>()
+                        .map(|analytics| analytics.new_run_id())
+                }
+                #[cfg(not(desktop))]
+                {
+                    None
+                }
+            };
             let level_arc = session.level.clone();
             let raw_level_arc = session.raw_level.clone();
             let envelope_arc = session.envelope.clone();
@@ -289,6 +300,23 @@ pub fn start_recording_session_ex_with_context(
                     handless_from_hold: false,
                     prepend_audio: prepend_for_lifecycle.clone(),
                 };
+                st.analytics_run_id = analytics_run_id.clone();
+            }
+            #[cfg(desktop)]
+            if let (Some(analytics), Some(run_id)) = (
+                app.try_state::<crate::analytics::Analytics>(),
+                analytics_run_id.as_deref(),
+            ) {
+                analytics.dictation_started(run_id, handless, noise_reduction);
+                if noise_reduction {
+                    analytics.feature_used(run_id, "noise_reduction");
+                }
+                if pause_media {
+                    analytics.feature_used(run_id, "media_pause");
+                }
+                if handless {
+                    analytics.feature_used(run_id, "hands_free");
+                }
             }
             state::note_sensitivity_for_new_recording(state);
             if options.durable
@@ -525,7 +553,7 @@ pub fn stash_cancelled_capture(
                 // has happened yet to move focus to Verenu's own window. See
                 // CancelledCapture::target for why resume must reuse it
                 // instead of re-capturing the foreground later.
-                let target = st.target;
+                let target = st.target.clone();
                 // Drop the state lock before disk I/O so hotkey/UI paths are
                 // not stalled on fsync.
                 drop(st);
@@ -566,6 +594,14 @@ pub fn stash_cancelled_capture(
     };
     match outcome {
         StashOutcome::Stashed(capture) => {
+            #[cfg(desktop)]
+            if let (Some(analytics), Some(run_id)) = (
+                app.try_state::<crate::analytics::Analytics>(),
+                super::state::analytics_run_id(state).as_deref(),
+            ) {
+                analytics.dictation_cancelled(run_id, true);
+                analytics.delivery_outcome(run_id, "cancelled_user");
+            }
             if start_stop_sounds_enabled(app) {
                 crate::media::sound::play(crate::media::sound::SoundCue::Cancel);
             }

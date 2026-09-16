@@ -1,7 +1,7 @@
 pub mod audio;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub mod device_match;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 pub mod digital_silence;
 #[cfg(windows)]
 pub mod hardware_mute;

@@ -6,10 +6,11 @@ use super::{
     ensure_terminal_punctuation, has_spoken_content, is_transcription_hallucination,
     normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
     recording_gate_rms_for_sensitivity, resolve_app_mapping, run_pipeline_fixture,
-    should_run_cleanup_llm, should_use_cleanup_cache, strip_hallucinated_suffix,
-    style_scoped_cleanup_cache_key, PipelineTestDictionaryEntry, PipelineTestRequest,
-    PipelineTestSnippet,
+    should_hide_orphaned_pill, should_run_cleanup_llm, should_use_cleanup_cache,
+    strip_hallucinated_suffix, style_scoped_cleanup_cache_key, PipelineTestDictionaryEntry,
+    PipelineTestRequest, PipelineTestSnippet,
 };
+use crate::core::window_geometry::WindowTarget;
 use crate::db;
 use crate::system::apps::AppMapping;
 
@@ -578,6 +579,7 @@ fn base_request(config: store::PipelineConfig) -> PipelineTestRequest {
         config,
         profile: "casual".into(),
         target_hwnd: 77,
+        target: WindowTarget { id: 77, ..Default::default() },
         app_context: None,
         snippets: Vec::new(),
         dictionary: Vec::new(),
@@ -1561,4 +1563,21 @@ async fn pipeline_evicts_a_poisoned_cleanup_cache_entry_instead_of_serving_it() 
         2
     );
     reset();
+}
+
+#[test]
+fn orphaned_session_pill_hides_only_when_idle_with_session_state() {
+    // The stuck-pill case: release found no session, backend Idle, pill still
+    // showing a session-bound state — nothing else will hide it.
+    assert!(should_hide_orphaned_pill(true, "recording"));
+    assert!(should_hide_orphaned_pill(true, "handsfree"));
+    // A stray release while another task owns the lifecycle must never
+    // clobber that task's pill.
+    assert!(!should_hide_orphaned_pill(false, "recording"));
+    assert!(!should_hide_orphaned_pill(false, "handsfree"));
+    // Idle toasts (error/cancelled/interrupted) must never be cut short by a
+    // stray release with no session behind it.
+    for state in ["idle", "error", "cancelled", "interrupted", "processing", "paste_failed", "copied"] {
+        assert!(!should_hide_orphaned_pill(true, state), "state={state}");
+    }
 }

@@ -429,7 +429,17 @@ async fn run_cleanup_provider_chain(
 ) -> (Option<CleanupSuccess>, Option<anyhow::Error>, bool) {
     let mut last_cleanup_err: Option<anyhow::Error> = None;
     let mut saw_soft_timeout = false;
-    for (provider_id, model) in cleanup_model_chain(cfg) {
+    for (provider_index, (provider_id, model)) in cleanup_model_chain(cfg).into_iter().enumerate() {
+        if provider_index > 0 {
+            if let (Some(app), Some(state)) = (app, app.and_then(|a| a.try_state::<SharedState>()))
+            {
+                if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                    if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
+                        analytics.fallback_used(&run_id, "cleanup");
+                    }
+                }
+            }
+        }
         if !crate::api::cleanup::model_supports_cleanup_reasoning_policy(
             ProviderId::from_str(&provider_id),
             &model,
@@ -448,6 +458,17 @@ async fn run_cleanup_provider_chain(
         }
         let attempts = if is_local { 1 } else { CLEANUP_FAST_ATTEMPTS };
         for attempt in 1..=attempts {
+            if attempt > 1 {
+                if let (Some(app), Some(state)) =
+                    (app, app.and_then(|a| a.try_state::<SharedState>()))
+                {
+                    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                        if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
+                            analytics.retry_attempted(&run_id, attempt, "timeout");
+                        }
+                    }
+                }
+            }
             let custom_template = cfg.cleanup_override();
             let outcome = if is_local {
                 run_local_cleanup_request(

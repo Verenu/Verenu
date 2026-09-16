@@ -36,6 +36,7 @@ type SettingsValueMap = {
   cleanup_default_model: string;
   transcription_fallback_models: string[];
   dual_transcription_enabled: boolean;
+  analytics_enabled: boolean;
   cleanup_fallback_models: string[];
   cleanup_enabled: boolean;
   default_tone: ToneId;

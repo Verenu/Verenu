@@ -2,7 +2,7 @@
 
 ## Project model
 
-Verenu is a Tauri 2 desktop dictation app for Windows and macOS. The Rust
+Verenu is a Tauri 2 desktop dictation app for Windows, macOS, and Linux. The Rust
 backend owns native integration, SQLite, settings storage, provider calls, and
 the dictation pipeline; the Svelte 5 frontend owns the application UI. Keep
 the app privacy-aware, lightweight, and offline-capable where the feature
@@ -79,6 +79,10 @@ npm run test:smoke
   spawned outside the hook. Never hide the pill window; hidden WebView state
   events can be lost.
 - Text injection is clipboard-based and must restore focus and selection safely.
+- Linux's primary desktop target is Omarchy Quattro on Hyprland/Wayland. Use
+  XDG Desktop Portal GlobalShortcuts, Hyprland IPC, PipeWire, and Secret
+  Service; never replace them with `/dev/input`, uinput/ydotool, root helpers,
+  or edits below `/usr/share/omarchy`.
   Do not log raw dictated or cleaned text.
 - Preserve exact selectors asserted by `tests/smoke/`, including accessibility
   roles and required classes, when changing the UI.

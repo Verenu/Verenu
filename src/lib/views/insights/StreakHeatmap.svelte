@@ -520,7 +520,7 @@
     color: var(--ink-mute);
   }
   .stat-value {
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 15px;
     font-weight: 500;
     color: var(--ink);

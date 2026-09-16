@@ -17,6 +17,8 @@ jobs:
             os-name: windows
           - platform: macos-latest
             os-name: macos
+          - platform: ubuntu-22.04
+            os-name: linux
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -32,6 +34,13 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux AppImage build dependencies
+        if: matrix.os-name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libasound2-dev patchelf fuse3
 
       - name: Set up macOS targets
         if: matrix.os-name == 'macos'
@@ -173,6 +182,8 @@ jobs:
       - name: Build Tauri release app
         env:
           APPLE_SIGNING_IDENTITY: ${{ matrix.os-name == 'macos' && secrets.MACOS_SIGNING_IDENTITY || '' }}
+          POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
         run: |
           set -euo pipefail
 
@@ -271,4 +282,12 @@ jobs:
         with:
           name: Verenu-macOS-Intel-dmg
           path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/Verenu_*_Intel.dmg
+          if-no-files-found: error
+
+      - name: Upload Linux AppImage
+        if: matrix.os-name == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verenu-Linux-AppImage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error

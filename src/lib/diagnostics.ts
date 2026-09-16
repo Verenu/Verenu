@@ -80,6 +80,14 @@ export interface DiagnosticsRuntime {
   auto_learn?: Record<string, unknown> | null;
   cleanup_cache?: Record<string, unknown> | null;
   audio?: AudioDiagnostics | null;
+  window_chrome?: WindowChromeDiagnostics | null;
+}
+
+export interface WindowChromeDiagnostics {
+  compositor: string;
+  minimize_supported: boolean;
+  maximize_supported: boolean;
+  close_supported: boolean;
 }
 
 export interface AudioDiagnostics {
@@ -142,6 +150,18 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 export function unknown(value: unknown): string { if (value == null || value === '') return 'Unavailable'; if (typeof value === 'boolean') return value ? 'Yes' : 'No'; return String(value); }
+
+export function runtimeModelLabel(runtime: Record<string, unknown> | null | undefined): string {
+  if (!runtime) return 'Off';
+  if (runtime.is_loading === true) return 'Loading';
+  if (runtime.is_downloading === true) {
+    const id = runtime.downloading_model_id;
+    return typeof id === 'string' && id ? `Downloading ${id}` : 'Downloading';
+  }
+  const id = runtime.current_model_id;
+  if (typeof id === 'string' && id) return id;
+  return 'Off';
+}
 export function spanWidth(duration: number | null | undefined, total: number | null | undefined): number { if (!duration || !total || total <= 0) return 0; return Math.min(100, Math.max(1, duration / total * 100)); }
 
 export interface FrontendIpcMetric { command: string; calls: number; failures: number; total_duration_ms: number; average_duration_ms: number | null; p95_duration_ms: number | null; max_duration_ms: number | null; currently_running: number; hidden_calls: number; first_seen: number; last_seen: number; samples: number[]; last_error: string | null; }

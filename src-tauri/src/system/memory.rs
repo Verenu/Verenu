@@ -44,7 +44,24 @@ pub fn system_memory_status() -> Option<SystemMemoryStatus> {
         })
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        let mem = crate::system::linux_proc::system_meminfo()?;
+        let total_mb = mem.total_kb / 1024;
+        let available_mb = mem.available_kb / 1024;
+        if total_mb == 0 {
+            return None;
+        }
+        let load_percent = (((total_mb.saturating_sub(available_mb)) as f64 / total_mb as f64)
+            * 100.0) as u32;
+        Some(SystemMemoryStatus {
+            available_mb,
+            total_mb,
+            load_percent,
+        })
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     None
 }
 
@@ -316,12 +333,26 @@ mod pressure_tests {
         assert!(LOW_VRAM_THRESHOLD_MB > 0);
         assert!(HIGH_VRAM_LOAD_PERCENT <= 100);
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_measure_reads_this_process_rss() {
+        assert!(measure() > 0);
+        assert!(system_memory_status().is_some());
+    }
 }
 
 /// Returns the total resident private memory used by this process and all
 /// WebView2 child processes (in MB), matching Task Manager's "Memory" column.
 pub fn measure() -> u64 {
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        return crate::system::linux_proc::process_tree_memory_bytes(std::process::id())
+            .unwrap_or(0)
+            / (1024 * 1024);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     return 0;
 
     // macOS: sum resident memory of this process and its WebView child processes

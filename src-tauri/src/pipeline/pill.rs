@@ -31,6 +31,17 @@ static REVEAL_GEN: AtomicU64 = AtomicU64::new(0);
 /// suspend, which makes `pill.is_visible()` a bad proxy for "the user can
 /// already see the pill."
 static PILL_VISUALLY_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether the pill window has completed at least one reveal. Guards Linux
+/// hit-testing (see `apply_pill_hit_testing`): only a never-yet-revealed
+/// window can have an unrealized Wayland surface. Set at the end of the
+/// first `reveal_pill` so every later call — including the frontend's
+/// delayed-controls path 150ms into the first hands-free session — applies
+/// normally. Never resets.
+static PILL_HIT_TEST_SAFE: AtomicBool = AtomicBool::new(false);
+/// Last state emitted to the pill WebView. A lazily-created GTK/WebKit window
+/// can finish mounting after the backend has already revealed its first state;
+/// the frontend readiness handshake replays this value to close that race.
+static CURRENT_PILL_STATE: Mutex<String> = Mutex::new(String::new());
 
 /// Whether the pill has ever had a real, monitor-resolved placement applied
 /// in this process. `false` only for the very first `show_pill_msg` call —
@@ -61,12 +72,24 @@ pub(crate) fn queue_pill_context(context: &str) {
     }
 }
 
-fn create_pill_if_needed(app: &AppHandle) {
+pub(crate) fn current_pill_state() -> String {
+    CURRENT_PILL_STATE
+        .lock()
+        .ok()
+        .filter(|state| !state.is_empty())
+        .map(|state| state.clone())
+        .unwrap_or_else(|| "idle".to_string())
+}
+
+fn create_pill_if_needed(app: &AppHandle) -> bool {
     if app.get_webview_window("pill").is_some() {
-        return;
+        return false;
     }
     match tauri::WebviewWindowBuilder::new(app, "pill", tauri::WebviewUrl::App("/pill.html".into()))
-        .title("")
+        // A stable, non-localized identity lets a user add a Hyprland floating
+        // rule if their compositor policy tiles utility windows. Decorations
+        // remain disabled, so this never becomes visible chrome.
+        .title("Verenu Dictation Pill")
         .inner_size(PILL_WIDTH_POINTS, PILL_HEIGHT_POINTS)
         .decorations(false)
         .transparent(true)
@@ -87,9 +110,21 @@ fn create_pill_if_needed(app: &AppHandle) {
             pill.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))
                 .ok();
             harden_pill_window(&pill);
+            true
         }
-        Err(err) => log::warn!("Failed to create dictation pill window: {err}"),
+        Err(err) => {
+            log::warn!("Failed to create dictation pill window: {err}");
+            false
+        }
     }
+}
+
+/// Pre-create the Linux pill while the app is starting so its WebView can
+/// finish mounting and install event listeners before the first dictation.
+/// The window remains hidden until a recording state is revealed.
+#[cfg(target_os = "linux")]
+pub(crate) fn initialize_pill(app: &AppHandle) {
+    create_pill_if_needed(app);
 }
 
 #[cfg(target_os = "windows")]
@@ -187,21 +222,68 @@ fn harden_pill_window<R: Runtime>(_pill: &WebviewWindow<R>) {}
 
 /// Flip pill hit-testing and re-harden the native frame without going through
 /// `set_decorations`. Hit-test transitions can make tao reapply caption styles;
-/// calling `set_decorations(false)` afterward can flash a pale caption-sized
-/// strip along the top of the pill on Windows.
+/// calling `set_decorations(false)` afterward was observed to flash a pale
+/// caption-sized bar along the top of the pill. Strip frame bits via
+/// `harden_pill_window` instead, and keep the WebView surface transparent.
 fn apply_pill_hit_testing<R: Runtime>(pill: &WebviewWindow<R>, interactive: bool) {
+    // tao 0.35 unwraps the GTK native surface when cursor-ignore is queued
+    // before an initially-hidden Wayland window has been realized, aborting
+    // the process on Hyprland. Every Linux call site runs after `show()`
+    // (reveal) or after the frontend has rendered a button-bearing state
+    // (delayed controls) — except the very first reveal of the process, whose
+    // surface can never have been realized yet. Skip only that one call (the
+    // window default accepts cursor events, which is exactly what the
+    // button-bearing states need; a first-reveal passive pill stays
+    // interactive until the next reveal, confined to its content-sized zone).
+    // Verified with a throwaway tao 0.35.3 probe: all post-show toggles are
+    // safe. Without this, the hands-free Confirm/Cancel buttons could never
+    // receive clicks and the pill could not stop a hands-free dictation.
+    #[cfg(target_os = "linux")]
+    if !PILL_HIT_TEST_SAFE.load(Ordering::SeqCst) {
+        return;
+    }
     pill.set_ignore_cursor_events(!interactive).ok();
     harden_pill_window(pill);
+    // Re-assert every hit-test change, not just once at window creation:
+    // WebView2 has been observed repainting its surface opaque again when the
+    // window flips between click-through and interactive, which showed up as
+    // whatever sits behind the pill flashing through for a frame.
     pill.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))
         .ok();
 }
 
-/// Frontend entry point for delayed controls that mount after the state lands.
+/// Frontend entry point for delayed controls (handsfree / paste-failed buttons
+/// that mount a beat after the state lands). Same path as reveal/hide so the
+/// pill never toggles hit-testing without re-hardening.
 pub(crate) fn set_pill_interactive(app: &AppHandle, interactive: bool) {
     let Some(pill) = app.get_webview_window("pill") else {
         return;
     };
     apply_pill_hit_testing(&pill, interactive);
+
+    // This command is invoked by the pill frontend only after it has received
+    // and rendered a new state, making it a later and more reliable Wayland
+    // synchronization point than the native show() call itself.
+    #[cfg(target_os = "linux")]
+    if current_pill_state() != "idle" {
+        raise_linux_pill_now();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            if current_pill_state() != "idle" && app.get_webview_window("pill").is_some() {
+                raise_linux_pill_now();
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn raise_linux_pill_now() {
+    if let Some(window) = crate::core::hyprland::pill_window() {
+        if let Err(error) = crate::core::hyprland::raise_window(&window.address) {
+            log::warn!("Failed to keep Linux dictation pill above other windows: {error}");
+        }
+    }
 }
 
 pub(crate) fn show_pill(app: &AppHandle, state: &str) {
@@ -250,10 +332,18 @@ pub(crate) fn update_pill_state(app: &AppHandle, state: &str) {
 /// process skips the animation, since nothing has been shown yet for it to
 /// glide from.
 fn show_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
-    create_pill_if_needed(app);
+    let created = create_pill_if_needed(app);
     let Some(pill) = app.get_webview_window("pill") else {
         return;
     };
+
+    // A newly created WebView can receive the native `show()` immediately,
+    // while its Svelte listeners are still being registered. Wait briefly for
+    // the post-listener readiness handshake so the first visible state is not
+    // lost. This is normally a no-op because Linux pre-creates the pill.
+    if created {
+        wait_for_pill_frontend(app);
+    }
 
     let generation = REVEAL_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     #[cfg(not(target_os = "windows"))]
@@ -309,6 +399,22 @@ fn show_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
     reveal_pill(app, &pill, state, message);
 }
 
+fn wait_for_pill_frontend(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    let Some(readiness) = app.try_state::<crate::FrontendReadiness>() else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_millis(750);
+    while !readiness.pill.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !readiness.pill.load(Ordering::Acquire) {
+        log::warn!("pill frontend did not complete its listener startup handshake");
+    }
+}
+
 /// The non-placement part of showing the pill: click-through flag, bringing
 /// it to the front without stealing focus, and emitting the state (plus
 /// optional error message) the frontend reacts to. Shared by both the
@@ -322,6 +428,11 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
 
     // Click-through for passive states so nothing behind the pill is blocked.
     // Keep this list limited to states that actually render a live control.
+    // Do not call set_decorations(false) here: after the window is already
+    // hardened, tao's decoration path can briefly restore a caption-sized
+    // non-client strip (a pale bar along the top of the pill) — most visible
+    // when a button click flips the pill into the next state.
+    #[cfg(not(target_os = "linux"))]
     apply_pill_hit_testing(pill, pill_state_has_clickable_buttons(state));
 
     // Show the window before emitting state so WebView2 is active when it
@@ -353,6 +464,41 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     }
     #[cfg(not(target_os = "windows"))]
     pill.show().ok();
+    // GTK only has a realized input surface after show(). Applying the input
+    // region before that point can abort tao on Wayland, so do it afterward.
+    #[cfg(target_os = "linux")]
+    apply_pill_hit_testing(pill, pill_state_has_clickable_buttons(state));
+    #[cfg(target_os = "linux")]
+    {
+        let placement = app
+            .try_state::<SharedState>()
+            .and_then(|state| state.lock().ok().and_then(|guard| guard.pill_placement));
+        // A Wayland toplevel can only be moved by Hyprland after it has been
+        // mapped. The pre-show placement call resizes the client but cannot
+        // find its compositor address yet, so repeat the move here. Raise it
+        // after moving as well: pinning keeps it on every workspace, but does
+        // not keep it above existing floating windows.
+        // `pill_window_after_show` polls briefly instead of a single lookup:
+        // mapping happens asynchronously on the compositor side, and a single
+        // miss here used to leave the pill exactly where Hyprland's default
+        // floating placement put it (screen center) with no retry.
+        if let Some(window) = crate::core::hyprland::pill_window_after_show() {
+            if let Some(placement) = placement {
+                let placement = super::pill_position::snap_linux_placement_to_mapped_size(
+                    placement,
+                    window.size,
+                );
+                if let Err(error) =
+                    crate::core::hyprland::move_window(&window.address, placement.x, placement.y)
+                {
+                    log::warn!("Failed to position Linux dictation pill: {error}");
+                }
+            }
+            if let Err(error) = crate::core::hyprland::raise_window(&window.address) {
+                log::warn!("Failed to raise Linux dictation pill: {error}");
+            }
+        }
+    }
 
     // macOS: `show()` (orderFront:) is ignored for a background app, so the
     // pill only appeared when Verenu was frontmost. Force it above the
@@ -375,6 +521,9 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     if let Some(msg) = message {
         pill.emit("pill-error", msg).ok();
     }
+    if let Ok(mut current) = CURRENT_PILL_STATE.lock() {
+        *current = state.to_string();
+    }
     pill.emit("pill-state", state).ok();
 
     // Must fire after pill-state (see PENDING_PILL_CONTEXT) — this is the
@@ -387,6 +536,41 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     {
         pill.emit("pill-context", context).ok();
     }
+
+    #[cfg(target_os = "linux")]
+    schedule_linux_raise(app);
+    // Mark the surface as realized for future hit-testing (see
+    // `apply_pill_hit_testing`). Set last: this reveal's own apply call
+    // above still takes the first-reveal skip.
+    PILL_HIT_TEST_SAFE.store(true, Ordering::SeqCst);
+}
+
+/// GTK/Wayland maps and configures a shown WebView asynchronously. Hyprland can
+/// acknowledge the first z-order request while that configure is still in
+/// flight, then place the committed surface back below the previously focused
+/// window. The pill is fully rendered in that case, but the user only sees its
+/// entrance frame before it disappears behind the target app. Re-assert the
+/// compositor z-order after mapping and after the frontend's first layout pass.
+/// Generation and visibility checks prevent a stale retry from raising an idle
+/// pill or a superseded state.
+#[cfg(target_os = "linux")]
+fn schedule_linux_raise(app: &AppHandle) {
+    let app = app.clone();
+    let generation = REVEAL_GEN.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn(async move {
+        for delay in [120_u64, 280] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            if !PILL_VISUALLY_ACTIVE.load(Ordering::SeqCst)
+                || REVEAL_GEN.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+            if app.get_webview_window("pill").is_none() {
+                return;
+            }
+            raise_linux_pill_now();
+        }
+    });
 }
 
 fn pill_state_has_clickable_buttons(state: &str) -> bool {
@@ -449,16 +633,28 @@ pub(crate) fn hide_pill(app: &AppHandle) {
         REVEAL_GEN.fetch_add(1, Ordering::SeqCst);
         super::pill_animation::cancel_pending_pill_tween();
 
+        if let Ok(mut current) = CURRENT_PILL_STATE.lock() {
+            *current = "idle".to_string();
+        }
         pill.emit("pill-state", "idle").ok();
         // Re-enable click-through: after a button-bearing state (handsfree,
         // error, cancelled, interrupted, paste_failed) reveal_pill left the window
         // click-capturing. Idle is invisible, so it must never swallow clicks
         // in the pill's zone even though the pill content has disappeared.
-        // Do not call pill.hide() - hiding the window suspends the WebView2
-        // renderer. The next show_pill("recording") emit would then be lost
-        // before WebView2 wakes up, causing only "processing" to appear.
-        // The pill window is transparent + click-through in idle state, so
-        // leaving it visible has no user-visible effect.
+        // WebKitGTK does not have WebView2's hidden-renderer suspension bug.
+        // Hide the Linux client completely so Hyprland never shows an empty
+        // decorated rectangle while Verenu is idle.
+        #[cfg(target_os = "linux")]
+        {
+            pill.hide().ok();
+            return;
+        }
+        // Do not call pill.hide() on Windows - hiding the window suspends the
+        // WebView2 renderer. The next show_pill("recording") emit would then
+        // be lost before WebView2 wakes up.
+        // Hit-testing + harden only — never set_decorations(false) here (see
+        // apply_pill_hit_testing / reveal_pill).
+        #[cfg(not(target_os = "linux"))]
         apply_pill_hit_testing(&pill, false);
     }
 }

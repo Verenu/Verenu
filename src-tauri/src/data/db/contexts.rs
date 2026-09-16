@@ -168,6 +168,18 @@ pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     Ok(rows)
 }
 
+/// Count of user-created context groups, excluding the built-in "Everywhere"
+/// context. Used for the anonymous `context_group_count` analytics property.
+pub fn count_user_contexts(db: &Db) -> Result<i64> {
+    let conn = lock_conn(db)?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM contexts WHERE is_everywhere = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
 pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
     let conn = lock_conn(db)?;
     query_context_conn(&conn, context_id)

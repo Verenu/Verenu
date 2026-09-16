@@ -46,6 +46,33 @@ impl SettingsSnapshot {
     }
 }
 
+/// Anonymous count of optional features an install actually uses, for the
+/// `settings_snapshot` analytics event. Counts the same boolean feature
+/// flags that event already reports individually, plus one if at least one
+/// user-created context group exists.
+pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_count: i64) -> i64 {
+    let flags = [
+        CLEANUP_ENABLED,
+        DUAL_TRANSCRIPTION_ENABLED,
+        NOISE_REDUCTION,
+        AUTO_LEARN_ENABLED,
+        CONTEXTUAL_FORMATTING,
+        PAUSE_MEDIA_DURING_DICTATION,
+        MIC_MUTE_BUTTON_DICTATION,
+        SYNC_ENABLED,
+    ];
+    let enabled_flags = flags
+        .iter()
+        .filter(|key| {
+            settings
+                .get(key)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .count() as i64;
+    enabled_flags + i64::from(context_group_count > 0)
+}
+
 impl SettingsHandle {
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
@@ -385,6 +412,7 @@ pub const AUTOSTART_ENABLED: &str = "autostart_enabled";
 pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
 pub const DEFAULT_CLIPBOARD_PHRASE: &str = "paste clipboard here";
 pub const LOCAL_MODEL_MEMORY_POLICY: &str = "local_model_memory_policy";
+pub const ANALYTICS_ENABLED: &str = "analytics_enabled";
 
 pub const DEFAULT_TONES: &[&str] = &["casual", "formal", "very_casual"];
 pub const CLEANUP_INTENSITIES: &[&str] = &["none", "light", "medium", "high"];

@@ -655,27 +655,139 @@ pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
 
-// ============================== Fallback (e.g. Linux) ==============================
+// ========================= Linux: Freedesktop Secret Service =========================
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
-pub fn set(_provider: &str, _key: &str) -> Result<(), String> {
-    Ok(())
+#[cfg(target_os = "linux")]
+const LINUX_SECRET_SERVICE: &str = "com.verenu.app";
+
+#[cfg(target_os = "linux")]
+fn linux_account(provider: &str) -> Result<&'static str, String> {
+    user_for(provider).ok_or_else(|| format!("Unknown provider: {provider}"))
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
-pub fn get(_provider: &str) -> String {
-    String::new()
+/// Runs the maintained zbus Secret Service client outside Tauri's UI runtime.
+/// The older synchronous dbus client can crash current GNOME Keyring while it
+/// negotiates a plain session; this uses an encrypted DH session instead.
+#[cfg(target_os = "linux")]
+fn linux_secret_service<T>(
+    future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    // Never block the Tokio runtime that is driving Tauri commands. In
+    // particular, `Handle::block_on` panics when called from a worker thread.
+    // A short-lived current-thread runtime also avoids sharing zbus state with
+    // the UI runtime and works for status reads as well as writes.
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| format!("Could not start Secret Service client: {err}"))?
+            .block_on(future)
+    })
+    .join()
+    .map_err(|_| "Secret Service client thread failed".to_string())?
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
-pub fn has(_provider: &str) -> bool {
-    false
+#[cfg(target_os = "linux")]
+fn linux_attributes(account: &'static str) -> std::collections::HashMap<&'static str, &'static str> {
+    // Keep keyring-compatible attribute names so entries written during an
+    // interrupted older build remain discoverable without copying secrets.
+    std::collections::HashMap::from([("service", LINUX_SECRET_SERVICE), ("username", account)])
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "android")))]
-pub fn delete(_provider: &str) -> Result<(), String> {
-    Ok(())
+#[cfg(target_os = "linux")]
+pub fn set(provider: &str, key: &str) -> Result<(), String> {
+    let account = linux_account(provider)?;
+    let provider_name = provider.to_owned();
+    let key = normalize_key(key).to_owned();
+    if key.is_empty() {
+        return delete(provider);
+    }
+    linux_secret_service(async move {
+        use secret_service::{EncryptionType, SecretService};
+
+        let service = SecretService::connect(EncryptionType::Dh).await.map_err(|err| {
+            format!("Secret Service is unavailable or locked. Unlock GNOME Keyring/KWallet and try again: {err}")
+        })?;
+        let collection = service.get_default_collection().await.map_err(|err| {
+            format!("Secret Service's default collection is unavailable or locked. Unlock GNOME Keyring/KWallet and try again: {err}")
+        })?;
+        let item = collection
+            .create_item(
+                &format!("Verenu {provider_name} API key"),
+                linux_attributes(account),
+                key.as_bytes(),
+                true,
+                "text/plain",
+            )
+            .await
+            .map_err(|err| format!("Secret Service could not save {provider_name}: {err}"))?;
+        let verified = item
+            .get_secret()
+            .await
+            .map_err(|err| format!("Secret Service saved {provider_name}, but could not verify it: {err}"))?;
+        if normalize_key(&String::from_utf8_lossy(&verified)) != key {
+            return Err(format!("Secret Service could not verify the saved {provider_name} key."));
+        }
+        Ok(())
+    })
 }
+
+#[cfg(target_os = "linux")]
+pub fn get(provider: &str) -> String {
+    let Ok(account) = linux_account(provider) else { return String::new(); };
+    match linux_secret_service(async move {
+        use secret_service::{EncryptionType, SecretService};
+
+        let service = SecretService::connect(EncryptionType::Dh).await.map_err(|err| err.to_string())?;
+        let items = service.search_items(linux_attributes(account)).await.map_err(|err| err.to_string())?;
+        let Some(item) = items.unlocked.first() else { return Ok(String::new()); };
+        let secret = item.get_secret().await.map_err(|err| err.to_string())?;
+        Ok(String::from_utf8_lossy(&secret).into_owned())
+    }) {
+        Ok(value) => normalize_key(&value).to_string(),
+        Err(err) => {
+            log::debug!("credentials: Secret Service read unavailable for {provider}: {err}");
+            String::new()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn has(provider: &str) -> bool { !get(provider).is_empty() }
+
+#[cfg(target_os = "linux")]
+pub fn delete(provider: &str) -> Result<(), String> {
+    let account = linux_account(provider)?;
+    let provider_name = provider.to_owned();
+    linux_secret_service(async move {
+        use secret_service::{EncryptionType, SecretService};
+
+        let service = SecretService::connect(EncryptionType::Dh).await.map_err(|err| {
+            format!("Secret Service is unavailable or locked. Unlock GNOME Keyring/KWallet and try again: {err}")
+        })?;
+        let items = service.search_items(linux_attributes(account)).await
+            .map_err(|err| format!("Secret Service could not find {provider_name}: {err}"))?;
+        for item in items.unlocked {
+            item.delete().await.map_err(|err| format!("Secret Service delete failed for {provider_name}: {err}"))?;
+        }
+        if !items.locked.is_empty() {
+            return Err(format!("Secret Service has a locked {provider_name} key. Unlock GNOME Keyring/KWallet and try again."));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "linux")))]
+pub fn set(_provider: &str, _key: &str) -> Result<(), String> { Err("No secure credential backend is available on this platform".into()) }
+#[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "linux")))]
+pub fn get(_provider: &str) -> String { String::new() }
+#[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "linux")))]
+pub fn has(_provider: &str) -> bool { false }
+#[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "linux")))]
+pub fn delete(_provider: &str) -> Result<(), String> { Err("No secure credential backend is available on this platform".into()) }
 
 /// Moves any plaintext API keys from settings.json or legacy macOS
 /// credentials.json files into the OS secret store, then keeps retrying cleanup

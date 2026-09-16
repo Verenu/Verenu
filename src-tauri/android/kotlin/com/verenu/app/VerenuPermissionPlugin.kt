@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import app.tauri.annotation.ActivityCallback
@@ -20,7 +21,6 @@ import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
-import androidx.activity.result.ActivityResult
 
 @InvokeArg
 internal class PermissionRequestArgs {
@@ -35,6 +35,9 @@ internal class PermissionRequestArgs {
   ]
 )
 class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) {
+  private var pendingRuntimePermission: String? = null
+  private var pendingSettingsPermission: String? = null
+
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
   }
@@ -51,6 +54,7 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
       "microphone" -> requestRuntimePermission(invoke, "microphone", Manifest.permission.RECORD_AUDIO)
       "notifications" -> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+          capturePermissionCompletion("notifications")
           invoke.resolveObject(permissionSnapshot())
         } else {
           requestRuntimePermission(invoke, "notifications", Manifest.permission.POST_NOTIFICATIONS)
@@ -63,25 +67,31 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
 
   private fun requestRuntimePermission(invoke: Invoke, alias: String, permission: String) {
     if (ActivityCompat.checkSelfPermission(activity, permission) == PackageManager.PERMISSION_GRANTED) {
+      capturePermissionCompletion(alias)
       invoke.resolveObject(permissionSnapshot())
       return
     }
 
     if (isPermanentlyDenied(permission)) {
+      pendingSettingsPermission = alias
       openAppSettings(invoke)
       return
     }
 
+    pendingRuntimePermission = alias
     askedPrefs.edit().putBoolean(alias, true).apply()
     requestPermissionForAlias(alias, invoke, "runtimePermissionCallback")
   }
 
   @PermissionCallback
   private fun runtimePermissionCallback(invoke: Invoke) {
+    pendingRuntimePermission?.let(::capturePermissionCompletion)
+    pendingRuntimePermission = null
     invoke.resolveObject(permissionSnapshot())
   }
 
   private fun openSettings(invoke: Invoke, permission: String) {
+    pendingSettingsPermission = permission
     val intent = when (permission) {
       "accessibility_service" -> Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
       "battery_exemption" -> {
@@ -127,7 +137,20 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
 
   @ActivityCallback
   private fun settingsActivityCallback(invoke: Invoke, _result: ActivityResult) {
+    pendingSettingsPermission?.let(::capturePermissionCompletion)
+    pendingSettingsPermission = null
     invoke.resolveObject(permissionSnapshot())
+  }
+
+  private fun capturePermissionCompletion(permission: String) {
+    val safePermission = when (permission) {
+      "microphone", "notifications", "battery_exemption" -> permission
+      else -> "unknown"
+    }
+    VerenuAnalytics.permissionCompleted(
+      safePermission,
+      permissionSnapshot()[safePermission] ?: "unknown",
+    )
   }
 
   private fun isPermanentlyDenied(permission: String): Boolean {

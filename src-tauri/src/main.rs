@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod analytics;
 mod android;
 mod api;
 mod app_hotkey;
@@ -94,6 +95,9 @@ fn start_storage_maintenance(
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    configure_hyprland_webkit_renderer();
+
     #[cfg(target_os = "windows")]
     {
         cleanup_update_helper_if_requested();
@@ -130,6 +134,7 @@ fn main() {
         failover_session_id: None,
         failover_reuse_id: false,
         failover_started_at_unix: 0,
+        analytics_run_id: None,
     }));
 
     std::fs::create_dir_all(app_data_dir()).ok();
@@ -226,6 +231,22 @@ fn main() {
                                 } else {
                                     (k1, k2)
                                 };
+                                #[cfg(target_os = "linux")]
+                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
+                                {
+                                    let _ = settings.set(
+                                        crate::data::store::HOTKEY,
+                                        serde_json::json!(["ControlLeft", "Space"]),
+                                    );
+                                    if let Err(e) = settings.save() {
+                                        log::warn!(
+                                            "Failed to save migrated Linux hotkey to settings.json: {e:?}"
+                                        );
+                                    }
+                                    ("ControlLeft", "Space")
+                                } else {
+                                    (k1, k2)
+                                };
                                 let vk1 = crate::core::hotkey::map_code_to_vk(k1);
                                 let vk2 = crate::core::hotkey::map_code_to_vk(k2);
                                 crate::core::hotkey::update_keys(vk1, vk2);
@@ -311,6 +332,13 @@ fn main() {
             );
 
             app_tray::setup_tray(app)?;
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_titlebar::enable(&window).map_err(|error| {
+                    let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
+                    tauri::Error::Setup(source.into())
+                })?;
+            }
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 let theme = window.theme().ok();
@@ -574,8 +602,6 @@ fn main() {
             commands::clear_diagnostics,
             commands::get_diagnostics_snapshot,
             commands::download_diagnostics_bundle,
-            commands::subscribe_log_stream,
-            commands::unsubscribe_log_stream,
             commands::local_models_supported_on_this_platform,
             commands::start_input_recording,
             commands::start_setup_try_recording,
@@ -589,6 +615,7 @@ fn main() {
             commands::copy_paste_failure_to_clipboard,
             commands::set_pill_size,
             commands::set_pill_interactive,
+            commands::hide_dictation_pill,
             commands::get_installed_apps,
             commands::get_app_icon,
             commands::get_site_icon,
@@ -634,6 +661,8 @@ fn main() {
             commands::check_verenu_api_health,
             commands::check_connectivity,
             commands::get_recent_logs,
+            commands::subscribe_log_stream,
+            commands::unsubscribe_log_stream,
             commands::download_logs,
             commands::set_dev_logging_enabled,
             commands::get_dev_logging_enabled,
@@ -690,6 +719,24 @@ fn main() {
                 log::info!("app shutdown complete");
             }
         });
+}
+
+/// Hyprland currently rejects a WebKitGTK DMA-BUF explicit-sync commit that
+/// lacks an acquire timeline, terminating the Wayland connection with protocol
+/// error 71. Select WebKit's shared-memory renderer before GTK initializes.
+/// A user-provided value always wins so the workaround can be retired or
+/// overridden without rebuilding Verenu.
+#[cfg(target_os = "linux")]
+fn configure_hyprland_webkit_renderer() {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        // The process is still single-threaded and GTK/WebKit has not been
+        // initialized, which makes changing this process-local environment
+        // variable safe.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
 }
 #[cfg(target_os = "windows")]
 static TITLEBAR_REFRESH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

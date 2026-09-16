@@ -65,6 +65,8 @@ static HANDLESS_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static CANCEL_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ESCAPE_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static COPY_LAST_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+#[allow(dead_code)]
+static SUB_APP_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static HANDLESS_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -571,13 +573,14 @@ fn on_escape_pressed() {
 // --- start -----------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-pub fn start<P, R, H, C, E, L>(
+pub fn start<P, R, H, C, E, L, S>(
     on_press: P,
     on_release: R,
     on_handless: H,
     on_cancel: C,
     on_escape: E,
     on_copy_last: L,
+    on_capture_sub_app: S,
 ) -> Result<std::thread::JoinHandle<()>, String>
 where
     P: Fn() + Send + Sync + 'static,
@@ -586,6 +589,7 @@ where
     C: Fn() + Send + Sync + 'static,
     E: Fn() + Send + Sync + 'static,
     L: Fn() + Send + Sync + 'static,
+    S: Fn() + Send + Sync + 'static,
 {
     if MANAGER.get().is_some() {
         log::warn!("hotkey: global hotkey manager already initialized");
@@ -598,6 +602,10 @@ where
     let _ = CANCEL_CB.set(Box::new(on_cancel));
     let _ = ESCAPE_CB.set(Box::new(on_escape));
     let _ = COPY_LAST_CB.set(Box::new(on_copy_last));
+    // Accepted for signature parity with the Linux backend's sub-app capture
+    // hotkey; macOS has no capture trigger wired to it yet, so this is
+    // stored but never invoked.
+    let _ = SUB_APP_CB.set(Box::new(on_capture_sub_app));
 
     // Created here (on the main thread, from Tauri `setup`) because the crate
     // installs its Carbon event handler on the application event target, which
