@@ -1018,8 +1018,904 @@ mod win {
 #[cfg(windows)]
 pub use win::{reload, setup};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub use linux::{reload, setup};
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn reload(_app: &tauri::AppHandle) {}
+
+/// Linux (PipeWire) mic-mute-button dictation trigger.
+///
+/// Same user contract as the Windows watcher: a mute→unmute pulse on the
+/// selected microphone (held 10ms..3s) toggles hands-free dictation. Two
+/// independent mute sources are watched in parallel, because USB/headset
+/// hardware buttons disagree about where they report:
+///
+/// - PipeWire source mute (`pactl`), which covers mixer mutes and every
+///   hardware button that flips the graph mute flag. Watched event-driven
+///   via `pactl subscribe` with a slow poll as drift backstop.
+/// - Digital-silence PCM (CPAL idle capture + the shared
+///   `DigitalSilenceDetector`), which covers buttons that zero the samples
+///   without ever flipping a mute flag — common on USB mics.
+///
+/// Never mutes or unmutes anything itself; like the Windows watcher it only
+/// observes. The idle PCM client is released before dictation opens the mic
+/// so the streams never overlap.
+#[cfg(target_os = "linux")]
+mod linux {
+    use crate::core::window_geometry::WindowTarget;
+    use crate::data::store;
+    use crate::media::device_match;
+    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer, SilenceTransition};
+    use crate::pipeline::{self, start_recording_session, SharedState};
+    use std::io::BufRead;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tauri::AppHandle;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DetectionMethod {
+        PipeWireMute,
+        DigitalSilence,
+    }
+
+    impl DetectionMethod {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::PipeWireMute => "pipewire_mute",
+                Self::DigitalSilence => "digital_silence",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum MuteTriggerEvent {
+        BecameMuted { method: DetectionMethod },
+        BecameUnmuted { method: DetectionMethod },
+    }
+
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+    const REBIND_INTERVAL: Duration = Duration::from_secs(2);
+    const DISABLED_IDLE: Duration = Duration::from_secs(2);
+    const DEBOUNCE: Duration = Duration::from_millis(25);
+    /// A dictation gesture is mute → unmute. The mute→unmute half must land
+    /// inside this window or it is treated as an ordinary unmute.
+    const PULSE_MIN: Duration = Duration::from_millis(10);
+    const PULSE_MAX: Duration = Duration::from_millis(3000);
+    /// PCM mute detection window. Matches the Windows fallback: 40ms keeps a
+    /// physical mute click feeling instant.
+    const PCM_WINDOW: Duration = Duration::from_millis(40);
+    const PCM_DEBOUNCE: Duration = Duration::from_millis(15);
+    const PULSE_COOLDOWN: Duration = Duration::from_millis(180);
+
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    static WATCHER_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
+    static EVENT_TX: OnceLock<
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
+    > = OnceLock::new();
+    static PULSE_MUTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+    static LAST_PULSE_AT: Mutex<Option<Instant>> = Mutex::new(None);
+    static ACTIVE_PCM: Mutex<Option<PcmMonitorGuard>> = Mutex::new(None);
+
+    fn release_active_pcm() {
+        let guard = ACTIVE_PCM.lock().ok().and_then(|mut slot| slot.take());
+        if guard.is_some() {
+            log::info!("mic_mute_trigger: PCM monitor released");
+        }
+        drop(guard);
+    }
+
+    fn pcm_is_running() -> bool {
+        let Ok(slot) = ACTIVE_PCM.lock() else {
+            return false;
+        };
+        slot.as_ref().is_some_and(|guard| {
+            guard
+                .join
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
+        })
+    }
+
+    fn install_active_pcm(guard: PcmMonitorGuard) {
+        let previous = if let Ok(mut slot) = ACTIVE_PCM.lock() {
+            let old = slot.take();
+            *slot = Some(guard);
+            old
+        } else {
+            None
+        };
+        drop(previous);
+    }
+
+    fn event_tx_slot(
+    ) -> &'static std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>
+    {
+        EVENT_TX.get_or_init(|| std::sync::Mutex::new(None))
+    }
+
+    pub fn setup(app: &mut tauri::App, shared: SharedState) {
+        if STARTED.swap(true, Ordering::SeqCst) {
+            reload(app.handle());
+            return;
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
+        if let Ok(mut slot) = event_tx_slot().lock() {
+            *slot = Some(tx);
+        }
+
+        let app_handle = app.handle().clone();
+        let state_watch = shared.clone();
+        std::thread::Builder::new()
+            .name("mic-mute-trigger".into())
+            .spawn(move || watcher_loop(app_handle, state_watch))
+            .expect("spawn mic-mute-trigger thread");
+
+        let app_hk = app.handle().clone();
+        let state_hk = shared;
+        tauri::async_runtime::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
+                    let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
+                }
+                dispatch_event(&app_hk, &state_hk, event);
+            }
+        });
+
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        log::info!("mic_mute_trigger: watcher started");
+    }
+
+    pub fn reload(app: &AppHandle) {
+        let _ = app;
+        let gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        log::info!("mic_mute_trigger: reload requested (generation={gen})");
+        if let Ok(slot) = WATCHER_THREAD.lock() {
+            if let Some(thread) = slot.as_ref() {
+                thread.unpark();
+            }
+        }
+    }
+
+    fn emit(event: MuteTriggerEvent) {
+        let Ok(slot) = event_tx_slot().lock() else {
+            return;
+        };
+        if let Some(tx) = slot.as_ref() {
+            let _ = tx.send(event);
+        }
+    }
+
+    fn feature_enabled(app: &AppHandle) -> bool {
+        store::settings_handle(app)
+            .ok()
+            .and_then(|s| s.get(store::MIC_MUTE_BUTTON_DICTATION))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    fn selected_device_name(app: &AppHandle) -> Option<String> {
+        store::settings_handle(app)
+            .ok()
+            .and_then(|s| s.get(store::MICROPHONE_DEVICE))
+            .and_then(|v| v.as_str().map(|s| s.to_owned()))
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    fn take_pulse(now: Instant) -> Option<Duration> {
+        let Ok(mut slot) = PULSE_MUTED_AT.lock() else {
+            return None;
+        };
+        let muted_at = slot.take()?;
+        let elapsed = now.saturating_duration_since(muted_at);
+        if elapsed < PULSE_MIN || elapsed > PULSE_MAX {
+            log::info!(
+                "mic_mute_trigger: ignored unmute — not a mute→unmute pulse (held {elapsed:?}, want {PULSE_MIN:?}..{PULSE_MAX:?})"
+            );
+            return None;
+        }
+        Some(elapsed)
+    }
+
+    fn mark_pulse_muted(now: Instant) {
+        if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
+            *slot = Some(now);
+        }
+    }
+
+    fn clear_pulse() {
+        if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
+            *slot = None;
+        }
+    }
+
+    fn dispatch_event(app: &AppHandle, state: &SharedState, event: MuteTriggerEvent) {
+        if !feature_enabled(app) {
+            log::debug!("mic_mute_trigger: ignored event — feature disabled");
+            clear_pulse();
+            return;
+        }
+
+        match event {
+            MuteTriggerEvent::BecameMuted { method } => {
+                mark_pulse_muted(Instant::now());
+                log::info!(
+                    "mic_mute_trigger: muted via {} — pulse armed (waiting for unmute)",
+                    method.as_str()
+                );
+            }
+            MuteTriggerEvent::BecameUnmuted { method } => {
+                let now = Instant::now();
+                let Some(held) = take_pulse(now) else {
+                    return;
+                };
+                if let Ok(mut last) = LAST_PULSE_AT.lock() {
+                    if let Some(prev) = *last {
+                        if now.saturating_duration_since(prev) < PULSE_COOLDOWN {
+                            log::info!(
+                                "mic_mute_trigger: ignored pulse via {} — cooldown after prior pulse",
+                                method.as_str()
+                            );
+                            return;
+                        }
+                    }
+                    *last = Some(now);
+                }
+                log::info!(
+                    "mic_mute_trigger: mute→unmute pulse via {} (held {held:?}) — toggling hands-free",
+                    method.as_str()
+                );
+
+                let recording = {
+                    let Ok(st) = state.lock() else {
+                        log::error!("mic_mute_trigger: state lock poisoned");
+                        return;
+                    };
+                    st.lifecycle.is_recording()
+                };
+
+                if recording {
+                    crate::core::hotkey::set_handless_active(false);
+                    tauri::async_runtime::spawn(pipeline::run_pipeline(app.clone(), state.clone()));
+                    log::info!("mic_mute_trigger: dictation stop requested");
+                    return;
+                }
+
+                let busy = {
+                    let Ok(st) = state.lock() else {
+                        log::error!("mic_mute_trigger: state lock poisoned");
+                        return;
+                    };
+                    !matches!(st.lifecycle, pipeline::DictationLifecycle::Idle)
+                };
+                if busy {
+                    log::info!("mic_mute_trigger: ignored pulse — lifecycle busy");
+                    return;
+                }
+                if pipeline::reserve_starting(state).is_err() {
+                    log::info!("mic_mute_trigger: ignored pulse — could not reserve starting");
+                    return;
+                }
+                let target = WindowTarget::capture_foreground();
+                if let Ok(mut st) = state.lock() {
+                    st.target = target;
+                    st.pill_placement_stale = true;
+                }
+                start_recording_session(app, state, "handsfree", true);
+                crate::core::hotkey::set_handless_active(true);
+                log::info!("mic_mute_trigger: dictation started (handsfree)");
+            }
+        }
+    }
+
+    fn dictation_holds_mic(state: &SharedState) -> bool {
+        let Ok(st) = state.lock() else {
+            return false;
+        };
+        !st.lifecycle.is_idle()
+    }
+
+    fn recording_raw_level(state: &SharedState) -> Option<f32> {
+        let Ok(st) = state.lock() else {
+            return None;
+        };
+        match &st.lifecycle {
+            pipeline::DictationLifecycle::Recording { session, .. } => {
+                Some(f32::from_bits(session.raw_level.load(Ordering::Relaxed)))
+            }
+            _ => None,
+        }
+    }
+
+    // ---------- PipeWire helpers (pure parsing is unit-tested below) ----------
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PipeWireSource {
+        id: u32,
+        name: String,
+        description: String,
+    }
+
+    fn run_pactl(args: &[&str]) -> Result<String, String> {
+        let output = std::process::Command::new("pactl")
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("pactl unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("pactl {} failed", args.join(" ")));
+        }
+        String::from_utf8(output.stdout).map_err(|e| format!("pactl output not utf8: {e}"))
+    }
+
+    /// Parses `pactl list sources` blocks into sources. Only id/name/
+    /// description are kept — mute is always queried separately so the
+    /// reading is never older than the decision that uses it.
+    fn parse_sources_list(text: &str) -> Vec<PipeWireSource> {
+        let mut sources = Vec::new();
+        let mut current: Option<PipeWireSource> = None;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("Source #") {
+                if let Some(done) = current.take() {
+                    sources.push(done);
+                }
+                current = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|id| id.parse::<u32>().ok())
+                    .map(|id| PipeWireSource {
+                        id,
+                        name: String::new(),
+                        description: String::new(),
+                    });
+            } else if let Some(source) = current.as_mut() {
+                if let Some(name) = trimmed.strip_prefix("Name: ") {
+                    source.name = name.trim().to_string();
+                } else if let Some(description) = trimmed.strip_prefix("Description: ") {
+                    source.description = description.trim().to_string();
+                }
+            }
+        }
+        if let Some(done) = current.take() {
+            sources.push(done);
+        }
+        sources
+            .into_iter()
+            .filter(|s| !s.name.is_empty())
+            .collect()
+    }
+
+    fn parse_mute_flag(text: &str) -> Option<bool> {
+        text.lines().find_map(|line| {
+            let value = line.trim().strip_prefix("Mute: ")?;
+            match value.trim() {
+                "yes" => Some(true),
+                "no" => Some(false),
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether a `pactl subscribe` line concerns a source (as opposed to a
+    /// sink, client, card, …). Pure so topology churn stays testable.
+    fn is_source_event(line: &str) -> bool {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("source") && (lower.contains("event") || lower.contains("change"))
+    }
+
+    /// Picks the watched source: the selected mic by relaxed name match
+    /// (same scoring as the Windows watcher so WASAPI/CPAL/PipeWire labels
+    /// for one mic still resolve), else the PipeWire default source.
+    fn pick_watched_source(
+        sources: &[PipeWireSource],
+        desired_name: Option<&str>,
+        default_name: Option<&str>,
+    ) -> Option<PipeWireSource> {
+        if let Some(name) = desired_name {
+            let mut best: Option<(u8, &PipeWireSource)> = None;
+            for source in sources {
+                let score = device_match::best_score_against(
+                    name,
+                    &[source.name.as_str(), source.description.as_str()],
+                );
+                if score == device_match::SCORE_NONE {
+                    continue;
+                }
+                let better = match &best {
+                    None => true,
+                    Some((best_score, _)) => score > *best_score,
+                };
+                if better {
+                    if score == device_match::SCORE_EXACT {
+                        return Some(source.clone());
+                    }
+                    best = Some((score, source));
+                }
+            }
+            if let Some((_, source)) = best {
+                return Some(source.clone());
+            }
+            log::warn!(
+                "mic_mute_trigger: selected device '{name}' not found among PipeWire sources — falling back to default"
+            );
+        }
+        default_name
+            .and_then(|default| sources.iter().find(|s| s.name == default).cloned())
+            .or_else(|| sources.first().cloned())
+    }
+
+    fn query_source_mute(id: u32) -> Result<bool, String> {
+        let out = run_pactl(&["get-source-mute", &id.to_string()])?;
+        parse_mute_flag(&out).ok_or_else(|| "pactl get-source-mute had no Mute line".to_string())
+    }
+
+    fn watcher_loop(app: AppHandle, state: SharedState) {
+        if let Ok(mut slot) = WATCHER_THREAD.lock() {
+            *slot = Some(std::thread::current());
+        }
+
+        loop {
+            let gen = GENERATION.load(Ordering::SeqCst);
+            if !feature_enabled(&app) {
+                std::thread::park_timeout(DISABLED_IDLE);
+                continue;
+            }
+
+            let desired = selected_device_name(&app);
+            if let Err(err) = watch_session(&app, &state, desired.as_deref(), gen) {
+                log::warn!("mic_mute_trigger: watch session ended: {err}");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+
+    /// One watch session for a generation: resolves the source, subscribes
+    /// to PipeWire events, and runs the idle PCM fallback until the
+    /// generation changes, the feature is disabled, or the topology shifts
+    /// under us (returns, letting `watcher_loop` re-resolve).
+    fn watch_session(
+        app: &AppHandle,
+        state: &SharedState,
+        desired_name: Option<&str>,
+        gen: u64,
+    ) -> Result<(), String> {
+        let sources = parse_sources_list(&run_pactl(&["list", "sources"])?);
+        if sources.is_empty() {
+            return Err("no PipeWire sources".to_string());
+        }
+        let default_name = run_pactl(&["get-default-source"]).ok().map(|s| s.trim().to_string());
+        let Some(watched) = pick_watched_source(&sources, desired_name, default_name.as_deref())
+        else {
+            return Err("no PipeWire source to watch".to_string());
+        };
+        log::info!(
+            "mic_mute_trigger: watching PipeWire source '{}' id={} ({})",
+            watched.name,
+            watched.id,
+            watched.description
+        );
+
+        let initial_muted = query_source_mute(watched.id).unwrap_or(false);
+        let mut debouncer = MuteDebouncer::new(DEBOUNCE);
+        debouncer.seed(initial_muted);
+
+        // `pactl subscribe` is the event-driven half: one long-lived child
+        // instead of polling a subprocess. The reader thread only forwards a
+        // ping — the main loop below performs the actual mute query, so a
+        // burst of subscribe lines can never interleave two queries.
+        let (ping_tx, ping_rx) = std::sync::mpsc::channel::<()>();
+        let subscribe_child = std::process::Command::new("pactl")
+            .arg("subscribe")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut subscribe_child = match subscribe_child {
+            Ok(child) => child,
+            Err(e) => return Err(format!("pactl subscribe failed: {e}")),
+        };
+        let subscribe_out = subscribe_child.stdout.take();
+        let reader = std::thread::Builder::new()
+            .name("mic-mute-subscribe".into())
+            .spawn(move || {
+                let Some(out) = subscribe_out else {
+                    let _ = ping_tx.send(());
+                    return;
+                };
+                for line in std::io::BufReader::new(out).lines() {
+                    let Ok(line) = line else { break };
+                    if is_source_event(&line) {
+                        let _ = ping_tx.send(());
+                    }
+                }
+                // EOF / error: nudge the main loop so the mute query below
+                // fails fast and the session rebinds instead of going deaf.
+                let _ = ping_tx.send(());
+            });
+        let _ = reader;
+
+        // Digital-silence fallback for hardware buttons that zero PCM without
+        // flipping the PipeWire mute flag. Always on while idle (the flag
+        // alone misses exactly the buttons this feature is for).
+        let mut last_pcm_start_at: Option<Instant> = None;
+        const PCM_RETRY: Duration = Duration::from_secs(5);
+        let mut level_debouncer = MuteDebouncer::new(DEBOUNCE);
+        let mut level_seeded = false;
+
+        let mut last_rebind_check = Instant::now();
+        let mut last_drift_poll = Instant::now();
+        const DRIFT_POLL: Duration = Duration::from_secs(2);
+
+        loop {
+            if GENERATION.load(Ordering::SeqCst) != gen {
+                log::info!("mic_mute_trigger: generation changed — rebinding");
+                break;
+            }
+            if !feature_enabled(app) {
+                log::info!("mic_mute_trigger: feature disabled — releasing watch");
+                clear_pulse();
+                break;
+            }
+
+            // Drain subscribe pings: re-query the mute flag once per batch.
+            let mut saw_ping = false;
+            while ping_rx.try_recv().is_ok() {
+                saw_ping = true;
+            }
+            let drift_due = last_drift_poll.elapsed() >= DRIFT_POLL;
+            if saw_ping || drift_due {
+                if drift_due {
+                    last_drift_poll = Instant::now();
+                }
+                match query_source_mute(watched.id) {
+                    Ok(muted) => {
+                        if let Some(stable) = debouncer.observe(muted, Instant::now()) {
+                            log::info!(
+                                "mic_mute_trigger: mute bit {} via pipewire_mute",
+                                if stable { "muted" } else { "unmuted" }
+                            );
+                            emit(if stable {
+                                MuteTriggerEvent::BecameMuted {
+                                    method: DetectionMethod::PipeWireMute,
+                                }
+                            } else {
+                                MuteTriggerEvent::BecameUnmuted {
+                                    method: DetectionMethod::PipeWireMute,
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("mic_mute_trigger: mute query failed: {e}");
+                        break;
+                    }
+                }
+            }
+
+            if last_rebind_check.elapsed() >= REBIND_INTERVAL {
+                last_rebind_check = Instant::now();
+                let current_desired = selected_device_name(app);
+                match run_pactl(&["list", "sources"]) {
+                    Ok(text) => {
+                        let current = parse_sources_list(&text);
+                        let default = run_pactl(&["get-default-source"])
+                            .ok()
+                            .map(|s| s.trim().to_string());
+                        match pick_watched_source(
+                            &current,
+                            current_desired.as_deref(),
+                            default.as_deref(),
+                        ) {
+                            Some(next)
+                                if next.id != watched.id || next.name != watched.name =>
+                            {
+                                log::info!(
+                                    "mic_mute_trigger: device changed ('{}' -> '{}') — rebinding",
+                                    watched.name,
+                                    next.name
+                                );
+                                break;
+                            }
+                            None => {
+                                log::warn!("mic_mute_trigger: watched source vanished — rebinding");
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("mic_mute_trigger: source resolve failed during watch: {e}");
+                        break;
+                    }
+                }
+            }
+
+            let holding_mic = dictation_holds_mic(state);
+            if holding_mic {
+                if pcm_is_running() {
+                    release_active_pcm();
+                    log::info!("mic_mute_trigger: PCM monitor paused (dictation holds the mic)");
+                }
+                last_pcm_start_at = None;
+                if let Some(level) = recording_raw_level(state) {
+                    let silent = level <= crate::media::digital_silence::DIGITAL_SILENCE_EPS * 4.0;
+                    if !level_seeded {
+                        level_debouncer.seed(silent);
+                        level_seeded = true;
+                    } else if let Some(stable) = level_debouncer.observe(silent, Instant::now()) {
+                        log::info!(
+                            "mic_mute_trigger: {} via recording-level (rms={level:.6})",
+                            if stable { "muted" } else { "unmuted" }
+                        );
+                        emit(if stable {
+                            MuteTriggerEvent::BecameMuted {
+                                method: DetectionMethod::DigitalSilence,
+                            }
+                        } else {
+                            MuteTriggerEvent::BecameUnmuted {
+                                method: DetectionMethod::DigitalSilence,
+                            }
+                        });
+                    }
+                }
+            } else {
+                level_seeded = false;
+                if !pcm_is_running() {
+                    let can_retry = last_pcm_start_at
+                        .map(|at| at.elapsed() >= PCM_RETRY)
+                        .unwrap_or(true);
+                    if can_retry {
+                        log::info!("mic_mute_trigger: starting digital-silence PCM monitor");
+                        last_pcm_start_at = Some(Instant::now());
+                        install_active_pcm(start_pcm_monitor(selected_device_name(app)));
+                    }
+                }
+            }
+
+            std::thread::sleep(POLL_INTERVAL);
+        }
+
+        release_active_pcm();
+        let _ = subscribe_child.kill();
+        Ok(())
+    }
+
+    struct PcmMonitorGuard {
+        stop: Arc<AtomicBool>,
+        join: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for PcmMonitorGuard {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.join.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn start_pcm_monitor(device_name: Option<String>) -> PcmMonitorGuard {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let join = std::thread::Builder::new()
+            .name("mic-mute-pcm".into())
+            .spawn(move || {
+                if let Err(err) = run_pcm_monitor(device_name, stop_thread) {
+                    log::warn!("mic_mute_trigger: PCM monitor stopped: {err}");
+                }
+            })
+            .ok();
+        PcmMonitorGuard { stop, join }
+    }
+
+    fn run_pcm_monitor(
+        device_name: Option<String>,
+        stop: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+        let host = cpal::default_host();
+        let device = if let Some(name) = device_name.as_deref() {
+            let mut best: Option<(u8, cpal::Device)> = None;
+            if let Ok(iter) = host.input_devices() {
+                for device in iter {
+                    let Ok(candidate) = device.name() else {
+                        continue;
+                    };
+                    let score = device_match::device_name_match_score(&candidate, name);
+                    if score == device_match::SCORE_NONE {
+                        continue;
+                    }
+                    let better = match &best {
+                        None => true,
+                        Some((best_score, _)) => score > *best_score,
+                    };
+                    if better {
+                        if score == device_match::SCORE_EXACT {
+                            best = Some((score, device));
+                            break;
+                        }
+                        best = Some((score, device));
+                    }
+                }
+            }
+            best.map(|(_, device)| device)
+                .or_else(|| host.default_input_device())
+                .ok_or_else(|| "no input device for PCM monitor".to_string())?
+        } else {
+            host.default_input_device()
+                .ok_or_else(|| "no default input device for PCM monitor".to_string())?
+        };
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let name = device.name().unwrap_or_else(|_| "unknown".into());
+        let config = device
+            .default_input_config()
+            .map_err(|e| format!("default_input_config: {e}"))?;
+        log::info!(
+            "mic_mute_trigger: PCM digital-silence monitor on '{name}' ({:?})",
+            config.sample_format()
+        );
+
+        let detector = Arc::new(Mutex::new(DigitalSilenceDetector::new(
+            PCM_WINDOW,
+            PCM_DEBOUNCE,
+        )));
+        let err_fn = |err| log::warn!("mic_mute_trigger: PCM stream error: {err}");
+
+        macro_rules! build_stream {
+            ($ty:ty, $convert:expr) => {
+                device
+                    .build_input_stream(
+                        &config.clone().into(),
+                        move |data: &[$ty], _| {
+                            let convert = $convert;
+                            let (silent, abs_max) =
+                                pcm_stats(data.iter().map(|s| convert(*s)));
+                            handle_pcm_stats(data.len(), silent, abs_max, &detector);
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?
+            };
+        }
+
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => build_stream!(f32, |s: f32| s.abs()),
+            cpal::SampleFormat::F64 => build_stream!(f64, |s: f64| (s as f32).abs()),
+            cpal::SampleFormat::I16 => build_stream!(i16, |s: i16| (s as f32 / 32768.0).abs()),
+            cpal::SampleFormat::I32 => {
+                build_stream!(i32, |s: i32| (s as f32 / 2147483648.0).abs())
+            }
+            cpal::SampleFormat::I8 => build_stream!(i8, |s: i8| (s as f32 / 128.0).abs()),
+            cpal::SampleFormat::U16 => {
+                build_stream!(u16, |s: u16| ((s as f32 - 32768.0) / 32768.0).abs())
+            }
+            cpal::SampleFormat::U8 => build_stream!(u8, |s: u8| ((s as f32 - 128.0) / 128.0).abs()),
+            other => {
+                return Err(format!("unsupported PCM sample format: {other:?}"));
+            }
+        };
+        stream.play().map_err(|e| e.to_string())?;
+
+        while !stop.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(stream);
+        Ok(())
+    }
+
+    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
+        let mut silent = 0u32;
+        let mut abs_max = 0.0f32;
+        for a in abs_samples {
+            if a > abs_max {
+                abs_max = a;
+            }
+            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
+                silent += 1;
+            }
+        }
+        (silent, abs_max)
+    }
+
+    fn handle_pcm_stats(
+        total: usize,
+        silent: u32,
+        abs_max: f32,
+        detector: &Mutex<DigitalSilenceDetector>,
+    ) {
+        let now = Instant::now();
+        let Ok(mut det) = detector.lock() else {
+            return;
+        };
+        let Some(transition) = det.push_chunk_stats(now, silent, total as u32, abs_max) else {
+            return;
+        };
+        let muted = matches!(transition, SilenceTransition::BecameMuted);
+        log::info!(
+            "mic_mute_trigger: {} via {}",
+            if muted { "muted" } else { "unmuted" },
+            DetectionMethod::DigitalSilence.as_str()
+        );
+        emit(if muted {
+            MuteTriggerEvent::BecameMuted {
+                method: DetectionMethod::DigitalSilence,
+            }
+        } else {
+            MuteTriggerEvent::BecameUnmuted {
+                method: DetectionMethod::DigitalSilence,
+            }
+        });
+    }
+
+    #[cfg(test)]
+    mod linux_tests {
+        use super::{
+            is_source_event, parse_mute_flag, parse_sources_list, pick_watched_source,
+        };
+
+        const FIXTURE: &str = "Source #60\n\tState: SUSPENDED\n\tName: alsa_output.usb-ACTIONS_Pebble_V3-00.analog-stereo.monitor\n\tDescription: Monitor of Pebble V3 Analog Stereo\n\tMute: no\nSource #61\n\tState: SUSPENDED\n\tName: alsa_input.usb-Blue_Microphones_Yeti_Nano_2043SG0059H8_888-000154040606-00.analog-stereo\n\tDescription: Yeti Nano Analog Stereo\n\tMute: no\n";
+
+        #[test]
+        fn parses_pipewire_sources_list() {
+            let sources = parse_sources_list(FIXTURE);
+            assert_eq!(sources.len(), 2);
+            assert_eq!(sources[1].id, 61);
+            assert_eq!(
+                sources[1].description, "Yeti Nano Analog Stereo",
+            );
+        }
+
+        #[test]
+        fn ignores_blocks_without_a_name() {
+            let sources = parse_sources_list("Source #7\n\tState: IDLE\n");
+            assert!(sources.is_empty());
+        }
+
+        #[test]
+        fn parses_mute_flag() {
+            assert_eq!(parse_mute_flag("Mute: yes\n"), Some(true));
+            assert_eq!(parse_mute_flag("Mute: no\n"), Some(false));
+            assert_eq!(parse_mute_flag("Volume: 0.44\n"), None);
+        }
+
+        #[test]
+        fn subscribe_source_lines_are_recognized() {
+            assert!(is_source_event("Event 'change' on source #61"));
+            assert!(is_source_event("Event 'new' on source #62"));
+            assert!(!is_source_event("Event 'change' on sink #34"));
+            assert!(!is_source_event("Event 'change' on client #71"));
+        }
+
+        #[test]
+        fn picks_the_selected_mic_by_description() {
+            let sources = parse_sources_list(FIXTURE);
+            let picked = pick_watched_source(&sources, Some("Yeti Nano"), Some(&sources[0].name));
+            assert_eq!(picked.map(|s| s.id), Some(61));
+        }
+
+        #[test]
+        fn falls_back_to_the_default_source() {
+            let sources = parse_sources_list(FIXTURE);
+            let picked = pick_watched_source(&sources, None, Some(&sources[1].name));
+            assert_eq!(picked.map(|s| s.id), Some(61));
+        }
+
+        #[test]
+        fn falls_back_to_the_first_source_without_a_default() {
+            let sources = parse_sources_list(FIXTURE);
+            let picked = pick_watched_source(&sources, None, None);
+            assert_eq!(picked.map(|s| s.id), Some(60));
+        }
+    }
+}

@@ -6,6 +6,7 @@ import {
   frontendIpcActivity,
   p95,
   pushBounded,
+  runtimeModelLabel,
   spanWidth,
 } from './diagnostics';
 
@@ -45,6 +46,16 @@ describe('diagnostics helpers', () => {
     expect(formatBytes(null)).toBe('Unavailable');
     expect(formatBytes(1024 * 1024)).toBe('1.00 MiB');
     expect(formatDuration(1_250)).toBe('1.25 s');
+  });
+
+  it('labels local model runtime as Off instead of a missing-data error', () => {
+    expect(runtimeModelLabel(null)).toBe('Off');
+    expect(runtimeModelLabel({ is_loaded: false, current_model_id: null })).toBe('Off');
+    expect(runtimeModelLabel({ is_loading: true, current_model_id: null })).toBe('Loading');
+    expect(runtimeModelLabel({ is_downloading: true, downloading_model_id: 'small' })).toBe(
+      'Downloading small',
+    );
+    expect(runtimeModelLabel({ current_model_id: 'whisper-large' })).toBe('whisper-large');
   });
 
   it('keeps frontend IPC metrics metadata-only and bounded', () => {

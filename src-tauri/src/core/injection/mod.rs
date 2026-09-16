@@ -20,6 +20,8 @@ use crate::core::text_context;
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "linux")]
+mod linux;
 
 // Maximum bytes stored for backspace-tracking. Covers any practical editing sequence
 // while keeping the per-injection allocation bounded.
@@ -660,7 +662,11 @@ pub async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     {
         return macos::copy_to_clipboard(text).await;
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        return linux::copy_to_clipboard(text).await;
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = text;
         anyhow::bail!("copy_to_clipboard: unsupported platform")
@@ -683,7 +689,7 @@ pub async fn read_current_clipboard_text() -> Option<String> {
 #[allow(unused_variables)]
 pub async fn inject_text(
     text: &str,
-    target_hwnd: usize,
+    target: &crate::core::window_geometry::WindowTarget,
     contextual_caps: bool,
     auto_spacing: bool,
     profile: &str,
@@ -694,7 +700,7 @@ pub async fn inject_text(
     if crate::testing::is_enabled() {
         crate::testing::record_injection(crate::testing::InjectionRecord {
             text: text.to_string(),
-            target_hwnd,
+            target_hwnd: target.id,
             contextual_caps,
             auto_spacing,
             profile: profile.to_string(),
@@ -712,7 +718,7 @@ pub async fn inject_text(
     {
         return windows::inject_text(
             text,
-            target_hwnd,
+            target.id,
             contextual_caps,
             auto_spacing,
             profile,
@@ -726,7 +732,7 @@ pub async fn inject_text(
     {
         return macos::inject_text(
             text,
-            target_hwnd,
+            target.id,
             contextual_caps,
             auto_spacing,
             profile,
@@ -736,7 +742,14 @@ pub async fn inject_text(
         .await;
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        return linux::inject_text(
+            text, target, contextual_caps, auto_spacing, profile, language, protected_initial_case,
+        ).await;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         // Android hands the final text to the Kotlin overlay service through
         // the loopback bridge outbox (see crate::android::bridge): Kotlin
@@ -749,7 +762,7 @@ pub async fn inject_text(
         {
             let seq = crate::android::bridge::publish_android_insertion(text);
             log::info!(
-                "inject_text(android): handoff seq={seq} target={target_hwnd} chars={}",
+                "inject_text(android): handoff seq={seq} target={} chars={}", target.id,
                 text.chars().count()
             );
             return Ok(InjectionOutcome {
@@ -762,7 +775,7 @@ pub async fn inject_text(
         }
         #[cfg(not(target_os = "android"))]
         {
-            log::warn!("inject_text: not on Windows - skipping target_hwnd={target_hwnd}");
+            log::warn!("inject_text: unsupported target={}", target.id);
 
             Ok(InjectionOutcome {
                 text: text.to_string(),

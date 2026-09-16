@@ -6,7 +6,7 @@ Verenu is a Tauri desktop app. The Svelte frontend owns the interface and local 
 
 | Area | Implementation | Responsibility |
 | --- | --- | --- |
-| Desktop shell | Tauri 2 | Windows and macOS windows, commands, events, and packaging |
+| Desktop shell | Tauri 2 | Windows, macOS, and Linux windows, commands, events, and packaging |
 | Frontend | Svelte 5, TypeScript, Tailwind CSS | Setup, settings, contexts, history, insights, and the dictation pill |
 | Backend | Rust, Tokio | Pipeline orchestration, platform integration, provider requests, and background work |
 | Audio | `cpal`, `hound`, `nnnoiseless` | Microphone capture, WAV encoding, gain, and noise reduction |
@@ -14,7 +14,7 @@ Verenu is a Tauri desktop app. The Svelte frontend owns the interface and local 
 | Local transcription | `transcribe-rs` and downloaded model files | On-device speech-to-text |
 | Local cleanup | Managed local LLM runtime and downloaded model files | On-device text cleanup |
 | Storage | SQLite plus an app-data JSON settings file | History, contexts, vocabulary, snippets, insights, cache, and non-secret settings |
-| Credentials | Windows Credential Manager or macOS Keychain | API keys, kept outside SQLite and the settings file |
+| Credentials | Windows Credential Manager, macOS Keychain, or Linux Secret Service | API keys, kept outside SQLite and the settings file |
 
 ## Dictation flow
 
@@ -55,6 +55,7 @@ Verenu resolves a foreground executable and, when available, a browser domain to
 
 - Windows uses a low-level keyboard hook for hold/release state, UI Automation for focused-text reads and Auto-learn, native clipboard paste, and Credential Manager.
 - macOS uses Carbon `RegisterEventHotKey`, Accessibility APIs for focused-text reads and paste, NSPasteboard for clipboard work, and Keychain for credentials.
+- Linux (primary target: Omarchy Quattro / Hyprland) uses XDG Desktop Portal GlobalShortcuts for hold/release, Hyprland IPC for the captured window target and focused paste, Wayland data-control clipboard support, PipeWire through CPAL, and Freedesktop Secret Service. Portal/AT-SPI failures are capability failures, never a reason to discard recorded audio.
 - The recording pill is created at runtime as an always-on-top, transparent Tauri window. It stays available while idle and becomes interactive only when its state requires user input.
 
 ## Code map

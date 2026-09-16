@@ -17,6 +17,10 @@ const gitSha = git('git rev-parse --short HEAD') || 'unknown';
 const gitBranch = git('git rev-parse --abbrev-ref HEAD') || 'unknown';
 const gitDirty = git('git status --porcelain') !== '';
 const buildTime = new Date().toISOString();
+// Release tooling can request hidden maps for private Error Tracking upload.
+// They are written beside the build artifacts without a public sourceMappingURL
+// comment, so a normal production build never exposes source files to users.
+const emitPrivateErrorTrackingMaps = process.env.VERENU_POSTHOG_SOURCE_MAPS === 'true';
 
 export default defineConfig({
   plugins: [svelte()],
@@ -42,7 +46,7 @@ export default defineConfig({
   build: {
     target: ['es2020', 'chrome100'],
     minify: !process.env.TAURI_DEBUG,
-    sourcemap: !!process.env.TAURI_DEBUG,
+    sourcemap: emitPrivateErrorTrackingMaps ? 'hidden' : !!process.env.TAURI_DEBUG,
     rollupOptions: {
       input: {
         main: 'index.html',

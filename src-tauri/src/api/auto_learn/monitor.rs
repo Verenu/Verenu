@@ -142,29 +142,28 @@ pub(super) fn record_candidate(
         return false;
     }
 
-    let confidence_avg =
-        match db::upsert_auto_learn_candidate_for_context(
-            db,
-            context.id,
-            &mistake,
-            &correction,
-            confidence,
-        ) {
-            Ok(confidence_avg) => confidence_avg,
-            Err(e) => {
-                log::warn!("auto-learn candidate upsert failed: {e}");
-                log_context_event(
-                    db,
-                    context,
-                    "candidate",
-                    "candidate_upsert_failed",
-                    &mistake_hash,
-                    &correction_hash,
-                    confidence,
-                );
-                return false;
-            }
-        };
+    let confidence_avg = match db::upsert_auto_learn_candidate_for_context(
+        db,
+        context.id,
+        &mistake,
+        &correction,
+        confidence,
+    ) {
+        Ok(confidence_avg) => confidence_avg,
+        Err(e) => {
+            log::warn!("auto-learn candidate upsert failed: {e}");
+            log_context_event(
+                db,
+                context,
+                "candidate",
+                "candidate_upsert_failed",
+                &mistake_hash,
+                &correction_hash,
+                confidence,
+            );
+            return false;
+        }
+    };
 
     let tier = if confidence_avg >= HIGH_CONFIDENCE_TIER {
         "high"
@@ -544,9 +543,8 @@ fn run_coordinator(receiver: std::sync::mpsc::Receiver<MonitorRequest>) {
 
         let mut index = 0;
         while index < tasks.len() {
-            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tasks[index].step()
-            }));
+            let step =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tasks[index].step()));
             match step {
                 Ok(true) => {
                     tasks.swap_remove(index);

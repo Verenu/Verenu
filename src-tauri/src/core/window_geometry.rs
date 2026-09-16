@@ -16,14 +16,53 @@ pub struct DesktopPoint {
 /// The native focus target used for injection plus the display anchor captured
 /// at dictation start. The id is an HWND on Windows and an application PID on
 /// macOS.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WindowTarget {
     pub id: usize,
     pub display_point: Option<DesktopPoint>,
+    /// Hyprland's stable client address and metadata captured *before* audio
+    /// processing. Other platforms leave this empty and keep their HWND/PID
+    /// identity in `id`.
+    #[cfg(target_os = "linux")]
+    pub linux: Option<LinuxWindowTarget>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinuxWindowTarget {
+    pub address: String,
+    pub pid: u32,
+    pub class_name: String,
+    pub title: String,
+    pub workspace_id: i32,
+    pub monitor: i32,
+    pub tags: Vec<String>,
 }
 
 impl WindowTarget {
     pub fn capture_foreground() -> Self {
+        #[cfg(target_os = "linux")]
+        if let Some(window) = crate::core::hyprland::active_window() {
+            let point = (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
+                x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
+                y: f64::from(window.at[1]) + f64::from(window.size[1]) / 2.0,
+            });
+            return Self {
+                // Kept for existing target-id contracts; all Linux-native
+                // operations consume the typed `linux` identity below.
+                id: window.pid as usize,
+                display_point: point,
+                linux: Some(LinuxWindowTarget {
+                    address: window.address,
+                    pid: window.pid,
+                    class_name: window.class_name,
+                    title: window.title,
+                    workspace_id: window.workspace.id,
+                    monitor: window.monitor,
+                    tags: window.tags,
+                }),
+            };
+        }
         Self::from_id(window_context::get_foreground_hwnd())
     }
 
@@ -33,23 +72,53 @@ impl WindowTarget {
     }
 
     pub fn from_parts(id: usize, display_point: Option<DesktopPoint>) -> Self {
-        Self { id, display_point }
+        Self {
+            id,
+            display_point,
+            #[cfg(target_os = "linux")]
+            linux: None,
+        }
     }
 
     pub fn from_id(id: usize) -> Self {
         Self {
             id,
             display_point: window_center(id),
+            #[cfg(target_os = "linux")]
+            linux: None,
         }
     }
 
     /// Re-read geometry for retries in case the target window moved. Retain the
     /// original point if the native window is no longer queryable.
     pub fn refreshed(self) -> Self {
+        #[cfg(target_os = "linux")]
+        if let Some(linux) = &self.linux {
+            if let Some(window) = crate::core::hyprland::window_by_address(&linux.address) {
+                return Self {
+                    id: window.pid as usize,
+                    display_point: (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
+                        x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
+                        y: f64::from(window.at[1]) + f64::from(window.size[1]) / 2.0,
+                    }),
+                    linux: Some(LinuxWindowTarget {
+                        address: window.address,
+                        pid: window.pid,
+                        class_name: window.class_name,
+                        title: window.title,
+                        workspace_id: window.workspace.id,
+                        monitor: window.monitor,
+                        tags: window.tags,
+                    }),
+                };
+            }
+        }
         let refreshed = Self::from_id(self.id);
         Self {
             id: self.id,
             display_point: refreshed.display_point.or(self.display_point),
+            #[cfg(target_os = "linux")]
+            linux: self.linux.clone(),
         }
     }
 }

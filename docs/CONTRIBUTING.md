@@ -98,6 +98,13 @@ npm run dev
 - Real macOS testing matters because permissions are part of the feature, not an edge case.
 - Changes that touch hotkeys, injection, onboarding, setup, or key storage should be checked on macOS if they can possibly affect it.
 
+### Linux (Omarchy / Hyprland)
+
+- Default hold-to-record hotkey is <kbd>Ctrl</kbd> + <kbd>Space</kbd>.
+- Global shortcuts must go through the XDG Desktop Portal; do not add input snooping or privileged helpers.
+- API keys use Freedesktop Secret Service and must never be written to settings or SQLite.
+- Do not edit Omarchy-owned files under `/usr/share/omarchy`; user Hyprland changes belong under `~/.config/hypr/`.
+
 ## Development Rules
 
 - Keep Tauri. Do not replace the app shell with Electron.

@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
+use tauri::Manager;
 static PERMISSION_QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static SIGNING_INFO: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
@@ -504,7 +505,18 @@ pub async fn request_accessibility_permission(
         });
         let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rx).await;
     }
-    macos_permission_snapshot(provider).await
+    let snapshot = macos_permission_snapshot(provider).await;
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.permission_event(
+            "accessibility",
+            if snapshot.accessibility == "authorized" {
+                "granted"
+            } else {
+                "denied"
+            },
+        );
+    }
+    snapshot
 }
 
 #[tauri::command]
@@ -525,10 +537,24 @@ pub async fn request_microphone_permission(app: tauri::AppHandle) -> Result<Stri
         if before == "not_determined" {
             crate::system::mac_app::request_microphone_on_main_thread(&app).await?;
         }
-        Ok(crate::system::mac_app::microphone_permission_status().to_string())
+        let status = crate::system::mac_app::microphone_permission_status().to_string();
+        if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+            analytics.permission_event(
+                "microphone",
+                if status == "authorized" {
+                    "granted"
+                } else {
+                    "denied"
+                },
+            );
+        }
+        Ok(status)
     }
     #[cfg(not(target_os = "macos"))]
     {
+        if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+            analytics.permission_event("microphone", "granted");
+        }
         Ok("authorized".to_string())
     }
 }
@@ -623,7 +649,18 @@ pub async fn request_notification_permission(
             crate::system::mac_app::request_notifications_on_main_thread(&app).await?;
         }
     }
-    Ok(notification_permission_snapshot().await)
+    let snapshot = notification_permission_snapshot().await;
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.permission_event(
+            "notifications",
+            if snapshot.authorization == "authorized" {
+                "granted"
+            } else {
+                "denied"
+            },
+        );
+    }
+    Ok(snapshot)
 }
 
 /// Opens the macOS Microphone privacy pane so the user can grant permission.

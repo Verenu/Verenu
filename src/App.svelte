@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { appStore } from './lib/stores';
   import { cleanupPromptEditor } from './lib/stores.svelte';
-  import { isWindows } from './lib/platform';
+  import { isWindows, isLinux } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
@@ -65,8 +65,37 @@
   function applyTheme() {
     const theme = effectiveTheme(appStore.appearanceMode);
     document.documentElement.dataset.theme = theme;
-    if (isWindows && isTauriRuntime()) {
-      invoke('set_native_titlebar_theme', { dark: theme === 'dark' }).catch((error) => {
+    // isLinux is UA-derived and Android's UA also contains "Linux", so it
+    // must be paired with !isAndroid before it means "Linux desktop".
+    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
+      // Read the actual resolved surface/ink/sidebar/hover tokens rather
+      // than hardcoding a duplicate palette on the Rust side — the native
+      // Linux title bar CSS is built from these exact values, so it can
+      // never drift from theme.css, and Light/Dark/accent changes follow
+      // automatically. Windows' native caption theming ignores these.
+      const rootStyles = getComputedStyle(document.documentElement);
+      const surface = rootStyles.getPropertyValue('--paper').trim();
+      const text = rootStyles.getPropertyValue('--ink').trim();
+      const border = rootStyles.getPropertyValue('--line').trim();
+      const hover = rootStyles.getPropertyValue('--control-hover').trim();
+      const sidebarSurface = rootStyles.getPropertyValue('--sidebar-bg').trim();
+      // --sidebar-w is only ever overridden on .app (the compact-rail and
+      // Android no-rail breakpoints), not :root, so it has to be read from
+      // .app itself — reading it from documentElement would silently miss
+      // those overrides and let the native split drift from the real rail.
+      const appEl = document.querySelector('.app');
+      const sidebarWidth = (appEl ? getComputedStyle(appEl) : rootStyles)
+        .getPropertyValue('--sidebar-w')
+        .trim();
+      invoke('set_native_titlebar_theme', {
+        dark: theme === 'dark',
+        surface: surface || null,
+        text: text || null,
+        border: border || null,
+        hover: hover || null,
+        sidebarSurface: sidebarSurface || null,
+        sidebarWidth: sidebarWidth || null,
+      }).catch((error) => {
         console.error('Failed to sync native title bar theme:', error);
       });
     }
@@ -210,9 +239,21 @@
       const message = (event as CustomEvent<unknown>).detail;
       showErrorToast(typeof message === 'string' ? message : 'Something went wrong');
     };
+    // Never send Error.message, rejected values, source URLs, line numbers, or
+    // JavaScript stacks across IPC. The native analytics boundary converts
+    // these two fixed signals into a sanitized PostHog `$exception` event.
+    const reportFrontendException = (kind: 'frontend_unhandled' | 'frontend_handled', handled: boolean) => {
+      if (isTauriRuntime()) {
+        void invoke('analytics_frontend_exception', { kind, handled }).catch(() => {});
+      }
+    };
+    const onWindowError = () => reportFrontendException('frontend_unhandled', false);
+    const onUnhandledRejection = () => reportFrontendException('frontend_unhandled', false);
     window.addEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
 
-    if (isWindows && isTauriRuntime()) {
+    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
       invoke<NativeTitleBarMetrics>('get_native_titlebar_metrics')
         .then(applyNativeTitleBarMetrics)
         .catch((error) => console.error('Failed to read native title bar metrics:', error));
@@ -376,6 +417,8 @@
       if (stopSyncListeners) stopSyncListeners();
       if (stopTitleBarMetricsListener) stopTitleBarMetricsListener();
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
       media?.removeEventListener?.('change', onSystemThemeChange);
       connectivityPoll.stop();
       stopViewport();
@@ -386,10 +429,14 @@
 <div
   class="app"
   class:app-windows={isWindows}
+  class:app-linux={isLinux && !isAndroid}
   data-android={isAndroid ? 'true' : 'false'}
   data-width-class={viewport.widthClass}
   data-compact-nav={compactNav ? 'true' : 'false'}
 >
+  {#if isLinux && !isAndroid}
+    <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
+  {/if}
   {#if appStore.setupComplete === false}
     <Setup />
   {/if}
@@ -515,6 +562,32 @@
      without changing the established macOS page rhythm. */
   .app.app-windows {
     --page-pad-y: calc(var(--native-titlebar-height, 32px) + 10px);
+  }
+
+  /* Linux chrome is an upper-right exclusion zone, not a full-width row.
+     Page content keeps the normal top rhythm; only controls that can collide
+     with the native cluster consume its measured bounds. */
+  .app.app-linux {
+    --page-pad-y: clamp(20px, 2vw, 24px);
+    --native-chrome-inline-clearance: max(0px, calc(var(--native-caption-right-inset, 54px) - var(--page-pad-x) + 8px));
+    --native-chrome-below-clearance: max(0px, calc(var(--native-titlebar-height, 32px) - var(--page-pad-y) + 8px));
+  }
+
+  :global(.app.app-linux .native-chrome-corner--inline) {
+    margin-right: var(--native-chrome-inline-clearance);
+  }
+
+  :global(.app.app-linux .native-chrome-corner--below) {
+    margin-top: var(--native-chrome-below-clearance);
+  }
+
+  .native-drag-region {
+    position: absolute;
+    z-index: 59;
+    top: 0;
+    left: var(--sidebar-w);
+    right: var(--native-caption-right-inset, 126px);
+    height: var(--native-titlebar-height, 32px);
   }
 
   .body {
