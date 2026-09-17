@@ -247,6 +247,17 @@ pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]
     count
 }
 
+/// Words dictated, without snippet awareness: whitespace-delimited tokens
+/// containing at least one alphanumeric character. Punctuation-only tokens
+/// (`...`, em dashes, stray periods from the transcription model) are not
+/// words. This is the shared definition behind history totals, lifetime
+/// stats, and Insights aggregates.
+pub fn count_alphanumeric_words(text: &str) -> i64 {
+    text.split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphanumeric))
+        .count() as i64
+}
+
 /// If the entire transcription is just a snippet trigger (ignoring punctuation
 /// added by the transcription model), return the expansion directly.
 ///
@@ -447,8 +458,8 @@ fn ensure_final_exclamation(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cleanup_instruction_overrides, count_words_without_snippet_triggers,
-        expand_snippets_from, prepare_snippets,
+        apply_cleanup_instruction_overrides, count_alphanumeric_words,
+        count_words_without_snippet_triggers, expand_snippets_from, prepare_snippets,
     };
     use crate::data::db;
 
@@ -581,6 +592,14 @@ mod tests {
         let count = count_words_without_snippet_triggers("pre-test run", &snippets);
 
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn alphanumeric_word_count_ignores_punctuation_only_tokens() {
+        assert_eq!(count_alphanumeric_words("hello ... world"), 2);
+        assert_eq!(count_alphanumeric_words("..."), 0);
+        assert_eq!(count_alphanumeric_words(""), 0);
+        assert_eq!(count_alphanumeric_words("don't re-enter 42"), 3);
     }
 
     #[test]
