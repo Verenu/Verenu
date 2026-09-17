@@ -1604,19 +1604,20 @@ async fn lifetime_counters_merge_without_double_counting() {
     let host_a = TestHost::new(&uuid("aaaa"));
     let host_b = TestHost::new(&uuid("bbbb"));
 
-    // Each device dictated: A 100 words, B 40 words.
+    // Each device dictated; stored counts are spoken words ("one two three"
+    // is 3, "hello world" is 2).
     db::insert_transcription_returning(
         &a,
         "one two three",
         "one two three",
-        100,
+        3,
         6_000,
         "",
         None,
         None,
     )
     .expect("transcribe a");
-    db::insert_transcription_returning(&b, "hello world", "hello world", 40, 4_000, "", None, None)
+    db::insert_transcription_returning(&b, "hello world", "hello world", 2, 4_000, "", None, None)
         .expect("transcribe b");
 
     run_two_sessions(&a, &b, &host_a, &host_b).await;
@@ -1624,12 +1625,12 @@ async fn lifetime_counters_merge_without_double_counting() {
     for (name, handle) in [("a", &a), ("b", &b)] {
         let conn = handle.lock().expect("lock");
         let (words, _fixes) = sync_store::effective_lifetime_totals(&conn).expect("totals");
-        assert_eq!(words, 140, "device {name} merged word count");
+        assert_eq!(words, 5, "device {name} merged word count");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM transcriptions"), 2);
         // History rows arrived with their original timestamps and text.
         let raw: String = conn
             .query_row(
-                "SELECT raw_text FROM transcriptions WHERE words = 100",
+                "SELECT raw_text FROM transcriptions WHERE words = 3",
                 [],
                 |r| r.get(0),
             )

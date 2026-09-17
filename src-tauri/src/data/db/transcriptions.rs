@@ -26,6 +26,14 @@ pub struct Stats {
 
 // One flat call site in the pipeline; bundling these into a params struct
 // would add a type without removing a caller.
+//
+// `words` is kept in the signature for caller compatibility but is no longer
+// authoritative: the canonical count is the snippet-aware spoken count derived
+// here from `raw`. A bare `split_whitespace` count inflates totals with
+// punctuation-only tokens and snippet triggers (shortcut words that were
+// never spoken), which is what made lifetime totals read higher than what
+// users actually dictated. Storing the spoken count in `words` keeps history,
+// lifetime, and daily rollups on one definition.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_transcription_returning(
     db: &Db,
@@ -41,6 +49,10 @@ pub fn insert_transcription_returning(
     // snippet trigger snapshot is cached by the schema layer, so this does
     // not reload complete snippet rows for every transcription.
     let spoken_words = compute_spoken_words(db, raw)?;
+    // Canonical "words dictated": what was actually spoken. The passed-in
+    // `words` (historically a raw whitespace split) is intentionally ignored.
+    let _ = words;
+    let words = spoken_words;
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let entry = tx.query_row(
