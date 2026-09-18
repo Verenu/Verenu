@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed inflated word totals: history, lifetime, and daily counts now use spoken words (snippet triggers and punctuation-only tokens excluded) instead of a raw whitespace split. Existing databases are repaired on open, refunding the overcount from the lifetime total.
 - Fixed multiple Verenu sessions running at once on Windows: a newer launch
   now asks the older session to shut down cleanly and takes over after it has
   released its instance lock, including when dev and packaged builds overlap.

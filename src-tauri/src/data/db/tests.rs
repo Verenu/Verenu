@@ -1512,7 +1512,7 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
 }
 
 #[test]
-fn stats_avg_wpm_ignores_snippet_triggers_even_when_stored_words_are_inflated() {
+fn stats_total_words_uses_spoken_count_excluding_snippet_triggers() {
     let db = test_db();
     insert_snippet(
         &db,
@@ -1535,7 +1535,8 @@ fn stats_avg_wpm_ignores_snippet_triggers_even_when_stored_words_are_inflated() 
 
     let stats = query_stats(&db).expect("stats");
 
-    assert_eq!(stats.total_words, 9);
+    // The passed-in 9 is ignored: a pure snippet trigger is zero spoken words.
+    assert_eq!(stats.total_words, 0);
     assert_eq!(stats.avg_wpm, 0.0);
 }
 
@@ -1606,7 +1607,7 @@ fn stats_avg_wpm_streams_large_transcription_sets() {
                 "hello sig world"
             },
             "clean",
-            3,
+            2,
             1000,
             "test",
             None,
@@ -1617,7 +1618,8 @@ fn stats_avg_wpm_streams_large_transcription_sets() {
 
     let stats = query_stats(&db).expect("stats");
 
-    assert_eq!(stats.total_words, 1500);
+    // "hello sig world" counts 2 spoken words: the trigger is never spoken.
+    assert_eq!(stats.total_words, 1000);
     assert!(stats.avg_wpm > 0.0);
 }
 
@@ -1654,9 +1656,9 @@ fn prune_transcriptions_older_than_deletes_only_old_rows() {
 #[test]
 fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
     let db = test_db();
-    insert_transcription_returning(&db, "old one", "old one", 5, 1000, "test", None, None)
+    insert_transcription_returning(&db, "old one", "old one", 2, 1000, "test", None, None)
         .expect("old transcription");
-    insert_transcription_returning(&db, "recent one", "recent one", 3, 1000, "test", None, None)
+    insert_transcription_returning(&db, "recent one", "recent one", 2, 1000, "test", None, None)
         .expect("recent transcription");
     {
         let conn = lock_conn(&db).expect("lock");
@@ -1668,14 +1670,14 @@ fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
     }
 
     let before = query_stats(&db).expect("stats before prune").total_words;
-    assert_eq!(before, 8);
+    assert_eq!(before, 4);
 
     let deleted = prune_transcriptions_older_than(&db, 7).expect("prune");
     assert_eq!(deleted, 1);
 
     let after = query_stats(&db).expect("stats after prune").total_words;
     assert_eq!(
-        after, 8,
+        after, 4,
         "lifetime word counter must not shrink when old history is pruned"
     );
 }
@@ -1683,7 +1685,8 @@ fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
 #[test]
 fn pruning_old_transcriptions_preserves_daily_insights_and_lifetime_wpm() {
     let db = test_db();
-    insert_transcription_returning(&db, "old one", "old one", 5, 2_000, "test", None, None)
+    // Stored count is spoken words ("old one" is 2).
+    insert_transcription_returning(&db, "old one", "old one", 2, 2_000, "test", None, None)
         .expect("old transcription");
     {
         let conn = lock_conn(&db).expect("lock");
@@ -1698,7 +1701,7 @@ fn pruning_old_transcriptions_preserves_daily_insights_and_lifetime_wpm() {
     let old_day = before
         .daily
         .iter()
-        .find(|day| day.words == 5)
+        .find(|day| day.words == 2)
         .expect("daily summary")
         .day
         .clone();
@@ -1712,11 +1715,59 @@ fn pruning_old_transcriptions_preserves_daily_insights_and_lifetime_wpm() {
         .iter()
         .find(|day| day.day == old_day)
         .expect("preserved daily summary");
-    assert_eq!(preserved.words, 5);
+    assert_eq!(preserved.words, 2);
     assert_eq!(preserved.transcriptions, 1);
     assert_eq!(preserved.speaking_ms, 2_000);
     assert_eq!(after.totals.total_transcriptions, 1);
     assert!(after.totals.avg_wpm > 0.0);
+}
+
+#[test]
+fn repair_aligns_legacy_inflated_counts_and_refunds_lifetime() {
+    let db = test_db();
+    insert_snippet(&db, "sig", "Best regards", "").expect("snippet");
+    {
+        let conn = lock_conn(&db).expect("lock");
+        // Pre-fix row: raw whitespace-split count stored in `words`, spoken
+        // count never backfilled.
+        conn.execute(
+            "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used)
+             VALUES ('please add sig thanks ...', 'Please add thanks', 5, NULL, 2000, 'test')",
+            [],
+        )
+        .expect("legacy row");
+        conn.execute("UPDATE lifetime_stats SET total_words = 5 WHERE id = 1", [])
+            .expect("lifetime");
+    }
+    {
+        let mut conn = lock_conn(&db).expect("lock");
+        repair_inflated_word_counts(&mut conn).expect("repair");
+        // Second run must be a no-op.
+        repair_inflated_word_counts(&mut conn).expect("repair again");
+    }
+    let conn = lock_conn(&db).expect("lock");
+    // "please add sig thanks ...": trigger + punctuation excluded → 3.
+    let words: i64 = conn
+        .query_row("SELECT words FROM transcriptions", [], |r| r.get(0))
+        .expect("words");
+    assert_eq!(words, 3);
+    let lifetime: i64 = conn
+        .query_row(
+            "SELECT total_words FROM lifetime_stats WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("lifetime");
+    assert_eq!(lifetime, 3);
+    // The daily summary followed through the update trigger.
+    let daily: i64 = conn
+        .query_row(
+            "SELECT total_words FROM transcription_daily_stats",
+            [],
+            |r| r.get(0),
+        )
+        .expect("daily");
+    assert_eq!(daily, 3);
 }
 
 #[test]
