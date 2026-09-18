@@ -166,7 +166,6 @@ pub async fn run_pipeline_fixture(
     } else {
         injected_text
     };
-    let words = raw_text.split_whitespace().count() as i64;
     // Mirrors finalize.rs: History must save the same text that actually
     // gets injected (dictionary substitution included), not the
     // pre-dictionary value.
@@ -175,7 +174,8 @@ pub async fn run_pipeline_fixture(
         &db_handle,
         &raw_text,
         &clean_for_insert,
-        words,
+        // Canonical count is derived inside from the raw text (see finalize.rs).
+        0,
         request.audio.duration_ms as i64,
         &api_used,
         None,

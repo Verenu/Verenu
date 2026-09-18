@@ -878,14 +878,13 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         return;
     }
 
-    let words = raw.split_whitespace().count() as i64;
     let finalize_span = diagnostics::start_span(
         trace_guard.trace_id(),
         "finalize_and_inject",
         Some("injection"),
         None,
     );
-    if let Err(e) = finalize_pipeline_completion(
+    let entry = match finalize_pipeline_completion(
         &app,
         &state,
         PipelineCompletionContext {
@@ -909,22 +908,27 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     )
     .await
     {
-        if let Some(ref span) = finalize_span {
-            let _ = diagnostics::finish_span(span, OperationOutcome::Failure);
+        Ok(entry) => {
+            if let Some(ref span) = finalize_span {
+                let _ = diagnostics::finish_span(span, OperationOutcome::Success);
+            }
+            entry
         }
-        log::error!("pipeline finalize failed: {e}");
-        state::leave_finalizing(&state, generation);
-        return;
-    }
-    if let Some(ref span) = finalize_span {
-        let _ = diagnostics::finish_span(span, OperationOutcome::Success);
-    }
+        Err(e) => {
+            if let Some(ref span) = finalize_span {
+                let _ = diagnostics::finish_span(span, OperationOutcome::Failure);
+            }
+            log::error!("pipeline finalize failed: {e}");
+            state::leave_finalizing(&state, generation);
+            return;
+        }
+    };
     state::leave_finalizing(&state, generation);
     state::note_sensitivity_success(&state);
 
     log::info!(
         "pipeline: completed gen={generation} words={} duration_ms={} elapsed_ms={}",
-        words,
+        entry.words,
         captured_audio.duration_ms,
         started_at.elapsed().as_millis()
     );
