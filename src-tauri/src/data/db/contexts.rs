@@ -1686,6 +1686,122 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_content_reports_and_moves_from_everywhere() {
+        let db = open(":memory:").expect("db");
+        let context =
+            insert_context_returning(&db, "Work", None, None, None, None, false).expect("context");
+        let dictionary = insert_dictionary_entry_returning(&db, "Grok", Some("Glock"), None)
+            .expect("dictionary");
+        let snippet =
+            insert_snippet_returning(&db, "sig", "Best regards", "", None).expect("snippet");
+
+        let dictionary_locations = query_dictionary_entry_contexts(&db, "Grok").expect("locations");
+        assert_eq!(dictionary_locations.len(), 1);
+        assert_eq!(dictionary_locations[0].id, EVERYWHERE_CONTEXT_ID);
+        assert!(dictionary_locations[0].is_everywhere);
+
+        let snippet_locations = query_snippet_entry_contexts(&db, "sig").expect("locations");
+        assert_eq!(snippet_locations.len(), 1);
+        assert_eq!(snippet_locations[0].id, EVERYWHERE_CONTEXT_ID);
+        assert!(snippet_locations[0].is_everywhere);
+
+        let moved_dictionary =
+            move_dictionary_entry_to_context(&db, "Grok", context.id).expect("move dictionary");
+        assert_eq!(moved_dictionary.id, dictionary.id);
+        assert_eq!(moved_dictionary.mistake.as_deref(), Some("Glock"));
+        assert!(query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.id != dictionary.id));
+        assert!(query_dictionary_for_context(&db, context.id)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.id == dictionary.id));
+
+        let moved_snippet =
+            move_snippet_entry_to_context(&db, "sig", context.id).expect("move snippet");
+        assert_eq!(moved_snippet.id, snippet.id);
+        assert_eq!(moved_snippet.expansion, "Best regards");
+        assert!(query_snippets_for_context(&db, EVERYWHERE_CONTEXT_ID)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.id != snippet.id));
+        assert!(query_snippets_for_context(&db, context.id)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.id == snippet.id));
+    }
+
+    #[test]
+    fn duplicating_context_copies_settings_and_content_without_targets() {
+        let db = open(":memory:").expect("db");
+        let source = insert_context_returning(
+            &db,
+            "Development",
+            Some("code"),
+            Some("casual"),
+            Some("high"),
+            Some("Use concise technical language."),
+            true,
+        )
+        .expect("source context");
+        update_context_color(&db, source.id, Some("oklch(0.65 0.09 250)")).expect("source color");
+        let dictionary = insert_dictionary_entry_returning(&db, "Tauri", Some("Tory"), None)
+            .expect("dictionary");
+        let snippet =
+            insert_snippet_returning(&db, "sig", "Best regards", "", None).expect("snippet");
+        set_dictionary_context_assignment(&db, source.id, dictionary.id, true)
+            .expect("dictionary assignment");
+        set_snippet_context_assignment(&db, source.id, snippet.id, true)
+            .expect("snippet assignment");
+        assign_context_target(&db, source.id, "code.exe").expect("app target");
+        assign_context_website(&db, source.id, "docs.example.com").expect("website target");
+
+        let duplicate = duplicate_context(&db, source.id).expect("duplicate context");
+
+        assert_eq!(duplicate.name, "Development copy");
+        assert_eq!(duplicate.icon.as_deref(), Some("code"));
+        assert_eq!(duplicate.tone.as_deref(), Some("casual"));
+        assert_eq!(duplicate.cleanup_intensity.as_deref(), Some("high"));
+        assert_eq!(
+            duplicate.custom_instructions.as_deref(),
+            Some("Use concise technical language.")
+        );
+        assert_eq!(duplicate.color.as_deref(), Some("oklch(0.65 0.09 250)"));
+        assert!(query_dictionary_for_context(&db, duplicate.id)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.id == dictionary.id));
+        assert!(query_snippets_for_context(&db, duplicate.id)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.id == snippet.id));
+        assert!(query_context_targets(&db, Some(duplicate.id))
+            .unwrap()
+            .is_empty());
+        assert!(query_context_website_targets(&db, Some(duplicate.id))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn duplicated_context_names_are_unique() {
+        let db = open(":memory:").expect("db");
+        let source = insert_context_returning(&db, "Writing", None, None, None, None, false)
+            .expect("source");
+        insert_context_returning(&db, "Writing copy", None, None, None, None, false).expect("copy");
+
+        let duplicate = duplicate_context(&db, source.id).expect("numbered copy");
+        assert_eq!(duplicate.name, "Writing copy 2");
+    }
+
+    #[test]
+    fn everywhere_context_cannot_be_duplicated() {
+        let db = open(":memory:").expect("db");
+        assert!(duplicate_context(&db, EVERYWHERE_CONTEXT_ID).is_err());
+    }
+
+    #[test]
     fn adding_existing_content_to_a_context_does_not_overwrite_everywhere() {
         let db = open(":memory:").expect("db");
         let context = insert_context_returning(&db, "Writing", None, None, None, None, false)
