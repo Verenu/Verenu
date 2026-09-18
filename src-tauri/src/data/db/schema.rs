@@ -1041,6 +1041,10 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
 
     ensure_stats_summary_triggers(&conn)?;
+    // Refund pre-fix inflated `words` (raw whitespace splits) down to spoken
+    // counts. Runs after the triggers above so daily summaries adjust in the
+    // same transaction; see repair_inflated_word_counts.
+    repair_inflated_word_counts(&mut conn)?;
     ensure_history_fts(&conn);
 
     Ok(Arc::new(Mutex::new(conn)))
@@ -2542,5 +2546,52 @@ fn backfill_spoken_words(conn: &Connection) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// One-time repair for inflated word counts. Rows stored before the
+/// spoken-count fix carry a raw whitespace-split count in `words`
+/// (punctuation-only tokens and snippet triggers included). This aligns them
+/// to `spoken_words` and refunds the overcount from the lifetime counter.
+/// Daily summaries follow automatically through
+/// `trg_transcriptions_daily_update`; the WPM update trigger nets to zero
+/// because old and new values resolve through the same
+/// `COALESCE(spoken_words, words)`. Idempotent: a repaired database reports
+/// zero overcount and this becomes one cheap aggregate query per open.
+///
+/// `pub(crate)` for the repair regression test in `db::tests`.
+pub(crate) fn repair_inflated_word_counts(conn: &mut Connection) -> Result<()> {
+    // Snippet triggers may have changed since old dictations, so recomputed
+    // spoken counts for aged rows are an approximation — still strictly
+    // closer to what was spoken than the raw split count.
+    backfill_spoken_words(conn)?;
+    let needs_repair: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM transcriptions
+          WHERE spoken_words IS NOT NULL AND words > spoken_words)",
+        [],
+        |r| r.get(0),
+    )?;
+    if !needs_repair {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    let overcount: i64 = tx.query_row(
+        "SELECT COALESCE(SUM(words - spoken_words), 0) FROM transcriptions
+          WHERE spoken_words IS NOT NULL AND words > spoken_words",
+        [],
+        |r| r.get(0),
+    )?;
+    tx.execute(
+        "UPDATE transcriptions SET words = spoken_words
+          WHERE spoken_words IS NOT NULL AND words > spoken_words",
+        [],
+    )?;
+    if overcount > 0 {
+        tx.execute(
+            "UPDATE lifetime_stats SET total_words = MAX(0, total_words - ?1) WHERE id = 1",
+            params![overcount],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }

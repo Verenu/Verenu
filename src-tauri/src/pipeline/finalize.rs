@@ -140,7 +140,9 @@ pub(super) async fn finalize_pipeline_completion(
     }
 
     let db_handle = app.state::<DbHandle>();
-    let words = ctx.raw.split_whitespace().count() as i64;
+    // No local word count here: `insert_transcription_returning` derives the
+    // canonical spoken count from the raw text (snippet triggers and
+    // punctuation-only tokens excluded).
     let db_for_insert = db_handle.inner().clone();
     let raw_for_insert = ctx.raw.to_string();
     // History's per-entry app metadata is the lowercase executable name. The
@@ -167,7 +169,8 @@ pub(super) async fn finalize_pipeline_completion(
             &db_for_insert,
             &raw_for_insert,
             &clean_for_insert,
-            words,
+            // Canonical count is derived inside from the raw text; see above.
+            0,
             duration_for_insert,
             &api_used_for_insert,
             app_name_for_insert.as_deref(),

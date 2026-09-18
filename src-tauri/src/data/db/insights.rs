@@ -1251,7 +1251,7 @@ mod tests {
     fn daily_zero_fills_a_gap_day_and_stays_ascending() {
         let db = test_db();
         insert_on_day(&db, 3, "day one", 2, 1000);
-        insert_on_day(&db, 1, "day three", 3, 1500);
+        insert_on_day(&db, 1, "day three", 2, 1500);
 
         let insights = query_insights(&db, 7, None).expect("insights");
         let expected = (0..7).rev().map(local_day_string).collect::<Vec<_>>();
@@ -1271,7 +1271,7 @@ mod tests {
         assert_eq!(active[0].day, local_day_string(3));
         assert_eq!(active[0].words, 2);
         assert_eq!(active[1].day, local_day_string(1));
-        assert_eq!(active[1].words, 3);
+        assert_eq!(active[1].words, 2);
         assert_eq!(active[1].speaking_ms, 1500);
     }
 
@@ -1303,7 +1303,7 @@ mod tests {
         let db = test_db();
         insert_on_day(&db, 6, "run one", 2, 1000);
         insert_on_day(&db, 5, "run two", 2, 1000);
-        insert_on_day(&db, 4, "run three", 4, 2000);
+        insert_on_day(&db, 4, "run three", 2, 2000);
 
         let insights = query_insights(&db, 7, None).expect("insights");
 
@@ -1316,7 +1316,7 @@ mod tests {
             insights.streak.longest_ended_on.as_deref(),
             Some(local_day_string(4).as_str())
         );
-        assert_eq!(insights.streak.longest_words, 8);
+        assert_eq!(insights.streak.longest_words, 6);
         assert_eq!(
             insights.streak.current_days, 0,
             "gap at the range end breaks the current streak"
