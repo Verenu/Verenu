@@ -22,7 +22,7 @@
 //! | --- | --- | --- |
 //! | GET | `/v1/state` | → `{ lifecycle, dictationActive, overlay, pendingInsertion }` |
 //! | POST | `/v1/focus` | `{ keyboardVisible, hasEditableFocus }` → overlay decision |
-//! | POST | `/v1/recording/start` | `{ package, hasEditableFocus, supportsSetText }` → `{ ok }` |
+//! | POST | `/v1/recording/start` | `{ package, hasEditableFocus, supportsSetText }` → `{ ok, analyticsSettings }` |
 //! | POST | `/v1/recording/stop` | → `{ ok }` (pipeline continues through state/outbox) |
 //! | POST | `/v1/recording/cancel` | → `{ ok }` |
 //! | POST | `/v1/recording/retry` | → `{ ok }` |
@@ -48,6 +48,11 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+// Needed for `Permissions::from_mode` below (unix-only file). The Android
+// bridge session is evolving this area (atomic publish); this import keeps
+// the current call compiling until that work lands.
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -387,6 +392,7 @@ fn state_payload(state: &BridgeState) -> Value {
         "pillStage": last_pill_stage(),
         "audioLevel": last_audio_level(),
         "keystorePending": has_keystore_rotation(),
+        "analyticsEnabled": analytics_enabled(state),
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
         "overlay": {
@@ -401,6 +407,95 @@ fn state_payload(state: &BridgeState) -> Value {
             .clone(),
         "pendingInsertion": pending,
     })
+}
+
+/// A deliberately small settings summary for pseudonymous product analytics.
+/// Keep this allowlist boolean/category-only: never expose prompts, targets,
+/// model names, microphone names, hotkeys, credentials, or app context.
+fn analytics_settings_from_snapshot(
+    settings: &crate::data::store::SettingsSnapshot,
+    context_group_count: i64,
+) -> Value {
+    let bool_value = |key: &str| settings.get(key).and_then(Value::as_bool);
+    let category_value = |key: &str| {
+        let value = settings.get(key).and_then(Value::as_str).unwrap_or("");
+        let normalized = match key {
+            crate::data::store::TRANSCRIPTION_PROVIDER | crate::data::store::CLEANUP_PROVIDER => {
+                match value {
+                    "groq" | "openai" | "google" | "assemblyai" | "local" => value,
+                    _ => "unknown",
+                }
+            }
+            crate::data::store::CLEANUP_INTENSITY => match value {
+                "none" | "light" | "medium" | "high" => value,
+                _ => "unknown",
+            },
+            crate::data::store::HISTORY_RETENTION => match value {
+                "7 days" | "30 days" | "90 days" | "Forever" => value,
+                _ => "unknown",
+            },
+            crate::data::store::LOCAL_MODEL_MEMORY_POLICY => match value {
+                "keep_loaded" | "unload_after_use" | "never_load" => value,
+                _ => "unknown",
+            },
+            _ => "unknown",
+        };
+        Some(normalized)
+    };
+    let context_group_count = context_group_count.clamp(0, 200);
+    let feature_breadth =
+        crate::data::store::analytics_feature_breadth(settings, context_group_count);
+    json!({
+        "cleanup_enabled": bool_value(crate::data::store::CLEANUP_ENABLED),
+        "dual_transcription_enabled": bool_value(crate::data::store::DUAL_TRANSCRIPTION_ENABLED),
+        "noise_reduction": bool_value(crate::data::store::NOISE_REDUCTION),
+        "mute_audio": bool_value(crate::data::store::MUTE_AUDIO),
+        "exclusive_mic": bool_value(crate::data::store::EXCLUSIVE_MIC),
+        "pause_media": bool_value(crate::data::store::PAUSE_MEDIA_DURING_DICTATION),
+        "sound_effects": bool_value(crate::data::store::PLAY_START_STOP_SOUNDS),
+        "app_context_hint": bool_value(crate::data::store::APP_CONTEXT_HINT),
+        "auto_learn_enabled": bool_value(crate::data::store::AUTO_LEARN_ENABLED),
+        "contextual_formatting": bool_value(crate::data::store::CONTEXTUAL_FORMATTING),
+        "contextual_caps": bool_value(crate::data::store::CONTEXTUAL_CAPS),
+        "auto_spacing": bool_value(crate::data::store::AUTO_SPACING),
+        "autostart_enabled": bool_value(crate::data::store::AUTOSTART_ENABLED),
+        "transcription_provider": category_value(crate::data::store::TRANSCRIPTION_PROVIDER),
+        "cleanup_provider": category_value(crate::data::store::CLEANUP_PROVIDER),
+        "cleanup_intensity": category_value(crate::data::store::CLEANUP_INTENSITY),
+        "history_retention": category_value(crate::data::store::HISTORY_RETENTION),
+        "local_model_memory_policy": category_value(crate::data::store::LOCAL_MODEL_MEMORY_POLICY),
+        "mic_mute_button_dictation": bool_value(crate::data::store::MIC_MUTE_BUTTON_DICTATION),
+        "sync_enabled": bool_value(crate::data::store::SYNC_ENABLED),
+        "context_group_count": context_group_count,
+        "feature_breadth": feature_breadth,
+    })
+}
+
+fn analytics_settings_payload(app: &AppHandle) -> Value {
+    let Ok(settings) = crate::data::store::settings_snapshot(app) else {
+        return json!({});
+    };
+    let context_group_count = app
+        .try_state::<crate::DbHandle>()
+        .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
+        .unwrap_or(0);
+    analytics_settings_from_snapshot(&settings, context_group_count)
+}
+
+fn analytics_enabled(state: &BridgeState) -> bool {
+    state
+        .app
+        .as_ref()
+        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
+        .map(|settings| analytics_enabled_value(&settings))
+        .unwrap_or(true)
+}
+
+fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> bool {
+    settings
+        .get(crate::data::store::ANALYTICS_ENABLED)
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +647,9 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
             note_audio_level(0.0);
             let action = app.state::<crate::pipeline::SharedState>();
             match crate::commands::start_input_recording(app.clone(), action).await {
-                Ok(()) => ok(json!({})),
+                Ok(()) => ok(json!({
+                    "analyticsSettings": analytics_settings_payload(&app),
+                })),
                 Err(e) => err(500, "Internal Server Error", &e),
             }
         }
@@ -887,7 +984,54 @@ pub fn start_bridge(app: AppHandle) -> anyhow::Result<std::net::SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::store::SettingsSnapshot;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn analytics_settings_are_allowlisted_and_normalized() {
+        let settings = SettingsSnapshot::from_pairs([
+            (crate::data::store::CLEANUP_ENABLED.to_string(), json!(true)),
+            (
+                crate::data::store::TRANSCRIPTION_PROVIDER.to_string(),
+                json!("custom-model"),
+            ),
+            (
+                crate::data::store::CLEANUP_INTENSITY.to_string(),
+                json!("medium"),
+            ),
+            (
+                crate::data::store::CLEANUP_PROMPT_OVERRIDE.to_string(),
+                json!("fake transcript"),
+            ),
+            (
+                crate::data::store::TRANSCRIPTION_MODEL.to_string(),
+                json!("sk-test-api-key"),
+            ),
+            (
+                crate::data::store::MICROPHONE_DEVICE.to_string(),
+                json!("C:\\Users\\fake\\mic"),
+            ),
+        ]);
+        let payload = analytics_settings_from_snapshot(&settings, 0);
+        assert_eq!(payload["cleanup_enabled"], true);
+        assert_eq!(payload["transcription_provider"], "unknown");
+        assert_eq!(payload["cleanup_intensity"], "medium");
+        let serialized = payload.to_string();
+        assert!(!serialized.contains("fake transcript"));
+        assert!(!serialized.contains("sk-test-api-key"));
+        assert!(!serialized.contains("C:\\\\Users"));
+        assert!(!serialized.contains("custom-model"));
+    }
+
+    #[test]
+    fn analytics_defaults_on_and_preserves_an_explicit_opt_out() {
+        assert!(analytics_enabled_value(&SettingsSnapshot::from_pairs([])));
+        let disabled = SettingsSnapshot::from_pairs([(
+            crate::data::store::ANALYTICS_ENABLED.to_string(),
+            json!(false),
+        )]);
+        assert!(!analytics_enabled_value(&disabled));
+    }
 
     /// Spin a test server (no AppHandle) on an ephemeral port for
     /// end-to-end protocol tests over real TCP.

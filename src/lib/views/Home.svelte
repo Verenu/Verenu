@@ -320,7 +320,7 @@
   }
 </script>
 
-<div class="content-inner">
+<div class="content-inner" class:desktop-home={!isAndroid}>
   <div class="home-grid">
     <!-- Left column -->
     <div>
@@ -328,6 +328,7 @@
       <p class="page-sub">{greeting}</p>
 
       <HomeHero {hk1} {hk2} android={isAndroid} />
+
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
       {/if}
@@ -379,7 +380,7 @@
 
     <!-- Right column — flat stats (desktop only, see hero note above) -->
     {#if !isAndroid}
-      <div class="stat-stack">
+      <div class="stat-stack native-chrome-corner--below">
         <StatsCard {stats} />
       </div>
     {/if}
@@ -399,6 +400,7 @@
     grid-template-columns: minmax(540px, 1fr) minmax(220px, 280px);
     gap: clamp(18px, 3vw, 32px);
     align-items: start;
+    min-width: 0;
   }
 
   .home-grid > div {
@@ -423,7 +425,12 @@
   @media (max-width: 1060px) {
     .home-grid {
       grid-template-columns: 1fr;
+      min-width: 640px;
     }
+
+    /* Stats are secondary on a narrow desktop window; keeping them in the
+       flow crushes the primary history/recording surface into a column. */
+    .desktop-home .stat-stack { display: none; }
   }
 
   /*

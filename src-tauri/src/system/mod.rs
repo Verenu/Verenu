@@ -5,6 +5,9 @@ pub mod icons;
 pub mod logger;
 #[cfg(target_os = "macos")]
 pub mod mac_app;
+pub mod linux_proc;
+#[cfg(target_os = "linux")]
+pub mod linux_titlebar;
 pub mod media_control;
 pub mod memory;
 pub mod notify;
@@ -17,13 +20,57 @@ pub mod volume;
 pub mod windows_titlebar;
 #[cfg(not(target_os = "windows"))]
 pub mod windows_titlebar {
+    #[cfg(target_os = "linux")]
     #[tauri::command]
-    pub fn get_native_titlebar_metrics() -> Result<(), String> {
-        Err("native title bar metrics are only available on Windows".to_owned())
+    pub fn get_native_titlebar_metrics(
+        window: tauri::WebviewWindow,
+    ) -> Result<super::linux_titlebar::TitleBarMetrics, String> {
+        super::linux_titlebar::metrics(&window)
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[tauri::command]
-    pub fn set_native_titlebar_theme(_window: tauri::WebviewWindow, _dark: bool) {}
+    pub fn get_native_titlebar_metrics() -> Result<(), String> {
+        Err("native title bar metrics are unavailable on this platform".to_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tauri::command]
+    pub fn set_native_titlebar_theme(
+        window: tauri::WebviewWindow,
+        dark: bool,
+        surface: Option<String>,
+        text: Option<String>,
+        border: Option<String>,
+        hover: Option<String>,
+        sidebar_surface: Option<String>,
+        sidebar_width: Option<String>,
+    ) {
+        super::linux_titlebar::apply_theme(
+            &window,
+            dark,
+            surface,
+            text,
+            border,
+            hover,
+            sidebar_surface,
+            sidebar_width,
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tauri::command]
+    pub fn set_native_titlebar_theme(
+        _window: tauri::WebviewWindow,
+        _dark: bool,
+        _surface: Option<String>,
+        _text: Option<String>,
+        _border: Option<String>,
+        _hover: Option<String>,
+        _sidebar_surface: Option<String>,
+        _sidebar_width: Option<String>,
+    ) {
+    }
 }
 
 /// Stops and unloads both local model engines (LLM + STT) before the process

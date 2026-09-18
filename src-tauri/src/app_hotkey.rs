@@ -24,6 +24,10 @@ enum HotkeyEvent {
     Cancel,
     EscapeCancel,
     CopyLast,
+    // Wired below so `hotkey::start`'s signature is satisfied on every
+    // platform; the sub-app capture feature itself isn't implemented yet, so
+    // this currently just logs.
+    CaptureSubApp,
 }
 
 /// A hands-free stop is itself a quick tap, so the next click can still be
@@ -103,6 +107,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
     let tx_cancel = hotkey_tx.clone();
     let tx_escape = hotkey_tx.clone();
     let tx_copy_last = hotkey_tx.clone();
+    let tx_sub_app = hotkey_tx.clone();
     let tx_release = hotkey_tx;
 
     match crate::core::hotkey::start(
@@ -123,6 +128,9 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
         },
         move || {
             let _ = tx_copy_last.send(HotkeyEvent::CopyLast);
+        },
+        move || {
+            let _ = tx_sub_app.send(HotkeyEvent::CaptureSubApp);
         },
     ) {
         Ok(_handle) => log::info!("hotkey: hook installed"),
@@ -269,14 +277,84 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         handsfree_conversion_guard.arm(Instant::now());
                         crate::core::hotkey::set_handless_active(true);
                         pipeline::update_pill_state(&app_hk, "handsfree");
-                    } else if !has_session && pipeline::reserve_starting(&state_hk).is_ok() {
-                        let target = WindowTarget::capture_foreground();
-                        if let Some(mut st) = lock_app_state(&state_hk) {
-                            st.target = target;
-                            st.pill_placement_stale = true;
+                    } else if !has_session {
+                        // Linux's only handsfree gesture is a double-tap of the
+                        // whole chord (see hotkey/linux.rs) — its first tap's
+                        // own release already fired and can still be
+                        // Processing (a near-certain quality-gate rejection,
+                        // since a "tap" is far under MIN_RECORDING_MS) by the
+                        // time this fires for the second tap. reserve_starting
+                        // requires Idle and silently no-ops against
+                        // Processing, which used to mean the double-tap just
+                        // watched two short, separately-rejected dictations
+                        // instead of converting to handsfree. Interrupt that
+                        // stale attempt first, exactly like a fresh Press
+                        // would, carrying its audio forward instead of
+                        // discarding it.
+                        let started = {
+                            let Some(st) = lock_app_state(&state_hk) else {
+                                continue;
+                            };
+                            match &st.lifecycle {
+                                pipeline::DictationLifecycle::Idle => {
+                                    drop(st);
+                                    pipeline::reserve_starting(&state_hk).is_ok()
+                                }
+                                pipeline::DictationLifecycle::Processing(_) => {
+                                    drop(st);
+                                    match pipeline::take_active_pipeline_for_interrupt(&state_hk) {
+                                        Some(active) => {
+                                            let _ = active.cancel_tx.send(true);
+                                            true
+                                        }
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            }
+                        };
+                        if started {
+                            // Lossless release-then-double-tap conversion: on
+                            // Linux the chord contains Space, so no key can
+                            // convert a live hold in place the way Windows'
+                            // Space key does. Releasing to stop and
+                            // immediately double-tapping is the closest
+                            // gesture — carry the just-cancelled audio into
+                            // the new hands-free session instead of leaving
+                            // it behind as a pill Continue offer. Tightly
+                            // bounded (seconds, not the full resume window)
+                            // so an unrelated older stash is never silently
+                            // prepended to a fresh dictation.
+                            let carried = pipeline::peek_cancelled_capture_if_fresh(&state_hk)
+                                .filter(|capture| {
+                                    capture.captured_at.elapsed()
+                                        < std::time::Duration::from_secs(5)
+                                });
+                            if let Some(capture) = &carried {
+                                pipeline::set_starting_prepend_audio(
+                                    &state_hk,
+                                    capture.audio.clone(),
+                                );
+                            }
+                            let target = WindowTarget::capture_foreground();
+                            if let Some(mut st) = lock_app_state(&state_hk) {
+                                st.target = target;
+                                st.pill_placement_stale = true;
+                            }
+                            start_recording_session(&app_hk, &state_hk, "handsfree", true);
+                            crate::core::hotkey::set_handless_active(true);
+                            if carried.is_some()
+                                && lock_app_state(&state_hk)
+                                    .is_some_and(|st| st.lifecycle.is_recording())
+                            {
+                                // The stash was adopted: retire the Continue
+                                // offer (the pill morphs cancelled ->
+                                // handsfree) instead of leaving a stale
+                                // resume behind.
+                                pipeline::clear_cancelled_capture(&state_hk);
+                                pipeline::emit_cancelled_capture_cleared(&app_hk);
+                            }
                         }
-                        start_recording_session(&app_hk, &state_hk, "handsfree", true);
-                        crate::core::hotkey::set_handless_active(true);
                     }
                 }
 
@@ -444,6 +522,13 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             }
                         }
                     });
+                }
+
+                HotkeyEvent::CaptureSubApp => {
+                    // Sub-app capture isn't implemented yet; the hotkey hook
+                    // fires this event, but there's nothing downstream to
+                    // handle it.
+                    log::debug!("hotkey: capture-sub-app fired (not yet implemented)");
                 }
             }
         }

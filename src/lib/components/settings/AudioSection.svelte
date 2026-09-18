@@ -50,15 +50,20 @@
     }
   }
 
+  let noiseReductionError = $state(false);
+
   async function handleNoiseReduction(value: boolean) {
     noiseReduction = value;
     try {
       await saveSetting('noise_reduction', value);
     } catch (err) {
       noiseReduction = !value;
+      noiseReductionError = true;
       console.error('save noise_reduction failed:', err);
     }
   }
+
+  let muteAudioError = $state(false);
 
   async function handleMuteAudio(value: boolean) {
     muteAudio = value;
@@ -66,9 +71,12 @@
       await saveSetting('mute_audio', value);
     } catch (err) {
       muteAudio = !value;
+      muteAudioError = true;
       console.error('save mute_audio failed:', err);
     }
   }
+
+  let exclusiveMicError = $state(false);
 
   async function handleExclusiveMic(value: boolean) {
     exclusiveMic = value;
@@ -76,9 +84,12 @@
       await saveSetting('exclusive_mic', value);
     } catch (err) {
       exclusiveMic = !value;
+      exclusiveMicError = true;
       console.error('save exclusive_mic failed:', err);
     }
   }
+
+  let pauseMediaError = $state(false);
 
   async function handlePauseMedia(value: boolean) {
     pauseMediaDuringDictation = value;
@@ -86,9 +97,12 @@
       await saveSetting('pause_media_during_dictation', value);
     } catch (err) {
       pauseMediaDuringDictation = !value;
+      pauseMediaError = true;
       console.error('save pause_media_during_dictation failed:', err);
     }
   }
+
+  let micMuteButtonDictationError = $state(false);
 
   async function handleMicMuteButtonDictation(value: boolean) {
     micMuteButtonDictation = value;
@@ -96,6 +110,7 @@
       await saveSetting('mic_mute_button_dictation', value);
     } catch (err) {
       micMuteButtonDictation = !value;
+      micMuteButtonDictationError = true;
       console.error('save mic_mute_button_dictation failed:', err);
     }
   }
@@ -193,34 +208,35 @@
 <h3 class="settings-subhead">Input</h3>
 <div class="setting-row" data-setting-target="audio-system-mute">
   <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : 'Mutes Windows volume while dictating to prevent audio interference'}</div></div>
-  <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} />
+  <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} bind:error={muteAudioError} />
 </div>
 {#if isMac}
   <div class="setting-row" data-setting-target="audio-exclusive">
     <div><div class="label">Exclusive microphone access</div><div class="desc">Reserves the mic for Verenu while dictating, muting it for all other apps</div></div>
-    <Toggle checked={exclusiveMic} onchange={handleExclusiveMic} label="Exclusive microphone access" />
+    <Toggle checked={exclusiveMic} onchange={handleExclusiveMic} label="Exclusive microphone access" bind:error={exclusiveMicError} />
   </div>
 {/if}
 {#if isWindows}
   <div class="setting-row" data-setting-target="audio-pause-media">
     <div><div class="label">Pause media while dictating</div><div class="desc">Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.</div></div>
-    <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" />
+    <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" bind:error={pauseMediaError} />
   </div>
   <div class="setting-row" data-setting-target="audio-mic-mute-button">
     <div>
       <div class="label">Use microphone mute button for dictation</div>
-      <div class="desc">Mute then unmute the selected mic (within ~3s) to toggle hands-free dictation. Works with mute buttons Windows can see — mixer mute, USB/headset hardware mute, or a mute that silences the capture stream. Keyboard hotkey is unchanged.</div>
+      <div class="desc">Mute then unmute the selected mic (within ~3s) to toggle hands-free dictation. Works with mute buttons the system can see — mixer mute, USB/headset hardware mute, or a mute that silences the capture stream (PipeWire on Linux). Keyboard hotkey is unchanged.</div>
     </div>
     <Toggle
       checked={micMuteButtonDictation}
       onchange={handleMicMuteButtonDictation}
       label="Use microphone mute button for dictation"
+      bind:error={micMuteButtonDictationError}
     />
   </div>
 {/if}
 <div class="setting-row" data-setting-target="audio-noise">
   <div><div class="label">Noise reduction</div><div class="desc">Suppress background noise before transcription (RNNoise)</div></div>
-  <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" />
+  <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" bind:error={noiseReductionError} />
 </div>
 
 <h3 class="settings-subhead">Sound effects</h3>
@@ -252,7 +268,11 @@
 
 <style>
 
-  .gain-row { flex-direction: column; align-items: stretch; gap: 0; }
+  /* .setting-row (shared, Settings.svelte) is a 2-column grid; without an
+     explicit display override here, `flex-direction: column` below was a
+     no-op, so the slider kept landing in the same narrow auto-sized column
+     as the label instead of stacking full-width beneath it. */
+  .gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
   .gain-value {
     font-family: var(--mono);
@@ -320,7 +340,7 @@
   .gain-tip svg { flex-shrink: 0; color: var(--warning); }
   .gain-tip strong { font-weight: 600; }
 
-  .sound-volume-row { flex-direction: column; align-items: stretch; gap: 0; }
+  .sound-volume-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .sound-volume-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
   .sound-volume-value {
     font-family: var(--mono);

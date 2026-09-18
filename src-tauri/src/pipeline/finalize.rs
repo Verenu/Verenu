@@ -10,6 +10,11 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) duration_ms: u64,
     pub(super) api_used: &'a str,
     pub(super) target_hwnd: usize,
+    /// The full captured target for injection backends that need more than
+    /// the raw id (notably the Linux backend, which pastes via the captured
+    /// Hyprland client address). Kept alongside `target_hwnd` so the id-only
+    /// readers (self-inject guard, AutoLearn monitors) stay untouched.
+    pub(super) target: crate::core::window_geometry::WindowTarget,
     pub(super) cfg: &'a store::PipelineConfig,
     pub(super) profile: &'a str,
     pub(super) process_name: String,
@@ -292,7 +297,7 @@ pub(super) async fn finalize_pipeline_completion(
     } else {
         match injection::inject_text(
             &delivered_text,
-            ctx.target_hwnd,
+            &ctx.target,
             // Caps lock must be the final word on casing: contextual capitalization
             // (e.g. lowercasing a continuation's first letter) would otherwise run
             // on top of the all-caps text and undo part of it.

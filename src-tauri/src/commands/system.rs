@@ -11,6 +11,7 @@ use super::*;
 #[tauri::command]
 pub fn frontend_ready(
     window: tauri::WebviewWindow,
+    app: AppHandle,
     readiness: tauri::State<'_, crate::FrontendReadiness>,
 ) -> Result<(), String> {
     match window.label() {
@@ -21,6 +22,13 @@ pub fn frontend_ready(
             .pill
             .store(true, std::sync::atomic::Ordering::Release),
         label => return Err(format!("Unknown frontend window: {label}")),
+    }
+    // The first state may have been emitted while a lazily-created GTK/WebKit
+    // pill was still installing its listeners. Replay the backend's current
+    // state after readiness so a mapped overlay can never remain blank.
+    if window.label() == "pill" {
+        app.emit_to("pill", "pill-state", crate::pipeline::current_pill_state())
+            .ok();
     }
     Ok(())
 }
@@ -129,6 +137,11 @@ pub async fn get_diagnostics_snapshot(
         collect_resource_sample_if_enabled();
         let mut snapshot = crate::system::diagnostics::snapshot_for_ui();
         snapshot.runtime.audio = recording_audio_diagnostics(&app, &state);
+        #[cfg(target_os = "linux")]
+        {
+            snapshot.runtime.window_chrome =
+                serde_json::to_value(crate::system::linux_titlebar::capabilities()).ok();
+        }
         if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
             snapshot.runtime.local_stt = serde_json::to_value(manager.state()).ok();
         }
@@ -225,10 +238,13 @@ fn collect_resource_sample_if_enabled() {
         .find(|gpu| gpu.total_mb > 0)
     {
         sample.gpu_memory_bytes = Some(gpu.used_mb.saturating_mul(1024 * 1024));
+        sample.gpu_total_memory_bytes = Some(gpu.total_mb.saturating_mul(1024 * 1024));
     }
 
     #[cfg(target_os = "windows")]
     collect_windows_process_metrics(&mut sample);
+    #[cfg(target_os = "linux")]
+    crate::system::linux_proc::fill_resource_snapshot(&mut sample, std::process::id());
 
     sample.collector_duration_us = Some(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
     crate::system::diagnostics::record_resource_sample(sample);
@@ -858,6 +874,9 @@ pub fn get_dev_logging_enabled() -> bool {
 
 #[tauri::command]
 pub fn notify_update_available(app: AppHandle, version: String) -> Result<(), String> {
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.updater_event("update_available", None, Some(&version));
+    }
     crate::system::notify::notify_update_available(&app, &version)
 }
 

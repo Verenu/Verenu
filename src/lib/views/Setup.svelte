@@ -12,6 +12,7 @@
   import { splitModelId } from '../components/settings/models';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
+  import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
   import ProviderStep from '../setup/steps/ProviderStep.svelte';
   import ApiKeyStep from '../setup/steps/ApiKeyStep.svelte';
   import PermissionsStep from '../setup/steps/PermissionsStep.svelte';
@@ -23,21 +24,22 @@
   import TryItStep from '../setup/steps/TryItStep.svelte';
   import DoneStep from '../setup/steps/DoneStep.svelte';
 
-  // macOS and Android both need an OS-permission step at index 3 (macOS:
+  // macOS and Android both need an OS-permission step after provider setup
+  // (macOS:
   // Accessibility + Microphone; Android: microphone, accessibility service,
   // battery exemption, notifications). Windows has none.
   const hasOsPermissionStep = isMac || isAndroid;
-  const TOTAL_STEPS = hasOsPermissionStep ? 9 : 8;
-  const providerStep = 1;
-  const apiKeyStep = 2;
-  const permissionStep = hasOsPermissionStep ? 3 : -1;
-  const modelsStep = hasOsPermissionStep ? 4 : 3;
-  const writingStyleStep = hasOsPermissionStep ? 5 : 4;
-  const languageStep = hasOsPermissionStep ? 6 : 5;
-  const audioEnvStep = hasOsPermissionStep ? 7 : 6;
-  const calibrationStep = hasOsPermissionStep ? 8 : 7;
+  const onboardingTotalSteps = hasOsPermissionStep ? 9 : 8;
+  const analyticsStep = 1;
+  const providerStep = 2;
+  const apiKeyStep = 3;
+  const permissionStep = hasOsPermissionStep ? 4 : -1;
+  const modelsStep = hasOsPermissionStep ? 5 : 4;
+  const writingStyleStep = hasOsPermissionStep ? 6 : 5;
+  const languageStep = hasOsPermissionStep ? 7 : 6;
+  const audioEnvStep = hasOsPermissionStep ? 8 : 7;
   const tryItStep = hasOsPermissionStep ? 9 : 8;
-  const doneStep = TOTAL_STEPS + 1;
+  const doneStep = onboardingTotalSteps + 1;
 
   let step = $state(0);
   let direction = $state<'forward' | 'back'>('forward');
@@ -72,6 +74,9 @@
   let usesHeadphones = $state(true);
   let saveError = $state('');
   let finishing = $state(false);
+  let analyticsEnabled = $state(true);
+  let analyticsError = $state(false);
+  const setupStepEnteredAt = new Map<number, number>();
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
@@ -80,6 +85,7 @@
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
   onMount(async () => {
+    sendSetupEvent('setup_started');
     void loadHotkey();
     if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
       // Browser-dev runs can exercise the Android-shaped wizard at a narrow
@@ -101,7 +107,7 @@
     }
     try {
       const [
-        savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute,
+        savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute, savedAnalytics,
       ] = await Promise.all([
         invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
         invoke<ProviderId | null>('get_setting', { key: 'transcription_provider' }),
@@ -109,6 +115,7 @@
         invoke<ToneId | null>('get_setting', { key: 'default_tone' }),
         invoke<Record<ProviderId, boolean> | null>('get_api_key_status'),
         invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
+        invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
       ]);
       if (savedLanguage && transcriptionLanguages.some((o) => o.code === savedLanguage)) language = savedLanguage;
       if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider;
@@ -119,7 +126,16 @@
       }
       // Muting implies speakers — that's the only reason the setting is on.
       if (savedMute === true) usesHeadphones = false;
+      analyticsEnabled = savedAnalytics ?? true;
     } catch {}
+  });
+
+  $effect(() => {
+    const currentStep = setupStepName(step);
+    if (currentStep) {
+      sendSetupEvent('setup_step_viewed', currentStep);
+      setupStepEnteredAt.set(step, performance.now());
+    }
   });
 
   $effect(() => {
@@ -137,12 +153,31 @@
     }
   });
 
-  // The legacy step constants still include the removed calibration slot so
-  // the Android onboarding branch can share its numbering. The visible wizard
-  // skips that slot entirely.
-  const onboardingTotalSteps = TOTAL_STEPS - 1;
-  const onboardingTryItStep = tryItStep - 1;
-  const onboardingDoneStep = doneStep - 1;
+  const onboardingTryItStep = tryItStep;
+  const onboardingDoneStep = doneStep;
+
+  function setupStepName(value: number): string | null {
+    if (value === 0) return 'intro';
+    if (value === analyticsStep) return 'analytics';
+    if (value === providerStep) return 'provider';
+    if (value === apiKeyStep) return 'api_key';
+    if (value === permissionStep) return 'permissions';
+    if (value === modelsStep) return 'models';
+    if (value === writingStyleStep) return 'writing_style';
+    if (value === languageStep) return 'language';
+    if (value === audioEnvStep) return 'audio_environment';
+    if (value === onboardingTryItStep) return 'try_it';
+    if (value === onboardingDoneStep) return 'done';
+    return null;
+  }
+
+  function sendSetupEvent(event: string, setupStep?: string | null, durationMs?: number) {
+    void invoke('analytics_setup_event', {
+      event,
+      step: setupStep ?? null,
+      durationMs: durationMs ?? null,
+    }).catch(() => {});
+  }
 
   function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -163,6 +198,12 @@
 
   async function animateTo(target: number, dir: 'forward' | 'back') {
     if (animating) return;
+    const currentStep = setupStepName(step);
+    const enteredAt = setupStepEnteredAt.get(step);
+    if (currentStep && enteredAt !== undefined) {
+      sendSetupEvent('setup_step_duration', currentStep, Math.max(0, Math.round(performance.now() - enteredAt)));
+    }
+    if (dir === 'forward') sendSetupEvent('setup_step_completed', currentStep);
     direction = dir;
     animating = true;
     step = target;
@@ -178,6 +219,17 @@
     // their own in-page controls; making Back unwind those instead trapped
     // people on step 2.
     if (step > 0) void animateTo(step - 1, 'back');
+  }
+
+  async function handleAnalytics(value: boolean) {
+    const previous = analyticsEnabled;
+    analyticsEnabled = value;
+    try {
+      await saveSetting('analytics_enabled', value);
+    } catch {
+      analyticsEnabled = previous;
+      analyticsError = true;
+    }
   }
 
   function jumpToStep(target: number) {
@@ -359,6 +411,7 @@
 
     try {
       await saveSetting('setup_complete', true);
+      sendSetupEvent('setup_completed');
     } catch (err) {
       console.error('Failed to mark setup complete:', err);
       saveError = 'Your choices were saved, but setup could not be marked complete. Try again.';
@@ -375,6 +428,7 @@
   type HeaderInfo = { title: string; subtitle: string; name: string } | null;
   function headerFor(s: number): HeaderInfo {
     if (s === providerStep) return { name: 'Provider', title: 'Choose your AI provider', subtitle: 'This powers both transcription and text cleanup. You can switch anytime in Settings.' };
+    if (s === analyticsStep) return { name: 'Analytics', title: 'Choose whether to share product analytics', subtitle: 'This helps us find reliability problems and improve Verenu. You can change it anytime in Settings.' };
     if (s === apiKeyStep) {
       if (provider === 'local') {
         return { name: 'Local', title: 'Set up private, on-device dictation', subtitle: 'Download the speech model here. Nothing is sent to a cloud provider.' };
@@ -423,6 +477,7 @@
   let actionBar = $derived.by((): ActionBarConfig => {
     if (step === 0) return bar({ rightLabel: 'Get Started', rightLg: true, onRight: goNext });
     if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
+    if (step === analyticsStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
       if (provider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
@@ -540,6 +595,8 @@
   <div class="step-wrap" bind:this={stepWrapEl} in:pageSwap={stepInParams} out:pageSwap={stepOutParams}>
     {#if step === 0}
       <IntroStep />
+    {:else if step === analyticsStep}
+      <AnalyticsStep enabled={analyticsEnabled} onchange={handleAnalytics} error={analyticsError} />
     {:else if step === providerStep}
       <ProviderStep
         bind:provider

@@ -95,6 +95,12 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     await historyRetentionButton.click();
     await page.locator('.mic-item:has-text("Forever")').click();
     await page.getByLabel('Auto-learn corrections').click();
+    const analyticsToggle = page.getByRole('switch', { name: 'Share pseudonymous product analytics' });
+    const analyticsBefore = await analyticsToggle.getAttribute('aria-checked');
+    await analyticsToggle.click();
+    const analyticsAfter = await analyticsToggle.getAttribute('aria-checked');
+    if (analyticsBefore === analyticsAfter) errors.push('Privacy analytics toggle did not change');
+    await analyticsToggle.click();
 
     await page.locator('.settings-nav-item:has-text("About")').click();
     const versionButton = page.locator('.version-tap');

@@ -4,6 +4,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api::{auto_learn, cleanup, prompts, transcription, ProviderId};
 use crate::core::{browser_probe, injection, window_context};
+use crate::core::window_geometry::WindowTarget;
 use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
 use crate::system::apps::AppMapping;
@@ -30,6 +31,10 @@ mod pill {
     // Android renders the pill in Kotlin. Keep the shared pipeline calls
     // intact while mirroring the state through the authenticated bridge.
     pub(crate) fn queue_pill_context(_context: &str) {}
+
+    pub(crate) fn current_pill_state() -> String {
+        "idle".to_string()
+    }
 
     pub(crate) fn show_pill(_app: &AppHandle, _state: &str) {}
 
@@ -89,9 +94,11 @@ use gates::{
     strip_hallucinated_suffix, strip_trailing_hallucination, MIN_RECORDING_MS, MIN_RECORDING_RMS,
 };
 pub(crate) use pill::{
-    emit_pill_context, emit_pill_stage, hide_pill, show_clipboard_warning_pill, show_copied_pill,
-    set_pill_interactive, show_pill, update_pill_state,
+    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_interactive,
+    show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use pill::initialize_pill;
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
     show_paste_failed_pill,
@@ -99,6 +106,8 @@ use pill::{
 pub(crate) use pill_position::{
     apply_pill_placement, placement_for_current_monitor, PillPlacement,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use pill_position::linux_effective_placement;
 pub(crate) use session::*;
 use stages_cleanup::*;
 use stages_style::*;
@@ -312,6 +321,16 @@ pub async fn run_pipeline_event_only(app: AppHandle, state: SharedState) {
     run_pipeline_with_delivery(app, state, true).await;
 }
 
+/// Whether a release that found no live session should hide the pill.
+/// True only when the backend is genuinely Idle (so a stray release during
+/// Stopping/Processing/Finalizing never touches that task's pill) and the
+/// pill is showing a session-bound state (so idle toasts like
+/// error/cancelled are never cut short). A recording/handsfree pill with an
+/// Idle backend is an orphaned session indicator nothing else will clear.
+fn should_hide_orphaned_pill(lifecycle_is_idle: bool, pill_state: &str) -> bool {
+    lifecycle_is_idle && matches!(pill_state, "recording" | "handsfree")
+}
+
 /// Waits for a cancellation signal without ever missing one that arrived
 /// before this future started polling — `watch` retains its last value, so
 /// checking `*rx.borrow()` first (not just relying on `changed()`) closes the
@@ -367,6 +386,20 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     )) = state::take_recording_for_stopping(&state)
     else {
         log::debug!("pipeline: no session - recording never started or was already consumed");
+        // A release that finds no live session must not leave a
+        // session-bound pill on screen. The take above already consumed a
+        // raced Starting reservation (the late mic opener aborts on Idle),
+        // so a pill still showing recording/handsfree belongs to a session
+        // that no longer exists and nothing else will hide it. Gate on Idle
+        // so a stray release during Stopping/Processing/Finalizing can never
+        // clobber that task's own pill, and gate on the pill state so idle
+        // toasts (error/cancelled) are never cut short by a stray release.
+        if should_hide_orphaned_pill(
+            lock_state(&state).is_ok_and(|st| st.lifecycle.is_idle()),
+            &current_pill_state(),
+        ) {
+            hide_pill(&app);
+        }
         return;
     };
     let trace = diagnostics::start_trace("dictation", None);
@@ -523,7 +556,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         cancel_tx,
         captured_audio: captured_audio.clone(),
         context: resolved_context_identity.clone(),
-        target,
+        target: target.clone(),
     };
     {
         let (id, started) = lock_state(&state)
@@ -611,7 +644,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         st.retry_capture = Some(RetryCapture {
             audio: captured_audio.clone(),
             captured_at: retry_captured_at,
-            target,
+            target: target.clone(),
             process_name: process_name.clone(),
             context: resolved_context_identity.clone(),
             profile: profile.clone(),
@@ -896,6 +929,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
             duration_ms: captured_audio.duration_ms,
             api_used: &api_used,
             target_hwnd: target.id,
+            target: target.clone(),
             cfg: &cfg,
             profile: &profile,
             process_name: process_name.clone(),
@@ -1047,7 +1081,7 @@ pub async fn retry_transcription_impl(
     state::note_sensitivity_retry(state);
     capture.target = capture.target.refreshed();
     if let Ok(mut st) = lock_state(state) {
-        st.target = capture.target;
+        st.target = capture.target.clone();
         st.pill_placement_stale = true;
     }
     show_pill(app, "processing");
@@ -1144,6 +1178,7 @@ pub async fn retry_transcription_impl(
             duration_ms: capture.audio.duration_ms,
             api_used: &api_used,
             target_hwnd: capture.target.id,
+            target: capture.target.clone(),
             cfg: &cfg,
             profile: &capture.profile,
             process_name: capture.process_name,

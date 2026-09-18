@@ -33,6 +33,13 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("arc.app", "Arc"),
 ];
 
+#[cfg(target_os = "linux")]
+const BROWSER_EXES: &[(&str, &str)] = &[
+    ("google-chrome", "Google Chrome"), ("google-chrome-stable", "Google Chrome"),
+    ("chromium", "Chromium"), ("brave-browser", "Brave"), ("firefox", "Firefox"),
+    ("librewolf", "LibreWolf"), ("microsoft-edge", "Microsoft Edge"),
+];
+
 /// The focus target to refocus before paste. On Windows this is the foreground
 /// `HWND`; on macOS it is the frontmost application's PID (both fit in a `usize`).
 pub fn get_foreground_hwnd() -> usize {
@@ -53,18 +60,25 @@ pub fn get_foreground_hwnd() -> usize {
             .map(|p| p as usize)
             .unwrap_or(0)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::core::hyprland::active_window()
+            .map(|window| window.pid as usize)
+            .unwrap_or(0)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     0
 }
 
 /// Whether `process_name` (as returned by `get_process_name_for_hwnd`) is a
 /// known browser — used to gate the address-bar domain probe so it's never
 /// attempted against a non-browser foreground window.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn is_browser_exe(process_name: &str) -> bool {
     BROWSER_EXES.iter().any(|(exe, _)| *exe == process_name)
+        || matches!(process_name, "google-chrome" | "chromium" | "brave-browser" | "firefox" | "librewolf")
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn is_browser_exe(_process_name: &str) -> bool {
     false
 }
@@ -119,7 +133,13 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
         crate::system::mac_app::app_name_for_pid(hwnd as i32)
             .map(|n| format!("{}.app", n.to_lowercase()))
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::core::hyprland::active_window().and_then(|window| {
+            (window.pid as usize == hwnd).then_some(window.class_name.to_ascii_lowercase())
+        })
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     None
 }
 
@@ -141,7 +161,7 @@ pub fn get_app_context_hint(
     {
         lines.push(format!("Context: {}", truncate_hint_value(name, 60)));
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         let browser = BROWSER_EXES
             .iter()
@@ -248,6 +268,10 @@ fn get_window_title(target_id: usize) -> Option<String> {
     }
     #[cfg(not(windows))]
     {
+        #[cfg(target_os = "linux")]
+        if let Some(window) = crate::core::hyprland::active_window().filter(|window| window.pid as usize == target_id) {
+            return Some(window.title);
+        }
         let _ = target_id;
         None
     }
