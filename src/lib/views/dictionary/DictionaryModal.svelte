@@ -142,7 +142,7 @@
       }
       const normalizedMessage = msg.toLowerCase();
       saveError = conflictContexts.length > 0
-        ? `"${term}" already exists inside of ${conflictLocation()}. Move it here?`
+        ? `"${term}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
         : normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
           ? 'That term already exists.'
           : msg;
