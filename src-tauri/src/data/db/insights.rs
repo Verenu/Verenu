@@ -911,6 +911,11 @@ fn query_text_metrics(
         raw_words += raw_text.split_whitespace().count() as i64;
         changed_words += count_changed_words(&raw_text, &clean_text);
         for token in clean_text.split_whitespace() {
+            // Same word definition as history totals: punctuation-only tokens
+            // are not words.
+            if !token.chars().any(char::is_alphanumeric) {
+                continue;
+            }
             clean_words += 1;
             let normalized = normalize_word(token);
             if normalized.is_empty() {
@@ -1456,7 +1461,7 @@ mod tests {
         let range = range_bounds(&conn, 0, None).expect("range");
         let (words, raw, clean, changed) =
             query_text_metrics(&conn, &range, None).expect("metrics");
-        assert_eq!((raw, clean), (1, 6));
+        assert_eq!((raw, clean), (1, 5));
         assert_eq!(changed, 5);
         assert_eq!(words.unique_words, 3);
         assert_eq!(words.longest_word.as_deref(), Some("reenter"));
