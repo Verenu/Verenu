@@ -133,7 +133,8 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
-      if (mode === 'add' && contextId != null && contextId !== 1) {
+      const isDuplicate = msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== 1 && isDuplicate) {
         try {
           conflictContexts = await findConflictContexts(term);
         } catch {
