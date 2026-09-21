@@ -47,6 +47,7 @@ data class BridgeStateSnapshot(
     val overlay: BridgeOverlay,
     val pendingInsertion: BridgePendingInsertion?,
     val targetPackage: String,
+    val analyticsEnabled: Boolean,
 )
 
 class VerenuBridge(appContext: Context) {
@@ -146,6 +147,7 @@ class VerenuBridge(appContext: Context) {
                 )
             },
             targetPackage = json.optString("targetPackage", ""),
+            analyticsEnabled = json.optBoolean("analyticsEnabled", true),
             overlay = BridgeOverlay(
                 state = overlay?.optString("state", "hidden") ?: "hidden",
                 visible = overlay?.optBoolean("visible", false) ?: false,

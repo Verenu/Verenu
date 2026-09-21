@@ -106,7 +106,11 @@
     } catch (e) {
       console.error('save_api_key failed', e);
       keyValidation[provider] = { status: 'idle', message: '' };
-      keyErrors[provider] = 'Could not save this key locally. Please try again.';
+      // Credential-store errors never include the key. Surface the native
+      // cause so Linux users can unlock/start Secret Service instead of being
+      // sent through an unhelpful generic retry loop.
+      const detail = typeof e === 'string' ? e : e instanceof Error ? e.message : 'Please try again.';
+      keyErrors[provider] = `Could not save this key locally: ${detail}`;
     } finally {
       keySaving[provider] = false;
     }

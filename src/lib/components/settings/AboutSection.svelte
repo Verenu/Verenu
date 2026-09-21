@@ -69,6 +69,8 @@
     void setBetaUpdates(false);
   }
 
+  let betaUpdatesError = $state(false);
+
   async function setBetaUpdates(value: boolean) {
     if (savingBetaUpdates) return;
     const previous = betaUpdatesEnabled;
@@ -81,6 +83,7 @@
       } catch (error) {
         betaUpdatesEnabled = previous;
         appStore.betaUpdatesEnabled = previous;
+        betaUpdatesError = true;
         console.error('Failed to save beta update setting:', error);
         return;
       }
@@ -226,7 +229,7 @@
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
   </div>
-  <Toggle checked={betaUpdatesEnabled} onchange={handleBetaUpdatesToggle} label="Beta updates" />
+  <Toggle checked={betaUpdatesEnabled} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
 </div>
 
 {#if confirmBetaUpdates}

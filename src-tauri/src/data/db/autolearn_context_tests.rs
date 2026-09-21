@@ -276,8 +276,16 @@ fn scoped_promotion_and_rejection_preserve_shared_canonical_identity() {
         upsert_auto_learn_candidate_for_context(&db, context_id, "Kubernetez", "Kubernetes", 0.6)
             .expect("candidate");
         assert_eq!(
-            auto_learn_promote_for_context(&db, context_id, "Kubernetez", "Kubernetes", "medium", 2, 2)
-                .expect("first observation"),
+            auto_learn_promote_for_context(
+                &db,
+                context_id,
+                "Kubernetez",
+                "Kubernetes",
+                "medium",
+                2,
+                2
+            )
+            .expect("first observation"),
             AutoLearnPromoteResult::BelowThreshold { pending_count: 1 }
         );
     }
@@ -408,8 +416,14 @@ fn concurrent_promotions_in_different_contexts_keep_independent_mapping_state() 
     let writing_db = db.clone();
     let writing_id = writing.id;
     let second = std::thread::spawn(move || {
-        upsert_auto_learn_candidate_for_context(&writing_db, writing_id, "Kubernetez", "Kubernetes", 0.95)
-            .expect("writing candidate");
+        upsert_auto_learn_candidate_for_context(
+            &writing_db,
+            writing_id,
+            "Kubernetez",
+            "Kubernetes",
+            0.95,
+        )
+        .expect("writing candidate");
         auto_learn_promote_for_context(
             &writing_db,
             writing_id,

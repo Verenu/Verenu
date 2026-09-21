@@ -63,7 +63,7 @@ async function layoutState(page) {
       await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
       const actionbarTops = [];
 
-      for (let index = 0; index < 10; index += 1) {
+      for (let index = 0; index < 12; index += 1) {
         await page.waitForTimeout(340);
         const state = await layoutState(page);
         const heading = (await page.locator('.setup-header h2, .brand-name, .done-title').first().textContent())?.trim() || `step ${index}`;
@@ -116,6 +116,7 @@ async function layoutState(page) {
     });
     await local.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
     await local.getByRole('button', { name: 'Get Started' }).click();
+    await local.getByRole('button', { name: 'Next' }).click();
     await local.locator('.provider-card:has-text("On this device")').click();
     await local.getByRole('button', { name: 'Next' }).click();
     const localDownload = local.getByRole('button', { name: 'Download model' });

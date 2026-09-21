@@ -6,7 +6,7 @@
 // 2. Copies src-tauri/android/kotlin/* into the app module package dir.
 // 3. Copies res/xml + res/values resources.
 // 4. Merges AndroidManifest.snippet.xml blocks (idempotent, marker-wrapped).
-// 5. Pins minSdk 26 + androidx security-crypto in app/build.gradle.kts.
+// 5. Pins minSdk 26 plus required Android dependencies in app/build.gradle.kts.
 //
 // Idempotent: safe to re-run after `tauri android init` or CLI upgrades.
 // Fails loudly (non-zero exit + anchor dump) when generated content it must
@@ -27,6 +27,28 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+function loadDotEnv() {
+  const envPath = join(root, '.env');
+  if (!existsSync(envPath)) return;
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    const value = match[2].replace(/^(?:"(.*)"|'(.*)')$/, '$1$2');
+    process.env[match[1]] = value;
+  }
+}
+
+function kotlinString(value) {
+  return JSON.stringify(value);
+}
+
+function buildConfigString(value) {
+  return kotlinString(JSON.stringify(value));
+}
+
+loadDotEnv();
+
 const srcTauri = join(root, 'src-tauri');
 const androidSrc = join(srcTauri, 'android');
 const genAndroid = join(srcTauri, 'gen', 'android');
@@ -204,6 +226,10 @@ function mergeManifest() {
   if (!manifest.includes('android:allowBackup=')) {
     appAttrs.push('android:allowBackup="false"');
   }
+  const appTagEnd = manifest.indexOf('>', appAt);
+  if (!manifest.slice(appAt, appTagEnd).includes('android:name=')) {
+    appAttrs.push('android:name=".VerenuApplication"');
+  }
   if (appAttrs.length > 0) {
     manifest =
       manifest.slice(0, appAt + appAnchor.length) +
@@ -222,13 +248,43 @@ function patchGradle() {
   // Keep the runtime capability report and the packaged APK metadata aligned
   // even when `tauri android init` was produced by a different CLI template.
   gradle = gradle.replace(/targetSdk\s*=\s*\d+/, 'targetSdk = 36');
-  const dep = 'implementation("androidx.security:security-crypto:1.1.0-alpha06")';
-  if (!gradle.includes('security-crypto')) {
+  if (!gradle.includes('POSTHOG_PROJECT_TOKEN')) {
+    const anchor = 'defaultConfig {';
+    const at = gradle.indexOf(anchor);
+    if (at === -1) fail('gradle anchor `defaultConfig {` not found; check the Tauri CLI template.');
+    const projectToken = process.env.POSTHOG_PROJECT_TOKEN
+      ? buildConfigString(process.env.POSTHOG_PROJECT_TOKEN)
+      : kotlinString('null');
+    const host = process.env.POSTHOG_HOST
+      ? buildConfigString(process.env.POSTHOG_HOST)
+      : kotlinString('null');
+    gradle =
+      gradle.slice(0, at + anchor.length) +
+      `\n        // PostHog credentials are loaded from .env during android:sync.\n        buildConfigField("String", "POSTHOG_PROJECT_TOKEN", ${projectToken})\n        buildConfigField("String", "POSTHOG_HOST", ${host})` +
+      gradle.slice(at + anchor.length);
+  }
+  const dependencies = [
+    {
+      marker: 'security-crypto',
+      declaration: 'implementation("androidx.security:security-crypto:1.1.0-alpha06")',
+      comment: 'Verenu: Keystore-backed credential storage.',
+    },
+    {
+      marker: 'com.posthog:posthog-android',
+      // Pin this dependency so a future SDK default cannot silently broaden
+      // the analytics data-collection contract.
+      declaration: 'implementation("com.posthog:posthog-android:3.64.0")',
+      comment: 'PostHog Android SDK.',
+    },
+  ];
+  for (const dependency of dependencies) {
+    if (gradle.includes(dependency.marker)) continue;
     const anchor = 'dependencies {';
     const at = gradle.indexOf(anchor);
     if (at === -1) fail('gradle anchor `dependencies {` not found; check the Tauri CLI template.');
     gradle =
-      gradle.slice(0, at + anchor.length) + `\n    // Verenu: Keystore-backed credential storage.\n    ${dep}` +
+      gradle.slice(0, at + anchor.length) +
+      `\n    // ${dependency.comment}\n    ${dependency.declaration}` +
       gradle.slice(at + anchor.length);
   }
   if (!gradle.includes('verenuMinSdk')) {
@@ -236,6 +292,20 @@ function patchGradle() {
   }
   writeFileSync(gradlePath, gradle);
   console.log('android-sync: gradle patched');
+}
+
+function patchRootGradle() {
+  const gradlePath = join(genAndroid, 'build.gradle.kts');
+  if (!existsSync(gradlePath)) fail(`root build script missing: ${gradlePath}`);
+  let gradle = readFileSync(gradlePath, 'utf8');
+  // PostHog 3.64.0 is published with Kotlin 2.1 metadata. Keep the
+  // generated Tauri project compatible with its transitive dependencies.
+  gradle = gradle.replace(
+    /kotlin-gradle-plugin:\d+\.\d+\.\d+/,
+    'kotlin-gradle-plugin:2.1.21',
+  );
+  writeFileSync(gradlePath, gradle);
+  console.log('android-sync: root Kotlin plugin pinned to 2.1.21');
 }
 
 const initOnly = process.argv.includes('--init-only');
@@ -249,5 +319,6 @@ copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'pr
 console.log('android-sync: kotlin + res installed');
 syncCppRuntime();
 mergeManifest();
+patchRootGradle();
 patchGradle();
 console.log('android-sync: done. Next: npx tauri android build (or open gen/android in Android Studio).');

@@ -13,6 +13,10 @@ const macDevRunner = path.join(__dirname, 'tauri-macos-dev-runner.mjs');
 const macDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.conf.json');
 const windowsDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.windows.conf.json');
 
+// Tauri's child process does not otherwise read the repository .env file.
+// Load only the two explicitly supported, non-secret analytics build values.
+loadAnalyticsEnv();
+
 const args = process.argv.slice(2);
 
 if (process.platform === 'win32' && isReleaseBuild(args)) {
@@ -78,6 +82,16 @@ function hasRunnerOption(args) {
     }
   }
   return false;
+}
+
+function loadAnalyticsEnv() {
+  const envPath = path.join(repoRoot, '.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(POSTHOG_PROJECT_TOKEN|POSTHOG_HOST)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]]) continue;
+    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+  }
 }
 
 function hasConfigOption(args) {

@@ -22,6 +22,7 @@
   let appContextHint = $state(false);
   let autoLearn = $state(false);
   let serviceChecksEnabled = $state(true);
+  let analyticsEnabled = $state(true);
   let cleanupCacheEntries = $state(0);
   let cleanupCacheSpaceConstrained = $state(false);
   let cleanupCacheFreeBytes = $state<number | null>(null);
@@ -38,11 +39,12 @@
 
   async function loadSettings() {
     try {
-      const [retention, hint, learn, serviceChecks, cacheStatus, summary, recent] = await Promise.all([
+      const [retention, hint, learn, serviceChecks, analytics, cacheStatus, summary, recent] = await Promise.all([
         invoke<string | null>('get_setting', { key: 'history_retention' }),
         invoke<boolean | null>('get_setting', { key: 'app_context_hint' }),
         invoke<boolean | null>('get_setting', { key: 'auto_learn_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'verenu_service_checks_enabled' }),
+        invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
         invoke<CleanupCacheStatus>('get_cleanup_cache_status'),
         invoke<typeof autoLearnSummary>('get_auto_learn_status_summary'),
         invoke<typeof recentAutoLearn>('get_recent_auto_learn_activity', { limit: 5 }),
@@ -51,6 +53,7 @@
       appContextHint = hint ?? false;
       autoLearn = learn ?? false;
       serviceChecksEnabled = serviceChecks ?? true;
+      analyticsEnabled = analytics ?? true;
       setServiceChecksEnabled(serviceChecksEnabled);
       cleanupCacheEntries = cacheStatus?.entry_count ?? 0;
       cleanupCacheSpaceConstrained = cacheStatus?.is_space_constrained ?? false;
@@ -98,15 +101,20 @@
     if (e.key === 'Escape' && confirmRetention) confirmRetention = null;
   }
 
+  let appContextHintError = $state(false);
+
   async function handleAppContextHint(value: boolean) {
     appContextHint = value;
     try {
       await saveSetting('app_context_hint', value);
     } catch (err) {
       appContextHint = !value;
+      appContextHintError = true;
       console.error('save app_context_hint failed:', err);
     }
   }
+
+  let autoLearnError = $state(false);
 
   async function handleAutoLearn(value: boolean) {
     autoLearn = value;
@@ -114,9 +122,12 @@
       await saveSetting('auto_learn_enabled', value);
     } catch (err) {
       autoLearn = !value;
+      autoLearnError = true;
       console.error('save auto_learn_enabled failed:', err);
     }
   }
+
+  let serviceChecksError = $state(false);
 
   async function handleServiceChecks(value: boolean) {
     const previous = serviceChecksEnabled;
@@ -127,8 +138,23 @@
       setServiceChecksEnabled(value);
     } catch (err) {
       serviceChecksEnabled = previous;
+      serviceChecksError = true;
       setServiceChecksEnabled(previous);
       console.error('save verenu_service_checks_enabled failed:', err);
+    }
+  }
+
+  let analyticsError = $state(false);
+
+  async function handleAnalytics(value: boolean) {
+    const previous = analyticsEnabled;
+    analyticsEnabled = value;
+    try {
+      await saveSetting('analytics_enabled', value);
+    } catch (err) {
+      analyticsEnabled = previous;
+      analyticsError = true;
+      console.error('save analytics_enabled failed:', err);
     }
   }
 
@@ -273,7 +299,7 @@
 <h3 class="settings-subhead first">Context</h3>
 <div class="setting-row" data-setting-target="privacy-context">
   <div><div class="label">App context hint</div><div class="desc">Shares the target app, website, and window title so cleanup can resolve terminology and formatting</div></div>
-  <Toggle checked={appContextHint} onchange={handleAppContextHint} label="App context hint" />
+  <Toggle checked={appContextHint} onchange={handleAppContextHint} label="App context hint" bind:error={appContextHintError} />
 </div>
 
 <h3 class="settings-subhead">Verenu services</h3>
@@ -282,7 +308,15 @@
     <div class="label">Allow Verenu service checks</div>
     <div class="desc">Checks provider status, service health, and global messages in the background. Turn this off to stop background requests to api.verenu.com. Dictation requests to your selected AI provider are unaffected.</div>
   </div>
-  <Toggle checked={serviceChecksEnabled} onchange={handleServiceChecks} label="Allow Verenu service checks" />
+  <Toggle checked={serviceChecksEnabled} onchange={handleServiceChecks} label="Allow Verenu service checks" bind:error={serviceChecksError} />
+</div>
+
+<div class="setting-row" data-setting-target="privacy-analytics">
+  <div>
+        <div class="label">Share pseudonymous product analytics</div>
+    <div class="desc">Helps improve Verenu by measuring feature usage, settings adoption, pipeline reliability, retries, and fallbacks. Dictated content, prompts, clipboard contents, app names, and raw errors are never included.</div>
+  </div>
+        <Toggle checked={analyticsEnabled} onchange={handleAnalytics} label="Share pseudonymous product analytics" bind:error={analyticsError} />
 </div>
 
 <h3 class="settings-subhead">On-device learning</h3>
@@ -300,7 +334,7 @@
     </div>
     <div class="desc">Add confirmed corrections to dictionary automatically</div>
   </div>
-  <Toggle checked={autoLearn} onchange={handleAutoLearn} label="Auto-learn corrections" />
+  <Toggle checked={autoLearn} onchange={handleAutoLearn} label="Auto-learn corrections" bind:error={autoLearnError} />
 </div>
 <div class="setting-row" data-setting-target="privacy-learning-activity">
   <div>

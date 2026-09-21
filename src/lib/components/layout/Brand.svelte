@@ -6,9 +6,9 @@
   import LogoMark from './LogoMark.svelte';
 </script>
 
-<div class="brand">
-  <div class="brand-mark"><LogoMark /></div>
-  <div class="brand-name">
+<div class="brand" data-tauri-drag-region>
+  <div class="brand-mark" data-tauri-drag-region><LogoMark /></div>
+  <div class="brand-name" data-tauri-drag-region>
     <span>Verenu</span>
     {#if appStore.betaUpdatesEnabled}
       <span class="beta-marker" aria-label="Beta updates enabled" in:fly|global={{ y: -4, duration: motionMs(180), easing: cubicOut }} out:fly|global={{ y: -5, duration: motionMs(220), easing: cubicOut }}>BETA</span>

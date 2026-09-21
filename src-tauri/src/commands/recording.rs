@@ -247,6 +247,12 @@ pub async fn stop_handless_mode(
     } else {
         pipeline::cancel_starting_reservation(state.inner());
         crate::system::media_control::end_dictation_media_pause();
+        // This command only fires from the pill's own hands-free confirm
+        // button. No live session means the pill is showing a hands-free
+        // state for a session that no longer exists — leaving it up strands
+        // the user with confirm/cancel buttons that can never do anything.
+        // (stop_recording's own empty-take path already hides unconditionally.)
+        pipeline::hide_pill(&app);
     }
     Ok(())
 }
@@ -400,10 +406,22 @@ pub async fn copy_paste_failure_to_clipboard(
 }
 
 /// Flip the floating pill between click-through and interactive without
-/// touching window decorations. Used when delayed controls mount.
+/// touching window decorations. Used when delayed controls mount (handsfree /
+/// paste-failed buttons). Backend reveal/hide own the same path; the pill
+/// window's ACL does not grant `setIgnoreCursorEvents` / `setDecorations`,
+/// and decorations must stay backend-hardened to avoid the pale caption flash.
 #[tauri::command]
 pub fn set_pill_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
     crate::pipeline::set_pill_interactive(&app, interactive);
+    Ok(())
+}
+
+/// Frontend auto-dismiss (error / cancelled / copied toasts) owns the hide
+/// timer so a newer recording cannot be stolen by a stale timeout. On Linux
+/// the native window must actually unmap; Windows leave it shown and idle.
+#[tauri::command]
+pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
+    crate::pipeline::hide_pill(&app);
     Ok(())
 }
 
@@ -470,7 +488,25 @@ pub fn set_pill_size(
                     height: h,
                 }
             });
-    crate::pipeline::apply_pill_placement(&pill, placement);
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    let geometry_changed = crate::pipeline::apply_pill_placement(&pill, placement);
+    #[cfg(target_os = "linux")]
+    let placement = crate::pipeline::linux_effective_placement(placement);
+
+    // On Hyprland, resizing a mapped xdg-toplevel can put it back underneath
+    // the previously focused floating window. The recording reveal raises the
+    // pill before the frontend has measured its real content, so the first
+    // content-fit resize was undoing that raise and leaving a fully rendered
+    // pill hidden behind the target app. Re-assert z-order after each actual
+    // geometry change; this is compositor-scoped and never focuses the pill.
+    #[cfg(target_os = "linux")]
+    if geometry_changed {
+        if let Some(window) = crate::core::hyprland::pill_window() {
+            if let Err(error) = crate::core::hyprland::raise_window(&window.address) {
+                log::warn!("Failed to re-raise resized Linux dictation pill: {error}");
+            }
+        }
+    }
 
     let mut st = lock_state(&state)?;
     st.pill_width_points = width_points;

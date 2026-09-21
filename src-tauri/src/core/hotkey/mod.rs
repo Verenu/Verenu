@@ -92,9 +92,14 @@ mod mac;
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
 // Fallback for any other platform (e.g. Linux CI): inert no-op shims so the
 // crate still builds. Mirrors the public contract above.
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod noop {
     pub fn is_hotkey_available(_key1: &str, _key2: &str) -> bool {
         true
@@ -116,13 +121,14 @@ mod noop {
         0
     }
     #[allow(clippy::too_many_arguments)]
-    pub fn start<P, R, H, C, E, L>(
+    pub fn start<P, R, H, C, E, L, S>(
         _on_press: P,
         _on_release: R,
         _on_handless: H,
         _on_cancel: C,
         _on_escape: E,
         _on_copy_last: L,
+        _on_capture_sub_app: S,
     ) -> Result<std::thread::JoinHandle<()>, String>
     where
         P: Fn() + Send + Sync + 'static,
@@ -131,9 +137,10 @@ mod noop {
         C: Fn() + Send + Sync + 'static,
         E: Fn() + Send + Sync + 'static,
         L: Fn() + Send + Sync + 'static,
+        S: Fn() + Send + Sync + 'static,
     {
         Ok(std::thread::spawn(|| {}))
     }
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub use noop::*;

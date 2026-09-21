@@ -57,10 +57,34 @@ pub async fn sync_set_device_name(app: AppHandle, name: String) -> Result<(), St
 /// on this screen; the other device's user types it.
 #[tauri::command]
 pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<String, String> {
-    manager(&app)?
+    let result = manager(&app)?
         .start_pairing(device_uuid)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.sync_event(
+            "sync_flow",
+            if result.is_ok() {
+                "pairing_started"
+            } else {
+                "pairing_failed"
+            },
+        );
+        if result.is_err() {
+            analytics.capture_sanitized_exception(crate::analytics::ErrorReport {
+                domain: crate::analytics::ErrorDomain::Sync,
+                code: "sync_transport_failed",
+                stage: Some(crate::analytics::Stage::Sync),
+                severity: crate::analytics::ErrorSeverity::Warning,
+                handled: true,
+                recovered: false,
+                recovery_method: None,
+                run_id: None,
+                callsite: "sync_command",
+            });
+        }
+    }
+    result
 }
 
 /// Responder side of pairing: approve (with the code typed by the user) or
@@ -96,10 +120,42 @@ pub async fn sync_remove_device(app: AppHandle, device_uuid: String) -> Result<(
 /// Manual sync. `deviceUuid = null` syncs every visible paired device.
 #[tauri::command]
 pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(), String> {
-    manager(&app)?
+    let sync_manager = manager(&app)?;
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.sync_event("sync_started", "started");
+    }
+    let result = sync_manager
         .sync_now(device_uuid)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        analytics.sync_event(
+            if result.is_ok() {
+                "sync_completed"
+            } else {
+                "sync_failed"
+            },
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
+        if result.is_err() {
+            analytics.capture_sanitized_exception(crate::analytics::ErrorReport {
+                domain: crate::analytics::ErrorDomain::Sync,
+                code: "sync_transport_failed",
+                stage: Some(crate::analytics::Stage::Sync),
+                severity: crate::analytics::ErrorSeverity::Error,
+                handled: true,
+                recovered: false,
+                recovery_method: None,
+                run_id: None,
+                callsite: "sync_command",
+            });
+        }
+    }
+    result
 }
 
 /// Debug/diagnostics: change-log size and per-peer cursor positions.

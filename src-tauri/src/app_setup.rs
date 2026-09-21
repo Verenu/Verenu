@@ -183,6 +183,9 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn start_frontend_watchdog(app: &AppHandle, _readiness: FrontendReadiness) {
+    #[cfg(target_os = "linux")]
+    crate::pipeline::initialize_pill(app);
+    #[cfg(not(target_os = "linux"))]
     if !crate::pipeline::failover::offer_restored_capture_pill(app) {
         crate::pipeline::show_pill(app, "idle");
     }
@@ -214,9 +217,11 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
     if let Some(path) = app_data_dir_override() {
         return path;
     }
-    std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".config/Verenu"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .map(|root| root.join("Verenu"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
 /// Canonical path to the SQLite database file. Use this everywhere.

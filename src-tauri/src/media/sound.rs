@@ -233,7 +233,11 @@ fn sound_worker(rx: mpsc::Receiver<SoundCommand>) {
         let sink = match play_with_cached_output(&mut output, cue) {
             Ok(sink) => Arc::new(sink),
             Err(e) => {
-                log::debug!("sound cue failed: {e:?}");
+                // Keep this at warning level: a missing cue is user-visible
+                // and the diagnostics console must show the backend reason on
+                // Linux, where ALSA/PipeWire failures otherwise disappear at
+                // the default log level. No dictated content is included.
+                log::warn!("sound cue playback failed: {e:?}");
                 output = None;
 
                 if generation.is_some_and(|g| START_CUE_GEN.load(Ordering::SeqCst) != g) {

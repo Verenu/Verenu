@@ -38,6 +38,9 @@ pub const DEFAULT_PILL_HEIGHT_POINTS: f64 = 54.0;
 
 pub struct AppState {
     pub lifecycle: DictationLifecycle,
+    /// Ephemeral product-analytics correlation id. Never persisted or derived
+    /// from audio, text, windows, devices, or pairing identities.
+    pub analytics_run_id: Option<String>,
     pub target: WindowTarget,
     pub pill_placement: Option<PillPlacement>,
     pub pill_placement_stale: bool,
@@ -228,6 +231,12 @@ pub(super) fn lock_state(state: &SharedState) -> anyhow::Result<MutexGuard<'_, A
     state
         .lock()
         .map_err(|_| anyhow::anyhow!("Recording state lock was poisoned"))
+}
+
+pub(super) fn analytics_run_id(state: &SharedState) -> Option<String> {
+    lock_state(state)
+        .ok()
+        .and_then(|st| st.analytics_run_id.clone())
 }
 
 fn bump_sensitivity_level(st: &mut AppState) {
@@ -636,7 +645,7 @@ pub(super) fn take_recording_for_stopping(state: &SharedState) -> Option<Stoppin
             return None;
         }
     };
-    let target = st.target;
+    let target = st.target.clone();
     match std::mem::replace(&mut st.lifecycle, DictationLifecycle::Idle) {
         DictationLifecycle::Recording {
             session,
@@ -864,6 +873,7 @@ mod tests {
     fn fresh_state() -> SharedState {
         Arc::new(Mutex::new(AppState {
             lifecycle: DictationLifecycle::Idle,
+            analytics_run_id: None,
             target: WindowTarget::default(),
             pill_placement: None,
             pill_placement_stale: false,

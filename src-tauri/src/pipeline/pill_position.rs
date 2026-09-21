@@ -64,6 +64,7 @@ fn choose_monitor(
     target_monitor.or(primary_monitor)
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(super) fn resolve_pill_placement<R: Runtime>(
     pill: &WebviewWindow<R>,
     target_point: Option<DesktopPoint>,
@@ -97,6 +98,42 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     Some(placement)
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn resolve_pill_placement<R: Runtime>(
+    _pill: &WebviewWindow<R>,
+    target_point: Option<DesktopPoint>,
+    width_points: f64,
+    height_points: f64,
+) -> Option<PillPlacement> {
+    let monitor = target_point
+        .and_then(|point| crate::core::hyprland::logical_monitor_for_point(point.x, point.y))
+        // A NaN cannot match a monitor rectangle, so this cleanly selects the
+        // compositor's focused/first fallback when no target point exists.
+        .or_else(|| crate::core::hyprland::logical_monitor_for_point(f64::NAN, f64::NAN))?;
+    Some(placement_for_linux_monitor(
+        monitor,
+        width_points,
+        height_points,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn placement_for_linux_monitor(
+    monitor: crate::core::hyprland::LogicalMonitor,
+    width_points: f64,
+    height_points: f64,
+) -> PillPlacement {
+    let width = width_points.max(1.0).round() as i32;
+    let height = height_points.max(1.0).round() as i32;
+    PillPlacement {
+        x: (monitor.work_x + (monitor.work_width - f64::from(width)) / 2.0).round() as i32,
+        y: (monitor.work_y + monitor.work_height - f64::from(height) - PILL_BOTTOM_GAP_POINTS)
+            .round() as i32,
+        width,
+        height,
+    }
+}
+
 /// Recomputes the pill's ideal centered placement for a given content size,
 /// purely from the monitor it currently sits on — never from the window's
 /// own current position. `set_pill_size` used to derive the new position by
@@ -110,6 +147,7 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
 /// capsule). Recomputing from the monitor's work area every time is
 /// idempotent — each call lands on the same correct center regardless of
 /// what the window's geometry was a moment ago, so nothing can compound.
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn placement_for_current_monitor<R: Runtime>(
     pill: &WebviewWindow<R>,
     width_points: f64,
@@ -122,6 +160,19 @@ pub(crate) fn placement_for_current_monitor<R: Runtime>(
         .or_else(|| pill.primary_monitor().ok().flatten())?;
     Some(placement_for_monitor(
         MonitorSnapshot::from(&monitor),
+        width_points,
+        height_points,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn placement_for_current_monitor<R: Runtime>(
+    _pill: &WebviewWindow<R>,
+    width_points: f64,
+    height_points: f64,
+) -> Option<PillPlacement> {
+    Some(placement_for_linux_monitor(
+        crate::core::hyprland::logical_monitor_for_pill()?,
         width_points,
         height_points,
     ))
@@ -185,6 +236,36 @@ pub(super) fn should_animate_cross_monitor_move(
     dx > recenter_budget || dy > recenter_budget
 }
 
+/// GTK/WebKit on Hyprland often refuses to shrink the pill below a ~200×200
+/// client. Content-fit placement still uses the measured capsule size, which
+/// parks that larger window so far below the work-area bottom that only the
+/// entrance animation is visible. Keep the requested bottom-center, then lift
+/// and recenter by the extra mapped pixels.
+#[cfg(target_os = "linux")]
+pub(crate) fn snap_linux_placement_to_mapped_size(
+    requested: PillPlacement,
+    mapped_size: [i32; 2],
+) -> PillPlacement {
+    let width = mapped_size[0].max(requested.width).max(1);
+    let height = mapped_size[1].max(requested.height).max(1);
+    if width == requested.width && height == requested.height {
+        return requested;
+    }
+    PillPlacement {
+        x: requested.x - (width - requested.width) / 2,
+        y: requested.y - (height - requested.height),
+        width,
+        height,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_effective_placement(requested: PillPlacement) -> PillPlacement {
+    crate::core::hyprland::pill_window()
+        .map(|window| snap_linux_placement_to_mapped_size(requested, window.size))
+        .unwrap_or(requested)
+}
+
 /// Moves/resizes the pill to `placement` if it isn't already there. Returns
 /// `true` if a native resize or reposition was actually issued. Used as-is
 /// for the synchronous same-monitor path and by `set_pill_size` for
@@ -198,6 +279,15 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 ) -> bool {
     super::pill_animation::cancel_pending_pill_tween();
 
+    #[cfg(target_os = "linux")]
+    let desired_size = {
+        let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
+        (
+            placement.width.max(1) as f64 * scale,
+            placement.height.max(1) as f64 * scale,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
     let desired_size = (
         placement.width.max(1) as f64,
         placement.height.max(1) as f64,
@@ -211,10 +301,14 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
         })
         .unwrap_or(true);
 
+    #[cfg(not(target_os = "linux"))]
     let needs_reposition = pill
         .outer_position()
         .map(|cur| position_changed(cur.x, placement.x) || position_changed(cur.y, placement.y))
         .unwrap_or(true);
+
+    #[cfg(target_os = "linux")]
+    let needs_reposition;
 
     #[cfg(target_os = "windows")]
     {
@@ -258,14 +352,40 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
         if needs_resize {
-            // `placement` is physical px; Tauri's set_size takes logical
-            // points on non-Windows. The Windows path uses SetWindowPos with
-            // the physical values directly; here convert back so the
-            // variable-width pill sizes correctly on macOS too.
-            let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
+            pill.set_size(tauri::LogicalSize::new(
+                placement.width as f64,
+                placement.height as f64,
+            ))
+            .ok();
+        }
+        let linux_placement = linux_effective_placement(placement);
+        needs_reposition = crate::core::hyprland::pill_window()
+            .map(|window| {
+                position_changed(window.at[0], linux_placement.x)
+                    || position_changed(window.at[1], linux_placement.y)
+            })
+            .unwrap_or(true);
+        if needs_reposition {
+            if let Some(window) = crate::core::hyprland::pill_window() {
+                crate::core::hyprland::move_window(
+                    &window.address,
+                    linux_placement.x,
+                    linux_placement.y,
+                )
+                .ok();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // The shared Tauri monitor path stores physical pixels; AppKit's Tauri
+        // size API consumes logical points.
+        let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
+        if needs_resize {
             pill.set_size(tauri::LogicalSize::new(
                 placement.width as f64 / scale,
                 placement.height as f64 / scale,
@@ -284,6 +404,51 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_scaled_offset_monitor_keeps_pill_inside_logical_work_area() {
+        let placement = placement_for_linux_monitor(
+            crate::core::hyprland::LogicalMonitor {
+                work_x: 0.0,
+                work_y: 1106.0,
+                work_width: 2048.0,
+                work_height: 1126.0,
+            },
+            200.0,
+            200.0,
+        );
+
+        assert_eq!(placement.x, 924);
+        assert_eq!(placement.y, 2016);
+        assert_eq!(placement.width, 200);
+        assert_eq!(placement.height, 200);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_mapped_min_size_keeps_content_bottom_in_the_work_area() {
+        let requested = PillPlacement {
+            x: 964,
+            y: 2144,
+            width: 120,
+            height: 72,
+        };
+
+        assert_eq!(
+            snap_linux_placement_to_mapped_size(requested, [200, 200]),
+            PillPlacement {
+                x: 924,
+                y: 2016,
+                width: 200,
+                height: 200,
+            }
+        );
+        assert_eq!(
+            snap_linux_placement_to_mapped_size(requested, [120, 72]),
+            requested
+        );
+    }
 
     #[test]
     fn dimension_changed_respects_one_pixel_tolerance() {

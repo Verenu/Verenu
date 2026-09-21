@@ -104,7 +104,7 @@ Rules:
 - ~200MB RAM idle target, native Tauri app, not Electron
 - Local SQLite history
 - API keys stored locally (Windows Credential Manager / macOS Keychain)
-- No telemetry
+- Optional pseudonymous product analytics, disableable in Settings → Privacy
 ```
 
 This is static.

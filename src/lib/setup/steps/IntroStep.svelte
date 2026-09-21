@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { isAndroid, isMac } from '../../platform';
+  import { isAndroid, isMac, isLinux } from '../../platform';
   import { hotkeyLabels } from '../../hotkey.svelte';
   import LogoMark from '../../components/layout/LogoMark.svelte';
 
-  const platformTagline = isAndroid ? 'Android' : isMac ? 'macOS' : 'Windows';
+  const platformTagline = isAndroid ? 'Android' : isMac ? 'macOS' : isLinux ? 'Linux' : 'Windows';
   const keyLabels = $derived(hotkeyLabels());
 
   let introReady = $state(false);

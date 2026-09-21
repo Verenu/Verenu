@@ -6,6 +6,7 @@ Before opening an issue:
 
 - Check [Troubleshooting](TROUBLESHOOTING.md).
 - Check [Install Verenu](INSTALL.md) for install warnings and platform notes.
+- On Omarchy/Hyprland, include the XDG Desktop Portal and Secret Service state (never keys or clipboard contents) when reporting shortcut or credential issues.
 - Check [Data And Privacy](DATA_AND_PRIVACY.md) if the issue involves storage, logs, providers, exports, or network calls.
 
 ## What To Include

@@ -11,7 +11,8 @@
   import { saveSetting, type ProviderId } from '../../settings';
   import { MOTION_MS, MOTION_PX, modalBackdrop, modalCard, motionMs, motionPx } from '../../motion';
   import { modalFocusTrap } from '../../modalFocus';
-  import { frontendIpcActivity, filterLogs, formatBytes, formatDuration, formatRate, spanWidth, unknown, type DiagnosticsSnapshot, type StructuredLogEntry, type PipelineTrace } from '../../diagnostics';
+  import { frontendIpcActivity, filterLogs, formatBytes, formatDuration, formatRate, runtimeModelLabel, spanWidth, unknown, type DiagnosticsSnapshot, type StructuredLogEntry, type PipelineTrace } from '../../diagnostics';
+  import { buildSegments, segmentsToPath } from '../../views/insights/chartCurve';
 
   const [send, receive] = crossfade({ duration: motionMs(MOTION_MS.fast), easing: expoOut });
 
@@ -86,6 +87,64 @@
   }
 
   function currentResource() { return snapshot.current_resource ?? null; }
+
+  /* Same curve language as Insights DailyChart: Catmull-Rom area + stroke. */
+  const resourceChartW = 600;
+  const resourceChartH = 110;
+  const resourcePadTop = 8;
+  const resourcePadBottom = 2;
+  const resourceGradientId = `resource-edge-fade-${Math.random().toString(36).slice(2)}`;
+  const resourceSamples = $derived(snapshot.resource_samples.slice(-60));
+  const resourcePeak = $derived(
+    Math.max(
+      1,
+      currentResource()?.peak_resident_bytes ?? 0,
+      ...resourceSamples.map((sample) => sample.snapshot.resident_bytes ?? 0),
+    ),
+  );
+  const resourceChart = $derived.by(() => {
+    const samples = resourceSamples;
+    if (samples.length === 0) {
+      return { linePath: '', areaPath: '', summary: 'No resource samples yet.' };
+    }
+    const plotH = resourceChartH - resourcePadTop - resourcePadBottom;
+    const max = resourcePeak;
+    const xAt = (i: number) =>
+      samples.length <= 1 ? resourceChartW / 2 : (i / (samples.length - 1)) * resourceChartW;
+    const yAt = (bytes: number) => resourcePadTop + plotH * (1 - bytes / max);
+    const points = samples.map((sample, i) => ({
+      x: xAt(i),
+      y: yAt(sample.snapshot.resident_bytes ?? 0),
+    }));
+    const linePath =
+      samples.length === 1
+        ? `M 0 ${points[0].y} L ${resourceChartW} ${points[0].y}`
+        : segmentsToPath(buildSegments(points, resourcePadTop, resourceChartH - resourcePadBottom));
+    const areaPath = linePath
+      ? `${linePath} L ${resourceChartW} ${resourceChartH - resourcePadBottom} L 0 ${resourceChartH - resourcePadBottom} Z`
+      : '';
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    return {
+      linePath,
+      areaPath,
+      summary: `Resident memory over ${samples.length} samples, from ${shortTime(first.observed_at_ms)} to ${shortTime(last.observed_at_ms)}. Peak scale ${formatBytes(max)}.`,
+    };
+  });
+  let resourceHover = $state<number | null>(null);
+  const resourceHoverSample = $derived(
+    resourceHover !== null ? resourceSamples[resourceHover] ?? null : null,
+  );
+
+  function onResourceMove(event: PointerEvent) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width === 0 || resourceSamples.length === 0) return;
+    const ratio = (event.clientX - rect.left) / rect.width;
+    resourceHover = Math.min(
+      resourceSamples.length - 1,
+      Math.max(0, Math.round(ratio * (resourceSamples.length - 1))),
+    );
+  }
   function operationRows() { return [...snapshot.operations, ...frontendMetrics.map((m) => ({
     operation: `frontend.invoke:${m.command}`, calls: m.calls, success_count: m.calls - m.failures,
     failure_count: m.failures, cancelled_count: 0, skipped_count: 0, total_duration_ms: m.total_duration_ms,
@@ -137,6 +196,10 @@
     // the most recently started one is the representative one to show.
     return [...trace.spans].reverse().find((s) => s.stage === stageId);
   }
+  // The pill runs in its own window with unsynced local state, so the main
+  // window's appStore.pillState reads 'idle' even mid-dictation. Prefer the
+  // backend snapshot (live recording atomics, then active traces) and only
+  // fall back to the local pill state when neither reports anything.
   function pillLabel(): string {
     if (audioActive()) return 'recording';
     if (pipelineActive()) return 'processing';
@@ -347,7 +410,7 @@
   </nav>
 
   {#key view}
-  <div class="diag-view" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
+  <div class="diag-view" in:fade={{ duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
   {#if view === 'overview'}
     {@const resource = currentResource()}
     <div class="metric-grid">
@@ -360,13 +423,13 @@
       <div class="metric"><span>IPC rate</span><strong>{formatRate(operationRows().reduce((sum, row) => sum + row.calls_per_minute, 0), '/min')}</strong><small>{operationRows().length} tracked operations</small></div>
       <div class="metric"><span>Profiler overhead</span><strong>{snapshot.health.collector_duration_us_average == null ? 'Unavailable' : `${(snapshot.health.collector_duration_us_average / 1000).toFixed(2)} ms`}</strong><small>{snapshot.health.collector_samples} samples</small></div>
     </div>
-    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Current runtime</h3><span class="mono">{shortTime(snapshot.generated_at_ms)}</span></div><div class="key-lines"><div><span>Dictation</span><b>{appStore.pillState || 'idle'}</b></div><div><span>Local STT</span><b>{unknown(snapshot.runtime.local_stt?.current_model_id)}</b></div><div><span>Local cleanup</span><b>{unknown(snapshot.runtime.local_llm?.current_model_id)}</b></div><div><span>Active traces</span><b>{snapshot.health.active_trace_count}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Last pipeline</h3><button class="link-btn" onclick={() => view = 'pipeline'}>Inspect</button></div>{#if latestTrace()}<div class="trace-summary"><span class="mono">{latestTrace()!.trace_id}</span><strong>{formatDuration(latestTrace()!.duration_ms)}</strong><em class:bad={latestTrace()!.outcome === 'failure'}>{latestTrace()!.outcome}</em></div>{:else}<p class="muted">No completed pipeline retained.</p>{/if}</section></div>
+    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Current runtime</h3><span class="mono">{shortTime(snapshot.generated_at_ms)}</span></div><div class="key-lines"><div><span>Dictation</span><b>{appStore.pillState || 'idle'}</b></div><div><span>Local STT</span><b>{runtimeModelLabel(snapshot.runtime.local_stt)}</b></div><div><span>Local cleanup</span><b>{runtimeModelLabel(snapshot.runtime.local_llm)}</b></div><div><span>Active traces</span><b>{snapshot.health.active_trace_count}</b></div>{#if snapshot.runtime.window_chrome}<div><span>Compositor</span><b>{snapshot.runtime.window_chrome.compositor}</b></div><div><span>Window controls</span><b>close {snapshot.runtime.window_chrome.close_supported ? 'on' : 'off'} · minimize {snapshot.runtime.window_chrome.minimize_supported ? 'on' : 'off'} · maximize {snapshot.runtime.window_chrome.maximize_supported ? 'on' : 'off'}</b></div>{/if}</div></section><section class="diag-panel"><div class="panel-title"><h3>Last pipeline</h3><button class="link-btn" onclick={() => view = 'pipeline'}>Inspect</button></div>{#if latestTrace()}<div class="trace-summary"><span class="mono">{latestTrace()!.trace_id}</span><strong>{formatDuration(latestTrace()!.duration_ms)}</strong><em class:bad={latestTrace()!.outcome === 'failure'}>{latestTrace()!.outcome}</em></div>{:else}<p class="muted">No completed pipeline retained.</p>{/if}</section></div>
     <div class="toolbar"><button class="btn-ghost btn-compact" onclick={() => void clearDiagnostics()}>Clear retained data</button><button class="btn-ghost btn-compact" onclick={() => void download('json')}>Download diagnostics bundle</button><span data-setting-target="developer-download-logs"><button class="btn-ghost btn-compact" onclick={() => void download('text')}>Download Logs</button></span>{#if exportMessage}<span class="muted export-status">{exportMessage}</span>{/if}</div>
   {:else if view === 'pipeline'}
     <section class="diag-panel" data-setting-target="developer-pipeline"><div class="panel-title"><h3>Pipeline traces</h3><span class="muted">{snapshot.active_pipelines.length} active · {snapshot.recent_pipelines.length} completed</span></div>{#each [...snapshot.active_pipelines, ...snapshot.recent_pipelines].slice(-8).reverse() as trace}<button class="trace-row" class:selected={selectedTrace === trace.trace_id} onclick={() => selectedTrace = trace.trace_id}><span class="mono">{trace.trace_id}</span><span>{trace.root_operation}</span><span>{trace.spans.length} stages</span><strong>{formatDuration(trace.duration_ms)}</strong><em class:bad={trace.outcome === 'failure'}>{trace.outcome}</em></button>{/each}{#if !snapshot.active_pipelines.length && !snapshot.recent_pipelines.length}<p class="muted">Start a dictation to capture a bounded timeline.</p>{/if}</section>
     {#if selectedTrace}<section class="diag-panel trace-detail"><div class="panel-title"><h3>Waterfall <span class="mono">{selectedTrace}</span></h3><div><button class="link-btn" onclick={() => void copyTrace([...snapshot.active_pipelines, ...snapshot.recent_pipelines].find((item) => item.trace_id === selectedTrace))}>Copy trace</button><button class="link-btn" onclick={() => selectedTrace = null}>Close</button></div></div>{#each [...snapshot.active_pipelines, ...snapshot.recent_pipelines].filter((item) => item.trace_id === selectedTrace) as trace}{#each trace.spans as span}<div class="span-row"><span class="span-label">{span.stage ?? span.operation}</span><div class="waterfall"><i style={`width:${spanWidth(span.duration_ms, trace.duration_ms)}%;`} class:failed={span.outcome === 'failure'}></i></div><span class="mono">{formatDuration(span.duration_ms)}</span><span>{span.provider ?? span.model ?? ''}</span></div>{/each}{/each}</section>{/if}
   {:else if view === 'failures'}
-    <div class="two-col"><section class="diag-panel" data-setting-target="developer-latest-failures"><div class="panel-title"><h3>Latest failures</h3><span>{snapshot.latest_failures.length}</span></div>{#each snapshot.latest_failures.slice(-20).reverse() as failure}<details class="failure-row"><summary><span class="severity-dot"></span><span>{shortTime(failure.timestamp_ms)}</span><b>{subsystemLabel(failure.subsystem)}</b><span>{failure.operation ?? failure.stage ?? 'unknown'}</span><strong>{failure.cause}</strong></summary><div class="detail-grid"><span>fingerprint <code>{failure.fingerprint}</code></span><span>trace <code>{failure.trace_id ?? '—'}</code></span><span>duration {formatDuration(failure.duration_ms)}</span><span>{failure.provider ?? ''} {failure.model ?? ''}</span></div></details>{/each}{#if !snapshot.latest_failures.length}<p class="muted">No failures retained.</p>{/if}</section><section class="diag-panel"><div class="panel-title"><h3>Most common</h3><span>normalized</span></div>{#each [...snapshot.failure_groups].sort((a, b) => b.count - a.count).slice(0, 20) as group}<div class="group-row"><span class="mono">{group.fingerprint}</span><b>{group.count}×</b><span>{subsystemLabel(group.subsystem)} / {group.operation ?? group.stage ?? 'unknown'}</span><small>{group.representative_cause}</small></div>{/each}{#if !snapshot.failure_groups.length}<p class="muted">No grouped failures yet.</p>{/if}</section></div>
+    <div class="two-col"><section class="diag-panel" data-setting-target="developer-latest-failures"><div class="panel-title"><h3>Latest failures</h3><span>{snapshot.latest_failures.length}</span></div>{#each snapshot.latest_failures.slice(-20).reverse() as failure}<details class="failure-row"><summary><span class="severity-dot"></span><span>{shortTime(failure.timestamp_ms)}</span><b>{subsystemLabel(failure.subsystem)}</b><span>{failure.operation ?? failure.stage ?? failure.error_category ?? 'event'}</span><strong>{failure.cause}</strong></summary><div class="detail-grid"><span>fingerprint <code>{failure.fingerprint}</code></span><span>trace <code>{failure.trace_id ?? '—'}</code></span><span>duration {formatDuration(failure.duration_ms)}</span><span>{failure.provider ?? ''} {failure.model ?? ''}</span></div></details>{/each}{#if !snapshot.latest_failures.length}<p class="muted">No failures retained.</p>{/if}</section><section class="diag-panel"><div class="panel-title"><h3>Most common</h3><span>normalized</span></div>{#each [...snapshot.failure_groups].sort((a, b) => b.count - a.count).slice(0, 20) as group}<div class="group-row"><span class="mono">{group.fingerprint}</span><b>{group.count}×</b><span>{subsystemLabel(group.subsystem)} / {group.operation ?? group.stage ?? group.error_category ?? 'event'}</span><small>{group.representative_cause}</small></div>{/each}{#if !snapshot.failure_groups.length}<p class="muted">No grouped failures yet.</p>{/if}</section></div>
   {:else if view === 'logs'}
     <section class="diag-panel" data-setting-target="developer-logs"><div class="panel-title"><h3>Structured logs</h3><span>{filteredLogs().length} / {snapshot.logs.length}</span></div><div class="log-toolbar"><div class="log-filters">
       <input aria-label="Search logs" placeholder="Search message, operation, trace…" bind:value={logQuery} />
@@ -406,11 +469,11 @@
       </div>
     </div><div class="log-table" role="table">{#each filteredLogs().slice(-500).reverse() as entry}<div class="log-row" role="row"><time>{shortTime(entry.timestamp_ms)}</time><b class={`level-${entry.level}`}>{entry.level}</b><span class="subsystem">{subsystemLabel(entry.subsystem)}</span><span>{entry.operation ?? entry.stage ?? ''}</span><span class="message">{entry.message}</span><code>{entry.trace_id ?? ''}</code></div>{/each}</div></section>
   {:else if view === 'runtime'}
-    <section class="diag-panel runtime-panel" data-setting-target="developer-runtime"><div class="panel-title"><h3>Live runtime</h3><span class="stage-live" data-state={stageState(null)}><i class="node-dot"></i>{pillLabel()}</span></div><div class="runtime-flow">{#each RUNTIME_STAGES as node, index}<div class="runtime-node" data-state={stageState(node.id)}><span class="node-head"><i class="node-dot"></i>{node.label}</span><small>{stageDetail(node.id)}</small></div>{#if index < RUNTIME_STAGES.length - 1}<span class="flow-arrow">→</span>{/if}{/each}</div><div class="audio-grid"><div><span>Recording state</span><b>{audioActive() ? 'active' : (appStore.pillState || 'idle')}</b></div><div><span>Raw RMS / processed</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.raw_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.processed_level?.toFixed(4) ?? '—'}` : 'Unavailable'}</b></div><div><span>Gate threshold / verdict</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.gate_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.would_pass_gate == null ? 'unknown' : snapshot.runtime.audio.would_pass_gate ? 'pass' : 'below gate'}` : 'Unavailable when idle'}</b></div><div><span>VAD / sensitivity / gain</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.speech_detected ? 'speech' : 'quiet'} / L${snapshot.runtime.audio.adaptive_sensitivity ?? '—'} / ×${snapshot.runtime.audio.microphone_gain?.toFixed(2) ?? '—'}` : 'Unavailable when idle'}</b></div></div>{#if snapshot.runtime.audio?.stream_error}<p class="panel-note bad-note">The capture stream reported an error; the session may be ending.</p>{:else}<p class="panel-note">Audio diagnostics read the existing recording session atomics and the pipeline’s actual gate threshold. No duplicate audio processing or retained audio buffers are created by this view.</p>{/if}</section>
+    <section class="diag-panel runtime-panel" data-setting-target="developer-runtime"><div class="panel-title"><h3>Live runtime</h3><span class="stage-live" data-state={stageState(null)}><i class="node-dot"></i>{pillLabel()}</span></div><div class="runtime-flow">{#each RUNTIME_STAGES as node, index}<div class="runtime-node" data-state={stageState(node.id)}><span class="node-head"><i class="node-dot"></i>{node.label}</span><small>{stageDetail(node.id)}</small></div>{#if index < RUNTIME_STAGES.length - 1}<span class="flow-arrow">→</span>{/if}{/each}</div><div class="audio-grid"><div><span>Recording state</span><b>{audioActive() ? 'active' : pillLabel()}</b></div><div><span>Raw RMS / processed</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.raw_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.processed_level?.toFixed(4) ?? '—'}` : 'Unavailable'}</b></div><div><span>Gate threshold / verdict</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.gate_rms?.toFixed(4) ?? '—'} / ${snapshot.runtime.audio.would_pass_gate == null ? 'unknown' : snapshot.runtime.audio.would_pass_gate ? 'pass' : 'below gate'}` : 'Unavailable when idle'}</b></div><div><span>VAD / sensitivity / gain</span><b>{snapshot.runtime.audio ? `${snapshot.runtime.audio.speech_detected ? 'speech' : 'quiet'} / L${snapshot.runtime.audio.adaptive_sensitivity ?? '—'} / ×${snapshot.runtime.audio.microphone_gain?.toFixed(2) ?? '—'}` : 'Unavailable when idle'}</b></div></div>{#if snapshot.runtime.audio?.stream_error}<p class="panel-note bad-note">The capture stream reported an error; the session may be ending.</p>{:else}<p class="panel-note">Audio diagnostics read the existing recording session atomics and the pipeline’s actual gate threshold. No duplicate audio processing or retained audio buffers are created by this view.</p>{/if}</section>
   {:else if view === 'activity'}
     <section class="diag-panel" data-setting-target="developer-activity"><div class="panel-title"><h3>Activity / operations</h3><span class="muted">backend + frontend invoke metrics</span></div>{#each groupedOperations() as group}<h4 class="operation-group-h">{group.label}</h4><div class="operation-table"><div class="operation-head"><span>Operation</span><span>Calls / min</span><span>Total</span><span>Avg</span><span>p95</span><span>Failures</span><span>Active</span></div>{#each group.rows.slice(0, 40) as operation}<div class="operation-row"><code>{operation.operation}</code><span>{operation.calls_per_minute}</span><span>{formatDuration(operation.total_duration_ms)}</span><span>{formatDuration(operation.average_duration_ms)}</span><span>{formatDuration(operation.p95_duration_ms)}</span><span class:bad={operation.failure_count > 0}>{operation.failure_count}</span><span>{operation.currently_running}</span></div>{/each}</div>{/each}{#if frontendMetrics.some((metric) => metric.failures > 0)}<div class="frontend-errors"><h4 class="operation-group-h">Latest frontend IPC errors</h4>{#each frontendMetrics.filter((metric) => metric.failures > 0 && metric.last_error) as metric}<div class="frontend-error-row"><code>{metric.command}</code><span>{metric.last_error}</span></div>{/each}</div>{/if}</section>
   {:else if view === 'storage'}
-    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Resource timeline</h3><span class="muted">{snapshot.resource_samples.length} points</span></div><div class="resource-chart">{#each snapshot.resource_samples.slice(-60) as sample}<i title={`${shortTime(sample.observed_at_ms)} ${formatBytes(sample.snapshot.resident_bytes)}`} style={`height:${Math.min(100, Math.max(4, ((sample.snapshot.resident_bytes ?? 0) / Math.max(1, currentResource()?.peak_resident_bytes ?? sample.snapshot.resident_bytes ?? 1)) * 100))}%;`}></i>{/each}</div><div class="key-lines"><div><span>Peak resident</span><b>{formatBytes(currentResource()?.peak_resident_bytes)}</b></div><div><span>GPU signal</span><b>{formatBytes(currentResource()?.gpu_memory_bytes)}</b></div><div><span>Collector samples</span><b>{snapshot.health.collector_samples}</b></div><div><span>Cleanup cache</span><b>{unknown(snapshot.runtime.cleanup_cache?.entry_count)}</b></div><div><span>Sync log / peers</span><b>{unknown(snapshot.runtime.sync?.log_entries)} / {unknown(snapshot.runtime.sync?.peer_count)}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Bounded retention</h3><span class="muted">health</span></div><div class="key-lines"><div><span>Logs</span><b>{snapshot.health.retained_log_count} / dropped {snapshot.health.dropped_logs}</b></div><div><span>Failures</span><b>{snapshot.health.retained_failure_count} / dropped {snapshot.health.dropped_failures}</b></div><div><span>Traces</span><b>{snapshot.health.retained_trace_count} / dropped {snapshot.health.dropped_traces}</b></div><div><span>Resource samples</span><b>{snapshot.health.retained_resource_sample_count} / dropped {snapshot.health.dropped_resource_samples}</b></div><div><span>Auto-learn promotions</span><b>{unknown(snapshot.runtime.auto_learn?.promotions)}</b></div></div></section></div>
+    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Resource timeline</h3><span class="muted">{snapshot.resource_samples.length} points</span></div><!-- svelte-ignore a11y_no_noninteractive_element_interactions --><div class="resource-chart" role="img" aria-label={resourceChart.summary} onpointermove={onResourceMove} onpointerleave={() => (resourceHover = null)}>{#if resourceChart.linePath}<svg viewBox="0 0 {resourceChartW} {resourceChartH}" preserveAspectRatio="none"><defs><linearGradient id={resourceGradientId} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stop-color="white" stop-opacity="0" /><stop offset="4%" stop-color="white" stop-opacity="1" /><stop offset="96%" stop-color="white" stop-opacity="1" /><stop offset="100%" stop-color="white" stop-opacity="0" /></linearGradient><mask id="{resourceGradientId}-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={resourceChartW} height={resourceChartH}><rect x="0" y="0" width={resourceChartW} height={resourceChartH} fill="url(#{resourceGradientId})" /></mask></defs><line x1="0" y1={resourceChartH - resourcePadBottom} x2={resourceChartW} y2={resourceChartH - resourcePadBottom} stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke" /><path d={resourceChart.areaPath} fill="color-mix(in srgb, var(--accent) 18%, transparent)" mask="url(#{resourceGradientId}-mask)" class="resource-area" /><path d={resourceChart.linePath} fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="resource-line" />{#if resourceHover !== null && resourceSamples.length > 0}{@const hx = resourceSamples.length <= 1 ? resourceChartW / 2 : (resourceHover / (resourceSamples.length - 1)) * resourceChartW}<line x1={hx} y1={resourcePadTop - 4} x2={hx} y2={resourceChartH - resourcePadBottom} stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3" opacity="0.55" vector-effect="non-scaling-stroke" />{/if}</svg>{#if resourceHoverSample}<div class="resource-tooltip"><strong>{formatBytes(resourceHoverSample.snapshot.resident_bytes)}</strong><span>{shortTime(resourceHoverSample.observed_at_ms)}</span></div>{/if}{:else}<p class="muted resource-empty">No samples yet.</p>{/if}</div><div class="key-lines"><div><span>Peak resident</span><b>{formatBytes(currentResource()?.peak_resident_bytes)}</b></div><div><span>GPU signal</span><b>{formatBytes(currentResource()?.gpu_memory_bytes)}</b></div><div><span>Collector samples</span><b>{snapshot.health.collector_samples}</b></div><div><span>Cleanup cache</span><b>{unknown(snapshot.runtime.cleanup_cache?.entry_count)}</b></div><div><span>Sync log / peers</span><b>{unknown(snapshot.runtime.sync?.log_entries)} / {unknown(snapshot.runtime.sync?.peer_count)}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Bounded retention</h3><span class="muted">health</span></div><div class="key-lines"><div><span>Logs</span><b>{snapshot.health.retained_log_count} / dropped {snapshot.health.dropped_logs}</b></div><div><span>Failures</span><b>{snapshot.health.retained_failure_count} / dropped {snapshot.health.dropped_failures}</b></div><div><span>Traces</span><b>{snapshot.health.retained_trace_count} / dropped {snapshot.health.dropped_traces}</b></div><div><span>Resource samples</span><b>{snapshot.health.retained_resource_sample_count} / dropped {snapshot.health.dropped_resource_samples}</b></div><div><span>Auto-learn promotions</span><b>{unknown(snapshot.runtime.auto_learn?.promotions)}</b></div></div></section></div>
   {:else if view === 'faults'}
     <section class="diag-panel" data-setting-target="developer-simulations"><div class="panel-title"><h3>Fault injection</h3><span class="muted">reversible previews and controlled failures</span></div><div class="fault-grid"><button class="btn-ghost btn-compact" onclick={simulateProviderDown}>Provider Down</button><button class="btn-ghost btn-compact" onclick={simulateWifiOffline}>Wi-Fi Offline</button><button class="btn-ghost btn-compact" onclick={simulateGlobalMessage}>Global Message</button><button class="btn-ghost btn-compact" onclick={simulateDriveFull}>Drive Full</button><button class="btn-ghost btn-compact" data-setting-target="developer-notifications" onclick={() => void testNotifications()}>Send Notification</button><button class="btn-ghost btn-compact" data-setting-target="developer-installer" onclick={() => void testInstaller()}>Reinstall Latest Stable</button><button class="btn-ghost btn-compact" data-setting-target="developer-status" onclick={() => void checkProviderStatus()}>Run Check</button></div><div class="fault-row"><div class="fault-provider">
       <span class="fault-provider-label">Provider</span>
@@ -466,7 +529,8 @@
   .diag-tab.active { color:var(--ink); font-weight:500; }
   .diag-tab-bar { position:absolute; bottom:-1px; left:0; right:0; height:2px; background:var(--accent); }
 
-  .diag-view { min-width:0; }
+  .diagnostics-console { position:relative; isolation:isolate; background:var(--paper); }
+  .diag-view { min-width:0; position:relative; overflow:hidden; background:var(--paper); }
   .frontend-errors { margin-top:18px; }
   .frontend-error-row { display:grid; grid-template-columns:minmax(150px, .35fr) minmax(0, 1fr); gap:12px; padding:8px 0; border-top:1px solid var(--line-soft); font-size:11.5px; }
   .frontend-error-row code { color:var(--ink-soft); }
@@ -584,9 +648,16 @@
   .operation-head { color:var(--ink-mute); font-size:10px; text-transform:uppercase; letter-spacing:.04em; border-bottom-color:var(--line); }
   .operation-row code { color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-  .resource-chart { height:110px; display:flex; align-items:flex-end; gap:2px; border-bottom:1px solid var(--line); padding:8px 0 0; }
-  .resource-chart i { flex:1; min-width:2px; background:var(--accent); opacity:.75; border-radius:1px 1px 0 0; transition:opacity var(--ui-duration-fast, 150ms) ease; }
-  .resource-chart i:hover { opacity:1; }
+  .resource-chart { position:relative; height:110px; border-bottom:1px solid var(--line); padding:8px 0 0; }
+  .resource-chart svg { display:block; width:100%; height:100%; overflow:visible; }
+  .resource-area, .resource-line { transition:d var(--ui-duration-base, 220ms) var(--ui-ease-out, ease); }
+  .resource-empty { margin:0; padding-top:36px; text-align:center; }
+  .resource-tooltip {
+    position:absolute; top:10px; right:0; display:flex; flex-direction:column; gap:1px;
+    padding:6px 8px; border-radius:var(--r-sm); background:var(--bg-elev); border:1px solid var(--line);
+    box-shadow:var(--shadow-elev); pointer-events:none; font-size:11px; color:var(--ink-mute);
+  }
+  .resource-tooltip strong { color:var(--ink); font-weight:500; font-variant-numeric:tabular-nums; }
 
   .fault-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
   .fault-row { justify-content:space-between; margin-top:22px; }
@@ -625,7 +696,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .runtime-node, .resource-chart i, .waterfall i { transition:none; }
+    .runtime-node, .resource-area, .resource-line, .waterfall i { transition:none; }
     .stage-live .node-dot, .runtime-node .node-dot { animation:none; }
   }
 </style>

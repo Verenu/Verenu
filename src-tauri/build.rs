@@ -1,4 +1,20 @@
 fn main() {
+    // The public PostHog ingestion token is compiled into desktop builds only
+    // when the local/release environment provides it. No administrative key
+    // is accepted or logged here.
+    println!("cargo:rerun-if-env-changed=POSTHOG_PROJECT_TOKEN");
+    println!("cargo:rerun-if-env-changed=POSTHOG_HOST");
+    if std::env::var("POSTHOG_PROJECT_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+        println!(
+            "cargo:rustc-env=VERENU_POSTHOG_PROJECT_TOKEN={}",
+            std::env::var("POSTHOG_PROJECT_TOKEN").unwrap()
+        );
+    }
+    if let Ok(host) = std::env::var("POSTHOG_HOST") {
+        if !host.trim().is_empty() {
+            println!("cargo:rustc-env=VERENU_POSTHOG_HOST={host}");
+        }
+    }
     // Build scripts themselves run for the host, so `cfg(target_os =
     // "windows")` describes this machine rather than Cargo's Android target.
     // Read CARGO_CFG_TARGET_OS for cross-compiles and keep desktop-only native
@@ -44,10 +60,8 @@ fn main() {
     // `[default]` set, which forced ACL checks on every custom command and made
     // `save_setting` fail with "not allowed. Command not found" during
     // `tauri dev` (Vite is still a local origin relative to `devUrl`).
-    let mut attributes = tauri_build::Attributes::new().plugin(
-        "verenu-security",
-        tauri_build::InlinedPlugin::new(),
-    );
+    let mut attributes =
+        tauri_build::Attributes::new().plugin("verenu-security", tauri_build::InlinedPlugin::new());
     if target_os == "windows" {
         attributes = attributes
             .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
