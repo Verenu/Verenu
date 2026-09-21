@@ -297,7 +297,7 @@ fn duplicate_context_name(conn: &Connection, source_name: &str) -> Result<String
             format!(" copy {copy_number}")
         };
         let base_len = CONTEXT_NAME_CHAR_LIMIT.saturating_sub(suffix.chars().count());
-        let base: String = source_name.chars().take(base_len).collect();
+        let base: String = source_name.chars().take(base_len).collect::<String>().trim_end().to_string();
         let candidate = format!("{base}{suffix}");
         if !context_name_exists(conn, &candidate)? {
             return Ok(candidate);
