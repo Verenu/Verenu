@@ -58,24 +58,8 @@
     return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
   }
 
-  async function findConflictContexts(term: string): Promise<ContextAssignment[]> {
-    const contexts = await invoke<Context[]>('get_contexts');
-    const priorityIds = new Set([1, contextId as number]);
-    const priority = contexts.filter((context) => priorityIds.has(context.id));
-    const checked = new Set(priority.map((context) => context.id));
-    const findIn = async (context: Context) => {
-      const entries = await invoke<DictionaryEntry[]>('get_context_dictionary', { contextId: context.id });
-      return entries.some((entry) => entry.term === term)
-        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
-        : null;
-    };
-    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
-      (location): location is ContextAssignment => location !== null,
-    );
-    if (priorityLocations.length > 0) return priorityLocations;
-    return (await Promise.all(
-      contexts.filter((context) => !checked.has(context.id)).map(findIn),
-    )).filter((location): location is ContextAssignment => location !== null);
+  function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    return invoke<ContextAssignment[]>('get_dictionary_entry_contexts', { term });
   }
 
   async function saveModal() {
@@ -156,19 +140,11 @@
     movingExisting = true;
     saveError = '';
     try {
-      const existing = (await invoke<DictionaryEntry[]>('get_dictionary')).find((entry) => entry.term === term);
-      if (!existing) throw new Error(`"${term}" was not found`);
-      await invoke('set_dictionary_context_assignment', {
+      const moved = await invoke<DictionaryEntry>('move_dictionary_entry_by_term_to_context', {
+        term,
         contextId,
-        dictionaryId: existing.id,
-        assigned: true,
       });
-      await invoke('set_dictionary_context_assignment', {
-        contextId: 1,
-        dictionaryId: existing.id,
-        assigned: false,
-      });
-      onSaved(existing);
+      onSaved(moved);
       onClose();
     } catch (err) {
       saveError = formatIpcError(err);
