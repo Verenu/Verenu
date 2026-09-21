@@ -57,24 +57,8 @@
     return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
   }
 
-  async function findConflictContexts(trigger: string): Promise<ContextAssignment[]> {
-    const contexts = await invoke<Context[]>('get_contexts');
-    const priorityIds = new Set([EVERYWHERE_ID, contextId as number]);
-    const priority = contexts.filter((context) => priorityIds.has(context.id));
-    const checked = new Set(priority.map((context) => context.id));
-    const findIn = async (context: Context) => {
-      const snippets = await invoke<Snippet[]>('get_context_snippets', { contextId: context.id });
-      return snippets.some((snippet) => snippet.trigger === trigger)
-        ? { id: context.id, name: context.name, is_everywhere: context.is_everywhere }
-        : null;
-    };
-    const priorityLocations = (await Promise.all(priority.map(findIn))).filter(
-      (location): location is ContextAssignment => location !== null,
-    );
-    if (priorityLocations.length > 0) return priorityLocations;
-    return (await Promise.all(
-      contexts.filter((context) => !checked.has(context.id)).map(findIn),
-    )).filter((location): location is ContextAssignment => location !== null);
+  function findConflictContexts(trigger: string): Promise<ContextAssignment[]> {
+    return invoke<ContextAssignment[]>('get_snippet_entry_contexts', { trigger });
   }
 
   async function saveModal() {
