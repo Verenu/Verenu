@@ -3,6 +3,7 @@
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
   import { formatIpcError, type DictionaryEntry } from '../../stores';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
@@ -47,7 +48,7 @@
   const hasEverywhereConflict = $derived(
     mode === 'add'
       && contextId != null
-      && contextId !== 1
+      && contextId !== EVERYWHERE_ID
       && conflictContexts.some((context) => context.is_everywhere),
   );
 
@@ -118,7 +119,7 @@
     } catch (err) {
       const msg = formatIpcError(err);
       const isDuplicate = msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('already exists');
-      if (mode === 'add' && contextId != null && contextId !== 1 && isDuplicate) {
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
         try {
           conflictContexts = await findConflictContexts(term);
         } catch {
@@ -135,7 +136,7 @@
   }
 
   async function moveExistingToContext() {
-    if (mode !== 'add' || contextId == null || contextId === 1) return;
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
     const term = (termInput?.value ?? draftTerm).trim();
     movingExisting = true;
     saveError = '';
