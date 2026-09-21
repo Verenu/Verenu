@@ -3,6 +3,7 @@
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
   import { formatIpcError, type DictionaryEntry } from '../../stores';
+  import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
@@ -33,8 +34,34 @@
   let draftMistake = $state(entry?.mistake ?? '');
   let saving = $state(false);
   let saveError = $state('');
+  let conflictContexts = $state<ContextAssignment[]>([]);
+  let movingExisting = $state(false);
   let termInput = $state<HTMLInputElement | null>(null);
   let mistakeInput = $state<HTMLInputElement | null>(null);
+
+  type ContextAssignment = {
+    id: number;
+    name: string;
+    is_everywhere: boolean;
+  };
+
+  const hasEverywhereConflict = $derived(
+    mode === 'add'
+      && contextId != null
+      && contextId !== EVERYWHERE_ID
+      && conflictContexts.some((context) => context.is_everywhere),
+  );
+
+  function conflictLocation() {
+    const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
+    if (names.length <= 1) return names[0] ?? '';
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  }
+
+  function findConflictContexts(term: string): Promise<ContextAssignment[]> {
+    return invoke<ContextAssignment[]>('get_dictionary_entry_contexts', { term });
+  }
 
   async function saveModal() {
     // Read directly from DOM elements at click time to bypass WKWebView
@@ -55,6 +82,7 @@
       return;
     }
     saving = true; saveError = '';
+    conflictContexts = [];
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(
@@ -90,11 +118,40 @@
       onClose();
     } catch (err) {
       const msg = formatIpcError(err);
+      const isDuplicate = msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('already exists');
+      if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
+        try {
+          conflictContexts = await findConflictContexts(term);
+        } catch {
+          conflictContexts = [];
+        }
+      }
       const normalizedMessage = msg.toLowerCase();
-      saveError = normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
-        ? 'That term already exists.'
-        : msg;
+      saveError = conflictContexts.length > 0
+        ? `"${term}" already exists inside of ${conflictLocation()}.${hasEverywhereConflict ? ' Move it here?' : ''}`
+        : normalizedMessage.includes('unique') || normalizedMessage.includes('already exists')
+          ? 'That term already exists.'
+          : msg;
     } finally { saving = false; }
+  }
+
+  async function moveExistingToContext() {
+    if (mode !== 'add' || contextId == null || contextId === EVERYWHERE_ID) return;
+    const term = (termInput?.value ?? draftTerm).trim();
+    movingExisting = true;
+    saveError = '';
+    try {
+      const moved = await invoke<DictionaryEntry>('move_dictionary_entry_by_term_to_context', {
+        term,
+        contextId,
+      });
+      onSaved(moved);
+      onClose();
+    } catch (err) {
+      saveError = formatIpcError(err);
+    } finally {
+      movingExisting = false;
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -172,6 +229,14 @@
     {#if saveError}
       <div class="save-error" role="alert">
         <span>{saveError}</span>
+        {#if hasEverywhereConflict}
+          <button
+            class="btn-ghost btn-compact conflict-move-btn"
+            type="button"
+            onclick={() => void moveExistingToContext()}
+            disabled={movingExisting}
+          >{movingExisting ? 'Moving…' : 'Move it here'}</button>
+        {/if}
       </div>
     {/if}
     {#if draftTerm.length >= TERM_LIMIT}
@@ -352,6 +417,7 @@
   }
 
   .save-error > span { min-width: 0; }
+  .conflict-move-btn { margin-left: auto; flex-shrink: 0; }
 
   .spinner {
     display: inline-block;
