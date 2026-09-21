@@ -1355,7 +1355,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         .filter((context) => devItemContextIds('snippets', snippet.id).includes(context.id))
         .map((context) => ({ id: context.id, name: context.name, is_everywhere: context.is_everywhere })) as T;
     }
-    case 'move_dictionary_entry_to_context': {
+    case 'move_dictionary_entry_by_term_to_context': {
       const term = assertDevText(args?.term, 'Term').trim();
       const contextId = Number(args?.contextId ?? args?.context_id);
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
