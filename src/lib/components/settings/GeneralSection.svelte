@@ -259,15 +259,20 @@
     }
   });
 
+  let autostartError = $state(false);
+
   async function handleAutostart(value: boolean) {
     autostart = value;
     try {
       await invoke('set_autostart', { enabled: value });
     } catch (err) {
       autostart = !value;
+      autostartError = true;
       console.error('set_autostart failed:', err);
     }
   }
+
+  let legacyFeaturesToggleError = $state(false);
 
   async function applyLegacyFeatures(value: boolean) {
     legacyFeaturesError = '';
@@ -277,6 +282,7 @@
     } catch (err) {
       appStore.legacyFeaturesEnabled = !value;
       legacyFeaturesError = 'Could not save Legacy pages. Your change was reverted.';
+      legacyFeaturesToggleError = true;
       console.error('save legacy_features_enabled failed:', err);
     }
   }
@@ -304,12 +310,15 @@
     if (e.key === 'Escape' && confirmLegacyOn) confirmLegacyOn = false;
   }
 
+  let cleanupError = $state(false);
+
   async function applyCleanup(value: boolean) {
     appStore.cleanupEnabled = value;
     try {
       await saveSetting('cleanup_enabled', value);
     } catch (err) {
       appStore.cleanupEnabled = !value;
+      cleanupError = true;
       console.error('save cleanup_enabled failed:', err);
     }
   }
@@ -338,15 +347,20 @@
     if (e.key === 'Escape' && confirmCleanupOff) confirmCleanupOff = false;
   }
 
+  let contextualFormattingError = $state(false);
+
   async function handleContextualFormatting(value: boolean) {
     contextualFormatting = value;
     try {
       await saveSetting('contextual_formatting_enabled', value);
     } catch (err) {
       contextualFormatting = !value;
+      contextualFormattingError = true;
       console.error('save contextual_formatting_enabled failed:', err);
     }
   }
+
+  let capsLockUppercaseError = $state(false);
 
   async function handleCapsLockUppercase(value: boolean) {
     capsLockUppercase = value;
@@ -354,6 +368,7 @@
       await saveSetting('caps_lock_uppercase_enabled', value);
     } catch (err) {
       capsLockUppercase = !value;
+      capsLockUppercaseError = true;
       console.error('save caps_lock_uppercase_enabled failed:', err);
     }
   }
@@ -672,28 +687,28 @@
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-startup">
     <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : 'Launch Verenu when Windows starts'}</div></div>
-    <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" />
+    <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" bind:error={autostartError} />
   </div>
 {/if}
 <h3 class="settings-subhead">Text processing</h3>
 <div class="setting-row" data-setting-target="general-cleanup">
   <div><div class="label">Cleanup</div><div class="desc">Runs an LLM-powered cleanup pass after transcription for tone and formatting.</div></div>
-  <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" />
+  <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
 </div>
 <div class="setting-row" data-setting-target="general-spacing">
   <div><div class="label">Smart spacing &amp; capitalization</div><div class="desc">Adjusts capitalization and spacing around inserted text when the cursor context is clear.</div></div>
-  <Toggle checked={contextualFormatting} onchange={handleContextualFormatting} label="Smart spacing and capitalization" />
+  <Toggle checked={contextualFormatting} onchange={handleContextualFormatting} label="Smart spacing and capitalization" bind:error={contextualFormattingError} />
 </div>
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-caps-lock">
     <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
-    <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" />
+    <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" bind:error={capsLockUppercaseError} />
   </div>
 {/if}
 <h3 class="settings-subhead">Legacy</h3>
 <div class="setting-row" data-setting-target="general-legacy">
   <div><div class="label">Legacy pages</div><div class="desc">Bring back the standalone App Mappings settings page and the Dictionary/Snippets pages, superseded by Contexts.</div></div>
-  <Toggle checked={appStore.legacyFeaturesEnabled} onchange={handleLegacyFeatures} label="Legacy pages" />
+  <Toggle checked={appStore.legacyFeaturesEnabled} onchange={handleLegacyFeatures} label="Legacy pages" bind:error={legacyFeaturesToggleError} />
 </div>
 {#if legacyFeaturesError}
   <p class="settings-error" role="alert">{legacyFeaturesError}</p>

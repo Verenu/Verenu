@@ -14,8 +14,7 @@
 
   const max = $derived(Math.max(...words.top.map((w) => w.count), 0));
 
-  /* Negative means cleanup trimmed the dictation; positive means it grew
-     (snippet expansions can outweigh filler removal). */
+  /* Negative means cleanup trimmed the dictation; positive means it grew. */
   const trimPct = $derived(
     cleanup.raw_words > 0 ? ((cleanup.clean_words - cleanup.raw_words) / cleanup.raw_words) * 100 : null
   );
@@ -202,7 +201,7 @@
   }
   .figures dd {
     margin: 0;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 18px;
     font-weight: 500;
     color: var(--ink);
@@ -231,7 +230,7 @@
   .word-toggle-text {
     min-width: 0;
     flex: 1;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 15px;
     font-weight: 500;
     color: inherit;
@@ -257,7 +256,7 @@
     padding-right: 6px;
     max-height: 130px;
     overflow-y: auto;
-    font-family: var(--serif);
+    font-family: var(--sans);
     font-size: 14px;
     font-weight: 500;
     color: var(--ink);

@@ -26,6 +26,16 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
 
     await page.getByRole('button', { name: 'Get Started' }).click();
+    const analyticsToggle = page.getByRole('switch', { name: 'Share privacy-preserving product analytics' });
+    await analyticsToggle.waitFor({ state: 'visible', timeout: TIMEOUT });
+    if (await analyticsToggle.getAttribute('aria-checked') !== 'true') {
+      errors.push('Analytics should be enabled by default during onboarding');
+    }
+    await analyticsToggle.click();
+    if (await analyticsToggle.getAttribute('aria-checked') !== 'false') {
+      errors.push('Onboarding analytics toggle did not turn off');
+    }
+    await page.getByRole('button', { name: 'Next' }).click();
     await page.locator('.provider-card:has-text("OpenAI")').click();
     await page.getByRole('button', { name: 'Next' }).click();
 
@@ -147,6 +157,7 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     }
 
     if (persisted.setup_complete !== true) errors.push('Setup completion did not persist');
+    if (persisted.analytics_enabled !== false) errors.push('Disabled onboarding analytics choice did not persist');
 
     if (errors.length > 0) {
       console.error('FAIL');

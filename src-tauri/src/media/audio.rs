@@ -35,6 +35,124 @@ pub fn list_input_devices() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// WirePlumber can remember an output-only profile for a card that Verenu has
+/// configured as its microphone. In that state PipeWire exposes no source and
+/// CPAL's ALSA `default` device fails later, during `snd_pcm_hw_params`, with a
+/// misleading backend error. Follow PipeWire's configured source metadata and
+/// activate the least-surprising profile that provides capture. This is a
+/// no-op when PipeWire is unavailable or the profile is already input-capable.
+#[cfg(target_os = "linux")]
+fn ensure_configured_capture_profile() {
+    use serde_json::Value;
+    use std::process::Command;
+    use std::thread;
+    use std::time::Duration;
+
+    let output = match Command::new("pw-dump").output() {
+        Ok(output) if output.status.success() => output,
+        _ => return,
+    };
+    let dump: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let Some(objects) = dump.as_array() else {
+        return;
+    };
+
+    let configured_source = objects.iter().find_map(|object| {
+        let metadata = object.get("metadata")?.as_array()?;
+        metadata.iter().find_map(|entry| {
+            let key = entry.get("key")?.as_str()?;
+            if !matches!(
+                key,
+                "default.configured.audio.source" | "default.audio.source"
+            ) {
+                return None;
+            }
+            entry.get("value")?.get("name")?.as_str().map(str::to_owned)
+        })
+    });
+    let Some(source) = configured_source else {
+        return;
+    };
+    let Some(source_tail) = source.strip_prefix("alsa_input.") else {
+        return;
+    };
+
+    let Some(card) = objects.iter().find(|object| {
+        if object.get("type").and_then(Value::as_str) != Some("PipeWire:Interface:Device") {
+            return false;
+        }
+        let Some(bus_id) = object
+            .get("info")
+            .and_then(|info| info.get("props"))
+            .and_then(|props| props.get("device.bus-id"))
+            .and_then(Value::as_str)
+        else {
+            return false;
+        };
+        source_tail.starts_with(bus_id)
+    }) else {
+        return;
+    };
+
+    let Some(card_id) = card.get("id").and_then(Value::as_u64) else {
+        return;
+    };
+    let params = card.get("info").and_then(|info| info.get("params"));
+    let current_profile = params
+        .and_then(|params| params.get("Profile"))
+        .and_then(Value::as_array)
+        .and_then(|profiles| profiles.first())
+        .and_then(|profile| profile.get("index"))
+        .and_then(Value::as_u64);
+    let Some(profiles) = params
+        .and_then(|params| params.get("EnumProfile"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+
+    // Prefer the microphone-only profile. Switching to `pro-audio` can create
+    // a new playback node and cause some WirePlumber sessions to reroute audio
+    // away from the user's existing default sink. Dictation must not change
+    // where system audio is played.
+    let selected = profiles
+        .iter()
+        .find(|profile| {
+            profile.get("name").and_then(Value::as_str) == Some("input:analog-stereo")
+        });
+    let Some(selected) = selected else {
+        return;
+    };
+    let Some(profile_id) = selected.get("index").and_then(Value::as_u64) else {
+        return;
+    };
+    if current_profile == Some(profile_id) {
+        return;
+    }
+
+    let result = Command::new("wpctl")
+        .args(["set-profile", &card_id.to_string(), &profile_id.to_string()])
+        .output();
+    if !matches!(result, Ok(output) if output.status.success()) {
+        log::warn!(
+            "audio: configured microphone profile could not be activated (card={card_id}, profile={profile_id})"
+        );
+        return;
+    }
+    log::info!(
+        "audio: activated PipeWire capture profile {profile_id} for configured microphone card {card_id}"
+    );
+    // Profile changes are asynchronous. Give WirePlumber a short opportunity
+    // to publish the source before CPAL opens ALSA's default route.
+    thread::sleep(Duration::from_millis(150));
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_configured_capture_profile() {}
+
 struct FrameDenoiser {
     state: Box<nnnoiseless::DenoiseState<'static>>,
     buf: Vec<f32>,
@@ -368,6 +486,7 @@ impl RecordingSession {
         durable: Option<Box<dyn DurableSink>>,
         max_output_samples: Option<usize>,
     ) -> Result<Self> {
+        ensure_configured_capture_profile();
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
             host.input_devices()?

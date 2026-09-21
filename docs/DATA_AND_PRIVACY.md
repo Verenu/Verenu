@@ -5,7 +5,10 @@ This document explains what Verenu keeps on device, what it sends off device, an
 ## Core Principles
 
 - Verenu's own server (`api.verenu.com`) serves only public app metadata — release info, download links, and provider status. It never receives your dictated audio, transcripts, API keys, or history.
-- There is no built-in telemetry, analytics, or ad-tech pipeline.
+- Desktop and Android builds may include optional pseudonymous product
+  analytics when the build is configured with the public PostHog ingestion
+  token; this is limited to explicit
+  aggregate events and is described below.
 - Your dictated audio and text either stay on your machine or go directly to the AI providers you configure — never through a Verenu server.
 - If data leaves your machine, it leaves because a feature needs it: either the AI provider endpoint that feature depends on, or Verenu's own public status/update endpoint.
 - Safety defaults beat convenience. On Windows, updates download or open the published installer instead of auto-executing downloaded bytes.
@@ -16,6 +19,7 @@ This document explains what Verenu keeps on device, what it sends off device, an
 
 - Windows: stored in Windows Credential Manager
 - macOS: stored in Keychain
+- Linux: stored through Freedesktop Secret Service (GNOME Keyring/KWallet)
 - Legacy plaintext storage is migrated away from older formats where possible
 
 ### App data
@@ -133,6 +137,35 @@ Verenu periodically asks `api.verenu.com` for the operating status of the transc
 
 These are plain GET requests with no request body. They never include your dictated audio, transcripts, history, dictionary, snippets, prompts, or API keys — Verenu's server only ever sends back public status data in response, it does not receive anything from you beyond the bare HTTP request.
 
+### Optional desktop and Android product analytics
+
+Product analytics is available only when the build is configured with
+`POSTHOG_PROJECT_TOKEN` and `POSTHOG_HOST`. Windows and macOS use the shared
+Rust transport; Android uses its native SDK boundary.
+When enabled, Verenu sends a fresh random per-process identifier and only explicit
+aggregate product events: dictation lifecycle/delivery events, a safe settings
+summary, and categorized pipeline failures. Event properties are limited to
+booleans, fixed categories, and coarse pipeline stages. Failures never include
+raw error messages or stack traces.
+
+The Android SDK's automatic lifecycle, screen, deep-link, push, session replay,
+feature-flag, person-profile, and crash/error capture are disabled. Verenu does
+not call identify and does not send dictated audio, transcripts, prompts,
+history, snippets, vocabulary, app/window names, package names, email
+addresses, device IDs, or stack traces to PostHog. Settings summaries exclude
+prompts, context targets, model names, microphone names, hotkeys, and API keys.
+The random session
+identifier is regenerated for each app process and is not linked to an account.
+This is pseudonymous usage analytics, not a claim of mathematical anonymity;
+the tradeoff is that cross-launch retention cannot be measured.
+
+The Settings → Privacy toggle persists the choice. Turning analytics off opts
+the SDK out immediately, resets its random identity, clears its local
+deduplication state, and prevents new events while off. Events already accepted
+by the SDK before opt-out may remain in its offline queue; they contain only the
+safe contract fields above.
+See [the event contract](ANALYTICS.md) for the complete allowlist.
+
 ## History Loading
 
 The Home view loads recent transcription history in pages of 100 items by default and can request older pages on demand.
@@ -146,7 +179,7 @@ This changes UI loading behavior, not storage location. The full history databas
 - transcription history
 - context vocabulary and snippets by default
 - local settings backups by default
-- analytics events
+- analytics events to Verenu-owned servers (optional Android product events go only to the separately configured PostHog host)
 - user profiles
 - payment data
 
@@ -170,6 +203,7 @@ That said, once data is sent to a third-party AI provider, that provider's reten
 | API health check | current app state stays local | optional periodic GET to `api.verenu.com/v1/health` (every 20 min) |
 | Export data | backup file on local disk | nothing unless you share the file yourself |
 | Logs export | log file on local disk | nothing unless you share the file yourself |
+| Optional desktop/Android product analytics | nothing beyond local SDK queue until delivery | explicit aggregate dictation events with a fresh random per-process identifier |
 
 ## macOS And Windows Key Storage
 

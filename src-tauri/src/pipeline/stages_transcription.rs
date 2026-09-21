@@ -570,7 +570,19 @@ async fn run_primary_transcription_chain(
     gen: u64,
 ) -> anyhow::Result<(String, String, String)> {
     let mut last_err: Option<anyhow::Error> = None;
-    for (provider_id, model) in transcription_model_chain(cfg) {
+    for (provider_index, (provider_id, model)) in
+        transcription_model_chain(cfg).into_iter().enumerate()
+    {
+        if provider_index > 0 {
+            if let (Some(state), Some(analytics)) = (
+                app.try_state::<SharedState>(),
+                app.try_state::<crate::analytics::Analytics>(),
+            ) {
+                if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
+                    analytics.fallback_used(&run_id, "transcription");
+                }
+            }
+        }
         let key = cfg.key_for(&provider_id).to_owned();
         let language = cfg.transcription_language.clone();
         match transcribe_any(
