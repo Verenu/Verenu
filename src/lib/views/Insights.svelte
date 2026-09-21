@@ -306,6 +306,13 @@
     min-width: 0;
   }
 
+  /* The Linux close control overlays the upper-right of this row. Drop the
+     whole header below it so the filters can sit on the page's right edge
+     instead of leaving a caption-sized hole beside the charts. */
+  :global(.app.app-linux) .head {
+    margin-top: var(--native-chrome-below-clearance);
+  }
+
   .head > div:first-child {
     flex: 1 1 240px;
     min-width: 0;
