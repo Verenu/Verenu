@@ -2,7 +2,7 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
-  import { formatIpcError, type Context, type DictionaryEntry } from '../../stores';
+  import { formatIpcError, type DictionaryEntry } from '../../stores';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
   import MicInputButton from '../../components/MicInputButton.svelte';
