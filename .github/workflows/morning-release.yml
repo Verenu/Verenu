@@ -255,7 +255,7 @@ jobs:
               echo '- Native Tauri app for Windows and macOS'
               echo '- Local SQLite history'
               echo '- API keys stored locally'
-              echo '- No telemetry'
+              echo '- Optional pseudonymous product analytics, disableable in Settings → Privacy'
               echo
               echo '## Virustotal Review'
               echo
@@ -556,6 +556,8 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
           APPLE_SIGNING_IDENTITY: ${{ matrix.os-name == 'macos' && secrets.MACOS_SIGNING_IDENTITY || '' }}
+          POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
         run: |
           set -euo pipefail
 

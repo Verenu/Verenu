@@ -65,16 +65,40 @@ impl LlamaBackend {
                 },
             ],
             LlamaBackend::Vulkan => vec![RuntimeAsset {
-                url: format!("{base}/llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64.zip"),
-                sha256: "8056f5c2fd8863a9b02719db527edd3c51f16567abb26981de4292d8d797444e",
+                url: {
+                    #[cfg(target_os = "linux")]
+                    { format!("{base}/llama-{LLAMA_CPP_TAG}-bin-ubuntu-vulkan-x64.tar.gz") }
+                    #[cfg(not(target_os = "linux"))]
+                    { format!("{base}/llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64.zip") }
+                },
+                sha256: {
+                    #[cfg(target_os = "linux")]
+                    { "79cb630e029a1a0bc1be4342f293850f874a1ffe2453e8dfb1efefcb9789bb9c" }
+                    #[cfg(not(target_os = "linux"))]
+                    { "8056f5c2fd8863a9b02719db527edd3c51f16567abb26981de4292d8d797444e" }
+                },
             }],
             LlamaBackend::Metal => vec![RuntimeAsset {
                 url: format!("{base}/llama-{LLAMA_CPP_TAG}-bin-macos-arm64.tar.gz"),
                 sha256: "c2903c14b9e0cf60a62fc85b8b8ab379267f5f849b9c6f29c8a4e21d299fa62b",
             }],
             LlamaBackend::Cpu => vec![RuntimeAsset {
-                url: format!("{base}/llama-{LLAMA_CPP_TAG}-bin-macos-x64.tar.gz"),
-                sha256: "ec167296de6b1e9fd6510c181b6424973515a78dac916d83aad4734b3f89bf2b",
+                url: {
+                    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+                    { format!("{base}/llama-{LLAMA_CPP_TAG}-bin-ubuntu-arm64.tar.gz") }
+                    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+                    { format!("{base}/llama-{LLAMA_CPP_TAG}-bin-ubuntu-x64.tar.gz") }
+                    #[cfg(not(target_os = "linux"))]
+                    { format!("{base}/llama-{LLAMA_CPP_TAG}-bin-macos-x64.tar.gz") }
+                },
+                sha256: {
+                    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+                    { "4b058271f177814390a430fb3954240a56301386a4f2d6aea48f8bdd284771a2" }
+                    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+                    { "0052bb62c9752abf0e4e2412d0a16637b9c8dc02d517572b18ed42b461aebbef" }
+                    #[cfg(not(target_os = "linux"))]
+                    { "ec167296de6b1e9fd6510c181b6424973515a78dac916d83aad4734b3f89bf2b" }
+                },
             }],
         }
     }
@@ -107,13 +131,19 @@ pub fn detect_backend() -> LlamaBackend {
             LlamaBackend::Cpu
         }
     }
-    // Not a supported release target (Windows/macOS only, see AGENTS.md),
-    // but this must still return something so the crate type-checks when
-    // built or analyzed on other platforms (e.g. a Linux CI/dev machine).
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        LlamaBackend::Cpu
+        if cfg!(target_arch = "x86_64") && vulkan_gpu_present() { LlamaBackend::Vulkan } else { LlamaBackend::Cpu }
     }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    { LlamaBackend::Cpu }
+}
+
+#[cfg(target_os = "linux")]
+fn vulkan_gpu_present() -> bool {
+    std::process::Command::new("vulkaninfo").arg("--summary")
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().map(|status| status.success()).unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -278,7 +308,7 @@ fn extract_archive(archive_path: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn extract_archive(archive_path: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let decoder = flate2::read::GzDecoder::new(file);
@@ -329,12 +359,7 @@ fn extract_archive(archive_path: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-// Not a supported release target (Windows/macOS only, see AGENTS.md), but
-// this must still exist so the crate type-checks when built or analyzed on
-// other platforms (e.g. a Linux CI/dev machine) — mirrors detect_backend()'s
-// Linux fallback above. Never actually reached in practice since nothing
-// calls ensure_llama_server_binary on an unsupported platform.
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn extract_archive(_archive_path: &Path, _dest: &Path) -> anyhow::Result<()> {
     anyhow::bail!("local LLM runtime is only supported on Windows and macOS")
 }
@@ -489,8 +514,14 @@ mod tests {
     #[test]
     fn every_backend_targets_the_right_platform_asset() {
         assert!(LlamaBackend::Cuda.assets()[0].url.contains("win-cuda"));
+        #[cfg(target_os = "linux")]
+        assert!(LlamaBackend::Vulkan.assets()[0].url.contains("ubuntu-vulkan"));
+        #[cfg(not(target_os = "linux"))]
         assert!(LlamaBackend::Vulkan.assets()[0].url.contains("win-vulkan"));
         assert!(LlamaBackend::Metal.assets()[0].url.contains("macos-arm64"));
+        #[cfg(target_os = "linux")]
+        assert!(LlamaBackend::Cpu.assets()[0].url.contains("ubuntu-"));
+        #[cfg(not(target_os = "linux"))]
         assert!(LlamaBackend::Cpu.assets()[0].url.contains("macos-x64"));
     }
 

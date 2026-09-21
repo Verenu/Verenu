@@ -14,6 +14,10 @@ const isNativeAndroidRuntime =
 	typeof globalThis !== 'undefined' &&
 	(globalThis as typeof globalThis & { __VERENU_ANDROID__?: boolean }).__VERENU_ANDROID__ === true;
 export const isMac = isMacUserAgent;
+// A Tauri WebKitGTK UA often contains Linux without X11. That is a desktop
+// Wayland session, not Android. Android is identified only by its explicit UA,
+// UA-CH, or native bridge marker.
+export const isLinux = /Linux/i.test(ua) || /Linux/i.test(uaDataPlatform);
 // Some Android WebViews used by Tauri report a desktop-style UA. Their
 // platform still identifies the Linux/ARM WebView. Verenu's supported desktop
 // targets are Windows/macOS, so Linux + touch is an Android fallback without
@@ -80,8 +84,8 @@ export function formatKeyLabel(code: string): string {
 	const generic: Record<string, string> = {
 		ControlLeft: 'Ctrl',
 		ControlRight: 'Ctrl',
-		MetaLeft: 'Windows',
-		MetaRight: 'Windows',
+		MetaLeft: isLinux ? 'Super' : 'Windows',
+		MetaRight: isLinux ? 'Super' : 'Windows',
 		AltLeft: 'Alt',
 		AltRight: 'Alt',
 		ShiftLeft: 'Shift',
@@ -102,7 +106,11 @@ export function formatKeyLabel(code: string): string {
  * can't bind a modifier-only chord — so the default is ⌥ Option + Space (two
  * adjacent bottom-row keys, no Fn/Spotlight conflict). Windows keeps its chord.
  */
-export const defaultHotkey: string[] = isMac ? ['AltLeft', 'Space'] : ['ControlLeft', 'MetaLeft'];
+export const defaultHotkey: string[] = isMac
+	? ['AltLeft', 'Space']
+	: isLinux
+		? ['ControlLeft', 'Space']
+		: ['ControlLeft', 'MetaLeft'];
 
 /** Platform label for the fixed copy-last-dictation shortcut. */
 export const copyLastHotkey: string[] = isMac

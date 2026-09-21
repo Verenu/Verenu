@@ -1,5 +1,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(desktop)]
+#[allow(dead_code)]
+mod analytics;
 mod android;
 mod api;
 mod app_hotkey;
@@ -110,6 +113,9 @@ fn start_storage_maintenance(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    configure_hyprland_webkit_renderer();
+
     #[cfg(target_os = "windows")]
     {
         cleanup_update_helper_if_requested();
@@ -131,6 +137,7 @@ pub fn run() {
 
     let shared: SharedState = Arc::new(Mutex::new(AppState {
         lifecycle: pipeline::DictationLifecycle::Idle,
+        analytics_run_id: None,
         target: WindowTarget::default(),
         pill_placement: None,
         pill_placement_stale: false,
@@ -261,7 +268,7 @@ pub fn run() {
             if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
                 log::warn!("Failed to migrate contextual formatting setting: {error}");
             }
-            let _first_launch = {
+            let first_launch = {
                 if let Some(val) = settings.get(crate::data::store::HOTKEY) {
                     if let Some(arr) = val.as_array() {
                         if arr.len() == 2 {
@@ -285,6 +292,26 @@ pub fn run() {
                                         );
                                     }
                                     ("AltLeft", "Space")
+                                } else {
+                                    (k1, k2)
+                                };
+                                // Linux's portal requires a real modifier+key
+                                // chord. Migrate the old Ctrl+Super default (and
+                                // any other unsupported stored chord) to the
+                                // Omarchy-safe Ctrl+Space default.
+                                #[cfg(target_os = "linux")]
+                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
+                                {
+                                    let _ = settings.set(
+                                        crate::data::store::HOTKEY,
+                                        serde_json::json!(["ControlLeft", "Space"]),
+                                    );
+                                    if let Err(e) = settings.save() {
+                                        log::warn!(
+                                            "Failed to save migrated Linux hotkey to settings.json: {e:?}"
+                                        );
+                                    }
+                                    ("ControlLeft", "Space")
                                 } else {
                                     (k1, k2)
                                 };
@@ -322,8 +349,26 @@ pub fn run() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 app.manage(settings.clone());
+                #[cfg(desktop)]
+                app.manage(crate::analytics::Analytics::new(
+                    settings
+                        .get(crate::data::store::ANALYTICS_ENABLED)
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true),
+                    crate::app_data_dir(),
+                ));
                 first_launch
             };
+
+            #[cfg(desktop)]
+            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                analytics.install_panic_hook();
+                let context_group_count = app
+                    .try_state::<crate::DbHandle>()
+                    .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
+                    .unwrap_or(0);
+                analytics.app_launched(first_launch, &settings, context_group_count);
+            }
 
             #[cfg(target_os = "windows")]
             {
@@ -374,6 +419,13 @@ pub fn run() {
 
             #[cfg(desktop)]
             app_tray::setup_tray(app)?;
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_titlebar::enable(&window).map_err(|error| {
+                    let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
+                    tauri::Error::Setup(source.into())
+                })?;
+            }
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 let theme = window.theme().ok();
@@ -606,6 +658,8 @@ pub fn run() {
             commands::request_notification_permission,
             commands::check_keychain_access,
             commands::save_setting,
+            commands::analytics_setup_event,
+            commands::analytics_frontend_exception,
             commands::get_setting,
             commands::set_storage_full_simulation,
             commands::get_storage_full_simulation,
@@ -667,6 +721,7 @@ pub fn run() {
             commands::copy_paste_failure_to_clipboard,
             commands::set_pill_size,
             commands::set_pill_interactive,
+            commands::hide_dictation_pill,
             commands::get_installed_apps,
             commands::get_app_icon,
             commands::get_site_icon,
@@ -776,6 +831,18 @@ pub fn run() {
                 log::info!("app shutdown complete");
             }
         });
+}
+
+/// See the matching desktop-binary helper in `main.rs`.
+#[cfg(target_os = "linux")]
+fn configure_hyprland_webkit_renderer() {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        // This runs before Tauri initializes GTK/WebKit.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
 }
 #[cfg(target_os = "windows")]
 static TITLEBAR_REFRESH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -287,7 +287,7 @@ class SettingsContractCheck(PythonTest):
         payload_keys = set(re.findall(r"pub ([a-zA-Z0-9_]+):", payload_match.group(1)))
         missing_ts = sorted(rust_keys - ts_keys - {"hotkey", "autostart_enabled", "macos_clipboard_sniff_enabled"})
         missing_rust = sorted(ts_keys - rust_keys - {"history_retention", "update_dismissed_version"})
-        missing_payload = sorted(ts_keys - payload_keys - {"setup_complete", "force_setup_on_launch", "default_tone", "cleanup_intensity", "app_mappings"})
+        missing_payload = sorted(ts_keys - payload_keys - {"setup_complete", "analytics_enabled", "force_setup_on_launch", "default_tone", "cleanup_intensity", "app_mappings"})
         problems = []
         if missing_ts:
             problems.append("Missing in TypeScript: " + ", ".join(missing_ts))

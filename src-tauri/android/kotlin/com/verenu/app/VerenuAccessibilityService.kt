@@ -111,6 +111,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     @Volatile private var lastInsertedPackage = ""
     @Volatile private var lastInsertionAckAttemptMs = 0L
     @Volatile private var transientShownAtMs = 0L
+    @Volatile private var currentRunId = ""
+    @Volatile private var recordingStartedAtMs = 0L
+    @Volatile private var lastPipelineStage = ""
     // ------------------------------------------------------------------ setup
 
     override fun onServiceConnected() {
@@ -500,6 +503,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             mainHandler.post {
                 cancelRequestInFlight = false
                 if (resp?.optBoolean("ok") == true) {
+                    VerenuAnalytics.dictationCancelled(currentRunId)
                     stopDictationService()
                     setOverlayState(VerenuOverlayView.State.CANCELLED)
                 } else {
@@ -515,20 +519,24 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     override fun onPillRetry() {
         when (errorAction) {
             ErrorAction.RETRY_START -> {
+                VerenuAnalytics.retryAttempted(currentRunId, "start")
                 setOverlayState(VerenuOverlayView.State.IDLE)
                 startDictation()
                 return
             }
             ErrorAction.RETRY_STOP -> {
+                VerenuAnalytics.retryAttempted(currentRunId, "stop")
                 setOverlayState(VerenuOverlayView.State.RECORDING)
                 stopDictation()
                 return
             }
             ErrorAction.RETRY_CANCEL -> {
+                VerenuAnalytics.retryAttempted(currentRunId, "cancel")
                 requestCancel()
                 return
             }
             ErrorAction.RETRY_INSERTION -> {
+                VerenuAnalytics.retryAttempted(currentRunId, "insertion")
                 lastInsertAttemptMs = 0L
                 setOverlayState(VerenuOverlayView.State.INSERTING)
                 return
@@ -545,6 +553,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             return
         }
         handler.post {
+            VerenuAnalytics.retryAttempted(currentRunId, "transcription")
             val resp = try {
                 bridge.retryTranscription()
             } catch (e: Exception) {
@@ -601,6 +610,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
             mainHandler.post {
                 if (resp?.optBoolean("ok") == true) {
+                    currentRunId = VerenuAnalytics.newRunId()
+                    recordingStartedAtMs = System.currentTimeMillis()
+                    lastPipelineStage = "recording"
+                    VerenuAnalytics.dictationStarted(
+                        currentRunId,
+                        setText,
+                        resp.optJSONObject("analyticsSettings"),
+                    )
                     setOverlayState(VerenuOverlayView.State.RECORDING)
                 } else {
                     // Do not leave a foreground notification behind when the
@@ -630,6 +647,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             mainHandler.post {
                 stopRequestInFlight = false
                 if (resp?.optBoolean("ok") == true) {
+                    VerenuAnalytics.recordingFinished(
+                        currentRunId,
+                        System.currentTimeMillis() - recordingStartedAtMs,
+                    )
+                    VerenuAnalytics.dictationStopped(currentRunId)
                     // The foreground service is needed only while Rust owns
                     // the microphone. Transcription and cleanup continue
                     // through the bridge after this acknowledgement.
@@ -801,6 +823,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     private fun onBridgeState(snapshot: BridgeStateSnapshot) {
+        VerenuAnalytics.setEnabled(snapshot.analyticsEnabled)
         // Staged Keystore rotation → persist, then confirm by re-pushing.
         if (snapshot.keystorePending) {
             try {
@@ -823,6 +846,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         // leave the pill stuck on Transcribing forever.
         val bridgeError = snapshot.lastError
         if (bridgeError != null && isDictationActive() && bridgeError.ageMs < 120_000L) {
+            VerenuAnalytics.pipelineFailed(currentRunId, bridgeError.message, snapshot.pillStage)
             stopDictationService()
             mainHandler.post {
                 showOverlayError(bridgeError.message)
@@ -832,6 +856,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
         // Pill stage refinement while a dictation is in flight.
         if (isDictationActive()) {
+            if (snapshot.pillStage != lastPipelineStage) {
+                lastPipelineStage = snapshot.pillStage
+                VerenuAnalytics.pipelineStageStarted(currentRunId, snapshot.pillStage)
+            }
             when (snapshot.pillStage) {
                 "cleaning" -> if (overlayState == VerenuOverlayView.State.TRANSCRIBING) {
                     setOverlayState(VerenuOverlayView.State.CLEANING)
@@ -900,6 +928,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             System.currentTimeMillis() - lastInsertAttemptMs > INSERT_RETRY_MS
         ) {
             lastInsertAttemptMs = System.currentTimeMillis()
+            VerenuAnalytics.insertionAttempted(currentRunId)
             val (strategy, ok) = performInsertion(current.text)
             val blockedPassword = strategy == "blocked_password"
             // A failed ACTION_PASTE still leaves the text in the clipboard;
@@ -917,6 +946,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 discard = blockedPassword || manualCopy,
             )
             if (ok || manualCopy) {
+                VerenuAnalytics.dictationInserted(
+                    currentRunId,
+                    if (ok) strategy else "clipboard_fallback",
+                    current.text.trim().split(Regex("\\s+")).count { it.isNotEmpty() },
+                )
+                if (!ok && manualCopy) VerenuAnalytics.fallbackUsed(currentRunId, "manual_copy")
                 // Consider the local edit successful even if the ack response
                 // is lost. The next poll retries only this ack, avoiding a
                 // second edit while still allowing Rust to clear its outbox.
@@ -934,6 +969,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     }
                 }
             } else if (ack?.optBoolean("ok") == true || !ok) {
+                VerenuAnalytics.pipelineFailed(currentRunId, "insertion failed", "inserting")
                 stopDictationService()
                 if (blockedPassword) {
                     mainHandler.post {
@@ -962,5 +998,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             )
         }
     }
+
 
 }

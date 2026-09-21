@@ -735,6 +735,12 @@ static ESCAPE_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::
 static COPY_LAST_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static COPY_LAST_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
+// Accepted for signature parity with the Linux backend's sub-app capture
+// hotkey; Windows has no capture trigger wired to it yet, so this is stored
+// but never invoked.
+#[allow(dead_code)]
+static SUB_APP_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -1293,13 +1299,14 @@ mod chord_tests {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn start<P, R, H, C, E, L>(
+pub fn start<P, R, H, C, E, L, S>(
     on_press: P,
     on_release: R,
     on_handless: H,
     on_cancel: C,
     on_escape: E,
     on_copy_last: L,
+    on_capture_sub_app: S,
 ) -> Result<std::thread::JoinHandle<()>, String>
 where
     P: Fn() + Send + Sync + 'static,
@@ -1308,6 +1315,7 @@ where
     C: Fn() + Send + Sync + 'static,
     E: Fn() + Send + Sync + 'static,
     L: Fn() + Send + Sync + 'static,
+    S: Fn() + Send + Sync + 'static,
 {
     let _ = PRESS_CB.set(Box::new(on_press));
     let _ = RELEASE_CB.set(Box::new(on_release));
@@ -1315,6 +1323,7 @@ where
     let _ = CANCEL_CB.set(Box::new(on_cancel));
     let _ = ESCAPE_CB.set(Box::new(on_escape));
     let _ = COPY_LAST_CB.set(Box::new(on_copy_last));
+    let _ = SUB_APP_CB.set(Box::new(on_capture_sub_app));
 
     // Verify the hook can be installed before spawning the thread so the caller
     // gets a synchronous error instead of a silent panic on a background thread.

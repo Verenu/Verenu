@@ -1,6 +1,9 @@
 # Privacy & Data
 
-Verenu doesn't run its own servers, doesn't have an account system, and doesn't collect telemetry or analytics. Your data either stays on your device, or goes directly to the AI provider you chose, and nothing else.
+Verenu doesn't run an account system. Desktop builds don't collect telemetry or
+analytics. Android builds may include optional pseudonymous product analytics, but
+only explicit aggregate dictation events are sent when the build is configured
+for it; dictated content and identifiers are not.
 
 ## What stays on your device
 
@@ -19,6 +22,15 @@ Verenu doesn't run its own servers, doesn't have an account system, and doesn't 
 - **Context website checks** send the domain you typed (nothing else) to DNS when you attach a website to a context group, to confirm it actually exists before saving it
 - **Update checks** request GitHub release metadata without sending dictated text, history, or keys
 - **Verenu service checks** optionally request public provider status and health data from `api.verenu.com`; disable them in Settings → Privacy
+
+## Optional Android analytics
+
+When configured at build time, Android sends explicit dictation lifecycle and
+delivery categories, a safe settings summary, and categorized pipeline
+failures with a fresh random per-process identifier. Automatic capture,
+replay, crashes, raw error messages, app names, and dictated content are
+excluded. This is pseudonymous rather than mathematically anonymous; the
+identifier is deliberately not persistent across app launches.
 
 ## One important caveat
 

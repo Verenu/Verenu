@@ -1,6 +1,16 @@
 # Install Verenu
 
-Verenu is a free, open-source dictation app for Windows and macOS. There is no account or subscription. Cloud providers use API keys that you provide, while local transcription and cleanup need no key. See [Add Your API Key](API_KEYS.md).
+Verenu is a free, open-source dictation app for Windows, macOS, and Linux. There is no account or subscription. Cloud providers use API keys that you provide, while local transcription and cleanup need no key. See [Add Your API Key](API_KEYS.md).
+
+## Linux (Omarchy Quattro / Arch / Hyprland)
+
+Verenu supports native Wayland dictation on current Omarchy Quattro. Install `webkit2gtk-4.1`, `libappindicator-gtk3`, `pipewire`, `wireplumber`, `xdg-desktop-portal`, `xdg-desktop-portal-hyprland`, and a Secret Service provider such as `gnome-keyring` or KWallet. The installer is an AppImage; an Arch package can use the same release bundle.
+
+On first launch, approve Verenu's **XDG Desktop Portal** shortcut request. The default is **Ctrl+Space**, a two-key chord that avoids Omarchy's reserved Super+Space menu. The portal reports conflicts rather than stealing a binding. Keep the portal and Secret Service unlocked; Verenu never writes API keys to settings or SQLite.
+
+If a custom Hyprland policy tiles utility windows, add a user-level floating/no-focus rule matching the stable title **Verenu Dictation Pill** in `~/.config/hypr/hyprland.lua`; do not edit `/usr/share/omarchy`. Omarchy's current Lua helper syntax varies with the installed release, so use its documented `o.window` helper and validate with `hyprctl configerrors`.
+
+If the same tiling policy also catches the main window (`class: verenu`), it will resize on your layout's terms rather than the app's own `minWidth`/`minHeight`, since Hyprland's tiling rules take priority over a client's size hints. Add a matching floating (and, if you want a fixed default size, `size`) rule for `class: verenu` alongside the pill rule if you want the main window to behave like a normal floating app window.
 
 ## Windows
 

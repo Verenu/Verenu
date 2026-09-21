@@ -431,6 +431,9 @@ pub struct DiagnosticsRuntime {
     /// Snapshot of the active recording session's atomic audio/VAD state.
     /// This deliberately contains levels and state flags only, never PCM.
     pub audio: Option<serde_json::Value>,
+    /// Linux titlebar / window-chrome capability probe for diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_chrome: Option<serde_json::Value>,
 }
 
 /// Opaque handle returned by [`start_trace`]. The value contains no user

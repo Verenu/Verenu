@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::window_geometry::WindowTarget;
 
 #[cfg(any(test, debug_assertions))]
 #[allow(dead_code)]
@@ -27,6 +28,10 @@ pub struct PipelineTestRequest {
     pub config: store::PipelineConfig,
     pub profile: String,
     pub target_hwnd: usize,
+    /// Full target for injection backends that need more than the raw id
+    /// (see `PipelineCompletionContext::target`). The fixture harness
+    /// short-circuits injection in test mode before the address is read.
+    pub target: WindowTarget,
     pub app_context: Option<String>,
     pub snippets: Vec<PipelineTestSnippet>,
     pub dictionary: Vec<PipelineTestDictionaryEntry>,
@@ -185,7 +190,7 @@ pub async fn run_pipeline_fixture(
     )?;
     let injected = injection::inject_text(
         &injected_text,
-        request.target_hwnd,
+        &request.target,
         request.config.contextual_formatting_enabled,
         request.config.contextual_formatting_enabled,
         &request.profile,

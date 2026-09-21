@@ -130,6 +130,21 @@ libproc            = "0.14"    # process RSS for memory monitor
 security-framework = "2"       # macOS Keychain generic-password storage
 coreaudio          = { package = "coreaudio-rs", version = "0.11" }  # CoreAudio native mute control
 
+# Wayland is deliberately implemented through the desktop portal and Hyprland's
+# authenticated IPC socket.  No keyboard snooping, uinput daemon, or root
+# helper is involved. `arboard` uses the compositor data-control protocol on
+# Hyprland (and falls back to XWayland where available); `keyring` uses the
+# Freedesktop Secret Service implementation supplied by GNOME Keyring/KWallet.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
+futures-util = "0.3"
+# Matches the version tao/wry already resolve (see Cargo.lock) so the
+# gtk::ApplicationWindow returned by WebviewWindow::gtk_window() and the
+# gtk::Settings used to theme it are the same type, not a version mismatch.
+gtk = "0.18"
+
 [profile.release]
 opt-level  = "s"
 lto        = true
@@ -138,6 +153,14 @@ panic      = "abort"
 codegen-units = 1
 
 [patch.crates-io]
+# Tauri 2.11's Linux resize hook assumes WebView -> GtkBox -> GtkWindow and
+# aborts when a legitimate GtkOverlay adds another ancestor. This upstream
+# revision replaces the infallible downcast with a guarded lookup. Keep the
+# runtime crates on one source revision so their shared trait types agree.
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+
 # tauri-winrt-notification 0.7.2 pins quick-xml = "^0.37" (0.37.5 in our
 # lockfile), which carries two high-severity DoS advisories with no fix in
 # the 0.37 line (RUSTSEC-2026-0194, RUSTSEC-2026-0195; fixed upstream in

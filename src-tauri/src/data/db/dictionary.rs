@@ -359,14 +359,17 @@ pub fn move_dictionary_corrections_conn(
                     params![target_id, source_count, source_last_seen_at],
                 )?;
             } else if source_auto_learned && target_auto_learned {
-                let (target_count, target_tier, target_last_seen_at):
-                    (i64, String, Option<String>) = conn.query_row(
-                        "SELECT correction_count, confidence_tier, last_seen_at
+                let (target_count, target_tier, target_last_seen_at): (
+                    i64,
+                    String,
+                    Option<String>,
+                ) = conn.query_row(
+                    "SELECT correction_count, confidence_tier, last_seen_at
                            FROM dictionary_corrections
                           WHERE id = ?1",
-                        params![target_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )?;
+                    params![target_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
                 let last_seen_at = match (target_last_seen_at, source_last_seen_at) {
                     (Some(target), Some(source)) => Some(target.max(source)),
                     (target, source) => target.or(source),
@@ -1188,11 +1191,7 @@ pub fn log_auto_learn_event_for_context(
     context_id: i64,
     event: AutoLearnEventFields<'_>,
 ) -> Result<()> {
-    log_auto_learn_event_with_context(
-        db,
-        Some(context_id),
-        event,
-    )
+    log_auto_learn_event_with_context(db, Some(context_id), event)
 }
 
 fn log_auto_learn_event_with_context(
