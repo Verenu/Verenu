@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed the September 21 nightly build failure: bumped `@tauri-apps/plugin-notification` to 2.4.0 to match the Rust crate (Cargo had resolved `tauri-plugin-notification` to 2.4.0 while the npm lockfile still pinned 2.3.3, and the Tauri CLI aborts on any major/minor mismatch). Also added a PR check that fails fast when any Tauri plugin's Rust and npm versions disagree, so this class of drift breaks a PR instead of a release.
 - Fixed Linux dictation reliability for hold-to-talk and hands-free: the portal hotkey thread now reconnects with backoff instead of dying silently (a dead thread stranded recordings with no way to stop them), and releasing then quickly double-tapping the chord carries the just-recorded audio into the new hands-free session instead of stranding it behind a Continue offer.
 - Added Escape-to-cancel on Linux: a trigger-less portal cancel action dispatched through a bare-Escape Hyprland bind that is only installed while a chord is held, hands-free is active, or transcription is running — Escape is never swallowed while idle.
 - Made the Linux dictation pill clickable in button-bearing states (hands-free Confirm/Cancel and error/retry controls), so a hands-free dictation can be ended with the mouse. Click-through is still used for passive states and the first-reveal guard keeps the pre-realize Wayland abort impossible.
@@ -137,7 +138,7 @@ Installer hashes:
 | --- | --- |
 | `Verenu_0.14.1_Apple_Silicon.dmg` | `C26886D38C3E686118D43165C061177092064CE6CD6FEF2B417BD5FBC7B74B97` |
 | `Verenu_0.14.1_Intel.dmg` | `F451FA4E0B41A61610354215B8ADDE0A6133771AA84630F6791740DD70BFC028` |
-| `Verenu_0.14.1_x64-setup.exe` | `5D2A5E99AC4D0CA03036B15A36F6EE39C6477F65821881D88CA1724159AF3967` |
+| `Verenu_0.14.1_x64-setup.exe` | `5D2A5E99AC4D0CA03036F6EE39C6477F65821881D88CA1724159AF3967` |
 | `Verenu_0.14.1_x64_en-US.msi` | `546F1F3A4436649A51C6F5753FF6D95AED3E197E1EC17F77B2EB1B220E94DC21` |
 
 ## 0.14.0 beta - UI Refresh
