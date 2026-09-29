@@ -149,7 +149,15 @@ pub(super) async fn inject_text(
     let (adjusted, context_kind, case_decision) = apply_probe_adjustments(
         text, contextual_caps, auto_spacing, profile, language, protected_initial_case, &probe,
     );
-    let saved = snapshot_clipboard().await?;
+    // Preserving the existing clipboard is best effort. A broken or unusually
+    // large clipboard must not prevent the dictated text from being inserted.
+    let saved = match snapshot_clipboard().await {
+        Ok(snapshot) => Some(snapshot),
+        Err(err) => {
+            log::warn!("injection: could not snapshot Wayland clipboard: {err}");
+            None
+        }
+    };
     write_clipboard(adjusted.clone(), true).await?;
     tokio::time::sleep(CLIPBOARD_SETTLE).await;
     crate::core::hyprland::dispatch_paste_for_target(&linux_target.class_name, &linux_target.tags)
@@ -161,12 +169,14 @@ pub(super) async fn inject_text(
         clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
     }).await.ok().flatten();
     if current.as_deref() == Some(adjusted.as_str()) {
-        let restored = match saved {
-            ClipboardSnapshot::Data(sources) => restore_clipboard(sources).await,
-            ClipboardSnapshot::Empty => clear_clipboard().await,
-        };
-        if let Err(err) = restored {
-            log::warn!("injection: could not restore Wayland clipboard: {err}");
+        if let Some(saved) = saved {
+            let restored = match saved {
+                ClipboardSnapshot::Data(sources) => restore_clipboard(sources).await,
+                ClipboardSnapshot::Empty => clear_clipboard().await,
+            };
+            if let Err(err) = restored {
+                log::warn!("injection: could not restore Wayland clipboard: {err}");
+            }
         }
     }
     Ok(InjectionOutcome { text: adjusted, context_state: context_kind.as_str(), case_decision: case_decision.as_str(), probe_source: probe.source.as_str(), selection_state: probe.selection_state.as_str() })
