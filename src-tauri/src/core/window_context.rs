@@ -38,6 +38,7 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("google-chrome", "Google Chrome"), ("google-chrome-stable", "Google Chrome"),
     ("chromium", "Chromium"), ("brave-browser", "Brave"), ("firefox", "Firefox"),
     ("librewolf", "LibreWolf"), ("microsoft-edge", "Microsoft Edge"),
+    ("vivaldi-stable", "Vivaldi"), ("zen", "Zen Browser"),
 ];
 
 /// The focus target to refocus before paste. On Windows this is the foreground
@@ -135,9 +136,14 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
     }
     #[cfg(target_os = "linux")]
     {
-        crate::core::hyprland::active_window().and_then(|window| {
-            (window.pid as usize == hwnd).then_some(window.class_name.to_ascii_lowercase())
-        })
+        // Resolve the captured client even if focus has since moved; the live
+        // foreground may be a different app by the time processing runs.
+        let pid = u32::try_from(hwnd).ok().filter(|pid| *pid != 0)?;
+        crate::core::hyprland::active_window()
+            .filter(|window| window.pid == pid)
+            .or_else(|| crate::core::hyprland::window_by_pid(pid))
+            .map(|window| window.class_name.to_ascii_lowercase())
+            .filter(|class| !class.is_empty())
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     None
@@ -269,7 +275,10 @@ fn get_window_title(target_id: usize) -> Option<String> {
     #[cfg(not(windows))]
     {
         #[cfg(target_os = "linux")]
-        if let Some(window) = crate::core::hyprland::active_window().filter(|window| window.pid as usize == target_id) {
+        if let Some(window) = u32::try_from(target_id)
+            .ok()
+            .and_then(crate::core::hyprland::window_by_pid)
+        {
             return Some(window.title);
         }
         let _ = target_id;

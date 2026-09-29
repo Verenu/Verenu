@@ -154,6 +154,20 @@ pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
         .and_then(|window| serde_json::from_value(window).ok())
 }
 
+/// The client owned by `pid`, preferring the most recently focused one. Used
+/// to resolve a captured target's app after focus has moved elsewhere.
+#[cfg(target_os = "linux")]
+pub(crate) fn window_by_pid(pid: u32) -> Option<ActiveWindow> {
+    let windows = hyprctl_json(&["-j", "clients"])?;
+    windows
+        .as_array()?
+        .iter()
+        .filter(|window| window.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(pid)))
+        .min_by_key(|window| window.get("focusHistoryID").and_then(|v| v.as_i64()).unwrap_or(i64::MAX))
+        .cloned()
+        .and_then(|window| serde_json::from_value(window).ok())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn focus(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");

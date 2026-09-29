@@ -79,6 +79,10 @@ pub fn current_platform_tag() -> Option<&'static str> {
         Some("windows")
     } else if cfg!(target_os = "macos") {
         Some("macos")
+    } else if cfg!(target_os = "linux") {
+        // Linux targets are desktop ids/window classes; keep them apart from
+        // synced `.exe` and `.app` targets that can never match here.
+        Some("linux")
     } else {
         None
     }
