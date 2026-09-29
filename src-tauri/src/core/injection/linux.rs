@@ -3,10 +3,91 @@
 
 use super::*;
 use arboard::{ClearExtLinux, Clipboard, GetExtLinux, LinuxClipboardKind, SetExtLinux};
-use std::time::Duration;
+use std::{io::Read, time::Duration};
+use wl_clipboard_rs::{
+    copy::{self, ClipboardType as CopyClipboardType, MimeSource, MimeType, Options, Source},
+    paste::{self, ClipboardType, MimeType as PasteMimeType, Seat},
+};
 
 const CLIPBOARD_SETTLE: Duration = Duration::from_millis(80);
 const PASTE_SETTLE: Duration = Duration::from_millis(250);
+const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SNAPSHOT_MIME_TYPES: usize = 64;
+
+enum ClipboardSnapshot {
+    Empty,
+    Data(Vec<MimeSource>),
+}
+
+fn read_clipboard_snapshot() -> anyhow::Result<ClipboardSnapshot> {
+    let mime_types = match paste::get_mime_types_ordered(ClipboardType::Regular, Seat::Unspecified)
+    {
+        Ok(mime_types) => mime_types,
+        Err(paste::Error::ClipboardEmpty | paste::Error::NoMimeType) => {
+            return Ok(ClipboardSnapshot::Empty)
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "Could not inspect Wayland clipboard: {err}"
+            ))
+        }
+    };
+    if mime_types.len() > MAX_SNAPSHOT_MIME_TYPES {
+        anyhow::bail!("Clipboard has too many MIME types to preserve safely");
+    }
+
+    let mut total_bytes = 0usize;
+    let mut sources = Vec::with_capacity(mime_types.len() + 1);
+    for mime_type in mime_types {
+        let (mut contents, actual_mime_type) = paste::get_contents(
+            ClipboardType::Regular,
+            Seat::Unspecified,
+            PasteMimeType::Specific(&mime_type),
+        )
+        .map_err(|err| anyhow::anyhow!("Could not read Wayland clipboard data: {err}"))?;
+        let remaining = MAX_SNAPSHOT_BYTES.saturating_sub(total_bytes);
+        let mut bytes = Vec::new();
+        contents
+            .by_ref()
+            .take(remaining.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|err| anyhow::anyhow!("Could not read Wayland clipboard data: {err}"))?;
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if total_bytes > MAX_SNAPSHOT_BYTES {
+            anyhow::bail!("Clipboard data is too large to preserve safely");
+        }
+        sources.push(MimeSource {
+            source: Source::Bytes(bytes.into_boxed_slice()),
+            mime_type: MimeType::Specific(actual_mime_type),
+        });
+    }
+
+    if sources.is_empty() {
+        Ok(ClipboardSnapshot::Empty)
+    } else {
+        // Match arboard's Linux hint so clipboard history skips this restore.
+        sources.push(MimeSource {
+            source: Source::Bytes(b"secret".to_vec().into_boxed_slice()),
+            mime_type: MimeType::Specific("x-kde-passwordManagerHint".to_string()),
+        });
+        Ok(ClipboardSnapshot::Data(sources))
+    }
+}
+
+async fn snapshot_clipboard() -> anyhow::Result<ClipboardSnapshot> {
+    Ok(tokio::task::spawn_blocking(read_clipboard_snapshot).await??)
+}
+
+async fn restore_clipboard(sources: Vec<MimeSource>) -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let mut options = Options::new();
+        options.clipboard(CopyClipboardType::Regular);
+        copy::copy_multi(options, sources)
+            .map_err(|err| anyhow::anyhow!("Could not restore Wayland clipboard: {err}"))
+    })
+    .await??;
+    Ok(())
+}
 
 pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     // An explicit copy is the user's own clipboard content; let history keep it.
@@ -68,26 +149,21 @@ pub(super) async fn inject_text(
     let (adjusted, context_kind, case_decision) = apply_probe_adjustments(
         text, contextual_caps, auto_spacing, profile, language, protected_initial_case, &probe,
     );
-    let saved = tokio::task::spawn_blocking(|| {
-        let mut clipboard = Clipboard::new().ok()?;
-        clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
-    }).await.ok().flatten();
+    let saved = snapshot_clipboard().await?;
     write_clipboard(adjusted.clone(), true).await?;
     tokio::time::sleep(CLIPBOARD_SETTLE).await;
     crate::core::hyprland::dispatch_paste_for_target(&linux_target.class_name, &linux_target.tags)
         .map_err(anyhow::Error::msg)?;
     tokio::time::sleep(PASTE_SETTLE).await;
-    // Do not overwrite a user copy performed while the paste settled. When
-    // nothing textual was saved (empty clipboard or non-text content), clear
-    // the dictation instead of leaving it behind.
+    // Do not overwrite a user copy performed while the paste settled.
     let current = tokio::task::spawn_blocking(|| {
         let mut clipboard = Clipboard::new().ok()?;
         clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
     }).await.ok().flatten();
     if current.as_deref() == Some(adjusted.as_str()) {
         let restored = match saved {
-            Some(saved) => write_clipboard(saved, true).await,
-            None => clear_clipboard().await,
+            ClipboardSnapshot::Data(sources) => restore_clipboard(sources).await,
+            ClipboardSnapshot::Empty => clear_clipboard().await,
         };
         if let Err(err) = restored {
             log::warn!("injection: could not restore Wayland clipboard: {err}");
