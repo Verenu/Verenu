@@ -107,7 +107,7 @@ pub(crate) fn resolve_context_from_tail(
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub(crate) fn describe_selection_state(range_seen: bool, range_collapsed: bool) -> SelectionState {
     if range_seen && range_collapsed {
         SelectionState::CollapsedCaret
@@ -189,6 +189,8 @@ impl Drop for MacosProbeGuard {
     }
 }
 
+// Linux injection probes the captured target pid directly.
+#[cfg(not(target_os = "linux"))]
 pub async fn read_injection_context_probe() -> InjectionContextProbe {
     #[cfg(windows)]
     {
@@ -235,6 +237,55 @@ pub async fn read_injection_context_probe() -> InjectionContextProbe {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
+    }
+}
+
+/// Bounded AT-SPI probe of the focused control in the window owned by `pid`.
+#[cfg(target_os = "linux")]
+pub async fn read_linux_injection_context_probe_async(pid: u32) -> InjectionContextProbe {
+    const LINUX_PROBE_TIMEOUT_MS: u64 = 400;
+    let task = tokio::task::spawn_blocking(move || read_linux_injection_context_probe(pid));
+    match tokio::time::timeout(std::time::Duration::from_millis(LINUX_PROBE_TIMEOUT_MS), task).await {
+        Ok(Ok(probe)) => probe,
+        Ok(Err(_)) => InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "probe_join_failed"),
+        Err(_) => InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "probe_timeout"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn read_linux_injection_context_probe(pid: u32) -> InjectionContextProbe {
+    use crate::core::atspi::{read_focused, FocusProbe, LOCAL_TEXT_CHARS};
+
+    let focused = match read_focused(pid, LOCAL_TEXT_CHARS) {
+        FocusProbe::Text(focused) => focused,
+        FocusProbe::NonTextFocus => {
+            return InjectionContextProbe::unavailable(ContextProbeSource::UnsupportedControl, "non_text")
+        }
+        FocusProbe::Unavailable => {
+            return InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
+        }
+    };
+    let tail = focused.left_of_caret();
+    let head = focused.right_of_caret();
+    let selection_state = describe_selection_state(true, focused.selection.is_none());
+    let source = if focused.field_empty {
+        ContextProbeSource::EmptyField
+    } else {
+        ContextProbeSource::CaretLocal
+    };
+    InjectionContextProbe {
+        context: resolve_context_from_tail(focused.field_empty, Some(&tail)),
+        source,
+        // A window that does not reach the field edge is still reliable: it
+        // holds real text next to the caret.
+        left_reliable: focused.field_empty || !tail.is_empty() || focused.starts_at_field_start,
+        right_reliable: focused.field_empty || !head.is_empty() || focused.ends_at_field_end,
+        context_tail: tail,
+        context_head: head,
+        selection_state,
+        control_identity_hash: focused.identity,
+        control_type: focused.control_type,
+        target_id: focused.pid as usize,
     }
 }
 

@@ -140,6 +140,10 @@ ashpd = { version = "0.13", default-features = false, features = ["tokio", "glob
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
 futures-util = "0.3"
+wl-clipboard-rs = "0.9"
+# AT-SPI focused-text reads for smart formatting and AutoLearn (already in
+# the tree through ashpd; the blocking API keeps probes off the async runtime).
+zbus = "5.19"
 # Matches the version tao/wry already resolve (see Cargo.lock) so the
 # gtk::ApplicationWindow returned by WebviewWindow::gtk_window() and the
 # gtk::Settings used to theme it are the same type, not a version mismatch.

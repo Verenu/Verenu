@@ -39,7 +39,177 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     png_bytes_to_data_uri(&png)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux: the target is a desktop id or window class, so the icon comes from
+/// the matching `.desktop` entry's `Icon=` resolved through the icon theme.
+/// Theme lookups are plain file reads, so results are not cached.
+#[cfg(target_os = "linux")]
+pub fn get_icon_data_uri(_app: &tauri::AppHandle, exe: &str) -> Option<String> {
+    let exe = exe.trim().to_lowercase();
+    let icon = linux::desktop_icon_name(&exe)?;
+    let path = linux::resolve_icon_path(&icon)?;
+    let bytes = std::fs::read(&path).ok()?;
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
+        use base64::Engine;
+        return Some(format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ));
+    }
+    png_bytes_to_data_uri(&bytes)
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::path::{Path, PathBuf};
+
+    fn data_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(home) = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        {
+            dirs.push(home.join("flatpak/exports/share"));
+            dirs.push(home);
+        }
+        let system = std::env::var("XDG_DATA_DIRS")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+        dirs.extend(system.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
+        dirs.push(PathBuf::from("/var/lib/flatpak/exports/share"));
+        dirs
+    }
+
+    /// `Icon=` of the desktop entry whose id, StartupWMClass, or Exec
+    /// basename matches `exe` (the same identities the app picker emits).
+    pub fn desktop_icon_name(exe: &str) -> Option<String> {
+        for dir in data_dirs() {
+            let Ok(entries) = std::fs::read_dir(dir.join("applications")) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                let Ok(contents) = std::fs::read_to_string(&path) else { continue };
+                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                if let Some(icon) = icon_if_matches(&contents, &id, exe) {
+                    return Some(icon);
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn icon_if_matches(contents: &str, desktop_id: &str, exe: &str) -> Option<String> {
+        let mut in_entry = false;
+        let (mut icon, mut wm_class, mut exec) = (None, None, None);
+        for line in contents.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_entry = line.eq_ignore_ascii_case("[Desktop Entry]");
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=').filter(|_| in_entry) else { continue };
+            match key.trim() {
+                "Icon" => icon = Some(value.trim().to_string()),
+                "StartupWMClass" => wm_class = Some(value.trim().to_lowercase()),
+                "Exec" => exec = exec_basename(value),
+                _ => {}
+            }
+        }
+        let matches = desktop_id == exe
+            || wm_class.as_deref() == Some(exe)
+            || exec.as_deref() == Some(exe);
+        icon.filter(|icon| matches && !icon.is_empty())
+    }
+
+    pub(super) fn exec_basename(exec: &str) -> Option<String> {
+        let exec = exec.trim_start();
+        let program = if let Some(quoted) = exec.strip_prefix('"') {
+            let mut program = String::new();
+            let mut escaped = false;
+            let mut closed = false;
+            for character in quoted.chars() {
+                if escaped {
+                    program.push(character);
+                    escaped = false;
+                } else {
+                    match character {
+                        '\\' => escaped = true,
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        _ => program.push(character),
+                    }
+                }
+            }
+            if !closed {
+                return None;
+            }
+            program
+        } else {
+            exec.split_whitespace().next()?.to_string()
+        };
+        Path::new(&program)
+            .file_name()?
+            .to_str()
+            .map(str::to_lowercase)
+    }
+
+    /// Absolute `Icon=` paths are used as-is; names are looked up in hicolor
+    /// (largest raster first, then scalable) and pixmaps.
+    pub fn resolve_icon_path(icon: &str) -> Option<PathBuf> {
+        let direct = Path::new(icon);
+        if direct.is_absolute() {
+            return direct.is_file().then(|| direct.to_path_buf());
+        }
+        if direct.extension().is_some() {
+            for dir in data_dirs() {
+                let hicolor = dir.join("icons/hicolor");
+                for size in [
+                    "256x256", "128x128", "512x512", "96x96", "64x64", "48x48", "32x32",
+                ] {
+                    let candidate = hicolor.join(size).join("apps").join(icon);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                let scalable = hicolor.join("scalable/apps").join(icon);
+                if scalable.is_file() {
+                    return Some(scalable);
+                }
+                let pixmap = dir.join("pixmaps").join(icon);
+                if pixmap.is_file() {
+                    return Some(pixmap);
+                }
+            }
+            return None;
+        }
+        const SIZES: &[&str] = &["256x256", "128x128", "512x512", "96x96", "64x64", "48x48", "32x32"];
+        for dir in data_dirs() {
+            let hicolor = dir.join("icons/hicolor");
+            for size in SIZES {
+                let candidate = hicolor.join(size).join("apps").join(format!("{icon}.png"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+            let svg = hicolor.join("scalable/apps").join(format!("{icon}.svg"));
+            if svg.is_file() {
+                return Some(svg);
+            }
+            for ext in ["png", "svg"] {
+                let pixmap = dir.join("pixmaps").join(format!("{icon}.{ext}"));
+                if pixmap.is_file() {
+                    return Some(pixmap);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn get_icon_data_uri(_app: &tauri::AppHandle, _exe: &str) -> Option<String> {
     None
 }
@@ -604,6 +774,23 @@ fn favicon_cache_path(app: &tauri::AppHandle, host: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::normalize_favicon_host;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_desktop_entry_matches_wm_class_and_resolves_theme_icon() {
+        let entry = "[Desktop Entry]\nName=T3 Code\nExec=/usr/bin/t3code %U\nIcon=t3code-nightly\nStartupWMClass=t3code\n";
+        assert_eq!(super::linux::icon_if_matches(entry, "t3code", "t3code").as_deref(), Some("t3code-nightly"));
+        assert_eq!(super::linux::icon_if_matches(entry, "other", "t3code").as_deref(), Some("t3code-nightly"));
+        assert_eq!(super::linux::icon_if_matches(entry, "other", "firefox"), None);
+        assert_eq!(
+            super::linux::exec_basename("\"/opt/My App/bin/T3Code\" %u").as_deref(),
+            Some("t3code")
+        );
+        // Live resolution against the installed theme, when present.
+        if std::path::Path::new("/usr/share/icons/hicolor/256x256/apps/t3code-nightly.png").exists() {
+            assert!(super::linux::resolve_icon_path("t3code-nightly").is_some());
+        }
+    }
 
     #[test]
     fn normalizes_urls_and_hosts_to_one_identity() {

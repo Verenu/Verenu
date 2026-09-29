@@ -172,7 +172,12 @@ mod mac {
 use mac::read_address_bar_text as platform_read_address_bar_text;
 #[cfg(windows)]
 use win::read_address_bar_text as platform_read_address_bar_text;
-#[cfg(not(any(windows, target_os = "macos")))]
+/// On Linux the window id is the client's pid; AT-SPI finds the omnibox.
+#[cfg(target_os = "linux")]
+fn platform_read_address_bar_text(window_id: usize) -> Option<String> {
+    crate::core::atspi::read_address_bar(u32::try_from(window_id).ok()?)
+}
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     None
 }
