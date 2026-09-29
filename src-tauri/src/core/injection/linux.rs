@@ -11,6 +11,7 @@ use wl_clipboard_rs::{
 
 const CLIPBOARD_SETTLE: Duration = Duration::from_millis(80);
 const PASTE_SETTLE: Duration = Duration::from_millis(250);
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(400);
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SNAPSHOT_MIME_TYPES: usize = 64;
 
@@ -151,10 +152,14 @@ pub(super) async fn inject_text(
     );
     // Preserving the existing clipboard is best effort. A broken or unusually
     // large clipboard must not prevent the dictated text from being inserted.
-    let saved = match snapshot_clipboard().await {
-        Ok(snapshot) => Some(snapshot),
-        Err(err) => {
+    let saved = match tokio::time::timeout(SNAPSHOT_TIMEOUT, snapshot_clipboard()).await {
+        Ok(Ok(snapshot)) => Some(snapshot),
+        Ok(Err(err)) => {
             log::warn!("injection: could not snapshot Wayland clipboard: {err}");
+            None
+        }
+        Err(_) => {
+            log::warn!("injection: Wayland clipboard snapshot timed out");
             None
         }
     };
