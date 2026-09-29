@@ -84,6 +84,7 @@ pub fn ensure_accessibility_enabled() {
             )
         });
         if let Err(err) = result {
+            ENABLED_REQUESTED.store(false, Ordering::SeqCst);
             log::debug!("atspi: could not enable toolkit accessibility: {err}");
         }
     });

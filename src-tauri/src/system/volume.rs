@@ -494,8 +494,9 @@ mod linux {
     pub fn default_sink() -> Result<(Sink, bool), String> {
         if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
             if let Some(id) = parse_wpctl_id(&inspect) {
-                let volume = run("wpctl", &["get-volume", &id])?;
-                return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+                if let Ok(volume) = run("wpctl", &["get-volume", &id]) {
+                    return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+                }
             }
         }
         let name = run("pactl", &["get-default-sink"])?.trim().to_string();
