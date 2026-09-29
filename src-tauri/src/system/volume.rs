@@ -482,9 +482,12 @@ mod linux {
     }
 
     pub(super) fn parse_wpctl_id(inspect: &str) -> Option<String> {
-        let rest = inspect.lines().next()?.trim().strip_prefix("id ")?;
-        let id = rest.split(',').next()?.trim();
-        (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then(|| id.to_string())
+        inspect.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix("id ")?;
+            let id = rest.split(',').next()?.trim();
+            (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+                .then(|| id.to_string())
+        })
     }
 
     /// Returns the default sink and whether it is currently muted.
@@ -757,6 +760,10 @@ mod linux_tests {
         assert_eq!(
             super::linux::parse_wpctl_id("id 34, type PipeWire:Interface:Node\n  alsa.card = \"0\""),
             Some("34".to_string())
+        );
+        assert_eq!(
+            super::linux::parse_wpctl_id("diagnostic banner\n  id 52, type PipeWire:Interface:Node"),
+            Some("52".to_string())
         );
         assert_eq!(super::linux::parse_wpctl_id("Object not found"), None);
     }

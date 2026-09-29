@@ -112,12 +112,7 @@ mod linux {
             match key.trim() {
                 "Icon" => icon = Some(value.trim().to_string()),
                 "StartupWMClass" => wm_class = Some(value.trim().to_lowercase()),
-                "Exec" => {
-                    exec = value
-                        .split_whitespace()
-                        .next()
-                        .and_then(|cmd| Path::new(cmd).file_name()?.to_str().map(str::to_lowercase))
-                }
+                "Exec" => exec = exec_basename(value),
                 _ => {}
             }
         }
@@ -125,6 +120,40 @@ mod linux {
             || wm_class.as_deref() == Some(exe)
             || exec.as_deref() == Some(exe);
         icon.filter(|icon| matches && !icon.is_empty())
+    }
+
+    fn exec_basename(exec: &str) -> Option<String> {
+        let exec = exec.trim_start();
+        let program = if let Some(quoted) = exec.strip_prefix('"') {
+            let mut program = String::new();
+            let mut escaped = false;
+            let mut closed = false;
+            for character in quoted.chars() {
+                if escaped {
+                    program.push(character);
+                    escaped = false;
+                } else {
+                    match character {
+                        '\\' => escaped = true,
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        _ => program.push(character),
+                    }
+                }
+            }
+            if !closed {
+                return None;
+            }
+            program
+        } else {
+            exec.split_whitespace().next()?.to_string()
+        };
+        Path::new(&program)
+            .file_name()?
+            .to_str()
+            .map(str::to_lowercase)
     }
 
     /// Absolute `Icon=` paths are used as-is; names are looked up in hicolor
@@ -753,6 +782,10 @@ mod tests {
         assert_eq!(super::linux::icon_if_matches(entry, "t3code", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "firefox"), None);
+        assert_eq!(
+            super::linux::exec_basename("\"/opt/My App/bin/T3Code\" %u").as_deref(),
+            Some("t3code")
+        );
         // Live resolution against the installed theme, when present.
         if std::path::Path::new("/usr/share/icons/hicolor/256x256/apps/t3code-nightly.png").exists() {
             assert!(super::linux::resolve_icon_path("t3code-nightly").is_some());

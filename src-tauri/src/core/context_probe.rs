@@ -190,7 +190,7 @@ impl Drop for MacosProbeGuard {
 }
 
 // Linux injection probes the captured target pid directly.
-#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[cfg(not(target_os = "linux"))]
 pub async fn read_injection_context_probe() -> InjectionContextProbe {
     #[cfg(windows)]
     {
@@ -234,15 +234,7 @@ pub async fn read_injection_context_probe() -> InjectionContextProbe {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        match crate::core::hyprland::active_window() {
-            Some(window) => read_linux_injection_context_probe_async(window.pid).await,
-            None => InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable"),
-        }
-    }
-
-    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
     }

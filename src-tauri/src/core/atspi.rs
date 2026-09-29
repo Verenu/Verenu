@@ -329,7 +329,12 @@ fn read_text(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32) -> FocusPro
     } else {
         None
     };
-    let (left_anchor, right_anchor) = selection.unwrap_or((caret, caret));
+    let (left_anchor, right_anchor) = match selection {
+        Some((selection_start, selection_end)) => {
+            (selection_start.min(caret), selection_end.max(caret))
+        }
+        None => (caret, caret),
+    };
     let start = left_anchor.saturating_sub(radius).max(0);
     let end = (right_anchor.saturating_add(radius)).min(count);
     let Some(text) = call::<_, String>(conn, obj, TEXT, "GetText", &(start, end)) else {
