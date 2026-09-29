@@ -207,7 +207,7 @@
 
 <h3 class="settings-subhead">Input</h3>
 <div class="setting-row" data-setting-target="audio-system-mute">
-  <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : 'Mutes Windows volume while dictating to prevent audio interference'}</div></div>
+  <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : isWindows ? 'Mutes Windows volume while dictating to prevent audio interference' : 'Mutes the default output while dictating to prevent audio interference'}</div></div>
   <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} bind:error={muteAudioError} />
 </div>
 {#if isMac}

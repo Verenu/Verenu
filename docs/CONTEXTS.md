@@ -18,7 +18,7 @@ Verenu chooses one active context for each dictation:
 
 Website matching is more specific than app matching. A website target such as `mail.google.com` can therefore use a different context from the rest of the browser. Verenu reads the active tab's domain from the browser address bar. No browser extension is required.
 
-The app target is the executable name on Windows or the bundle identifier on macOS. Context targets are normalized when saved. A website is normalized to its hostname, and Verenu checks that the domain exists before saving it.
+The app target is the executable name on Windows, the bundle identifier on macOS, or the desktop application ID/window class on Linux. Context targets are normalized when saved. A website is normalized to its hostname, and Verenu checks that the domain exists before saving it.
 
 ## The Everywhere context
 
