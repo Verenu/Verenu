@@ -62,6 +62,55 @@ jobs:
       - name: Audit Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
 
+      - name: Verify Tauri plugin version alignment
+        # The Tauri CLI aborts the build when the Rust crate and NPM package
+        # of any plugin disagree on major/minor. Cargo resolves semver ranges
+        # to the newest compatible crate while npm follows package-lock.json,
+        # so the two sides can drift apart silently (this broke the
+        # 2026-09-21 nightly: tauri-plugin-notification 2.4.0 vs
+        # @tauri-apps/plugin-notification 2.3.3). Fail fast here instead of
+        # in the middle of a release build.
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const cargoLock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
+
+          const npmVersions = {};
+          for (const [path, entry] of Object.entries(lock.packages || {})) {
+            const m = path.match(/^node_modules\/(@tauri-apps\/plugin-[^/]+)$/);
+            if (m && entry.version) npmVersions[m[1].replace('@tauri-apps/plugin-', '')] = entry.version;
+          }
+
+          const cargoVersions = {};
+          for (const block of cargoLock.split('[[package]]')) {
+            const name = block.match(/^name = "([^"]+)"/m)?.[1];
+            const version = block.match(/^version = "([^"]+)"/m)?.[1];
+            if (name && version && name.startsWith('tauri-plugin-')) {
+              cargoVersions[name.replace('tauri-plugin-', '')] = version;
+            }
+          }
+
+          const majorMinor = (v) => v.split('.').slice(0, 2).join('.');
+          let failed = false;
+          for (const [plugin, npmVersion] of Object.entries(npmVersions)) {
+            const cargoVersion = cargoVersions[plugin];
+            if (!cargoVersion) {
+              console.log(`SKIP ${plugin}: npm ${npmVersion}, no matching Rust crate in Cargo.lock`);
+              continue;
+            }
+            if (majorMinor(npmVersion) !== majorMinor(cargoVersion)) {
+              console.error(`MISMATCH tauri-plugin-${plugin}: Rust crate ${cargoVersion} vs NPM package ${npmVersion} (major/minor must match)`);
+              failed = true;
+            } else {
+              console.log(`OK tauri-plugin-${plugin}: Rust ${cargoVersion} / NPM ${npmVersion}`);
+            }
+          }
+          if (failed) process.exit(1);
+          NODE
+
   rust:
     name: Rust checks
     strategy:
