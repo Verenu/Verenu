@@ -122,7 +122,7 @@ mod linux {
         icon.filter(|icon| matches && !icon.is_empty())
     }
 
-    fn exec_basename(exec: &str) -> Option<String> {
+    pub(super) fn exec_basename(exec: &str) -> Option<String> {
         let exec = exec.trim_start();
         let program = if let Some(quoted) = exec.strip_prefix('"') {
             let mut program = String::new();
