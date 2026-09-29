@@ -112,6 +112,9 @@ fn connect() -> zbus::Result<Connection> {
 fn with_connection<T>(f: impl FnOnce(&Connection) -> Option<T>) -> Option<T> {
     ensure_accessibility_enabled();
     let mut slot = connection_slot().lock().ok()?;
+    if slot.as_ref().is_some_and(|conn| conn.is_closed()) {
+        *slot = None;
+    }
     if slot.is_none() {
         match connect() {
             Ok(conn) => *slot = Some(conn),
@@ -327,7 +330,7 @@ fn read_text(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32) -> FocusPro
         None
     };
     let (left_anchor, right_anchor) = selection.unwrap_or((caret, caret));
-    let start = (left_anchor - radius).max(0);
+    let start = left_anchor.saturating_sub(radius).max(0);
     let end = (right_anchor.saturating_add(radius)).min(count);
     let Some(text) = call::<_, String>(conn, obj, TEXT, "GetText", &(start, end)) else {
         return FocusProbe::NonTextFocus;

@@ -134,6 +134,28 @@ mod linux {
         if direct.is_absolute() {
             return direct.is_file().then(|| direct.to_path_buf());
         }
+        if direct.extension().is_some() {
+            for dir in data_dirs() {
+                let hicolor = dir.join("icons/hicolor");
+                for size in [
+                    "256x256", "128x128", "512x512", "96x96", "64x64", "48x48", "32x32",
+                ] {
+                    let candidate = hicolor.join(size).join("apps").join(icon);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                let scalable = hicolor.join("scalable/apps").join(icon);
+                if scalable.is_file() {
+                    return Some(scalable);
+                }
+                let pixmap = dir.join("pixmaps").join(icon);
+                if pixmap.is_file() {
+                    return Some(pixmap);
+                }
+            }
+            return None;
+        }
         const SIZES: &[&str] = &["256x256", "128x128", "512x512", "96x96", "64x64", "48x48", "32x32"];
         for dir in data_dirs() {
             let hicolor = dir.join("icons/hicolor");
