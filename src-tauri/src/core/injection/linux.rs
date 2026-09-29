@@ -2,24 +2,41 @@
 //! and shortcut dispatch; no input snooping, X11 hook, uinput, or root daemon.
 
 use super::*;
-use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind, SetExtLinux};
+use arboard::{ClearExtLinux, Clipboard, GetExtLinux, LinuxClipboardKind, SetExtLinux};
 use std::time::Duration;
 
 const CLIPBOARD_SETTLE: Duration = Duration::from_millis(80);
 const PASTE_SETTLE: Duration = Duration::from_millis(250);
 
 pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
-    write_clipboard(text.to_owned()).await
+    // An explicit copy is the user's own clipboard content; let history keep it.
+    write_clipboard(text.to_owned(), false).await
 }
 
-async fn write_clipboard(text: String) -> anyhow::Result<()> {
+/// Transient paste payloads and clipboard restores carry the KDE password
+/// manager hint, which Omarchy and other clipboard histories skip, matching the
+/// Windows exclusion from clipboard history.
+async fn write_clipboard(text: String, exclude_from_history: bool) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || {
         let mut clipboard = Clipboard::new().map_err(|e| anyhow::anyhow!("Wayland clipboard unavailable: {e}"))?;
-        clipboard
-            .set()
-            .clipboard(LinuxClipboardKind::Clipboard)
-            .text(text)
+        let mut set = clipboard.set().clipboard(LinuxClipboardKind::Clipboard);
+        if exclude_from_history {
+            set = set.exclude_from_history();
+        }
+        set.text(text)
             .map_err(|e| anyhow::anyhow!("Could not write Wayland clipboard: {e}"))
+    })
+    .await??;
+    Ok(())
+}
+
+async fn clear_clipboard() -> anyhow::Result<()> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard = Clipboard::new().map_err(|e| anyhow::anyhow!("Wayland clipboard unavailable: {e}"))?;
+        clipboard
+            .clear_with()
+            .clipboard(LinuxClipboardKind::Clipboard)
+            .map_err(|e| anyhow::anyhow!("Could not clear Wayland clipboard: {e}"))
     })
     .await??;
     Ok(())
@@ -38,8 +55,12 @@ pub(super) async fn inject_text(
     let linux_target = target.linux.as_ref().ok_or_else(|| anyhow::anyhow!(
         "No Hyprland target was captured. Focus the app and start dictation again."
     ))?;
+    // Refocus first: AT-SPI only reports a FOCUSED control inside the active
+    // window, so the caret probe must run after the target is active again.
+    crate::core::hyprland::focus(&linux_target.address).map_err(anyhow::Error::msg)?;
+    tokio::time::sleep(Duration::from_millis(60)).await;
     let mut probe = if contextual_caps || auto_spacing {
-        crate::core::context_probe::read_injection_context_probe().await
+        crate::core::context_probe::read_linux_injection_context_probe_async(linux_target.pid).await
     } else { unavailable_injection_probe() };
     // AT-SPI context probing is intentionally best effort; a failed probe
     // never prevents insertion.
@@ -51,21 +72,26 @@ pub(super) async fn inject_text(
         let mut clipboard = Clipboard::new().ok()?;
         clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
     }).await.ok().flatten();
-    write_clipboard(adjusted.clone()).await?;
+    write_clipboard(adjusted.clone(), true).await?;
     tokio::time::sleep(CLIPBOARD_SETTLE).await;
-    crate::core::hyprland::focus(&linux_target.address).map_err(anyhow::Error::msg)?;
-    tokio::time::sleep(Duration::from_millis(60)).await;
     crate::core::hyprland::dispatch_paste_for_target(&linux_target.class_name, &linux_target.tags)
         .map_err(anyhow::Error::msg)?;
     tokio::time::sleep(PASTE_SETTLE).await;
-    if let Some(saved) = saved {
-        // Do not overwrite a user copy performed while the paste settled.
-        // If a clipboard manager changed ownership we leave its newer value.
-        let current = tokio::task::spawn_blocking(|| {
-            let mut clipboard = Clipboard::new().ok()?;
-            clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
-        }).await.ok().flatten();
-        if current.as_deref() == Some(adjusted.as_str()) { write_clipboard(saved).await?; }
+    // Do not overwrite a user copy performed while the paste settled. When
+    // nothing textual was saved (empty clipboard or non-text content), clear
+    // the dictation instead of leaving it behind.
+    let current = tokio::task::spawn_blocking(|| {
+        let mut clipboard = Clipboard::new().ok()?;
+        clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
+    }).await.ok().flatten();
+    if current.as_deref() == Some(adjusted.as_str()) {
+        let restored = match saved {
+            Some(saved) => write_clipboard(saved, true).await,
+            None => clear_clipboard().await,
+        };
+        if let Err(err) = restored {
+            log::warn!("injection: could not restore Wayland clipboard: {err}");
+        }
     }
     Ok(InjectionOutcome { text: adjusted, context_state: context_kind.as_str(), case_decision: case_decision.as_str(), probe_source: probe.source.as_str(), selection_state: probe.selection_state.as_str() })
 }
