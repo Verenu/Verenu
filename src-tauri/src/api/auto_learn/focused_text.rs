@@ -939,30 +939,81 @@ pub(super) fn ensure_value_change_hook() -> bool {
     spawned
 }
 
+#[cfg(target_os = "linux")]
+fn linux_focused_text(injected_text: &str) -> Option<crate::core::atspi::FocusedText> {
+    let radius = crate::core::atspi::LOCAL_TEXT_CHARS
+        .saturating_add(injected_text.chars().count().min(i32::MAX as usize) as i32);
+    match crate::core::atspi::read_active(radius) {
+        crate::core::atspi::FocusProbe::Text(text) => Some(text),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
+#[cfg(target_os = "linux")]
+pub fn read_focused_text_probe() -> FocusedTextProbe {
+    match crate::core::atspi::read_active(crate::core::atspi::LOCAL_TEXT_CHARS) {
+        crate::core::atspi::FocusProbe::Text(text) => FocusedTextProbe::Text(text.text),
+        crate::core::atspi::FocusProbe::NonTextFocus => FocusedTextProbe::NonTextFocus,
+        crate::core::atspi::FocusProbe::Unavailable => FocusedTextProbe::Unavailable,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn read_focused_text() -> Option<String> {
+    linux_focused_text("").map(|focused| focused.text)
+}
+
+/// The caret sits right after freshly pasted text, so a caret-centred window
+/// widened by the injected length contains the whole insertion.
+#[cfg(target_os = "linux")]
+pub fn read_focused_text_around(injected_text: &str) -> Option<String> {
+    if injected_text.is_empty() {
+        return None;
+    }
+    linux_focused_text(injected_text)
+        .map(|focused| focused.text)
+        .filter(|text| text.contains(injected_text))
+}
+
+#[cfg(target_os = "linux")]
+pub fn read_focused_text_near_caret(injected_text: &str) -> Option<String> {
+    linux_focused_text(injected_text).map(|focused| focused.text)
+}
+
+#[allow(dead_code)]
+#[cfg(target_os = "linux")]
+pub fn read_injection_context_probe() -> InjectionContextProbe {
+    match crate::core::hyprland::active_window() {
+        Some(window) => crate::core::context_probe::read_linux_injection_context_probe(window.pid),
+        None => InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable"),
+    }
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn read_focused_text_probe() -> FocusedTextProbe {
     FocusedTextProbe::Unavailable
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn read_focused_text() -> Option<String> {
     None
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn read_focused_text_around(_injected_text: &str) -> Option<String> {
     None
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[allow(dead_code)]
 pub fn read_focused_text_near_caret(_injected_text: &str) -> Option<String> {
     None
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn read_injection_context_probe() -> InjectionContextProbe {
     InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
 }

@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+pub mod atspi;
 pub mod browser_probe;
 pub mod context;
 pub mod context_probe;
