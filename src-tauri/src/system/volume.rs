@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use std::sync::Mutex;
 
 #[cfg(windows)]
@@ -451,10 +452,70 @@ mod macos {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn set_system_muted(_muted: bool) -> Result<(), String> {
     Ok(())
 }
+
+/// Default-sink mute through PipeWire (`wpctl`), with a PulseAudio `pactl`
+/// fallback. The sink is pinned by id when muting so a default-device change
+/// mid-dictation cannot leave a different sink muted.
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::process::Command;
+
+    fn run(program: &str, args: &[&str]) -> Result<String, String> {
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .map_err(|e| format!("{program} unavailable: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("{program} {} failed", args.first().unwrap_or(&"")));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Sink {
+        PipeWire(String),
+        Pulse(String),
+    }
+
+    pub(super) fn parse_wpctl_id(inspect: &str) -> Option<String> {
+        let rest = inspect.lines().next()?.trim().strip_prefix("id ")?;
+        let id = rest.split(',').next()?.trim();
+        (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then(|| id.to_string())
+    }
+
+    /// Returns the default sink and whether it is currently muted.
+    pub fn default_sink() -> Result<(Sink, bool), String> {
+        if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
+            if let Some(id) = parse_wpctl_id(&inspect) {
+                let volume = run("wpctl", &["get-volume", &id])?;
+                return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+            }
+        }
+        let name = run("pactl", &["get-default-sink"])?.trim().to_string();
+        if name.is_empty() {
+            return Err("no default audio sink".into());
+        }
+        let mute = run("pactl", &["get-sink-mute", &name])?;
+        Ok((Sink::Pulse(name), mute.contains("yes")))
+    }
+
+    pub fn set_muted(sink: &Sink, muted: bool) -> Result<(), String> {
+        let flag = if muted { "1" } else { "0" };
+        match sink {
+            Sink::PipeWire(id) => run("wpctl", &["set-mute", id, flag]).map(|_| ()),
+            Sink::Pulse(name) => run("pactl", &["set-sink-mute", name, flag]).map(|_| ()),
+        }
+    }
+}
+
+/// The sink Verenu muted, if any. A sink that was already muted by the user is
+/// never recorded, so it is never unmuted on their behalf.
+#[cfg(target_os = "linux")]
+static LINUX_MUTED_SINK: Mutex<Option<linux::Sink>> = Mutex::new(None);
 
 #[cfg(windows)]
 pub fn mute() {
@@ -657,12 +718,56 @@ pub fn release_mic(session_id: u64) {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn mute() {
+    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if muted_sink.is_some() {
+        return;
+    }
+    match linux::default_sink() {
+        Ok((_, true)) => {}
+        Ok((sink, false)) => match linux::set_muted(&sink, true) {
+            Ok(()) => *muted_sink = Some(sink),
+            Err(err) => log::warn!("Failed to mute system audio: {err}"),
+        },
+        Err(err) => log::warn!("Failed to read system audio state: {err}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn unmute() {
+    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(sink) = muted_sink.take() {
+        if let Err(err) = linux::set_muted(&sink, false) {
+            log::warn!("Failed to unmute system audio: {err}");
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    #[test]
+    fn wpctl_inspect_header_yields_node_id() {
+        assert_eq!(
+            super::linux::parse_wpctl_id("id 34, type PipeWire:Interface:Node\n  alsa.card = \"0\""),
+            Some("34".to_string())
+        );
+        assert_eq!(super::linux::parse_wpctl_id("Object not found"), None);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn mute() {
     let _ = set_system_muted(true);
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn unmute() {
     let _ = set_system_muted(false);
 }
