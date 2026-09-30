@@ -44,6 +44,7 @@ The manual GitHub Actions workflow [`../.github/workflows/build-installers.yml`]
 - macOS Apple Silicon DMG
 - macOS Intel DMG
 - Linux x86_64 AppImage (built on Ubuntu 22.04 for conservative glibc compatibility)
+- Arch Linux x86_64 pacman package (beta, built from the same AppImage for Omarchy/Hyprland)
 
 The release folder should contain:
 
@@ -51,6 +52,8 @@ The release folder should contain:
 - `Verenu_<version>_x64_en-US.msi`
 - `Verenu_<version>_Apple_Silicon.dmg`
 - `Verenu_<version>_Intel.dmg`
+- `Verenu_<version>_x86_64.AppImage`
+- `verenu-<version>-1-x86_64.pkg.tar.zst` (beta)
 - `SHA256SUMS.txt`
 
 Installer artifacts are committed under [`../installers/`](../installers/) with a versioned subfolder and also attached to the GitHub Release.
@@ -60,13 +63,13 @@ Installer artifacts are committed under [`../installers/`](../installers/) with 
 After placing the installers in the correct version folder under [`../installers/`](../installers/), regenerate hashes from that folder:
 
 ```bash
-shasum -a 256 *.exe *.msi *.dmg > SHA256SUMS.txt
+shasum -a 256 *.exe *.msi *.dmg *.AppImage *.pkg.tar.zst > SHA256SUMS.txt
 ```
 
 On Windows PowerShell, generate the same file with:
 
 ```powershell
-Get-ChildItem *.exe,*.msi,*.dmg | ForEach-Object {
+Get-ChildItem *.exe,*.msi,*.dmg,*.AppImage,*.pkg.tar.zst | ForEach-Object {
   $hash = (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower()
   "{0} *{1}" -f $hash, $_.Name
 } | Set-Content SHA256SUMS.txt
@@ -78,7 +81,7 @@ On Windows PowerShell, verify a file manually with:
 Get-FileHash .\Verenu_<version>_x64-setup.exe -Algorithm SHA256
 ```
 
-The hashes in `SHA256SUMS.txt`, the committed files, GitHub Release assets, and release notes must agree.
+The hashes in `SHA256SUMS.txt`, the committed files, GitHub Release assets, and release notes must agree. Mark the Arch package as a beta in release notes until its Omarchy/Hyprland install path has received user testing.
 
 ## Release Notes
 

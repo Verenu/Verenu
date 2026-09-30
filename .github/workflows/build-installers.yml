@@ -291,3 +291,48 @@ jobs:
           name: Verenu-Linux-AppImage
           path: src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+
+  arch-package:
+    name: Build Arch Linux beta package
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Read package version
+        id: version
+        run: echo "version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: Verenu-Linux-AppImage
+          path: packaging/arch
+
+      - name: Build Arch package from the AppImage
+        env:
+          VERENU_PKGVER: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          appimage="$(find packaging/arch -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          mv "$appimage" "packaging/arch/Verenu_${VERENU_PKGVER}_x86_64.AppImage"
+          docker run --rm \
+            -e VERENU_PKGVER="$VERENU_PKGVER" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/packaging/arch \
+            archlinux:base-devel \
+            bash -euo pipefail -c '
+              pacman -Syu --noconfirm --needed squashfs-tools
+              useradd --create-home builder
+              chown -R builder:builder /workspace/packaging/arch
+              su builder -c "makepkg --cleanbuild --noconfirm"
+            '
+
+      - name: Upload Arch Linux beta package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verenu-Arch-Linux-beta
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
