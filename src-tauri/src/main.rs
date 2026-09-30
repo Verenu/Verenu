@@ -282,8 +282,30 @@ fn main() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 app.manage(settings.clone());
+                #[cfg(desktop)]
+                app.manage(crate::analytics::Analytics::new(
+                    settings
+                        .get(crate::data::store::ANALYTICS_ENABLED)
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true),
+                    crate::app_data_dir(),
+                ));
                 first_launch
             };
+
+            #[cfg(desktop)]
+            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                analytics.install_panic_hook();
+                let context_group_count = app
+                    .try_state::<crate::DbHandle>()
+                    .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
+                    .unwrap_or(0);
+                let first_launch = !settings
+                    .get(crate::data::store::SETUP_COMPLETE)
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                analytics.app_launched(first_launch, &settings, context_group_count);
+            }
 
             #[cfg(target_os = "windows")]
             {
