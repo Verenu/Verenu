@@ -147,6 +147,14 @@ pub(super) async fn inject_text(
     // AT-SPI context probing is intentionally best effort; a failed probe
     // never prevents insertion.
     if probe.target_id != 0 && probe.target_id != linux_target.pid as usize { probe = unavailable_injection_probe(); }
+    log::info!(
+        "injection: Linux cursor formatting enabled={} source={} control={} left_reliable={} right_reliable={}",
+        contextual_caps || auto_spacing,
+        probe.source.as_str(),
+        probe.control_type,
+        probe.left_reliable,
+        probe.right_reliable,
+    );
     let (adjusted, context_kind, case_decision) = apply_probe_adjustments(
         text, contextual_caps, auto_spacing, profile, language, protected_initial_case, &probe,
     );
