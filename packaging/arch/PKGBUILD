@@ -1,0 +1,55 @@
+pkgname=verenu
+pkgver="${VERENU_PKGVER:?Set VERENU_PKGVER to the release version}"
+pkgrel=1
+pkgdesc='Local-first dictation app for Omarchy and Arch Linux'
+arch=('x86_64')
+url='https://github.com/MONKE2525E/Verenu'
+license=('MIT')
+depends=(
+  'gtk3'
+  'webkit2gtk-4.1'
+  'libappindicator'
+  'pipewire'
+  'libsecret'
+  'xdg-desktop-portal'
+  'xdg-desktop-portal-hyprland'
+)
+optdepends=(
+  'gnome-keyring: Secret Service provider for API key storage'
+  'wireplumber: PipeWire session manager'
+)
+source=("Verenu_${pkgver}_x86_64.AppImage")
+noextract=("Verenu_${pkgver}_x86_64.AppImage")
+sha256sums=('SKIP')
+
+prepare() {
+  chmod +x "$srcdir/Verenu_${pkgver}_x86_64.AppImage"
+  cd "$srcdir"
+  ./"Verenu_${pkgver}_x86_64.AppImage" --appimage-extract
+}
+
+package() {
+  local appdir="$srcdir/squashfs-root"
+  local desktop icon
+
+  test -x "$appdir/AppRun"
+  install -d "$pkgdir/opt/verenu"
+  cp -a "$appdir/." "$pkgdir/opt/verenu/"
+
+  install -d "$pkgdir/usr/bin"
+  ln -s /opt/verenu/AppRun "$pkgdir/usr/bin/verenu"
+
+  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  desktop="$(find "$appdir" -maxdepth 4 -type f -name '*.desktop' -print -quit)"
+  test -n "$desktop"
+  install -d "$pkgdir/usr/share/applications"
+  sed -E \
+    -e 's/^Exec=.*/Exec=verenu/' \
+    -e 's/^Icon=.*/Icon=verenu/' \
+    "$desktop" > "$pkgdir/usr/share/applications/verenu.desktop"
+
+  icon="$(find "$appdir" -maxdepth 4 -type f -iname '*.png' -print -quit)"
+  test -n "$icon"
+  install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/256x256/apps/verenu.png"
+}
