@@ -2,6 +2,22 @@
 
 Use the smallest test pass that covers the change, then run broader checks before release or risky PRs.
 
+## Linux cursor formatting verification
+
+Run a disposable GTK entry in one terminal (requires Python PyGObject and GTK3):
+
+```bash
+env -u NO_AT_BRIDGE python scripts/test/linux-format-fixture.py
+```
+
+Keep its window focused and run this from another terminal, replacing `PID` with the fixture's printed process ID:
+
+```bash
+VERENU_FORMAT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml atspi_live_formats_disposable_entry --lib -- --ignored
+```
+
+This verifies real AT-SPI Collection discovery and cursor formatting for empty fields, continuation text, sentence endings, and existing whitespace. It changes only the disposable entry; it does not paste or call providers. Close the window afterward; it also closes after five minutes.
+
 ## Default Gate
 
 ```bash

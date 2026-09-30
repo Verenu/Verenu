@@ -207,16 +207,18 @@ fn app_roots_for_pid(conn: &Connection, pid: u32) -> Vec<ObjRef> {
 /// One in-process query on toolkits that implement Collection (atk-bridge,
 /// used by GTK3, Firefox, Chromium and Electron).
 fn focused_via_collection(conn: &Connection, scope: &ObjRef) -> Option<ObjRef> {
-    let focused_bits = [(1i32 << STATE_FOCUSED), 0i32];
+    // Browsers also mark their document container focused. Matching EDITABLE
+    // here prevents the one-result limit from hiding the actual text field.
+    let focused_bits = [(1i32 << STATE_FOCUSED) | (1i32 << STATE_EDITABLE), 0i32];
     let rule = (
         focused_bits.to_vec(),
         1i32, // ALL
         HashMap::<String, String>::new(),
-        0i32,
+        1i32, // ALL with no attributes imposes no restriction; 0 is INVALID.
         Vec::<i32>::new(),
-        0i32,
+        1i32,
         Vec::<String>::new(),
-        0i32,
+        1i32,
         false,
     );
     let matches: Vec<(String, OwnedObjectPath)> =
@@ -264,7 +266,16 @@ fn focused_via_walk(conn: &Connection, app: &ObjRef) -> Option<ObjRef> {
 
 fn focused_object(conn: &Connection, pid: u32) -> Option<ObjRef> {
     for app in app_roots_for_pid(conn, pid) {
-        let scopes = std::iter::once(app.clone()).chain(children(conn, &app));
+        // Chromium/Electron can expose a native placeholder until an assistive
+        // client requests extended properties. GetAttributes activates the
+        // renderer accessibility tree; GetState/GetChildren alone do not.
+        // Discard attributes: they are not cursor text and may contain metadata.
+        let _: Option<HashMap<String, String>> = call(conn, &app, ACCESSIBLE, "GetAttributes", &());
+        let frames = children(conn, &app);
+        for frame in &frames {
+            let _: Option<HashMap<String, String>> = call(conn, frame, ACCESSIBLE, "GetAttributes", &());
+        }
+        let scopes = std::iter::once(app.clone()).chain(frames);
         for scope in scopes {
             if let Some(obj) = focused_via_collection(conn, &scope) {
                 if states(conn, &obj)
@@ -286,6 +297,13 @@ fn char_slice(text: &str, start: usize, end: usize) -> String {
 }
 
 fn read_text(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32) -> FocusProbe {
+    read_text_at_depth(conn, obj, pid, radius, 0)
+}
+
+fn read_text_at_depth(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32, depth: usize) -> FocusProbe {
+    if depth >= 8 {
+        return FocusProbe::Unavailable;
+    }
     let Some(s) = states(conn, obj) else {
         return FocusProbe::Unavailable;
     };
@@ -341,6 +359,34 @@ fn read_text(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32) -> FocusPro
     let Some(text) = call::<_, String>(conn, obj, TEXT, "GetText", &(start, end)) else {
         return FocusProbe::NonTextFocus;
     };
+    // Rich contenteditable fields expose paragraphs as embedded objects. The
+    // outer caret points at that object, not at the character inside it.
+    // Follow only the object at the caret and require its own valid caret.
+    let anchor = caret.min(count - 1);
+    if selection.is_none() && text.chars().nth((anchor - start) as usize) == Some('\u{fffc}') {
+        let embedded = (|| {
+            let index: i32 = call(conn, obj, "org.a11y.atspi.Hypertext", "GetLinkIndex", &(anchor,))?;
+            if index < 0 { return None; }
+            let (bus, path): (String, OwnedObjectPath) =
+                call(conn, obj, "org.a11y.atspi.Hypertext", "GetLink", &(index,))?;
+            let link = ObjRef { bus, path };
+            let (bus, path): (String, OwnedObjectPath) =
+                call(conn, &link, "org.a11y.atspi.Hyperlink", "GetObject", &(0i32,))?;
+            Some(ObjRef { bus, path })
+        })();
+        if let Some(embedded) = embedded {
+            if let FocusProbe::Text(mut focused) = read_text_at_depth(conn, &embedded, pid, radius, depth + 1) {
+                focused.starts_at_field_start &= anchor == 0;
+                focused.ends_at_field_end &= anchor == count - 1;
+                focused.field_empty &= count == 1;
+                focused.identity = identity;
+                return FocusProbe::Text(focused);
+            }
+        }
+        // A replacement character is not real cursor text. Do not infer a
+        // sentence start or spacing from an unresolved rich-text container.
+        return FocusProbe::Unavailable;
+    }
     // Some toolkits return fewer characters than requested (embedded objects).
     let len = text.chars().count();
     let local = |offset: i32| ((offset - start).max(0) as usize).min(len);
@@ -363,8 +409,17 @@ pub fn read_focused(pid: u32, radius: i32) -> FocusProbe {
         return FocusProbe::Unavailable;
     }
     with_connection(|conn| {
-        let obj = focused_object(conn, pid)?;
-        Some(read_text(conn, &obj, pid, radius))
+        let read = || focused_object(conn, pid)
+            .map(|obj| read_text(conn, &obj, pid, radius))
+            .unwrap_or(FocusProbe::Unavailable);
+        let probe = read();
+        if matches!(probe, FocusProbe::Text(_)) {
+            return Some(probe);
+        }
+        // Renderer activation is asynchronous. Give it one short retry on
+        // the first read; the outer injection timeout still bounds this work.
+        std::thread::sleep(Duration::from_millis(35));
+        Some(read())
     })
     .unwrap_or(FocusProbe::Unavailable)
 }
@@ -468,6 +523,51 @@ mod tests {
         let focused = sample("one two three", 3, Some((4, 7)));
         assert_eq!(focused.left_of_caret(), "one ");
         assert_eq!(focused.right_of_caret(), " three");
+    }
+
+    /// Opt-in verification against a disposable GTK entry, never a user's document.
+    #[test]
+    #[ignore]
+    fn atspi_live_formats_disposable_entry() {
+        let pid = std::env::var("VERENU_FORMAT_FIXTURE_PID")
+            .expect("start the disposable formatting fixture first")
+            .parse::<u32>().unwrap();
+        for (before, payload, expected) in [
+            ("", "hello", "Hello"),
+            ("Hello", "World", " world"),
+            ("Hello.", "next sentence", " Next sentence"),
+            ("Hello ", "World", "world"),
+        ] {
+            with_connection(|conn| {
+                let app = app_roots_for_pid(conn, pid).into_iter().next().unwrap();
+                let frame = children(conn, &app).into_iter().next().unwrap();
+                assert_eq!(get_property::<String>(conn, &frame, ACCESSIBLE, "Name").as_deref(),
+                    Some("Verenu formatting verification"), "use only the disposable fixture window");
+                let obj = focused_via_collection(conn, &app)
+                    .expect("Collection must find the focused editable entry");
+                let accepted: bool = call(conn, &obj, "org.a11y.atspi.EditableText",
+                    "SetTextContents", &(before,)).unwrap();
+                assert!(accepted);
+                let accepted: bool = call(conn, &obj, TEXT, "SetCaretOffset",
+                    &(before.chars().count() as i32,)).unwrap();
+                assert!(accepted);
+                Some(())
+            }).unwrap();
+            let probe = crate::core::context_probe::read_linux_injection_context_probe(pid);
+            assert!(probe.left_reliable && probe.right_reliable);
+            let adjusted = crate::core::text_context::decide_insertion(payload,
+                crate::core::text_context::CaretTextContext {
+                    left: &probe.context_tail,
+                    right: &probe.context_head,
+                    left_reliable: probe.left_reliable,
+                    right_reliable: probe.right_reliable,
+                    language: "en",
+                    casing_enabled: true,
+                    preserve_sentence_case: false,
+                    protected_initial_case: false,
+                });
+            assert_eq!(adjusted.text, expected);
+        }
     }
 
     /// Live desktop check: `cargo test atspi_live -- --ignored --nocapture`
