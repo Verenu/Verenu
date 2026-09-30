@@ -8,7 +8,7 @@ license=('MIT')
 depends=(
   'gtk3'
   'webkit2gtk-4.1'
-  'libappindicator'
+  'libayatana-appindicator'
   'pipewire'
   'libsecret'
   'xdg-desktop-portal'
@@ -18,9 +18,9 @@ optdepends=(
   'wireplumber: PipeWire session manager'
   'xdg-desktop-portal-hyprland: XDG portal backend for Omarchy and Hyprland'
 )
-source=("Verenu_${pkgver}_x86_64.AppImage")
+source=("Verenu_${pkgver}_x86_64.AppImage" 'LICENSE')
 noextract=("Verenu_${pkgver}_x86_64.AppImage")
-sha256sums=('SKIP')
+sha256sums=('SKIP' 'SKIP')
 
 prepare() {
   chmod +x "$srcdir/Verenu_${pkgver}_x86_64.AppImage"
@@ -39,7 +39,7 @@ package() {
   install -d "$pkgdir/usr/bin"
   ln -s /opt/verenu/AppRun "$pkgdir/usr/bin/verenu"
 
-  install -Dm644 "$startdir/../../LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   desktop="$(find "$appdir" -maxdepth 4 -type f -name '*.desktop' -print -quit)"
   test -n "$desktop"
@@ -51,5 +51,5 @@ package() {
 
   icon="$appdir/.DirIcon"
   test -f "$icon"
-  install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/128x128/apps/verenu.png"
+  install -Dm644 "$icon" "$pkgdir/usr/share/pixmaps/verenu.png"
 }
