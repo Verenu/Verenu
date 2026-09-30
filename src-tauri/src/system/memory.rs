@@ -1,6 +1,23 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+/// Return freed audio/provider/model allocations to the OS while idle. glibc
+/// otherwise retains free pages in its arenas for later allocations. This only
+/// affects the native process; WebKit children own their separate allocators.
+pub async fn reclaim_idle_memory(state: &crate::pipeline::SharedState) {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        let idle = state.lock().is_ok_and(|state| state.lifecycle.is_idle());
+        if idle {
+            // Trimming can scan allocator arenas. Keep it off the async worker
+            // and recording path; the caller runs at most once every 30 seconds.
+            let _ = tauri::async_runtime::spawn_blocking(|| unsafe { libc::malloc_trim(0) }).await;
+        }
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    let _ = state;
+}
+
 /// System-wide RAM availability (not just this process) — used to decide
 /// whether to proactively unload local models under memory pressure rather
 /// than waiting for their configured idle timeout.

@@ -2,6 +2,24 @@
 
 Use the smallest test pass that covers the change, then run broader checks before release or risky PRs.
 
+## Linux webview memory policy verification
+
+Run with a working Linux display:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --example linux-memory-policy
+```
+
+This checks the actual WebKit cache settings without opening the app database,
+registering hotkeys, or calling providers. It runs on the process main thread
+because WebKit shutdown can abort after initialization on a Rust test worker.
+
+For RAM comparisons, use the same build profile, settings, window sizes, and
+model state. Sum `Pss` in `/proc/<pid>/smaps_rollup` for the app and descendants,
+as the app counter does. Compare startup, repeated navigation, and idle memory
+after dictation or model unload. The native allocator trim runs at most once
+every 30 seconds while dictation is idle and does not unload active models.
+
 ## Linux cursor formatting verification
 
 Run a disposable GTK entry in one terminal (requires Python PyGObject and GTK3):

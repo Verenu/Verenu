@@ -9,6 +9,8 @@ pub mod mac_app;
 pub mod linux_proc;
 #[cfg(target_os = "linux")]
 pub mod linux_titlebar;
+#[cfg(target_os = "linux")]
+pub mod linux_webview;
 pub mod media_control;
 pub mod memory;
 pub mod notify;

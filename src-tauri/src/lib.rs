@@ -421,6 +421,7 @@ pub fn run() {
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_webview::configure_window(&window);
                 crate::system::linux_titlebar::enable(&window).map_err(|error| {
                     let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
                     tauri::Error::Setup(source.into())
@@ -547,6 +548,7 @@ pub fn run() {
                             .await;
                         }
                     }
+                    crate::system::memory::reclaim_idle_memory(&capture_state).await;
                 }
             });
 
