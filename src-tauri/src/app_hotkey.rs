@@ -98,6 +98,8 @@ impl HandsfreeConversionGuard {
 }
 
 pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
+    #[cfg(target_os = "linux")]
+    crate::core::atspi::ensure_accessibility_enabled();
     // The WH_KEYBOARD_LL hook callback must return within Windows' hook timeout
     // (~300ms) or the hook is silently removed. All real work happens in a Tokio
     // task below; callbacks only send a lightweight channel message.
