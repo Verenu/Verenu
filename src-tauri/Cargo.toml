@@ -148,6 +148,8 @@ zbus = "5.19"
 # gtk::ApplicationWindow returned by WebviewWindow::gtk_window() and the
 # gtk::Settings used to theme it are the same type, not a version mismatch.
 gtk = "0.18"
+# Use the same WebKitGTK types as Tauri/wry for per-window cache policy.
+webkit2gtk = "2.0.2"
 
 [profile.release]
 opt-level  = "s"

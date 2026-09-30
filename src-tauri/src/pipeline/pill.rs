@@ -102,6 +102,8 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
         .build()
     {
         Ok(pill) => {
+            #[cfg(target_os = "linux")]
+            crate::system::linux_webview::configure_window(&pill);
             // Keep the WebView client area transparent even when Windows
             // switches the window from click-through to interactive. Without
             // an explicit native colour, WebView2 can briefly repaint the
