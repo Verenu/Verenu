@@ -12,11 +12,11 @@ depends=(
   'pipewire'
   'libsecret'
   'xdg-desktop-portal'
-  'xdg-desktop-portal-hyprland'
 )
 optdepends=(
   'gnome-keyring: Secret Service provider for API key storage'
   'wireplumber: PipeWire session manager'
+  'xdg-desktop-portal-hyprland: XDG portal backend for Omarchy and Hyprland'
 )
 source=("Verenu_${pkgver}_x86_64.AppImage")
 noextract=("Verenu_${pkgver}_x86_64.AppImage")
@@ -49,7 +49,7 @@ package() {
     -e 's/^Icon=.*/Icon=verenu/' \
     "$desktop" > "$pkgdir/usr/share/applications/verenu.desktop"
 
-  icon="$(find "$appdir" -maxdepth 4 -type f -iname '*.png' -print -quit)"
-  test -n "$icon"
-  install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/256x256/apps/verenu.png"
+  icon="$appdir/.DirIcon"
+  test -f "$icon"
+  install -Dm644 "$icon" "$pkgdir/usr/share/icons/hicolor/128x128/apps/verenu.png"
 }
