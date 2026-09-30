@@ -205,7 +205,7 @@ fn main() {
             if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
                 log::warn!("Failed to migrate contextual formatting setting: {error}");
             }
-            let _first_launch = {
+            let first_launch = {
                 if let Some(val) = settings.get(crate::data::store::HOTKEY) {
                     if let Some(arr) = val.as_array() {
                         if arr.len() == 2 {
@@ -300,10 +300,6 @@ fn main() {
                     .try_state::<crate::DbHandle>()
                     .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
                     .unwrap_or(0);
-                let first_launch = !settings
-                    .get(crate::data::store::SETUP_COMPLETE)
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
                 analytics.app_launched(first_launch, &settings, context_group_count);
             }
 
