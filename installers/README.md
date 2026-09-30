@@ -17,6 +17,8 @@ in its notes).
 | `Verenu_<version>_x64_en-US.msi` | Windows (MSI installer) |
 | `Verenu_<version>_Apple_Silicon.dmg` | macOS (Apple Silicon / arm64) |
 | `Verenu_<version>_Intel.dmg` | macOS (Intel / x64) |
+| `Verenu_<version>_x86_64.AppImage` | Linux (x86_64) |
+| `verenu-<version>-1-x86_64.pkg.tar.zst` | Arch Linux (x86_64, beta; Omarchy / Hyprland) |
 
 ## Verifying a download
 

@@ -5,6 +5,7 @@ This directory contains user, contributor, release, and architecture docs for Ve
 ## Start Here
 
 - [Install Verenu](INSTALL.md)
+- [Arch Linux beta package](ARCH_PACKAGE.md)
 - [Add Your API Key](API_KEYS.md)
 - [Your First Dictation](FIRST_DICTATION.md)
 - [Data And Privacy](DATA_AND_PRIVACY.md)
