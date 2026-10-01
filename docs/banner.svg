@@ -1,17 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 150">
-  <rect width="800" height="150" rx="16" fill="#0d1117"/>
+  <!-- Colors mirror the dark theme tokens in src/theme.css (docs/colors.md). -->
+  <rect width="800" height="150" rx="16" fill="#161514"/>
+  <rect x="0.5" y="0.5" width="799" height="149" rx="15.5" fill="none" stroke="#2b2928"/>
 
-  <!-- The mark geometry is shared with src-tauri/icons/verenu-mark.svg. -->
-  <use href="../src-tauri/icons/verenu-mark.svg#mark" transform="translate(232 31) scale(0.3346456693)" style="color:#ffffff"/>
+  <!-- Five-bar mark, inlined from src-tauri/icons/verenu-mark.svg (GitHub blocks external <use> refs). -->
+  <g transform="translate(160 47) scale(0.2692)" fill="#f5f4f0">
+    <rect x="0" y="138" width="38" height="70" rx="19"/>
+    <rect x="54" y="68" width="38" height="140" rx="19"/>
+    <rect x="108" y="0" width="38" height="208" rx="19"/>
+    <rect x="162" y="88" width="38" height="120" rx="19"/>
+    <rect x="216" y="146" width="38" height="62" rx="19"/>
+  </g>
 
   <text
-    x="333"
-    y="90"
+    x="251"
+    y="79"
     font-family="'Fraunces', Georgia, 'Times New Roman', serif"
     font-size="46"
     font-weight="500"
-    fill="#ffffff"
+    fill="#f5f4f0"
     letter-spacing="-0.5"
   >Verenu</text>
 
+  <text
+    x="252"
+    y="103"
+    font-family="'Inter Tight', 'Segoe UI', Arial, sans-serif"
+    font-size="15"
+    fill="#9c9993"
+    letter-spacing="0.01em"
+  >open-source AI dictation for Windows, macOS, and Linux</text>
 </svg>
