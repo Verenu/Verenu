@@ -326,7 +326,9 @@ jobs:
             -w /workspace/packaging/arch \
             archlinux:base-devel \
             bash -euo pipefail -c '
-              pacman -Syu --noconfirm --needed squashfs-tools
+            pacman -Syu --noconfirm --needed \
+              squashfs-tools gtk3 webkit2gtk-4.1 libayatana-appindicator \
+              pipewire libsecret xdg-desktop-portal
               useradd --create-home builder
               chown -R builder:builder /workspace/packaging/arch
               su builder -c "makepkg --cleanbuild --noconfirm"
