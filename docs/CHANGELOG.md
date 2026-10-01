@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Linux Settings showing Windows wording: Start on Boot now says "Launch Verenu when you log in" and Appearance says "Follow your desktop".
+
 - Reworked user-facing errors for recording, provider access and request limits, local models, downloads, backups, sync, permissions, and local data. Messages explain the failure and give a next step, preserve full recovery instructions, and link to the relevant settings where available. Copy, model deletion, and update failures now show feedback instead of only logging an error; a failed update check no longer reports that Verenu is up to date.
 - Linux recording failures now explain when no microphone is detected and suggest reconnecting it or selecting another input in General settings.
 

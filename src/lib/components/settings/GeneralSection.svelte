@@ -712,7 +712,7 @@
 </div>
 <h3 class="settings-subhead">Appearance & System</h3>
 <div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : isLinux ? (appStore.omarchyTheme ? 'Follows your Omarchy theme, or force a specific look' : 'Follow your desktop or force a specific theme') : 'Follow Windows or force a specific theme'}</div></div>
+  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : isLinux ? (appStore.omarchyTheme ? 'Follow your Omarchy theme or force a specific look' : 'Follow your desktop or force a specific theme') : 'Follow Windows or force a specific theme'}</div></div>
   <div class="appearance-segment" role="radiogroup" aria-label="Appearance" bind:this={segmentEl}>
     {#if indicatorStyle}
       <div class="appearance-indicator" style={indicatorStyle} aria-hidden="true"></div>
