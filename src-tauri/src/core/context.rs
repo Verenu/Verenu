@@ -23,6 +23,15 @@ impl ResolvedContextIdentity {
         }
     }
 
+    /// Pill/diagnostic label for a sub-app match: "Work · #design".
+    pub fn from_context_and_sub_app(context: &Context, sub_app: Option<&db::ContextSubApp>) -> Self {
+        let mut identity = Self::from_context(context);
+        if let Some(sub_app) = sub_app {
+            identity.label = format!("{} · {}", context.name, sub_app.label);
+        }
+        identity
+    }
+
     pub fn everywhere() -> Self {
         Self {
             id: db::EVERYWHERE_CONTEXT_ID,
@@ -32,12 +41,23 @@ impl ResolvedContextIdentity {
 }
 
 pub fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Context> {
+    resolve_context_with_title(db, executable, domain, None).map(|(context, _)| context)
+}
+
+/// Like [`resolve_context`], but a window title lets a sub-app rule win over
+/// website and app targets.
+pub fn resolve_context_with_title(
+    db: &Db,
+    executable: &str,
+    domain: Option<&str>,
+    window_title: Option<&str>,
+) -> Result<(Context, Option<db::ContextSubApp>)> {
     // App bundles/installers commonly replace their executable name on every
     // update. Refresh a target lazily on the dictation path so users do not
     // need to reopen the Contexts screen after a nightly release changes.
     let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
     db::reconcile_context_targets(db, &installed_apps)?;
-    db::resolve_context_for_target(db, executable, domain)
+    db::resolve_context_with_sub_app(db, executable, domain, window_title)
 }
 
 #[cfg(test)]

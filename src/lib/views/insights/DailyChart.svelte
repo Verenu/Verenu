@@ -95,8 +95,15 @@
   // fluid, so x scales by the rendered width and y needs no conversion.
   const cursorLeft = $derived((cursorPoint.x / W) * plotWidth);
 
+  // Measured on entry, not every move: the readout digits change on each
+  // step, so reading layout per pointermove forced a synchronous reflow.
+  let plotRect: DOMRect | null = null;
+
   function onMove(event: PointerEvent) {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (hover === null || !plotRect) {
+      plotRect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    }
+    const rect = plotRect;
     if (rect.width === 0 || daily.length === 0) return;
     plotWidth = rect.width;
     const ratio = (event.clientX - rect.left) / rect.width;
@@ -141,7 +148,7 @@
     role="img"
     aria-label={summary}
     onpointermove={onMove}
-    onpointerleave={() => (hover = null)}
+    onpointerleave={() => { hover = null; plotRect = null; }}
   >
     <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
       <defs>

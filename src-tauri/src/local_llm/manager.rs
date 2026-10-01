@@ -238,7 +238,10 @@ impl LocalLlmManager {
                     if !was_cancelled {
                         let _ = app_handle.emit(
                             "verenu:error",
-                            format!("Failed to download local model: {}", err),
+                            format!(
+                                "Could not download the cleanup model. {}",
+                                crate::api::user_facing_error(&err)
+                            ),
                         );
                     }
 
@@ -321,7 +324,10 @@ impl LocalLlmManager {
                     if !was_cancelled {
                         let _ = app_handle.emit(
                             "verenu:error",
-                            format!("Failed to download local cleanup runtime: {}", err),
+                            format!(
+                                "Could not download the local cleanup engine. {}",
+                                crate::api::user_facing_error(&err)
+                            ),
                         );
                     }
 

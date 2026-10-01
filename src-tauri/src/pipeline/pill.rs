@@ -96,7 +96,11 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
-        .resizable(false)
+        // GTK advertises a non-resizable window's size as both its min and
+        // max, and Hyprland enforces those hints, pinning the pill at 200x200
+        // so wide error states clipped. Without decorations or focus it still
+        // cannot be resized by the user.
+        .resizable(cfg!(target_os = "linux"))
         .shadow(false)
         .focused(false)
         .build()

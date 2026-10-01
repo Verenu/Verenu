@@ -35,7 +35,7 @@ export function normalizeText(value: string): string {
 
 export function requireCreatedRecordMeta(value: unknown): CreatedRecordMeta {
   if (typeof value !== 'object' || value === null) {
-    throw new Error('Snippet save returned no record metadata. Relaunch the Tauri app and try again.');
+    throw new Error('Verenu could not confirm that this snippet was saved. Refresh the list before trying again.');
   }
   const meta = value as Partial<CreatedRecordMeta>;
   if (typeof meta.id !== 'number' || !Number.isFinite(meta.id) || typeof meta.created_at !== 'string' || !meta.created_at.trim()) {

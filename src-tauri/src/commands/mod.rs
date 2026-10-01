@@ -21,6 +21,7 @@ pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
 mod analytics;
 mod android;
 mod contexts;
+mod sub_apps;
 mod history;
 mod library;
 mod local_llm;
@@ -76,6 +77,7 @@ fn db_state(app: &AppHandle) -> DbHandle {
 pub use analytics::*;
 pub use android::*;
 pub use contexts::*;
+pub use sub_apps::*;
 pub use history::*;
 pub use library::*;
 pub use local_llm::*;

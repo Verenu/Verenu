@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
-  import { isAndroid, isMac, isWindows } from '../../platform';
+  import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
   import { saveSetting } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
   import { shouldPersistMicGain } from './audioGain';
@@ -221,6 +221,8 @@
     <div><div class="label">Pause media while dictating</div><div class="desc">Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.</div></div>
     <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" bind:error={pauseMediaError} />
   </div>
+{/if}
+{#if isWindows || (isLinux && !isAndroid)}
   <div class="setting-row" data-setting-target="audio-mic-mute-button">
     <div>
       <div class="label">Use microphone mute button for dictation</div>

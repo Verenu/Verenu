@@ -346,6 +346,33 @@ async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
+/// A very short hotkey hold can release while the microphone is still opening.
+/// Keep the stop request alive for that startup window instead of consuming the
+/// `Starting` reservation and allowing the late opener to leave a live pill.
+async fn take_recording_for_stopping_after_start(
+    state: &SharedState,
+) -> Option<state::StoppingHandoff> {
+    const START_STOP_RACE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
+    const START_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+    let deadline = std::time::Instant::now() + START_STOP_RACE_WINDOW;
+
+    loop {
+        let starting = state::lock_state(state)
+            .map(|st| matches!(st.lifecycle, DictationLifecycle::Starting { .. }))
+            .unwrap_or(false);
+        if !starting {
+            return state::take_recording_for_stopping(state);
+        }
+        if std::time::Instant::now() >= deadline {
+            // Consume the reservation atomically. The start task will observe
+            // Idle and tear down its newly opened session instead of reviving
+            // the recording after the user already released the chord.
+            return state::take_recording_for_stopping(state);
+        }
+        tokio::time::sleep(START_STOP_POLL).await;
+    }
+}
+
 /// Concatenates a previous (interrupted) dictation's audio onto a freshly
 /// captured one — both are already resampled to the fixed 16kHz mono target,
 /// so the sample buffers join directly. RMS is recomputed from the merged
@@ -383,7 +410,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         generation,
         prepend_audio,
         resolved_context_identity,
-    )) = state::take_recording_for_stopping(&state)
+    )) = take_recording_for_stopping_after_start(&state).await
     else {
         log::debug!("pipeline: no session - recording never started or was already consumed");
         // A release that finds no live session must not leave a

@@ -308,7 +308,10 @@ impl LocalTranscriptionManager {
                     if !was_cancelled {
                         let _ = app_handle.emit(
                             "verenu:error",
-                            format!("Failed to download local model: {}", err),
+                            format!(
+                                "Could not download the transcription model. {}",
+                                crate::api::user_facing_error(&err)
+                            ),
                         );
                     }
 

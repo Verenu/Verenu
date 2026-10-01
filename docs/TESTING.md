@@ -108,6 +108,19 @@ node tests/smoke/playwright-test-state.cjs
 
 ## Rust Tests
 
+LAN sync has a focused deterministic gate:
+
+```bash
+npm run test:sync
+```
+
+It includes two virtual devices with separate temporary databases, actual
+loopback TCP/TLS connections, code-based pairing, multi-batch transfers,
+database restart, interrupted transfer recovery, and a three-device relay
+case. These tests also run in the ordinary Rust suite. See
+[`lan-sync.md`](lan-sync.md) for coverage, boundaries, and the physical
+two-device checklist.
+
 ```bash
 npm run test:rust
 cargo test --manifest-path src-tauri/Cargo.toml <test_name>
@@ -146,4 +159,3 @@ GitHub Actions currently run:
   <a href="RELEASE.md"><img alt="Release Process" src="https://img.shields.io/badge/Release-Process-7e7266"></a>
   <a href="README.md"><img alt="Docs Index" src="https://img.shields.io/badge/Docs-Index-2b2422"></a>
 </p>
-

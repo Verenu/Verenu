@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke, listen } from '../../tauri';
   import { isAndroid, isMac } from '../../platform';
-  import { formatIpcError } from '../../stores.svelte';
+  import { classifyIpcError, formatIpcError, type ErrorKind } from '../../errors';
   import { hotkeyCodes, hotkeyLabels, hotkeyWatchCodes, matchesHotkey } from '../../hotkey.svelte';
 
   const keyLabels = $derived(hotkeyLabels());
@@ -10,6 +10,7 @@
 
   let sampleText = $state('');
   let errorMessage = $state('');
+  let errorKind = $state<ErrorKind>('unknown');
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
   let localRecording = false;
   let localStartInFlight = false;
@@ -18,13 +19,16 @@
 
   let status = $derived(sampleText.trim().length > 0 ? 'success' : 'waiting');
   const errorTitle = $derived(
-    /no speech|didn.t hear|too quiet/i.test(errorMessage)
+    ['no-speech', 'nothing-transcribed'].includes(errorKind)
       ? "We didn't hear any speech"
-      : 'That recording did not go through',
+      : errorKind === 'too-quiet' ? 'The microphone was too quiet' : 'That recording did not go through',
   );
-  const errorDetail = $derived(
-    `${errorMessage.replace(/[.!?]+$/, '')}. Check your microphone, then ${isAndroid ? 'tap the pill above your keyboard' : 'hold the hotkey until you finish speaking'}.`,
-  );
+  const errorDetail = $derived(errorMessage);
+
+  function showRecordingError(err: unknown) {
+    errorKind = classifyIpcError(err).kind;
+    errorMessage = formatIpcError(err, 'Could not complete this recording');
+  }
 
   function tryItFieldFocused() {
     return typeof document !== 'undefined' && document.activeElement === textareaEl;
@@ -46,9 +50,8 @@
       }
       localRecording = true;
     } catch (err) {
-      const message = formatIpcError(err);
-      if (!destroyed && !message.toLowerCase().includes('already recording')) {
-        errorMessage = message;
+      if (!destroyed && classifyIpcError(err).kind !== 'already-recording') {
+        showRecordingError(err);
       }
     } finally {
       localStartInFlight = false;
@@ -61,7 +64,7 @@
     try {
       await invoke('stop_setup_try_recording');
     } catch (err) {
-      errorMessage = formatIpcError(err);
+      showRecordingError(err);
     }
   }
 
@@ -105,9 +108,7 @@
 
     listen<string>('verenu:error', (ev) => {
       if (destroyed) return;
-      errorMessage = ev.payload
-        ? formatIpcError(ev.payload)
-        : 'Something went wrong with that recording.';
+      showRecordingError(ev.payload);
     }).then((unsub) => {
       if (destroyed) unsub();
       else unlistenError = unsub;

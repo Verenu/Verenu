@@ -407,7 +407,7 @@
           transition:fly={{ y: -10, duration: motionMs(400), easing: expoOut }}
         >
           <div class="day-time">{fmtTime(failedEntry.created_at)}</div>
-          <div class="day-text error-msg">Looks like your last transcription failed.</div>
+          <div class="day-text error-msg">Your last dictation could not be transcribed. Retry to use the same recording.</div>
           <button
             class="retry-btn"
             onclick={onRetry}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -218,6 +219,11 @@
     snippets_inserted: number;
     snippets_skipped: number;
     snippets_already_existed: number;
+    app_targets_kept?: number;
+    app_targets_matched?: number;
+    app_targets_dropped?: number;
+    sub_apps_imported?: number;
+    sub_apps_dropped?: number;
   };
 
   let exporting = $state(false);
@@ -238,8 +244,8 @@
       const path = await invoke<string>('export_data');
       exportMsg = `Saved to ${path}`;
       exportMsgKind = 'ok';
-    } catch {
-      exportMsg = 'Export failed.';
+    } catch (err) {
+      exportMsg = formatIpcError(err, 'Could not export your backup');
       exportMsgKind = 'err';
     } finally {
       exporting = false;
@@ -274,16 +280,22 @@
           ? `${s.dictionary_corrections_skipped} skipped`
           : '',
       ].filter(Boolean).join(', ');
-      const contextParts = contextTotal > 0 ? ` Contexts: ${contextTotal}.` : '';
+      const appParts = [
+        (s.app_targets_kept ?? 0) + (s.app_targets_matched ?? 0) > 0
+          ? `${(s.app_targets_kept ?? 0) + (s.app_targets_matched ?? 0)} apps linked`
+          : '',
+        s.app_targets_matched ? `${s.app_targets_matched} matched to apps on this device` : '',
+        s.app_targets_dropped ? `${s.app_targets_dropped} not installed here, left out` : '',
+        s.sub_apps_imported ? `${s.sub_apps_imported} sub-apps` : '',
+        s.sub_apps_dropped ? `${s.sub_apps_dropped} sub-apps left out` : '',
+      ].filter(Boolean).join(', ');
+      const contextParts =
+        contextTotal > 0 ? ` Contexts: ${contextTotal}${appParts ? ` (${appParts})` : ''}.` : '';
       const correctionSummary = correctionParts ? ` Corrections: ${correctionParts}.` : '';
       importMsg = `Applied ${s.settings_applied} settings.${contextParts} Dictionary: ${dictParts}.${correctionSummary} Snippets: ${snipParts}.`;
       importMsgKind = 'ok';
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      importMsg =
-        msg.startsWith('Invalid backup') || msg.startsWith('Unsupported backup')
-          ? msg
-          : 'Import failed.';
+      importMsg = formatIpcError(err, 'Could not import this backup');
       importMsgKind = 'err';
     } finally {
       importing = false;

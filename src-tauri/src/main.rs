@@ -163,7 +163,22 @@ fn main() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            #[cfg(target_os = "linux")]
+            if argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
+                crate::core::hotkey::notify_release();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
+                crate::core::hotkey::notify_handless();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
+                crate::core::hotkey::notify_capture_sub_app();
+                return;
+            }
             show_main_window(app);
         }))
         .manage(shared.clone())
@@ -179,6 +194,18 @@ fn main() {
 
     builder
         .setup(move |app| {
+            #[cfg(target_os = "linux")]
+            if std::env::args().any(|arg| {
+                arg == "--verenu-hotkey-release"
+                    || arg == "--verenu-hotkey-handsfree"
+                    || arg == "--verenu-capture-sub-app"
+            }) {
+                // A handoff helper that reaches first-instance startup has no
+                // recording target. Do not turn it into an orphaned normal
+                // window when the primary process (or its dev server) is gone.
+                app.handle().exit(0);
+                return Ok(());
+            }
             #[cfg(target_os = "windows")]
             crate::single_instance::listen_for_takeover(app.handle());
             crate::system::logger::attach_app(app.handle());
@@ -233,18 +260,28 @@ fn main() {
                                     (k1, k2)
                                 };
                                 #[cfg(target_os = "linux")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
-                                {
+                                let (k1, k2) = if (k1, k2) == ("ControlLeft", "Space") {
                                     let _ = settings.set(
                                         crate::data::store::HOTKEY,
-                                        serde_json::json!(["ControlLeft", "Space"]),
+                                        serde_json::json!(["ControlLeft", "MetaLeft"]),
                                     );
                                     if let Err(e) = settings.save() {
                                         log::warn!(
                                             "Failed to save migrated Linux hotkey to settings.json: {e:?}"
                                         );
                                     }
-                                    ("ControlLeft", "Space")
+                                    ("ControlLeft", "MetaLeft")
+                                } else if !crate::core::hotkey::is_hotkey_available(k1, k2) {
+                                    let _ = settings.set(
+                                        crate::data::store::HOTKEY,
+                                        serde_json::json!(["ControlLeft", "MetaLeft"]),
+                                    );
+                                    if let Err(e) = settings.save() {
+                                        log::warn!(
+                                            "Failed to save migrated Linux hotkey to settings.json: {e:?}"
+                                        );
+                                    }
+                                    ("ControlLeft", "MetaLeft")
                                 } else {
                                     (k1, k2)
                                 };
@@ -564,7 +601,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             system::windows_titlebar::get_native_titlebar_metrics,
             system::windows_titlebar::set_native_titlebar_theme,
+            system::omarchy_theme::get_omarchy_theme,
             commands::save_hotkey,
+            core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
             commands::save_api_key,
             commands::delete_api_key,
@@ -658,6 +697,11 @@ fn main() {
              commands::get_context_websites,
              commands::check_domain_exists,
              commands::assign_context_website,
+            commands::get_sub_apps,
+            commands::create_sub_app,
+            commands::assign_sub_app,
+            commands::delete_sub_app,
+            commands::take_pending_sub_app_capture,
              commands::remove_context_website,
              commands::get_context_dictionary,
              commands::get_context_snippets,

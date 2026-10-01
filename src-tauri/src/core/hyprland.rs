@@ -255,6 +255,27 @@ pub(crate) fn move_window(address: &str, x: i32, y: i32) -> Result<(), String> {
 /// Raises a floating window without focusing it. Wayland does not guarantee
 /// that Tauri's always-on-top hint reaches the compositor, so the pill needs
 /// an explicit Hyprland z-order update each time it is revealed.
+/// Floating clients cannot resize themselves reliably under Hyprland (the
+/// non-resizable GTK pill stayed at Hyprland's 200x200 default), so size is
+/// set by the compositor, like position. Units are layout (logical) pixels.
+#[cfg(target_os = "linux")]
+pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<(), String> {
+    let selector = format!("address:{address}");
+    let expression = format!(
+        "hl.dsp.window.resize({{ x = {width}, y = {height}, relative = false, window = '{selector}' }})"
+    );
+    let status = std::process::Command::new("hyprctl")
+        .args(["dispatch", &expression])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("Hyprland resize IPC unavailable: {e}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Hyprland could not size the dictation pill".to_string())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn raise_window(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");
@@ -305,10 +326,16 @@ pub(crate) fn pill_window_after_show() -> Option<ActiveWindow> {
     None
 }
 
-/// Install the portal action in the user's Lua bindings. Omarchy loads this
+/// Install the portal actions in the user's Lua bindings. Omarchy loads this
 /// file after its defaults, so the marked block is the only text Verenu owns.
 #[cfg(target_os = "linux")]
-pub(crate) fn ensure_global_shortcut_binding(trigger: &str, portal_id: &str) -> Result<(), String> {
+pub(crate) fn ensure_global_shortcut_binding(
+    bindings: &[String],
+    press_portal_id: &str,
+    release_command: &str,
+    handsfree_command: &str,
+    release_keycodes: &[u32],
+) -> Result<(), String> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -320,7 +347,15 @@ pub(crate) fn ensure_global_shortcut_binding(trigger: &str, portal_id: &str) -> 
         fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let start = "-- >>> Verenu managed global shortcut (do not edit) <<<";
     let end = "-- <<< End Verenu managed global shortcut >>>";
-    let block = global_shortcut_binding_block(start, end, trigger, portal_id);
+    let block = global_shortcut_binding_block(
+        start,
+        end,
+        bindings,
+        press_portal_id,
+        release_command,
+        handsfree_command,
+        release_keycodes,
+    );
     let next = if let (Some(a), Some(b)) = (current.find(start), current.find(end)) {
         let b = b + end.len();
         format!("{}{}{}", &current[..a], block, &current[b..])
@@ -346,16 +381,225 @@ pub(crate) fn ensure_global_shortcut_binding(trigger: &str, portal_id: &str) -> 
     Ok(())
 }
 
+/// Installs the fixed sub-app capture chord in its own managed block. The
+/// bind runs a single-instance handoff (`--verenu-capture-sub-app`); exec
+/// does not move focus, so the running app captures the user's window.
 #[cfg(target_os = "linux")]
-fn global_shortcut_binding_block(start: &str, end: &str, trigger: &str, portal_id: &str) -> String {
-    // Lua dispatchers are registered with Hyprland as generic `__lua`
-    // handlers. Unlike the legacy native `global` dispatcher, those handlers
-    // are not called automatically for both key-down and key-up. Bind the same
-    // portal action for each edge so XDG GlobalShortcuts emits Activated and
-    // Deactivated and hold-to-dictate stops when the chord is released.
+pub(crate) fn ensure_sub_app_capture_binding(chord: &str, capture_command: &str) -> Result<(), String> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })
+        .ok_or_else(|| "XDG config directory is unavailable".to_string())?;
+    let path = config.join("hypr/bindings.lua");
+    let current =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let block = sub_app_capture_binding_block(chord, capture_command);
+    let (start, end) = SUB_APP_CAPTURE_MARKERS;
+    let next = if let (Some(a), Some(b)) = (current.find(start), current.find(end)) {
+        format!("{}{}{}", &current[..a], block, &current[b + end.len()..])
+    } else {
+        format!("{}\n\n{}\n", current.trim_end(), block)
+    };
+    if next == current {
+        return Ok(());
+    }
+    let tmp = path.with_extension("lua.verenu.tmp");
+    fs::write(&tmp, next).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
+    let status = std::process::Command::new("hyprctl")
+        .arg("reload")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("Hyprland reload failed: {e}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Hyprland rejected the Verenu sub-app capture binding".to_string())
+}
+
+#[cfg(target_os = "linux")]
+const SUB_APP_CAPTURE_MARKERS: (&str, &str) = (
+    "-- >>> Verenu sub-app capture (do not edit) <<<",
+    "-- <<< End Verenu sub-app capture >>>",
+);
+
+#[cfg(target_os = "linux")]
+fn sub_app_capture_binding_block(chord: &str, capture_command: &str) -> String {
+    let (start, end) = SUB_APP_CAPTURE_MARKERS;
+    let command = capture_command.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
-        "{start}\n-- Portal action: {portal_id}\nlocal verenu_dictate = hl.dsp.global(\"{portal_id}\")\nhl.bind(\"{trigger}\", verenu_dictate, {{ description = \"Verenu dictation\" }})\nhl.bind(\"{trigger}\", verenu_dictate, {{ description = \"Verenu dictation release\", release = true }})\n{end}"
+        "{start}\nhl.bind(\"{chord}\", hl.dsp.exec_cmd(\"{command}\"), {{ description = \"Verenu capture sub-app\" }})\n{end}"
     )
+}
+
+/// xkb keycodes that do not turn a held chord into a different shortcut:
+/// Escape, Space, Caps Lock, and the Shift/Ctrl/Alt/Super modifiers.
+#[cfg(target_os = "linux")]
+const NON_COMBO_KEYCODES: [u32; 11] = [9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134];
+
+#[cfg(target_os = "linux")]
+const GLOBAL_SHORTCUT_TEMPLATE: &str = r#"{start}
+-- Portal action: {press_portal_id}
+local verenu_dictate = hl.dsp.global("{press_portal_id}")
+local verenu_cancel = hl.dsp.global("{cancel_portal_id}")
+local verenu_release = hl.dsp.exec_cmd("{release_command}")
+local verenu_handsfree = hl.dsp.exec_cmd("{handsfree_command}")
+local verenu_release_armed = false
+local verenu_release_generation = 0
+local verenu_press_generation = 0
+local verenu_short_hold = false
+local verenu_quick_tap_pending = false
+local verenu_quick_tap_generation = 0
+-- True once another key joins the held chord: the user is running some other
+-- shortcut that happens to start with these modifiers (Omarchy has many
+-- Super+Ctrl binds), not dictating.
+local verenu_combo = false
+local verenu_suppress_press = false
+local verenu_release_keycodes = { {release_keycodes} }
+local verenu_ignored_keycodes = {}
+for _, ignored in ipairs({ {ignored_keycodes} }) do
+  verenu_ignored_keycodes[ignored] = true
+end
+local verenu_release_key = function(generation)
+  if not verenu_release_armed or generation ~= verenu_release_generation then
+    return
+  end
+  verenu_release_armed = false
+  hl.dispatch(verenu_release)
+  hl.dispatch(hl.dsp.submap("reset"))
+end
+local verenu_press = function()
+  -- A chord pressed right after a combo is almost always the next combo.
+  if verenu_suppress_press then
+    return
+  end
+  verenu_combo = false
+  verenu_press_generation = verenu_press_generation + 1
+  local press_generation = verenu_press_generation
+  if verenu_quick_tap_pending then
+    -- The second physical press can arrive before the first release helper
+    -- finishes its single-instance handoff. Decide the gesture here, where
+    -- both key edges are still ordered by Hyprland.
+    verenu_quick_tap_pending = false
+    verenu_quick_tap_generation = verenu_quick_tap_generation + 1
+    verenu_release_generation = verenu_release_generation + 1
+    verenu_release_armed = true
+    hl.dispatch(verenu_handsfree)
+  else
+    verenu_release_generation = verenu_release_generation + 1
+    verenu_release_armed = true
+    hl.dispatch(verenu_dictate)
+  end
+  verenu_short_hold = true
+  hl.timer(function()
+    if press_generation == verenu_press_generation then
+      verenu_short_hold = false
+    end
+  end, { timeout = 250, type = "oneshot" })
+end
+hl.on("input.keyboard.key", function(keycode, _, state)
+  if not verenu_release_armed then
+    return
+  end
+  if state == 1 then
+    if not verenu_combo and not verenu_ignored_keycodes[keycode] then
+      verenu_combo = true
+      hl.dispatch(verenu_cancel)
+    end
+    return
+  end
+  if state ~= 0 then
+    return
+  end
+  for _, release_keycode in ipairs(verenu_release_keycodes) do
+    if keycode == release_keycode then
+      if verenu_combo then
+        -- Not a tap: it must not arm the double-tap hands-free gesture, and
+        -- the next chord press is swallowed for a moment.
+        verenu_short_hold = false
+        verenu_suppress_press = true
+        hl.timer(function()
+          verenu_suppress_press = false
+        end, { timeout = 400, type = "oneshot" })
+      end
+      if verenu_short_hold then
+        verenu_quick_tap_pending = true
+        verenu_quick_tap_generation = verenu_quick_tap_generation + 1
+        local tap_generation = verenu_quick_tap_generation
+        hl.timer(function()
+          if tap_generation == verenu_quick_tap_generation then
+            verenu_quick_tap_pending = false
+          end
+        end, { timeout = 350, type = "oneshot" })
+      end
+      local generation = verenu_release_generation
+      -- Let the portal press event reach Verenu before handing off the
+      -- release. This covers very short taps without blocking Hyprland.
+      hl.timer(function()
+        verenu_release_key(generation)
+      end, { timeout = 25, type = "oneshot" })
+      return
+    end
+  end
+end)
+{binds}
+{end}"#;
+
+#[cfg(target_os = "linux")]
+fn global_shortcut_binding_block(
+    start: &str,
+    end: &str,
+    bindings: &[String],
+    press_portal_id: &str,
+    release_command: &str,
+    handsfree_command: &str,
+    release_keycodes: &[u32],
+) -> String {
+    // Lua dispatchers are registered with Hyprland as generic `__lua`
+    // handlers. Hyprland 0.56 can miss modifier-only release binds and the
+    // matching global-shortcut release event. Watch the compositor's raw
+    // keyboard event stream instead, but arm that watcher only after the
+    // Verenu press bind fires so ordinary modifier releases remain untouched.
+    let binds = bindings
+        .iter()
+        .map(|binding| {
+            format!(
+                "hl.bind(\"{binding}\", verenu_press, {{ description = \"Verenu dictation\", submap_universal = true }})"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let release_list = release_keycodes
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The portal's trigger-less cancel action lives beside the dictate action
+    // in the same app scope; Escape-to-cancel dispatches the same handle.
+    let cancel_portal_id = press_portal_id
+        .rsplit_once(':')
+        .map_or_else(|| "cancel".to_string(), |(scope, _)| format!("{scope}:cancel"));
+    // Keys that never mean "this is another shortcut": every modifier (the
+    // chord is made of them), the chord's own keys, Space (hands-free) and
+    // Escape (cancel).
+    let ignored_keycodes = release_keycodes
+        .iter()
+        .chain(NON_COMBO_KEYCODES.iter())
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    GLOBAL_SHORTCUT_TEMPLATE
+        .replace("{start}", start)
+        .replace("{end}", end)
+        .replace("{press_portal_id}", press_portal_id)
+        .replace("{cancel_portal_id}", &cancel_portal_id)
+        .replace("{release_command}", release_command)
+        .replace("{handsfree_command}", handsfree_command)
+        .replace("{release_keycodes}", &release_list)
+        .replace("{ignored_keycodes}", &ignored_keycodes)
+        .replace("{binds}", &binds)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -394,15 +638,71 @@ mod tests {
     }
 
     #[test]
+    fn sub_app_capture_block_binds_the_fixed_chord_to_the_handoff() {
+        let block = super::sub_app_capture_binding_block(
+            "CTRL + ALT + SHIFT + S",
+            "'/usr/bin/verenu' --verenu-capture-sub-app",
+        );
+        assert!(block.starts_with(super::SUB_APP_CAPTURE_MARKERS.0));
+        assert!(block.ends_with(super::SUB_APP_CAPTURE_MARKERS.1));
+        assert!(block.contains(
+            "hl.bind(\"CTRL + ALT + SHIFT + S\", hl.dsp.exec_cmd(\"'/usr/bin/verenu' --verenu-capture-sub-app\"), { description = \"Verenu capture sub-app\" })"
+        ));
+    }
+
+    #[test]
     fn global_shortcut_binding_forwards_press_and_release() {
-        let block = global_shortcut_binding_block("START", "END", "CTRL + SPACE", "app:dictate");
+        let block = global_shortcut_binding_block(
+            "START",
+            "END",
+            &["CTRL + SPACE".to_string()],
+            "app:dictate",
+            "/usr/bin/verenu --verenu-hotkey-release",
+            "/usr/bin/verenu --verenu-hotkey-handsfree",
+            &[65],
+        );
 
         assert!(block.contains("local verenu_dictate = hl.dsp.global(\"app:dictate\")"));
         assert!(block.contains(
-            "hl.bind(\"CTRL + SPACE\", verenu_dictate, { description = \"Verenu dictation\" })"
+            "local verenu_release = hl.dsp.exec_cmd(\"/usr/bin/verenu --verenu-hotkey-release\")"
         ));
         assert!(block.contains(
-            "hl.bind(\"CTRL + SPACE\", verenu_dictate, { description = \"Verenu dictation release\", release = true })"
+            "local verenu_handsfree = hl.dsp.exec_cmd(\"/usr/bin/verenu --verenu-hotkey-handsfree\")"
         ));
+        assert!(block.contains("local verenu_quick_tap_pending = false"));
+        assert!(block.contains("hl.dispatch(verenu_handsfree)"));
+        assert!(block.contains(
+            "hl.on(\"input.keyboard.key\", function(keycode, _, state)"
+        ));
+        assert!(block.contains("local verenu_release_keycodes = { 65 }"));
+        assert!(block.contains("local verenu_cancel = hl.dsp.global(\"app:cancel\")"));
+        assert!(block.contains("for _, ignored in ipairs({ 65, 9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134 }) do"));
+        assert!(block.contains("type = \"oneshot\""));
+        assert!(block.contains(
+            "hl.bind(\"CTRL + SPACE\", verenu_press, { description = \"Verenu dictation\", submap_universal = true })"
+        ));
+    }
+
+    #[test]
+    fn global_shortcut_binding_supports_both_modifier_press_orders() {
+        let block = global_shortcut_binding_block(
+            "START",
+            "END",
+            &[
+                "CTRL + Super_L".to_string(),
+                "SUPER + Control_L".to_string(),
+            ],
+            "app:dictate",
+            "/usr/bin/verenu --verenu-hotkey-release",
+            "/usr/bin/verenu --verenu-hotkey-handsfree",
+            &[37, 133],
+        );
+
+        for binding in ["CTRL + Super_L", "SUPER + Control_L"] {
+            assert!(block.contains(&format!(
+                "hl.bind(\"{binding}\", verenu_press, {{ description = \"Verenu dictation\", submap_universal = true }})"
+            )));
+        }
+        assert!(block.contains("local verenu_release_keycodes = { 37, 133 }"));
     }
 }

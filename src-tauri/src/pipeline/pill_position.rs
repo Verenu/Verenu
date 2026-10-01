@@ -362,6 +362,16 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
             .ok();
         }
         let linux_placement = linux_effective_placement(placement);
+        if let Some(window) = crate::core::hyprland::pill_window() {
+            if window.size[0] != placement.width as i32 || window.size[1] != placement.height as i32 {
+                crate::core::hyprland::resize_window(
+                    &window.address,
+                    placement.width as i32,
+                    placement.height as i32,
+                )
+                .ok();
+            }
+        }
         needs_reposition = crate::core::hyprland::pill_window()
             .map(|window| {
                 position_changed(window.at[0], linux_placement.x)
