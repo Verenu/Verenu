@@ -3,7 +3,7 @@
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
-  import { isAndroid, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
+  import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
   import { saveSetting, type AppearanceMode } from '../../settings';
@@ -664,7 +664,7 @@
 </div>
 <h3 class="settings-subhead">Appearance & System</h3>
 <div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
+  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : isLinux ? 'Follow your desktop or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
   <div class="appearance-segment" role="radiogroup" aria-label="Appearance" bind:this={segmentEl}>
     {#if indicatorStyle}
       <div class="appearance-indicator" style={indicatorStyle} aria-hidden="true"></div>
@@ -686,7 +686,7 @@
 </div>
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-startup">
-    <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : 'Launch Verenu when Windows starts'}</div></div>
+    <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : isLinux ? 'Launch Verenu when you log in' : 'Launch Verenu when Windows starts'}</div></div>
     <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" bind:error={autostartError} />
   </div>
 {/if}
