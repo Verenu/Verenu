@@ -122,7 +122,7 @@ mod tests {
         assert!(result
             .message
             .to_lowercase()
-            .contains("account or model-access"));
+            .contains("account or model access"));
     }
 
     #[test]
@@ -130,7 +130,8 @@ mod tests {
         let result = classify_validation_response(503, "");
         assert!(!result.ok);
         assert_eq!(result.status, "unknown");
-        assert!(result.message.contains("503"));
+        assert!(result.message.contains("temporarily unavailable"));
+        assert!(result.message.contains("try again"));
     }
 
     #[test]
