@@ -49,7 +49,7 @@ package() {
     -e 's/^Icon=.*/Icon=verenu/' \
     "$desktop" > "$pkgdir/usr/share/applications/verenu.desktop"
 
-  icon="$appdir/.DirIcon"
+  icon="$appdir/Verenu.png"
   test -f "$icon"
   install -Dm644 "$icon" "$pkgdir/usr/share/pixmaps/verenu.png"
 }
