@@ -184,19 +184,19 @@ pub fn run() {
     }
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             #[cfg(target_os = "linux")]
-            if argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
                 crate::core::hotkey::notify_release();
                 return;
             }
             #[cfg(target_os = "linux")]
-            if argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
                 crate::core::hotkey::notify_handless();
                 return;
             }
             #[cfg(target_os = "linux")]
-            if argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
+            if _argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
                 crate::core::hotkey::notify_capture_sub_app();
                 return;
             }

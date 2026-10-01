@@ -240,7 +240,7 @@ impl LocalLlmManager {
                             "verenu:error",
                             format!(
                                 "Could not download the cleanup model. {}",
-                                crate::api::user_facing_error(&err)
+                                crate::api::user_facing_error(err)
                             ),
                         );
                     }
@@ -326,7 +326,7 @@ impl LocalLlmManager {
                             "verenu:error",
                             format!(
                                 "Could not download the local cleanup engine. {}",
-                                crate::api::user_facing_error(&err)
+                                crate::api::user_facing_error(err)
                             ),
                         );
                     }

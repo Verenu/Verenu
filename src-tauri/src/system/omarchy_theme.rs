@@ -6,6 +6,7 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "linux")]
 pub const THEME_CHANGED_EVENT: &str = "verenu:omarchy-theme-changed";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -57,6 +58,7 @@ pub(crate) fn custom_is_dark(value: &serde_json::Value) -> Option<bool> {
 
 /// Parses the flat `key = "value"` subset of TOML that `colors.toml` uses.
 /// Returns `None` unless it defines a usable background and foreground.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_colors(contents: &str, name: &str, light_marker: bool) -> Option<OmarchyTheme> {
     let mut colors = BTreeMap::new();
     let mut mode = None;
