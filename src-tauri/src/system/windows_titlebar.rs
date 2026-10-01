@@ -305,7 +305,7 @@ mod tests {
     fn system_appearance_uses_native_theme() {
         assert!(!dark(Some(tauri::Theme::Light), Some("system"), None));
         assert!(dark(Some(tauri::Theme::Dark), Some("system"), None));
-        assert!(dark(None, None));
+        assert!(dark(None, None, None));
     }
 
     fn metrics() -> NativeMetrics {
