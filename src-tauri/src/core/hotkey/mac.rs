@@ -108,6 +108,8 @@ static ESCAPE_HOTKEY: OnceLock<HotKey> = OnceLock::new();
 // paste failed in a way the pipeline's own detection missed. Unlike Escape
 // this is registered permanently at startup, not just while recording.
 static COPY_LAST_HOTKEY: OnceLock<HotKey> = OnceLock::new();
+static SUB_APP_HOTKEY: Mutex<Option<HotKey>> = Mutex::new(None);
+static SUB_APP_CHORD: Mutex<Option<super::chord::Chord>> = Mutex::new(None);
 // `Mutex<bool>` (not an atomic) so the check and the register/unregister call are
 // one critical section — `set_escape_listening` is invoked from both the hotkey
 // event thread and Tauri command threads, and a lock-free swap could interleave
@@ -454,6 +456,54 @@ fn register_copy_last_hotkey() {
     }
 }
 
+/// Rebinds the sub-app capture chord (default Cmd+Option+Shift+S).
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
+    if let Ok(mut slot) = SUB_APP_CHORD.lock() {
+        *slot = Some(chord);
+    }
+    register_sub_app_hotkey();
+}
+
+/// Registers (or re-registers) the capture chord as a global hotkey.
+fn register_sub_app_hotkey() {
+    let Some(mgr) = MANAGER.get() else {
+        return;
+    };
+    let chord = SUB_APP_CHORD
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .unwrap_or_else(super::chord::Chord::default_for_platform);
+    let Ok(code) = chord.web_code().parse::<Code>() else {
+        log::warn!("hotkey: unsupported sub-app capture key");
+        return;
+    };
+    let mut mods = Modifiers::empty();
+    if chord.ctrl {
+        mods |= Modifiers::CONTROL;
+    }
+    if chord.alt {
+        mods |= Modifiers::ALT;
+    }
+    if chord.shift {
+        mods |= Modifiers::SHIFT;
+    }
+    if chord.super_key {
+        mods |= Modifiers::META;
+    }
+    let next = HotKey::new(Some(mods), code);
+    let Ok(mut slot) = SUB_APP_HOTKEY.lock() else {
+        return;
+    };
+    if let Some(previous) = slot.take() {
+        let _ = mgr.unregister(previous);
+    }
+    match mgr.register(next) {
+        Ok(()) => *slot = Some(next),
+        Err(e) => log::warn!("hotkey: failed to register sub-app capture hotkey: {e}"),
+    }
+}
+
 /// Register/unregister a plain-Escape hotkey for the duration of an active
 /// recording so the user can cancel mid-dictation. We keep it transient because
 /// a registered hotkey is consumed system-wide — we don't want to swallow Escape
@@ -498,6 +548,19 @@ fn handle_hotkey_event(ev: GlobalHotKeyEvent) {
     if COPY_LAST_HOTKEY.get().is_some_and(|h| h.id() == ev.id) {
         if matches!(ev.state, HotKeyState::Pressed) {
             if let Some(cb) = COPY_LAST_CB.get() {
+                cb();
+            }
+        }
+        return;
+    }
+    if SUB_APP_HOTKEY
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .is_some_and(|h| h.id() == ev.id)
+    {
+        if matches!(ev.state, HotKeyState::Pressed) {
+            if let Some(cb) = SUB_APP_CB.get() {
                 cb();
             }
         }
@@ -618,6 +681,7 @@ where
     }
     register_main_hotkey();
     register_copy_last_hotkey();
+    register_sub_app_hotkey();
 
     // Drain hotkey events on a background thread; the receiver is a process-wide
     // channel fed by the Carbon handler, so it is safe to poll off-thread.

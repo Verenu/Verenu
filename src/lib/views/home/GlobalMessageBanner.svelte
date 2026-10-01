@@ -22,8 +22,8 @@
     align-items: center;
     gap: 12px;
     padding: 12px 18px;
-    background: var(--warn-bg, rgba(196, 116, 42, 0.08));
-    border: 1px solid var(--warn-line, rgba(196, 116, 42, 0.35));
+    background: var(--warning-bg);
+    border: 1px solid var(--warning-line);
     border-radius: var(--r-lg);
     font-size: 13px;
     color: var(--ink);
@@ -34,7 +34,7 @@
     flex: 0 0 24px;
     height: 24px;
     border-radius: 50%;
-    color: var(--warning, #c4742a);
+    color: var(--warning);
   }
   .global-icon svg {
     width: 18px;

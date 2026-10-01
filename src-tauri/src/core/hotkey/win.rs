@@ -740,6 +740,19 @@ static COPY_LAST_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::syn
 // but never invoked.
 #[allow(dead_code)]
 static SUB_APP_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+static SUB_APP_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+// Sub-app capture chord: key VK plus modifier bits (1 Ctrl, 2 Alt, 4 Shift, 8 Win).
+static SUB_APP_VK: AtomicU32 = AtomicU32::new(0x53);
+static SUB_APP_MODS: AtomicU32 = AtomicU32::new(1 | 2 | 4);
+
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
+    let mods = u32::from(chord.ctrl)
+        | (u32::from(chord.alt) << 1)
+        | (u32::from(chord.shift) << 2)
+        | (u32::from(chord.super_key) << 3);
+    SUB_APP_MODS.store(mods, Ordering::SeqCst);
+    SUB_APP_VK.store(chord.windows_vk(), Ordering::SeqCst);
+}
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
@@ -946,6 +959,32 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 && COPY_LAST_KEY_DOWN.swap(false, Ordering::SeqCst)
                 && unsafe { modifier_held(VK_CTRL) && modifier_held(VK_ALT) }
             {
+                return LRESULT(1);
+            }
+        }
+
+        if vk == SUB_APP_VK.load(Ordering::Relaxed) {
+            // The sub-app capture chord (default Ctrl+Alt+Shift+S). Modifiers
+            // must match exactly so Ctrl+Alt+S never fires Ctrl+Alt+Shift+S.
+            // Same handling as copy-last: fire once per physical press, and
+            // swallow the chord only because a callback consumes it. The
+            // capture itself runs on the async hotkey loop, not in the hook.
+            let mods = SUB_APP_MODS.load(Ordering::Relaxed);
+            let chord = unsafe {
+                modifier_held(VK_CTRL) == (mods & 1 != 0)
+                    && modifier_held(VK_ALT) == (mods & 2 != 0)
+                    && modifier_held(VK_SHIFT) == (mods & 4 != 0)
+                    && modifier_held(91) == (mods & 8 != 0)
+            };
+            if is_down && chord && SUB_APP_CB.get().is_some() {
+                if !SUB_APP_KEY_DOWN.swap(true, Ordering::SeqCst) {
+                    if let Some(cb) = SUB_APP_CB.get() {
+                        cb();
+                    }
+                }
+                return LRESULT(1);
+            }
+            if is_up && SUB_APP_KEY_DOWN.swap(false, Ordering::SeqCst) && chord {
                 return LRESULT(1);
             }
         }

@@ -12,6 +12,12 @@ use super::store as sync_store;
 use crate::data::db;
 use crate::DbHandle;
 
+#[path = "regression_tests.rs"]
+mod regression_tests;
+
+#[path = "device_tests.rs"]
+mod device_tests;
+
 // ---- helpers ----
 
 #[test]
@@ -1583,7 +1589,12 @@ async fn session_exchanges_changes_incrementally() {
 }
 
 async fn run_two_sessions(a: &DbHandle, b: &DbHandle, host_a: &TestHost, host_b: &TestHost) {
-    pair_test_dbs(a, b, &host_a.uuid, &host_b.uuid);
+    for (db, peer_uuid) in [(a, &host_b.uuid), (b, &host_a.uuid)] {
+        let conn = db.lock().expect("lock");
+        if sync_store::get_peer(&conn, peer_uuid).expect("peer").is_none() {
+            sync_store::upsert_peer(&conn, peer_uuid, "Peer", "test-pin").expect("pair");
+        }
+    }
     let (mut side_a, mut side_b) = tokio::io::duplex(1024 * 1024);
     let peer_a = peer_of(&host_b.uuid);
     let peer_b = peer_of(&host_a.uuid);
@@ -1740,9 +1751,12 @@ fn failed_remote_settings_batch_does_not_record_stamps() {
 
     let applied = {
         let conn = db.lock().expect("lock");
-        engine::apply_settings_exchange(&conn, &host, &[record]).expect("exchange remains usable")
+        engine::apply_settings_exchange(&conn, &host, &[record])
     };
-    assert_eq!(applied, 0);
+    assert!(
+        applied.is_err(),
+        "failed persistence must fail the sync session"
+    );
     assert!(host.settings.lock().expect("settings").is_empty());
     let conn = db.lock().expect("lock");
     assert!(
@@ -1774,6 +1788,7 @@ fn syncable_settings_exclude_device_local_keys() {
         crate::data::store::PLAY_START_STOP_SOUNDS,
         crate::data::store::SOUND_EFFECTS_VOLUME,
         crate::data::store::APPEARANCE_MODE,
+        crate::data::store::CUSTOM_THEME,
         crate::data::store::APP_MAPPINGS,
         crate::data::store::CLIPBOARD_PHRASE,
         crate::data::store::CLIPBOARD_PHRASE_ENABLED,
@@ -2157,7 +2172,10 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
                 panic!("expected pair request");
             };
             let (msg_b, cipher) = pairing::responder_start(&code_b, &spake_msg).expect("start");
-            pairing::responder_exchange(&mut b, &cipher, msg_b, &identity_b, &device_uuid).await
+            let outcome =
+                pairing::responder_exchange(&mut b, &cipher, msg_b, &identity_b, &device_uuid).await?;
+            send_message(&mut b, &Message::PairComplete).await?;
+            Ok::<_, anyhow::Error>(outcome)
         },
     );
     let peer_from_a = initiator.expect("initiator outcome");
@@ -2228,4 +2246,59 @@ fn pair_test_dbs(a: &DbHandle, b: &DbHandle, a_uuid: &str, b_uuid: &str) {
         let conn = b.lock().expect("lock");
         sync_store::upsert_peer(&conn, a_uuid, "A", "fp-a").expect("upsert b->a");
     }
+}
+
+#[test]
+fn sub_apps_sync_as_their_own_table_with_assignment_and_deletes() {
+    let a = test_db(&uuid("sa-a"));
+    let b = test_db(&uuid("sa-b"));
+    let sub_app = db::create_sub_app(
+        &a,
+        db::NewSubApp {
+            executable: "discord",
+            app_name: Some("Discord"),
+            label: "Acme",
+            icon: Some("chat"),
+            title_pattern: "Acme",
+            match_mode: db::TitleMatchMode::Contains,
+        },
+    )
+    .expect("sub-app");
+
+    // An unassigned sub-app still syncs.
+    exchange(&a, &b);
+    {
+        let conn_b = b.lock().expect("lock");
+        let (label, icon, uuid_b, context): (String, Option<String>, String, Option<i64>) = conn_b
+            .query_row(
+                "SELECT label, icon, uuid, context_id FROM context_sub_apps",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("synced sub-app");
+        assert_eq!((label.as_str(), icon.as_deref()), ("Acme", Some("chat")));
+        assert_eq!(uuid_b, sub_app.uuid, "identity survives sync");
+        assert_eq!(context, None);
+    }
+
+    // Assigning on A carries the Context across by uuid.
+    let ctx = db::insert_context_returning(&a, "Work", None, None, None, None, false).expect("ctx");
+    db::assign_sub_app(&a, sub_app.id, Some(ctx.id)).expect("assign");
+    exchange(&a, &b);
+    {
+        let conn_b = b.lock().expect("lock");
+        let assigned_to: String = conn_b
+            .query_row(
+                "SELECT c.name FROM context_sub_apps s JOIN contexts c ON c.id = s.context_id",
+                [],
+                |r| r.get(0),
+            )
+            .expect("assigned on b");
+        assert_eq!(assigned_to, "Work");
+    }
+
+    db::delete_sub_app(&a, sub_app.id).expect("delete");
+    exchange(&a, &b);
+    let conn_b = b.lock().expect("lock");
+    assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM context_sub_apps"), 0);
 }

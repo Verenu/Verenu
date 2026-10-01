@@ -14,6 +14,9 @@
   import Settings from './lib/views/Settings.svelte';
   import CleanupPromptModal from './lib/components/settings/CleanupPromptModal.svelte';
   import SyncPairModal from './lib/components/settings/SyncPairModal.svelte';
+  import SubAppSheet from './lib/components/SubAppSheet.svelte';
+  import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
+  import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
   import DictationPill from './lib/components/layout/DictationPill.svelte';
   import Setup from './lib/views/Setup.svelte';
@@ -33,6 +36,8 @@
   import { expoOut } from 'svelte/easing';
   import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
+  import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
+  import { normalizeCustomTheme } from './lib/customTheme';
   import { isAndroid } from './lib/platform';
   import MobileNav from './lib/components/layout/MobileNav.svelte';
   import {
@@ -42,6 +47,7 @@
   } from './lib/android/viewport';
 
   type EffectiveTheme = 'light' | 'dark';
+  import type { AppearanceMode } from './lib/settings';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
 
   function applyNativeTitleBarMetrics(metrics: NativeTitleBarMetrics | null) {
@@ -58,13 +64,20 @@
     return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
 
-  function effectiveTheme(mode: 'system' | 'light' | 'dark'): EffectiveTheme {
-    return mode === 'system' ? systemTheme() : mode;
+  function activePalette() {
+    return resolvePalette(appStore.appearanceMode, appStore.omarchyTheme, appStore.customTheme);
+  }
+
+  function effectiveTheme(mode: AppearanceMode): EffectiveTheme {
+    if (mode === 'system' || mode === 'omarchy' || mode === 'custom') return activePalette()?.mode ?? systemTheme();
+    return mode;
   }
 
   function applyTheme() {
     const theme = effectiveTheme(appStore.appearanceMode);
     document.documentElement.dataset.theme = theme;
+    // Applied before the native title bar reads the resolved tokens below.
+    applyOmarchyPalette(document.documentElement, activePalette());
     // isLinux is UA-derived and Android's UA also contains "Linux", so it
     // must be paired with !isAndroid before it means "Linux desktop".
     if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
@@ -103,11 +116,13 @@
 
   $effect(() => {
     appStore.appearanceMode;
+    appStore.omarchyTheme;
+    appStore.customTheme;
     if (typeof document !== 'undefined') applyTheme();
   });
 
   $effect(() => {
-    const accentColor = appStore.accentColor;
+    const accentColor = effectiveAccent(appStore.accentColor, activePalette());
     if (typeof document !== 'undefined') applyAccentTheme(document.documentElement, accentColor);
   });
 
@@ -215,10 +230,10 @@
 
   function showErrorToast(raw: string) {
     const classified = classifyIpcError(raw);
-    errorToast = raw ? classified.message : 'Something went wrong';
+    errorToast = classified.message;
     errorToastKind = raw ? classified.kind : null;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { errorToast = ''; errorToastKind = null; }, 5000);
+    toastTimer = setTimeout(() => { errorToast = ''; errorToastKind = null; }, Math.min(20000, Math.max(8000, errorToast.length * 65)));
   }
 
   onMount(() => {
@@ -237,7 +252,7 @@
     let stopTitleBarMetricsListener: (() => void) | undefined;
     const onSettingsSaveError = (event: Event) => {
       const message = (event as CustomEvent<unknown>).detail;
-      showErrorToast(typeof message === 'string' ? message : 'Something went wrong');
+      showErrorToast(typeof message === 'string' ? message : '');
     };
     // Never send Error.message, rejected values, source URLs, line numbers, or
     // JavaScript stacks across IPC. The native analytics boundary converts
@@ -267,10 +282,11 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        const [done, appearance, accentColor, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup] = await Promise.all([
+        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
-          invoke<'system' | 'light' | 'dark' | null>('get_setting', { key: 'appearance_mode' }),
+          invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
+          invoke<unknown>('get_setting', { key: 'custom_theme' }),
           invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }),
           invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
@@ -278,18 +294,21 @@
           invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
           invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
+          invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
         ]);
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
-        if (appearance === 'light' || appearance === 'dark' || appearance === 'system') {
+        if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
           appStore.appearanceMode = appearance;
         }
         appStore.accentColor = normalizeAccentColor(accentColor);
+        appStore.customTheme = normalizeCustomTheme(customTheme);
         appStore.cleanupEnabled = cleanupEnabled ?? true;
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
         appStore.syncEnabled = syncEnabled ?? false;
         appStore.ruinAccessibility = ruinAccessibility ?? false;
         appStore.devModeOnStartup = devModeOnStartup ?? false;
+        appStore.subAppCaptureHotkey = typeof subAppCaptureHotkey === 'string' ? subAppCaptureHotkey : null;
         if (appStore.ruinAccessibility || appStore.devModeOnStartup) appStore.devModeEnabled = true;
       } catch {
         appStore.setupComplete = false;
@@ -387,6 +406,44 @@
       .then((version) => { appStore.appVersion = version; })
       .catch((error) => { console.error('Failed to read app version:', error); });
 
+    // Sub-app capture hotkey: the backend snapshots the focused window, then
+    // raises this window. A capture that fired while the page was still
+    // loading is picked up with take_pending_sub_app_capture.
+    const openSubAppCapture = async (capture: SubAppCapture | null) => {
+      if (!capture) return;
+      await loadContexts();
+      contextsStore.subAppSheet = { mode: 'capture', capture };
+    };
+    const stopSubAppListeners: Array<() => void> = [];
+    if (isTauriRuntime()) {
+      void listen<SubAppCapture>(SUB_APP_CAPTURED_EVENT, () => {
+        // The payload is also held backend-side; taking it clears it so a
+        // later window reload cannot reopen a finished capture.
+        void invoke<SubAppCapture | null>('take_pending_sub_app_capture').then(openSubAppCapture);
+      }).then((unlisten) => stopSubAppListeners.push(unlisten));
+      void listen<string>(SUB_APP_CAPTURE_FAILED_EVENT, (event) => {
+        errorToast = event.payload || 'Nothing to capture.';
+        errorToastKind = null;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { errorToast = ''; }, 5000);
+      }).then((unlisten) => stopSubAppListeners.push(unlisten));
+      void invoke<SubAppCapture | null>('take_pending_sub_app_capture')
+        .then(openSubAppCapture)
+        .catch(() => {});
+    }
+
+    // Omarchy palette: fetched once, then pushed by the backend whenever
+    // `omarchy theme set` switches themes.
+    let stopOmarchyTheme: (() => void) | undefined;
+    if (isLinux && !isAndroid && isTauriRuntime()) {
+      const setOmarchyTheme = (value: unknown) => {
+        appStore.omarchyTheme = isOmarchyTheme(value) ? value : null;
+      };
+      invoke<OmarchyTheme | null>('get_omarchy_theme').then(setOmarchyTheme).catch(() => {});
+      void listen<OmarchyTheme | null>(OMARCHY_THEME_EVENT, (event) => setOmarchyTheme(event.payload))
+        .then((unlisten) => { stopOmarchyTheme = unlisten; });
+    }
+
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
     const onSystemThemeChange = () => {
       if (appStore.appearanceMode === 'system') applyTheme();
@@ -420,6 +477,8 @@
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
       media?.removeEventListener?.('change', onSystemThemeChange);
+      stopOmarchyTheme?.();
+      for (const stop of stopSubAppListeners) stop();
       connectivityPoll.stop();
       stopViewport();
     };
@@ -483,6 +542,11 @@
   {#if syncStore.status?.pairing?.kind === 'incoming' && syncStore.status.pairing.phase !== 'failed'}
     <SyncPairModal />
   {/if}
+  {#if contextsStore.subAppSheet}
+    {#key contextsStore.subAppSheet}
+      <SubAppSheet sheet={contextsStore.subAppSheet} onClose={() => (contextsStore.subAppSheet = null)} />
+    {/key}
+  {/if}
   <DictationPill />
 
   {#if errorToast}
@@ -495,7 +559,7 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
         <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
       </svg>
-      <span>{errorToast}</span>
+      <span class="toast-message">{errorToast}</span>
       {#if errorToastKind && settingsSectionForKind(errorToastKind)}
         <button class="toast-action ui-focus-ring" onclick={() => openSettingsSection(settingsSectionForKind(errorToastKind!)!)}>
           Fix in Settings
@@ -782,8 +846,14 @@
     /* Settings sits above the app content; errors must remain visible while a
        setting change fails inside that page. */
     z-index: 80;
-    max-width: 480px;
+    width: max-content;
+    max-width: min(560px, calc(100% - 36px));
     transition: bottom 0.15s ease;
+  }
+
+  .toast-message {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .toast-close {

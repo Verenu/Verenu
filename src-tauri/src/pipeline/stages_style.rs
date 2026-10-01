@@ -84,12 +84,24 @@ pub(super) fn resolve_context_for_window(
     } else {
         None
     };
+    // Sub-app rules match on the captured window's title. It is read here
+    // only and never stored or logged.
+    let window_title = if hwnd != 0 {
+        window_context::get_window_title(hwnd)
+    } else {
+        None
+    };
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
-    let context =
-        crate::core::context::resolve_context(&db_handle, &process_name, browser_domain.as_deref())
-            .ok()?;
-    Some(crate::core::context::ResolvedContextIdentity::from_context(
+    let (context, sub_app) = crate::core::context::resolve_context_with_title(
+        &db_handle,
+        &process_name,
+        browser_domain.as_deref(),
+        window_title.as_deref(),
+    )
+    .ok()?;
+    Some(crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
         &context,
+        sub_app.as_ref(),
     ))
 }
 

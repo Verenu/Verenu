@@ -171,7 +171,8 @@ where
 
 /// Responder side of the wire exchange, after the user approved with `code`.
 /// Sends acceptance, exchanges encrypted identities, and returns the
-/// initiator's verified identity.
+/// initiator's verified identity. The caller must persist trust before
+/// sending PairComplete; a successful identity exchange alone is not pairing.
 pub async fn responder_exchange<S>(
     stream: &mut S,
     cipher: &ChaCha20Poly1305,
@@ -209,6 +210,5 @@ where
         },
     )
     .await?;
-    send_message(stream, &Message::PairComplete).await?;
     Ok(peer)
 }

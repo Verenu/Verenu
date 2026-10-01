@@ -1,6 +1,7 @@
 import { invoke } from './tauri';
 import { classifyIpcError } from './errors';
-import type { Context, ContextTarget, ContextWebsiteTarget } from './stores';
+import type { Context, ContextSubApp, ContextTarget, ContextWebsiteTarget } from './stores';
+import type { SubAppCapture } from './subApps';
 
 export const EVERYWHERE_ID = 1;
 
@@ -15,6 +16,9 @@ export const contextsStore = $state({
   contexts: [] as Context[],
   targets: [] as ContextTarget[],
   websites: [] as ContextWebsiteTarget[],
+  subApps: [] as ContextSubApp[],
+  /** A fresh capture awaiting review. Mounted globally so the capture hotkey opens it from any page. */
+  subAppSheet: null as null | { mode: 'capture'; capture: SubAppCapture },
   selectedId: EVERYWHERE_ID,
   /**
    * +1 when the newly selected context sits below the previous one in the
@@ -80,14 +84,16 @@ export function loadContexts(force = false): Promise<void> {
   if (contextsStore.loaded && !force) return Promise.resolve();
   inFlight = (async () => {
     try {
-      const [contexts, targets, websites] = await Promise.all([
+      const [contexts, targets, websites, subApps] = await Promise.all([
         invoke<Context[]>('get_contexts'),
         invoke<ContextTarget[]>('get_context_targets', { contextId: null }),
         invoke<ContextWebsiteTarget[]>('get_context_websites', { contextId: null }),
+        invoke<ContextSubApp[]>('get_sub_apps'),
       ]);
       contextsStore.contexts = contexts ?? [];
       contextsStore.targets = targets ?? [];
       contextsStore.websites = websites ?? [];
+      contextsStore.subApps = subApps ?? [];
       contextsStore.error = '';
       contextsStore.loaded = true;
       if (!contextsStore.contexts.some((context) => context.id === contextsStore.selectedId)) {

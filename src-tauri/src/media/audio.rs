@@ -153,6 +153,38 @@ fn ensure_configured_capture_profile() {
 #[cfg(not(target_os = "linux"))]
 fn ensure_configured_capture_profile() {}
 
+#[cfg(target_os = "linux")]
+fn pipewire_has_no_capture_sources(dump: &serde_json::Value) -> bool {
+    let Some(objects) = dump.as_array() else {
+        return false;
+    };
+    // Only trust a complete PipeWire graph, not an empty or malformed response.
+    objects.iter().any(|object| {
+        object.get("type").and_then(serde_json::Value::as_str) == Some("PipeWire:Interface:Core")
+    }) && !objects.iter().any(|object| {
+        object
+            .pointer("/info/props/media.class")
+            .and_then(serde_json::Value::as_str)
+            == Some("Audio/Source")
+    })
+}
+
+fn recording_start_error(error: anyhow::Error) -> anyhow::Error {
+    #[cfg(target_os = "linux")]
+    if let Ok(output) = std::process::Command::new("pw-dump").output() {
+        if output.status.success() {
+            if let Ok(dump) = serde_json::from_slice(&output.stdout) {
+                if pipewire_has_no_capture_sources(&dump) {
+                    return anyhow::anyhow!(
+                        "No microphone detected. Reconnect your mic or choose another input in Settings > General."
+                    );
+                }
+            }
+        }
+    }
+    error
+}
+
 struct FrameDenoiser {
     state: Box<nnnoiseless::DenoiseState<'static>>,
     buf: Vec<f32>,
@@ -480,6 +512,23 @@ impl StreamingResampler {
 
 impl RecordingSession {
     pub fn start(
+        device_name: Option<String>,
+        noise_reduction: bool,
+        gain: f32,
+        durable: Option<Box<dyn DurableSink>>,
+        max_output_samples: Option<usize>,
+    ) -> Result<Self> {
+        Self::start_inner(
+            device_name,
+            noise_reduction,
+            gain,
+            durable,
+            max_output_samples,
+        )
+        .map_err(recording_start_error)
+    }
+
+    fn start_inner(
         device_name: Option<String>,
         noise_reduction: bool,
         gain: f32,
@@ -975,6 +1024,23 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_microphone_requires_a_valid_graph_without_capture_sources() {
+        use serde_json::json;
+        let core = json!({"type": "PipeWire:Interface:Core"});
+        assert!(super::pipewire_has_no_capture_sources(
+            &json!([core.clone(),
+                {"info": {"props": {"media.class": "Audio/Sink"}}}
+            ])
+        ));
+        assert!(!super::pipewire_has_no_capture_sources(&json!([core,
+            {"info": {"props": {"media.class": "Audio/Source"}}}
+        ])));
+        assert!(!super::pipewire_has_no_capture_sources(&json!([])));
+        assert!(!super::pipewire_has_no_capture_sources(&json!({})));
+    }
+
     use super::{
         enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, WorkerWake, DISPLAY_GAIN,
     };

@@ -100,6 +100,25 @@ CREATE TABLE IF NOT EXISTS context_targets (
 );
 CREATE INDEX IF NOT EXISTS idx_context_targets_context_id
   ON context_targets(context_id);
+CREATE TABLE IF NOT EXISTS context_sub_apps (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid          TEXT NOT NULL UNIQUE,
+  context_id    INTEGER REFERENCES contexts(id) ON DELETE SET NULL,
+  executable    TEXT NOT NULL COLLATE NOCASE,
+  app_name      TEXT,
+  label         TEXT NOT NULL,
+  icon          TEXT,
+  title_pattern TEXT NOT NULL COLLATE NOCASE,
+  match_mode    TEXT NOT NULL DEFAULT 'contains' CHECK (match_mode IN ('contains', 'starts_with', 'equals')),
+  platform      TEXT,
+  created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (executable, title_pattern, match_mode)
+);
+CREATE INDEX IF NOT EXISTS idx_context_sub_apps_context_id
+  ON context_sub_apps(context_id);
+CREATE INDEX IF NOT EXISTS idx_context_sub_apps_executable
+  ON context_sub_apps(executable);
 CREATE TABLE IF NOT EXISTS context_website_targets (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   context_id   INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
@@ -968,6 +987,58 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 29 {
+        log::info!("db: migrating schema {user_version} -> 29");
+        run_migration(&mut conn, |conn| {
+            // SCHEMA already created `context_sub_apps` on this open; the
+            // version marks sub-app support for downgrade diagnostics.
+            conn.execute_batch("PRAGMA user_version = 29;")?;
+            Ok(())
+        })?;
+    }
+    if user_version < 30 {
+        log::info!("db: migrating schema {user_version} -> 30");
+        run_migration(&mut conn, |conn| {
+            // Sub-apps became a standalone list: context assignment is
+            // optional (deleting a context returns them to the list) and each
+            // has an icon. Early v29 development tables required a context.
+            let has_icon: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('context_sub_apps') WHERE name = 'icon'")?
+                .exists([])?;
+            if !has_icon {
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_ins;
+                     DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_upd;
+                     DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_del;
+                     ALTER TABLE context_sub_apps RENAME TO context_sub_apps_v29;
+                     CREATE TABLE context_sub_apps (
+                       id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                       uuid          TEXT NOT NULL UNIQUE,
+                       context_id    INTEGER REFERENCES contexts(id) ON DELETE SET NULL,
+                       executable    TEXT NOT NULL COLLATE NOCASE,
+                       app_name      TEXT,
+                       label         TEXT NOT NULL,
+                       icon          TEXT,
+                       title_pattern TEXT NOT NULL COLLATE NOCASE,
+                       match_mode    TEXT NOT NULL DEFAULT 'contains' CHECK (match_mode IN ('contains', 'starts_with', 'equals')),
+                       platform      TEXT,
+                       created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+                       updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+                       UNIQUE (executable, title_pattern, match_mode)
+                     );
+                     INSERT INTO context_sub_apps
+                       (id, uuid, context_id, executable, app_name, label, title_pattern, match_mode, platform, created_at, updated_at)
+                     SELECT id, uuid, context_id, executable, app_name, label, title_pattern, match_mode, platform, created_at, updated_at
+                       FROM context_sub_apps_v29;
+                     DROP TABLE context_sub_apps_v29;
+                     CREATE INDEX IF NOT EXISTS idx_context_sub_apps_context_id ON context_sub_apps(context_id);
+                     CREATE INDEX IF NOT EXISTS idx_context_sub_apps_executable ON context_sub_apps(executable);",
+                )?;
+            }
+            conn.execute_batch("PRAGMA user_version = 30;")?;
+            Ok(())
+        })?;
+    }
     // SCHEMA executes before migrations so it can safely create missing
     // tables, but it cannot create a context-aware index against a legacy
     // pre-v26 table. The v26 rebuild above installs these indexes for an
@@ -1759,6 +1830,42 @@ CREATE TRIGGER IF NOT EXISTS trg_sync_context_targets_del AFTER DELETE ON contex
   WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0
     AND (SELECT uuid FROM contexts WHERE id = OLD.context_id) IS NOT NULL;
+END;
+-- Sub-apps are their own sync table (they exist without a Context).
+-- Earlier development builds logged them into the Context aggregate.
+DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_ins;
+DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_upd;
+DROP TRIGGER IF EXISTS trg_sync_context_sub_apps_del;
+CREATE TRIGGER IF NOT EXISTS trg_sync_sub_apps_ins AFTER INSERT ON context_sub_apps BEGIN
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'context_sub_apps', NEW.uuid, 'upsert',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                   WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+  WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+    AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_sync_sub_apps_upd AFTER UPDATE ON context_sub_apps
+  WHEN NEW.uuid IS OLD.uuid BEGIN
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'context_sub_apps', NEW.uuid, 'upsert',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                   WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+  WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+    AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_sync_sub_apps_del AFTER DELETE ON context_sub_apps BEGIN
+  INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
+  SELECT 'context_sub_apps', OLD.uuid, 'delete',
+         CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+         (SELECT uuid FROM sync_identity),
+         COALESCE((SELECT MAX(origin_seq) FROM sync_log
+                   WHERE origin = (SELECT uuid FROM sync_identity)), 0) + 1
+  WHERE (SELECT uuid FROM sync_identity) IS NOT NULL
+    AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_sync_context_websites_ins AFTER INSERT ON context_website_targets BEGIN
   INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)

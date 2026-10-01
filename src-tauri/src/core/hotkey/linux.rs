@@ -6,17 +6,27 @@
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[path = "linux_shortcuts.rs"]
+mod shortcuts;
+#[path = "linux_conflicts.rs"]
+mod conflicts;
 
 const CTRL: u32 = 1;
 const ALT: u32 = 2;
 const SHIFT: u32 = 3;
 const SUPER: u32 = 4;
 static KEY1: AtomicU32 = AtomicU32::new(CTRL);
-// Ctrl+Space is a real two-key chord that is currently unused by Omarchy's
-// global bindings (unlike Super+Space, which opens the Omarchy menu).
-static KEY2: AtomicU32 = AtomicU32::new(200);
+// Ctrl+Super is the Linux default. It is installed through Hyprland's
+// modifier-only binding path rather than as a portal preferred accelerator.
+static KEY2: AtomicU32 = AtomicU32::new(SUPER);
+static EFFECTIVE_KEY1: AtomicU32 = AtomicU32::new(CTRL);
+static EFFECTIVE_KEY2: AtomicU32 = AtomicU32::new(SUPER);
+static CANCEL_KEY: Mutex<String> = Mutex::new(String::new());
+static HANDSFREE_KEY: Mutex<String> = Mutex::new(String::new());
+static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
 static HANDLESS: AtomicBool = AtomicBool::new(false);
 static PROCESSING: AtomicU64 = AtomicU64::new(0);
 /// Mirrors `PortalGesture::chord_active` across threads so Escape arming can
@@ -24,13 +34,15 @@ static PROCESSING: AtomicU64 = AtomicU64::new(0);
 /// `refresh_escape_listening` from any thread.
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Whether the dynamic bare-Escape Hyprland bind is currently installed.
-/// Tracked so `hl.unbind("ESCAPE")` only ever removes a bind Verenu added
-/// itself — never a pre-existing user binding on the same trigger.
+/// The Lua handle disables only Verenu's binding, preserving user bindings.
 static ESCAPE_ARMED: AtomicBool = AtomicBool::new(false);
 /// App-scoped portal id of the trigger-less "cancel" shortcut (see
 /// `PORTAL_CANCEL_ID`), resolved at startup. Needed to build the dynamic
 /// Escape bind's `hl.dsp.global(...)` action.
-static CANCEL_PORTAL_ID: OnceLock<String> = OnceLock::new();
+static CANCEL_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
+static HANDSFREE_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
+static SPACE_ARMED: AtomicBool = AtomicBool::new(false);
+static GESTURE: OnceLock<Mutex<PortalGesture>> = OnceLock::new();
 
 static PRESS: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static RELEASE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -54,6 +66,10 @@ const PORTAL_SHORTCUT_DESCRIPTION: &str = "Verenu dictation";
 /// every app, all the time.
 const PORTAL_CANCEL_ID: &str = "cancel";
 const PORTAL_CANCEL_DESCRIPTION: &str = "Verenu cancel";
+const PORTAL_COPY_ID: &str = "copy-last";
+const PORTAL_COPY_DESCRIPTION: &str = "Verenu copy last dictation";
+const PORTAL_HANDSFREE_ID: &str = "handsfree";
+const PORTAL_HANDSFREE_DESCRIPTION: &str = "Verenu hands-free";
 /// Backoff between portal reconnect attempts. A dead portal stream used to
 /// kill the hotkey thread silently (`else => break`), stranding any active
 /// recording with no way to stop it short of killing the app.
@@ -92,18 +108,18 @@ impl PortalGesture {
                 .pressed_at
                 .is_some_and(|pressed_at| now.duration_since(pressed_at) > STALE_CHORD_TIMEOUT)
         {
-            // A repeat activation arriving minutes into a hold (key repeat)
-            // or after a lost deactivation: re-anchor the hold clock so the
-            // eventual release is measured from a sane edge. Logged at info:
-            // this distinction is the primary signal when diagnosing a hold
-            // that "keeps going" after release.
+            // Hyprland can emit another activation while a chord is still
+            // held. Do not re-anchor the hold clock here. Doing that made a
+            // multi-second hold look like a fresh quick tap when the eventual
+            // deactivation arrived, which armed hands-free by accident on the
+            // next Ctrl+Space press.
             if let Some(pressed_at) = self.pressed_at {
                 log::info!(
-                    "linux hotkey: stale chord reset after {}ms",
+                    "linux hotkey: ignored repeated activation after {}ms",
                     now.duration_since(pressed_at).as_millis()
                 );
             }
-            *self = Self::default();
+            return None;
         }
         if self.chord_active || self.consume_deactivation {
             return None;
@@ -177,13 +193,7 @@ pub fn map_code_to_vk(code: &str) -> u32 {
 }
 
 fn portal_trigger(modifier: u32, key: u32) -> Option<String> {
-    let modifier = match modifier {
-        CTRL => "CTRL",
-        ALT => "ALT",
-        SHIFT => "SHIFT",
-        SUPER => "SUPER",
-        _ => return None,
-    };
+    let modifier = portal_modifier_name(modifier)?;
     let key = match key {
         101..=112 => format!("F{}", key - 100),
         200 => "SPACE".to_string(),
@@ -194,12 +204,239 @@ fn portal_trigger(modifier: u32, key: u32) -> Option<String> {
     Some(format!("{modifier}+{key}"))
 }
 
+fn portal_modifier_name(modifier: u32) -> Option<&'static str> {
+    match modifier {
+        CTRL => Some("CTRL"),
+        ALT => Some("ALT"),
+        SHIFT => Some("SHIFT"),
+        SUPER => Some("SUPER"),
+        _ => None,
+    }
+}
+
+fn shortcut_code(key: u32) -> String {
+    match key {
+        CTRL => "ControlLeft".into(),
+        ALT => "AltLeft".into(),
+        SHIFT => "ShiftLeft".into(),
+        SUPER => "MetaLeft".into(),
+        200 => "Space".into(),
+        101..=112 => format!("F{}", key - 100),
+        _ => String::new(),
+    }
+}
+
+fn shortcut_display(first: u32, second: u32) -> String {
+    [first, second]
+        .iter()
+        .map(|key| match *key {
+            CTRL => "Ctrl".into(),
+            ALT => "Alt".into(),
+            SHIFT => "Shift".into(),
+            SUPER => "Super".into(),
+            _ => shortcut_code(*key),
+        })
+        .collect::<Vec<String>>()
+        .join("+")
+}
+
+fn hyprland_modifier_name(modifier: u32) -> Option<&'static str> {
+    match modifier {
+        CTRL => Some("Control_L"),
+        ALT => Some("Alt_L"),
+        SHIFT => Some("Shift_L"),
+        SUPER => Some("Super_L"),
+        _ => None,
+    }
+}
+
+fn hyprland_keycode(key: u32) -> Option<u32> {
+    match key {
+        101..=110 => Some(key - 34), // F1–F10: XKB 67–76
+        111..=112 => Some(key - 16), // F11–F12: XKB 95–96
+        200 => Some(65),             // Space
+        _ => None,
+    }
+}
+
+fn hyprland_modifier_keycodes(modifier: u32) -> &'static [u32] {
+    match modifier {
+        CTRL => &[37, 105],
+        ALT => &[64, 108],
+        SHIFT => &[50, 62],
+        SUPER => &[133, 134],
+        _ => &[],
+    }
+}
+
+fn release_keycodes(modifier: u32, key: u32) -> Vec<u32> {
+    hyprland_modifier_keycodes(modifier)
+        .iter()
+        .chain(hyprland_modifier_keycodes(key))
+        .copied()
+        .chain(hyprland_keycode(key))
+        .collect()
+}
+
+/// Returns the portal preference and the Hyprland bindings for one setting.
+/// XDG GlobalShortcuts expects a key accelerator, so modifier-only chords use
+/// an unpreferred portal action and Hyprland's documented modifier-key form.
+/// Both press orders are installed because Hyprland treats the activating
+/// keysym as ordered when the modifier is also part of the chord.
+fn shortcut_configuration(modifier: u32, key: u32) -> Option<(Option<String>, Vec<String>)> {
+    if let (Some(first_mask), Some(first_key), Some(second_mask), Some(second_key)) = (
+        portal_modifier_name(modifier),
+        hyprland_modifier_name(modifier),
+        portal_modifier_name(key),
+        hyprland_modifier_name(key),
+    ) {
+        if first_mask == second_mask {
+            return None;
+        }
+        let mut bindings = vec![
+            format!("{first_mask} + {second_key}"),
+            format!("{second_mask} + {first_key}"),
+        ];
+        // Do not register Right Super as an activating key. Keep both sides
+        // of the other modifiers available in the reverse press order.
+        if key != SUPER {
+            bindings.push(format!("{first_mask} + {}", second_key.replace("_L", "_R")));
+        }
+        if modifier != SUPER {
+            bindings.push(format!("{second_mask} + {}", first_key.replace("_L", "_R")));
+        }
+        return Some((None, bindings));
+    }
+
+    let trigger = portal_trigger(modifier, key)?;
+    Some((Some(trigger.clone()), vec![trigger.replace('+', " + ")]))
+}
+
 pub fn is_hotkey_available(key1: &str, key2: &str) -> bool {
-    portal_trigger(map_code_to_vk(key1), map_code_to_vk(key2)).is_some()
+    shortcut_configuration(map_code_to_vk(key1), map_code_to_vk(key2)).is_some()
 }
 pub fn update_keys(k1: u32, k2: u32) {
     KEY1.store(k1, Ordering::SeqCst);
     KEY2.store(k2, Ordering::SeqCst);
+    CONFIG_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Called by the Linux single-instance handoff from Hyprland's keyboard-event
+/// release watcher. This avoids the broken global-shortcuts release event for
+/// modifier-only chords while preserving the same gesture classification.
+pub fn notify_release() {
+    let Some(gesture) = GESTURE.get() else {
+        return;
+    };
+    let Ok(mut gesture) = gesture.lock() else {
+        log::error!("linux hotkey: gesture state lock was poisoned");
+        return;
+    };
+    match gesture.deactivated(Instant::now()) {
+        Some(PortalGestureAction::Release) => {
+            log::info!("linux hotkey: application release handoff fired");
+            CHORD_ACTIVE.store(false, Ordering::SeqCst);
+            refresh_escape_listening();
+            if let Some(cb) = RELEASE.get() {
+                cb();
+            }
+        }
+        Some(PortalGestureAction::Cancel) => {
+            log::info!("linux hotkey: application quick release cancelled; handsfree armed");
+            CHORD_ACTIVE.store(false, Ordering::SeqCst);
+            refresh_escape_listening();
+            if let Some(cb) = CANCEL.get() {
+                cb();
+            }
+        }
+        _ => log::info!("linux hotkey: consumed application release handoff"),
+    }
+}
+static SUB_APP_CHORD: Mutex<Option<super::chord::Chord>> = Mutex::new(None);
+
+/// Rebinds the sub-app capture chord. Rewrites only the capture block in the
+/// Hyprland config, so the dictation bind and portal session are untouched.
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
+    if let Ok(mut slot) = SUB_APP_CHORD.lock() {
+        *slot = Some(chord);
+    }
+    install_sub_app_capture_binding();
+}
+
+fn install_sub_app_capture_binding() {
+    let chord = SUB_APP_CHORD
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .unwrap_or_else(super::chord::Chord::default_for_platform);
+    let requested = chord.to_string();
+    let active = conflicts::bindings("capture").ok().and_then(|bindings| {
+        conflicts::choose(
+            &bindings,
+            &requested,
+            &["Ctrl+Alt+Shift+F7", "Ctrl+Alt+Shift+F8", "Alt+Super+F7"],
+            false,
+        )
+    });
+    let Some(active) = active else {
+        let _ = shortcuts::remove_block(
+            "-- >>> Verenu sub-app capture (do not edit) <<<",
+            "-- <<< End Verenu sub-app capture >>>",
+        );
+        conflicts::status("capture", requested, None, vec![]);
+        return;
+    };
+    let Some(chord) = super::chord::Chord::parse(&active) else {
+        return;
+    };
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let capture_command = format!(
+                "{} --verenu-capture-sub-app",
+                shell_quote(&exe.to_string_lossy())
+            );
+            if let Err(error) = crate::core::hyprland::ensure_sub_app_capture_binding(
+                &chord.hyprland(),
+                &capture_command,
+            ) {
+                log::warn!("linux hotkey: sub-app capture binding unavailable: {error}");
+                conflicts::status("capture", requested, None, vec![]);
+                return;
+            }
+            conflicts::status("capture", requested, Some(active), vec![]);
+            ESCAPE_ARMED.store(false, Ordering::SeqCst);
+            SPACE_ARMED.store(false, Ordering::SeqCst);
+            register_temporary_controls();
+            refresh_escape_listening();
+        }
+        Err(error) => log::warn!("linux hotkey: cannot resolve capture command: {error}"),
+    }
+}
+
+/// Called by the single-instance handoff from the sub-app capture chord
+/// (`--verenu-capture-sub-app`, bound in its own managed Hyprland block).
+pub fn notify_capture_sub_app() {
+    if let Some(cb) = SUB_APP.get() {
+        cb();
+    }
+}
+
+/// Called by the Hyprland raw-key gesture watcher when it has already
+/// recognized the second quick tap. Reset the Rust-side edge tracker so the
+/// release of that second tap cannot stop the hands-free session it starts.
+pub fn notify_handless() {
+    if let Some(gesture) = GESTURE.get() {
+        match gesture.lock() {
+            Ok(mut gesture) => *gesture = PortalGesture::default(),
+            Err(_) => log::error!("linux hotkey: gesture state lock was poisoned"),
+        }
+    }
+    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+    refresh_escape_listening();
+    if let Some(cb) = HANDLESS_CB.get() {
+        log::info!("linux hotkey: compositor double-tap handoff toggling handsfree");
+        cb();
+    }
 }
 pub fn update_capture_keys(_k1: u32, _k2: u32) {}
 pub fn reset_chord_state() {
@@ -230,25 +467,26 @@ pub fn caps_lock_is_on() -> bool {
 /// Lua snippet installing the bare-Escape bind that dispatches the portal
 /// cancel action. Pure so the trigger text is unit-testable.
 fn escape_bind_snippet(cancel_portal_id: &str) -> String {
-    format!(
-        "hl.bind(\"ESCAPE\", hl.dsp.global(\"{cancel_portal_id}\"), \
-         {{ description = \"Verenu cancel dictation\" }})"
+    let key = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+    shortcuts::temporary_binding(
+        "escape",
+        if key.is_empty() { "ESCAPE" } else { &key },
+        Some(cancel_portal_id),
+        "Verenu cancel dictation (while active)",
     )
 }
 
-fn escape_unbind_snippet() -> &'static str {
-    "hl.unbind(\"ESCAPE\")"
+fn escape_unbind_snippet() -> String {
+    shortcuts::temporary_binding("escape", "ESCAPE", None, "")
 }
 
 fn eval_hyprland(snippet: &str) -> Result<(), String> {
-    let status = std::process::Command::new("hyprctl")
+    let output = std::process::Command::new("hyprctl")
         .args(["eval", snippet])
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .map_err(|e| format!("hyprctl eval unavailable: {e}"))?;
-    status
-        .success()
+    (output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "ok")
         .then_some(())
         .ok_or_else(|| "hyprctl eval rejected the snippet".to_string())
 }
@@ -261,6 +499,7 @@ fn eval_hyprland(snippet: &str) -> Result<(), String> {
 /// bind would swallow Escape in every application, all the time. Idempotent —
 /// only shells out to `hyprctl` on transitions.
 fn refresh_escape_listening() {
+    refresh_space_listening();
     let wanted = CHORD_ACTIVE.load(Ordering::SeqCst)
         || HANDLESS.load(Ordering::SeqCst)
         || PROCESSING.load(Ordering::SeqCst) != 0;
@@ -268,24 +507,83 @@ fn refresh_escape_listening() {
         return;
     }
     if wanted {
-        let Some(cancel_id) = CANCEL_PORTAL_ID.get() else {
+        if CANCEL_KEY.lock().map(|key| key.is_empty()).unwrap_or(true) { return; }
+        let cancel_id = CANCEL_PORTAL_ID.lock().ok().and_then(|id| id.clone());
+        let Some(cancel_id) = cancel_id else {
             log::debug!("linux hotkey: Escape arming deferred — cancel action not resolved yet");
             return;
         };
-        match eval_hyprland(&escape_bind_snippet(cancel_id)) {
+        match eval_hyprland(&escape_bind_snippet(&cancel_id)) {
             Ok(()) => {
                 ESCAPE_ARMED.store(true, Ordering::SeqCst);
                 log::info!("linux hotkey: Escape-to-cancel armed for this dictation");
             }
             Err(e) => log::warn!("linux hotkey: could not arm Escape-to-cancel: {e}"),
         }
-    } else if eval_hyprland(escape_unbind_snippet()).is_ok() {
+    } else if eval_hyprland(&escape_unbind_snippet()).is_ok() {
         ESCAPE_ARMED.store(false, Ordering::SeqCst);
         log::info!("linux hotkey: Escape-to-cancel disarmed");
     } else {
         // Stay armed so the next refresh retries the unbind instead of
         // leaking a live bare-Escape bind that swallows Escape everywhere.
         log::warn!("linux hotkey: could not disarm Escape-to-cancel, will retry");
+    }
+}
+
+fn refresh_space_listening() {
+    let key = HANDSFREE_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+    let wanted = CHORD_ACTIVE.load(Ordering::SeqCst)
+        && !HANDLESS.load(Ordering::SeqCst)
+        && !(EFFECTIVE_KEY2.load(Ordering::SeqCst) == 200 && key.eq_ignore_ascii_case("Space"));
+    if wanted == SPACE_ARMED.load(Ordering::SeqCst) {
+        return;
+    }
+    let id = HANDSFREE_PORTAL_ID.lock().ok().and_then(|id| id.clone());
+    if wanted && key.is_empty() { return; }
+    if wanted && id.is_none() {
+        return;
+    }
+    let snippet = shortcuts::temporary_binding(
+        "space",
+        &key,
+        if wanted { id.as_deref() } else { None },
+        "Verenu switch to hands-free (while holding dictation)",
+    );
+    if eval_hyprland(&snippet).is_ok() {
+        SPACE_ARMED.store(wanted, Ordering::SeqCst);
+    }
+}
+
+fn register_temporary_controls() {
+    // Hyprland lists disabled controls too, so Super+K explains the gestures
+    // while idle without consuming those keys in other applications.
+    let cancel_key = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+    let handsfree_key = HANDSFREE_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+    for (name, key, id, description) in [
+        (
+            "escape",
+            cancel_key.as_str(),
+            &CANCEL_PORTAL_ID,
+            "Verenu cancel dictation (while active)",
+        ),
+        (
+            "space",
+            handsfree_key.as_str(),
+            &HANDSFREE_PORTAL_ID,
+            "Verenu switch to hands-free (while holding dictation)",
+        ),
+    ] {
+        if key.is_empty() { continue; }
+        if let Some(id) = id.lock().ok().and_then(|id| id.clone()) {
+            let snippet = format!(
+                "{}; {}",
+                shortcuts::temporary_binding(name, key, Some(&id), description),
+                shortcuts::temporary_binding(name, key, None, "")
+            );
+            if let Err(error) = eval_hyprland(&snippet) {
+                log::warn!("linux hotkey: temporary control registration failed: {error}");
+            }
+        }
     }
 }
 
@@ -315,9 +613,12 @@ where
     let _ = ESCAPE.set(Box::new(on_escape));
     let _ = COPY.set(Box::new(on_copy_last));
     let _ = SUB_APP.set(Box::new(on_capture_sub_app));
-    let trigger = portal_trigger(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst))
-        .ok_or_else(|| "Linux shortcut must be one modifier plus F1–F12 or Space".to_string())?;
-    log::info!("linux hotkey: requesting XDG portal trigger {trigger}");
+    shortcut_configuration(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst)).ok_or_else(
+        || {
+            "Linux shortcut must use one modifier plus F1–F12/Space, or two different modifiers"
+                .to_string()
+        },
+    )?;
     Ok(std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -335,19 +636,56 @@ where
             // ending the thread with no error surface, which stranded any
             // active recording (release could never arrive) until restart.
             loop {
-                if run_portal_session(&trigger).await {
+                let requested = (KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst));
+                let available = conflicts::bindings("dictation").ok().and_then(|bindings| {
+                    std::iter::once(requested)
+                        .chain([(CTRL, SUPER), (CTRL, 105), (ALT, 106), (CTRL, 107), (SUPER, 108), (ALT, 109)])
+                        .find(|(first, second)| shortcut_configuration(*first, *second)
+                            .is_some_and(|(_, triggers)| conflicts::free(&bindings, &triggers, false)))
+                });
+                let Some((first, second)) = available else {
+                    conflicts::status("dictation", shortcut_display(requested.0, requested.1), None, vec![]);
+                    let _ = shortcuts::remove_block("-- >>> Verenu managed global shortcut (do not edit) <<<", "-- <<< End Verenu managed global shortcut >>>");
+                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                    continue;
+                };
+                EFFECTIVE_KEY1.store(first, Ordering::SeqCst);
+                EFFECTIVE_KEY2.store(second, Ordering::SeqCst);
+                let Some((preferred_trigger, bindings)) = shortcut_configuration(
+                    first,
+                    second,
+                ) else {
+                    log::error!("linux hotkey: stored shortcut is no longer supported");
+                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                    continue;
+                };
+                log::info!(
+                    "linux hotkey: requesting XDG portal trigger {}",
+                    preferred_trigger
+                        .as_deref()
+                        .unwrap_or("Hyprland modifier chord")
+                );
+                let generation = CONFIG_GENERATION.load(Ordering::SeqCst);
+                if run_portal_session(preferred_trigger.as_deref(), &bindings, generation).await {
                     log::info!("linux hotkey: portal session ended, reconnecting");
+                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                } else {
+                    log::info!("linux hotkey: shortcut changed, rebinding");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
             }
         });
     }))
 }
 
 /// One portal session: bind, resolve compositor actions, and dispatch edges
-/// until a stream ends. Returns always (the caller reconnects); logs loudly
-/// on every failure so a dead hotkey is diagnosable from exported logs.
-async fn run_portal_session(trigger: &str) -> bool {
+/// until a stream ends or the saved shortcut changes. The return value tells
+/// the caller whether to use the normal failure backoff or a fast rebind.
+async fn run_portal_session(
+    preferred_trigger: Option<&str>,
+    bindings: &[String],
+    generation: u64,
+) -> bool {
     let portal = match GlobalShortcuts::new().await {
         Ok(v) => v,
         Err(e) => {
@@ -363,15 +701,20 @@ async fn run_portal_session(trigger: &str) -> bool {
         }
     };
     let before = list_portal_shortcuts();
+    let mut dictate_shortcut = NewShortcut::new(PORTAL_SHORTCUT_ID, PORTAL_SHORTCUT_DESCRIPTION);
+    if let Some(trigger) = preferred_trigger {
+        dictate_shortcut = dictate_shortcut.preferred_trigger(trigger);
+    }
     let shortcuts = [
-        NewShortcut::new(PORTAL_SHORTCUT_ID, PORTAL_SHORTCUT_DESCRIPTION)
-            .preferred_trigger(trigger),
+        dictate_shortcut,
         // No preferred trigger: this action exists only so the dynamic
         // bare-Escape bind has something to dispatch (see
         // `refresh_escape_listening`). Requesting no trigger means nothing
         // to collide with and no consent prompt for a key the user never
         // presses directly.
         NewShortcut::new(PORTAL_CANCEL_ID, PORTAL_CANCEL_DESCRIPTION),
+        NewShortcut::new(PORTAL_COPY_ID, PORTAL_COPY_DESCRIPTION),
+        NewShortcut::new(PORTAL_HANDSFREE_ID, PORTAL_HANDSFREE_DESCRIPTION),
     ];
     match portal
         .bind_shortcuts(&session, &shortcuts, None, Default::default())
@@ -395,28 +738,98 @@ async fn run_portal_session(trigger: &str) -> bool {
         }
     };
     log::info!("linux hotkey: discovered portal ID");
-    // The static Lua block references the dictate action only; the cancel
-    // action is dispatched through runtime-evaluated binds that resolve the
-    // id below on every arm, so a reconnected session needs no config edit
-    // for cancel — but the dictate bind may still reference the dead
-    // session's handle, so always re-ensure it (the helper reloads even
-    // when the text is unchanged, which re-resolves the action).
+    // The managed Lua block references both dictation edge actions; the
+    // cancel action is dispatched through runtime-evaluated binds that resolve
+    // its id below on every arm. A reconnected session therefore needs the
+    // managed block re-ensured so both dictation handles resolve to the live
+    // portal session.
+    let release_command = match std::env::current_exe() {
+        Ok(exe) => format!(
+            "{} --verenu-hotkey-release",
+            shell_quote(&exe.to_string_lossy())
+        ),
+        Err(error) => {
+            log::error!("linux hotkey: cannot resolve release command: {error}");
+            return true;
+        }
+    };
+    let handsfree_command = match std::env::current_exe() {
+        Ok(exe) => format!(
+            "{} --verenu-hotkey-handsfree",
+            shell_quote(&exe.to_string_lossy())
+        ),
+        Err(error) => {
+            log::error!("linux hotkey: cannot resolve handsfree command: {error}");
+            return true;
+        }
+    };
     if let Err(error) = crate::core::hyprland::ensure_global_shortcut_binding(
-        &trigger.replace('+', " + "),
+        bindings,
         &dictate_id,
+        &release_command,
+        &handsfree_command,
+        &release_keycodes(EFFECTIVE_KEY1.load(Ordering::SeqCst), EFFECTIVE_KEY2.load(Ordering::SeqCst)),
     ) {
         log::error!("linux hotkey: Hyprland binding setup failed: {error}");
         return true;
     }
     log::info!("linux hotkey: Hyprland binding installed");
+    let first = EFFECTIVE_KEY1.load(Ordering::SeqCst);
+    let second = EFFECTIVE_KEY2.load(Ordering::SeqCst);
+    conflicts::status("dictation", shortcut_display(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst)),
+        Some(shortcut_display(first, second)), vec![shortcut_code(first), shortcut_code(second)]);
+    install_sub_app_capture_binding();
     match discover_portal_id(&before, PORTAL_CANCEL_DESCRIPTION) {
         Some(id) => {
-            let _ = CANCEL_PORTAL_ID.set(id);
+            if let Ok(mut slot) = CANCEL_PORTAL_ID.lock() {
+                *slot = Some(id);
+            }
         }
         None => log::warn!(
             "linux hotkey: cancel portal action not visible — Escape-to-cancel unavailable this session"
         ),
     }
+    if let Some(id) = discover_portal_id(&before, PORTAL_HANDSFREE_DESCRIPTION) {
+        if let Ok(mut slot) = HANDSFREE_PORTAL_ID.lock() {
+            *slot = Some(id);
+        }
+    }
+    match discover_portal_id(&before, PORTAL_COPY_DESCRIPTION) {
+        Some(id) => {
+            let active = conflicts::bindings("copy").ok().and_then(|bindings| conflicts::choose(
+                &bindings, "Ctrl+Alt+C", &["Ctrl+Alt+F6", "Ctrl+Shift+F6", "Alt+Super+F6"], false,
+            ));
+            if let Some(active) = active {
+                if let Err(error) = shortcuts::ensure_copy_binding(&id, &active) {
+                    log::warn!("linux hotkey: copy shortcut registration failed: {error}");
+                    conflicts::status("copy", "Ctrl+Alt+C".into(), None, vec![]);
+                } else {
+                    conflicts::status("copy", "Ctrl+Alt+C".into(), Some(active), vec![]);
+                }
+            } else {
+                let _ = shortcuts::remove_block(shortcuts::START, shortcuts::END);
+                conflicts::status("copy", "Ctrl+Alt+C".into(), None, vec![]);
+            }
+        }
+        None => log::warn!("linux hotkey: copy portal action is unavailable"),
+    }
+    // These controls ignore held modifiers, so reserve the key across every
+    // modifier mask and submap before enabling it during dictation.
+    for (id, requested, alternatives, key_slot) in [
+        ("cancel", "Escape", &["F8", "F9", "F10", "F11", "F12"][..], &CANCEL_KEY),
+        ("handsfree", "Space", &["F9", "F10", "F11", "F12", "F8"][..], &HANDSFREE_KEY),
+    ] {
+        let already_chosen = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+        let choices = alternatives.iter().copied().filter(|key| id != "handsfree" || !key.eq_ignore_ascii_case(&already_chosen)).collect::<Vec<_>>();
+        let active = conflicts::bindings(id).ok().and_then(|bindings| conflicts::choose(&bindings, requested, &choices, true));
+        if let Ok(mut key) = key_slot.lock() { *key = active.clone().unwrap_or_default(); }
+        conflicts::status(id, requested.into(), active, vec![]);
+    }
+    // Config reloads remove runtime handles. Re-arm against this session.
+    ESCAPE_ARMED.store(false, Ordering::SeqCst);
+    SPACE_ARMED.store(false, Ordering::SeqCst);
+    register_temporary_controls();
+    refresh_escape_listening();
     let mut activated = match portal.receive_activated().await {
         Ok(v) => v,
         Err(e) => {
@@ -424,25 +837,57 @@ async fn run_portal_session(trigger: &str) -> bool {
             return true;
         }
     };
-    let mut deactivated = match portal.receive_deactivated().await {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("portal deactivation stream failed: {e}");
-            return true;
-        }
-    };
-    // Hyprland reports an activation each time Space goes down while
-    // the configured modifier remains held, so both a full double-tap
-    // of the chord and "hold Ctrl, tap Space twice" use this path.
-    // Classify complete edges instead of treating any activation near
-    // the previous release as hands-free; that distinction filters key
-    // repeat and consumes the second tap's release.
-    let mut gesture = PortalGesture::default();
+    // Keep the portal edge classifier as a fallback for normal chord events.
+    // The Hyprland raw-key block recognizes the second quick tap before this
+    // portal stream can be delayed by the single-instance handoff, then calls
+    // `notify_handless` directly. This classifier still filters repeated
+    // portal activations and consumes a portal-delivered second release when
+    // a compositor sends the events in the slower order.
+    let gesture = GESTURE.get_or_init(|| Mutex::new(PortalGesture::default()));
+    if let Ok(mut state) = gesture.lock() {
+        *state = PortalGesture::default();
+    }
+    let mut configuration_poll = tokio::time::interval(Duration::from_millis(100));
+    let mut desktop_check = Instant::now();
     loop {
         tokio::select! {
+            _ = configuration_poll.tick() => {
+                let mut desktop_changed = false;
+                if desktop_check.elapsed() >= Duration::from_secs(5)
+                    && !CHORD_ACTIVE.load(Ordering::SeqCst)
+                    && !HANDLESS.load(Ordering::SeqCst)
+                    && PROCESSING.load(Ordering::SeqCst) == 0
+                {
+                    desktop_check = Instant::now();
+                    desktop_changed = shortcuts_need_rebind();
+                    if !desktop_changed {
+                        // A user config reload clears runtime Lua handles.
+                        // Restore the idle controls and their menu entries.
+                        register_temporary_controls();
+                    }
+                }
+                if CONFIG_GENERATION.load(Ordering::SeqCst) != generation || desktop_changed {
+                    let was_holding = gesture
+                        .lock()
+                        .map(|state| state.chord_active)
+                        .unwrap_or(false);
+                    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+                    refresh_escape_listening();
+                    if was_holding {
+                        if let Some(cb) = RELEASE.get() {
+                            cb();
+                        }
+                    }
+                    return false;
+                }
+            },
             Some(event) = activated.next() => {
                 let id = event.shortcut_id();
                 if id == PORTAL_SHORTCUT_ID {
+                    let Ok(mut gesture) = gesture.lock() else {
+                        log::error!("linux hotkey: gesture state lock was poisoned");
+                        continue;
+                    };
                     match gesture.activated(Instant::now()) {
                         Some(PortalGestureAction::Press) => {
                             // Info-level: one line per dictation start is the
@@ -454,7 +899,10 @@ async fn run_portal_session(trigger: &str) -> bool {
                         }
                         Some(PortalGestureAction::Handsfree) => {
                             log::info!("linux hotkey: portal double-tap, toggling handsfree");
-                            CHORD_ACTIVE.store(true, Ordering::SeqCst);
+                            // The second tap's release is consumed by the
+                            // gesture tracker; it must not leave a held chord
+                            // behind after hands-free stops.
+                            CHORD_ACTIVE.store(false, Ordering::SeqCst);
                             refresh_escape_listening();
                             if let Some(cb) = HANDLESS_CB.get() { cb(); }
                         }
@@ -463,27 +911,10 @@ async fn run_portal_session(trigger: &str) -> bool {
                 } else if id == PORTAL_CANCEL_ID {
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
-                }
-            },
-            Some(event) = deactivated.next() => {
-                if event.shortcut_id() == PORTAL_SHORTCUT_ID {
-                    match gesture.deactivated(Instant::now()) {
-                        Some(PortalGestureAction::Release) => {
-                            log::info!("linux hotkey: portal hold released");
-                            CHORD_ACTIVE.store(false, Ordering::SeqCst);
-                            refresh_escape_listening();
-                            if let Some(cb) = RELEASE.get() { cb(); }
-                        }
-                        Some(PortalGestureAction::Cancel) => {
-                            log::info!(
-                                "linux hotkey: portal quick tap cancelled; handsfree armed"
-                            );
-                            CHORD_ACTIVE.store(false, Ordering::SeqCst);
-                            refresh_escape_listening();
-                            if let Some(cb) = CANCEL.get() { cb(); }
-                        }
-                        _ => log::info!("linux hotkey: consumed portal deactivation"),
-                    }
+                } else if id == PORTAL_COPY_ID {
+                    if let Some(cb) = COPY.get() { cb(); }
+                } else if id == PORTAL_HANDSFREE_ID {
+                    notify_handless();
                 }
             },
             else => {
@@ -494,6 +925,79 @@ async fn run_portal_session(trigger: &str) -> bool {
             },
         }
     }
+}
+
+fn shortcuts_need_rebind() -> bool {
+    super::shortcut_status::get_shortcut_status()
+        .iter()
+        .any(|status| {
+            let Ok(bindings) = conflicts::bindings(&status.id) else {
+                return false;
+            };
+            let ignore_mods = matches!(status.id.as_str(), "cancel" | "handsfree");
+            let active_triggers = if status.id == "dictation" {
+                shortcut_configuration(
+                    EFFECTIVE_KEY1.load(Ordering::SeqCst),
+                    EFFECTIVE_KEY2.load(Ordering::SeqCst),
+                )
+                .map(|(_, triggers)| triggers)
+                .unwrap_or_default()
+            } else {
+                status.active.iter().cloned().collect()
+            };
+            let requested_triggers = if status.id == "dictation" {
+                shortcut_configuration(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst))
+                    .map(|(_, triggers)| triggers)
+                    .unwrap_or_default()
+            } else {
+                vec![status.requested.clone()]
+            };
+            let Some(active) = &status.active else {
+                if conflicts::free(&bindings, &requested_triggers, ignore_mods) {
+                    return true;
+                }
+                return match status.id.as_str() {
+                    "dictation" => [
+                        (CTRL, SUPER),
+                        (CTRL, 105),
+                        (ALT, 106),
+                        (CTRL, 107),
+                        (SUPER, 108),
+                        (ALT, 109),
+                    ]
+                    .iter()
+                    .any(|(first, second)| {
+                        shortcut_configuration(*first, *second).is_some_and(|(_, triggers)| {
+                            conflicts::free(&bindings, &triggers, false)
+                        })
+                    }),
+                    "copy" => conflicts::choose(
+                        &bindings,
+                        &status.requested,
+                        &["Ctrl+Alt+F6", "Ctrl+Shift+F6", "Alt+Super+F6"],
+                        false,
+                    )
+                    .is_some(),
+                    "capture" => conflicts::choose(
+                        &bindings,
+                        &status.requested,
+                        &["Ctrl+Alt+Shift+F7", "Ctrl+Alt+Shift+F8", "Alt+Super+F7"],
+                        false,
+                    )
+                    .is_some(),
+                    _ => conflicts::choose(
+                        &bindings,
+                        &status.requested,
+                        &["F8", "F9", "F10", "F11", "F12"],
+                        true,
+                    )
+                    .is_some(),
+                };
+            };
+            !conflicts::free(&bindings, &active_triggers, ignore_mods)
+                || (active != &status.requested
+                    && conflicts::free(&bindings, &requested_triggers, ignore_mods))
+        })
 }
 
 #[cfg(target_os = "linux")]
@@ -517,6 +1021,10 @@ fn parse_portal_shortcuts(text: &str) -> Vec<(String, String)> {
                 .then(|| (id.to_string(), description.to_string()))
         })
         .collect()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Prefer a shortcut that appeared after we bound, with Verenu's description.
@@ -549,7 +1057,8 @@ fn pick_portal_id(
 mod tests {
     use super::{
         escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
-        PortalGesture, PortalGestureAction, PORTAL_CANCEL_DESCRIPTION, PORTAL_SHORTCUT_DESCRIPTION,
+        shortcut_configuration, PortalGesture, PortalGestureAction, PORTAL_CANCEL_DESCRIPTION,
+        PORTAL_SHORTCUT_DESCRIPTION,
     };
     use std::time::{Duration, Instant};
 
@@ -621,15 +1130,49 @@ mod tests {
     }
 
     #[test]
-    fn stale_held_chord_recovers_on_the_next_activation() {
+    fn repeated_activation_during_a_long_hold_keeps_the_original_hold_clock() {
         let start = Instant::now();
         let mut gesture = PortalGesture::default();
 
         assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
+        assert_eq!(gesture.activated(start + Duration::from_secs(3)), None);
         assert_eq!(
-            gesture.activated(start + Duration::from_secs(3)),
-            Some(PortalGestureAction::Press)
+            gesture.deactivated(start + Duration::from_secs(3) + Duration::from_millis(400)),
+            Some(PortalGestureAction::Release)
         );
+    }
+
+    #[test]
+    fn modifier_only_ctrl_super_uses_both_press_orders_without_a_portal_preference() {
+        let (preferred, bindings) = shortcut_configuration(1, 4).expect("Ctrl+Super");
+
+        assert_eq!(preferred, None);
+        assert_eq!(
+            bindings,
+            vec![
+                "CTRL + Super_L".to_string(),
+                "SUPER + Control_L".to_string(),
+                "SUPER + Control_R".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn releasing_either_side_of_either_chord_key_finishes_the_hold() {
+        assert_eq!(super::release_keycodes(1, 4), vec![37, 105, 133, 134]);
+        assert_eq!(super::release_keycodes(1, 105), vec![37, 105, 71]);
+        for first in 1..=4 {
+            for second in 1..=4 {
+                assert_eq!(
+                    super::shortcut_configuration(first, second).is_some(),
+                    first != second
+                );
+            }
+            for key in (101..=112).chain(std::iter::once(200)) {
+                assert!(super::shortcut_configuration(first, key).is_some());
+                assert_eq!(super::release_keycodes(first, key).len(), 3);
+            }
+        }
     }
 
     #[test]
@@ -683,6 +1226,9 @@ mod tests {
         let snippet = escape_bind_snippet("com.t3tools.T3Code:cancel");
         assert!(snippet.contains("hl.bind(\"ESCAPE\""));
         assert!(snippet.contains("hl.dsp.global(\"com.t3tools.T3Code:cancel\")"));
-        assert_eq!(escape_unbind_snippet(), "hl.unbind(\"ESCAPE\")");
+        assert!(snippet.contains("ignore_mods = true"));
+        assert!(snippet.contains("submap_universal = true"));
+        assert!(escape_unbind_snippet().contains("_verenu_escape_binding:set_enabled(false)"));
+        assert!(!escape_unbind_snippet().contains("hl.unbind"));
     }
 }

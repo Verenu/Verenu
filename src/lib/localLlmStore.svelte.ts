@@ -12,6 +12,7 @@ import {
   type LocalLlmVerificationProgressPayload,
 } from './tauri';
 import { ensureNotificationPermission } from './notifications';
+import { formatIpcError } from './errors';
 
 export const localLlmStore = $state({
   models: [] as LocalLlmModelInfo[],
@@ -64,7 +65,7 @@ export async function downloadLocalLlmRuntime() {
     await refreshLocalLlmRuntimeInfo();
   } catch (err) {
     console.error('download local cleanup runtime failed', err);
-    emit('verenu:error', `Failed to start runtime download: ${err instanceof Error ? err.message : String(err)}`);
+    emit('verenu:error', formatIpcError(err, 'Could not download the local cleanup engine'));
   }
 }
 
@@ -75,6 +76,7 @@ export async function cancelLocalLlmRuntimeDownload() {
     localLlmStore.runtimeDownloadProgress = undefined;
   } catch (err) {
     console.error('cancel local cleanup runtime download failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not cancel the cleanup engine download'));
   }
 }
 
@@ -85,6 +87,7 @@ export async function deleteLocalLlmRuntime() {
     localLlmStore.runtimeDownloadProgress = undefined;
   } catch (err) {
     console.error('delete local cleanup runtime failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not delete the local cleanup engine'));
   }
 }
 
@@ -96,7 +99,7 @@ export async function downloadLocalLlmModel(modelIdValue: string): Promise<boole
     return true;
   } catch (err) {
     console.error('download local cleanup model failed', err);
-    emit('verenu:error', `Failed to start model download: ${err instanceof Error ? err.message : String(err)}`);
+    emit('verenu:error', formatIpcError(err, 'Could not start the cleanup model download'));
     return false;
   }
 }
@@ -111,6 +114,7 @@ export async function cancelLocalLlmModelDownload(modelIdValue: string) {
     localLlmStore.downloadStage = { ...localLlmStore.downloadStage };
   } catch (err) {
     console.error('cancel local cleanup model download failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not cancel the cleanup model download'));
   }
 }
 
@@ -124,6 +128,7 @@ export async function deleteLocalLlmModel(modelIdValue: string) {
     localLlmStore.downloadStage = { ...localLlmStore.downloadStage };
   } catch (err) {
     console.error('delete local cleanup model failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not delete the cleanup model'));
   }
 }
 

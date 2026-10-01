@@ -10,6 +10,7 @@ import {
   type LocalTranscriptionState,
 } from './tauri';
 import { ensureNotificationPermission } from './notifications';
+import { formatIpcError } from './errors';
 
 export const localSttStore = $state({
   models: [] as LocalSttModelInfo[],
@@ -51,7 +52,7 @@ export async function downloadLocalModel(modelIdValue: string): Promise<boolean>
     return true;
   } catch (err) {
     console.error('download local model failed', err);
-    emit('verenu:error', `Failed to start model download: ${err instanceof Error ? err.message : String(err)}`);
+    emit('verenu:error', formatIpcError(err, 'Could not start the transcription model download'));
     return false;
   }
 }
@@ -67,6 +68,7 @@ export async function cancelLocalModelDownload(modelIdValue: string) {
     localSttStore.downloadStage = { ...localSttStore.downloadStage };
   } catch (err) {
     console.error('cancel local model download failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not cancel the transcription model download'));
   }
 }
 
@@ -81,6 +83,7 @@ export async function deleteLocalModel(modelIdValue: string) {
     localSttStore.downloadStage = { ...localSttStore.downloadStage };
   } catch (err) {
     console.error('delete local model failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not delete the transcription model'));
   }
 }
 
@@ -89,6 +92,7 @@ export async function openLocalModelsFolder() {
     await invoke('open_local_stt_models_folder');
   } catch (err) {
     console.error('open local models folder failed', err);
+    void emit('verenu:error', formatIpcError(err, 'Could not open the models folder'));
   }
 }
 

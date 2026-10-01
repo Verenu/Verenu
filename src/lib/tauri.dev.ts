@@ -78,6 +78,7 @@ const DEV_DICTIONARY_KEY = 'verenu:dev-dictionary';
 const DEV_CONTEXTS_KEY = 'verenu:dev-contexts';
 const DEV_CONTEXT_TARGETS_KEY = 'verenu:dev-context-targets';
 const DEV_CONTEXT_WEBSITE_TARGETS_KEY = 'verenu:dev-context-website-targets';
+const DEV_CONTEXT_SUB_APPS_KEY = 'verenu:dev-context-sub-apps';
 const DEV_CONTEXT_ASSIGNMENTS_KEY = 'verenu:dev-context-assignments';
 const DEV_EVERYWHERE_CONTEXT_ID = 1;
 const DEV_LOCAL_STT_MODELS_KEY = 'verenu:dev-local-stt-models';
@@ -241,6 +242,24 @@ function readDevContexts(): DevContext[] {
 
 function readDevContextTargets() {
   return readDevList<DevContextTarget>(DEV_CONTEXT_TARGETS_KEY);
+}
+
+type DevContextSubApp = {
+  id: number;
+  uuid: string;
+  context_id: number | null;
+  executable: string;
+  app_name: string | null;
+  label: string;
+  icon: string | null;
+  title_pattern: string;
+  match_mode: 'contains' | 'starts_with' | 'equals';
+  platform: string | null;
+  created_at: string;
+};
+
+function readDevContextSubApps() {
+  return readDevList<DevContextSubApp>(DEV_CONTEXT_SUB_APPS_KEY);
 }
 
 function readDevContextWebsiteTargets() {
@@ -1328,6 +1347,44 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       );
       return undefined as T;
     }
+    case 'get_sub_apps':
+      return readDevContextSubApps() as T;
+    case 'create_sub_app': {
+      const rows = readDevContextSubApps();
+      const row: DevContextSubApp = {
+        id: nextDevId(rows),
+        uuid: crypto.randomUUID(),
+        context_id: null,
+        executable: assertDevText(args?.executable, 'App').trim().toLowerCase(),
+        app_name: (args?.appName as string | null) ?? null,
+        label: assertDevText(args?.label, 'Sub-app name').trim(),
+        icon: (args?.icon as string | null) ?? null,
+        title_pattern: assertDevText(args?.titlePattern, 'Title pattern').trim(),
+        match_mode: (args?.matchMode as DevContextSubApp['match_mode']) ?? 'contains',
+        platform: null,
+        created_at: devNow(),
+      };
+      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, [...rows, row]);
+      return row as T;
+    }
+    case 'assign_sub_app': {
+      const id = Number(args?.id);
+      const contextId = args?.contextId == null ? null : Number(args.contextId);
+      if (contextId === DEV_EVERYWHERE_CONTEXT_ID) throw new Error('The Everywhere context cannot have sub-apps');
+      const rows = readDevContextSubApps();
+      const current = rows.find((row) => row.id === id);
+      if (!current) throw new Error(`Sub-app ${id} was not found`);
+      const updated = { ...current, context_id: contextId };
+      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, rows.map((row) => (row.id === id ? updated : row)));
+      return updated as T;
+    }
+    case 'delete_sub_app': {
+      const id = Number(args?.id);
+      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, readDevContextSubApps().filter((row) => row.id !== id));
+      return undefined as T;
+    }
+    case 'take_pending_sub_app_capture':
+      return null as T;
     case 'get_app_icon':
     case 'get_site_icon':
       return null as T;
@@ -1951,6 +2008,8 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'set_dev_logging_enabled':
       writeDevSetting('dev_logging_enabled', Boolean(args?.enabled));
       return undefined as T;
+    case 'get_shortcut_status':
+      return [] as T;
     case 'set_autostart':
     case 'save_hotkey':
     case 'open_accessibility_settings':

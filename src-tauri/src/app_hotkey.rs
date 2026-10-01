@@ -24,9 +24,7 @@ enum HotkeyEvent {
     Cancel,
     EscapeCancel,
     CopyLast,
-    // Wired below so `hotkey::start`'s signature is satisfied on every
-    // platform; the sub-app capture feature itself isn't implemented yet, so
-    // this currently just logs.
+    // The sub-app capture hotkey: snapshot the foreground window for review.
     CaptureSubApp,
 }
 
@@ -99,6 +97,8 @@ impl HandsfreeConversionGuard {
 
 pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
     #[cfg(target_os = "linux")]
+    crate::core::hotkey::shortcut_status::initialize(app.handle().clone());
+    #[cfg(target_os = "linux")]
     crate::core::atspi::ensure_accessibility_enabled();
     // The WH_KEYBOARD_LL hook callback must return within Windows' hook timeout
     // (~300ms) or the hook is silently removed. All real work happens in a Tokio
@@ -135,7 +135,10 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
             let _ = tx_sub_app.send(HotkeyEvent::CaptureSubApp);
         },
     ) {
-        Ok(_handle) => log::info!("hotkey: hook installed"),
+        Ok(_handle) => {
+            log::info!("hotkey: hook installed");
+            crate::commands::apply_sub_app_capture_hotkey(app.handle());
+        }
         Err(e) => {
             log::error!("Hotkey hook failed to start: {e}");
             let app_h = app.handle().clone();
@@ -182,6 +185,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                 HotkeyEvent::Press => {
                     pipeline::clear_handless_hold_marker(&state_hk);
 
+                    #[allow(clippy::large_enum_variant)]
                     enum PressAction {
                         None,
                         Fresh,
@@ -527,10 +531,12 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                 }
 
                 HotkeyEvent::CaptureSubApp => {
-                    // Sub-app capture isn't implemented yet; the hotkey hook
-                    // fires this event, but there's nothing downstream to
-                    // handle it.
-                    log::debug!("hotkey: capture-sub-app fired (not yet implemented)");
+                    // Capture shells out to the compositor/accessibility APIs,
+                    // so keep it off the async hotkey loop.
+                    let app = app_hk.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::commands::handle_capture_hotkey(&app);
+                    });
                 }
             }
         }

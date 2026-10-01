@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatSyncError as formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
   import {
     syncStore,
@@ -38,7 +39,7 @@
   );
   const pairingError = $derived(
     syncStore.status?.pairing?.phase === 'failed'
-      ? syncStore.status.pairing.error ?? 'Pairing could not be completed.'
+      ? formatIpcError(syncStore.status.pairing.error, 'Could not pair these devices')
       : '',
   );
   const listenerActive = $derived(syncStore.status?.listener_active ?? false);
@@ -86,7 +87,7 @@
       await refreshSyncStatus();
     } catch (err) {
       deviceName = nameSaved;
-      flash(err instanceof Error ? err.message : String(err), 'err');
+      flash(formatIpcError(err, 'Could not save this device name'), 'err');
     } finally {
       nameBusy = false;
     }
@@ -99,7 +100,7 @@
       await invoke<string>('sync_start_pairing', { deviceUuid: device.uuid });
       await refreshSyncStatus();
     } catch (err) {
-      flash(err instanceof Error ? err.message : String(err), 'err');
+      flash(formatIpcError(err, 'Could not start pairing'), 'err');
     } finally {
       pairingUuid = '';
     }
@@ -117,7 +118,7 @@
       await invoke('sync_now', { deviceUuid: device.uuid });
       flash(`Syncing with ${device.name}…`, 'ok');
     } catch (err) {
-      flash(err instanceof Error ? err.message : String(err), 'err');
+      flash(formatIpcError(err, 'Could not sync with this device'), 'err');
     } finally {
       setTimeout(() => {
         syncingUuid = '';
@@ -140,7 +141,7 @@
       flash(`${name} removed. It can no longer sync with this device.`, 'ok');
       await refreshSyncStatus();
     } catch (err) {
-      flash(err instanceof Error ? err.message : String(err), 'err');
+      flash(formatIpcError(err, 'Could not remove this paired device'), 'err');
     } finally {
       removingUuid = '';
     }
@@ -249,7 +250,7 @@
 
 {#if syncStore.status && !listenerActive}
   <div class="desc data-status data-err" role="alert">
-    {syncStore.status.last_error_hint ?? 'Sync is unavailable on this device right now.'}
+    {formatIpcError(syncStore.status.last_error_hint ?? 'Sync is unavailable on this device. Restart Verenu and check that your system keyring is unlocked.')}
   </div>
 {/if}
 
@@ -282,7 +283,7 @@
             {/if}
           </div>
           {#if device.error && device.state === 'error'}
-            <div class="desc device-error">{device.error}</div>
+            <div class="desc device-error">{formatIpcError(device.error, 'Sync did not finish')}</div>
           {/if}
         </div>
         <div class="device-actions">

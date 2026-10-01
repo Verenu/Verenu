@@ -43,13 +43,17 @@ use super::store::SyncPeer;
 /// Where a snapshot send has gotten to. Held by the sender across batches.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SnapshotProgress {
-    /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = dictionary corrections,
-    /// 4 = transcriptions, 5 = api_calls, 6 = retained tombstones, 7 = done.
+    /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = sub-apps,
+    /// 4 = dictionary corrections, 5 = transcriptions, 6 = api_calls,
+    /// 7 = retained tombstones, 8 = done.
     pub stage: u8,
     pub last_id: i64,
     /// Sequence namespace for synthesized snapshot stamps. Snapshot rows are
     /// not written to the local log, so this must survive across batches.
     pub origin_seq: Option<i64>,
+    /// Only acknowledge changes present when enumeration started. Writes to
+    /// an already enumerated table must remain eligible for the next delta.
+    pub start_cursor: Option<i64>,
 }
 
 /// Settings keys that sync between paired devices. Everything else in
@@ -145,6 +149,28 @@ fn resolve_context_targets_in_ops(host: &dyn SyncHost, ops: &[SyncOp]) -> Vec<Sy
     ops.iter()
         .cloned()
         .map(|mut op| {
+            if op.table == "context_sub_apps" && op.op != "delete" {
+                // A sub-app names an app the same way a target does: remap it
+                // to this device's identity or the unresolved marker.
+                if let Some(map) = op.payload.as_mut().and_then(serde_json::Value::as_object_mut) {
+                    if let Some(source) = map.get("executable").and_then(|v| v.as_str()).map(str::to_string) {
+                        let app_name = map.get("app_name").and_then(|v| v.as_str()).map(str::to_string);
+                        let (resolved, resolved_name) = host
+                            .resolve_app_target_with_metadata(&source, app_name.as_deref(), None)
+                            .map(|(resolved, name, _)| (resolved, name))
+                            .unwrap_or_else(|| (unresolved_app_target(&source), app_name.clone()));
+                        let platform = if resolved.starts_with(UNRESOLVED_APP_PREFIX) {
+                            None
+                        } else {
+                            db::current_platform_tag()
+                        };
+                        map.insert("executable".into(), serde_json::json!(resolved));
+                        map.insert("app_name".into(), serde_json::json!(resolved_name));
+                        map.insert("platform".into(), serde_json::json!(platform));
+                    }
+                }
+                return op;
+            }
             if op.table != "contexts" || op.op == "delete" {
                 return op;
             }
@@ -326,6 +352,30 @@ pub struct ContextAggregate {
     pub dictionary_entries: Vec<DictionaryReference>,
     #[serde(default)]
     pub snippet_uuids: Vec<String>,
+}
+
+/// A sub-app row. Sub-apps sync as their own table because they exist
+/// without a Context; the assignment travels as the owning Context's uuid.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SubAppRow {
+    pub executable: String,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub app_name: Option<String>,
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub title_pattern: String,
+    #[serde(default = "default_match_mode")]
+    pub match_mode: String,
+    #[serde(default)]
+    pub context_uuid: Option<String>,
+    pub created_at: String,
+}
+
+fn default_match_mode() -> String {
+    "contains".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -691,6 +741,32 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
     ))
 }
 
+fn sub_app_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
+    let row = conn
+        .query_row(
+            "SELECT s.executable, s.platform, s.app_name, s.label, s.icon, s.title_pattern,
+                    s.match_mode, c.uuid, s.created_at
+               FROM context_sub_apps s LEFT JOIN contexts c ON c.id = s.context_id
+              WHERE s.uuid = ?1",
+            params![uuid],
+            |r| {
+                Ok(SubAppRow {
+                    executable: r.get(0)?,
+                    platform: r.get(1)?,
+                    app_name: r.get(2)?,
+                    label: r.get(3)?,
+                    icon: r.get(4)?,
+                    title_pattern: r.get(5)?,
+                    match_mode: r.get(6)?,
+                    context_uuid: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row.map(|row| serde_json::to_value(row).expect("serialize sub-app row")))
+}
+
 fn transcription_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
     let row = conn
         .query_row(
@@ -755,6 +831,7 @@ fn resolve_entry(conn: &Connection, entry: &sync_store::LogEntry) -> Result<Opti
         }
         "snippets" if entry.op == "upsert" => snippet_payload(conn, &entry.row_uuid)?,
         "contexts" if entry.op == "upsert" => context_aggregate(conn, &entry.row_uuid)?,
+        "context_sub_apps" if entry.op == "upsert" => sub_app_payload(conn, &entry.row_uuid)?,
         "transcriptions" if entry.op == "upsert" => transcription_payload(conn, &entry.row_uuid)?,
         "api_calls" if entry.op == "upsert" => api_call_payload(conn, &entry.row_uuid)?,
         _ => None,
@@ -792,6 +869,14 @@ pub fn collect_ops(
 ) -> Result<(Vec<SyncOp>, i64, bool)> {
     let limit = limit.max(1) as i64;
     if snapshot {
+        let start_cursor = match progress.start_cursor {
+            Some(cursor) => cursor,
+            None => {
+                let cursor = sync_store::max_log_seq(conn)?;
+                progress.start_cursor = Some(cursor);
+                cursor
+            }
+        };
         // Full state for a new/rejoining peer. Every table is keyset-paginated
         // so the wire batch and sender memory stay bounded on big libraries.
         let mut ops = Vec::new();
@@ -832,7 +917,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 6 {
+        while (ops.len() as i64) < limit && progress.stage <= 7 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -840,13 +925,14 @@ pub fn collect_ops(
                 0 => "dictionary",
                 1 => "snippets",
                 2 => "contexts",
-                3 => "dictionary_corrections",
-                4 => "transcriptions",
-                5 => "api_calls",
-                6 => "tombstones",
+                3 => "context_sub_apps",
+                4 => "dictionary_corrections",
+                5 => "transcriptions",
+                6 => "api_calls",
+                7 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
-            if stage == 6 {
+            if stage == 7 {
                 let mut stmt = conn.prepare(
                     "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
                      FROM sync_log AS current
@@ -881,10 +967,9 @@ pub fn collect_ops(
                 }
                 ops.extend(rows.into_iter().map(|(_, op)| op));
                 if fetched < chunk {
-                    progress.stage = 6;
+                    progress.stage = 7;
                     progress.origin_seq = Some(origin_seq);
-                    let cursor = sync_store::max_log_seq(conn)?;
-                    return Ok((ops, cursor, true));
+                    return Ok((ops, start_cursor, true));
                 }
                 progress.origin_seq = Some(origin_seq);
                 return Ok((ops, 0, false));
@@ -917,6 +1002,7 @@ pub fn collect_ops(
                     "dictionary_corrections" => dictionary_correction_payload(conn, &uuid)?,
                     "snippets" => snippet_payload(conn, &uuid)?,
                     "contexts" => context_aggregate(conn, &uuid)?,
+                    "context_sub_apps" => sub_app_payload(conn, &uuid)?,
                     "transcriptions" => transcription_payload(conn, &uuid)?,
                     "api_calls" => api_call_payload(conn, &uuid)?,
                     _ => unreachable!("snapshot table is complete"),
@@ -928,10 +1014,9 @@ pub fn collect_ops(
                 // This table is exhausted; move to the next stage.
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 6 {
+                if progress.stage > 7 {
                     progress.origin_seq = Some(origin_seq);
-                    let cursor = sync_store::max_log_seq(conn)?;
-                    return Ok((ops, cursor, true));
+                    return Ok((ops, start_cursor, true));
                 }
             } else {
                 // Batch full; more of this table remains.
@@ -939,14 +1024,13 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 6 {
+        if progress.stage <= 7 {
             // Capacity exhausted mid-stream.
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
         }
         progress.origin_seq = Some(origin_seq);
-        let cursor = sync_store::max_log_seq(conn)?;
-        return Ok((ops, cursor, true));
+        return Ok((ops, start_cursor, true));
     }
 
     let entries = sync_store::changes_since(conn, since_seq, limit)?;
@@ -986,7 +1070,8 @@ fn apply_rank(op: &SyncOp) -> u8 {
     match (op.table.as_str(), op.is_delete()) {
         ("contexts", true)
         | ("dictionary", true)
-        | ("snippets", true) => 0,
+        | ("snippets", true)
+        | ("context_sub_apps", true) => 0,
         ("dictionary", false) => 10,
         // Apply a canonical upsert first so its natural-key replacement can
         // capture/reparent children before an anti-entropy tombstone removes
@@ -995,6 +1080,8 @@ fn apply_rank(op: &SyncOp) -> u8 {
         (NATURAL_KEY_TOMBSTONE_TABLE, true) => 15,
         ("snippets", false) => 11,
         ("contexts", false) => 20,
+        // After Contexts, so an assignment can resolve its Context uuid.
+        ("context_sub_apps", false) => 25,
         ("dictionary_corrections", _) => 30,
         ("transcriptions", false) => 40,
         ("api_calls", false) => 41,
@@ -1007,6 +1094,10 @@ fn apply_rank(op: &SyncOp) -> u8 {
 /// re-applying an already-known op is a no-op, so retries and duplicate
 /// deliveries never create duplicate rows.
 pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
+    with_sync_savepoint(conn, |conn| apply_ops_inner(conn, ops))
+}
+
+fn apply_ops_inner(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
     let _guard = ApplyingGuard::new(conn)?;
     let mut summary = ApplySummary::default();
     // Apply in dependency order rather than trusting the order in a delta
@@ -1033,7 +1124,21 @@ pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
                 }
             }
             "contexts" => {
-                if apply_context_op(conn, op)? == Applied::Yes {
+                match apply_context_op(conn, op)? {
+                    Applied::Yes => {
+                        summary.contexts = true;
+                        summary.applied += 1;
+                    }
+                    Applied::Skipped => summary.skipped += 1,
+                    Applied::Deferred => {
+                        summary.deferred = true;
+                        summary.skipped += 1;
+                    }
+                }
+            }
+            "context_sub_apps" => {
+                if apply_sub_app_op(conn, op)? == Applied::Yes {
+                    // Sub-apps render on the Contexts page and in Settings.
                     summary.contexts = true;
                     summary.applied += 1;
                 } else {
@@ -1541,11 +1646,9 @@ fn resolve_correction_dictionary_id(
     .map_err(Into::into)
 }
 
-/// Runs a parent/child replacement under a SQLite savepoint. Applying a
-/// remote batch is intentionally not one large transaction because some
-/// existing helpers open their own transaction, but a canonical natural-key
-/// replacement must be all-or-nothing or a failed child restore would lose
-/// the loser's mappings permanently.
+/// Keeps batches and nested parent/child replacements atomic. Nested
+/// savepoints let a failed child restore roll back without committing the
+/// surrounding batch.
 fn with_sync_savepoint<T>(
     conn: &Connection,
     f: impl FnOnce(&Connection) -> Result<T>,
@@ -1838,6 +1941,71 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
     Ok(Applied::Yes)
 }
 
+fn apply_sub_app_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() {
+        return apply_simple_delete(conn, op, "context_sub_apps", "context_sub_apps");
+    }
+    if let Some(stamp) = latest_stamp(conn, "context_sub_apps", &op.row_uuid)? {
+        if !op.newer_than(&stamp) {
+            return Ok(Applied::Skipped);
+        }
+    }
+    let row: SubAppRow = serde_json::from_value(
+        op.payload
+            .clone()
+            .ok_or_else(|| anyhow!("sub-app upsert missing payload"))?,
+    )
+    .context("invalid sub-app payload")?;
+    let mode = db::TitleMatchMode::parse(&row.match_mode)?;
+    let executable = row.executable.trim().to_lowercase();
+    let pattern = row.title_pattern.trim();
+    if executable.is_empty() || pattern.is_empty() || row.label.trim().is_empty() {
+        anyhow::bail!("sub-app payload is missing its app, rule, or name");
+    }
+    // An unknown or deleted Context leaves the sub-app in the list.
+    let context_id: Option<i64> = match row.context_uuid.as_deref() {
+        Some(uuid) => conn
+            .query_row(
+                "SELECT id FROM contexts WHERE uuid = ?1 AND is_everywhere = 0",
+                params![uuid],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    // The same rule captured separately on two devices converges on the
+    // incoming uuid instead of failing the unique rule constraint.
+    conn.execute(
+        "DELETE FROM context_sub_apps
+          WHERE executable = ?1 AND title_pattern = ?2 AND match_mode = ?3 AND uuid <> ?4",
+        params![executable, pattern, mode.as_str(), op.row_uuid],
+    )?;
+    conn.execute(
+        "INSERT INTO context_sub_apps
+           (uuid, context_id, executable, app_name, label, icon, title_pattern, match_mode, platform, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(uuid) DO UPDATE SET context_id = excluded.context_id,
+             executable = excluded.executable, app_name = excluded.app_name,
+             label = excluded.label, icon = excluded.icon,
+             title_pattern = excluded.title_pattern, match_mode = excluded.match_mode,
+             platform = excluded.platform, updated_at = datetime('now')",
+        params![
+            op.row_uuid,
+            context_id,
+            executable,
+            row.app_name,
+            row.label.trim(),
+            row.icon,
+            pattern,
+            mode.as_str(),
+            row.platform,
+            row.created_at,
+        ],
+    )?;
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
 fn apply_snippet_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         let result = apply_simple_delete(conn, op, "snippets", "snippets");
@@ -2063,6 +2231,10 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     )
     .context("invalid context payload")?;
 
+    if context_has_missing_members(conn, &aggregate)? {
+        return Ok(Applied::Deferred);
+    }
+
     if aggregate.is_everywhere {
         apply_everywhere_aggregate(conn, &aggregate)?;
         log_applied(conn, op)?;
@@ -2251,26 +2423,24 @@ fn reconcile_context_children(
     context_id: i64,
     aggregate: &ContextAggregate,
 ) -> Result<()> {
-    // Exe targets: single-owner by design; assign moves them, extras are
-    // removed — EXCEPT a row this device already resolved for its own
-    // platform (a real installed app, not the "?::" unresolved marker) is
-    // sticky: `resolve_context_targets_in_ops` reruns app matching on every
-    // incoming op and always stamps the result with this device's own
-    // platform tag, so without this guard a stale/failed re-match on a later
-    // sync would silently delete a target the user (or an earlier successful
-    // match) already pinned correctly on this device. A genuinely
-    // cross-device removal only reaches this device through its own local
-    // `remove_context_target` call, never through this reconcile path, so
-    // protecting sticky rows here never blocks a real local delete.
+    // Preserve local app matches when a peer's targets cannot be resolved.
+    // A fully resolved list, including an empty one, replaces the old list
+    // so explicit removals propagate across devices.
+    let has_unresolved_targets = aggregate
+        .targets
+        .iter()
+        .any(|entry| entry.executable().starts_with(UNRESOLVED_APP_PREFIX));
     let my_platform = db::current_platform_tag();
     let sticky_executables: std::collections::HashSet<String> = conn
         .prepare(
             "SELECT executable FROM context_targets
                WHERE context_id = ?1
                  AND (platform = ?2 OR (?2 IS NULL AND platform IS NULL))
-                 AND executable NOT LIKE '?::%'",
+                 AND executable NOT LIKE '?::%' AND ?3",
         )?
-        .query_map(params![context_id, my_platform], |r| r.get::<_, String>(0))?
+        .query_map(params![context_id, my_platform, has_unresolved_targets], |r| {
+            r.get::<_, String>(0)
+        })?
         .collect::<rusqlite::Result<_>>()?;
     for entry in &aggregate.targets {
         let normalized = entry.executable().trim().to_lowercase();
@@ -2329,6 +2499,48 @@ fn reconcile_context_children(
     )?;
     reconcile_context_members(conn, context_id, aggregate)?;
     Ok(())
+}
+
+/// A delta may split a Context from its vocabulary or snippets. Do not stamp
+/// that aggregate as applied until its live members can be resolved. Durable
+/// deletes are final and do not need replay.
+fn context_has_missing_members(conn: &Connection, aggregate: &ContextAggregate) -> Result<bool> {
+    let entries = if aggregate.dictionary_entries.is_empty() {
+        aggregate
+            .dictionary_uuids
+            .iter()
+            .map(|uuid| DictionaryReference {
+                uuid: uuid.clone(),
+                term: String::new(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        aggregate.dictionary_entries.clone()
+    };
+    for entry in entries {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary WHERE uuid = ?1 OR (?2 <> '' AND term = ?2))",
+            params![entry.uuid, entry.term.trim()],
+            |r| r.get(0),
+        )?;
+        if !exists
+            && !latest_is_delete(conn, "dictionary", &entry.uuid)?
+            && !latest_is_delete(conn, NATURAL_KEY_TOMBSTONE_TABLE, &entry.uuid)?
+        {
+            return Ok(true);
+        }
+    }
+    for uuid in &aggregate.snippet_uuids {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM snippets WHERE uuid = ?1)",
+            params![uuid],
+            |r| r.get(0),
+        )?;
+        if !exists && !latest_is_delete(conn, "snippets", uuid)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Junction membership reconcile: add everything in the payload that resolves
@@ -2731,8 +2943,7 @@ pub fn apply_settings_exchange(
         .map(|record| (record.key.clone(), record.value.clone()))
         .collect();
     if let Err(err) = host.apply_remote_settings(&values) {
-        log::warn!("sync: failed to apply settings batch: {err}");
-        return Ok(0);
+        return Err(anyhow!("failed to persist synced settings: {err}"));
     }
     for record in accepted {
         sync_store::set_setting_stamp(conn, &record.key, record.ts_ms, &record.origin)?;
@@ -2827,18 +3038,18 @@ where
         )
         .await?;
         match read_message(stream).await? {
-            Message::HelloAck(remote) => check_hello(&remote)?,
+            Message::HelloAck(remote) => check_hello(&remote, &peer.device_uuid)?,
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
-            other => return Err(anyhow!("expected HelloAck, got {other:?}")),
+            _ => return Err(anyhow!("expected HelloAck")),
         }
     } else {
         if let Some(remote) = remote_hello {
-            check_hello(&remote)?;
+            check_hello(&remote, &peer.device_uuid)?;
         } else {
             match read_message(stream).await? {
-                Message::Hello(remote) => check_hello(&remote)?,
+                Message::Hello(remote) => check_hello(&remote, &peer.device_uuid)?,
                 Message::Error { message } => return Err(anyhow!("peer error: {message}")),
-                other => return Err(anyhow!("expected Hello, got {other:?}")),
+                _ => return Err(anyhow!("expected Hello")),
             }
         }
         send_message(
@@ -2872,7 +3083,7 @@ where
     let remote_meta = match read_message(stream).await? {
         Message::Meta { stats, settings } => (stats, settings),
         Message::Error { message } => return Err(anyhow!("peer error: {message}")),
-        other => return Err(anyhow!("expected Meta, got {other:?}")),
+        _ => return Err(anyhow!("expected Meta")),
     };
     if !initiator {
         send_message(stream, &meta).await?;
@@ -2898,16 +3109,23 @@ where
     }
     summary.applied.merge(pulled);
 
-    // 5. Done: announce and drain the peer's announcement (or their close).
-    let _ = send_message(stream, &Message::SyncDone).await;
-    match read_message(stream).await {
-        Ok(Message::SyncDone) | Err(_) => {}
-        Ok(_) => {}
+    if summary.applied.deferred {
+        return Err(anyhow!("Sync is waiting for referenced data; the next session will retry"));
+    }
+
+    // Success requires both directions to finish and the peer to confirm it.
+    send_message(stream, &Message::SyncDone).await?;
+    match read_message(stream).await? {
+        Message::SyncDone => {}
+        _ => return Err(anyhow!("expected sync completion confirmation")),
     }
     Ok(summary)
 }
 
-fn check_hello(remote: &Hello) -> Result<()> {
+fn check_hello(remote: &Hello, expected_uuid: &str) -> Result<()> {
+    if remote.device_uuid != expected_uuid {
+        return Err(anyhow!("sync peer identity does not match the paired device"));
+    }
     if remote.protocol != PROTOCOL_VERSION {
         return Err(anyhow!(
             "peer runs sync protocol v{} but this device speaks v{}",
@@ -2923,7 +3141,7 @@ fn lock(db: &DbHandle) -> Result<std::sync::MutexGuard<'_, Connection>> {
 }
 
 /// Puller side: request deltas, apply batches until the sender reports a
-/// final cursor. A SyncDone from the peer mid-pull is a clean terminator.
+/// final cursor. An early completion message is an incomplete transfer.
 async fn pull_from_peer<S>(
     db: &DbHandle,
     host: &dyn SyncHost,
@@ -2978,9 +3196,9 @@ where
                     break;
                 }
             }
-            Message::SyncDone => break,
+            Message::SyncDone => return Err(anyhow!("peer ended sync before completing the pull")),
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
-            other => return Err(anyhow!("unexpected message during pull: {other:?}")),
+            _ => return Err(anyhow!("unexpected message during pull")),
         }
     }
     Ok(summary)
@@ -2997,9 +3215,9 @@ where
         Message::PullRequest(request) => {
             serve_one_pull(db, stream, peer, request.since_seq, request.snapshot).await
         }
-        Message::SyncDone => Ok(()),
+        Message::SyncDone => Err(anyhow!("peer ended sync before requesting its pull")),
         Message::Error { message } => Err(anyhow!("peer error: {message}")),
-        other => Err(anyhow!("expected PullRequest, got {other:?}")),
+        _ => Err(anyhow!("expected PullRequest")),
     }
 }
 
@@ -3045,6 +3263,9 @@ where
         .await?;
         match read_message(stream).await? {
             Message::Ack { seq } => {
+                if seq != final_cursor {
+                    return Err(anyhow!("peer acknowledged an unexpected sync cursor"));
+                }
                 let conn = lock(db)?;
                 sync_store::set_peer_send_position(
                     &conn,
@@ -3054,7 +3275,7 @@ where
                 )?;
             }
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
-            other => return Err(anyhow!("unexpected message during serve: {other:?}")),
+            _ => return Err(anyhow!("unexpected message during serve")),
         }
         if !snapshot && !done {
             next_since_seq = cursor;

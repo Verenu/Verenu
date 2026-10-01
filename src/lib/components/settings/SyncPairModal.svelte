@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatSyncError as formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
   import { refreshSyncStatus, syncStore } from '../../syncStore.svelte';
   import { modalFocusTrap } from '../../modalFocus';
@@ -41,7 +42,7 @@
       await invoke('sync_respond_to_pairing', { code: code.replace(/\s/g, ''), approve });
       await refreshSyncStatus();
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      error = formatIpcError(err, 'Could not complete pairing');
     } finally {
       busy = false;
     }
@@ -137,7 +138,7 @@
     />
     {#if error || incoming.error}
       <div class="pair-error" role="alert" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-        {error || incoming.error}
+        {error || formatIpcError(incoming.error, 'Could not complete pairing')}
       </div>
     {/if}
     <div class="pair-actions">

@@ -30,3 +30,6 @@ export const icons = {
   refresh:  `<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>`,
   devices:  `<rect x="2" y="6" width="13" height="10" rx="2"/><path d="M17 9h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-5"/><path d="M6 20h5"/><path d="M15.5 15.5h.01"/>`,
 };
+
+/** Icons offered for context groups and sub-apps. */
+export const CONTEXT_ICON_CHOICES = ['code', 'browser', 'chat', 'pencil', 'mic', 'book', 'sliders', 'shield', 'key', 'chart', 'lock', 'bell'] as const;

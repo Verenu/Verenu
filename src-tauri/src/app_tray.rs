@@ -8,7 +8,7 @@ use tauri::{
 const TRAY_ID: &str = "verenu-tray";
 
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
-    key == crate::data::store::APPEARANCE_MODE
+    key == crate::data::store::APPEARANCE_MODE || key == crate::data::store::CUSTOM_THEME
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1152,6 +1152,30 @@ fn resolve_icon_theme(app: &AppHandle, theme_hint: Option<Theme>) -> IconTheme {
     match appearance_mode(app).as_deref() {
         Some("dark") => IconTheme::Dark,
         Some("light") => IconTheme::Light,
+        Some("omarchy") if crate::system::omarchy_theme::is_dark().is_some() => {
+            if crate::system::omarchy_theme::is_dark() == Some(true) {
+                IconTheme::Dark
+            } else {
+                IconTheme::Light
+            }
+        }
+        Some("custom") if custom_theme_is_dark(app).is_some() => {
+            if custom_theme_is_dark(app) == Some(true) {
+                IconTheme::Dark
+            } else {
+                IconTheme::Light
+            }
+        }
+        // System means the desktop, which on Omarchy is its active theme.
+        None | Some("system")
+            if crate::system::omarchy_theme::is_dark().is_some() =>
+        {
+            if crate::system::omarchy_theme::is_dark() == Some(true) {
+                IconTheme::Dark
+            } else {
+                IconTheme::Light
+            }
+        }
         _ => match theme_hint.or_else(|| {
             app.get_webview_window("main")
                 .and_then(|window| window.theme().ok())
@@ -1199,6 +1223,7 @@ mod icon_theme_tests {
     #[test]
     fn only_appearance_settings_refresh_runtime_icons() {
         assert!(setting_updates_runtime_icons("appearance_mode"));
+        assert!(setting_updates_runtime_icons("custom_theme"));
         assert!(!setting_updates_runtime_icons("accent_color"));
         assert!(!setting_updates_runtime_icons("default_tone"));
     }
@@ -1215,6 +1240,14 @@ mod icon_theme_tests {
         assert_eq!(other_size.tray_rgba.len(), 24 * 24 * 4);
         assert_eq!(other_size.window_rgba, first.window_rgba);
     }
+}
+
+/// Whether the saved Custom palette is dark; `None` until one is saved.
+pub(crate) fn custom_theme_is_dark(app: &AppHandle) -> Option<bool> {
+    crate::data::store::settings_handle(app)
+        .ok()
+        .and_then(|settings| settings.get(crate::data::store::CUSTOM_THEME))
+        .and_then(|value| crate::system::omarchy_theme::custom_is_dark(&value))
 }
 
 pub(crate) fn appearance_mode(app: &AppHandle) -> Option<String> {
