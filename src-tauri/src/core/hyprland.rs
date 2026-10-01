@@ -590,13 +590,17 @@ fn global_shortcut_binding_block(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    // Commands are interpolated into Lua string literals, so escape both
+    // backslashes and quotes before inserting them into the template.
+    let release_command = release_command.replace('\\', "\\\\").replace('"', "\\\"");
+    let handsfree_command = handsfree_command.replace('\\', "\\\\").replace('"', "\\\"");
     GLOBAL_SHORTCUT_TEMPLATE
         .replace("{start}", start)
         .replace("{end}", end)
         .replace("{press_portal_id}", press_portal_id)
         .replace("{cancel_portal_id}", &cancel_portal_id)
-        .replace("{release_command}", release_command)
-        .replace("{handsfree_command}", handsfree_command)
+        .replace("{release_command}", &release_command)
+        .replace("{handsfree_command}", &handsfree_command)
         .replace("{release_keycodes}", &release_list)
         .replace("{ignored_keycodes}", &ignored_keycodes)
         .replace("{binds}", &binds)
@@ -704,5 +708,25 @@ mod tests {
             )));
         }
         assert!(block.contains("local verenu_release_keycodes = { 37, 133 }"));
+    }
+
+    #[test]
+    fn global_shortcut_binding_escapes_commands_for_lua_strings() {
+        let block = global_shortcut_binding_block(
+            "START",
+            "END",
+            &["CTRL + SPACE".to_string()],
+            "app:dictate",
+            r#"C:\Program Files\Verenu\verenu.exe --release "quoted""#,
+            r#"C:\Program Files\Verenu\verenu.exe --handsfree"#,
+            &[65],
+        );
+
+        assert!(block.contains(
+            r#"local verenu_release = hl.dsp.exec_cmd("C:\\Program Files\\Verenu\\verenu.exe --release \"quoted\"")"#
+        ));
+        assert!(block.contains(
+            r#"local verenu_handsfree = hl.dsp.exec_cmd("C:\\Program Files\\Verenu\\verenu.exe --handsfree")"#
+        ));
     }
 }

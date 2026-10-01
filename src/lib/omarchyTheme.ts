@@ -105,7 +105,8 @@ export function applyOmarchyPalette(root: HTMLElement, theme: OmarchyTheme | nul
   const edge = theme.mode === 'dark' ? '#ffffff' : '#000000';
   // Text stays neutral (white on dark, near-black on light) so a green or
   // brown theme never tints it. Only a color the user typed is used as given.
-  const ink = theme.customText ? fg : theme.mode === 'dark' ? '#f4f4f4' : '#141414';
+  const neutralInk = theme.mode === 'dark' ? '#f4f4f4' : '#141414';
+  const ink = theme.customText ? fg : neutralInk;
   const mix = (amount: number, base = bg) => `color-mix(in srgb, ${ink} ${amount}%, ${base})`;
   const alpha = (amount: number) => `color-mix(in srgb, ${ink} ${amount}%, transparent)`;
   // Secondary text steps are gray rather than a blend into the themed background.
