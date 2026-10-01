@@ -310,7 +310,7 @@ impl LocalTranscriptionManager {
                             "verenu:error",
                             format!(
                                 "Could not download the transcription model. {}",
-                                crate::api::user_facing_error(&err)
+                                crate::api::user_facing_error(err)
                             ),
                         );
                     }

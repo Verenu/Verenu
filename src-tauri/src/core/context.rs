@@ -40,6 +40,7 @@ impl ResolvedContextIdentity {
     }
 }
 
+#[cfg(test)]
 pub fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Context> {
     resolve_context_with_title(db, executable, domain, None).map(|(context, _)| context)
 }

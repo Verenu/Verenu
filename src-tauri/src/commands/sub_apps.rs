@@ -44,17 +44,18 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
     } else {
         &cached
     };
-    let app_name = installed
-        .iter()
-        .find(|app| app.exe.eq_ignore_ascii_case(&executable))
-        .map(|app| app.name.clone())
-        .or_else(|| {
-            #[cfg(target_os = "linux")]
-            return crate::system::icons::linux_app_display_name(&executable);
-            #[cfg(not(target_os = "linux"))]
-            None
-        })
-        .unwrap_or_else(|| fallback_app_name(&executable));
+    let find_installed_name = || {
+        installed
+            .iter()
+            .find(|app| app.exe.eq_ignore_ascii_case(&executable))
+            .map(|app| app.name.clone())
+    };
+    #[cfg(target_os = "linux")]
+    let app_name = find_installed_name()
+        .or_else(|| crate::system::icons::linux_app_display_name(&executable));
+    #[cfg(not(target_os = "linux"))]
+    let app_name = find_installed_name();
+    let app_name = app_name.unwrap_or_else(|| fallback_app_name(&executable));
     let proposed_pattern = db::propose_title_pattern(&window_title, Some(&app_name));
     Some(SubAppCapture {
         executable,

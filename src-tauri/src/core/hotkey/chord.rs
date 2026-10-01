@@ -62,6 +62,7 @@ impl Chord {
     }
 
     /// Hyprland `hl.bind` form, e.g. `CTRL + ALT + SHIFT + S`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn hyprland(&self) -> String {
         let mut parts = Vec::new();
         if self.ctrl {
