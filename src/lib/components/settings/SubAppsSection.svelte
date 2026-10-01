@@ -83,6 +83,10 @@
 
 <svelte:window onkeydown={handleRecordKeydown} />
 
+<h2 class="settings-h">Sub-apps</h2>
+
+<h3 class="settings-subhead first">Shortcut</h3>
+
 <div class="setting-row" data-setting-target="sub-apps-shortcut">
   <div>
     <div class="label">Capture shortcut</div>
