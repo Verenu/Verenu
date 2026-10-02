@@ -145,6 +145,8 @@ check('sub-app pattern Enter saves into the isolated database on desktop and pho
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
         await page.getByRole(viewport.width < 700 ? 'tab' : 'button', { name: 'Sub-apps', exact: true }).filter({ visible: true }).click();
         await page.getByRole('heading', { name: 'General', exact: true }).waitFor({ state: 'hidden' });
+        await page.getByRole('heading', { name: 'Sub-apps', exact: true, level: 2 }).waitFor();
+        assert.equal(await page.getByRole('heading', { name: 'Shortcut', exact: true, level: 3 }).isVisible(), true);
         await page.getByRole('button', { name: `Remove ${saved.label}`, exact: true }).waitFor();
         const panel = page.locator('.settings-page');
         const box = await panel.boundingBox();
