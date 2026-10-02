@@ -61,6 +61,8 @@ async function start() {
   const id = option('--id', `${path.basename(root).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}-${randomUUID().slice(0, 8)}`);
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error('Session ID must contain 1 to 80 letters, numbers, or hyphens');
   const directory = path.join(stateRoot, id);
+  await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
+  await fs.chmod(stateRoot, 0o700);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const lock = await fs.open(path.join(directory, 'launcher.lock'), 'wx', 0o600).catch(() => { throw new Error('Session is already owned. Choose a new --id; do not delete another session lock.'); });
   const children = [];
@@ -123,7 +125,7 @@ async function start() {
     const token = randomBytes(32).toString('hex');
     // Capability links belong in a private file, never terminal logs or reports.
     await fs.writeFile(path.join(directory, 'access.json'), JSON.stringify({ token, localAccessUrl: `${localUrl}/#session-token=${token}`, shareAccessUrl: shareUrl ? `${shareUrl}/#session-token=${token}` : null }), { mode: 0o600 });
-    manifest = { id, directory, worktree: root, branch: git('branch', '--show-current'), commit: git('rev-parse', 'HEAD'), dirty: git('status', '--porcelain') !== '', localUrl, shareUrl, status: 'starting', startedAt: new Date().toISOString(), launcherPid: process.pid, privateHistory: args.includes('--private-history') };
+    manifest = { id, directory, worktree: root, branch: git('branch', '--show-current') || 'HEAD', commit: git('rev-parse', 'HEAD'), dirty: git('status', '--porcelain') !== '', localUrl, shareUrl, status: 'starting', startedAt: new Date().toISOString(), launcherPid: process.pid, privateHistory: args.includes('--private-history') };
     await save();
     await fs.rm(path.join(directory, 'ready'), { force: true });
     await fs.mkdir(path.join(directory, 'fixtures'), { recursive: true });

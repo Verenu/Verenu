@@ -65,7 +65,6 @@ static HANDLESS_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static CANCEL_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ESCAPE_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static COPY_LAST_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
-#[allow(dead_code)]
 static SUB_APP_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -665,9 +664,6 @@ where
     let _ = CANCEL_CB.set(Box::new(on_cancel));
     let _ = ESCAPE_CB.set(Box::new(on_escape));
     let _ = COPY_LAST_CB.set(Box::new(on_copy_last));
-    // Accepted for signature parity with the Linux backend's sub-app capture
-    // hotkey; macOS has no capture trigger wired to it yet, so this is
-    // stored but never invoked.
     let _ = SUB_APP_CB.set(Box::new(on_capture_sub_app));
 
     // Created here (on the main thread, from Tauri `setup`) because the crate

@@ -19,11 +19,12 @@ export function desktopShortcut(id: ShortcutStatus['id']): ShortcutStatus | unde
 export async function loadDesktopShortcuts(): Promise<void> {
   if (!isLinux || isAndroid) return;
   listening ??= listen<ShortcutStatus[]>('verenu:shortcuts-changed', (event) => {
-    shortcutStatus.items = event.payload;
+    shortcutStatus.items = Array.isArray(event.payload) ? event.payload : [];
   }).then(() => undefined).catch(() => { listening = undefined; });
   await listening;
   try {
-    shortcutStatus.items = await invoke<ShortcutStatus[]>('get_shortcut_status');
+    const items = await invoke<ShortcutStatus[]>('get_shortcut_status');
+    shortcutStatus.items = Array.isArray(items) ? items : [];
   } catch {
     // A browser preview has no native desktop bindings.
   }

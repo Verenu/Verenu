@@ -549,7 +549,14 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(std::env::temp_dir().join("verenu-dev-host-mic.lock"))
+                .open(
+                    session_dir()
+                        .parent()
+                        .ok_or_else(|| {
+                            error(StatusCode::CONFLICT, "Session directory has no parent")
+                        })?
+                        .join("host-mic.lock"),
+                )
                 .map_err(|_| error(StatusCode::CONFLICT, "Cannot acquire host microphone lease"))?;
             file.try_lock_exclusive().map_err(|_| {
                 error(

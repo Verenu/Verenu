@@ -156,5 +156,6 @@ mod tests {
         assert!(!armed.contains("hl.unbind"));
         let disarmed = temporary_binding("escape", "ESCAPE", None, "");
         assert!(!disarmed.contains("hl.bind"));
+        assert_eq!(disarmed, temporary_binding("escape", "F8", None, ""));
     }
 }

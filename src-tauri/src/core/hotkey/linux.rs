@@ -520,6 +520,8 @@ fn escape_bind_snippet(cancel_portal_id: &str) -> String {
 }
 
 fn escape_unbind_snippet() -> String {
+    // Disabling uses the stored handle only; temporary_binding ignores the key
+    // when no portal ID is supplied, including when cancellation uses F8–F12.
     shortcuts::temporary_binding("escape", "ESCAPE", None, "")
 }
 
