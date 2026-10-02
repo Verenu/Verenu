@@ -398,6 +398,8 @@ pub const ACCENT_COLOR: &str = "accent_color";
 /// User-entered hex palette for the Custom appearance mode (background, text,
 /// and optional sidebar/surface colors).
 pub const CUSTOM_THEME: &str = "custom_theme";
+/// Where the Android dictation pill sits; see `ANDROID_PILL_POSITIONS`.
+pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";
