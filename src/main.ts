@@ -27,6 +27,7 @@ async function start() {
   const app = mount(App, { target: document.getElementById('app') as HTMLElement });
   void invoke('frontend_ready').catch(() => {
     if (isBrowserDevSession()) window.dispatchEvent(new CustomEvent('verenu:dev-connection', { detail: 'The Rust backend startup handshake failed.' }));
+    else console.error('Failed to complete startup handshake.');
   });
   return app;
 }

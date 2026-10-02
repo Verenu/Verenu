@@ -20,12 +20,20 @@ function option(name, fallback) {
 function git(...arguments_) {
   return execFileSync('git', arguments_, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
-async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+async function freePorts(count) {
+  const servers = [];
+  try {
+    const ports = [];
+    for (let index = 0; index < count; index++) {
+      const server = net.createServer();
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+      servers.push(server);
+      ports.push(server.address().port);
+    }
+    return ports;
+  } finally {
+    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+  }
 }
 async function list() {
   const directories = await fs.readdir(stateRoot).catch(() => []);
@@ -59,23 +67,27 @@ async function start() {
   let sharedPort;
   let serveWithSudo = false;
   let closing = false;
+  let cleanupPromise;
   let manifest;
   const save = async () => fs.writeFile(path.join(directory, 'session.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-  const cleanup = async () => {
-    if (closing) return;
+  const cleanup = () => {
+    if (cleanupPromise) return cleanupPromise;
     closing = true;
-    for (const child of children) {
-      if (child.exitCode === null) {
-        if (process.platform === 'win32') child.kill();
-        else { try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ } }
+    cleanupPromise = (async () => {
+      for (const child of children) {
+        if (child.exitCode === null) {
+          if (process.platform === 'win32') child.kill();
+          else { try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ } }
+        }
       }
-    }
-    if (sharedPort) {
-      try { execFileSync(serveWithSudo ? 'sudo' : 'tailscale', [...(serveWithSudo ? ['-n', 'tailscale'] : []), 'serve', `--https=${sharedPort}`, 'off'], { stdio: 'ignore', timeout: 10_000 }); } catch { console.error(`Could not remove this session's Tailscale listener on ${sharedPort}`); }
-    }
-    if (manifest) { manifest.status = 'stopped'; await save(); }
-    await lock.close();
-    await fs.unlink(path.join(directory, 'launcher.lock')).catch(() => {});
+      if (sharedPort) {
+        try { execFileSync(serveWithSudo ? 'sudo' : 'tailscale', [...(serveWithSudo ? ['-n', 'tailscale'] : []), 'serve', `--https=${sharedPort}`, 'off'], { stdio: 'ignore', timeout: 10_000 }); } catch { console.error(`Could not remove this session's Tailscale listener on ${sharedPort}`); }
+      }
+      if (manifest) { manifest.status = 'stopped'; await save(); }
+      await lock.close();
+      await fs.unlink(path.join(directory, 'launcher.lock')).catch(() => {});
+    })();
+    return cleanupPromise;
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void cleanup(); });
   function run(command, argv, env) {
@@ -86,8 +98,7 @@ async function start() {
     return child;
   }
   try {
-    const webPort = await freePort();
-    const bridgePort = await freePort();
+    const [webPort, bridgePort] = await freePorts(2);
     const localUrl = `http://127.0.0.1:${webPort}`;
     let shareUrl = null;
     if (args.includes('--share')) {

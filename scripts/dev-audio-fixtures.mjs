@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const index = process.argv.indexOf('--out');
+if (index >= 0 && (!process.argv[index + 1] || process.argv[index + 1].startsWith('--'))) {
+  throw new Error('--out requires a directory path');
+}
 const output = index < 0 ? path.join(os.homedir(), '.cache', 'verenu', 'test-audio') : path.resolve(process.argv[index + 1]);
 const cases = JSON.parse(await fs.readFile(path.join(root, 'tests', 'fixtures', 'dev-audio.json'), 'utf8'));
 await fs.mkdir(output, { recursive: true });

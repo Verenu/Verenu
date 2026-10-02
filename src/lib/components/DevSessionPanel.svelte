@@ -105,6 +105,7 @@
         recorder.onstop = null;
         recorder.stop();
       }
+      if (hostRecording) void invoke('stop_recording').catch(() => {});
       stream?.getTracks().forEach((track) => track.stop());
     };
   });
