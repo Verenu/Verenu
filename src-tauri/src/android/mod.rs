@@ -121,6 +121,18 @@ use std::sync::{Mutex, OnceLock};
 /// `androidx.security` MasterKey paths, notification channels, and the
 /// `AccessibilityService.SoftKeyboardController` show/hide callbacks Verenu's
 /// overlay relies on are all available from here.
+/// Placements for the dictation pill (stored in `android_pill_position`).
+/// Mirrored by the Settings dropdown and `VerenuAccessibilityService.kt`.
+pub const ANDROID_PILL_POSITIONS: [&str; 6] = [
+    "keyboard-center",
+    "keyboard-left",
+    "keyboard-right",
+    "screen-top",
+    "screen-middle",
+    "punch-hole",
+];
+pub const DEFAULT_ANDROID_PILL_POSITION: &str = "keyboard-center";
+
 pub const ANDROID_MIN_SDK: u32 = 26;
 
 /// SDK Verenu targets. Kept in sync with `gen/android/app/build.gradle.kts`.

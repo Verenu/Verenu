@@ -42,12 +42,15 @@ data class BridgeStateSnapshot(
     val dictationActive: Boolean,
     val pillStage: String,
     val audioLevel: Float,
+    val audioEnvelope: FloatArray = FloatArray(0),
     val keystorePending: Boolean,
     val lastError: BridgeErrorSnapshot?,
     val overlay: BridgeOverlay,
     val pendingInsertion: BridgePendingInsertion?,
     val targetPackage: String,
     val analyticsEnabled: Boolean,
+    val pillPosition: String = "keyboard-center",
+    val appearanceMode: String = "system",
 )
 
 class VerenuBridge(appContext: Context) {
@@ -139,6 +142,9 @@ class VerenuBridge(appContext: Context) {
             dictationActive = json.optBoolean("dictationActive", false),
             pillStage = json.optString("pillStage", ""),
             audioLevel = json.optDouble("audioLevel", 0.0).toFloat(),
+            audioEnvelope = json.optJSONArray("audioEnvelope")?.let { array ->
+                FloatArray(array.length()) { array.optDouble(it, 0.0).toFloat() }
+            } ?: FloatArray(0),
             keystorePending = json.optBoolean("keystorePending", false),
             lastError = json.optJSONObject("lastError")?.let { error ->
                 BridgeErrorSnapshot(
@@ -148,6 +154,8 @@ class VerenuBridge(appContext: Context) {
             },
             targetPackage = json.optString("targetPackage", ""),
             analyticsEnabled = json.optBoolean("analyticsEnabled", true),
+            pillPosition = json.optString("pillPosition", "keyboard-center"),
+            appearanceMode = json.optString("appearanceMode", "system"),
             overlay = BridgeOverlay(
                 state = overlay?.optString("state", "hidden") ?: "hidden",
                 visible = overlay?.optBoolean("visible", false) ?: false,
