@@ -331,6 +331,22 @@ impl Bridge {
 }
 
 async fn session(State(bridge): State<Bridge>) -> ApiResult {
+    let runs = *bridge.runs.lock().map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Session state unavailable",
+        )
+    })?;
+    let event_cursor = bridge
+        .events
+        .lock()
+        .map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Session events unavailable",
+            )
+        })?
+        .seq;
     Ok(Json(json!({
         "id": std::env::var("VERENU_DEV_SESSION_ID").unwrap_or_default(),
         "branch": std::env::var("VERENU_DEV_BRANCH").unwrap_or_default(),
@@ -340,8 +356,8 @@ async fn session(State(bridge): State<Bridge>) -> ApiResult {
         "shareUrl": std::env::var("VERENU_DEV_SHARE_URL").unwrap_or_default(),
         "privateHistory": std::env::var("VERENU_DEV_PRIVATE_HISTORY").as_deref() == Ok("1"),
         "maxRuns": bridge.max_runs,
-        "runs": *bridge.runs.lock().unwrap(),
-        "eventCursor": bridge.events.lock().unwrap().seq,
+        "runs": runs,
+        "eventCursor": event_cursor,
         "capabilities": {
             "productionPipeline": true, "browserAudio": true,
             "hostMicrophone": bridge.host_mic, "nativeInjection": false,
@@ -505,7 +521,12 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             ));
         }
         if starts_mic {
-            let mut held = bridge.host_mic_lock.lock().unwrap();
+            let mut held = bridge.host_mic_lock.lock().map_err(|_| {
+                error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Microphone lease state unavailable",
+                )
+            })?;
             if held.is_some() {
                 return Err(error(
                     StatusCode::CONFLICT,
@@ -541,7 +562,9 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
     }
     let result = dispatch(&bridge.app, command).await;
     if starts_mic && result.is_err() {
-        bridge.host_mic_lock.lock().unwrap().take();
+        if let Ok(mut lease) = bridge.host_mic_lock.lock() {
+            lease.take();
+        }
     }
     if stops_mic && result.is_ok() {
         let owner = bridge.clone();
@@ -554,7 +577,9 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                     .lock()
                     .is_ok_and(|state| state.lifecycle.is_idle());
                 if idle {
-                    owner.host_mic_lock.lock().unwrap().take();
+                    if let Ok(mut lease) = owner.host_mic_lock.lock() {
+                        lease.take();
+                    }
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -572,7 +597,9 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             .lock()
             .is_ok_and(|state| state.lifecycle.is_idle());
         if idle {
-            bridge.host_mic_lock.lock().unwrap().take();
+            if let Ok(mut lease) = bridge.host_mic_lock.lock() {
+                lease.take();
+            }
         }
     }
     result
@@ -638,7 +665,12 @@ struct Cursor {
     after: u64,
 }
 async fn events(State(bridge): State<Bridge>, Query(query): Query<Cursor>) -> ApiResult {
-    let buffer = bridge.events.lock().unwrap();
+    let buffer = bridge.events.lock().map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Session events unavailable",
+        )
+    })?;
     let first = buffer
         .rows
         .front()
@@ -682,7 +714,9 @@ async fn fixture(
     RoutePath(name): RoutePath<String>,
 ) -> Result<([(String, String); 2], Vec<u8>), (StatusCode, Json<Value>)> {
     let path = fixture_path(&name).map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
-    let bytes = fs::read(path).map_err(|_| error(StatusCode::NOT_FOUND, "Fixture not found"))?;
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|_| error(StatusCode::NOT_FOUND, "Fixture not found"))?;
     Ok((
         [
             ("content-type".into(), "audio/wav".into()),
@@ -753,7 +787,9 @@ async fn audio(
     let capture = result.clone();
     let listener = bridge.app.listen_any("verenu:transcribed", move |event| {
         if let Ok(text) = serde_json::from_str::<Value>(event.payload()) {
-            *capture.lock().unwrap() = Some(text);
+            if let Ok(mut captured) = capture.lock() {
+                *captured = Some(text);
+            }
         }
     });
     let state = bridge
@@ -772,7 +808,16 @@ async fn audio(
     .await;
     bridge.app.unlisten(listener);
     outcome.map_err(|e| error(StatusCode::CONFLICT, e))?;
-    let text = result.lock().unwrap().clone().ok_or_else(|| {
+    let captured = result
+        .lock()
+        .map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Dictation result unavailable",
+            )
+        })?
+        .clone();
+    let text = captured.ok_or_else(|| {
         error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "Dictation failed or audio was rejected. Inspect session events and redacted logs.",

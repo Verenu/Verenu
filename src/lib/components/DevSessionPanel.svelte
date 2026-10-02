@@ -95,7 +95,18 @@
     void listen<string>('verenu:transcribed', (event) => { result = event.payload; message = 'Production dictation completed.'; })
       .then((cleanup) => { if (mounted) unlisten = cleanup; else cleanup(); })
       .catch((error) => { if (mounted) fail(error); });
-    return () => { mounted = false; window.removeEventListener('verenu:dev-connection', connection); unlisten?.(); if (recordingTimer) clearTimeout(recordingTimer); stream?.getTracks().forEach((track) => track.stop()); };
+    return () => {
+      mounted = false;
+      window.removeEventListener('verenu:dev-connection', connection);
+      unlisten?.();
+      if (recordingTimer) clearTimeout(recordingTimer);
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.stop();
+      }
+      stream?.getTracks().forEach((track) => track.stop());
+    };
   });
 </script>
 
