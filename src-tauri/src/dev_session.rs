@@ -546,6 +546,7 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
     if stops_mic && result.is_ok() {
         let owner = bridge.clone();
         tauri::async_runtime::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
             loop {
                 let idle = owner
                     .app
@@ -556,9 +557,23 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                     owner.host_mic_lock.lock().unwrap().take();
                     break;
                 }
+                if tokio::time::Instant::now() >= deadline {
+                    log::warn!("dev session: host microphone stayed busy after stop; retaining its lease until shutdown");
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         });
+    } else if stops_mic && result.is_err() {
+        // Keep the cross-process lease while capture may still be active.
+        let idle = bridge
+            .app
+            .state::<crate::pipeline::SharedState>()
+            .lock()
+            .is_ok_and(|state| state.lifecycle.is_idle());
+        if idle {
+            bridge.host_mic_lock.lock().unwrap().take();
+        }
     }
     result
         .map(Json)

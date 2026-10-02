@@ -2428,7 +2428,10 @@ export function isTauriRuntime(): boolean {
 
 export function invoke<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
   const started = frontendIpcActivity.start(command);
-  const request = hasTauriInternals() ? tauriInvoke<T>(command, args) : isBrowserDevSession() ? sessionInvoke<T>(command, args) : devInvoke<T>(command, args);
+  let request: Promise<T>;
+  if (hasTauriInternals()) request = tauriInvoke<T>(command, args);
+  else if (isBrowserDevSession()) request = sessionInvoke<T>(command, args);
+  else request = devInvoke<T>(command, args);
   return request.then(
     (value) => { frontendIpcActivity.finish(command, started, true); return value; },
     (error) => { frontendIpcActivity.finish(command, started, false, extractIpcErrorMessage(error)); throw error; },

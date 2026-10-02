@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { invoke } from '../tauri';
+  import { invoke, listen } from '../tauri';
   import { sessionInfo, sessionShareLink, sessionRequest, loadSessionFixture, submitSessionAudio, normalizeBrowserAudio, type SessionInfo } from '../devSession';
   let session = $state<SessionInfo | null>(sessionInfo());
   let open = $state(false);
@@ -91,8 +91,11 @@
     const connection = (event: Event) => fail(new Error((event as CustomEvent<string>).detail));
     window.addEventListener('verenu:dev-connection', connection);
     let unlisten: (() => void) | undefined;
-    void import('../tauri').then(({ listen }) => listen<string>('verenu:transcribed', (event) => { result = event.payload; message = 'Production dictation completed.'; })).then((cleanup) => { unlisten = cleanup; });
-    return () => { window.removeEventListener('verenu:dev-connection', connection); unlisten?.(); if (recordingTimer) clearTimeout(recordingTimer); stream?.getTracks().forEach((track) => track.stop()); };
+    let mounted = true;
+    void listen<string>('verenu:transcribed', (event) => { result = event.payload; message = 'Production dictation completed.'; })
+      .then((cleanup) => { if (mounted) unlisten = cleanup; else cleanup(); })
+      .catch((error) => { if (mounted) fail(error); });
+    return () => { mounted = false; window.removeEventListener('verenu:dev-connection', connection); unlisten?.(); if (recordingTimer) clearTimeout(recordingTimer); stream?.getTracks().forEach((track) => track.stop()); };
   });
 </script>
 

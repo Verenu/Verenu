@@ -132,7 +132,7 @@ async function start() {
     delete env.VERENU_ALLOW_ENV_CREDENTIALS;
     const config = path.join(directory, 'tauri-session.json');
     await fs.writeFile(config, JSON.stringify({ identifier: `com.verenu.session.${id.toLowerCase()}`, build: { devUrl: localUrl, beforeDevCommand: '' }, app: { windows: [{ label: 'main', title: 'Verenu dev worker', url: '/', width: 1320, height: 860, visible: false }] } }));
-    run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort)], env);
+    run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort), '--strictPort'], env);
     run(process.execPath, [path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'dev', '--features', 'dev-session', '--no-watch', '--config', config], env);
     console.log(`Session ${id}\nLocal: ${localUrl}\nPhone: ${shareUrl || 'Use --share to create a private Tailscale URL'}\nAccess links: ${path.join(directory, 'access.json')}\nManifest: ${path.join(directory, 'session.json')}\nWaiting for this worktree's Rust backend...`);
     while (!closing) {
