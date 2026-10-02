@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
+
 - Fixed Linux Settings showing Windows wording: Start on Boot now says "Launch Verenu when you log in" and Appearance says "Follow your desktop".
 - Reduced Linux memory retention by disabling WebKit's browser resource and back/forward page caches in the main window and dictation pill. On glibc builds, freed native allocations are returned to the OS during the existing idle maintenance cycle, including after local models unload.
 - Fixed the September 21 nightly build failure: bumped `@tauri-apps/plugin-notification` to 2.4.0 to match the Rust crate (Cargo had resolved `tauri-plugin-notification` to 2.4.0 while the npm lockfile still pinned 2.3.3, and the Tauri CLI aborts on any major/minor mismatch). Also added a PR check that fails fast when any Tauri plugin's Rust and npm versions disagree, so this class of drift breaks a PR instead of a release.
