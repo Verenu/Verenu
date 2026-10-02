@@ -53,7 +53,6 @@ pub(crate) struct LogicalMonitor {
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Deserialize)]
 struct HyprMonitor {
-    id: i32,
     x: i32,
     y: i32,
     width: i32,
@@ -121,15 +120,6 @@ pub(crate) fn logical_monitor_for_point(x: f64, y: f64) -> Option<LogicalMonitor
         .or_else(|| monitors.iter().find(|monitor| monitor.focused))
         .or_else(|| monitors.first())
         .map(HyprMonitor::logical_work_area)
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn logical_monitor_for_pill() -> Option<LogicalMonitor> {
-    let monitor_id = pill_window()?.monitor;
-    monitors()?
-        .into_iter()
-        .find(|monitor| monitor.id == monitor_id)
-        .map(|monitor| monitor.logical_work_area())
 }
 
 #[cfg(target_os = "linux")]
@@ -274,6 +264,34 @@ pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<()
         .success()
         .then_some(())
         .ok_or_else(|| "Hyprland could not size the dictation pill".to_string())
+}
+
+/// Lets the pointer reach a window that a user rule marked `no_focus`.
+///
+/// Hyprland excludes `no_focus` windows from pointer hit-testing altogether, so
+/// the pill's Cancel/Confirm/Dismiss/Retry/Copy buttons never saw a click when
+/// a rule such as the one long suggested in the install notes was present. The
+/// rule is applied at map time, which is what keeps the pill from taking
+/// keyboard focus away from the dictation target, so clearing the runtime
+/// property afterwards keeps that benefit and only restores the pointer.
+/// Clicking the pill may focus it; text injection re-focuses the original
+/// target before pasting.
+#[cfg(target_os = "linux")]
+pub(crate) fn allow_pointer_input(address: &str) -> Result<(), String> {
+    let selector = format!("address:{address}");
+    let expression = format!(
+        "hl.dsp.window.set_prop({{ window = '{selector}', prop = 'no_focus', value = '0' }})"
+    );
+    let status = std::process::Command::new("hyprctl")
+        .args(["dispatch", &expression])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("Hyprland property IPC unavailable: {e}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Hyprland could not enable pointer input for the dictation pill".to_string())
 }
 
 #[cfg(target_os = "linux")]

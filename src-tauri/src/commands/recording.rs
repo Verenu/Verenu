@@ -433,7 +433,8 @@ pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
 /// swallows or forwards stray clicks — the floating pill grows for wide
 /// content (long error messages, handsfree buttons) and shrinks back when
 /// it's just the bare recording capsule. Height changes grow the window
-/// upward so the pill itself stays visually pinned in place.
+/// upward so the pill itself stays visually pinned in place. Linux keeps a
+/// fixed-size window instead (see `set_pill_hit_rect`), so this is a no-op there.
 #[tauri::command]
 pub fn set_pill_size(
     app: AppHandle,
@@ -441,76 +442,87 @@ pub fn set_pill_size(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let Some(pill) = app.get_webview_window("pill") else {
-        return Ok(());
-    };
-
-    // Upper bounds are backstops against a bad frontend measurement, not the
-    // expected size. They leave room for transient status and error messages.
-    let width_points = if width.is_finite() {
-        width.clamp(60.0, 440.0).round()
-    } else {
-        60.0
-    };
-    let height_points = if height.is_finite() {
-        height.clamp(44.0, 420.0).round()
-    } else {
-        44.0
-    };
-
-    // Recompute the ideal centered placement from the monitor directly
-    // rather than offsetting from the window's current position — content-fit
-    // resizing fires many times per second during a width transition, and
-    // deriving each new position from the previous one let small rounding/race
-    // errors compound into a visible rightward drift. This recomputation is
-    // idempotent: every call lands on the same correct center.
-    //
-    // If no monitor resolves at all, still apply the *size* (anchored on the
-    // window's current center) rather than bailing. The frontend has already
-    // recorded this size as sent and won't re-send it, so dropping the resize
-    // here would strand the window too small for its content and clip the pill
-    // until something else happened to change its size.
-    let placement =
-        crate::pipeline::placement_for_current_monitor(&pill, width_points, height_points)
-            .unwrap_or_else(|| {
-                let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
-                let cur_pos = pill.outer_position().unwrap_or_default();
-                let w = (width_points * scale).round() as i32;
-                let h = (height_points * scale).round() as i32;
-                let (cur_w, cur_h) = pill
-                    .outer_size()
-                    .map(|size| (size.width as f64, size.height as f64))
-                    .unwrap_or((w as f64, h as f64));
-                crate::pipeline::PillPlacement {
-                    x: cur_pos.x + ((cur_w - w as f64) / 2.0).round() as i32,
-                    y: cur_pos.y + (cur_h - h as f64).round() as i32,
-                    width: w,
-                    height: h,
-                }
-            });
-    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-    let geometry_changed = crate::pipeline::apply_pill_placement(&pill, placement);
+    // The Linux pill window is a fixed size (see `LINUX_PILL_WIDTH_POINTS`):
+    // resizing a Hyprland floating window per content change raced the
+    // compositor and desynchronised the window box from the rendered pill.
+    // The frontend reports its visible rect through `set_pill_hit_rect`
+    // instead.
     #[cfg(target_os = "linux")]
-    let placement = crate::pipeline::linux_effective_placement(placement);
-
-    // On Hyprland, resizing a mapped xdg-toplevel can put it back underneath
-    // the previously focused floating window. The recording reveal raises the
-    // pill before the frontend has measured its real content, so the first
-    // content-fit resize was undoing that raise and leaving a fully rendered
-    // pill hidden behind the target app. Re-assert z-order after each actual
-    // geometry change; this is compositor-scoped and never focuses the pill.
-    #[cfg(target_os = "linux")]
-    if geometry_changed {
-        if let Some(window) = crate::core::hyprland::pill_window() {
-            if let Err(error) = crate::core::hyprland::raise_window(&window.address) {
-                log::warn!("Failed to re-raise resized Linux dictation pill: {error}");
-            }
-        }
+    {
+        let _ = (&app, &state, width, height);
+        Ok(())
     }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Some(pill) = app.get_webview_window("pill") else {
+            return Ok(());
+        };
 
-    let mut st = lock_state(&state)?;
-    st.pill_width_points = width_points;
-    st.pill_height_points = height_points;
-    st.pill_placement = Some(placement);
+        // Upper bounds are backstops against a bad frontend measurement, not the
+        // expected size. They leave room for transient status and error messages.
+        let width_points = if width.is_finite() {
+            width.clamp(60.0, 440.0).round()
+        } else {
+            60.0
+        };
+        let height_points = if height.is_finite() {
+            height.clamp(44.0, 420.0).round()
+        } else {
+            44.0
+        };
+
+        // Recompute the ideal centered placement from the monitor directly
+        // rather than offsetting from the window's current position — content-fit
+        // resizing fires many times per second during a width transition, and
+        // deriving each new position from the previous one let small rounding/race
+        // errors compound into a visible rightward drift. This recomputation is
+        // idempotent: every call lands on the same correct center.
+        //
+        // If no monitor resolves at all, still apply the *size* (anchored on the
+        // window's current center) rather than bailing. The frontend has already
+        // recorded this size as sent and won't re-send it, so dropping the resize
+        // here would strand the window too small for its content and clip the pill
+        // until something else happened to change its size.
+        let placement =
+            crate::pipeline::placement_for_current_monitor(&pill, width_points, height_points)
+                .unwrap_or_else(|| {
+                    let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
+                    let cur_pos = pill.outer_position().unwrap_or_default();
+                    let w = (width_points * scale).round() as i32;
+                    let h = (height_points * scale).round() as i32;
+                    let (cur_w, cur_h) = pill
+                        .outer_size()
+                        .map(|size| (size.width as f64, size.height as f64))
+                        .unwrap_or((w as f64, h as f64));
+                    crate::pipeline::PillPlacement {
+                        x: cur_pos.x + ((cur_w - w as f64) / 2.0).round() as i32,
+                        y: cur_pos.y + (cur_h - h as f64).round() as i32,
+                        width: w,
+                        height: h,
+                    }
+                });
+        crate::pipeline::apply_pill_placement(&pill, placement);
+
+        let mut st = lock_state(&state)?;
+        st.pill_width_points = width_points;
+        st.pill_height_points = height_points;
+        st.pill_placement = Some(placement);
+        Ok(())
+    }
+}
+
+/// Reports the pill's visible content rectangle (CSS px, viewport-relative) so
+/// the Linux window can accept clicks only over the capsule instead of its
+/// whole fixed-size transparent area. A no-op elsewhere, where the native
+/// window itself is content-sized.
+#[tauri::command]
+pub fn set_pill_hit_rect(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    crate::pipeline::set_pill_hit_rect(&app, x, y, width, height);
     Ok(())
 }

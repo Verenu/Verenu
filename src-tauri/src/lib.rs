@@ -762,6 +762,7 @@ pub fn run() {
             commands::get_cancelled_capture,
             commands::copy_paste_failure_to_clipboard,
             commands::set_pill_size,
+            commands::set_pill_hit_rect,
             commands::set_pill_interactive,
             commands::hide_dictation_pill,
             commands::get_installed_apps,

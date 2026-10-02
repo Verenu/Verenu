@@ -3,7 +3,25 @@ use tauri::{Runtime, WebviewWindow};
 
 const PILL_BOTTOM_GAP_POINTS: f64 = 16.0;
 
+/// Linux pill window size, in logical points. Under Hyprland a floating
+/// client's compositor-side box and its rendered surface only agree while the
+/// window is never resized: content-fit native resizing (the Windows/macOS
+/// approach) raced `hyprctl`, leaving the box and the surface out of step, so
+/// the pill drifted off-centre and its buttons sat outside the area the
+/// compositor routes clicks to. The Linux window is therefore fixed at the
+/// largest state the pill can render (error card: 440 wide clamp, ~175 tall),
+/// the Svelte layout centres the capsule inside it, and an input region
+/// (`system::linux_webview::set_input_region`) keeps the transparent rest
+/// click-through.
+#[cfg(target_os = "linux")]
+pub(crate) const LINUX_PILL_WIDTH_POINTS: f64 = 440.0;
+#[cfg(target_os = "linux")]
+pub(crate) const LINUX_PILL_HEIGHT_POINTS: f64 = 220.0;
+
+// The Linux pill uses a fixed-size window placed from Hyprland's own monitor
+// data, so the Tauri-monitor placement math below only serves other platforms.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 struct MonitorSnapshot {
     work_x: i32,
     work_y: i32,
@@ -33,10 +51,12 @@ impl From<&tauri::Monitor> for MonitorSnapshot {
     }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn round_to_physical(points: f64, scale_factor: f64) -> i32 {
     (points * scale_factor).round() as i32
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn placement_for_monitor(
     monitor: MonitorSnapshot,
     width_points: f64,
@@ -57,6 +77,7 @@ fn placement_for_monitor(
     }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn choose_monitor(
     target_monitor: Option<MonitorSnapshot>,
     primary_monitor: Option<MonitorSnapshot>,
@@ -165,19 +186,6 @@ pub(crate) fn placement_for_current_monitor<R: Runtime>(
     ))
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn placement_for_current_monitor<R: Runtime>(
-    _pill: &WebviewWindow<R>,
-    width_points: f64,
-    height_points: f64,
-) -> Option<PillPlacement> {
-    Some(placement_for_linux_monitor(
-        crate::core::hyprland::logical_monitor_for_pill()?,
-        width_points,
-        height_points,
-    ))
-}
-
 /// Reads the pill's actual on-screen geometry right now. Used by the
 /// animated cross-monitor path (`pill_animation.rs`) as the tween's starting
 /// point — it needs the literal current placement to interpolate from, not
@@ -257,13 +265,6 @@ pub(crate) fn snap_linux_placement_to_mapped_size(
         width,
         height,
     }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn linux_effective_placement(requested: PillPlacement) -> PillPlacement {
-    crate::core::hyprland::pill_window()
-        .map(|window| snap_linux_placement_to_mapped_size(requested, window.size))
-        .unwrap_or(requested)
 }
 
 /// Moves/resizes the pill to `placement` if it isn't already there. Returns
@@ -361,33 +362,21 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
             ))
             .ok();
         }
-        let linux_placement = linux_effective_placement(placement);
-        if let Some(window) = crate::core::hyprland::pill_window() {
-            if window.size[0] != placement.width as i32 || window.size[1] != placement.height as i32 {
-                crate::core::hyprland::resize_window(
-                    &window.address,
-                    placement.width as i32,
-                    placement.height as i32,
-                )
-                .ok();
-            }
-        }
+        // Not mapped yet (first show, or hidden): `reveal_pill` repositions
+        // once the compositor knows the window. Mapped: correct only drift.
         needs_reposition = crate::core::hyprland::pill_window()
             .map(|window| {
-                position_changed(window.at[0], linux_placement.x)
-                    || position_changed(window.at[1], linux_placement.y)
+                let target = snap_linux_placement_to_mapped_size(placement, window.size);
+                if position_changed(window.at[0], target.x)
+                    || position_changed(window.at[1], target.y)
+                {
+                    crate::core::hyprland::move_window(&window.address, target.x, target.y).ok();
+                    true
+                } else {
+                    false
+                }
             })
-            .unwrap_or(true);
-        if needs_reposition {
-            if let Some(window) = crate::core::hyprland::pill_window() {
-                crate::core::hyprland::move_window(
-                    &window.address,
-                    linux_placement.x,
-                    linux_placement.y,
-                )
-                .ok();
-            }
-        }
+            .unwrap_or(false);
     }
 
     #[cfg(target_os = "macos")]
