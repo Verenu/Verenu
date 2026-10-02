@@ -48,12 +48,15 @@ static PRESS: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static RELEASE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static HANDLESS_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static CANCEL: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+static CHORD_CANCEL: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ESCAPE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static COPY: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static SUB_APP: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
 const HANDSFREE_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(350);
-const TAP_MAX_HOLD: Duration = Duration::from_millis(250);
+// A first tap must never reach the recording quality gate while a second
+// tap can still promote its open capture. Match the compositor's tap limit.
+const TAP_MAX_HOLD: Duration = Duration::from_millis(700);
 const STALE_CHORD_TIMEOUT: Duration = Duration::from_secs(2);
 const PORTAL_SHORTCUT_ID: &str = "dictate";
 const PORTAL_SHORTCUT_DESCRIPTION: &str = "Verenu dictation";
@@ -66,6 +69,8 @@ const PORTAL_SHORTCUT_DESCRIPTION: &str = "Verenu dictation";
 /// every app, all the time.
 const PORTAL_CANCEL_ID: &str = "cancel";
 const PORTAL_CANCEL_DESCRIPTION: &str = "Verenu cancel";
+const PORTAL_CHORD_CANCEL_ID: &str = "cancel-chord";
+const PORTAL_CHORD_CANCEL_DESCRIPTION: &str = "Verenu discard hold gesture";
 const PORTAL_COPY_ID: &str = "copy-last";
 const PORTAL_COPY_DESCRIPTION: &str = "Verenu copy last dictation";
 const PORTAL_HANDSFREE_ID: &str = "handsfree";
@@ -89,7 +94,7 @@ enum PortalGestureAction {
 /// Hyprland may deliver another Activated notification while a key is still
 /// held. Tracking the physical chord edge here prevents that repeat from being
 /// mistaken for the second tap of a hands-free gesture. Once a real quick tap
-/// is released, its matching recording is cancelled and exactly one following
+/// is released, its matching recording stays open and exactly one following
 /// activation inside the double-tap window enters hands-free. The release of
 /// that second tap is consumed here, so it cannot immediately stop the session
 /// it just started.
@@ -99,6 +104,7 @@ struct PortalGesture {
     pressed_at: Option<Instant>,
     pending_tap_at: Option<Instant>,
     consume_deactivation: bool,
+    pending_release: Option<(Instant, PortalGestureAction)>,
 }
 
 impl PortalGesture {
@@ -125,9 +131,14 @@ impl PortalGesture {
             return None;
         }
 
-        if self.pending_tap_at.take().is_some_and(|released_at| {
+        let is_double_tap = self.pending_tap_at.take().is_some_and(|released_at| {
             now.duration_since(released_at) <= HANDSFREE_DOUBLE_TAP_WINDOW
-        }) {
+        });
+        // This activation either consumes the pending tap as hands-free or
+        // begins a new gesture. Never let its delayed cleanup affect that
+        // new recording.
+        self.pending_release = None;
+        if is_double_tap {
             self.consume_deactivation = true;
             return Some(PortalGestureAction::Handsfree);
         }
@@ -161,11 +172,25 @@ impl PortalGesture {
         );
         if held < TAP_MAX_HOLD {
             self.pending_tap_at = Some(now);
-            Some(PortalGestureAction::Cancel)
+            self.pending_release = Some((
+                now + HANDSFREE_DOUBLE_TAP_WINDOW,
+                PortalGestureAction::Cancel,
+            ));
+            None
         } else {
             self.pending_tap_at = None;
             Some(PortalGestureAction::Release)
         }
+    }
+
+    fn take_pending_release(&mut self, now: Instant) -> Option<PortalGestureAction> {
+        let (deadline, action) = self.pending_release?;
+        if now < deadline {
+            return None;
+        }
+        self.pending_release = None;
+        self.pending_tap_at = None;
+        Some(action)
     }
 }
 
@@ -332,25 +357,41 @@ pub fn notify_release() {
         log::error!("linux hotkey: gesture state lock was poisoned");
         return;
     };
-    match gesture.deactivated(Instant::now()) {
+    let action = gesture.deactivated(Instant::now());
+    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+    refresh_escape_listening();
+    match action {
         Some(PortalGestureAction::Release) => {
             log::info!("linux hotkey: application release handoff fired");
-            CHORD_ACTIVE.store(false, Ordering::SeqCst);
-            refresh_escape_listening();
             if let Some(cb) = RELEASE.get() {
                 cb();
             }
         }
-        Some(PortalGestureAction::Cancel) => {
-            log::info!("linux hotkey: application quick release cancelled; handsfree armed");
-            CHORD_ACTIVE.store(false, Ordering::SeqCst);
-            refresh_escape_listening();
-            if let Some(cb) = CANCEL.get() {
-                cb();
-            }
+        None if gesture.pending_release.is_some() => {
+            log::info!("linux hotkey: retaining first tap capture for handsfree");
         }
         _ => log::info!("linux hotkey: consumed application release handoff"),
     }
+}
+
+fn flush_pending_release(now: Instant) {
+    let action = GESTURE
+        .get()
+        .and_then(|gesture| gesture.lock().ok()?.take_pending_release(now));
+    if action == Some(PortalGestureAction::Cancel) {
+        log::info!("linux hotkey: lone tap expired; discarding hold gesture");
+        if let Some(cb) = CANCEL.get() {
+            cb();
+        }
+    }
+}
+
+fn should_cancel_hold(chord_active: bool, handsfree: bool) -> bool {
+    chord_active && !handsfree
+}
+
+pub fn set_chord_cancel_callback(callback: impl Fn() + Send + Sync + 'static) {
+    let _ = CHORD_CANCEL.set(Box::new(callback));
 }
 static SUB_APP_CHORD: Mutex<Option<super::chord::Chord>> = Mutex::new(None);
 
@@ -713,6 +754,7 @@ async fn run_portal_session(
         // to collide with and no consent prompt for a key the user never
         // presses directly.
         NewShortcut::new(PORTAL_CANCEL_ID, PORTAL_CANCEL_DESCRIPTION),
+        NewShortcut::new(PORTAL_CHORD_CANCEL_ID, PORTAL_CHORD_CANCEL_DESCRIPTION),
         NewShortcut::new(PORTAL_COPY_ID, PORTAL_COPY_DESCRIPTION),
         NewShortcut::new(PORTAL_HANDSFREE_ID, PORTAL_HANDSFREE_DESCRIPTION),
     ];
@@ -852,6 +894,7 @@ async fn run_portal_session(
     loop {
         tokio::select! {
             _ = configuration_poll.tick() => {
+                flush_pending_release(Instant::now());
                 let mut desktop_changed = false;
                 if desktop_check.elapsed() >= Duration::from_secs(5)
                     && !CHORD_ACTIVE.load(Ordering::SeqCst)
@@ -884,6 +927,7 @@ async fn run_portal_session(
             Some(event) = activated.next() => {
                 let id = event.shortcut_id();
                 if id == PORTAL_SHORTCUT_ID {
+                    flush_pending_release(Instant::now());
                     let Ok(mut gesture) = gesture.lock() else {
                         log::error!("linux hotkey: gesture state lock was poisoned");
                         continue;
@@ -911,6 +955,13 @@ async fn run_portal_session(
                 } else if id == PORTAL_CANCEL_ID {
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
+                } else if id == PORTAL_CHORD_CANCEL_ID {
+                    // The compositor rejects modifier prefixes of other
+                    // shortcuts. It must never cancel hands-free or processing.
+                    if should_cancel_hold(CHORD_ACTIVE.load(Ordering::SeqCst), HANDLESS.load(Ordering::SeqCst)) {
+                        log::info!("linux hotkey: discarding hold used by another shortcut");
+                        if let Some(cb) = CHORD_CANCEL.get() { cb(); }
+                    }
                 } else if id == PORTAL_COPY_ID {
                     if let Some(cb) = COPY.get() { cb(); }
                 } else if id == PORTAL_HANDSFREE_ID {
@@ -1057,8 +1108,8 @@ fn pick_portal_id(
 mod tests {
     use super::{
         escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
-        shortcut_configuration, PortalGesture, PortalGestureAction, PORTAL_CANCEL_DESCRIPTION,
-        PORTAL_SHORTCUT_DESCRIPTION,
+        shortcut_configuration, should_cancel_hold, PortalGesture, PortalGestureAction,
+        PORTAL_CANCEL_DESCRIPTION, PORTAL_SHORTCUT_DESCRIPTION,
     };
     use std::time::{Duration, Instant};
 
@@ -1069,7 +1120,7 @@ mod tests {
 
         assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
         assert_eq!(
-            gesture.deactivated(start + Duration::from_millis(400)),
+            gesture.deactivated(start + Duration::from_millis(1000)),
             Some(PortalGestureAction::Release)
         );
     }
@@ -1080,16 +1131,17 @@ mod tests {
         let mut gesture = PortalGesture::default();
 
         assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
-        assert_eq!(
-            gesture.deactivated(start + Duration::from_millis(80)),
-            Some(PortalGestureAction::Cancel)
-        );
+        assert_eq!(gesture.deactivated(start + Duration::from_millis(80)), None);
         assert_eq!(
             gesture.activated(start + Duration::from_millis(180)),
             Some(PortalGestureAction::Handsfree)
         );
         assert_eq!(
             gesture.deactivated(start + Duration::from_millis(240)),
+            None
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_secs(1)),
             None
         );
     }
@@ -1102,7 +1154,7 @@ mod tests {
         assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
         assert_eq!(gesture.activated(start + Duration::from_millis(100)), None);
         assert_eq!(
-            gesture.deactivated(start + Duration::from_millis(500)),
+            gesture.deactivated(start + Duration::from_millis(1000)),
             Some(PortalGestureAction::Release)
         );
     }
@@ -1113,13 +1165,18 @@ mod tests {
         let mut gesture = PortalGesture::default();
 
         assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
+        assert_eq!(gesture.deactivated(start + Duration::from_millis(80)), None);
         assert_eq!(
-            gesture.deactivated(start + Duration::from_millis(80)),
+            gesture.take_pending_release(start + Duration::from_millis(431)),
             Some(PortalGestureAction::Cancel)
         );
         assert_eq!(
             gesture.activated(start + Duration::from_millis(500)),
             Some(PortalGestureAction::Press)
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_secs(1)),
+            None
         );
     }
 
@@ -1127,6 +1184,80 @@ mod tests {
     fn unmatched_deactivation_is_ignored() {
         let mut gesture = PortalGesture::default();
         assert_eq!(gesture.deactivated(Instant::now()), None);
+    }
+
+    #[test]
+    fn logged_double_tap_timings_keep_one_capture_without_release_or_cancel() {
+        // First hold and gap from the reported failures, plus slower taps.
+        for (held, gap) in [(312, 163), (311, 337), (448, 200), (699, 349)] {
+            let start = Instant::now();
+            let mut gesture = PortalGesture::default();
+            assert_eq!(gesture.activated(start), Some(PortalGestureAction::Press));
+            let released = start + Duration::from_millis(held);
+            assert_eq!(gesture.deactivated(released), None);
+            assert_eq!(
+                gesture.take_pending_release(released + Duration::from_millis(gap)),
+                None
+            );
+            assert_eq!(
+                gesture.activated(released + Duration::from_millis(gap)),
+                Some(PortalGestureAction::Handsfree)
+            );
+            assert_eq!(
+                gesture.deactivated(released + Duration::from_millis(gap + 80)),
+                None
+            );
+            assert_eq!(
+                gesture.take_pending_release(start + Duration::from_secs(3)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn lone_tap_discards_once_only_after_the_second_tap_window() {
+        let start = Instant::now();
+        let mut gesture = PortalGesture::default();
+        gesture.activated(start);
+        assert_eq!(gesture.deactivated(start + Duration::from_millis(80)), None);
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_millis(429)),
+            None
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_millis(430)),
+            Some(PortalGestureAction::Cancel)
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_millis(500)),
+            None
+        );
+    }
+
+    #[test]
+    fn compositor_handoff_retires_first_tap_and_late_second_release() {
+        let start = Instant::now();
+        let mut gesture = PortalGesture::default();
+        gesture.activated(start);
+        gesture.deactivated(start + Duration::from_millis(312));
+        // notify_handless resets the tracker before promoting the capture.
+        gesture = PortalGesture::default();
+        assert_eq!(
+            gesture.deactivated(start + Duration::from_millis(600)),
+            None
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_secs(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn modifier_prefix_rejection_never_cancels_handsfree_or_processing() {
+        assert!(should_cancel_hold(true, false));
+        assert!(!should_cancel_hold(true, true));
+        assert!(!should_cancel_hold(false, false));
+        assert!(!should_cancel_hold(false, true));
     }
 
     #[test]

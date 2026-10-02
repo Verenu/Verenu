@@ -515,7 +515,7 @@ local verenu_press = function()
     if press_generation == verenu_press_generation then
       verenu_short_hold = false
     end
-  end, { timeout = 250, type = "oneshot" })
+  end, { timeout = 700, type = "oneshot" })
 end
 hl.on("input.keyboard.key", function(keycode, _, state)
   if not verenu_release_armed then
@@ -594,11 +594,12 @@ fn global_shortcut_binding_block(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    // The portal's trigger-less cancel action lives beside the dictate action
-    // in the same app scope; Escape-to-cancel dispatches the same handle.
-    let cancel_portal_id = press_portal_id
-        .rsplit_once(':')
-        .map_or_else(|| "cancel".to_string(), |(scope, _)| format!("{scope}:cancel"));
+    // Rejecting another shortcut's modifier prefix is distinct from Escape:
+    // the backend ignores this action during hands-free and processing.
+    let cancel_portal_id = press_portal_id.rsplit_once(':').map_or_else(
+        || "cancel-chord".to_string(),
+        |(scope, _)| format!("{scope}:cancel-chord"),
+    );
     // Keys that never mean "this is another shortcut": every modifier (the
     // chord is made of them), the chord's own keys, Space (hands-free) and
     // Escape (cancel).
@@ -634,9 +635,41 @@ mod tests {
     use super::{global_shortcut_binding_block, HyprMonitor, LogicalMonitor};
 
     #[test]
+    #[ignore = "requires a Lua interpreter; executes generated bindings with a fake compositor"]
+    fn generated_lua_handles_double_taps_mouse_chords_and_combo_rejection() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let block = global_shortcut_binding_block(
+            "-- START",
+            "-- END",
+            &["CTRL + Super_L".to_string(), "SUPER + Control_L".to_string()],
+            "app:dictate",
+            "release",
+            "handsfree",
+            &[37, 105, 133, 134],
+        );
+        let fixture = include_str!("../../../tests/fixtures/hyprland-gestures.lua")
+            .replace("-- GENERATED_BINDINGS", &block);
+        let mut child = Command::new("lua")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Lua interpreter is required for this native fixture");
+        child.stdin.take().unwrap().write_all(fixture.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn scaled_monitor_converts_mode_pixels_before_adding_layout_origin() {
         let monitor = HyprMonitor {
-            id: 1,
             x: 0,
             y: 1080,
             width: 2560,
@@ -697,8 +730,10 @@ mod tests {
             "hl.on(\"input.keyboard.key\", function(keycode, _, state)"
         ));
         assert!(block.contains("local verenu_release_keycodes = { 65 }"));
-        assert!(block.contains("local verenu_cancel = hl.dsp.global(\"app:cancel\")"));
-        assert!(block.contains("for _, ignored in ipairs({ 65, 9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134 }) do"));
+        assert!(block.contains("local verenu_cancel = hl.dsp.global(\"app:cancel-chord\")"));
+        assert!(block.contains(
+            "for _, ignored in ipairs({ 65, 9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134 }) do"
+        ));
         assert!(block.contains("type = \"oneshot\""));
         assert!(block.contains(
             "hl.bind(\"CTRL + SPACE\", verenu_press, { description = \"Verenu dictation\", submap_universal = true })"

@@ -22,6 +22,8 @@ enum HotkeyEvent {
     Release,
     HandlessToggle,
     Cancel,
+    #[allow(dead_code)] // Emitted only by the Linux compositor watcher.
+    ChordCancel,
     EscapeCancel,
     CopyLast,
     // The sub-app capture hotkey: snapshot the foreground window for review.
@@ -65,6 +67,7 @@ impl HandsfreeStopGuard {
                 | HotkeyEvent::Release
                 | HotkeyEvent::HandlessToggle
                 | HotkeyEvent::Cancel
+                | HotkeyEvent::ChordCancel
         )
     }
 }
@@ -111,6 +114,14 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
     let tx_copy_last = hotkey_tx.clone();
     let tx_sub_app = hotkey_tx.clone();
     let tx_release = hotkey_tx;
+
+    #[cfg(target_os = "linux")]
+    {
+        let tx_chord_cancel = tx_cancel.clone();
+        crate::core::hotkey::set_chord_cancel_callback(move || {
+            let _ = tx_chord_cancel.send(HotkeyEvent::ChordCancel);
+        });
+    }
 
     match crate::core::hotkey::start(
         move || {
@@ -284,19 +295,10 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         crate::core::hotkey::set_handless_active(true);
                         pipeline::update_pill_state(&app_hk, "handsfree");
                     } else if !has_session {
-                        // Linux's only handsfree gesture is a double-tap of the
-                        // whole chord (see hotkey/linux.rs) — its first tap's
-                        // own release already fired and can still be
-                        // Processing (a near-certain quality-gate rejection,
-                        // since a "tap" is far under MIN_RECORDING_MS) by the
-                        // time this fires for the second tap. reserve_starting
-                        // requires Idle and silently no-ops against
-                        // Processing, which used to mean the double-tap just
-                        // watched two short, separately-rejected dictations
-                        // instead of converting to handsfree. Interrupt that
-                        // stale attempt first, exactly like a fresh Press
-                        // would, carrying its audio forward instead of
-                        // discarding it.
+                        // Double-taps normally promote the first tap's open
+                        // capture above. An explicit hands-free gesture can
+                        // also arrive after a longer hold entered processing;
+                        // interrupt that attempt and carry its audio forward.
                         let started = {
                             let Some(st) = lock_app_state(&state_hk) else {
                                 continue;
@@ -364,7 +366,17 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                     }
                 }
 
-                HotkeyEvent::Cancel => {
+                HotkeyEvent::ChordCancel
+                    if lock_app_state(&state_hk).is_none_or(|st| {
+                        !st.lifecycle.is_recording() || st.lifecycle.is_handless_recording()
+                    }) =>
+                {
+                    // A queued modifier-prefix rejection cannot cancel a
+                    // session that has since converted to hands-free.
+                    continue;
+                }
+
+                HotkeyEvent::Cancel | HotkeyEvent::ChordCancel => {
                     // A discarded first tap (or a quick handsfree stop) must not
                     // let the pending start cue sound.
                     crate::media::sound::cancel_pending_start();
@@ -558,6 +570,7 @@ mod tests {
             HotkeyEvent::Release,
             HotkeyEvent::HandlessToggle,
             HotkeyEvent::Cancel,
+            HotkeyEvent::ChordCancel,
         ] {
             assert!(guard.suppresses(event, now + Duration::from_millis(1)));
         }
