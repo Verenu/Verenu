@@ -94,19 +94,21 @@ use gates::{
     recording_gate_rms_for_sensitivity, silence_floor_gate_rms_for_sensitivity,
     strip_hallucinated_suffix, strip_trailing_hallucination, MIN_RECORDING_MS, MIN_RECORDING_RMS,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use pill::initialize_pill;
 pub(crate) use pill::{
     current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_hit_rect,
     set_pill_interactive,
     show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use pill::initialize_pill;
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
     show_paste_failed_pill,
 };
 #[cfg(not(target_os = "linux"))]
-pub(crate) use pill_position::{apply_pill_placement, placement_for_current_monitor, PillPlacement};
+pub(crate) use pill_position::{
+    apply_pill_placement, placement_for_current_monitor, PillPlacement,
+};
 pub(crate) use session::*;
 use stages_cleanup::*;
 use stages_style::*;
@@ -314,11 +316,47 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
 }
 
 pub async fn run_pipeline(app: AppHandle, state: SharedState) {
-    run_pipeline_with_delivery(app, state, false).await;
+    run_pipeline_with_delivery(app, state, false, None).await;
 }
 
 pub async fn run_pipeline_event_only(app: AppHandle, state: SharedState) {
-    run_pipeline_with_delivery(app, state, true).await;
+    run_pipeline_with_delivery(app, state, true, None).await;
+}
+
+struct ProvidedCapture {
+    audio: CapturedAudio,
+    generation: u64,
+    context: crate::core::context::ResolvedContextIdentity,
+    process_name: String,
+    domain: Option<String>,
+}
+
+/// Browser audio enters the production pipeline after microphone capture.
+/// Delivery remains event-only, so tests cannot paste into an unrelated app.
+#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+pub(crate) async fn run_provided_audio(
+    app: AppHandle,
+    state: SharedState,
+    audio: CapturedAudio,
+    context: crate::core::context::ResolvedContextIdentity,
+    process_name: String,
+    domain: Option<String>,
+) -> Result<(), String> {
+    let generation = state::reserve_provided_capture(&state)?;
+    run_pipeline_with_delivery(
+        app,
+        state,
+        true,
+        Some(ProvidedCapture {
+            audio,
+            generation,
+            context,
+            process_name,
+            domain,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 /// Whether a release that found no live session should hide the pill.
@@ -346,32 +384,6 @@ async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-/// A very short hotkey hold can release while the microphone is still opening.
-/// Keep the stop request alive for that startup window instead of consuming the
-/// `Starting` reservation and allowing the late opener to leave a live pill.
-async fn take_recording_for_stopping_after_start(
-    state: &SharedState,
-) -> Option<state::StoppingHandoff> {
-    const START_STOP_RACE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
-    const START_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(5);
-    let deadline = std::time::Instant::now() + START_STOP_RACE_WINDOW;
-
-    loop {
-        let starting = state::lock_state(state)
-            .map(|st| matches!(st.lifecycle, DictationLifecycle::Starting { .. }))
-            .unwrap_or(false);
-        if !starting {
-            return state::take_recording_for_stopping(state);
-        }
-        if std::time::Instant::now() >= deadline {
-            // Consume the reservation atomically. The start task will observe
-            // Idle and tear down its newly opened session instead of reviving
-            // the recording after the user already released the chord.
-            return state::take_recording_for_stopping(state);
-        }
-        tokio::time::sleep(START_STOP_POLL).await;
-    }
-}
 
 /// Concatenates a previous (interrupted) dictation's audio onto a freshly
 /// captured one — both are already resampled to the fixed 16kHz mono target,
@@ -401,8 +413,29 @@ fn merge_prepend_audio(
     Ok((merged, merged_rms, merged_raw_rms))
 }
 
-async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_only: bool) {
+async fn run_pipeline_with_delivery(
+    app: AppHandle,
+    state: SharedState,
+    event_only: bool,
+    provided: Option<ProvidedCapture>,
+) {
     let started_at = std::time::Instant::now();
+    let handoff = if let Some(input) = &provided {
+        Some((
+            None,
+            crate::core::window_geometry::WindowTarget::default(),
+            None,
+            input.generation,
+            None,
+            input.context.clone(),
+        ))
+    } else {
+        state::take_recording_for_stopping(&state).map(
+            |(session, target, mic, generation, prepend, context)| {
+                (Some(session), target, mic, generation, prepend, context)
+            },
+        )
+    };
     let Some((
         session,
         target,
@@ -410,7 +443,7 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
         generation,
         prepend_audio,
         resolved_context_identity,
-    )) = take_recording_for_stopping_after_start(&state).await
+    )) = handoff
     else {
         log::debug!("pipeline: no session - recording never started or was already consumed");
         // A release that finds no live session must not leave a
@@ -443,8 +476,13 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // two can diverge (handsfree, focus shifts) and that divergence let one
     // app's mapping style leak into another app. Issue #144. Falls back to the
     // live foreground only when the captured target id is unavailable (null/0).
-    let process_name = window_context::get_process_name_for_hwnd(target.id)
-        .or_else(window_context::get_active_process_name)
+    let process_name = provided
+        .as_ref()
+        .map(|input| input.process_name.clone())
+        .or_else(|| {
+            window_context::get_process_name_for_hwnd(target.id)
+                .or_else(window_context::get_active_process_name)
+        })
         .unwrap_or_else(|| "unknown".into())
         .to_lowercase();
     let db_handle = app.state::<DbHandle>().inner().clone();
@@ -452,7 +490,9 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // browser — the UIA tree walk is comparatively costly and meaningless
     // for any other window. This metadata is only used for the cleanup prompt;
     // the Context identity itself was captured before recording began.
-    let browser_domain = if window_context::is_browser_exe(&process_name) {
+    let browser_domain = if let Some(input) = &provided {
+        input.domain.clone()
+    } else if window_context::is_browser_exe(&process_name) {
         browser_probe::read_browser_domain_for_window(target.id)
     } else {
         None
@@ -466,7 +506,9 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
 
     // Mark the session inactive before unmuting or waiting on stop() so the
     // delayed mute helper cannot wake up and re-mute the system mid-shutdown.
-    session.active.store(false, Ordering::Relaxed);
+    if let Some(session) = &session {
+        session.active.store(false, Ordering::Relaxed);
+    }
     crate::media::sound::cancel_pending_start();
     crate::media::sound::coordinated_unmute();
     show_pill(&app, "processing");
@@ -506,9 +548,21 @@ async fn run_pipeline_with_delivery(app: AppHandle, state: SharedState, event_on
     // Capture first, gate second: a resumed/prepended recording needs to be
     // merged with the previous session's audio before the quality gate runs,
     // so a short-but-valid continuation isn't rejected on its own merits.
-    let Some(stopped_capture) =
+    let capture = if let Some(input) = provided {
+        let rms = audio::rms_f32(&input.audio.samples_16k);
+        Some(StoppedCapture {
+            audio: input.audio,
+            rms,
+            raw_rms: rms,
+            stream_error: false,
+            recovery_write_failed: false,
+        })
+    } else if let Some(session) = session {
         stop_and_capture_audio(&app, session, exclusive_mic_session_id).await
-    else {
+    } else {
+        None
+    };
+    let Some(stopped_capture) = capture else {
         // Stop/capture failures retain any durable prefix for crash recovery;
         // the duration-limit branch handles its deliberate cleanup itself.
         state::leave_stopping_if_owned(&state, generation);

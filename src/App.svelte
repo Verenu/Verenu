@@ -5,6 +5,8 @@
   import { isWindows, isLinux } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
+  import DevSessionPanel from './lib/components/DevSessionPanel.svelte';
+  import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import Insights from './lib/views/Insights.svelte';
   import Contexts from './lib/views/Contexts.svelte';
@@ -383,7 +385,7 @@
     // background and returns the cleanup immediately, so there's no unmount
     // race to guard and the interval is always registered before we return.
     try {
-      stopAutomaticUpdateChecks = startAutomaticUpdateChecks();
+      if (!isBrowserDevSession()) stopAutomaticUpdateChecks = startAutomaticUpdateChecks();
     } catch (error) {
       console.error('Failed to start automatic update checks:', error);
     }
@@ -484,6 +486,8 @@
     };
   });
 </script>
+
+{#if isBrowserDevSession()}<DevSessionPanel />{/if}
 
 <div
   class="app"

@@ -92,13 +92,18 @@ pub(super) fn resolve_context_for_window(
         None
     };
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
-    let (context, sub_app) = crate::core::context::resolve_context_with_title(
+    let (mut context, sub_app) = crate::core::context::resolve_context_with_title(
         &db_handle,
         &process_name,
         browser_domain.as_deref(),
         window_title.as_deref(),
     )
     .ok()?;
+    if context.is_everywhere {
+        context = crate::core::context::resolve_context_for_window(
+            &db_handle, &process_name, browser_domain.as_deref(), hwnd,
+        ).ok()?;
+    }
     Some(crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
         &context,
         sub_app.as_ref(),
