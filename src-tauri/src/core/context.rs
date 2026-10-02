@@ -70,7 +70,7 @@ pub fn resolve_context_for_window(
     domain: Option<&str>,
     target_id: usize,
 ) -> Result<Context> {
-    let context = resolve_context(db, executable, domain)?;
+    let (context, _) = resolve_context_with_title(db, executable, domain, None)?;
     #[cfg(target_os = "linux")]
     {
         if !context.is_everywhere {
@@ -94,7 +94,7 @@ pub fn resolve_context_for_window(
 fn resolve_executable_alias(db: &Db, context: Context, alias: Option<&str>) -> Result<Context> {
     if context.is_everywhere {
         if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
-            return db::resolve_context_for_target(db, alias, None);
+            return db::resolve_context_with_sub_app(db, alias, None, None).map(|(context, _)| context);
         }
     }
     Ok(context)
