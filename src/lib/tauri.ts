@@ -3,6 +3,7 @@ import { emit as tauriEmit, listen as tauriListen } from '@tauri-apps/api/event'
 import { defaultHotkey } from './platform';
 import { frontendIpcActivity } from './diagnostics';
 import { extractIpcErrorMessage } from './errors';
+import { isBrowserDevSession, sessionEmit, sessionInvoke, sessionListen } from './devSession';
 
 declare const __APP_VERSION__: string;
 declare const __VERENU_GIT_SHA__: string;
@@ -2427,7 +2428,10 @@ export function isTauriRuntime(): boolean {
 
 export function invoke<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
   const started = frontendIpcActivity.start(command);
-  const request = hasTauriInternals() ? tauriInvoke<T>(command, args) : devInvoke<T>(command, args);
+  let request: Promise<T>;
+  if (hasTauriInternals()) request = tauriInvoke<T>(command, args);
+  else if (isBrowserDevSession()) request = sessionInvoke<T>(command, args);
+  else request = devInvoke<T>(command, args);
   return request.then(
     (value) => { frontendIpcActivity.finish(command, started, true); return value; },
     (error) => { frontendIpcActivity.finish(command, started, false, extractIpcErrorMessage(error)); throw error; },
@@ -2438,6 +2442,7 @@ export function listen<T>(
   event: string,
   handler: EventHandler<T>,
 ): Promise<UnlistenFn> {
+  if (isBrowserDevSession()) return sessionListen<T>(event, handler);
   if (hasTauriInternals()) {
     return tauriListen<T>(event, handler as Parameters<typeof tauriListen<T>>[1]);
   }
@@ -2469,6 +2474,7 @@ export function listen<T>(
 }
 
 export function emit<T>(event: string, payload?: T): Promise<void> {
+  if (isBrowserDevSession()) return sessionEmit(event, payload);
   if (hasTauriInternals()) {
     return tauriEmit(event, payload);
   }

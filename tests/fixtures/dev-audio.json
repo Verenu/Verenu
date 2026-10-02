@@ -1,0 +1,8 @@
+[
+  { "name": "plain", "text": "The orange notebook is on the kitchen table.", "contains": ["orange", "notebook", "kitchen", "table"] },
+  { "name": "punctuation", "text": "Hello team. The test passed. Please review the notes tomorrow.", "contains": ["team", "test", "notes", "tomorrow"] },
+  { "name": "correction", "text": "Schedule the review for Tuesday. Actually, make that Wednesday afternoon.", "contains": ["Wednesday", "afternoon"] },
+  { "name": "vocabulary", "text": "Verenu uses SQLite and PipeWire for local dictation.", "contains": ["local", "dictation"] },
+  { "name": "snippet", "text": "Insert the test signature.", "contains": ["signature"] },
+  { "name": "long", "text": "This is a longer dictation test. We are checking that recording, transcription, cleanup, and history all work together. The first task is to review the orange notebook. The second task is to update the test results. Keep the original meaning and write clear sentences. After the review, send the notes to the team on Wednesday afternoon.", "contains": ["orange", "notebook", "Wednesday", "afternoon"] }
+]

@@ -3,6 +3,15 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import pkg from './package.json';
 
+const allowedDevHosts = process.env.VERENU_DEV_ORIGINS?.split(',').flatMap((origin) => {
+  try {
+    const hostname = new URL(origin.trim()).hostname;
+    return hostname ? [hostname] : [];
+  } catch {
+    return [];
+  }
+});
+
 function git(command: string): string {
   try {
     return execSync(command, { stdio: ['ignore', 'pipe', 'ignore'] })
@@ -36,6 +45,13 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: '127.0.0.1',
+    allowedHosts: allowedDevHosts,
+    proxy: process.env.VERENU_DEV_BRIDGE_PORT ? {
+      '/__verenu_dev': {
+        target: `http://127.0.0.1:${process.env.VERENU_DEV_BRIDGE_PORT}`,
+        rewrite: (url) => url.replace(/^\/__verenu_dev/, ''),
+      },
+    } : undefined,
     headers: {
       'Cache-Control': 'no-store',
     },

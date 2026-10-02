@@ -30,17 +30,18 @@ Normal changes use one pull request directly into `master`.
 - Address review feedback and CI failures before merging.
 - Do not open an intermediate pull request into `dev`.
 
-For GitButler workspaces, verify the target before creating a pull request:
+Use the worktree assigned to your thread. Verify its branch and changes before creating a pull request:
 
 ```powershell
-but config target
+git branch --show-current
+git diff --stat
 ```
 
-It should report `origin/master`. If no branches are applied, set the target
-and push remote with:
+The branch should belong to this task and the PR base should be `master`.
+Before committing, review exactly what is staged:
 
 ```powershell
-but config target origin/master --push-remote origin
+git diff --cached
 ```
 
 ## Before You Start
