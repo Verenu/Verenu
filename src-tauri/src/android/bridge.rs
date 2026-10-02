@@ -385,8 +385,11 @@ fn state_payload(state: &BridgeState) -> Value {
         "dictationActive": dictation_active,
         "pillStage": last_pill_stage(),
         "audioLevel": last_audio_level(),
+        "audioEnvelope": take_audio_envelope(),
         "keystorePending": has_keystore_rotation(),
         "analyticsEnabled": analytics_enabled(state),
+        "pillPosition": pill_position(state),
+        "appearanceMode": appearance_mode(state),
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
         "overlay": {
@@ -487,6 +490,29 @@ fn analytics_enabled(state: &BridgeState) -> bool {
         .unwrap_or(true)
 }
 
+fn setting_string(state: &BridgeState, key: &str) -> Option<String> {
+    state
+        .app
+        .as_ref()
+        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
+        .and_then(|settings| settings.get(key).and_then(Value::as_str).map(String::from))
+}
+
+/// The user's pill placement, or the default when unset/unrecognised.
+fn pill_position(state: &BridgeState) -> String {
+    setting_string(state, crate::data::store::ANDROID_PILL_POSITION)
+        .filter(|value| super::ANDROID_PILL_POSITIONS.contains(&value.as_str()))
+        .unwrap_or_else(|| super::DEFAULT_ANDROID_PILL_POSITION.to_string())
+}
+
+/// `system`, `light` or `dark`; the pill follows the app's own appearance
+/// choice rather than only the OS night mode.
+fn appearance_mode(state: &BridgeState) -> String {
+    setting_string(state, crate::data::store::APPEARANCE_MODE)
+        .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
+        .unwrap_or_else(|| "system".to_string())
+}
+
 fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> bool {
     settings
         .get(crate::data::store::ANALYTICS_ENABLED)
@@ -575,6 +601,35 @@ fn audio_level_cell() -> &'static std::sync::atomic::AtomicU32 {
 /// this since it cannot see the `audio-level` WebView events.
 pub(crate) fn note_audio_level(level: f32) {
     audio_level_cell().store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn audio_envelope_buffer() -> &'static Mutex<Vec<f32>> {
+    static ENVELOPE: OnceLock<Mutex<Vec<f32>>> = OnceLock::new();
+    ENVELOPE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Queue the recorder's short-window peak envelope (10 ms per sample, see
+/// `EnvelopeTap`) for the Android pill. Capped so a stalled poller can never
+/// grow it without bound; the oldest samples are the ones dropped.
+pub(crate) fn note_audio_envelope(samples: &[f32]) {
+    const MAX_BUFFERED: usize = 400;
+    let mut buffer = audio_envelope_buffer()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    buffer.extend_from_slice(samples);
+    if buffer.len() > MAX_BUFFERED {
+        let excess = buffer.len() - MAX_BUFFERED;
+        buffer.drain(..excess);
+    }
+}
+
+/// Everything queued since the previous call (single consumer: the pill).
+pub(crate) fn take_audio_envelope() -> Vec<f32> {
+    std::mem::take(
+        &mut *audio_envelope_buffer()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
 }
 
 pub(crate) fn last_audio_level() -> f32 {
