@@ -397,8 +397,8 @@ pub fn upsert_remote_stats(conn: &Connection, stats: &DeviceStats) -> Result<()>
         "INSERT INTO sync_remote_stats (device_id, total_words, dictionary_fixes, updated_at)
          VALUES (?1, ?2, ?3, datetime('now'))
          ON CONFLICT(device_id) DO UPDATE SET
-           total_words = excluded.total_words,
-           dictionary_fixes = excluded.dictionary_fixes,
+           total_words = MAX(total_words, excluded.total_words),
+           dictionary_fixes = MAX(dictionary_fixes, excluded.dictionary_fixes),
            updated_at = excluded.updated_at",
         params![stats.device_id, stats.total_words, stats.dictionary_fixes],
     )?;

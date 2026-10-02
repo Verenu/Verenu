@@ -58,6 +58,12 @@ pub fn get_icon_data_uri(_app: &tauri::AppHandle, exe: &str) -> Option<String> {
     png_bytes_to_data_uri(&bytes)
 }
 
+/// Desktop-entry display name for a Linux app identity (see sub-app capture).
+#[cfg(target_os = "linux")]
+pub fn linux_app_display_name(exe: &str) -> Option<String> {
+    linux::desktop_app_name(&exe.trim().to_lowercase())
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::path::{Path, PathBuf};
@@ -83,24 +89,68 @@ mod linux {
     /// `Icon=` of the desktop entry whose id, StartupWMClass, or Exec
     /// basename matches `exe` (the same identities the app picker emits).
     pub fn desktop_icon_name(exe: &str) -> Option<String> {
-        for dir in data_dirs() {
-            let Ok(entries) = std::fs::read_dir(dir.join("applications")) else { continue };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
-                    continue;
-                }
-                let Ok(contents) = std::fs::read_to_string(&path) else { continue };
-                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-                if let Some(icon) = icon_if_matches(&contents, &id, exe) {
-                    return Some(icon);
+        desktop_value(exe, icon_if_matches)
+    }
+
+    /// Display name from the matching desktop entry, following a hidden
+    /// override entry to the visible one for the same binary.
+    pub fn desktop_app_name(exe: &str) -> Option<String> {
+        desktop_value(exe, |contents, id, exe| {
+            entry_matches(contents, id, exe)
+                .then(|| entry_name(contents))
+                .flatten()
+        })
+    }
+
+    fn entry_name(contents: &str) -> Option<String> {
+        let mut in_entry = false;
+        for line in contents.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_entry = line.eq_ignore_ascii_case("[Desktop Entry]");
+                continue;
+            }
+            if in_entry {
+                if let Some(name) = line.strip_prefix("Name=") {
+                    return Some(name.trim().to_string()).filter(|n| !n.is_empty());
                 }
             }
         }
         None
     }
 
-    pub(super) fn icon_if_matches(contents: &str, desktop_id: &str, exe: &str) -> Option<String> {
+    fn desktop_value(
+        exe: &str,
+        pick: impl Fn(&str, &str, &str) -> Option<String>,
+    ) -> Option<String> {
+        let mut entries = Vec::new();
+        for dir in data_dirs() {
+            let Ok(read) = std::fs::read_dir(dir.join("applications")) else { continue };
+            for entry in read.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                let Ok(contents) = std::fs::read_to_string(&path) else { continue };
+                let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                if let Some(value) = pick(&contents, &id, exe) {
+                    return Some(value);
+                }
+                entries.push((id, contents));
+            }
+        }
+        // A user override entry (e.g. one named after the Wayland app id) can
+        // omit Icon=. Fall back to another entry for the same binary.
+        let binary = entries
+            .iter()
+            .find(|(id, contents)| entry_matches(contents, id, exe))
+            .and_then(|(_, contents)| entry_exec(contents))
+            .filter(|binary| binary != exe)?;
+        entries
+            .iter()
+            .find_map(|(id, contents)| pick(contents, id, &binary))
+    }
+
+    fn entry_fields(contents: &str) -> (Option<String>, Option<String>, Option<String>) {
         let mut in_entry = false;
         let (mut icon, mut wm_class, mut exec) = (None, None, None);
         for line in contents.lines().map(str::trim) {
@@ -116,9 +166,21 @@ mod linux {
                 _ => {}
             }
         }
-        let matches = desktop_id == exe
-            || wm_class.as_deref() == Some(exe)
-            || exec.as_deref() == Some(exe);
+        (icon, wm_class, exec)
+    }
+
+    fn entry_matches(contents: &str, desktop_id: &str, exe: &str) -> bool {
+        let (_, wm_class, exec) = entry_fields(contents);
+        desktop_id == exe || wm_class.as_deref() == Some(exe) || exec.as_deref() == Some(exe)
+    }
+
+    fn entry_exec(contents: &str) -> Option<String> {
+        entry_fields(contents).2
+    }
+
+    pub(super) fn icon_if_matches(contents: &str, desktop_id: &str, exe: &str) -> Option<String> {
+        let (icon, wm_class, exec) = entry_fields(contents);
+        let matches = desktop_id == exe || wm_class.as_deref() == Some(exe) || exec.as_deref() == Some(exe);
         icon.filter(|icon| matches && !icon.is_empty())
     }
 

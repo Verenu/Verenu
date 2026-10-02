@@ -571,16 +571,22 @@ impl SyncManager {
             return Ok(());
         }
 
+        // Linux desktop ids and window classes carry no suffix, so every
+        // untagged row there goes through matching below.
         let native_suffix = if cfg!(target_os = "macos") {
-            ".app"
+            Some(".app")
+        } else if cfg!(target_os = "linux") {
+            None
         } else {
-            ".exe"
+            Some(".exe")
         };
         let installed_apps = crate::system::apps::list_installed_apps();
         let platform_tag = crate::data::db::current_platform_tag();
 
         for (id, executable) in rows {
-            if executable.starts_with("?::") || executable.to_lowercase().ends_with(native_suffix) {
+            if executable.starts_with("?::")
+                || native_suffix.is_some_and(|suffix| executable.to_lowercase().ends_with(suffix))
+            {
                 continue;
             }
             let mut resolved = closest_installed_app(&executable, &installed_apps)
@@ -871,7 +877,12 @@ impl SyncManager {
         // The responder replies only after its user approves, so the whole
         // exchange runs under the generous pairing timeout.
         let exchange = async {
-            let responder_msg = match read_message(&mut tls).await? {
+            let responder_msg = match super::protocol::read_message_with_timeout(
+                &mut tls,
+                PAIRING_TIMEOUT,
+            )
+            .await?
+            {
                 Message::PairAccept { spake_msg } => spake_msg,
                 Message::PairReject { reason } => return Err(anyhow!("rejected: {reason}")),
                 Message::PairBusy => {
@@ -988,8 +999,16 @@ impl SyncManager {
             Ok(outcome) => {
                 if let Err(err) = self.complete_pairing(outcome, generation).await {
                     self.inner.fail_pairing(generation, format!("{err:#}"));
+                    let _ = send_message(
+                        &mut stream,
+                        &Message::Error {
+                            message: "Could not save paired device trust".to_string(),
+                        },
+                    )
+                    .await;
                     return Err(err);
                 }
+                send_message(&mut stream, &Message::PairComplete).await?;
                 self.inner
                     .app
                     .emit(
@@ -1064,14 +1083,16 @@ impl SyncManager {
         let fp = identity::fingerprint_of(&outcome.cert_der);
         {
             let conn = self.lock_db()?;
-            sync_store::upsert_peer(&conn, &outcome.device_uuid, &outcome.device_name, &fp)?;
+            let tx = conn.unchecked_transaction()?;
+            sync_store::upsert_peer(&tx, &outcome.device_uuid, &outcome.device_name, &fp)?;
             // Seed setting stamps at pairing time so the first session compares
             // real timestamps instead of treating existing values as ancient.
             let keys: Vec<String> = engine::SYNCABLE_SETTINGS
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-            sync_store::seed_setting_stamps(&conn, &self.device_info().uuid, &keys)?;
+            sync_store::seed_setting_stamps(&tx, &self.device_info().uuid, &keys)?;
+            tx.commit()?;
         }
         drop(_pairing_generation_guard);
         self.clear_pending_if_generation(generation).await;
@@ -1094,7 +1115,7 @@ impl SyncManager {
         if should_auto_initiate(&self.device_info().uuid, &uuid) {
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
-                manager.sync_to_peer(&uuid).await;
+                let _ = manager.sync_to_peer(&uuid).await;
             });
         }
         Ok(())
@@ -1209,31 +1230,29 @@ impl SyncManager {
             .unwrap_or_default())
     }
 
-    /// Manual "Sync now". `None` syncs every discovered paired peer.
+    /// Manual "Sync now". `None` attempts every paired peer and reports errors.
     pub async fn sync_now(&self, peer_uuid: Option<String>) -> Result<()> {
-        match peer_uuid {
-            Some(uuid) => {
-                let manager = self.clone();
-                tauri::async_runtime::spawn(async move {
-                    manager.sync_to_peer(&uuid).await;
-                });
-            }
+        let targets = match peer_uuid {
+            Some(uuid) => vec![uuid],
             None => {
-                let uuids: Vec<String> = self
-                    .inner
-                    .discovered
-                    .lock()
-                    .map_err(|_| anyhow!("discovery lock poisoned"))?
-                    .keys()
-                    .cloned()
-                    .collect();
-                let manager = self.clone();
-                tauri::async_runtime::spawn(async move {
-                    for uuid in uuids {
-                        manager.sync_to_peer(&uuid).await;
-                    }
-                });
+                let conn = self.lock_db()?;
+                sync_store::list_peers(&conn)?
+                    .into_iter()
+                    .map(|peer| peer.device_uuid)
+                    .collect()
             }
+        };
+        if targets.is_empty() {
+            return Err(anyhow!("No paired devices to sync"));
+        }
+        let mut failures = Vec::new();
+        for uuid in targets {
+            if let Err(error) = self.sync_to_peer(&uuid).await {
+                failures.push(error.to_string());
+            }
+        }
+        if !failures.is_empty() {
+            return Err(anyhow!(failures.join("; ")));
         }
         Ok(())
     }
@@ -1304,37 +1323,36 @@ impl SyncManager {
         for uuid in targets {
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
-                manager.sync_to_peer(&uuid).await;
+                let _ = manager.sync_to_peer(&uuid).await;
             });
         }
     }
 
     /// Runs one sync session with a paired peer (if discovered and idle).
-    pub async fn sync_to_peer(&self, peer_uuid: &str) {
+    pub async fn sync_to_peer(&self, peer_uuid: &str) -> Result<()> {
         if peer_uuid == self.device_info().uuid {
-            return;
+            return Err(anyhow!("Cannot sync this device with itself"));
         }
         {
-            let mut sessions = match self.inner.sessions.lock() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .map_err(|_| anyhow!("session lock poisoned"))?;
             if !sessions.insert(peer_uuid.to_string()) {
-                return; // session already running
+                return Err(anyhow!("A sync session with this device is already running"));
             }
         }
         let _guard = SessionGuard(self.inner.clone(), peer_uuid.to_string());
 
-        let addrs = self.addr_candidates_for_peer(peer_uuid).unwrap_or_default();
+        let addrs = self.addr_candidates_for_peer(peer_uuid)?;
         if addrs.is_empty() {
-            return; // not visible right now; discovery will retrigger us
+            return Err(anyhow!("Device is offline or not visible on this network"));
         }
-        let Ok(peer) = (|| {
+        let peer = {
             let conn = self.lock_db()?;
             sync_store::get_peer(&conn, peer_uuid)?.ok_or_else(|| anyhow!("not paired"))
-        })() else {
-            return;
-        };
+        }?;
 
         self.set_status(peer_uuid, PeerState::Connecting, None);
         let mut result = Err(anyhow!("no connection candidates"));
@@ -1350,10 +1368,7 @@ impl SyncManager {
         match result {
             Ok(summary) => {
                 {
-                    let conn = match self.lock_db() {
-                        Ok(conn) => conn,
-                        Err(_) => return,
-                    };
+                    let conn = self.lock_db()?;
                     let _ = sync_store::mark_peer_synced(&conn, peer_uuid, 0);
                     let _ = sync_store::compact_log(&conn);
                 }
@@ -1368,15 +1383,13 @@ impl SyncManager {
                         )
                         .ok();
                 }
+                Ok(())
             }
             Err(err) => {
                 let message = format!("{err:#}");
                 log::warn!("sync: session with {peer_uuid} failed: {message}");
                 {
-                    let conn = match self.lock_db() {
-                        Ok(conn) => conn,
-                        Err(_) => return,
-                    };
+                    let conn = self.lock_db()?;
                     let _ = sync_store::mark_peer_error(&conn, peer_uuid, &message);
                 }
                 self.bump_backoff(peer_uuid);
@@ -1392,6 +1405,7 @@ impl SyncManager {
                         }),
                     )
                     .ok();
+                Err(err)
             }
         }
     }
@@ -1726,7 +1740,7 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
     let inner = inner.clone();
     let uuid = uuid.clone();
     tauri::async_runtime::spawn(async move {
-        SyncManager { inner }.sync_to_peer(&uuid).await;
+        let _ = SyncManager { inner }.sync_to_peer(&uuid).await;
     });
 }
 
@@ -1945,6 +1959,10 @@ async fn handle_sync_hello(
         return;
     }
     let _session_guard = SessionGuard(inner.clone(), hello.device_uuid.clone());
+    let manager = SyncManager {
+        inner: inner.clone(),
+    };
+    manager.set_status(&peer.device_uuid, PeerState::Syncing, None);
     let host = ManagerHost::new(&inner);
     // A stalled peer must not hold the session slot forever.
     let result = match tokio::time::timeout(
@@ -1962,6 +1980,8 @@ async fn handle_sync_hello(
                 let _ = sync_store::mark_peer_synced(&conn, &peer.device_uuid, 0);
                 let _ = sync_store::compact_log(&conn);
             }
+            manager.reset_backoff(&peer.device_uuid);
+            manager.set_status(&peer.device_uuid, PeerState::Synced, None);
             if summary.applied.applied > 0 || summary.settings_applied > 0 {
                 let _ = inner.app.emit(
                     "verenu:sync-data-changed",
@@ -1974,6 +1994,7 @@ async fn handle_sync_hello(
             if let Ok(conn) = inner.db.lock() {
                 let _ = sync_store::mark_peer_error(&conn, &peer.device_uuid, &format!("{err:#}"));
             }
+            manager.set_status(&peer.device_uuid, PeerState::Error, Some(&format!("{err:#}")));
         }
     }
 }

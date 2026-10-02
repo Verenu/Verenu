@@ -1,6 +1,7 @@
 import { invoke } from './tauri';
 import { classifyIpcError } from './errors';
 import type { TranscriptionLanguageCode } from './transcriptionLanguages';
+import type { CustomTheme } from './customTheme';
 
 export const SETTINGS_SAVE_ERROR_EVENT = 'verenu:setting-save-error';
 
@@ -9,7 +10,7 @@ export type ProviderModelMap = Record<ProviderId, string[]>;
 export type ToneId = 'casual' | 'formal' | 'very_casual';
 export type CleanupIntensity = 'none' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
-export type AppearanceMode = 'system' | 'light' | 'dark';
+export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 export type LocalModelMemoryPolicy =
   | 'keep_loaded'
   | 'unload_after_5m'
@@ -72,7 +73,11 @@ type SettingsValueMap = {
   beta_updates_enabled: boolean;
   verenu_service_checks_enabled: boolean;
   appearance_mode: AppearanceMode;
+  /** Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S"; unset means the platform default. */
+  sub_app_capture_hotkey: string | null;
   accent_color: string | null;
+  /** Hex palette for the Custom appearance mode. */
+  custom_theme: CustomTheme | null;
   advanced_model_ui: boolean;
   /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;
@@ -87,9 +92,9 @@ type SettingKey = keyof SettingsValueMap;
 export function saveSetting<K extends SettingKey>(key: K, value: SettingsValueMap[K]) {
   return invoke('save_setting', { key, value }).catch((error) => {
     const classified = classifyIpcError(error);
-    if (classified.kind === 'storage-full' && typeof window !== 'undefined') {
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(SETTINGS_SAVE_ERROR_EVENT, {
-        detail: classified.message,
+        detail: `Could not save this setting. ${classified.message}`,
       }));
     }
     throw error;

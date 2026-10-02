@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { encodePcmWav } from './devSession';
+import { encodePcmWav, loadSessionFixture } from './devSession';
 
 describe('browser PCM conversion', () => {
+  it('rejects fixture loading outside an authenticated browser session', async () => {
+    await expect(loadSessionFixture('synthetic.wav')).rejects.toThrow('No browser dev session');
+  });
   it('writes mono PCM16 WAV headers and clamps capture samples', () => {
     const bytes = encodePcmWav(new Float32Array([-2, 0, 2]));
     const view = new DataView(bytes.buffer);

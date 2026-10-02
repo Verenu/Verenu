@@ -27,10 +27,10 @@ pub struct AppMapping {
     pub cleanup_intensity: Option<String>,
 }
 
-/// Combines registry-discovered and currently-running apps into a single deduplicated list.
+/// Discovers user-facing app registrations into a single deduplicated list.
 pub fn list_installed_apps() -> Vec<InstalledApp> {
-    #[cfg(not(any(windows, target_os = "macos")))]
-    return vec![];
+    #[cfg(target_os = "linux")]
+    return list_linux_desktop_apps();
 
     // macOS: enumerate `.app` bundles in the standard Applications folders. The
     // `exe` key is "<bundle name>.app" lowercased, matching the foreground app
@@ -114,6 +114,121 @@ pub fn list_installed_apps() -> Vec<InstalledApp> {
         apps.sort_by_key(|app| app.name.to_lowercase());
         apps
     }
+}
+
+#[cfg(target_os = "linux")]
+fn list_linux_desktop_apps() -> Vec<InstalledApp> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    // Search user entries first. A desktop entry's filename is the stable
+    // application id used by most Wayland clients, while StartupWMClass (when
+    // present) preserves the class used by XWayland applications.
+    let mut directories = Vec::new();
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+    {
+        directories.push(data_home.join("applications"));
+        directories.push(data_home.join("flatpak/exports/share/applications"));
+    }
+
+    let data_dirs = std::env::var_os("XDG_DATA_DIRS")
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    for directory in data_dirs.split(':').filter(|value| !value.is_empty()) {
+        directories.push(PathBuf::from(directory).join("applications"));
+    }
+    directories.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+
+    let mut apps = HashMap::<String, InstalledApp>::new();
+    for directory in directories {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Some(desktop_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some(app) = parse_linux_desktop_entry(&contents, desktop_id) else {
+                continue;
+            };
+            apps.entry(app.exe.clone()).or_insert(app);
+        }
+    }
+
+    let mut apps: Vec<_> = apps.into_values().collect();
+    apps.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.exe.cmp(&right.exe))
+    });
+    apps
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_desktop_entry(contents: &str, desktop_id: &str) -> Option<InstalledApp> {
+    let mut name = None;
+    let mut startup_wm_class = None;
+    let mut entry_type = None;
+    let mut hidden = false;
+    let mut no_display = false;
+    let mut in_desktop_entry = false;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_desktop_entry = line.eq_ignore_ascii_case("[Desktop Entry]");
+            continue;
+        }
+        if !in_desktop_entry {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "Name" => name = nonempty_metadata(value),
+            "StartupWMClass" | "X-GNOME-WMClass" | "X-KDE-WMClass" => {
+                if startup_wm_class.is_none() {
+                    startup_wm_class = nonempty_metadata(value);
+                }
+            }
+            "Type" => entry_type = Some(value),
+            "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
+            "NoDisplay" => no_display = value.eq_ignore_ascii_case("true"),
+            _ => {}
+        }
+    }
+
+    if entry_type != Some("Application") || hidden || no_display {
+        return None;
+    }
+
+    let name = name?;
+    let exe = startup_wm_class
+        .or_else(|| nonempty_metadata(desktop_id))
+        ?
+        .trim()
+        .to_lowercase();
+    (!exe.is_empty()).then_some(InstalledApp {
+        name,
+        exe,
+        developer: None,
+    })
 }
 
 #[cfg(windows)]
@@ -564,6 +679,44 @@ mod tests {
             thread.join().expect("cache reader");
         }
         assert_eq!(CACHE_REFRESH_COUNT.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_desktop_tests {
+    use super::parse_linux_desktop_entry;
+
+    #[test]
+    fn desktop_entry_prefers_wayland_or_xwayland_window_identity() {
+        let app = parse_linux_desktop_entry(
+            "[Desktop Entry]\nType=Application\nName=Example Editor\nExec=/opt/example/editor %U\nStartupWMClass=ExampleEditor\nActions=new-window\n\n[Desktop Action new-window]\nName=New Window\n",
+            "com.example.Editor",
+        )
+        .expect("visible application");
+
+        assert_eq!(app.name, "Example Editor");
+        assert_eq!(app.exe, "exampleeditor");
+    }
+
+    #[test]
+    fn desktop_entry_uses_desktop_id_for_modern_wayland_apps() {
+        let app = parse_linux_desktop_entry(
+            "[Desktop Entry]\nType=Application\nName=Example Notes\nExec=example-notes --new-window\n",
+            "com.example.Notes",
+        )
+        .expect("visible application");
+
+        assert_eq!(app.exe, "com.example.notes");
+    }
+
+    #[test]
+    fn hidden_and_nodisplay_entries_are_not_user_selectable() {
+        for flag in ["Hidden=true", "NoDisplay=true"] {
+            let contents = format!(
+                "[Desktop Entry]\nType=Application\nName=Internal Tool\nExec=internal-tool\n{flag}\n"
+            );
+            assert!(parse_linux_desktop_entry(&contents, "internal-tool").is_none());
+        }
     }
 }
 

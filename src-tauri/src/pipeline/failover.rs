@@ -6,9 +6,9 @@
 
 use super::gates::{MIN_RECORDING_MS, MIN_RECORDING_RMS};
 use super::pill::{show_cancelled_pill, show_interrupted_pill};
-use super::state::{
-    lock_state, CancelledCapture, CaptureOrigin, SharedState, CANCEL_RESUME_WINDOW,
-};
+use super::state::{lock_state, CancelledCapture, CaptureOrigin, SharedState};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::state::CANCEL_RESUME_WINDOW;
 use super::{state, CapturedAudio};
 use crate::core::context::ResolvedContextIdentity;
 use crate::core::window_geometry::WindowTarget;
@@ -562,6 +562,7 @@ pub fn restore_into_state(state: &SharedState) {
 }
 
 /// After the pill window can be shown, surface a restored take.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn offer_restored_capture_pill(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<SharedState>() else {
         return false;

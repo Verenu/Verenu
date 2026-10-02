@@ -1,13 +1,16 @@
 <script lang="ts">
+  import { classifyIpcError } from './lib/errors';
   import { onMount, tick } from 'svelte';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
+  import { isAndroid, isLinux } from './lib/platform';
 
   type PillState = 'idle' | 'recording' | 'processing' | 'loading_local_model' | 'handsfree' | 'error' | 'cancelled' | 'interrupted' | 'paste_failed' | 'copied' | 'clipboard_warning';
   const isCancelLike = (s: PillState) => s === 'cancelled' || s === 'interrupted';
   let state: PillState = 'idle';
   let errorMsg = '';
+  $: displayError = classifyIpcError(errorMsg).message;
   let errOpen = false;
   let errWidth = 0;
   let errHeight = 34;
@@ -40,6 +43,9 @@
   // observed to flash a pale caption-sized bar along the top of the pill.
   async function setPillInteractive(interactive: boolean) {
     const { invoke } = await import('@tauri-apps/api/core');
+    // Linux only accepts clicks inside the reported capsule rect, so make
+    // sure the backend has the current one before it opens the input region.
+    if (interactive) await reportHitRect(true);
     await invoke('set_pill_interactive', { interactive }).catch(() => {});
   }
 
@@ -471,6 +477,13 @@
     let pillSizePending: { w: number; h: number } | null = null;
 
     function sendPillSize(w: number, h: number) {
+      // Linux keeps one fixed-size window (see `reportHitRect`); the backend
+      // ignores content-fit sizes there, so don't spend an IPC on them.
+      if (LINUX_FIXED_WINDOW) {
+        lastSentWidth = w;
+        lastSentHeight = h;
+        return;
+      }
       pillSizeInFlight = true;
       pillSizeInFlightTarget = { w, h };
       import('@tauri-apps/api/core')
@@ -505,6 +518,7 @@
 
   function measureAndResize() {
     if (!clusterEl) return;
+    void reportHitRect();
     const w = windowWidthFor(clusterEl.offsetWidth);
     const h = windowHeightFor(clusterEl.offsetHeight);
     if (w > lastSentWidth || h > lastSentHeight) {
@@ -515,6 +529,45 @@
       settleTimer = null;
       if (clusterEl) reportPillSize(clusterEl.offsetWidth, clusterEl.offsetHeight);
     }, 100);
+  }
+
+  // The Linux (Hyprland) pill window never resizes: native resizes raced the
+  // compositor and left the window box and the rendered capsule out of step,
+  // which made the pill drift off-centre and its buttons unclickable. The
+  // layout centres the capsule inside the fixed window instead, and the
+  // backend only lets clicks through inside the rect reported here.
+  const LINUX_FIXED_WINDOW = isLinux && !isAndroid;
+  // Bleed around the cluster for the shadow and the bouncy entrance scale.
+  const HIT_RECT_BLEED = 10;
+  let lastHitRect = '';
+  // Reports run strictly in order on this chain, and each measures the cluster
+  // when its turn comes, so a caller that awaits one (setPillInteractive) knows
+  // the backend has the latest rect before it proceeds.
+  let hitRectChain: Promise<void> = Promise.resolve();
+
+  async function sendHitRect(force: boolean) {
+    if (!clusterEl) return;
+    const box = clusterEl.getBoundingClientRect();
+    const x = Math.max(0, box.left - HIT_RECT_BLEED);
+    const y = Math.max(0, box.top - HIT_RECT_BLEED);
+    const width = Math.min(window.innerWidth - x, box.width + HIT_RECT_BLEED * 2);
+    const height = Math.min(window.innerHeight - y, box.height + HIT_RECT_BLEED * 2);
+    const key = [x, y, width, height].map(Math.round).join(',');
+    if (!force && key === lastHitRect) return;
+    lastHitRect = key;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_pill_hit_rect', { x, y, width, height });
+    } catch {
+      lastHitRect = '';
+    }
+  }
+
+  function reportHitRect(force = false): Promise<void> {
+    if (!LINUX_FIXED_WINDOW) return Promise.resolve();
+    // A failed report must not poison the chain for every later one.
+    hitRectChain = hitRectChain.then(() => sendHitRect(force)).catch(() => {});
+    return hitRectChain;
   }
 
   let pillResizeObserver: ResizeObserver | null = null;
@@ -992,7 +1045,7 @@
       unlisteners.push(l1);
 
       const l2 = await listen<string>('pill-error', (ev) => {
-        errorMsg = ev.payload ?? 'Something went wrong';
+        errorMsg = ev.payload ?? '';
         if (state === 'error') {
           openError();
         }
@@ -1304,7 +1357,7 @@
          The live .err-text cannot be measured for this: inside the collapsed
          capsule it is a flex item squeezed to ~0, so it can report a
          scrollWidth but never a truthful line count. -->
-    <span class="err-sizer" bind:this={errSizerEl} aria-hidden="true">{errorMsg || 'Something went wrong'}</span>
+    <span class="err-sizer" bind:this={errSizerEl} aria-hidden="true">{displayError}</span>
     <div class="pill error" class:err-open={errOpen} class:err-card={errLines > 1} class:err-scroll={errScroll} class:dying={dying}
          style={errWidth ? `width:${errWidth}px; height:${errHeight}px` : ''}>
       {#if errOpen}
@@ -1321,7 +1374,7 @@
           </svg>
         </button>
       {/if}
-      <span class="err-text" bind:this={errTextEl}>{errorMsg || 'Something went wrong'}</span>
+      <span class="err-text" bind:this={errTextEl}>{displayError}</span>
       {#if errOpen}
         <button class="hf-btn err-retry" onclick={retryFailed} aria-label="Retry">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">

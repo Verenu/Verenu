@@ -517,6 +517,7 @@ pub fn stash_cancelled_capture(
     origin: CaptureOrigin,
     context: ResolvedContextIdentity,
 ) {
+    #[allow(clippy::large_enum_variant)]
     enum StashOutcome {
         Stashed(CancelledCapture),
         LockPoisoned,

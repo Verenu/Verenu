@@ -9,6 +9,7 @@ let token = '';
 let cursor = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let initialization: Promise<void> | undefined;
+let pollFailures = 0;
 const handlers = new Map<string, Set<(event: Envelope) => void>>();
 const subscriptions = new Map<string, Promise<void>>();
 
@@ -86,8 +87,12 @@ async function poll(): Promise<void> {
       try { handler(event); } catch { window.dispatchEvent(new CustomEvent('verenu:dev-connection', { detail: 'A backend event handler failed. Repeat this verification.' })); }
     }
     cursor = result.cursor;
-  } catch { window.dispatchEvent(new CustomEvent('verenu:dev-connection', { detail: 'The Rust backend disconnected. Verification is incomplete.' })); }
-  timer = setTimeout(() => { void poll(); }, 250);
+    pollFailures = 0;
+  } catch {
+    if (pollFailures === 0) window.dispatchEvent(new CustomEvent('verenu:dev-connection', { detail: 'The Rust backend disconnected. Verification is incomplete.' }));
+    pollFailures = Math.min(pollFailures + 1, 6);
+  }
+  timer = setTimeout(() => { void poll(); }, Math.min(250 * 2 ** pollFailures, 10_000));
 }
 
 export function encodePcmWav(samples: Float32Array, sampleRate = 16_000): Uint8Array<ArrayBuffer> {
@@ -122,7 +127,9 @@ export async function submitSessionAudio(bytes: Uint8Array<ArrayBuffer>, target:
   return sessionRequest(`/audio?${query}`, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: new Blob([bytes], { type: 'audio/wav' }) });
 }
 export async function loadSessionFixture(name: string): Promise<Uint8Array<ArrayBuffer>> {
-  const response = await fetch(`/__verenu_dev/fixtures/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+  if (!isBrowserDevSession()) throw new Error('No browser dev session is configured');
+  if (!token) throw new Error('Open the private session access link to connect');
+  const response = await fetch(`/__verenu_dev/fixtures/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), cache: 'no-store' });
   if (!response.ok) throw new Error('Fixture could not be loaded');
   return new Uint8Array(await response.arrayBuffer());
 }

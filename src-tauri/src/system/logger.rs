@@ -95,7 +95,7 @@ pub fn subscribe_log_stream() {
 }
 
 pub fn unsubscribe_log_stream() {
-    let _ = LOG_SUBSCRIBERS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+    let _ = LOG_SUBSCRIBERS.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
         Some(count.saturating_sub(1))
     });
 }

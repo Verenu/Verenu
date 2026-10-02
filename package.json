@@ -22,6 +22,7 @@
     "test:live": "node scripts/run-onepyfone.mjs --profile live",
     "test:native": "node scripts/run-onepyfone.mjs --profile native",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:sync": "cargo test --manifest-path src-tauri/Cargo.toml sync:: --lib",
     "test:smoke": "node tests/smoke/test.cjs && node tests/smoke/test-app.cjs && node tests/smoke/playwright-test-ui.cjs && node tests/smoke/playwright-test-fixes.cjs",
     "test:smoke:state": "node tests/smoke/playwright-test-state.cjs",
     "macos:signing-identity": "bash scripts/macos/ensure-signing-identity.sh",

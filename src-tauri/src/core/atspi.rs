@@ -34,6 +34,8 @@ const ROLE_DOCUMENT_WEB: u32 = 95;
 const METHOD_TIMEOUT: Duration = Duration::from_millis(150);
 /// Upper bound on objects visited by the fallback tree walk.
 const WALK_BUDGET: usize = 600;
+/// Total time allowed for the browser address-bar walk.
+const ADDRESS_BAR_DEADLINE: Duration = Duration::from_millis(250);
 /// Characters read on each side of the caret.
 pub const LOCAL_TEXT_CHARS: i32 = 2048;
 
@@ -110,7 +112,25 @@ fn connect() -> zbus::Result<Connection> {
         .build()
 }
 
-fn with_connection<T>(f: impl FnOnce(&Connection) -> Option<T>) -> Option<T> {
+/// zbus is built with its tokio backend, so its blocking API calls
+/// `Runtime::block_on`, which panics on a tokio worker thread ("Cannot start
+/// a runtime from within a runtime"). Callers include async pipeline stages
+/// (recording start reads the browser address bar), so AT-SPI work always
+/// runs on its own OS thread when a runtime is current.
+fn with_connection<T: Send>(f: impl FnOnce(&Connection) -> Option<T> + Send) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::scope(|scope| {
+            scope
+                .spawn(|| with_connection_on_this_thread(f))
+                .join()
+                .ok()
+                .flatten()
+        });
+    }
+    with_connection_on_this_thread(f)
+}
+
+fn with_connection_on_this_thread<T>(f: impl FnOnce(&Connection) -> Option<T>) -> Option<T> {
     ensure_accessibility_enabled();
     let mut slot = connection_slot().lock().ok()?;
     if slot.as_ref().is_some_and(|conn| conn.is_closed()) {
@@ -431,6 +451,7 @@ pub fn read_address_bar(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
     }
+    let started = std::time::Instant::now();
     with_connection(|conn| {
         for app in app_roots_for_pid(conn, pid) {
             let mut frames = children(conn, &app);
@@ -445,7 +466,9 @@ pub fn read_address_bar(pid: u32) -> Option<String> {
             let mut visited = 0;
             while let Some(obj) = stack.pop() {
                 visited += 1;
-                if visited > WALK_BUDGET {
+                // Runs on the recording-start path: bound total time as well
+                // as node count so a slow browser cannot delay dictation.
+                if visited > WALK_BUDGET || started.elapsed() > ADDRESS_BAR_DEADLINE {
                     break;
                 }
                 let role: u32 = call(conn, &obj, ACCESSIBLE, "GetRole", &()).unwrap_or(0);
@@ -509,6 +532,21 @@ mod tests {
             pid: 1,
             identity: String::new(),
         }
+    }
+
+    /// Regression: calling from a tokio worker used to panic inside zbus's
+    /// blocking API and strand dictation in `Starting`.
+    #[test]
+    fn calls_from_a_tokio_runtime_do_not_panic() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            tokio::spawn(async {
+                let _ = read_address_bar(std::process::id());
+                let _ = read_focused(std::process::id(), 16);
+            })
+            .await
+            .expect("AT-SPI call must not panic on a runtime worker");
+        });
     }
 
     #[test]

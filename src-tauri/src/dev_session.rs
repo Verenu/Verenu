@@ -131,6 +131,7 @@ fn scrub_history(path: &Path) -> anyhow::Result<()> {
             name.as_str(),
             "contexts"
                 | "context_targets"
+                | "context_sub_apps"
                 | "context_website_targets"
                 | "dictionary"
                 | "snippets"
@@ -411,6 +412,10 @@ fn allowed(command: &str) -> bool {
             | "cancel_local_llm_model_download"
             | "cancel_local_llm_runtime_download"
             | "get_contexts"
+            | "get_sub_apps"
+            | "create_sub_app"
+            | "assign_sub_app"
+            | "delete_sub_app"
             | "create_context"
             | "duplicate_context"
             | "update_context"
@@ -483,6 +488,12 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             ),
         ));
     }
+    // Browser audio sessions must not probe host devices unless host access was
+    // explicitly enabled. Settings mounts can otherwise enumerate ALSA devices
+    // concurrently even though recording from those devices is forbidden.
+    if command.command == "get_microphones" && !bridge.host_mic {
+        return Ok(Json(json!([])));
+    }
     if command.command == "save_setting" {
         let key = command.args["key"].as_str().unwrap_or_default();
         use crate::data::store;
@@ -538,7 +549,14 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(std::env::temp_dir().join("verenu-dev-host-mic.lock"))
+                .open(
+                    session_dir()
+                        .parent()
+                        .ok_or_else(|| {
+                            error(StatusCode::CONFLICT, "Session directory has no parent")
+                        })?
+                        .join("host-mic.lock"),
+                )
                 .map_err(|_| error(StatusCode::CONFLICT, "Cannot acquire host microphone lease"))?;
             file.try_lock_exclusive().map_err(|_| {
                 error(
@@ -851,11 +869,13 @@ mod tests {
             )
             .unwrap();
             conn.execute("INSERT INTO transcriptions (raw_text, clean_text) VALUES ('Synthetic source text', 'Synthetic source text')", []).unwrap();
+            conn.execute("INSERT INTO context_sub_apps (uuid, label, executable, title_pattern, match_mode) VALUES ('synthetic-sub-app', 'Synthetic sub-app', 'fixture', 'Synthetic pattern', 'contains')", []).unwrap();
             conn.backup(rusqlite::DatabaseName::Main, &copy, None)
                 .unwrap();
         }
         scrub_history(&copy).unwrap();
         let copied = rusqlite::Connection::open(&copy).unwrap();
+        assert_eq!(copied.query_row("SELECT COUNT(*) FROM context_sub_apps WHERE label='Synthetic sub-app'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(
             copied
                 .query_row("SELECT COUNT(*) FROM transcriptions", [], |row| row
@@ -900,6 +920,9 @@ mod tests {
             assert!(!allowed(command), "{command}");
         }
         assert!(allowed("get_contexts"));
+        assert!(allowed("get_sub_apps"));
+        assert!(allowed("create_sub_app"));
+        assert!(!allowed("take_pending_sub_app_capture"));
         let mut settings =
             json!({crate::data::store::KEY_GROQ: "synthetic-key", "setup_complete": true});
         sanitize_settings(&mut settings).unwrap();

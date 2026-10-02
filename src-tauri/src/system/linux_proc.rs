@@ -96,6 +96,7 @@ pub(crate) fn parse_smaps_kb(text: &str, key: &str) -> Option<u64> {
     parse_status_kb(text, key)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_status_threads(text: &str) -> Option<u32> {
     let line = text
         .lines()

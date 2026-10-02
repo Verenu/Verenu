@@ -253,13 +253,13 @@ pub fn classify_unauthorized_body(body: &str) -> AuthErrorCategory {
 fn auth_401_user_message(provider: &str, category: AuthErrorCategory) -> String {
     match category {
         AuthErrorCategory::InvalidOrRevokedKey => {
-            format!("{provider} API key looks invalid or revoked. Re-enter it in Settings.")
+            format!("{provider} API key looks invalid or revoked. Replace it in Settings > API Keys.")
         }
         AuthErrorCategory::ScopeOrAccountRestriction => format!(
-            "{provider} rejected this key for account or model access. Check key role, team, and model permissions."
+            "{provider} rejected this key for account or model access. Check the key's permissions and your provider account's access to the selected model."
         ),
         AuthErrorCategory::UnknownUnauthorized => {
-            format!("{provider} rejected authentication. Re-enter the key and verify account access.")
+            format!("{provider} rejected authentication. Replace the key in Settings > API Keys and check your provider account's access.")
         }
     }
 }
@@ -362,7 +362,39 @@ pub fn is_retryable_provider_error(e: &anyhow::Error) -> bool {
 /// Converts an error into a safe, actionable user-facing message. Provider
 /// metadata and response bodies must never be shown directly in the UI.
 pub fn user_facing_error(e: &anyhow::Error) -> String {
+    // The outer context can hide the actual network or HTTP failure.
+    if parse_auth_401_error(&e.to_string()).is_some() || is_quota_error(e) {
+        return user_facing_message(&e.to_string());
+    }
+    for cause in e.chain() {
+        if let Some(error) = cause.downcast_ref::<reqwest::Error>() {
+            if let Some(status) = error.status() {
+                return provider_status_message(status.as_u16());
+            }
+            if error.is_timeout() {
+                return "The provider took too long to respond. Check your connection, then try again or choose another provider.".to_string();
+            }
+            if error.is_connect() {
+                return "Verenu could not connect to the provider. Check your internet connection and any VPN or firewall, then try again.".to_string();
+            }
+            if error.is_decode() {
+                return "The provider returned a response Verenu could not read. Try again or choose another model in Settings > Models.".to_string();
+            }
+        }
+    }
     user_facing_message(&e.to_string())
+}
+
+fn provider_status_message(status: u16) -> String {
+    match status {
+        401 | 403 => "The provider rejected access. Check your API key and account access in Settings > API Keys.".to_string(),
+        404 => "The requested model or download was not found. Refresh the model list in Settings > Models and choose an available model.".to_string(),
+        408 | 504 => "The provider took too long to respond. Check your connection, then try again or choose another provider.".to_string(),
+        413 => "The provider could not accept a recording this large. Try a shorter dictation or choose another transcription provider.".to_string(),
+        429 => "The provider's request limit was reached. Wait for it to reset, check your provider plan, or choose another provider.".to_string(),
+        500..=599 => "The provider is temporarily unavailable. Wait a moment, then try again or choose another provider.".to_string(),
+        _ => format!("The provider rejected the request (HTTP {status}). Check the selected model and language in Settings > Models, then try again."),
+    }
 }
 
 /// String-based sibling for call sites that already hold an error message.
@@ -378,28 +410,25 @@ pub fn user_facing_message(msg: &str) -> String {
             .next()
             .unwrap_or("The provider");
         return format!(
-            "{provider} quota reached. Wait for it to reset or add credits, then try again."
+            "{provider} request limit reached. Wait for it to reset, check your provider plan, or choose another provider."
         );
     }
+    let metadata = msg.split("body_preview=").next().unwrap_or(msg);
+    if let Some(status) =
+        extract_http_status_code(metadata).filter(|status| (400..600).contains(status))
+    {
+        return provider_status_message(status);
+    }
     if msg.contains("body_preview=") || msg.contains("request_id=") {
-        return match extract_http_status_code(msg) {
-            Some(status @ (408 | 429 | 500..=599)) => format!(
-                "The provider is temporarily unavailable (HTTP {status}). Wait a moment, then try again."
-            ),
-            Some(status) => format!(
-                "The provider rejected the request (HTTP {status}). Check your API key and model settings, then try again."
-            ),
-            None => "The provider rejected the request. Check your API key and model settings, then try again."
-                .to_string(),
-        };
+        return "The provider did not return a usable result. Try again or choose another model in Settings > Models.".to_string();
     }
     truncate_display(msg)
 }
 
 fn truncate_display(s: &str) -> String {
     let s = s.trim();
-    if s.chars().count() > 120 {
-        format!("{}…", s.chars().take(117).collect::<String>())
+    if s.chars().count() > 600 {
+        format!("{}…", s.chars().take(597).collect::<String>())
     } else {
         s.to_string()
     }
@@ -425,7 +454,7 @@ pub fn is_connectivity_error(e: &anyhow::Error) -> bool {
 }
 
 fn extract_http_status_code(msg: &str) -> Option<u16> {
-    for marker in ["status=", "status:"] {
+    for marker in ["status=", "status:", "status ", "HTTP "] {
         if let Some(idx) = msg.find(marker) {
             let digits: String = msg[idx + marker.len()..]
                 .chars()
@@ -448,6 +477,42 @@ mod tests {
         auth_401_display_message, classify_unauthorized_body, parse_auth_401_error,
         sanitize_error_body_preview, AuthErrorCategory, ParsedAuth401Error,
     };
+
+    #[test]
+    fn user_errors_explain_http_failures_without_response_data() {
+        for (status, guidance) in [
+            (401, "API Keys"),
+            (403, "account access"),
+            (404, "not found"),
+            (408, "too long"),
+            (413, "shorter dictation"),
+            (429, "request limit"),
+            (500, "temporarily unavailable"),
+            (503, "temporarily unavailable"),
+            (504, "too long"),
+        ] {
+            let message = super::user_facing_message(&format!(
+                "provider status={status} request_id=fixture-id body_preview=private response data"
+            ));
+            assert!(message.contains(guidance), "status={status}");
+            assert!(!message.contains("fixture-id"));
+            assert!(!message.contains("private response"));
+        }
+    }
+
+    #[test]
+    fn user_errors_do_not_infer_status_from_provider_body() {
+        let message =
+            super::user_facing_message("provider request_id=fixture-id body_preview=status=401");
+        assert!(message.contains("usable result"));
+        assert!(!message.contains("401"));
+    }
+
+    #[test]
+    fn user_errors_preserve_complete_recovery_instructions() {
+        let message = "This backup contains a newer context format that this version cannot read. Update Verenu on this device, then select the same backup and import it again.";
+        assert_eq!(super::user_facing_message(message), message);
+    }
 
     #[test]
     fn classifies_invalid_or_revoked_key_signals() {
