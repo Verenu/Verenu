@@ -40,9 +40,150 @@ pub fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Resul
     db::resolve_context_for_target(db, executable, domain)
 }
 
+/// Linux window classes can differ from the executable targets already saved
+/// in Contexts. Prefer the class/domain match, then try the captured process's
+/// executable basename. Never inspect the live foreground for this fallback.
+pub fn resolve_context_for_window(
+    db: &Db,
+    executable: &str,
+    domain: Option<&str>,
+    target_id: usize,
+) -> Result<Context> {
+    let context = resolve_context(db, executable, domain)?;
+    #[cfg(target_os = "linux")]
+    {
+        if !context.is_everywhere {
+            return Ok(context);
+        }
+        let alias = u32::try_from(target_id)
+            .ok()
+            .filter(|pid| *pid != 0)
+            .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
+            .and_then(|path| path.file_name()?.to_str().map(str::to_owned));
+        resolve_executable_alias(db, context, alias.as_deref())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = target_id;
+        Ok(context)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_executable_alias(db: &Db, context: Context, alias: Option<&str>) -> Result<Context> {
+    if context.is_everywhere {
+        if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
+            return db::resolve_context_for_target(db, alias, None);
+        }
+    }
+    Ok(context)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_alias_matches_saved_linux_target_without_overriding_class_or_website() {
+        let db = db::open(":memory:").expect("db");
+        let coding = db::insert_context_returning(&db, "AI Coding", None, None, None, None, false)
+            .expect("coding context");
+        db::assign_context_target(&db, coding.id, "t3code").expect("executable target");
+        let fallback = db::resolve_context_for_target(&db, "com.t3tools.T3Code", None).unwrap();
+        let resolved = resolve_executable_alias(&db, fallback.clone(), Some("T3CODE")).unwrap();
+        assert_eq!(
+            ResolvedContextIdentity::from_context(&resolved).label,
+            "AI Coding"
+        );
+        for alias in [None, Some(""), Some("unknown")] {
+            assert!(
+                resolve_executable_alias(&db, fallback.clone(), alias)
+                    .unwrap()
+                    .is_everywhere
+            );
+        }
+
+        let specific = db::insert_context_returning(&db, "Specific", None, None, None, None, false)
+            .expect("specific context");
+        db::assign_context_target(&db, specific.id, "com.t3tools.T3Code").unwrap();
+        let class_match = db::resolve_context_for_target(&db, "com.t3tools.T3Code", None).unwrap();
+        assert_eq!(
+            resolve_executable_alias(&db, class_match, Some("t3code"))
+                .unwrap()
+                .id,
+            specific.id
+        );
+        db::assign_context_website(&db, specific.id, "example.com").unwrap();
+        let website_match =
+            db::resolve_context_for_target(&db, "unknown", Some("example.com")).unwrap();
+        assert_eq!(
+            resolve_executable_alias(&db, website_match, Some("t3code"))
+                .unwrap()
+                .id,
+            specific.id
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn window_context_uses_captured_pid_executable_and_handles_missing_pid() {
+        let db = db::open(":memory:").expect("db");
+        let coding =
+            db::insert_context_returning(&db, "AI Coding", None, None, None, None, false).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        db::assign_context_target(
+            &db,
+            coding.id,
+            executable.file_name().unwrap().to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_context_for_window(
+                &db,
+                "synthetic.window.class",
+                None,
+                std::process::id() as usize
+            )
+            .unwrap()
+            .id,
+            coding.id
+        );
+        for pid in [0, usize::MAX] {
+            assert!(
+                resolve_context_for_window(&db, "synthetic.window.class", None, pid)
+                    .unwrap()
+                    .is_everywhere
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a live Hyprland client PID in VERENU_CONTEXT_FIXTURE_PID"]
+    fn live_linux_window_matches_executable_context() {
+        let pid: usize = std::env::var("VERENU_CONTEXT_FIXTURE_PID")
+            .expect("fixture PID")
+            .parse()
+            .expect("numeric PID");
+        let class = crate::core::window_context::get_process_name_for_hwnd(pid)
+            .expect("captured window class");
+        let executable =
+            std::fs::read_link(format!("/proc/{pid}/exe")).expect("captured executable");
+        let basename = executable.file_name().unwrap().to_str().unwrap();
+        assert!(
+            !class.eq_ignore_ascii_case(basename),
+            "fixture needs differing identities"
+        );
+        let db = db::open(":memory:").expect("isolated db");
+        let coding =
+            db::insert_context_returning(&db, "AI Coding", None, None, None, None, false).unwrap();
+        db::assign_context_target(&db, coding.id, basename).unwrap();
+        let context = resolve_context_for_window(&db, &class, None, pid).unwrap();
+        assert_eq!(
+            ResolvedContextIdentity::from_context(&context).label,
+            "AI Coding"
+        );
+    }
 
     #[test]
     fn resolver_matches_executables_case_insensitively() {
