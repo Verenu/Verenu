@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Fixed the Linux dictation pill drifting off-centre ("teleporting") and its Cancel/Confirm/Dismiss/Retry buttons ignoring clicks. The pill window no longer resizes with its content, which raced Hyprland and left the window box and the drawn pill out of step; it is now one fixed transparent window with the capsule centred inside it, so every state morph is pure CSS animation. Only the capsule itself accepts clicks, the rest stays click-through, placement is re-checked after mapping, and the window stays mapped long enough for the exit animation to play. Verenu also clears a user `no_focus` rule on the mapped pill, since Hyprland otherwise skips the pointer entirely for such windows.
+- Fixed Linux double-tap hands-free activation starting a second recording and showing a short-recording error. The first tap's capture now stays open for conversion. Modifier-prefix rejection uses a separate action so mouse-mapped Ctrl+Super and other shortcuts cannot cancel an active hands-free dictation.
 
 - Fixed Linux Settings showing Windows wording: Start on Boot now says "Launch Verenu when you log in" and Appearance says "Follow your desktop".
 

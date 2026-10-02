@@ -36,6 +36,17 @@ VERENU_FORMAT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml at
 
 This verifies real AT-SPI Collection discovery and cursor formatting for empty fields, continuation text, sentence endings, and existing whitespace. It changes only the disposable entry; it does not paste or call providers. Close the window afterward; it also closes after five minutes.
 
+## Linux hotkey gesture verification
+
+For Linux hotkey gesture changes, run the Rust classifier tests and the generated
+Hyprland Lua fixture. The fixture requires `lua` and uses a fake compositor;
+it does not change desktop bindings, capture audio, or call providers.
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml hotkey --lib
+cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
+```
+
 ## Default Gate
 
 ```bash
