@@ -8,7 +8,7 @@ use tauri::{
 const TRAY_ID: &str = "verenu-tray";
 
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
-    key == crate::data::store::APPEARANCE_MODE
+    key == crate::data::store::APPEARANCE_MODE || key == crate::data::store::CUSTOM_THEME
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -857,7 +857,7 @@ fn windows_micro_icon_image(
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn runtime_tray_icon_image(
     theme: IconTheme,
-    accent: [u8; 4],
+    _accent: [u8; 4],
     size: u32,
 ) -> tauri::image::Image<'static> {
     // Linux builds exist only for CI: under test, render through the same
@@ -865,7 +865,7 @@ fn runtime_tray_icon_image(
     // real artwork instead of the large-icon fallback.
     #[cfg(test)]
     {
-        windows_micro_icon_image(theme, accent, size)
+        windows_micro_icon_image(theme, _accent, size)
     }
     #[cfg(not(test))]
     {
@@ -1149,12 +1149,18 @@ mod windows_icon_tests {
 }
 
 fn resolve_icon_theme(app: &AppHandle, theme_hint: Option<Theme>) -> IconTheme {
-    match appearance_mode(app).as_deref() {
-        Some("dark") => IconTheme::Dark,
-        Some("light") => IconTheme::Light,
-        _ => match theme_hint.or_else(|| {
-            app.get_webview_window("main")
-                .and_then(|window| window.theme().ok())
+    let dark = match appearance_mode(app).as_deref() {
+        Some("dark") => Some(true),
+        Some("light") => Some(false),
+        Some("custom") => custom_theme_is_dark(app),
+        Some("omarchy") | None | Some("system") => crate::system::omarchy_theme::is_dark(),
+        _ => None,
+    };
+    match dark {
+        Some(true) => IconTheme::Dark,
+        Some(false) => IconTheme::Light,
+        None => match theme_hint.or_else(|| {
+            app.get_webview_window("main").and_then(|window| window.theme().ok())
         }) {
             Some(Theme::Dark) => IconTheme::Dark,
             _ => IconTheme::Light,
@@ -1199,6 +1205,7 @@ mod icon_theme_tests {
     #[test]
     fn only_appearance_settings_refresh_runtime_icons() {
         assert!(setting_updates_runtime_icons("appearance_mode"));
+        assert!(setting_updates_runtime_icons("custom_theme"));
         assert!(!setting_updates_runtime_icons("accent_color"));
         assert!(!setting_updates_runtime_icons("default_tone"));
     }
@@ -1215,6 +1222,14 @@ mod icon_theme_tests {
         assert_eq!(other_size.tray_rgba.len(), 24 * 24 * 4);
         assert_eq!(other_size.window_rgba, first.window_rgba);
     }
+}
+
+/// Whether the saved Custom palette is dark; `None` until one is saved.
+pub(crate) fn custom_theme_is_dark(app: &AppHandle) -> Option<bool> {
+    crate::data::store::settings_handle(app)
+        .ok()
+        .and_then(|settings| settings.get(crate::data::store::CUSTOM_THEME))
+        .and_then(|value| crate::system::omarchy_theme::custom_is_dark(&value))
 }
 
 pub(crate) fn appearance_mode(app: &AppHandle) -> Option<String> {

@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { formatIpcError } from '../errors';
   import { onMount } from 'svelte';
-  import { invoke, getVersion, listen } from '../tauri';
+  import { invoke, getVersion, listen, emit } from '../tauri';
   import { appStore } from '../stores';
   import { saveSetting } from '../settings';
   import { formatKeyLabel, defaultHotkey, isAndroid } from '../platform';
@@ -12,6 +13,8 @@
   import GlobalMessageBanner from './home/GlobalMessageBanner.svelte';
   import HistoryList from './home/HistoryList.svelte';
   import StatsCard from './home/StatsCard.svelte';
+  import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
+  import type { ShortcutStatus } from '../shortcutStatus.svelte';
 
   let hotkey = defaultHotkey;
   $: hk1 = formatKeyLabel(hotkey[0]);
@@ -96,6 +99,7 @@
       // success: verenu:transcribed listener clears failedEntry and calls load()
     } catch (err) {
       console.error('Retry failed:', err);
+      void emit('verenu:error', formatIpcError(err, 'Could not retry this dictation'));
       // keep failedEntry so user can try again
     } finally {
       retrying = false;
@@ -120,6 +124,7 @@
       clearCancelledEntry();
     } catch (err) {
       console.error('Resume cancelled capture failed:', err);
+      void emit('verenu:error', formatIpcError(err, 'Could not resume this recording'));
       // keep cancelledEntry so the user can try again
     } finally {
       resumingCancelled = false;
@@ -138,7 +143,9 @@
       await navigator.clipboard.writeText(entry.clean_text);
       copiedId = entry.id;
       setTimeout(() => { copiedId = null; }, 1500);
-    } catch { /* clipboard not available in dev */ }
+    } catch (err) {
+      void emit('verenu:error', formatIpcError(err, 'Could not copy this dictation to the clipboard'));
+    }
   }
 
   async function load(reset = true, refreshStats = false) {
@@ -172,7 +179,7 @@
       if (seq !== loadSeq) return;
       console.error('Home load failed:', err);
       if (reset) {
-        historyError = err instanceof Error ? err.message : String(err);
+        historyError = formatIpcError(err, 'Could not load your dictation history');
         recents = [];
         historyOffset = 0;
         historyCursor = null;
@@ -200,6 +207,7 @@
       await invoke('install_update', { downloadUrl: appStore.updateInfo.downloadUrl });
     } catch (e) {
       console.error('Install failed:', e);
+      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
     } finally {
       installing = false;
     }
@@ -218,8 +226,10 @@
     invoke<string[] | null>('get_history_apps')
       .then(list => { apps = list ?? []; })
       .catch(() => { apps = []; });
-    invoke<string[] | null>('get_setting', { key: 'hotkey' })
-      .then(hk => { if (hk?.length === 2) hotkey = hk; })
+    loadHotkey()
+      .then(() => {
+        hotkey = hotkeyCodes().length ? hotkeyCodes() : ['Unavailable', ''];
+      })
       .catch(() => { /* use platform default if setting unavailable */ });
     load(true, true);
     invoke<{ created_at: string; kind: string } | null>('get_cancelled_capture')
@@ -252,6 +262,10 @@
         .catch(() => {});
     }
 
+    trackListener(listen<ShortcutStatus[]>('verenu:shortcuts-changed', (event) => {
+      const dictation = event.payload.find((item) => item.id === 'dictation');
+      if (dictation) hotkey = dictation.codes.length ? dictation.codes : ['Unavailable', ''];
+    }));
     trackListener(listen('verenu:transcribed', () => {
       failedEntry = null;
       if (failedTimer) { clearTimeout(failedTimer); failedTimer = null; }

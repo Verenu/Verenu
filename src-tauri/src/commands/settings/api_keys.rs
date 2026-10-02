@@ -53,13 +53,13 @@ pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationRes
     if status == 401 || status == 403 {
         let message = match crate::api::classify_unauthorized_body(body) {
             crate::api::AuthErrorCategory::InvalidOrRevokedKey => {
-                "This key looks invalid or revoked.".to_string()
+                "This key looks invalid or revoked. Replace it with an active key from your provider account.".to_string()
             }
             crate::api::AuthErrorCategory::ScopeOrAccountRestriction => {
-                "This key was rejected for account or model-access reasons.".to_string()
+                "This key was rejected for account or model access. Check its permissions and your provider account's access to the selected model.".to_string()
             }
             crate::api::AuthErrorCategory::UnknownUnauthorized => {
-                "The provider rejected this key.".to_string()
+                "The provider rejected this key. Check that you copied the full key from the correct provider account, then try again.".to_string()
             }
         };
         return KeyValidationResult {
@@ -71,7 +71,10 @@ pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationRes
     KeyValidationResult {
         ok: false,
         status: "unknown".to_string(),
-        message: format!("Couldn't verify the key right now (provider returned status {status})."),
+        message: format!(
+            "The key could not be verified. {}",
+            crate::api::user_facing_message(&format!("status={status}"))
+        ),
     }
 }
 
@@ -114,7 +117,7 @@ pub async fn validate_api_key(
             return Ok(KeyValidationResult {
                 ok: false,
                 status: "unknown".to_string(),
-                message: "Couldn't reach the provider to verify the key.".to_string(),
+                message: "The provider could not be reached to verify this key. Check your internet connection and try verifying it again.".to_string(),
             })
         }
     };

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { invoke } from '../../tauri';
+  import { invoke, emit } from '../../tauri';
+  import { formatIpcError } from '../../errors';
   import { appStore, type UpdateInfo } from '../../stores';
   import { saveSetting } from '../../settings';
   import Toggle from '../Toggle.svelte';
@@ -56,8 +57,9 @@
       } else {
         updateCheckState = 'up-to-date';
       }
-    } catch {
+    } catch (err) {
       updateCheckState = 'idle';
+      void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
     }
   }
 
@@ -131,6 +133,7 @@
       await invoke('install_update', { downloadUrl: appStore.updateInfo.downloadUrl });
     } catch (e) {
       console.error('Install failed:', e);
+      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
     } finally {
       installingFromAbout = false;
     }

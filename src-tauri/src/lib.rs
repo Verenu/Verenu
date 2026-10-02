@@ -196,6 +196,21 @@ pub fn run() {
     #[cfg(desktop)]
     if !is_dev_session() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
+                crate::core::hotkey::notify_release();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
+                crate::core::hotkey::notify_handless();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
+                crate::core::hotkey::notify_capture_sub_app();
+                return;
+            }
             show_main_window(app);
         }));
     }
@@ -213,6 +228,18 @@ pub fn run() {
 
     builder
         .setup(move |app| {
+            #[cfg(target_os = "linux")]
+            if std::env::args().any(|arg| {
+                arg == "--verenu-hotkey-release"
+                    || arg == "--verenu-hotkey-handsfree"
+                    || arg == "--verenu-capture-sub-app"
+            }) {
+                // A handoff helper that reaches first-instance startup has no
+                // recording target. Do not turn it into an orphaned normal
+                // window when the primary process (or its dev server) is gone.
+                app.handle().exit(0);
+                return Ok(());
+            }
             #[cfg(target_os = "windows")]
             if !is_dev_session() {
                 crate::single_instance::listen_for_takeover(app.handle());
@@ -316,23 +343,22 @@ pub fn run() {
                                 } else {
                                     (k1, k2)
                                 };
-                                // Linux's portal requires a real modifier+key
-                                // chord. Migrate the old Ctrl+Super default (and
-                                // any other unsupported stored chord) to the
-                                // Omarchy-safe Ctrl+Space default.
+                                // Linux uses the portal for regular chords and
+                                // Hyprland bindings for modifier-only chords such
+                                // as Ctrl+Super. Preserve valid user choices and
+                                // migrate only unsupported stored chords.
                                 #[cfg(target_os = "linux")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
-                                {
+                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2) {
                                     let _ = settings.set(
                                         crate::data::store::HOTKEY,
-                                        serde_json::json!(["ControlLeft", "Space"]),
+                                        serde_json::json!(["ControlLeft", "MetaLeft"]),
                                     );
                                     if let Err(e) = settings.save() {
                                         log::warn!(
                                             "Failed to save migrated Linux hotkey to settings.json: {e:?}"
                                         );
                                     }
-                                    ("ControlLeft", "Space")
+                                    ("ControlLeft", "MetaLeft")
                                 } else {
                                     (k1, k2)
                                 };
@@ -670,7 +696,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             system::windows_titlebar::get_native_titlebar_metrics,
             system::windows_titlebar::set_native_titlebar_theme,
+            system::omarchy_theme::get_omarchy_theme,
             commands::save_hotkey,
+            core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
             commands::save_api_key,
             commands::delete_api_key,
@@ -743,6 +771,7 @@ pub fn run() {
             commands::get_cancelled_capture,
             commands::copy_paste_failure_to_clipboard,
             commands::set_pill_size,
+            commands::set_pill_hit_rect,
             commands::set_pill_interactive,
             commands::hide_dictation_pill,
             commands::get_installed_apps,
@@ -764,6 +793,11 @@ pub fn run() {
              commands::get_context_websites,
              commands::check_domain_exists,
              commands::assign_context_website,
+            commands::get_sub_apps,
+            commands::create_sub_app,
+            commands::assign_sub_app,
+            commands::delete_sub_app,
+            commands::take_pending_sub_app_capture,
              commands::remove_context_website,
              commands::get_context_dictionary,
              commands::get_context_snippets,

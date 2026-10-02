@@ -85,7 +85,7 @@
     /* Revert snaps instantly so the shake/X play on an already-settled
        toggle, instead of racing the position/background transitions. */
     transition: none;
-    background: #ef4444;
+    background: var(--danger);
     animation: toggle-shake 0.4s ease-out;
   }
 
@@ -96,7 +96,7 @@
   .toggle-x {
     width: 9px;
     height: 9px;
-    color: #ef4444;
+    color: var(--danger);
     animation: toggle-x-in 0.25s cubic-bezier(0.22, 1, 0.36, 1);
   }
 

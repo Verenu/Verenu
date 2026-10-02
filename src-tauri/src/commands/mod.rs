@@ -21,6 +21,7 @@ pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
 mod analytics;
 mod android;
 mod contexts;
+mod sub_apps;
 mod history;
 mod library;
 mod local_llm;
@@ -76,6 +77,7 @@ fn db_state(app: &AppHandle) -> DbHandle {
 pub use analytics::*;
 pub use android::*;
 pub use contexts::*;
+pub use sub_apps::*;
 pub use history::*;
 pub use library::*;
 pub use local_llm::*;
@@ -120,7 +122,7 @@ mod tests {
         assert!(result
             .message
             .to_lowercase()
-            .contains("account or model-access"));
+            .contains("account or model access"));
     }
 
     #[test]
@@ -128,7 +130,8 @@ mod tests {
         let result = classify_validation_response(503, "");
         assert!(!result.ok);
         assert_eq!(result.status, "unknown");
-        assert!(result.message.contains("503"));
+        assert!(result.message.contains("temporarily unavailable"));
+        assert!(result.message.contains("try again"));
     }
 
     #[test]

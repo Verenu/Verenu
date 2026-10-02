@@ -6,7 +6,7 @@
   import { startPolling } from '../polling';
   import { isMac } from '../platform';
   import { motionMs } from '../motion';
-  import { extractIpcErrorMessage } from '../errors';
+  import { formatIpcError } from '../errors';
   import type { ProviderId } from '../settings';
 
   type MacPermissionStatus =
@@ -241,7 +241,7 @@
       if (generation === refreshGeneration && active) applySnapshot(next, null);
     } catch {
       if (!silent) {
-        permissionsError = 'Could not refresh permission status right now.';
+        permissionsError = 'Could not refresh permission status. Try Refresh again, or quit and reopen Verenu.';
       }
     } finally {
       refreshInFlight -= 1;
@@ -259,7 +259,7 @@
       snapshot = { ...snapshot, keychain: result.state };
     } catch (error) {
       snapshot = { ...snapshot, keychain: 'error' };
-      permissionsError = `Keychain check failed before completion: ${extractIpcErrorMessage(error)}`;
+      permissionsError = formatIpcError(error, 'Could not check access to secure key storage');
     } finally {
       keychainLoading = false;
     }
@@ -308,7 +308,7 @@
       const next = await invoke<MacPermissionSnapshot>('request_accessibility_permission', { provider: null });
       if (generation === refreshGeneration && active) applySnapshot(next, null);
     } catch {
-      permissionsError = 'Could not request Accessibility permission.';
+      permissionsError = 'Could not open the Accessibility permission prompt. Open System Settings > Privacy & Security > Accessibility and enable Verenu manually.';
     } finally {
       accessibilityPrompting = false;
       if (active) startWatch();
@@ -324,7 +324,7 @@
       const next = await invoke<MacPermissionSnapshot>('request_microphone_permission_snapshot', { provider: null });
       if (generation === refreshGeneration && active) applySnapshot(next, null);
     } catch (error) {
-      permissionsError = `Could not request Microphone permission: ${extractIpcErrorMessage(error)}`;
+      permissionsError = formatIpcError(error, 'Could not request microphone access. Open System Settings > Privacy & Security > Microphone and allow Verenu');
     } finally {
       microphoneRequesting = false;
       if (active) startWatch();
@@ -359,7 +359,7 @@
       startWatch();
       await refreshMacPermissions(true);
     } catch {
-      permissionsError = 'Could not reset stale macOS permission grants.';
+      permissionsError = 'Could not reset the old macOS permissions. Remove and re-add Verenu in System Settings > Privacy & Security > Accessibility, then relaunch.';
     } finally {
       repairing = false;
     }
@@ -377,7 +377,7 @@
       const notifications = await invoke<NotificationPermission>('request_notification_permission');
       if (active) snapshot = { ...snapshot, notifications };
     } catch (error) {
-      permissionsError = `Could not request Notifications permission: ${extractIpcErrorMessage(error)}`;
+      permissionsError = formatIpcError(error, 'Could not request notification access. Open System Settings > Notifications > Verenu to change it manually');
     } finally {
       notificationRequesting = false;
     }
@@ -396,7 +396,7 @@
       await invoke(cmd);
       startWatch();
     } catch {
-      permissionsError = 'Could not open System Settings.';
+      permissionsError = 'Could not open System Settings. Open it manually and find Verenu under Privacy & Security or Notifications.';
     }
   }
 

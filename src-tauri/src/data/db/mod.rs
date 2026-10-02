@@ -19,6 +19,7 @@ mod insights;
 mod pricing;
 mod schema;
 mod snippets;
+mod sub_apps;
 mod transcriptions;
 mod validation;
 
@@ -29,6 +30,7 @@ pub use insights::*;
 pub use pricing::*;
 pub use schema::*;
 pub use snippets::*;
+pub use sub_apps::*;
 pub use transcriptions::*;
 pub use validation::*;
 

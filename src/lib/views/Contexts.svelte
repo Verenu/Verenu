@@ -18,6 +18,7 @@
   import { classifyIpcError } from '../errors';
   import {
     type Context,
+    type ContextSubApp,
     type ContextTarget,
     type ContextWebsiteTarget,
     type DictionaryEntry,
@@ -32,13 +33,17 @@
     profileOptions,
     type InstalledApp,
   } from '../appMappings';
-  import { icons } from '../icons';
+  import { CONTEXT_ICON_CHOICES, icons } from '../icons';
   import {
     contextsStore,
     loadContexts as loadSharedContexts,
     EVERYWHERE_ID,
   } from '../contextsStore.svelte';
   import AppIcon from '../components/AppIcon.svelte';
+  import { subAppCaptureKeys } from '../subApps';
+  import { desktopShortcut, loadDesktopShortcuts } from '../shortcutStatus.svelte';
+  import { appStore } from '../stores';
+  import SubAppIcon from '../components/SubAppIcon.svelte';
   import SiteIcon from '../components/SiteIcon.svelte';
   import Toggle from '../components/Toggle.svelte';
   import { matchesAppSearch } from '../components/appMappings/helpers';
@@ -62,7 +67,6 @@
   // Chosen for relevance to the "work mode" contexts people actually create
   // (coding, browsing, chat/support, writing, dictation, etc.) rather than
   // reusing whatever settings/nav icons happened to already exist.
-  const CONTEXT_ICON_CHOICES = ['code', 'browser', 'chat', 'pencil', 'mic', 'book', 'sliders', 'shield', 'key', 'chart', 'lock', 'bell'] as const;
 
   // A small curated swatch, not a full picker — same lightness/chroma family
   // as the app's own accent (oklch L~0.65-0.72, C~0.09-0.13) so every option
@@ -175,6 +179,63 @@
   );
   const selectedTargets = $derived(targets.filter((target) => target.context_id === selectedContextId));
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
+  const selectedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
+  // A sub-app belongs to at most one context group, so only unassigned ones
+  // are offered; assigning one removes it from this list everywhere.
+  const unassignedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === null));
+  const captureKeys = $derived(subAppCaptureKeys(desktopShortcut('capture')?.active ?? appStore.subAppCaptureHotkey));
+  const MATCH_MODE_PHRASE = { contains: 'contains', starts_with: 'starts with', equals: 'is' } as const;
+  let subAppPickerOpen = $state(false);
+
+  function toggleSubAppPicker() {
+    if (subAppPickerOpen) {
+      subAppPickerOpen = false;
+      return;
+    }
+    closeAppPicker();
+    closeWebsitePicker();
+    subAppPickerOpen = true;
+  }
+
+  $effect(() => {
+    if (!subAppPickerOpen) return;
+    const handleClose = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest('.sub-app-picker, .app-picker-trigger')) return;
+      subAppPickerOpen = false;
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') subAppPickerOpen = false;
+    };
+    const timeout = window.setTimeout(() => {
+      window.addEventListener('pointerdown', handleClose);
+      window.addEventListener('keydown', handleKey);
+    });
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener('pointerdown', handleClose);
+      window.removeEventListener('keydown', handleKey);
+    };
+  });
+
+  async function assignSubApp(subApp: ContextSubApp) {
+    subAppPickerOpen = false;
+    try {
+      const updated = await invoke<ContextSubApp>('assign_sub_app', { id: subApp.id, contextId: selectedContextId });
+      markRecentlyAdded(updated.uuid);
+      contextsStore.subApps = contextsStore.subApps.map((item) => (item.id === updated.id ? updated : item));
+    } catch (error) {
+      contextErrorMessage = classifyIpcError(error).message;
+    }
+  }
+
+  async function unassignSubApp(subApp: ContextSubApp) {
+    try {
+      const updated = await invoke<ContextSubApp>('assign_sub_app', { id: subApp.id, contextId: null });
+      contextsStore.subApps = contextsStore.subApps.map((item) => (item.id === updated.id ? updated : item));
+    } catch (error) {
+      contextErrorMessage = classifyIpcError(error).message;
+    }
+  }
   const assignedExes = $derived(new Set(targets.map((target) => normalizeExe(target.executable))));
   const availableApps = $derived(
     installedApps.filter((app) => !assignedExes.has(normalizeExe(app.exe))),
@@ -276,6 +337,7 @@
   }
 
   onMount(() => {
+    void loadDesktopShortcuts();
     let mounted = true;
     const stops: Array<() => void> = [];
     const registrations = [
@@ -829,6 +891,7 @@
   });
 
   async function toggleAppPicker() {
+    subAppPickerOpen = false;
     if (appPickerOpen) {
       closeAppPicker();
       return;
@@ -878,7 +941,7 @@
     }
   }
 
-  function appLabel(executable: string, target?: ContextTarget) {
+  function appLabel(executable: string, target?: { app_name: string | null }) {
     if (executable.startsWith('?::')) {
       return cleanAppName(target?.app_name || executable.slice(3));
     }
@@ -893,6 +956,7 @@
   }
 
   async function toggleWebsitePicker() {
+    subAppPickerOpen = false;
     if (websitePickerOpen) {
       closeWebsitePicker();
       return;
@@ -955,6 +1019,7 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
+      subAppPickerOpen = false;
       closeRowMenu();
       closeAppPicker();
       closeWebsitePicker();
@@ -1070,6 +1135,35 @@
                   <button class="btn-primary btn-compact" type="button" onclick={() => void assignWebsite()} disabled={!websiteValid}>Add</button>
                 </div>
               {/if}
+              <button class="btn-ghost btn-compact app-picker-trigger" type="button" onclick={toggleSubAppPicker} aria-expanded={subAppPickerOpen} aria-haspopup="listbox">
+                Add sub-app
+                <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              {#if subAppPickerOpen}
+                <div class="app-picker ui-dropdown-menu sub-app-picker" role="listbox" aria-label="Sub-apps" tabindex="-1" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                  {#if unassignedSubApps.length === 0}
+                    <span class="picker-empty">
+                      {#if desktopShortcut('capture')?.active === null}
+                      No sub-apps to add. Choose an available capture shortcut in Settings → Sub-apps.
+                      {:else}
+                      No sub-apps to add. Focus a window and press
+                      {#each captureKeys as key, index}{#if index > 0}+{/if}<kbd>{key}</kbd>{/each}
+                      to capture one.
+                      {/if}
+                    </span>
+                  {:else}
+                    <div class="app-picker-list">
+                      {#each unassignedSubApps as subApp (subApp.id)}
+                        <button class="ui-dropdown-option" type="button" role="option" aria-selected="false" onclick={() => void assignSubApp(subApp)}>
+                          <SubAppIcon {subApp} label={appLabel(subApp.executable, subApp)} />
+                          <span>{subApp.label}</span>
+                          <span class="app-exe">{appLabel(subApp.executable, subApp)}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1115,7 +1209,21 @@
                 </button>
               </span>
             {/each}
-            {#if selectedTargets.length === 0 && selectedWebsites.length === 0}<span class="target-empty">No apps or sites assigned yet</span>{/if}
+            {#each selectedSubApps as subApp (subApp.id)}
+              <span
+                class="target-chip"
+                title={`${appLabel(subApp.executable, subApp)} · title ${MATCH_MODE_PHRASE[subApp.match_mode]} “${subApp.title_pattern}”`}
+                animate:flip={{ duration: motionMs(220), easing: expoOut }}
+                in:fly={{ y: motionPx(MOTION_PX.nudge), duration: recentlyAddedChips.has(subApp.uuid) ? motionMs(220) : 0, easing: expoOut }}
+              >
+                <SubAppIcon {subApp} label={appLabel(subApp.executable, subApp)} />
+                {subApp.label}
+                <button type="button" aria-label={`Remove ${subApp.label}`} onclick={() => void unassignSubApp(subApp)}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </span>
+            {/each}
+            {#if selectedTargets.length === 0 && selectedWebsites.length === 0 && selectedSubApps.length === 0}<span class="target-empty">No apps or sites assigned yet</span>{/if}
           </div>
         {/if}
 
@@ -1711,6 +1819,9 @@
   .target-chip button { display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-faint); padding: 2px; cursor: pointer; border-radius: 4px; }
   .target-chip button:hover { color: var(--danger); background: var(--danger-bg); }
   .target-empty { color: var(--ink-faint); font-size: 11px; font-style: italic; }
+  .sub-app-picker { width: min(300px, calc(100vw - 64px)); }
+  .sub-app-picker .picker-empty { line-height: 1.6; }
+  .sub-app-picker kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2); color: var(--ink-mute); }
   .app-picker {
     position: absolute;
     z-index: 40;

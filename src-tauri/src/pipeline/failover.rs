@@ -562,6 +562,7 @@ pub fn restore_into_state(state: &SharedState) {
 }
 
 /// After the pill window can be shown, surface a restored take.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn offer_restored_capture_pill(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<SharedState>() else {
         return false;

@@ -37,8 +37,8 @@
     justify-content: space-between;
     gap: 14px;
     padding: 12px 18px;
-    background: rgba(217, 119, 87, 0.08);
-    border: 1px solid rgba(217, 119, 87, 0.20);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
     border-radius: var(--r-lg);
     font-size: 13px;
     color: var(--ink-strong);

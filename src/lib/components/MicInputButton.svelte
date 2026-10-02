@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '../tauri';
+  import { formatIpcError } from '../errors';
 
   let { onResult }: { onResult: (text: string) => void } = $props();
 
@@ -14,11 +15,7 @@
         await invoke('start_input_recording');
         micState = 'recording';
       } catch (e) {
-        const msg = String(e);
-        error = msg.includes('Already recording') ? 'Hotkey recording is active'
-              : msg.includes('Microphone access is blocked') ? 'Enable microphone permission in System Settings'
-              : msg.includes('Accessibility permission is required') ? 'Enable Accessibility permission in System Settings'
-              : 'Could not start mic';
+        error = formatIpcError(e, 'Could not start recording');
       }
     } else if (micState === 'recording') {
       micState = 'loading';
@@ -27,15 +24,7 @@
         onResult(text);
         micState = 'idle';
       } catch (e) {
-        const msg = String(e);
-        error = msg.includes('too short') ? 'Too short — try again'
-              : msg.includes('too quiet') ? 'Too quiet — try again'
-              : msg.includes('nothing was transcribed') ? 'Nothing detected — try again'
-              : msg.includes('Download the selected local model') ? 'Download the local model first'
-              : msg.includes('No configured transcription backend') ? 'Choose a transcription backend first'
-              : msg.includes('Microphone access is blocked') ? 'Enable microphone permission in System Settings'
-              : msg.includes('Accessibility permission is required') ? 'Enable Accessibility permission in System Settings'
-              : 'Transcription failed';
+        error = formatIpcError(e, 'Could not transcribe this recording');
         micState = 'idle';
       }
     }
@@ -65,7 +54,7 @@
     {/if}
   </button>
   {#if error}
-    <p class="mic-error">{error}</p>
+    <p class="mic-error" role="alert">{error}</p>
   {/if}
 </div>
 
@@ -121,7 +110,10 @@
     position: absolute;
     top: calc(100% + 4px);
     right: 0;
-    white-space: nowrap;
+    width: 280px;
+    max-width: calc(100vw - 48px);
+    white-space: normal;
+    overflow-wrap: anywhere;
     font-size: 10.5px;
     color: var(--danger);
     background: var(--danger-bg);

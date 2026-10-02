@@ -72,13 +72,13 @@
       if (!mounted || token !== fetchToken) return;
       console.error('IPC get_insights failed:', err);
       if (!opts?.silent) {
-        error = formatIpcError(err);
+        error = formatIpcError(err, 'Could not load your insights');
         status = 'error';
       } else if (!data) {
         // No data to fall back on — surface the error so the skeleton can't
         // spin forever (e.g. initial load failed, or a silent refresh landed
         // while the first load was still in flight).
-        error = formatIpcError(err);
+        error = formatIpcError(err, 'Could not load your insights');
         status = 'error';
       } else {
         // Silent refresh failed but we have good data: keep it up. Also clear
@@ -242,7 +242,7 @@
   {#if status === 'error' && !data}
     <div class="empty-state empty-state-error" role="alert" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
       <p class="empty-h">Could not load insights</p>
-      <p class="empty-sub">The backend is unavailable right now. {error}</p>
+      <p class="empty-sub">{error || 'Could not load your insights. Try again, or restart Verenu if the problem continues.'}</p>
       <button type="button" class="btn-ghost" onclick={() => load()}>Try again</button>
     </div>
   {:else if status === 'loading' && !data}
@@ -491,4 +491,3 @@
     .skeleton { animation-duration: 2.6s; }
   }
 </style>
-

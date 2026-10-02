@@ -36,6 +36,17 @@ VERENU_FORMAT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml at
 
 This verifies real AT-SPI Collection discovery and cursor formatting for empty fields, continuation text, sentence endings, and existing whitespace. It changes only the disposable entry; it does not paste or call providers. Close the window afterward; it also closes after five minutes.
 
+## Linux hotkey gesture verification
+
+For Linux hotkey gesture changes, run the Rust classifier tests and the generated
+Hyprland Lua fixture. The fixture requires `lua` and uses a fake compositor;
+it does not change desktop bindings, capture audio, or call providers.
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml hotkey --lib
+cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
+```
+
 ## Default Gate
 
 ```bash
@@ -108,6 +119,19 @@ node tests/smoke/playwright-test-state.cjs
 
 ## Rust Tests
 
+LAN sync has a focused deterministic gate:
+
+```bash
+npm run test:sync
+```
+
+It includes two virtual devices with separate temporary databases, actual
+loopback TCP/TLS connections, code-based pairing, multi-batch transfers,
+database restart, interrupted transfer recovery, and a three-device relay
+case. These tests also run in the ordinary Rust suite. See
+[`lan-sync.md`](lan-sync.md) for coverage, boundaries, and the physical
+two-device checklist.
+
 ```bash
 npm run test:rust
 cargo test --manifest-path src-tauri/Cargo.toml <test_name>
@@ -146,4 +170,3 @@ GitHub Actions currently run:
   <a href="RELEASE.md"><img alt="Release Process" src="https://img.shields.io/badge/Release-Process-7e7266"></a>
   <a href="README.md"><img alt="Docs Index" src="https://img.shields.io/badge/Docs-Index-2b2422"></a>
 </p>
-
