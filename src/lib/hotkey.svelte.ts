@@ -9,17 +9,20 @@
 // Slot 2 may be '' for a single-key macOS binding.
 import { invoke } from './tauri';
 import { defaultHotkey, formatKeyLabel } from './platform';
+import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
 
 const state = $state<{ codes: string[] }>({ codes: defaultHotkey });
 
 /** The current hotkey codes — reactive; reads `defaultHotkey` until `loadHotkey()` resolves. */
 export function hotkeyCodes(): string[] {
-	return state.codes;
+  const desktop = desktopShortcut('dictation');
+  return desktop ? desktop.codes : state.codes;
 }
 
 /** Display labels for the chord, empty slots dropped (e.g. `['Ctrl', 'Windows']`). */
 export function hotkeyLabels(): string[] {
-	return state.codes.filter(Boolean).map(formatKeyLabel);
+  if (desktopShortcut('dictation')?.active === null) return ['Unavailable'];
+	return hotkeyCodes().filter(Boolean).map(formatKeyLabel);
 }
 
 /**
@@ -27,6 +30,7 @@ export function hotkeyLabels(): string[] {
  * when the user has never set one, in which case the platform default stands.
  */
 export async function loadHotkey(): Promise<void> {
+	await loadDesktopShortcuts();
 	try {
 		const saved = await invoke<string[] | null>('get_setting', { key: 'hotkey' });
 		if (Array.isArray(saved) && saved.length === 2 && saved.some(Boolean)) {
@@ -51,12 +55,12 @@ function codeVariants(code: string): string[] {
 
 /** Every `KeyboardEvent.code` that should be tracked to detect the chord. */
 export function hotkeyWatchCodes(): Set<string> {
-	return new Set(state.codes.filter(Boolean).flatMap(codeVariants));
+	return new Set(hotkeyCodes().filter(Boolean).flatMap(codeVariants));
 }
 
 /** True when `pressed` satisfies every slot of the chord. */
 export function matchesHotkey(pressed: Set<string>): boolean {
-	const slots = state.codes.filter(Boolean);
+	const slots = hotkeyCodes().filter(Boolean);
 	if (slots.length === 0) return false;
 	return slots.every((code) => codeVariants(code).some((variant) => pressed.has(variant)));
 }

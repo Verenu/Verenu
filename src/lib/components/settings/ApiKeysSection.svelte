@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../../errors';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import { isAndroid } from '../../platform';
@@ -63,8 +64,8 @@
       try {
         const result = await invoke<{ ok: boolean; status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider, key });
         validation = { status: result.status, message: result.message };
-      } catch {
-        validation = { status: 'unknown', message: "Couldn't verify the key right now." };
+      } catch (err) {
+        validation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
       }
 
       // Definitive rejection — don't store it, surface the failure in red.
@@ -88,7 +89,7 @@
       const status = await loadKeyStatus();
       if (!status[provider]) {
         keyValidation[provider] = { status: 'idle', message: '' };
-        keyErrors[provider] = 'The key did not persist after saving. Please try again.';
+        keyErrors[provider] = 'Verenu could not confirm that this key was saved. Unlock your system key storage, then save the key again.';
         return;
       }
 
@@ -102,15 +103,14 @@
       keyValidation[provider] =
         validation.status === 'valid'
           ? { status: 'valid', message: 'Key verified.' }
-          : { status: 'unknown', message: "Saved, but couldn't verify it right now." };
+          : { status: 'unknown', message: `Saved on this device. ${validation.message || 'The provider could not verify it. Check your connection and try verifying it again.'}` };
     } catch (e) {
       console.error('save_api_key failed', e);
       keyValidation[provider] = { status: 'idle', message: '' };
       // Credential-store errors never include the key. Surface the native
       // cause so Linux users can unlock/start Secret Service instead of being
       // sent through an unhelpful generic retry loop.
-      const detail = typeof e === 'string' ? e : e instanceof Error ? e.message : 'Please try again.';
-      keyErrors[provider] = `Could not save this key locally: ${detail}`;
+      keyErrors[provider] = formatIpcError(e, 'Could not save this API key on this device');
     } finally {
       keySaving[provider] = false;
     }
@@ -137,7 +137,7 @@
       keyValidation[provider] = { status: 'idle', message: '' };
     } catch (e) {
       console.error('delete_api_key failed', e);
-      keyErrors[provider] = 'Could not remove this key locally. Please try again.';
+      keyErrors[provider] = formatIpcError(e, 'Could not remove this API key from this device');
     } finally {
       keySaving[provider] = false;
     }

@@ -79,6 +79,25 @@ pub struct ExportContextWebsiteTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExportSubApp {
+    pub executable: String,
+    #[serde(default)]
+    pub app_name: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub title_pattern: String,
+    #[serde(default = "default_export_match_mode")]
+    pub match_mode: String,
+}
+
+fn default_export_match_mode() -> String {
+    "contains".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportContext {
     /// Used only to recognize a renamed Context during import. New local
     /// Context rows receive a fresh identity; a JSON backup is not a sync
@@ -110,6 +129,9 @@ pub struct ExportContext {
     pub targets: Vec<ExportContextTarget>,
     #[serde(default)]
     pub website_targets: Vec<ExportContextWebsiteTarget>,
+    /// App + window-title rules. Older backups omit the field.
+    #[serde(default)]
+    pub sub_apps: Vec<ExportSubApp>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -127,6 +149,10 @@ pub struct ExportPayload {
     /// v2's Context graph. Empty for v1 backups.
     #[serde(default)]
     pub contexts: Vec<ExportContext>,
+    /// Sub-apps not assigned to any Context. Assigned ones live under their
+    /// Context in `contexts[].sub_apps`.
+    #[serde(default)]
+    pub sub_apps: Vec<ExportSubApp>,
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +170,11 @@ struct LibraryImportStats {
     snippets_inserted: usize,
     snippets_skipped: usize,
     snippets_already_existed: usize,
+    app_targets_kept: usize,
+    app_targets_matched: usize,
+    app_targets_dropped: usize,
+    sub_apps_imported: usize,
+    sub_apps_dropped: usize,
 }
 
 struct ImportCorrection<'a> {
@@ -177,6 +208,15 @@ pub struct ImportSummary {
     pub snippets_inserted: usize,
     pub snippets_skipped: usize,
     pub snippets_already_existed: usize,
+    /// App targets restored as-is (native to this platform or installed).
+    pub app_targets_kept: usize,
+    /// Targets from another platform/device rebound to the closest local app.
+    pub app_targets_matched: usize,
+    /// Targets with no local match; left out so the user can add them later.
+    pub app_targets_dropped: usize,
+    pub sub_apps_imported: usize,
+    /// Sub-apps whose app is not installed here; left out like app targets.
+    pub sub_apps_dropped: usize,
 }
 
 #[tauri::command]
@@ -214,6 +254,7 @@ pub async fn export_data(
             // Everywhere during a restore.
             snippets: Vec::new(),
             contexts,
+            sub_apps: export_unassigned_sub_apps(&db).map_err(|e| e.to_string())?,
         };
 
         let json = serde_json::to_string_pretty(&payload)
@@ -283,7 +324,7 @@ pub async fn import_data(
                             runtime_icon_setting_applied = true;
                         }
                         #[cfg(target_os = "windows")]
-                        if key == store::APPEARANCE_MODE {
+                        if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
                             appearance_setting_applied = true;
                         }
                         // Mirror save_setting's side effect: a backup that
@@ -332,6 +373,9 @@ pub async fn import_data(
         let _ = app.emit("verenu:settings-imported", ());
 
         let mut library_stats = LibraryImportStats::default();
+        // Resolved before taking the database lock: app discovery can walk
+        // the registry, bundles or desktop entries.
+        let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
 
         // Bulk-import dictionary entries and snippets inside a single
         // transaction (and a single lock acquisition) instead of one
@@ -348,7 +392,7 @@ pub async fn import_data(
                 import_legacy_library_conn(&tx, &payload, &mut library_stats)
                     .map_err(|e| e.to_string())?;
             } else {
-                import_contextual_library_conn(&tx, &payload, &mut library_stats)
+                import_contextual_library_conn(&tx, &payload, &installed_apps, &mut library_stats)
                     .map_err(|e| e.to_string())?;
                 // A hand-authored v2 payload may omit the Context graph. In
                 // that case retain the same safe fallback as v1. A v2 payload
@@ -398,6 +442,11 @@ pub async fn import_data(
             snippets_inserted: library_stats.snippets_inserted,
             snippets_skipped: library_stats.snippets_skipped,
             snippets_already_existed: library_stats.snippets_already_existed,
+            app_targets_kept: library_stats.app_targets_kept,
+            app_targets_matched: library_stats.app_targets_matched,
+            app_targets_dropped: library_stats.app_targets_dropped,
+            sub_apps_imported: library_stats.sub_apps_imported,
+            sub_apps_dropped: library_stats.sub_apps_dropped,
         })
     })
     .await
@@ -502,6 +551,7 @@ fn export_contextual_library(
                 snippets: Vec::new(),
                 targets: Vec::new(),
                 website_targets: Vec::new(),
+                sub_apps: Vec::new(),
             },
         ))
     })?;
@@ -586,10 +636,49 @@ fn export_contextual_library(
                 .collect::<rusqlite::Result<Vec<_>>>()?;
         }
 
+        {
+            let mut stmt = conn.prepare(
+                "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
+                   FROM context_sub_apps
+                  WHERE context_id IS ?1 AND executable NOT LIKE '?::%'
+                  ORDER BY id",
+            )?;
+            context.sub_apps = stmt
+                .query_map(params![context_id], export_sub_app_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+
         contexts.push(context);
     }
 
     Ok((dictionary, contexts))
+}
+
+fn export_sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportSubApp> {
+    Ok(ExportSubApp {
+        executable: row.get(0)?,
+        app_name: row.get(1)?,
+        platform: row.get(2)?,
+        label: row.get(3)?,
+        icon: row.get(4)?,
+        title_pattern: row.get(5)?,
+        match_mode: row.get(6)?,
+    })
+}
+
+/// Sub-apps waiting in the list, not assigned to a Context.
+fn export_unassigned_sub_apps(db: &db::Db) -> AnyhowResult<Vec<ExportSubApp>> {
+    let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    let mut stmt = conn.prepare(
+        "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
+           FROM context_sub_apps
+          WHERE context_id IS NULL AND executable NOT LIKE '?::%'
+          ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], export_sub_app_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn import_legacy_library_conn(
@@ -669,6 +758,7 @@ fn import_legacy_snippets_conn(
 fn import_contextual_library_conn(
     conn: &Connection,
     payload: &ExportPayload,
+    installed_apps: &[crate::system::apps::InstalledApp],
     stats: &mut LibraryImportStats,
 ) -> AnyhowResult<()> {
     let mut dictionary_ids: HashMap<String, i64> = HashMap::new();
@@ -790,10 +880,26 @@ fn import_contextual_library_conn(
         }
 
         for target in &context.targets {
-            let executable = target.executable.trim().to_lowercase();
-            if executable.is_empty() {
+            let Some(resolved) = resolve_import_target(
+                target,
+                installed_apps,
+                db::current_platform_tag(),
+            ) else {
+                stats.app_targets_dropped += 1;
                 continue;
+            };
+            if resolved.matched {
+                stats.app_targets_matched += 1;
+            } else {
+                stats.app_targets_kept += 1;
             }
+            let ResolvedImportTarget {
+                executable,
+                app_name,
+                developer,
+                platform,
+                ..
+            } = resolved;
             conn.execute(
                 "INSERT INTO context_targets
                    (context_id, executable, app_name, developer, platform)
@@ -803,13 +909,7 @@ fn import_contextual_library_conn(
                    app_name = excluded.app_name,
                    developer = excluded.developer,
                    platform = excluded.platform",
-                params![
-                    context_id,
-                    executable,
-                    target.app_name,
-                    target.developer,
-                    target.platform,
-                ],
+                params![context_id, executable, app_name, developer, platform],
             )?;
         }
 
@@ -824,6 +924,10 @@ fn import_contextual_library_conn(
                  ON CONFLICT(domain) DO UPDATE SET context_id = excluded.context_id",
                 params![context_id, domain],
             )?;
+        }
+
+        for sub_app in &context.sub_apps {
+            import_sub_app_conn(conn, sub_app, Some(context_id), installed_apps, stats)?;
         }
 
         for snippet in &context.snippets {
@@ -867,6 +971,137 @@ fn import_contextual_library_conn(
         }
     }
 
+    for sub_app in &payload.sub_apps {
+        import_sub_app_conn(conn, sub_app, None, installed_apps, stats)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct ResolvedImportTarget {
+    executable: String,
+    app_name: Option<String>,
+    developer: Option<String>,
+    platform: Option<String>,
+    /// True when the target was rebound to a different local app.
+    matched: bool,
+}
+
+/// Whether an executable identity has the shape this OS uses: `.exe` on
+/// Windows, `.app` bundles on macOS, suffix-less desktop ids/classes on Linux.
+fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
+    match platform {
+        Some("windows") => executable.ends_with(".exe"),
+        Some("macos") => executable.ends_with(".app"),
+        Some("linux") => !executable.ends_with(".exe") && !executable.ends_with(".app"),
+        _ => true,
+    }
+}
+
+/// Maps a backed-up app target onto this device. Targets from this platform
+/// are restored verbatim; targets from another platform (or an unresolved
+/// sync marker) are rebound to the closest installed app, and dropped when
+/// nothing is close enough so the Context still imports cleanly.
+fn resolve_import_target(
+    target: &ExportContextTarget,
+    installed_apps: &[crate::system::apps::InstalledApp],
+    current_platform: Option<&str>,
+) -> Option<ResolvedImportTarget> {
+    let raw = target.executable.trim().to_lowercase();
+    let unresolved = raw.starts_with("?::");
+    let executable = raw.trim_start_matches("?::").split('#').next().unwrap_or("").trim().to_string();
+    if executable.is_empty() {
+        return None;
+    }
+    if let Some(app) = installed_apps
+        .iter()
+        .find(|app| app.exe.trim().eq_ignore_ascii_case(&executable))
+    {
+        return Some(ResolvedImportTarget {
+            executable,
+            app_name: target.app_name.clone().or_else(|| Some(app.name.clone())),
+            developer: target.developer.clone().or_else(|| app.developer.clone()),
+            platform: current_platform.map(str::to_string),
+            matched: false,
+        });
+    }
+    let same_platform = match target.platform.as_deref() {
+        Some(platform) => current_platform == Some(platform),
+        None => looks_native_target(&executable, current_platform),
+    };
+    if !unresolved && same_platform {
+        return Some(ResolvedImportTarget {
+            executable,
+            app_name: target.app_name.clone(),
+            developer: target.developer.clone(),
+            platform: current_platform.map(str::to_string),
+            matched: false,
+        });
+    }
+    let app = crate::system::apps::closest_installed_app(
+        &executable,
+        target.app_name.as_deref(),
+        target.developer.as_deref(),
+        installed_apps,
+    )?;
+    Some(ResolvedImportTarget {
+        executable: app.exe.trim().to_lowercase(),
+        app_name: Some(app.name.clone()),
+        developer: app.developer.clone(),
+        platform: current_platform.map(str::to_string),
+        matched: true,
+    })
+}
+
+/// Rebinds a backed-up sub-app to a local app (same matching as app targets)
+/// and inserts it, assigned to `context_id` or left in the list.
+fn import_sub_app_conn(
+    conn: &Connection,
+    sub_app: &ExportSubApp,
+    context_id: Option<i64>,
+    installed_apps: &[crate::system::apps::InstalledApp],
+    stats: &mut LibraryImportStats,
+) -> AnyhowResult<()> {
+    let as_target = ExportContextTarget {
+        executable: sub_app.executable.clone(),
+        app_name: sub_app.app_name.clone(),
+        developer: None,
+        platform: sub_app.platform.clone(),
+    };
+    let (Some(resolved), Ok(mode)) = (
+        resolve_import_target(&as_target, installed_apps, db::current_platform_tag()),
+        db::TitleMatchMode::parse(&sub_app.match_mode),
+    ) else {
+        stats.sub_apps_dropped += 1;
+        return Ok(());
+    };
+    let pattern = sub_app.title_pattern.trim();
+    let label = sub_app.label.trim();
+    if pattern.is_empty() || label.is_empty() {
+        stats.sub_apps_dropped += 1;
+        return Ok(());
+    }
+    let inserted = conn.execute(
+        "INSERT INTO context_sub_apps
+           (uuid, context_id, executable, app_name, label, icon, title_pattern, match_mode, platform)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(executable, title_pattern, match_mode) DO UPDATE SET
+           context_id = COALESCE(excluded.context_id, context_sub_apps.context_id),
+           label = excluded.label, icon = excluded.icon, updated_at = datetime('now')",
+        params![
+            Uuid::new_v4().to_string(),
+            context_id,
+            resolved.executable,
+            resolved.app_name,
+            label,
+            sub_app.icon,
+            pattern,
+            mode.as_str(),
+            resolved.platform,
+        ],
+    )?;
+    stats.sub_apps_imported += usize::from(inserted > 0);
     Ok(())
 }
 
@@ -1352,12 +1587,13 @@ mod tests {
             dictionary,
             snippets: Vec::new(),
             contexts,
+            sub_apps: Vec::new(),
         };
         let mut first_stats = LibraryImportStats::default();
         {
             let mut conn = target.lock().expect("target lock");
             let tx = conn.transaction().expect("target transaction");
-            import_contextual_library_conn(&tx, &payload, &mut first_stats).expect("import");
+            import_contextual_library_conn(&tx, &payload, &[], &mut first_stats).expect("import");
             tx.commit().expect("commit");
         }
         let target_contexts = db::query_contexts(&target).expect("contexts");
@@ -1406,7 +1642,7 @@ mod tests {
         {
             let mut conn = target.lock().expect("target relock");
             let tx = conn.transaction().expect("repeat transaction");
-            import_contextual_library_conn(&tx, &payload, &mut second_stats)
+            import_contextual_library_conn(&tx, &payload, &[], &mut second_stats)
                 .expect("repeat import");
             tx.commit().expect("repeat commit");
         }
@@ -1420,5 +1656,134 @@ mod tests {
         assert_eq!(before, after);
         assert_eq!(second_stats.snippets_already_existed, 1);
         assert_eq!(second_stats.snippets_skipped, 0);
+    }
+
+    fn app(name: &str, exe: &str) -> crate::system::apps::InstalledApp {
+        crate::system::apps::InstalledApp {
+            name: name.to_string(),
+            exe: exe.to_string(),
+            developer: None,
+        }
+    }
+
+    fn target(executable: &str, name: Option<&str>, platform: Option<&str>) -> ExportContextTarget {
+        ExportContextTarget {
+            executable: executable.to_string(),
+            app_name: name.map(str::to_string),
+            developer: None,
+            platform: platform.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn import_rebinds_foreign_targets_to_closest_local_app() {
+        let installed = [app("Google Chrome", "google-chrome"), app("Slack", "slack")];
+        let resolved = resolve_import_target(
+            &target("chrome.exe", Some("Google Chrome"), Some("windows")),
+            &installed,
+            Some("linux"),
+        )
+        .expect("closest match");
+        assert_eq!(resolved.executable, "google-chrome");
+        assert_eq!(resolved.platform.as_deref(), Some("linux"));
+        assert!(resolved.matched);
+    }
+
+    #[test]
+    fn import_drops_foreign_targets_without_a_local_match() {
+        let installed = [app("Slack", "slack")];
+        assert_eq!(
+            resolve_import_target(
+                &target("winword.exe", Some("Microsoft Word"), Some("windows")),
+                &installed,
+                Some("linux"),
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_import_target(&target("?::photoshop.app", None, None), &installed, Some("linux")),
+            None
+        );
+    }
+
+    #[test]
+    fn import_keeps_same_platform_targets_even_when_not_installed() {
+        let resolved = resolve_import_target(
+            &target("Obsidian.exe", Some("Obsidian"), Some("windows")),
+            &[],
+            Some("windows"),
+        )
+        .expect("native target kept");
+        assert_eq!(resolved.executable, "obsidian.exe");
+        assert!(!resolved.matched);
+        // Untagged legacy targets are judged by their shape.
+        assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("windows")).is_some());
+        assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("linux")).is_none());
+    }
+
+    #[test]
+    fn sub_apps_round_trip_and_unmatched_apps_are_left_out() {
+        let source = db::open(":memory:").expect("source");
+        let work = db::insert_context_returning(&source, "Work", None, None, None, None, false)
+            .expect("ctx");
+        let mut ids = Vec::new();
+        for (exe, label) in [("discord", "Acme"), ("photoshop.app", "Retouch"), ("slack", "Loose")] {
+            ids.push(
+                db::create_sub_app(
+                    &source,
+                    db::NewSubApp {
+                        executable: exe,
+                        app_name: None,
+                        label,
+                        icon: Some("briefcase"),
+                        title_pattern: label,
+                        match_mode: db::TitleMatchMode::Contains,
+                    },
+                )
+                .expect("sub-app")
+                .id,
+            );
+        }
+        // Two are assigned; "Loose" stays in the list.
+        db::assign_sub_app(&source, ids[0], Some(work.id)).expect("assign");
+        db::assign_sub_app(&source, ids[1], Some(work.id)).expect("assign");
+        // The Photoshop rule was captured on a Mac.
+        source
+            .lock()
+            .expect("lock")
+            .execute("UPDATE context_sub_apps SET platform = 'macos' WHERE executable = 'photoshop.app'", [])
+            .expect("tag");
+        let (dictionary, contexts) = export_contextual_library(&source).expect("export");
+        let payload = ExportPayload {
+            version: "2".to_string(),
+            app_version: "test".to_string(),
+            exported_at: "test".to_string(),
+            stats: ExportStats::default(),
+            settings: serde_json::Value::Null,
+            dictionary,
+            snippets: Vec::new(),
+            contexts,
+            sub_apps: export_unassigned_sub_apps(&source).expect("unassigned"),
+        };
+
+        let target = db::open(":memory:").expect("target");
+        let installed = [app("Discord", "discord"), app("Slack", "slack")];
+        let mut stats = LibraryImportStats::default();
+        {
+            let mut conn = target.lock().expect("lock");
+            let tx = conn.transaction().expect("tx");
+            import_contextual_library_conn(&tx, &payload, &installed, &mut stats).expect("import");
+            tx.commit().expect("commit");
+        }
+        let imported = db::query_sub_apps(&target).expect("sub-apps");
+        let acme = imported.iter().find(|s| s.label == "Acme").expect("acme");
+        assert!(acme.context_id.is_some(), "assigned sub-app keeps its Context");
+        assert_eq!(acme.icon.as_deref(), Some("briefcase"));
+        let loose = imported.iter().find(|s| s.label == "Loose").expect("loose");
+        assert!(loose.context_id.is_none(), "unassigned sub-app returns to the list");
+        // The macOS-only .app has no match off macOS and is left out.
+        let expected_dropped = if cfg!(target_os = "macos") { 0 } else { 1 };
+        assert_eq!(stats.sub_apps_dropped, expected_dropped);
+        assert_eq!(stats.sub_apps_imported, 3 - expected_dropped);
     }
 }

@@ -27,12 +27,14 @@ enum SettingKind {
     ProviderModelCache,
     AppearanceMode,
     AccentColor,
+    CustomTheme,
     Bool,
     MicGain,
     SoundEffectsVolume,
     AppMappings,
     Hotkey,
     ClipboardPhrase,
+    SubAppChord,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +124,13 @@ const SETTING_SPECS: &[SettingSpec] = &[
     ),
     setting_spec(store::CLEANUP_ENABLED, SettingKind::Bool, true, true),
     setting_spec(store::HOTKEY, SettingKind::Hotkey, true, true),
+    // Not exported: modifier names differ between Windows/Linux and macOS.
+    setting_spec(
+        store::SUB_APP_CAPTURE_HOTKEY,
+        SettingKind::SubAppChord,
+        true,
+        false,
+    ),
     setting_spec(
         store::MICROPHONE_DEVICE,
         SettingKind::StringOrNull,
@@ -173,6 +182,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
     ),
     setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
+    setting_spec(store::CUSTOM_THEME, SettingKind::CustomTheme, true, true),
     setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
     setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
     setting_spec(store::DEV_MODE_ON_STARTUP, SettingKind::Bool, true, true),
@@ -378,6 +388,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
             .as_str()
             .is_some_and(store::is_supported_local_model_memory_policy),
         SettingKind::ModelMap => is_model_map(value),
+        SettingKind::SubAppChord => value
+            .as_str()
+            .is_some_and(|v| crate::core::hotkey::chord::Chord::parse(v).is_some()),
         SettingKind::ClipboardPhrase => value
             .as_str()
             .map(store::normalize_clipboard_phrase)
@@ -387,16 +400,15 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::ProviderModelCache => is_provider_model_cache(value),
         SettingKind::AppearanceMode => value
             .as_str()
-            .is_some_and(|v| matches!(v, "system" | "light" | "dark")),
+            .is_some_and(|v| matches!(v, "system" | "light" | "dark" | "omarchy" | "custom")),
         SettingKind::AccentColor => {
             value.is_null()
-                || value.as_str().is_some_and(|color| {
-                    color.len() == 7
-                        && color.starts_with('#')
-                        && color[1..]
-                            .chars()
-                            .all(|character| character.is_ascii_hexdigit())
-                })
+                || value
+                    .as_str()
+                    .is_some_and(crate::system::omarchy_theme::is_hex_color)
+        }
+        SettingKind::CustomTheme => {
+            value.is_null() || crate::system::omarchy_theme::is_custom_theme(value)
         }
         SettingKind::Bool => value.is_boolean(),
         SettingKind::MicGain => value.as_f64().is_some_and(|v| (1.0..=8.0).contains(&v)),
@@ -475,6 +487,15 @@ mod setting_key_tests {
         assert!(validate_setting(store::ACCENT_COLOR, &serde_json::Value::Null).is_ok());
         assert!(validate_setting(store::ACCENT_COLOR, &serde_json::json!("blue")).is_err());
         assert!(validate_setting(store::ACCENT_COLOR, &serde_json::json!("#1234")).is_err());
+    }
+
+    #[test]
+    fn custom_theme_setting_and_mode_are_accepted() {
+        let theme = serde_json::json!({"background": "#101315", "foreground": "#cacccc"});
+        assert!(validate_setting(store::CUSTOM_THEME, &theme).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEME, &serde_json::Value::Null).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEME, &serde_json::json!({"background": "#101315"})).is_err());
+        assert!(validate_setting(store::APPEARANCE_MODE, &serde_json::json!("custom")).is_ok());
     }
 }
 // ---------- generic settings ----------
@@ -571,11 +592,15 @@ pub async fn save_setting(
         }
     }
     #[cfg(target_os = "windows")]
-    if key == store::APPEARANCE_MODE {
+    if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
         crate::system::windows_titlebar::refresh_for_app(&app);
     }
     if let Some(volume) = sound_effects_volume {
         crate::media::sound::set_volume(volume);
+    }
+
+    if key == store::SUB_APP_CAPTURE_HOTKEY {
+        apply_sub_app_capture_hotkey(&app);
     }
 
     if key == store::MIC_MUTE_BUTTON_DICTATION || key == store::MICROPHONE_DEVICE {
@@ -654,8 +679,10 @@ pub struct AllSettings {
     pub beta_updates_enabled: Option<bool>,
     pub verenu_service_checks_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
+    pub sub_app_capture_hotkey: Option<String>,
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
+    pub custom_theme: Option<serde_json::Value>,
     pub cleanup_prompt_override: Option<String>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
@@ -735,6 +762,8 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         }),
         appearance_mode: str_val(store::APPEARANCE_MODE),
         accent_color: str_val(store::ACCENT_COLOR),
+        sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
+        custom_theme: json_val(store::CUSTOM_THEME),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })
@@ -826,4 +855,14 @@ mod provider_model_cache_tests {
         assert!(is_readable_setting_key(store::PROVIDER_MODEL_CACHE));
         assert!(!is_exportable_setting_key(store::PROVIDER_MODEL_CACHE));
     }
+}
+
+/// Applies the saved sub-app capture chord (or the platform default).
+pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
+    let chord = store::settings_handle(app)
+        .ok()
+        .and_then(|settings| settings.get(store::SUB_APP_CAPTURE_HOTKEY))
+        .and_then(|value| value.as_str().and_then(crate::core::hotkey::chord::Chord::parse))
+        .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
+    crate::core::hotkey::set_sub_app_capture_chord(chord);
 }

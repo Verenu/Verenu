@@ -216,6 +216,7 @@ fn migrate_legacy_settings_file(dest: &Path) {
 }
 
 fn legacy_settings_candidates() -> Vec<PathBuf> {
+    #[allow(unused_mut)]
     let mut out = Vec::new();
 
     #[cfg(windows)]
@@ -362,6 +363,8 @@ pub const DUAL_TRANSCRIPTION_ENABLED: &str = "dual_transcription_enabled";
 pub const CLEANUP_FALLBACK_MODELS: &str = "cleanup_fallback_models";
 pub const CLEANUP_ENABLED: &str = "cleanup_enabled";
 pub const HOTKEY: &str = "hotkey";
+/// Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S" (see core::hotkey::chord).
+pub const SUB_APP_CAPTURE_HOTKEY: &str = "sub_app_capture_hotkey";
 pub const MICROPHONE_DEVICE: &str = "microphone_device";
 pub const DEFAULT_TONE: &str = "default_tone";
 pub const CLEANUP_INTENSITY: &str = "cleanup_intensity";
@@ -390,6 +393,9 @@ pub const CONTEXTUAL_CAPS: &str = "contextual_caps_enabled";
 pub const AUTO_SPACING: &str = "auto_spacing_enabled";
 pub const APPEARANCE_MODE: &str = "appearance_mode";
 pub const ACCENT_COLOR: &str = "accent_color";
+/// User-entered hex palette for the Custom appearance mode (background, text,
+/// and optional sidebar/surface colors).
+pub const CUSTOM_THEME: &str = "custom_theme";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";

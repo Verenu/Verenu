@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../errors';
   import { invoke } from '../tauri';
   import { onMount } from 'svelte';
   import { appStore } from '../stores';
@@ -272,8 +273,8 @@
       providerKeyStatus = { ...providerKeyStatus, [provider]: true };
       keySaved = true;
       apiKeyDraft = '';
-    } catch {
-      keyError = 'Could not save the key. Check your connection and try again.';
+    } catch (err) {
+      keyError = formatIpcError(err, 'Could not save your API key on this device');
       keySaving = false;
       return;
     }
@@ -290,8 +291,8 @@
     try {
       const result = await invoke<{ ok: boolean; status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider, key });
       keyValidation = { status: result.status, message: result.message };
-    } catch {
-      keyValidation = { status: 'unknown', message: "Couldn't verify the key right now." };
+    } catch (err) {
+      keyValidation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
     }
   }
 
@@ -403,8 +404,7 @@
       // Previously this was swallowed, leaving a half-written config behind an
       // apparently successful setup. Stop before marking setup complete.
       console.error('Failed to save setup settings:', err);
-      const detail = err instanceof Error ? err.message : String(err);
-      saveError = `Settings save failed: ${detail}`;
+      saveError = formatIpcError(err, 'Could not save your setup choices');
       finishing = false;
       return;
     }

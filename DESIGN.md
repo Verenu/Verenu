@@ -44,7 +44,18 @@ Do not use a standard button for navigation rows, selection cards, tabs, microph
 
 ### Dropdowns
 
-Use the structural classes on a feature-local dropdown. This centralizes visual treatment while allowing each feature to retain typed values, option descriptions, width constraints, and keyboard behavior.
+For a plain single-choice select, use [`CompactSelect.svelte`](src/lib/components/CompactSelect.svelte). It is the Insights header dropdown: a bordered compact trigger with a chevron, and a padded menu that flies in. This is the default look for dropdowns in the app.
+
+```svelte
+<CompactSelect
+  value={range}
+  options={[{ value: '7d', label: 'Last 7 days' }, { value: '30d', label: 'Last 30 days' }]}
+  label="Date range"
+  onchange={(next) => (range = next)}
+/>
+```
+
+When a dropdown needs more than a label per option (icons, search, descriptions), compose it from the structural classes with the same anatomy: `ui-dropdown-trigger ui-dropdown-trigger--compact` on the trigger, `ui-dropdown-menu ui-dropdown-menu--padded` on the menu, and the same fly transition. This centralizes visual treatment while allowing each feature to retain typed values, option descriptions, width constraints, and keyboard behavior.
 
 ```svelte
 <script lang="ts">
@@ -56,7 +67,7 @@ Use the structural classes on a feature-local dropdown. This centralizes visual 
 <Dropdown bind:open closeSelector=".example-dropdown">
   <div class="ui-dropdown example-dropdown">
     <button
-      class="btn-ghost ui-dropdown-trigger"
+      class="ui-dropdown-trigger ui-dropdown-trigger--compact"
       aria-haspopup="listbox"
       aria-expanded={open}
       onclick={() => (open = !open)}
@@ -77,7 +88,7 @@ Use the structural classes on a feature-local dropdown. This centralizes visual 
 | Class | Responsibility |
 | --- | --- |
 | `ui-dropdown` | Anchors a menu to its trigger. |
-| `ui-dropdown-trigger` | Trigger shape, chevron motion, focus ring, and open treatment. Combine with `btn-ghost` when it is a secondary setting control. |
+| `ui-dropdown-trigger` | Trigger shape, chevron motion, focus ring, and open treatment. Pair with `ui-dropdown-trigger--compact` (the Insights look). Do not combine with `btn-ghost`; that produces a pill button that does not match the app's dropdowns. |
 | `ui-dropdown-menu` | Popover surface, stacking, border, shadow, and scroll behavior. |
 | `ui-dropdown-option` | Option row, selected state, hover, focus, and text overflow. |
 | `ui-dropdown-menu--padded` | Use for compact choice lists that need separated rounded options rather than row dividers. |

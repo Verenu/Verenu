@@ -2,6 +2,7 @@ import type { icons } from './icons';
 
 export type SettingsSectionId =
   | 'general'
+  | 'subapps'
   | 'apps'
   | 'keys'
   | 'models'
@@ -38,6 +39,7 @@ interface SettingsSection {
  */
 const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'general',     label: 'General',      icon: 'sliders', group: 'Settings' },
+  { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings' },
   { id: 'apps',        label: 'App Mappings', icon: 'apps',    group: 'Settings', legacyOnly: true },
   { id: 'keys',        label: 'API Keys',     icon: 'key',     group: 'Settings' },
   { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },

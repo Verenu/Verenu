@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../../errors';
   import { onDestroy, tick } from 'svelte';
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
@@ -18,7 +19,11 @@
   import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
   import { modelDisplayLabel, splitModelId } from './models';
   import AccentColorPicker from './AccentColorPicker.svelte';
+  import CustomThemeEditor from './CustomThemeEditor.svelte';
+  import { CUSTOM_THEME_CHANGE_EVENT, defaultCustomTheme, type CustomTheme } from '../../customTheme';
   import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent } from '../../accentTheme';
+  import { desktopShortcut } from '../../shortcutStatus.svelte';
+  import DesktopShortcutStatus from './DesktopShortcutStatus.svelte';
 
   let selectedLanguage = $state<TranscriptionLanguageCode>('en');
   let languageDropdownOpen = $state(false);
@@ -112,8 +117,8 @@
         ? isMac ? 'Pick a key like F5' : 'Must be Alt/Ctrl/Shift/Win'
         : capturedKeys.length === 0
           ? isMac ? 'Press a key (e.g. F5)…' : 'Press Alt/Ctrl/Shift/Win...'
-          : 'Press 2nd key...'
-      : formatHotkeyDisplay(hotkey)
+          : isLinux ? 'Press 2nd key or modifier...' : 'Press 2nd key...'
+      : isLinux && !isAndroid && desktopShortcut('dictation') ? desktopShortcut('dictation')?.active?.split('+').join(' + ') ?? 'Unavailable' : formatHotkeyDisplay(hotkey)
   );
 
   $effect.pre(() => {
@@ -135,11 +140,18 @@
     el.style.width = `${newW}px`;
   });
 
-  const appearanceOptions: { id: AppearanceMode; label: string }[] = [
+  // On Omarchy, System already follows the active Omarchy theme. The separate
+  // Omarchy choice is kept only for installs that saved it earlier.
+  // Custom lets the user type hex colors and is available on every desktop.
+  const appearanceOptions: { id: AppearanceMode; label: string }[] = $derived([
     { id: 'system', label: 'System' },
     { id: 'light', label: 'Light' },
     { id: 'dark', label: 'Dark' },
-  ];
+    ...(isLinux && !isAndroid && appStore.appearanceMode === 'omarchy'
+      ? [{ id: 'omarchy' as const, label: 'Omarchy' }]
+      : []),
+    ...(!isAndroid ? [{ id: 'custom' as const, label: 'Custom' }] : []),
+  ]);
 
   const MODIFIER_CODES = new Set([
     'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
@@ -172,7 +184,7 @@
     if (hk && hk.length === 2) hotkey = hk;
 
     const appearance = val<AppearanceMode | null>(2, null);
-    if (appearance === 'system' || appearance === 'light' || appearance === 'dark') {
+    if (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom') {
       appStore.appearanceMode = appearance;
     }
 
@@ -269,6 +281,7 @@
       autostart = !value;
       autostartError = true;
       console.error('set_autostart failed:', err);
+      void emit('verenu:error', formatIpcError(err, 'Could not change whether Verenu starts on boot'));
     }
   }
 
@@ -373,6 +386,25 @@
     }
   }
 
+  async function saveCustomTheme(next: CustomTheme | null) {
+    appStore.customTheme = next;
+    void emit(CUSTOM_THEME_CHANGE_EVENT, next).catch((err) => {
+      console.warn('broadcast custom theme failed:', err);
+    });
+    await saveSetting('custom_theme', next);
+  }
+
+  async function handleCustomTheme(next: CustomTheme | null) {
+    const previous = appStore.customTheme;
+    try {
+      await saveCustomTheme(next);
+    } catch (err) {
+      appStore.customTheme = previous;
+      void emit(CUSTOM_THEME_CHANGE_EVENT, previous).catch(() => {});
+      console.error('save custom_theme failed:', err);
+    }
+  }
+
   async function handleAppearance(mode: AppearanceMode) {
     const previousAppearance = appStore.appearanceMode;
     const previousAccent = appStore.accentColor;
@@ -380,6 +412,11 @@
     let accentResetSaved = false;
 
     try {
+      // First visit to Custom starts from the light or dark preset that
+      // matches the current look instead of an empty palette.
+      if (mode === 'custom' && !appStore.customTheme) {
+        await saveCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'));
+      }
       // Exact black and white represent the default accent in their respective
       // themes. Save null so the CSS default adapts when Appearance changes.
       if (resetAccentToThemeDefault) {
@@ -509,7 +546,7 @@
         }
         if (!available) {
           hotkeyState = 'error';
-          await emit('verenu:error', 'Hotkey may already be in use by another application');
+          await emit('verenu:error', 'That shortcut is unavailable and may be used by another app. Choose a different key combination in Settings > General.');
           setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
           return;
         }
@@ -520,7 +557,7 @@
       } catch (e) {
         console.error('Failed to save hotkey', e);
         hotkeyState = 'error';
-        await emit('verenu:error', 'Failed to save hotkey - key may not be recognized');
+        await emit('verenu:error', formatIpcError(e, 'Could not save this shortcut'));
         setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
       }
     }
@@ -544,7 +581,7 @@
   </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">
-    <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe</div></div>
+    <div><div class="label">Hotkey</div><div class="desc">{isLinux ? 'Hold to record, release to transcribe. Desktop conflicts automatically use an available alternative.' : 'Hold to record, release to transcribe'}</div></div>
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
@@ -569,13 +606,24 @@
     (or hold <strong>Fn</strong> with F5). You can also pick any other key above.
   </p>
 {/if}
+{#if isLinux && !isAndroid}<DesktopShortcutStatus id="dictation" />{/if}
 <!-- Keyboard chord, OS autostart, and Caps Lock have no phone equivalent —
      Android hides them rather than showing dead or Windows-worded controls. -->
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-copy-last">
-    <div><div class="label">Copy last dictation</div><div class="desc">Always available — re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
-    <span class="badge key-badge">{isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
+    <div><div class="label">Copy last dictation</div><div class="desc">Re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
+    <span class="badge key-badge">{isLinux && !isAndroid && desktopShortcut('copy') ? desktopShortcut('copy')?.active ?? 'Unavailable' : isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
   </div>
+{/if}
+{#if isLinux && !isAndroid}
+  <DesktopShortcutStatus id="copy" />
+  {#each [{ id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' }, { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' }] as control}
+    <div class="setting-row">
+      <div><div class="label">{control.label}</div><div class="desc">{control.description}</div></div>
+      <span class="badge key-badge">{desktopShortcut(control.id as 'cancel' | 'handsfree')?.active ?? 'Unavailable'}</span>
+    </div>
+    <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
+  {/each}
 {/if}
 <div class="setting-row" data-setting-target="general-language">
   <div class="lang-setting-text"><div class="label">Spoken Language</div><div class="desc">Tells transcription what language to expect{languageScopeNote}</div></div>
@@ -680,6 +728,16 @@
     {/each}
   </div>
 </div>
+{#if appStore.appearanceMode === 'custom' && appStore.customTheme}
+  <div class="setting-row" data-setting-target="general-custom-theme">
+    <div><div class="label">Custom colors</div><div class="desc">Type hex codes or pick colors. Everything else is derived from them; Sidebar and Surface are optional.</div></div>
+  </div>
+  <CustomThemeEditor
+    value={appStore.customTheme}
+    onchange={handleCustomTheme}
+    onreset={() => handleCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'))}
+  />
+{/if}
 <div class="setting-row" data-setting-target="general-accent">
   <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />

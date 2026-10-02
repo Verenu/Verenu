@@ -16,7 +16,7 @@ pub async fn check_for_update(
         Ok(update) => Ok(update),
         Err(e) => {
             log::warn!("Update check failed: {e}");
-            Ok(None)
+            Err(crate::api::user_facing_error(&e))
         }
     }
 }
@@ -61,7 +61,7 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
     // asset URL so a compromised/spoofed frontend can't turn this into an
     // arbitrary download-and-execute primitive.
     if !crate::api::updater::is_authorized_release_asset_url(&download_url) {
-        return Err("Refusing to install update from an unauthorized URL.".into());
+        return Err("Verenu blocked this update because it is not from an official release. Check for updates again in Settings > About.".into());
     }
 
     #[cfg(target_os = "macos")]
@@ -81,7 +81,7 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (&app, &download_url);
-        Err("Updates are only supported on Windows and macOS.".into())
+        Err("In-app update installation is unavailable on this platform. Download the latest Verenu release and install it with your usual package manager.".into())
     }
 
     #[cfg(windows)]
