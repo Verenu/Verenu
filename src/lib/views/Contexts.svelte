@@ -896,6 +896,7 @@
       return;
     }
     closeWebsitePicker();
+    subAppPickerOpen = false;
     appPickerOpen = true;
     await tick();
     appPickerInput?.focus();
@@ -960,6 +961,7 @@
       return;
     }
     closeAppPicker();
+    subAppPickerOpen = false;
     websitePickerOpen = true;
     await tick();
     websiteInputEl?.focus();
@@ -1020,6 +1022,7 @@
       closeRowMenu();
       closeAppPicker();
       closeWebsitePicker();
+      subAppPickerOpen = false;
       closeFieldMenu();
       closeModalColorPicker();
     }
