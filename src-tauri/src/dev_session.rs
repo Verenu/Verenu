@@ -411,6 +411,10 @@ fn allowed(command: &str) -> bool {
             | "cancel_local_llm_model_download"
             | "cancel_local_llm_runtime_download"
             | "get_contexts"
+            | "get_sub_apps"
+            | "create_sub_app"
+            | "assign_sub_app"
+            | "delete_sub_app"
             | "create_context"
             | "duplicate_context"
             | "update_context"
@@ -900,6 +904,9 @@ mod tests {
             assert!(!allowed(command), "{command}");
         }
         assert!(allowed("get_contexts"));
+        assert!(allowed("get_sub_apps"));
+        assert!(allowed("create_sub_app"));
+        assert!(!allowed("take_pending_sub_app_capture"));
         let mut settings =
             json!({crate::data::store::KEY_GROQ: "synthetic-key", "setup_complete": true});
         sanitize_settings(&mut settings).unwrap();

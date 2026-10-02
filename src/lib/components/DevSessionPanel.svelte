@@ -161,5 +161,10 @@
   .dev-upload { width: 100%; }
   summary { cursor: pointer; padding: 8px 0; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; max-height: 240px; overflow: auto; }
-  @media (max-width: 500px) { .dev-session-panel { padding: 16px; } .dev-fields { grid-template-columns: 1fr; } .dev-actions > button { flex: 1 1 100%; } }
+  @media (max-width: 500px) {
+    .dev-session-launcher { bottom: calc(80px + env(safe-area-inset-bottom)); }
+    .dev-session-panel { padding: 16px; bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 164px); }
+    .dev-fields { grid-template-columns: 1fr; }
+    .dev-actions > button { flex: 1 1 100%; }
+  }
 </style>
