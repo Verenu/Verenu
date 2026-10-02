@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../errors';
   import { onMount, tick } from 'svelte';
   import { emit, invoke, listen } from '../tauri';
   import { fade } from 'svelte/transition';
@@ -101,7 +102,7 @@
             appStore.dictionary = appStore.dictionary.filter((entry) => entry.id !== id);
           } catch (err) {
             console.error(err);
-            await emit('verenu:error', 'Could not delete dictionary term.');
+            await emit('verenu:error', formatIpcError(err, 'Could not delete this vocabulary term'));
           } finally {
             const nextLeaving = new Set(leavingIds);
             nextLeaving.delete(id);
@@ -137,7 +138,7 @@
   <p class="page-sub">Your personal vocabulary. Add words or phrases the AI should know — names, brands, jargon, anything niche. They get injected into every transcription so the AI recognises them and uses your exact spelling.</p>
   {#if appStore.dictionaryFetchStatus === 'error' && appStore.dictionary.length > 0}
     <div class="load-warning" role="alert" aria-live="assertive">
-      <span>{appStore.dictionaryFetchError || 'Unable to load dictionary terms.'} Check backend connection and retry.</span>
+      <span>{appStore.dictionaryFetchError || 'Could not load your vocabulary. Try again.'}</span>
       <button type="button" class="load-warning-retry" onclick={() => fetchDictionary()}>Retry</button>
     </div>
   {/if}
@@ -152,7 +153,7 @@
   {:else if appStore.dictionaryFetchStatus === 'error' && appStore.dictionary.length === 0}
     <div class="empty-state empty-state-error" role="alert" in:fade={{ duration: 220 }}>
       <p class="empty-h">Could not load dictionary</p>
-      <p class="empty-sub">The backend is unavailable right now. {appStore.dictionaryFetchError}</p>
+      <p class="empty-sub">{appStore.dictionaryFetchError || 'Could not load your vocabulary. Try again.'}</p>
       <button type="button" class="btn-ghost" onclick={() => fetchDictionary()}>Try again</button>
     </div>
   {:else if appStore.dictionary.length === 0}

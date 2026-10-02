@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../../errors';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
@@ -192,7 +193,7 @@
       if (!isMounted) return;
       testState = {
         status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
+        error: formatIpcError(err, 'Could not test or save this cleanup prompt'),
       };
     }
   }

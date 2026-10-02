@@ -222,7 +222,16 @@ pub async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Messa
 }
 
 pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
-    timeout(MESSAGE_READ_TIMEOUT, read_message_inner(reader))
+    read_message_with_timeout(reader, MESSAGE_READ_TIMEOUT).await
+}
+
+/// Pairing approval is a human wait and needs its own deadline. Ordinary
+/// frames retain the shorter timeout so stalled transfers release resources.
+pub async fn read_message_with_timeout<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    deadline: Duration,
+) -> Result<Message> {
+    timeout(deadline, read_message_inner(reader))
         .await
         .map_err(|_| anyhow!("timed out while reading sync message"))?
 }

@@ -87,6 +87,9 @@ mod win;
 #[cfg(windows)]
 pub use win::*;
 
+pub mod chord;
+pub mod shortcut_status;
+
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
@@ -105,6 +108,7 @@ mod noop {
         true
     }
     pub fn update_keys(_k1: u32, _k2: u32) {}
+    pub fn set_sub_app_capture_chord(_chord: super::chord::Chord) {}
     pub fn reset_chord_state() {}
     pub fn set_handless_active(_v: bool) {}
     pub fn begin_synthetic_paste_suppression(_duration_ms: u64) {}

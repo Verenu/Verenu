@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatIpcError } from '../errors';
   import { onMount, tick } from 'svelte';
   import { emit, invoke } from '../tauri';
   import { fade } from 'svelte/transition';
@@ -92,7 +93,7 @@
             appStore.snippets = appStore.snippets.filter((entry) => entry.id !== id);
           } catch (err) {
             console.error(err);
-            await emit('verenu:error', 'Could not delete snippet.');
+            await emit('verenu:error', formatIpcError(err, 'Could not delete this snippet'));
           } finally {
             const nextLeaving = new Set(leavingIds);
             nextLeaving.delete(id);
@@ -123,7 +124,7 @@
   <p class="page-sub">Speak a trigger and Verenu expands it during dictation.</p>
   {#if appStore.snippetsFetchStatus === 'error' && appStore.snippets.length > 0}
     <div class="load-warning" role="alert" aria-live="assertive">
-      <span>{appStore.snippetsFetchError || 'Unable to load snippets.'} Check backend connection and retry.</span>
+      <span>{appStore.snippetsFetchError || 'Could not load your snippets. Try again.'}</span>
       <button type="button" class="load-warning-retry" onclick={() => fetchSnippets()}>Retry</button>
     </div>
   {/if}
@@ -138,7 +139,7 @@
   {:else if appStore.snippetsFetchStatus === 'error' && appStore.snippets.length === 0}
     <div class="empty-state empty-state-error" role="alert" in:fade={{ duration: 250 }}>
       <p class="empty-h">Could not load snippets</p>
-      <p class="empty-sub">The backend is unavailable right now. {appStore.snippetsFetchError}</p>
+      <p class="empty-sub">{appStore.snippetsFetchError || 'Could not load your snippets. Try again.'}</p>
       <button type="button" class="btn-ghost" onclick={() => fetchSnippets()}>Try again</button>
     </div>
   {:else if appStore.snippets.length === 0}

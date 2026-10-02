@@ -12,13 +12,28 @@ For example, you might create:
 
 Verenu chooses one active context for each dictation:
 
-1. If the active browser tab matches a context website, that website context wins.
-2. Otherwise, if the foreground app matches a context app, that app context wins.
-3. If nothing matches, Verenu uses **Everywhere**.
+1. If the foreground window matches a sub-app (an app plus a window-title rule), that sub-app's context wins.
+2. Otherwise, if the active browser tab matches a context website, that website context wins.
+3. Otherwise, if the foreground app matches a context app, that app context wins.
+4. If nothing matches, Verenu uses **Everywhere**.
 
 Website matching is more specific than app matching. A website target such as `mail.google.com` can therefore use a different context from the rest of the browser. Verenu reads the active tab's domain from the browser address bar. No browser extension is required.
 
 The app target is the executable name on Windows, the bundle identifier on macOS, or the desktop application ID/window class on Linux. On Linux, if no website or window-class target matches, Verenu also checks the captured app's executable basename. Context targets are normalized when saved. A website is normalized to its hostname, and Verenu checks that the domain exists before saving it.
+
+## Sub-apps
+
+A sub-app is a place inside an app, such as one Discord server, one Slack workspace, or one VS Code project. It is the app plus a rule on the window title: the title contains, starts with, or is exactly some text. Matching ignores letter case and extra spaces.
+
+To capture one, focus the window and press **Ctrl+Alt+Shift+S** (**Cmd+Option+Shift+S** on macOS). Verenu opens a sheet with a suggested rule based on the current title, with unread counts and the app name already removed, and shows whether the rule matches that window. Name the sub-app and select **Create**. The sub-app is saved to your sub-app list.
+
+Sub-apps are added to context groups separately. On a context group's page, use **Add sub-app** next to **Add website** and pick from the list. A sub-app belongs to one context group at a time, so the list only offers sub-apps that are not in a group yet. Remove one from a group with its chip's × and it returns to the list. Deleting a context group also returns its sub-apps to the list. Sub-apps only affect dictation while they are in a context group.
+
+**Settings → Sub-apps** shows every sub-app with its app, rule, and context group, lets you remove sub-apps, and lets you change the capture shortcut. A shortcut needs Ctrl, Alt, or Super/Cmd plus a letter, number, or F1–F12.
+
+When several sub-app rules match, the most specific wins: an exact title beats "starts with", which beats "contains", and a longer rule beats a shorter one. Only the rule you save is stored. The captured window title is shown once in the sheet and is not saved or logged. On macOS, reading window titles needs Accessibility permission.
+
+Sub-apps sync between paired devices, whether or not they are in a context group, and are included in backups. On another device they are matched to the closest installed app, like app targets, and left out when no app matches.
 
 ## The Everywhere context
 

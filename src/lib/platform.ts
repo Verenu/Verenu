@@ -108,9 +108,7 @@ export function formatKeyLabel(code: string): string {
  */
 export const defaultHotkey: string[] = isMac
 	? ['AltLeft', 'Space']
-	: isLinux
-		? ['ControlLeft', 'Space']
-		: ['ControlLeft', 'MetaLeft'];
+	: ['ControlLeft', 'MetaLeft'];
 
 /** Platform label for the fixed copy-last-dictation shortcut. */
 export const copyLastHotkey: string[] = isMac

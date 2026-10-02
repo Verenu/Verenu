@@ -44,7 +44,7 @@ export const countCodePoints = (value: string): number => [...value].length;
 
 export function requireCreatedRecordMeta(value: unknown): CreatedRecordMeta {
   if (typeof value !== 'object' || value === null) {
-    throw new Error('Save returned no record metadata. Relaunch the Tauri app and try again.');
+    throw new Error('Verenu could not confirm that this vocabulary entry was saved. Refresh the list before trying again.');
   }
   const meta = value as Partial<CreatedRecordMeta>;
   const canonicalId = typeof meta.dictionary_id === 'number' && Number.isFinite(meta.dictionary_id)

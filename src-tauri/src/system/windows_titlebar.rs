@@ -165,10 +165,11 @@ fn convert(native: NativeMetrics) -> TitleBarMetrics {
     }
 }
 
-fn dark(theme: Option<Theme>, appearance_mode: Option<&str>) -> bool {
+fn dark(theme: Option<Theme>, appearance_mode: Option<&str>, custom_dark: Option<bool>) -> bool {
     match appearance_mode {
         Some("light") => false,
         Some("dark") => true,
+        Some("custom") if custom_dark.is_some() => custom_dark == Some(true),
         _ => !matches!(theme, Some(Theme::Light)),
     }
 }
@@ -177,6 +178,7 @@ fn resolved_dark(window: &WebviewWindow, theme: Option<Theme>) -> bool {
     dark(
         theme,
         crate::app_tray::appearance_mode(window.app_handle()).as_deref(),
+        crate::app_tray::custom_theme_is_dark(window.app_handle()),
     )
 }
 
@@ -288,15 +290,22 @@ mod tests {
 
     #[test]
     fn explicit_appearance_overrides_system_theme() {
-        assert!(!dark(Some(tauri::Theme::Dark), Some("light")));
-        assert!(dark(Some(tauri::Theme::Light), Some("dark")));
+        assert!(!dark(Some(tauri::Theme::Dark), Some("light"), None));
+        assert!(dark(Some(tauri::Theme::Light), Some("dark"), None));
+    }
+
+    #[test]
+    fn custom_appearance_follows_its_palette() {
+        assert!(dark(Some(tauri::Theme::Light), Some("custom"), Some(true)));
+        assert!(!dark(Some(tauri::Theme::Dark), Some("custom"), Some(false)));
+        assert!(dark(Some(tauri::Theme::Dark), Some("custom"), None));
     }
 
     #[test]
     fn system_appearance_uses_native_theme() {
-        assert!(!dark(Some(tauri::Theme::Light), Some("system")));
-        assert!(dark(Some(tauri::Theme::Dark), Some("system")));
-        assert!(dark(None, None));
+        assert!(!dark(Some(tauri::Theme::Light), Some("system"), None));
+        assert!(dark(Some(tauri::Theme::Dark), Some("system"), None));
+        assert!(dark(None, None, None));
     }
 
     fn metrics() -> NativeMetrics {

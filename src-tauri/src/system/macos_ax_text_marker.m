@@ -654,3 +654,39 @@ int verenu_macos_read_context_probe(
     CFRelease(system);
     return 1;
 }
+
+// Title of the focused window of the app with `pid`, for sub-app matching.
+// Returns 1 and writes UTF-8 into `out` on success. Requires Accessibility
+// permission; without it the attribute read fails and 0 is returned.
+int verenu_macos_focused_window_title(int32_t pid, char *out, size_t capacity) {
+    if (out == NULL || capacity == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (pid <= 0) {
+        return 0;
+    }
+    AXUIElementRef app = AXUIElementCreateApplication((pid_t)pid);
+    if (app == NULL) {
+        return 0;
+    }
+    of_set_timeout(app);
+    int ok = 0;
+    CFTypeRef window = of_copy_attribute(app, kAXFocusedWindowAttribute);
+    if (window != NULL && CFGetTypeID(window) == AXUIElementGetTypeID()) {
+        of_set_timeout((AXUIElementRef)window);
+        CFTypeRef title = of_copy_attribute((AXUIElementRef)window, kAXTitleAttribute);
+        if (title != NULL && CFGetTypeID(title) == CFStringGetTypeID()) {
+            of_write_cf_string((CFStringRef)title, out, capacity);
+            ok = out[0] != '\0';
+        }
+        if (title != NULL) {
+            CFRelease(title);
+        }
+    }
+    if (window != NULL) {
+        CFRelease(window);
+    }
+    CFRelease(app);
+    return ok;
+}

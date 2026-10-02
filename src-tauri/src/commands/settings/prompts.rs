@@ -90,7 +90,7 @@ pub async fn test_cleanup_prompt(
 
             let (passed, detail) = match outcome {
                 Ok(output) => evaluate_prompt_test_case(name, &output),
-                Err(e) => (false, format!("Request failed: {e}")),
+                Err(e) => (false, crate::api::user_facing_error(&e)),
             };
             live_results.push(PromptTestCaseResult {
                 name: name.to_string(),
@@ -138,7 +138,7 @@ pub async fn test_cleanup_prompt(
 
         let (passed, detail) = match outcome {
             Ok(output) => evaluate_prompt_test_case(name, &output),
-            Err(e) => (false, format!("Request failed: {e}")),
+            Err(e) => (false, crate::api::user_facing_error(&e)),
         };
         live_results.push(PromptTestCaseResult {
             name: name.to_string(),

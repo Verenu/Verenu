@@ -45,6 +45,9 @@ check('session uses its own real Rust backend', async () => {
 check('authentication, origin checks, and native command restrictions hold', async () => {
   assert.equal((await fetch(`${base}/__verenu_dev/session`)).status, 401);
   assert.equal((await request('/session', { headers: { Origin: 'https://untrusted.invalid' } })).status, 403);
+  if (!metadata.capabilities.hostMicrophone) {
+    assert.deepEqual(await invoke('get_microphones'), [], 'Browser-only sessions must not enumerate host microphones');
+  }
   for (const command of ['save_api_key', 'delete_api_key', 'export_data', 'plugin:shell|open']) {
     const response = await request('/invoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args: {} }) });
     assert.equal(response.status, 403);
@@ -109,6 +112,55 @@ check('missing session authentication never falls back to browser mocks', async 
     await page.getByRole('heading', { name: 'Connect to your dev session' }).waitFor();
     assert.equal(await page.locator('.app').count(), 0);
   } finally { await browser.close(); }
+});
+check('sub-app pattern Enter saves into the isolated database on desktop and phone', async () => {
+  const browser = await chromium.launch({ headless: true });
+  const createdIds = [];
+  try {
+    for (const viewport of [{ width: 1320, height: 860 }, { width: 390, height: 844 }]) {
+      const context = await browser.newContext({ viewport, reducedMotion: 'reduce' });
+      if (viewport.width < 700) {
+        await context.addInitScript(() => { window.__VERENU_ANDROID__ = true; });
+      }
+      try {
+        const page = await context.newPage();
+        await page.goto(access.localAccessUrl);
+        await page.getByRole('button', { name: /^Dev tests/ }).waitFor();
+        const label = `Synthetic sub-app ${viewport.width} ${Date.now()}`;
+        // Supply a public synthetic capture instead of invoking native hotkeys.
+        await page.evaluate(async (label) => {
+          const { contextsStore } = await import('/src/lib/contextsStore.svelte.ts');
+          contextsStore.subAppSheet = { mode: 'capture', capture: {
+            executable: 'fixture-app', app_name: 'Fixture app',
+            window_title: label, proposed_pattern: label,
+          } };
+        }, label);
+        const dialog = page.getByRole('dialog', { name: 'New sub-app' });
+        await dialog.waitFor();
+        await dialog.getByRole('textbox', { name: 'Window title text' }).press('Enter');
+        await dialog.waitFor({ state: 'hidden' }).catch(async (error) => {
+          await page.screenshot({ path: path.join(path.dirname(accessFile), `sub-apps-save-failure-${viewport.width}.png`) });
+          throw error;
+        });
+        const saved = (await invoke('get_sub_apps')).find((row) => row.title_pattern === label);
+        assert.ok(saved, 'Enter from the pattern input must persist a sub-app');
+        createdIds.push(saved.id);
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await page.getByRole(viewport.width < 700 ? 'tab' : 'button', { name: 'Sub-apps', exact: true }).filter({ visible: true }).click();
+        await page.locator('.settings-h').filter({ hasText: /^General$/ }).waitFor({ state: 'detached' });
+        await page.getByRole('heading', { name: 'Sub-apps', exact: true, level: 2 }).waitFor();
+        assert.equal(await page.getByRole('heading', { name: 'Shortcut', exact: true, level: 3 }).isVisible(), true);
+        await page.getByRole('button', { name: `Remove ${saved.label}`, exact: true }).waitFor();
+        const panel = page.locator('.settings-page');
+        const box = await panel.boundingBox();
+        assert.ok(box && box.x >= 0 && box.x + box.width <= viewport.width, 'Sub-apps settings must fit the viewport');
+        await page.screenshot({ animations: 'disabled', path: path.join(path.dirname(accessFile), `sub-apps-${viewport.width}.png`) });
+      } finally { await context.close(); }
+    }
+  } finally {
+    for (const id of createdIds) await invoke('delete_sub_app', { id });
+    await browser.close();
+  }
 });
 check('live synthetic dictation reaches providers and session history', async (t, row) => {
   if (process.env.VERENU_DEV_REQUIRE_LIVE !== '1') {

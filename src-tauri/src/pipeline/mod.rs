@@ -43,6 +43,8 @@ mod pill {
 
     pub(crate) fn set_pill_interactive(_app: &AppHandle, _interactive: bool) {}
 
+    pub(crate) fn set_pill_hit_rect(_app: &AppHandle, _x: f64, _y: f64, _w: f64, _h: f64) {}
+
     pub(crate) fn show_copied_pill(_app: &AppHandle, _msg: &str) {}
 
     pub(crate) fn emit_pill_stage(_app: &AppHandle, stage: &str) {
@@ -95,15 +97,15 @@ use gates::{
 #[cfg(target_os = "linux")]
 pub(crate) use pill::initialize_pill;
 pub(crate) use pill::{
-    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_interactive,
+    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_hit_rect,
+    set_pill_interactive,
     show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
     show_paste_failed_pill,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use pill_position::linux_effective_placement;
+#[cfg(not(target_os = "linux"))]
 pub(crate) use pill_position::{
     apply_pill_placement, placement_for_current_monitor, PillPlacement,
 };
@@ -381,6 +383,7 @@ async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
         }
     }
 }
+
 
 /// Concatenates a previous (interrupted) dictation's audio onto a freshly
 /// captured one — both are already resampled to the fixed 16kHz mono target,

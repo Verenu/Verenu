@@ -248,7 +248,7 @@ pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<Contex
     Ok(rows)
 }
 
-fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
+pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
         "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at
          FROM contexts WHERE id = ?1",
@@ -454,12 +454,26 @@ pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
 /// engine (which applies remote context deletions with identical semantics:
 /// scoped vocabulary moves to Everywhere so nothing is orphaned).
 pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+    // Remote sync batches already own a transaction. A savepoint makes the
+    // same deletion atomic both inside those batches and for local callers.
+    conn.execute_batch("SAVEPOINT delete_context")?;
+    let result = delete_context_contents(conn, context_id);
+    match result {
+        Ok(()) => conn.execute_batch("RELEASE delete_context")?,
+        Err(error) => {
+            conn.execute_batch("ROLLBACK TO delete_context; RELEASE delete_context")?;
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
+    let everywhere_id = ensure_everywhere_context_conn(tx)?;
     // Vocabulary assignments move to Everywhere when a Context is deleted;
     // move the Context-owned correction mappings in the same transaction so
     // learned substitutions do not disappear or remain orphaned.
-    move_dictionary_corrections_conn(&tx, context_id, everywhere_id)?;
+    move_dictionary_corrections_conn(tx, context_id, everywhere_id)?;
     // Evidence is transient and its original Context is being removed. Drop
     // it rather than allowing a later promotion to invent an Everywhere
     // origin after the source Context no longer exists.
@@ -573,7 +587,6 @@ pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
     )?;
     let changed = tx.execute("DELETE FROM contexts WHERE id = ?1", params![context_id])?;
     require_row_changed(changed, "Context", context_id)?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -834,13 +847,43 @@ pub fn remove_context_website(db: &Db, context_id: i64, domain: &str) -> Result<
 /// multiple contexts; domain match takes priority over the exe match (it's
 /// the more specific signal), and an unmatched/empty executable resolves to
 /// the stable Everywhere context.
+/// Resolution order: sub-app (app + window-title rule), website, app,
+/// Everywhere. Returns the matched sub-app too so the pill can name it.
+#[cfg(any(target_os = "linux", test))]
 pub fn resolve_context_for_target(
     db: &Db,
     executable: &str,
     domain: Option<&str>,
 ) -> Result<Context> {
+    resolve_context_with_sub_app(db, executable, domain, None).map(|(context, _)| context)
+}
+
+pub fn resolve_context_with_sub_app(
+    db: &Db,
+    executable: &str,
+    domain: Option<&str>,
+    window_title: Option<&str>,
+) -> Result<(Context, Option<ContextSubApp>)> {
     let conn = lock_conn(db)?;
-    let everywhere_id = ensure_everywhere_context_conn(&conn)?;
+    if let Some(sub_app) = window_title
+        .map(|title| resolve_sub_app_conn(&conn, executable, title))
+        .transpose()?
+        .flatten()
+    {
+        if let Some(context_id) = sub_app.context_id {
+            let context = query_context_conn(&conn, context_id)?;
+            return Ok((context, Some(sub_app)));
+        }
+    }
+    resolve_context_without_sub_app_conn(&conn, executable, domain).map(|context| (context, None))
+}
+
+fn resolve_context_without_sub_app_conn(
+    conn: &rusqlite::Connection,
+    executable: &str,
+    domain: Option<&str>,
+) -> Result<Context> {
+    let everywhere_id = ensure_everywhere_context_conn(conn)?;
     let normalized_executable = executable.trim().to_lowercase();
     let normalized_domain = domain
         .map(str::trim)
@@ -856,12 +899,12 @@ pub fn resolve_context_for_target(
             )
             .optional()?;
         if let Some(context_id) = context_id {
-            return query_context_conn(&conn, context_id);
+            return query_context_conn(conn, context_id);
         }
     }
 
     if normalized_executable.is_empty() {
-        return query_context_conn(&conn, everywhere_id);
+        return query_context_conn(conn, everywhere_id);
     }
 
     let context_id: Option<i64> = conn
@@ -871,7 +914,7 @@ pub fn resolve_context_for_target(
             |row| row.get(0),
         )
         .optional()?;
-    query_context_conn(&conn, context_id.unwrap_or(everywhere_id))
+    query_context_conn(conn, context_id.unwrap_or(everywhere_id))
 }
 
 pub fn set_dictionary_context_assignment(

@@ -1,10 +1,12 @@
 import { invoke } from './tauri';
-import { extractIpcErrorMessage } from './errors';
+import { formatIpcError as formatError } from './errors';
 import type { ProviderId } from './settings';
 import type { SettingsSectionId } from './settingsSections';
+import type { OmarchyTheme } from './omarchyTheme';
+import type { CustomTheme } from './customTheme';
 
 type PageId = 'home' | 'insights' | 'contexts' | 'dictionary' | 'snippets' | 'style';
-export type AppearanceMode = 'system' | 'light' | 'dark';
+export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 export type PillState = 'idle' | 'recording' | 'processing' | 'handsfree';
 type FetchStatus = 'idle' | 'loading' | 'loaded' | 'error';
 
@@ -76,6 +78,25 @@ export interface ContextTarget {
   created_at: string;
 }
 
+export type TitleMatchMode = 'contains' | 'starts_with' | 'equals';
+
+/** A place inside an app: the app plus a window-title rule. */
+export interface ContextSubApp {
+  id: number;
+  uuid: string;
+  /** `null` while the sub-app waits in the sub-app list. */
+  context_id: number | null;
+  executable: string;
+  app_name: string | null;
+  label: string;
+  /** Icon key from CONTEXT_ICON_CHOICES; `null` shows the app icon. */
+  icon: string | null;
+  title_pattern: string;
+  match_mode: TitleMatchMode;
+  platform: string | null;
+  created_at: string;
+}
+
 export interface ContextWebsiteTarget {
   id: number;
   context_id: number;
@@ -120,6 +141,12 @@ export const appStore = $state({
   ruinAccessibility: false,
   appearanceMode: 'system' as AppearanceMode,
   accentColor: null as string | null,
+  /** Sub-app capture chord ("Ctrl+Alt+Shift+S"); null means the platform default. */
+  subAppCaptureHotkey: null as string | null,
+  // Active Omarchy palette (Linux desktop only); drives the Omarchy appearance mode.
+  omarchyTheme: null as OmarchyTheme | null,
+  // Hex palette for the Custom appearance mode (all desktop platforms).
+  customTheme: null as CustomTheme | null,
   // Mirrors the `cleanup_enabled` setting. Shared here (rather than owned
   // privately by GeneralSection) so Style.svelte and the App Mappings
   // settings page can react live to the toggle without their own
@@ -163,8 +190,8 @@ export function cancelDictionaryFetch() {
   if (appStore.dictionaryFetchStatus === 'loading') appStore.dictionaryFetchStatus = 'loaded';
 }
 
-export function formatIpcError(err: unknown): string {
-  return extractIpcErrorMessage(err);
+export function formatIpcError(err: unknown, action?: string): string {
+  return formatError(err, action);
 }
 
 export async function fetchSnippets(): Promise<void> {
@@ -180,7 +207,7 @@ export async function fetchSnippets(): Promise<void> {
     if (token !== snippetsFetchToken) return;
     console.error('IPC fetchSnippets failed:', err);
     appStore.snippetsFetchStatus = 'error';
-    appStore.snippetsFetchError = formatIpcError(err);
+    appStore.snippetsFetchError = formatIpcError(err, 'Could not load your snippets');
   }
 }
 
@@ -235,6 +262,6 @@ export async function fetchDictionary(): Promise<void> {
     if (token !== dictionaryFetchToken) return;
     console.error('IPC fetchDictionary failed:', err);
     appStore.dictionaryFetchStatus = 'error';
-    appStore.dictionaryFetchError = formatIpcError(err);
+    appStore.dictionaryFetchError = formatIpcError(err, 'Could not load your vocabulary');
   }
 }

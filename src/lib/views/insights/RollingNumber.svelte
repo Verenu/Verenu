@@ -8,22 +8,21 @@
     format = (n: number) => Math.round(n).toLocaleString(),
   }: { value: number; format?: (n: number) => string } = $props();
 
-  const uid = `rn-${Math.random().toString(36).slice(2)}`;
   const text = $derived(format(value));
 
-  /* Real motion blur is velocity x exposure, and a frame is the exposure. The
-     blur is vertical-only (stdDeviation "0 n"): an isotropic blur smears a
-     digit sideways into its neighbours and reads as glow rather than movement,
-     which is the whole reason this is an SVG filter and not filter: blur(). */
-  const BLUR_PER_PX_PER_S = 0.022;
-  const MAX_BLUR = 7;
+  /* Motion cue: a digit stretches along its direction of travel in proportion
+     to the spring's speed. This used to be a per-digit SVG feGaussianBlur, but
+     SVG filters on HTML are rasterized in software every frame (WebKitGTK in
+     particular), which made scrubbing the chart lag and smeared digits into
+     boxes. Transform and opacity stay on the compositor. */
+  const STRETCH_PER_SPEED = 0.012;
+  const MAX_STRETCH = 0.22;
 
   let view = $state<string[]>([]);
 
   let cellEls: (HTMLSpanElement | null)[] = [];
   let liveEls: (HTMLSpanElement | null)[] = [];
   let ghostEls: (HTMLSpanElement | null)[] = [];
-  let blurEls: (SVGFEGaussianBlurElement | null)[] = [];
 
   // Deliberately not $state: these change every frame and drive the DOM
   // directly, so routing them through reactivity would only add churn.
@@ -31,7 +30,6 @@
   // Seeded from the mount value only; every later value arrives via the
   // effect below, which is the point — silence the reactivity lint.
   let prevValue = untrack(() => value);
-  let fontPx = 16;
   const springs: RollSpring[] = [];
 
   let raf = 0;
@@ -48,18 +46,11 @@
     if (!spring) return;
     const t = spring.pos;
     const travel = ROLL_TRAVEL * spring.dir;
-    live.style.transform = `translateY(${(t * travel).toFixed(4)}em)`;
+    const stretch = 1 + Math.min(MAX_STRETCH, Math.abs(spring.vel) * STRETCH_PER_SPEED);
+    live.style.transform = `translateY(${(t * travel).toFixed(4)}em) scaleY(${stretch.toFixed(3)})`;
     live.style.opacity = `${clamp(1 - Math.abs(t) * 1.35, 0, 1)}`;
-    ghost.style.transform = `translateY(${((t - 1) * travel).toFixed(4)}em)`;
+    ghost.style.transform = `translateY(${((t - 1) * travel).toFixed(4)}em) scaleY(${stretch.toFixed(3)})`;
     ghost.style.opacity = `${clamp(Math.abs(t) * 1.5 - 0.15, 0, 1)}`;
-    const blur = blurEls[i];
-    if (blur) {
-      const speedPx = Math.abs(spring.vel) * ROLL_TRAVEL * fontPx;
-      blur.setAttribute(
-        'stdDeviation',
-        `0 ${Math.min(MAX_BLUR, speedPx * BLUR_PER_PX_PER_S).toFixed(2)}`
-      );
-    }
   }
 
   function settle(i: number) {
@@ -72,9 +63,9 @@
       ghost.textContent = '';
       ghost.removeAttribute('style');
     }
-    // Dropping the filter when idle keeps settled text on normal subpixel
-    // antialiasing; a live filter forces every digit onto its own layer.
-    if (cell) cell.style.filter = '';
+    // Only rolling digits get their own layer; settled text keeps normal
+    // subpixel antialiasing.
+    if (cell) cell.classList.remove('rolling');
   }
 
   function frame(now: number) {
@@ -106,9 +97,6 @@
       for (let i = 0; i < springs.length; i++) settle(i);
       springs.length = 0;
     }
-    const firstCell = cellEls[0];
-    if (firstCell) fontPx = parseFloat(getComputedStyle(firstCell).fontSize) || 16;
-
     let started = false;
     for (let i = 0; i < next.length; i++) {
       const was = chars[i - shift];
@@ -119,7 +107,7 @@
       if (!live || !ghost || !cell) continue;
       ghost.textContent = was;
       (springs[i] ??= new RollSpring()).start(rollDir);
-      cell.style.filter = `url(#${uid}-${i})`;
+      cell.classList.add('rolling');
       paint(i);
       started = true;
     }
@@ -147,27 +135,9 @@
   });
 </script>
 
-<!-- The filter defs are a sibling, and the cells sit on one line with no gaps
-     between them: any whitespace in here becomes a text node, which would make
-     the readout copy and read aloud as "1 , 7 4 9" instead of "1,749". -->
-<svg class="rn-defs" aria-hidden="true" focusable="false">
-  <defs>
-    {#each view as _, i (i)}
-      <!-- The region must be generous: anything the blur or the travel pushes
-           outside it is clipped, which is what draws a hard box round it. -->
-      <filter
-        id="{uid}-{i}"
-        x="-80%"
-        y="-200%"
-        width="260%"
-        height="500%"
-        color-interpolation-filters="sRGB"
-      >
-        <feGaussianBlur bind:this={blurEls[i]} in="SourceGraphic" stdDeviation="0 0" />
-      </filter>
-    {/each}
-  </defs>
-</svg>
+<!-- The cells sit on one line with no gaps between them: any whitespace in
+     here becomes a text node, which would make the readout copy and read aloud
+     as "1 , 7 4 9" instead of "1,749". -->
 <span class="rolling-number"
   >{#each view as ch, i (i)}<span class="cell" bind:this={cellEls[i]}><span
       class="live"
@@ -205,10 +175,9 @@
     pointer-events: none;
   }
 
-  .rn-defs {
-    position: absolute;
-    width: 0;
-    height: 0;
-    overflow: hidden;
+  /* `rolling` is toggled from script, so it is global to Svelte's scoping. */
+  .cell:global(.rolling) .live,
+  .cell:global(.rolling) .ghost {
+    will-change: transform, opacity;
   }
 </style>

@@ -257,7 +257,35 @@ fn truncate_hint_value(value: &str, max_chars: usize) -> String {
     shortened
 }
 
-fn get_window_title(target_id: usize) -> Option<String> {
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn verenu_macos_focused_window_title(
+        pid: i32,
+        out: *mut std::ffi::c_char,
+        capacity: usize,
+    ) -> i32;
+}
+
+/// Title of the captured target window (HWND on Windows, PID on macOS/Linux).
+/// Used for sub-app matching and the cleanup prompt; never logged.
+pub fn get_window_title(target_id: usize) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let pid = i32::try_from(target_id).ok().filter(|pid| *pid > 0)?;
+        let mut buffer = vec![0 as std::ffi::c_char; 1024];
+        let ok = unsafe { verenu_macos_focused_window_title(pid, buffer.as_mut_ptr(), buffer.len()) };
+        if ok == 0 {
+            return None;
+        }
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, len) };
+        return Some(String::from_utf8_lossy(bytes).into_owned()).filter(|t| !t.is_empty());
+    }
+    #[allow(unreachable_code)]
+    get_window_title_platform(target_id)
+}
+
+fn get_window_title_platform(target_id: usize) -> Option<String> {
     #[cfg(windows)]
     unsafe {
         let hwnd = HWND(target_id as *mut core::ffi::c_void);

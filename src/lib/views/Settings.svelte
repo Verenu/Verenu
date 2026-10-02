@@ -19,6 +19,7 @@
   import PermissionsSection from '../components/settings/PermissionsSection.svelte';
   import AboutSection from '../components/settings/AboutSection.svelte';
   import DeveloperSection from '../components/settings/DeveloperSection.svelte';
+  import SubAppsSection from '../components/settings/SubAppsSection.svelte';
   import { isMac } from '../platform';
 
   let settingsPageEl = $state<HTMLDivElement | null>(null);
@@ -332,6 +333,8 @@
             <div class="panel-inner">
               {#if section === 'general'}
                 <GeneralSection />
+              {:else if section === 'subapps'}
+                <SubAppsSection />
               {:else if section === 'apps'}
                 <AppMappingsSection />
               {:else if section === 'keys'}
