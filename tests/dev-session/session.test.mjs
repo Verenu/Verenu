@@ -147,12 +147,14 @@ check('sub-app pattern Enter saves into the isolated database on desktop and pho
         createdIds.push(saved.id);
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
         await page.getByRole(viewport.width < 700 ? 'tab' : 'button', { name: 'Sub-apps', exact: true }).filter({ visible: true }).click();
-        await page.getByRole('heading', { name: 'General', exact: true }).waitFor({ state: 'hidden' });
+        await page.locator('.settings-h').filter({ hasText: /^General$/ }).waitFor({ state: 'detached' });
+        await page.getByRole('heading', { name: 'Sub-apps', exact: true, level: 2 }).waitFor();
+        assert.equal(await page.getByRole('heading', { name: 'Shortcut', exact: true, level: 3 }).isVisible(), true);
         await page.getByRole('button', { name: `Remove ${saved.label}`, exact: true }).waitFor();
         const panel = page.locator('.settings-page');
         const box = await panel.boundingBox();
         assert.ok(box && box.x >= 0 && box.x + box.width <= viewport.width, 'Sub-apps settings must fit the viewport');
-        await page.screenshot({ path: path.join(path.dirname(accessFile), `sub-apps-${viewport.width}.png`) });
+        await page.screenshot({ animations: 'disabled', path: path.join(path.dirname(accessFile), `sub-apps-${viewport.width}.png`) });
       } finally { await context.close(); }
     }
   } finally {
