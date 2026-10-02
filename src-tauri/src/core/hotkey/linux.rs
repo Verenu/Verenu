@@ -131,10 +131,14 @@ impl PortalGesture {
             return None;
         }
 
-        if self.pending_tap_at.take().is_some_and(|released_at| {
+        let is_double_tap = self.pending_tap_at.take().is_some_and(|released_at| {
             now.duration_since(released_at) <= HANDSFREE_DOUBLE_TAP_WINDOW
-        }) {
-            self.pending_release = None;
+        });
+        // This activation either consumes the pending tap as hands-free or
+        // begins a new gesture. Never let its delayed cleanup affect that
+        // new recording.
+        self.pending_release = None;
+        if is_double_tap {
             self.consume_deactivation = true;
             return Some(PortalGestureAction::Handsfree);
         }
@@ -1169,6 +1173,10 @@ mod tests {
         assert_eq!(
             gesture.activated(start + Duration::from_millis(500)),
             Some(PortalGestureAction::Press)
+        );
+        assert_eq!(
+            gesture.take_pending_release(start + Duration::from_secs(1)),
+            None
         );
     }
 
