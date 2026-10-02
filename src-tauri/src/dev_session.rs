@@ -487,6 +487,12 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             ),
         ));
     }
+    // Browser audio sessions must not probe host devices unless host access was
+    // explicitly enabled. Settings mounts can otherwise enumerate ALSA devices
+    // concurrently even though recording from those devices is forbidden.
+    if command.command == "get_microphones" && !bridge.host_mic {
+        return Ok(Json(json!([])));
+    }
     if command.command == "save_setting" {
         let key = command.args["key"].as_str().unwrap_or_default();
         use crate::data::store;

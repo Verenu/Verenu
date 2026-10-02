@@ -45,6 +45,9 @@ check('session uses its own real Rust backend', async () => {
 check('authentication, origin checks, and native command restrictions hold', async () => {
   assert.equal((await fetch(`${base}/__verenu_dev/session`)).status, 401);
   assert.equal((await request('/session', { headers: { Origin: 'https://untrusted.invalid' } })).status, 403);
+  if (!metadata.capabilities.hostMicrophone) {
+    assert.deepEqual(await invoke('get_microphones'), [], 'Browser-only sessions must not enumerate host microphones');
+  }
   for (const command of ['save_api_key', 'delete_api_key', 'export_data', 'plugin:shell|open']) {
     const response = await request('/invoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args: {} }) });
     assert.equal(response.status, 403);
