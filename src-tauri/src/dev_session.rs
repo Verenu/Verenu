@@ -700,13 +700,18 @@ fn fixture_path(name: &str) -> Result<PathBuf, String> {
 }
 
 async fn fixtures() -> ApiResult {
-    let names: Vec<String> = fs::read_dir(session_dir().join("fixtures"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| fixture_path(name).is_ok())
-        .collect();
+    let directory = session_dir().join("fixtures");
+    let names = tokio::task::spawn_blocking(move || {
+        fs::read_dir(directory)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| fixture_path(name).is_ok())
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Fixtures unavailable"))?;
     Ok(Json(json!({"fixtures": names})))
 }
 
