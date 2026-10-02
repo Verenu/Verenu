@@ -679,8 +679,10 @@ pub struct AllSettings {
     pub beta_updates_enabled: Option<bool>,
     pub verenu_service_checks_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
+    pub sub_app_capture_hotkey: Option<String>,
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
+    pub custom_theme: Option<serde_json::Value>,
     pub cleanup_prompt_override: Option<String>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
@@ -760,6 +762,8 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         }),
         appearance_mode: str_val(store::APPEARANCE_MODE),
         accent_color: str_val(store::ACCENT_COLOR),
+        sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
+        custom_theme: json_val(store::CUSTOM_THEME),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })
