@@ -136,6 +136,9 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      - name: Check browser dev-session bridge
+        run: cargo test --manifest-path src-tauri/Cargo.toml --features dev-session dev_session_ --lib
+
   blob-size-guard:
     name: No large files
     runs-on: ubuntu-latest

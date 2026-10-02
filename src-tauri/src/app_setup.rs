@@ -36,6 +36,9 @@ impl FrontendReadiness {
 }
 
 pub(crate) fn show_main_window(app: &AppHandle) {
+    if crate::is_dev_session() {
+        return;
+    }
     if let Some(w) = app.get_webview_window("main") {
         #[cfg(desktop)]
         if w.is_minimized().unwrap_or(false) {
