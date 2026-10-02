@@ -670,7 +670,6 @@ mod tests {
     #[test]
     fn scaled_monitor_converts_mode_pixels_before_adding_layout_origin() {
         let monitor = HyprMonitor {
-            id: 1,
             x: 0,
             y: 1080,
             width: 2560,
