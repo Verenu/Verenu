@@ -321,6 +321,20 @@ fn next_pipeline_generation() -> u64 {
     PIPELINE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
 }
 
+#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+pub(super) fn reserve_provided_capture(state: &SharedState) -> Result<u64, String> {
+    let mut st = lock_state(state).map_err(|e| e.to_string())?;
+    if !st.lifecycle.is_idle() {
+        return Err("A dictation is already running in this session".into());
+    }
+    let generation = next_pipeline_generation();
+    st.lifecycle = DictationLifecycle::Stopping {
+        generation,
+        prepend_audio: None,
+    };
+    Ok(generation)
+}
+
 /// `Idle -> Starting { prepend_audio: None }`. Fails if anything is already
 /// in progress. Used by a normal fresh press and by the manual
 /// `commands/recording.rs` entry points, which — unlike the hotkey's own

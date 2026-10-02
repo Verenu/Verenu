@@ -26,6 +26,8 @@ mod app_tray {
 mod commands;
 mod core;
 mod data;
+#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+mod dev_session;
 mod local_llm;
 mod local_stt;
 mod media;
@@ -45,6 +47,13 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 pub type DbHandle = db::Db;
+
+pub(crate) fn is_dev_session() -> bool {
+    #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+    return dev_session::enabled();
+    #[cfg(not(all(feature = "dev-session", debug_assertions, desktop)))]
+    false
+}
 
 // Startup helpers live in app_setup.rs; re-exported here so the rest of the
 // crate can keep using `crate::` paths.
@@ -113,6 +122,8 @@ fn start_storage_maintenance(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+    dev_session::prepare().expect("failed to prepare isolated dev session");
     #[cfg(target_os = "linux")]
     configure_hyprland_webkit_renderer();
 
@@ -133,7 +144,7 @@ pub fn run() {
     wait_for_relaunch_parent_exit();
 
     #[cfg(target_os = "windows")]
-    let single_instance = crate::single_instance::acquire();
+    let single_instance = (!is_dev_session()).then(crate::single_instance::acquire);
 
     let shared: SharedState = Arc::new(Mutex::new(AppState {
         lifecycle: pipeline::DictationLifecycle::Idle,
@@ -183,7 +194,7 @@ pub fn run() {
         );
     }
     #[cfg(desktop)]
-    {
+    if !is_dev_session() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             #[cfg(target_os = "linux")]
             if _argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
@@ -211,7 +222,7 @@ pub fn run() {
         .manage(frontend_readiness.clone());
 
     #[cfg(target_os = "windows")]
-    {
+    if let Some(single_instance) = single_instance {
         builder = builder.manage(single_instance);
     }
 
@@ -230,7 +241,9 @@ pub fn run() {
                 return Ok(());
             }
             #[cfg(target_os = "windows")]
-            crate::single_instance::listen_for_takeover(app.handle());
+            if !is_dev_session() {
+                crate::single_instance::listen_for_takeover(app.handle());
+            }
             #[cfg(target_os = "android")]
             {
                 // CPAL's Android/Oboe backend uses ndk-context from its audio
@@ -291,7 +304,15 @@ pub fn run() {
             );
             let settings = crate::data::store::SettingsHandle::open(app.handle())
                 .map_err(std::io::Error::other)?;
-            crate::data::credentials::migrate_from_store(app.handle(), &settings);
+            if !is_dev_session() {
+                crate::data::credentials::migrate_from_store(app.handle(), &settings);
+            }
+            #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+            if is_dev_session() {
+                app.manage(settings.clone());
+                dev_session::start(app.handle().clone())?;
+                return Ok(());
+            }
             if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
                 log::warn!("Failed to migrate contextual formatting setting: {error}");
             }

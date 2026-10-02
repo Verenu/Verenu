@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import { startPolling } from '../../polling';
+  import { MEMORY_BASELINE_KEY, MEMORY_BASELINE_SAMPLES, MEMORY_SAMPLE_INTERVAL_MS,
+    parseMemoryBaseline, sampleMemoryBaseline, memoryMeterPercent } from '../../memoryBaseline';
   import { appStore } from '../../stores';
   import { icons } from '../../icons';
   import { isMac, isWindows } from '../../platform';
@@ -39,14 +41,27 @@
   import { flip } from 'svelte/animate';
 
   let rawMemoryMb = $state(0);
+  let memoryBaseline = $state(parseMemoryBaseline(null));
   let memoryDir = $state(1);
   let memoryMb = tweened(0, { duration: motionMs(800), easing: expoOut });
 
   onMount(() => {
     let active = true;
+    let lastSampleAt = -Infinity;
+    try { memoryBaseline = parseMemoryBaseline(localStorage.getItem(MEMORY_BASELINE_KEY)); } catch { /* Storage may be unavailable. */ }
     const refresh = async () => {
       try {
         const next = await invoke<number>('get_memory_mb');
+        if (!active || !Number.isFinite(next) || next <= 0) return;
+        const now = performance.now();
+        if (now - lastSampleAt >= MEMORY_SAMPLE_INTERVAL_MS) {
+          const updated = sampleMemoryBaseline(memoryBaseline, next);
+          lastSampleAt = now;
+          if (updated !== memoryBaseline) {
+            memoryBaseline = updated;
+            try { localStorage.setItem(MEMORY_BASELINE_KEY, JSON.stringify(updated)); } catch { /* Keep the session baseline when storage is unavailable. */ }
+          }
+        }
         if (active && next !== rawMemoryMb) {
           memoryDir = next > rawMemoryMb ? 1 : -1;
           rawMemoryMb = next;
@@ -54,7 +69,7 @@
         }
       } catch { /* dev mode */ }
     };
-    const poll = startPolling(refresh, 5000);
+    const poll = startPolling(refresh, MEMORY_SAMPLE_INTERVAL_MS);
     return () => { active = false; poll.stop(); };
   });
 
@@ -883,7 +898,9 @@
         </span>
       </div>
     </div>
-    <div class="local-meter-thin"><span style="width:{Math.min($memoryMb / 400 * 100, 100)}%; background:{$memoryMb >= 150 ? 'var(--accent)' : 'var(--line-strong)'}"></span></div>
+    <div class="local-meter-thin"
+      title={memoryBaseline.samples === 0 ? 'Waiting for memory usage' : `Memory usage relative to your ${memoryBaseline.samples < MEMORY_BASELINE_SAMPLES ? 'learning' : 'saved'} average (${Math.round(memoryBaseline.averageMb)} MB). Average usage fills half the bar.`}
+    ><span style="width:{memoryMeterPercent($memoryMb, memoryBaseline.averageMb)}%; background:{$memoryMb >= 150 ? 'var(--accent)' : 'var(--line-strong)'}"></span></div>
   </div>
 </aside>
 

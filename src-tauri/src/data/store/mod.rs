@@ -76,7 +76,9 @@ pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_coun
 impl SettingsHandle {
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
-        migrate_legacy_settings_file(&path);
+        if !crate::is_dev_session() {
+            migrate_legacy_settings_file(&path);
+        }
         let values = read_settings_file(&path)?;
         Ok(Self {
             path: Arc::new(path),
