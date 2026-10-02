@@ -334,6 +334,14 @@ pub(crate) fn update_pill_state(app: &AppHandle, state: &str) {
 /// process skips the animation, since nothing has been shown yet for it to
 /// glide from.
 fn show_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
+    if crate::is_dev_session() {
+        app.emit(
+            "verenu:pill-state",
+            serde_json::json!({"state": state, "message": message}),
+        )
+        .ok();
+        return;
+    }
     let created = create_pill_if_needed(app);
     let Some(pill) = app.get_webview_window("pill") else {
         return;
@@ -625,6 +633,11 @@ fn next_pill_placement<R: Runtime>(
 }
 
 pub(crate) fn hide_pill(app: &AppHandle) {
+    if crate::is_dev_session() {
+        app.emit("verenu:pill-state", serde_json::json!({"state": "idle"}))
+            .ok();
+        return;
+    }
     if let Some(pill) = app.get_webview_window("pill") {
         // Invalidate any in-flight animated move's deferred reveal - without
         // this, a tween started by an earlier show_pill_msg call could land
@@ -703,6 +716,10 @@ pub(crate) fn show_copied_pill(app: &AppHandle, msg: &str) {
 /// string; the frontend maps it to a label, so adding a stage never requires
 /// an IPC schema change.
 pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
+    if crate::is_dev_session() {
+        app.emit("verenu:pill-stage", stage).ok();
+        return;
+    }
     if let Some(pill) = app.get_webview_window("pill") {
         pill.emit("pill-stage", stage).ok();
     }
@@ -712,6 +729,10 @@ pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
 /// can show where the current dictation is headed. Emitted from the pipeline
 /// itself — the frontend never re-resolves it.
 pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
+    if crate::is_dev_session() {
+        app.emit("verenu:pill-context", context).ok();
+        return;
+    }
     match app.get_webview_window("pill") {
         Some(pill) => {
             let sent = pill.emit("pill-context", context).is_ok();

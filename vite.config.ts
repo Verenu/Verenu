@@ -36,6 +36,13 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: '127.0.0.1',
+    allowedHosts: process.env.VERENU_DEV_ORIGINS?.split(',').map((origin) => new URL(origin).hostname),
+    proxy: process.env.VERENU_DEV_BRIDGE_PORT ? {
+      '/__verenu_dev': {
+        target: `http://127.0.0.1:${process.env.VERENU_DEV_BRIDGE_PORT}`,
+        rewrite: (url) => url.replace(/^\/__verenu_dev/, ''),
+      },
+    } : undefined,
     headers: {
       'Cache-Control': 'no-store',
     },

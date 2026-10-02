@@ -30,9 +30,10 @@ features on them without an explicit request.
 - `master` is the only integration and release branch. Create short-lived
   branches from it and open pull requests directly into `master`; never use a
   `dev` integration branch.
-- In GitButler workspaces, the target should be `origin/master`. Use `but` for
-  Git writes and inspect dirty files or hunks before committing. Do not absorb
-  unrelated work from other agents.
+- Use the worktree assigned by T3 Code and ordinary Git commands. Inspect the
+  branch and diff before writes; stage only this task's files or hunks.
+- Keep session data, ports, browser profiles, and build output separate. Never
+  reuse another thread's running backend to verify changes to your own branch.
 - Use `apply_patch` for local edits. Never kill a process you did not start.
 - Keep API keys, dictated text, clipboard contents, private screenshots, and
   local secrets out of code, logs, fixtures, commits, and test output.
@@ -62,6 +63,14 @@ npm run test:smoke
   need macOS verification when practical.
 - For UI changes, use the relevant Playwright or integration test and report
   any skipped manual verification.
+- For browser-verifiable changes, launch your own `npm run dev:session` and
+  inspect the changed flow yourself at desktop and phone widths. Read
+  `docs/DEV_SESSIONS.md`; do not hand routine browser verification to the user.
+- Run `npm run test:dev-session` against that session. Dictation changes also
+  require synthetic audio through the production pipeline with live providers
+  when configured. Record missing credentials or skipped native checks honestly.
+- Add focused regression coverage for the behavior you change. Restart the
+  dev session after Rust edits; its backend does not watch source files.
 
 ## Safety and contracts
 
