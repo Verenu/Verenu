@@ -36,16 +36,18 @@
   // Accessibility + Microphone; Android: microphone, accessibility service,
   // battery exemption, notifications). Windows has none.
   const hasOsPermissionStep = isMac || isAndroid;
-  const onboardingTotalSteps = hasOsPermissionStep ? 9 : 8;
+  // Android is cloud-only and has no system-audio muting, so it skips the
+  // Models and Audio steps (their step numbers are -1 and never match).
+  const onboardingTotalSteps = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const analyticsStep = 1;
   const providerStep = 2;
   const apiKeyStep = 3;
   const permissionStep = hasOsPermissionStep ? 4 : -1;
-  const modelsStep = hasOsPermissionStep ? 5 : 4;
-  const writingStyleStep = hasOsPermissionStep ? 6 : 5;
-  const languageStep = hasOsPermissionStep ? 7 : 6;
-  const audioEnvStep = hasOsPermissionStep ? 8 : 7;
-  const tryItStep = hasOsPermissionStep ? 9 : 8;
+  const modelsStep = isAndroid ? -1 : hasOsPermissionStep ? 5 : 4;
+  const writingStyleStep = isAndroid ? 5 : hasOsPermissionStep ? 6 : 5;
+  const languageStep = isAndroid ? 6 : hasOsPermissionStep ? 7 : 6;
+  const audioEnvStep = isAndroid ? -1 : hasOsPermissionStep ? 8 : 7;
+  const tryItStep = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const doneStep = onboardingTotalSteps + 1;
 
   let step = $state(0);

@@ -18,6 +18,13 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added OpenRouter and xAI as bring-your-own providers in Settings > API Keys and the model picker. OpenRouter transcribes through its JSON `audio/transcriptions` endpoint and cleans up through chat completions; xAI transcribes with Grok Voice Transcribe (`/v1/stt`) and cleans up through chat completions. Providers now declare a separate cleanup and transcription adapter, so one provider can mix wire formats. Cleanup skips always-reasoning models on both. Neither provider appears in the one-click presets or the setup wizard, and their model lists are not live-synced, so any model id can be entered in Advanced Models.
 
+- Made the Android build work end to end, verified on an API 34 emulator with synthetic speech through the real Groq pipeline:
+  - Restored the Android manifest snippet, strings resource, and the `VerenuOverlayView`, `VerenuKeystore`, and `VerenuDictationService` sources that the Android port merge dropped, so `scripts/android-sync.mjs` and the Gradle build succeed again. The shared `analytics` module now compiles on Android (still only registered on desktop), and a missing PostHog token no longer crashes debug builds on launch.
+  - The accessibility service now starts the Rust backend itself (a background-mode `MainActivity` launch) when Android restarts the app process, re-pushes saved API keys once it is up, and waits for it before the first recording, instead of failing with "Could not start recording" until the app had been opened by hand.
+  - Fixed a native abort when the audio stack outlived the Activity (opening Settings after backing out of the app): the audio context is now the Application context rather than a destroyed Activity reference.
+  - The pill now appears reliably when the keyboard reopens on an already-focused field and over WebView text fields, sits just above the keyboard instead of covering the app's header, and uses larger text, bigger touch targets, and a high-contrast color pair.
+  - Fixed layout bugs: the Home screen no longer overflows the phone width, setup permissions cards have side padding, Save/Clear no longer overlap in API Keys, and the bottom navigation clears the system gesture bar.
+
 - Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
 
 - Calibrated the sidebar RAM bar to a locally saved average from the first hour of sampled usage. Typical usage fills half the bar on each device instead of topping out at a fixed 400 MB; calibration resumes across restarts and the MB reading stays unchanged.
