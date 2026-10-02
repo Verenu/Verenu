@@ -131,6 +131,7 @@ fn scrub_history(path: &Path) -> anyhow::Result<()> {
             name.as_str(),
             "contexts"
                 | "context_targets"
+                | "context_sub_apps"
                 | "context_website_targets"
                 | "dictionary"
                 | "snippets"
@@ -861,11 +862,13 @@ mod tests {
             )
             .unwrap();
             conn.execute("INSERT INTO transcriptions (raw_text, clean_text) VALUES ('Synthetic source text', 'Synthetic source text')", []).unwrap();
+            conn.execute("INSERT INTO context_sub_apps (uuid, label, executable, title_pattern, match_mode) VALUES ('synthetic-sub-app', 'Synthetic sub-app', 'fixture', 'Synthetic pattern', 'contains')", []).unwrap();
             conn.backup(rusqlite::DatabaseName::Main, &copy, None)
                 .unwrap();
         }
         scrub_history(&copy).unwrap();
         let copied = rusqlite::Connection::open(&copy).unwrap();
+        assert_eq!(copied.query_row("SELECT COUNT(*) FROM context_sub_apps WHERE label='Synthetic sub-app'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(
             copied
                 .query_row("SELECT COUNT(*) FROM transcriptions", [], |row| row

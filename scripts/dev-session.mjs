@@ -94,7 +94,7 @@ async function start() {
     const child = spawn(command, argv, { cwd: root, env, stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32' });
     children.push(child);
     child.once('error', (error) => { console.error(error.message); void cleanup(); });
-    child.once('exit', (code) => { if (!closing) { process.exitCode = code || 1; void cleanup(); } });
+    child.once('exit', (code) => { if (!closing) { process.exitCode = code ?? 1; void cleanup(); } });
     return child;
   }
   try {
