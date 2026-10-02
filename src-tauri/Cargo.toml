@@ -89,6 +89,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # ndk-context. Tauri/tao owns the same activity context, so initialize this
 # small bridge during Android setup before any audio worker can start.
 ndk-context = "0.1"
+# Pinned to the version tao/tauri already resolve; used to take a process-lifetime
+# reference to the Application context for ndk-context.
+jni = "0.21"
 
 [target.'cfg(windows)'.dependencies]
 notify-rust = "4.18.0"
