@@ -474,6 +474,8 @@
       align-items: stretch;
       grid-template-rows: 1fr auto;
       gap: 16px;
+      /* Undo the narrow-desktop floor above; a phone is narrower than it. */
+      min-width: 0;
     }
 
     .home-grid > div:first-child {

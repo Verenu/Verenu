@@ -262,7 +262,7 @@ pub fn permission_rationale(permission: AndroidPermission) -> &'static str {
             "Verenu uses an Accessibility Service to see when the keyboard is open, show the dictation pill above it, read which app you're typing in (for per-app Contexts), and insert the dictated text into the focused field. It never reads passwords, never clicks for you, and never runs when the keyboard is closed."
         }
         AndroidPermission::BatteryExemption => {
-            "Some manufacturers aggressively kill background audio. Exempting Verenu from battery optimization keeps recordings from being cut off mid-sentence. Verenu still records only while you hold the pill."
+            "Some manufacturers aggressively kill background audio. Exempting Verenu from battery optimization keeps recordings from being cut off mid-sentence. Verenu only records after you tap the pill, and stops when you tap Stop."
         }
         AndroidPermission::Notifications => {
             "Verenu posts a status notification while recording so Android keeps the microphone alive and you can see — and stop — a dictation from anywhere."

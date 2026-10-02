@@ -334,7 +334,11 @@
     transition: opacity 160ms var(--ui-ease-out);
   }
   .flip-face.front { pointer-events: auto; }
-  .flip-face.back { opacity: 0; pointer-events: none; }
+  /* `:disabled` is listed too: `.settings-body .btn-ghost:disabled` sets its
+     own opacity and would otherwise leave both labels visible on top of each
+     other. */
+  .flip-btn .flip-face.back,
+  .flip-btn .flip-face.back:disabled { opacity: 0; pointer-events: none; }
   .flip-btn.flipped .flip-face.front { opacity: 0; pointer-events: none; }
   .flip-btn.flipped .flip-face.back { opacity: 1; pointer-events: auto; }
 
