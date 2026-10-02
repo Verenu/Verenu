@@ -8,6 +8,7 @@ let info: SessionInfo | null = null;
 let token = '';
 let cursor = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let initialization: Promise<void> | undefined;
 const handlers = new Map<string, Set<(event: Envelope) => void>>();
 const subscriptions = new Map<string, Promise<void>>();
 
@@ -31,8 +32,18 @@ export async function sessionRequest<T>(route: string, init: RequestInit = {}): 
   return value as T;
 }
 
-export async function initializeDevSession(): Promise<void> {
-  if (!isBrowserDevSession()) return;
+export function initializeDevSession(): Promise<void> {
+  if (!isBrowserDevSession()) return Promise.resolve();
+  if (!initialization) {
+    initialization = initialize().catch((error) => {
+      initialization = undefined;
+      throw error;
+    });
+  }
+  return initialization;
+}
+
+async function initialize(): Promise<void> {
   const hash = new URLSearchParams(location.hash.slice(1));
   const access = hash.get('session-token');
   if (access) {
@@ -99,7 +110,7 @@ export async function normalizeBrowserAudio(blob: Blob): Promise<Uint8Array<Arra
   const decoder = new AudioContext();
   try {
     const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
-    if (decoded.duration > 120) throw new Error('Test audio is limited to 120 seconds');
+    if (!Number.isFinite(decoded.duration) || decoded.duration <= 0 || decoded.duration > 120) throw new Error('Test audio must be longer than zero and at most 120 seconds');
     const renderer = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16_000), 16_000);
     const source = renderer.createBufferSource(); source.buffer = decoded; source.connect(renderer.destination); source.start();
     return encodePcmWav((await renderer.startRendering()).getChannelData(0));
