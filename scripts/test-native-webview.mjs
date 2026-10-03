@@ -4,10 +4,45 @@ import path from 'node:path';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { remote } from 'webdriverio';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { startOwnedSession } from './verification/session.mjs';
-import { connection } from '../tests/native/wdio.conf.mjs';
+
+class NativeDriver {
+  constructor(port, id) { this.base = `http://127.0.0.1:${port}/session/${id}`; }
+  static async start(port) {
+    const response = await fetch(`http://127.0.0.1:${port}/session`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ capabilities: { alwaysMatch: { 'wdio:tauriServiceOptions': { windowLabel: 'main' } } } }),
+    });
+    const body = await response.json();
+    assert.ok(response.ok && body.value?.sessionId, `Could not start native WebDriver session: ${body.value?.message || response.status}`);
+    return new NativeDriver(port, body.value.sessionId);
+  }
+  async command(method, endpoint, body) {
+    const response = await fetch(`${this.base}${endpoint}`, {
+      method, headers: { 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const result = await response.json().catch(() => ({}));
+    assert.ok(response.ok && !result.value?.error, `WebDriver ${method} ${endpoint} failed: ${result.value?.message || response.status}`);
+    return result.value;
+  }
+  execute(script) { return this.command('POST', '/execute/sync', { script, args: [] }); }
+  executeAsync(fn, ...args) { return this.command('POST', '/execute/async', { script: `(${fn.toString()})(...${JSON.stringify(args)}, arguments[arguments.length - 1]);`, args }); }
+  async waitForApp() {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (await this.execute('return !!document.querySelector(".app");')) return;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    throw new Error('Native WebView did not render .app');
+  }
+  refresh() { return this.command('POST', '/refresh', {}); }
+  getWindowHandles() { return this.command('GET', '/window/handles'); }
+  getWindowRect() { return this.command('GET', '/window/rect'); }
+  async saveScreenshot(file) { await fs.writeFile(file, Buffer.from(await this.command('GET', '/screenshot'), 'base64')); }
+  deleteSession() { return this.command('DELETE', ''); }
+}
 
 const args = process.argv.slice(2);
 const directory = path.join(root, 'test-results', `native-${randomUUID()}`);
@@ -22,7 +57,7 @@ try {
   await new Promise((resolve) => listener.close(resolve));
   process.env.TAURI_WEBDRIVER_PORT = String(port);
   session = await startOwnedSession({ id: `native-${randomUUID()}`, fixtures: directory, directory, native: true });
-  browser = await remote(connection(port));
+  browser = await NativeDriver.start(port);
   const invoke = async (command, args = {}) => {
     const result = await browser.executeAsync((name, values, done) => {
       window.__TAURI__.core.invoke(name, values).then((value) => done({ value }), (error) => done({ error: String(error) }));
@@ -30,12 +65,12 @@ try {
     assert.ok(!result.error, `Real native IPC ${command} failed: ${result.error || ''}`);
     return result.value;
   };
-  const app = await browser.$('.app'); await app.waitForDisplayed({ timeout: 30_000 });
-  const identity = await browser.execute(() => ({ native: !!window.__TAURI_INTERNALS__, mocks: !!window.__wdio_mocks__ && Object.keys(window.__wdio_mocks__).length > 0 }));
+  await browser.waitForApp();
+  const identity = await browser.execute('return { native: !!window.__TAURI_INTERNALS__, mocks: !!window.__wdio_mocks__ && Object.keys(window.__wdio_mocks__).length > 0 };');
   assert.equal(identity.native, true); assert.equal(identity.mocks, false);
   const created = await invoke('create_context', { name: 'Synthetic native', contextualFormattingDisabled: false });
   try {
-    await browser.refresh(); await (await browser.$('.app')).waitForDisplayed({ timeout: 30_000 });
+    await browser.refresh(); await browser.waitForApp();
     const contexts = await invoke('get_contexts');
     assert.ok(contexts.some((row) => row.id === created.id && row.name === 'Synthetic native'));
   } finally { await invoke('delete_context', { contextId: created.id }); }
