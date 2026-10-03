@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createNativeSession } from '../../scripts/verification/native-session.mjs';
 import { replacePromptArgument } from '../../scripts/verification/prompt.mjs';
@@ -50,11 +51,11 @@ test('owned session startup fails fast for a stopped manifest owned by its launc
 });
 
 test('dev-session rejects invalid synthetic seed arguments before creating a session', async () => {
-  const script = new URL('../../scripts/dev-session.mjs', import.meta.url);
+  const script = fileURLToPath(new URL('../../scripts/dev-session.mjs', import.meta.url));
   const stateRoot = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions');
   for (const args of [['--synthetic-seed', '--seed-dir'], ['--synthetic-seed', '--seed-dir', '/tmp/private-seed']]) {
     const id = `invalid-seed-${randomUUID()}`;
-    const result = spawnSync(process.execPath, [script.pathname, '--id', id, ...args], { encoding: 'utf8', timeout: 5_000 });
+    const result = spawnSync(process.execPath, [script, '--id', id, ...args], { encoding: 'utf8', timeout: 5_000 });
     assert.equal(result.status, 1);
     assert.match(result.stderr, args.at(-1) === '--seed-dir' ? /--seed-dir requires a value/ : /--synthetic-seed cannot copy installed data/);
     await assert.rejects(fs.access(path.join(stateRoot, id)), { code: 'ENOENT' });
