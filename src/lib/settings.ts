@@ -5,7 +5,14 @@ import type { CustomTheme } from './customTheme';
 
 export const SETTINGS_SAVE_ERROR_EVENT = 'verenu:setting-save-error';
 
-export type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'local';
+export type ProviderId =
+  | 'groq'
+  | 'openai'
+  | 'google'
+  | 'assemblyai'
+  | 'openrouter'
+  | 'xai'
+  | 'local';
 export type ProviderModelMap = Record<ProviderId, string[]>;
 export type ToneId = 'casual' | 'formal' | 'very_casual';
 export type CleanupIntensity = 'none' | 'light' | 'medium' | 'high';

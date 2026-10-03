@@ -14,6 +14,9 @@ import {
 describe('buildRecommended', () => {
   it('gives every task/provider pair both tiers', () => {
     for (const section of providerSections) {
+      // Bring-your-own providers are never picked by a preset, so they carry
+      // no tiers; they appear only in the model picker.
+      if (section.id === 'openrouter' || section.id === 'xai') continue;
       for (const task of section.tasks) {
         const tiers = recommendedModels[task][section.id];
         expect(tiers, `${section.id} has no ${task} entry`).toBeDefined();

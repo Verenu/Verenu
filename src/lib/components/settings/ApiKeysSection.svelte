@@ -5,7 +5,7 @@
   import { isAndroid } from '../../platform';
   import { getProviderLogo } from '../../setup/ProviderLogos';
 
-  type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai';
+  type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai';
   type KeyStatus = Record<ProviderId, boolean>;
   type KeyDrafts = Record<ProviderId, string>;
   type KeyValidation = { status: 'idle' | 'checking' | 'valid' | 'invalid' | 'unknown'; message: string };
@@ -15,18 +15,20 @@
     { id: 'openai',     label: 'OpenAI',     ph: 'sk-…',         models: 'gpt-4o-transcribe · gpt-4o-mini' },
     { id: 'google',     label: 'Gemini',     ph: 'AIza…',        models: 'gemini-3.5-transcribe · gemini-3.5-flash-lite' },
     { id: 'assemblyai', label: 'AssemblyAI', ph: '32-char key',  models: 'universal-3-5-pro · universal-2' },
+    { id: 'openrouter', label: 'OpenRouter', ph: 'sk-or-…',      models: 'Hundreds of models through one key' },
+    { id: 'xai',        label: 'xAI',        ph: 'xai-…',        models: 'grok-voice-transcribe-2.0 · grok-4-fast' },
   ];
 
-  let keyStatus = $state<KeyStatus>({ groq: false, openai: false, google: false, assemblyai: false });
-  let draftKeys = $state<KeyDrafts>({ groq: '', openai: '', google: '', assemblyai: '' });
-  let keySaving = $state<Record<ProviderId, boolean>>({ groq: false, openai: false, google: false, assemblyai: false });
-  let keyErrors = $state<KeyDrafts>({ groq: '', openai: '', google: '', assemblyai: '' });
-  let keyValidation = $state<Record<ProviderId, KeyValidation>>({
-    groq: { status: 'idle', message: '' },
-    openai: { status: 'idle', message: '' },
-    google: { status: 'idle', message: '' },
-    assemblyai: { status: 'idle', message: '' },
-  });
+  const perProvider = <T,>(value: () => T) =>
+    Object.fromEntries(keyProviders.map((p) => [p.id, value()])) as Record<ProviderId, T>;
+
+  let keyStatus = $state<KeyStatus>(perProvider(() => false));
+  let draftKeys = $state<KeyDrafts>(perProvider(() => ''));
+  let keySaving = $state<Record<ProviderId, boolean>>(perProvider(() => false));
+  let keyErrors = $state<KeyDrafts>(perProvider(() => ''));
+  let keyValidation = $state<Record<ProviderId, KeyValidation>>(
+    perProvider<KeyValidation>(() => ({ status: 'idle', message: '' })),
+  );
 
   async function loadKeyStatus() {
     try {
@@ -209,7 +211,7 @@
 {/each}
 
 <p class="trademark-note">
-  The logos above belong to their respective companies. Verenu is not affiliated with, endorsed by, or sponsored by Groq, OpenAI, Google, or AssemblyAI — they are shown solely to indicate provider compatibility.
+  The logos above belong to their respective companies. Verenu is not affiliated with, endorsed by, or sponsored by Groq, OpenAI, Google, AssemblyAI, OpenRouter, or xAI — they are shown solely to indicate provider compatibility.
 </p>
 
 <style>

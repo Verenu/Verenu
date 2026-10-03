@@ -32,6 +32,7 @@
   const PROVIDER_OPTIONS: { value: ProviderId; label: string }[] = [
     { value: 'groq', label: 'Groq' }, { value: 'openai', label: 'OpenAI' },
     { value: 'google', label: 'Gemini' }, { value: 'assemblyai', label: 'AssemblyAI' },
+    { value: 'openrouter', label: 'OpenRouter' }, { value: 'xai', label: 'xAI' },
   ];
 
   const emptySnapshot: DiagnosticsSnapshot = {
