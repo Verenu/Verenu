@@ -63,6 +63,8 @@ fn provider_label(provider: &str) -> &'static str {
         "openai" => "OpenAI",
         "google" => "Google",
         "assemblyai" => "AssemblyAI",
+        "openrouter" => "OpenRouter",
+        "xai" => "xAI",
         "local" => "Local",
         _ => "Groq",
     }

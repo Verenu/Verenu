@@ -548,6 +548,8 @@ fn base_config() -> store::PipelineConfig {
         key_openai: "fixture-openai-key".into(),
         key_google: "fixture-google-key".into(),
         key_assemblyai: "fixture-assemblyai-key".into(),
+        key_openrouter: "fixture-openrouter-key".into(),
+        key_xai: "fixture-xai-key".into(),
         default_tone: "casual".into(),
         cleanup_intensity: "medium".into(),
         clipboard_phrase_enabled: false,

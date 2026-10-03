@@ -7,7 +7,7 @@ import moonshineLogo from '../../assets/providers/moonshine.png?url';
  *
  * Sourced from SVGL (svgl.app), unmodified — an earlier pass stripped Groq's
  * orange plate and recoloured its white glyph, which turned a solid logo into
- * something that read as an outline. Two marks are not from SVGL: AssemblyAI,
+ * something that read as an outline. OpenRouter and xAI come from SVGL redrawn in `currentColor`, like AssemblyAI. Two marks are not from SVGL: AssemblyAI,
  * which SVGL has no entry for, and `local`, which is not a vendor at all.
  *
  * `plate` says how a mark wants to be framed:
@@ -47,6 +47,16 @@ const MARKS: Record<ProviderId, Mark> = {
     viewBox: '0 0 24 24',
     plate: 'none',
     body: `<path fill="currentColor" d="M10.595 1.5a3.695 3.695 0 00-3.444 2.355L0 22.26h5.432l5.629-14.486h.002a.96.96 0 011.782 0h.75V4.835h-1.393L13.498 1.5h-2.902z"/><path fill="currentColor" d="M7.151 3.855a3.695 3.695 0 013.26-2.35l-.002-.005H13.405c1.524 0 2.893.936 3.444 2.355L24 22.26h-5.525L11.54 4.413a2.528 2.528 0 00-4.609.006l.22-.564z"/>`,
+  },
+  openrouter: {
+    viewBox: '0 0 512 512',
+    plate: 'none',
+    body: `<g fill="currentColor" stroke="currentColor"><path d="M3 248.945C18 248.945 76 236 106 219C136 202 136 202 198 158C276.497 102.293 332 120.945 423 120.945" stroke-width="90" fill="none"/><path d="M511 121.5L357.25 210.268L357.25 32.7324L511 121.5Z"/><path d="M0 249C15 249 73 261.945 103 278.945C133 295.945 133 295.945 195 339.945C273.497 395.652 329 377 420 377" stroke-width="90" fill="none"/><path d="M508 376.445L354.25 287.678L354.25 465.213L508 376.445Z"/></g>`,
+  },
+  xai: {
+    viewBox: '0 0 841.89 595.28',
+    plate: 'none',
+    body: `<path fill="currentColor" d="m557.09 211.99 8.31 326.37h66.56l8.32-445.18zM640.28 56.91H538.72L379.35 284.53l50.78 72.52zM201.61 538.36h101.56l50.79-72.52-50.79-72.53zM201.61 211.99l228.52 326.37h101.56L303.17 211.99z"/>`,
   },
   local: {
     viewBox: '0 0 24 24',
