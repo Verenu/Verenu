@@ -2012,8 +2012,11 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return undefined as T;
     case 'get_shortcut_status':
       return [] as T;
-    case 'set_autostart':
     case 'save_hotkey':
+      writeDevSetting('hotkey', args?.keys);
+      return undefined as T;
+    case 'set_hotkey_capture':
+    case 'set_autostart':
     case 'open_accessibility_settings':
     case 'open_microphone_settings':
     case 'open_notifications_settings':

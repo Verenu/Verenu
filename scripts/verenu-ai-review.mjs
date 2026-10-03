@@ -39,6 +39,7 @@ import {
   selectReviewModels,
   shouldFallback,
 } from "./verenu-ai-review-logic.mjs";
+import { readProviderFailureReason } from "./verenu-ai-review-session.mjs";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
 const [OWNER, REPO] = requireEnv("GITHUB_REPOSITORY").split("/");
@@ -301,6 +302,9 @@ function ocrReviewArgs({ baseSha, headSha, model, background }) {
 }
 
 async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome) {
+  // Keep each model's diagnostic records separate so a previous quota error
+  // cannot misclassify a later model's unrelated failure.
+  const attemptHome = mkdtempSync(path.join(ocrHome, "attempt-"));
   const quarantineDir = mkdtempSync(path.join(tmpdir(), "verenu-pr-quarantine-"));
   // git < 2.12 refuses `worktree add` on an existing (even empty) directory.
   // mkdtempSync's job here is just reserving a unique path; free it and let
@@ -337,7 +341,7 @@ async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome)
       writeFileSync(dest, content);
     }
 
-    if (!(await previewOk(quarantineDir, pr, providerEnvVars, ocrHome))) {
+    if (!(await previewOk(quarantineDir, pr, providerEnvVars, attemptHome))) {
       return {
         code: 1,
         stdout: "",
@@ -345,7 +349,16 @@ async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome)
         previewFailed: true,
       };
     }
-    return await runOcrAt(quarantineDir, args, providerEnvVars, ocrHome);
+    const result = await runOcrAt(quarantineDir, args, providerEnvVars, attemptHome);
+    if (result.code === 0) {
+      try {
+        // OCR also exits zero when only some files failed. An incomplete
+        // review must not be published as a clean review.
+        if (extractJson(result.stdout)?.status === "completed_with_errors") result.code = 1;
+      } catch { /* Findings parsing handles malformed output separately. */ }
+    }
+    if (result.code !== 0) result.providerFailureReason = await readProviderFailureReason(attemptHome);
+    return result;
   } finally {
     try {
       await git(["worktree", "remove", "--force", quarantineDir]);

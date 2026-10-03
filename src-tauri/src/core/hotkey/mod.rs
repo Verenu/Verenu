@@ -53,9 +53,116 @@ pub fn is_known_key_code(code: &str) -> bool {
     }
 }
 
+/// Accept old single-key settings with an empty second slot, then remove it.
+/// Modifier sides have always matched either side in the native backends.
+pub fn normalize_codes(codes: &[String]) -> Result<Vec<String>, String> {
+    let legacy_single = codes.len() == 2 && codes[1].is_empty();
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, code) in codes.iter().enumerate() {
+        if legacy_single && index == 1 {
+            continue;
+        }
+        if !is_known_key_code(code) {
+            return Err(format!("Unrecognized key code: {code}"));
+        }
+        let identity = modifier_name(code).unwrap_or(code);
+        if !seen.insert(identity) {
+            return Err("A shortcut cannot contain the same key twice".into());
+        }
+        result.push(code.clone());
+    }
+    if result.is_empty() {
+        return Err("Press at least one key".into());
+    }
+    Ok(result)
+}
+
+pub fn modifier_name(code: &str) -> Option<&'static str> {
+    match code {
+        "ControlLeft" | "ControlRight" => Some("Ctrl"),
+        "AltLeft" | "AltRight" => Some("Alt"),
+        "ShiftLeft" | "ShiftRight" => Some("Shift"),
+        "MetaLeft" | "MetaRight" => Some("Super"),
+        _ => None,
+    }
+}
+
+pub fn mapped_codes(codes: &[String]) -> Result<Vec<u32>, String> {
+    normalize_codes(codes)?
+        .iter()
+        .map(|code| {
+            let id = map_code_to_vk(code);
+            if id == 0 {
+                Err(format!("This platform does not support {code}"))
+            } else {
+                Ok(id)
+            }
+        })
+        .collect()
+}
+
+pub fn conflicts_with_chord(codes: &[String], chord: chord::Chord) -> bool {
+    let mut other = Vec::new();
+    if chord.ctrl {
+        other.push("Ctrl".to_string());
+    }
+    if chord.alt {
+        other.push("Alt".to_string());
+    }
+    if chord.shift {
+        other.push("Shift".to_string());
+    }
+    if chord.super_key {
+        other.push("Super".to_string());
+    }
+    other.push(chord.web_code());
+    let mut codes = codes
+        .iter()
+        .filter(|code| !code.is_empty())
+        .map(|code| modifier_name(code).unwrap_or(code).to_string())
+        .collect::<Vec<_>>();
+    codes.sort();
+    other.sort();
+    codes == other
+}
+
+static CAPTURE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn capture_active() -> bool {
+    CAPTURE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_capture_active(active: bool) -> Result<(), String> {
+    let previous = CAPTURE_ACTIVE.swap(active, std::sync::atomic::Ordering::SeqCst);
+    if previous == active {
+        return Ok(());
+    }
+    if let Err(error) = suspend_shortcuts(active) {
+        let _ = suspend_shortcuts(previous);
+        CAPTURE_ACTIVE.store(previous, std::sync::atomic::Ordering::SeqCst);
+        return Err(error);
+    }
+    reset_chord_state();
+    Ok(())
+}
+
 #[cfg(test)]
 mod known_key_code_tests {
     use super::is_known_key_code;
+
+    #[test]
+    fn auxiliary_conflicts_ignore_modifier_order_and_sides() {
+        let codes = ["KeyC", "AltRight", "ControlLeft"].map(String::from);
+        assert!(super::conflicts_with_chord(
+            &codes,
+            super::chord::Chord::parse("Ctrl+Alt+C").unwrap()
+        ));
+        assert!(!super::conflicts_with_chord(
+            &codes,
+            super::chord::Chord::parse("Ctrl+Alt+Shift+C").unwrap()
+        ));
+    }
 
     #[test]
     fn recognizes_supported_hotkey_codes() {
@@ -82,6 +189,9 @@ mod known_key_code_tests {
     }
 }
 
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod gesture;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
@@ -104,10 +214,15 @@ pub use linux::*;
 // crate still builds. Mirrors the public contract above.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod noop {
-    pub fn is_hotkey_available(_key1: &str, _key2: &str) -> bool {
-        true
+    pub fn suspend_shortcuts(_active: bool) -> Result<(), String> {
+        Ok(())
     }
-    pub fn update_keys(_k1: u32, _k2: u32) {}
+    pub fn is_hotkey_available(_keys: &[String]) -> Result<bool, String> {
+        Err("Global shortcuts are unavailable on this platform".into())
+    }
+    pub fn update_keys(_keys: &[u32]) -> Result<(), String> {
+        Err("Global shortcuts are unavailable on this platform".into())
+    }
     pub fn set_sub_app_capture_chord(_chord: super::chord::Chord) {}
     pub fn reset_chord_state() {}
     pub fn set_handless_active(_v: bool) {}
