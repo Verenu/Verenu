@@ -6,8 +6,8 @@
 // the hotkey in Settings left the setup wizard advertising keys that do nothing.
 //
 // Codes are `KeyboardEvent.code` values, exactly as `save_hotkey` stores them.
-// Slot 2 may be '' for a single-key macOS binding.
-import { invoke } from './tauri';
+// Legacy single-key bindings may have an empty second slot.
+import { emit, invoke } from './tauri';
 import { defaultHotkey, formatKeyLabel } from './platform';
 import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
 
@@ -33,8 +33,9 @@ export async function loadHotkey(): Promise<void> {
 	await loadDesktopShortcuts();
 	try {
 		const saved = await invoke<string[] | null>('get_setting', { key: 'hotkey' });
-		if (Array.isArray(saved) && saved.length === 2 && saved.some(Boolean)) {
-			state.codes = saved;
+		if (Array.isArray(saved) && saved.length > 0 && saved.every((code) => typeof code === 'string') && saved.some(Boolean)) {
+			state.codes = saved.filter(Boolean);
+			await emit('verenu:hotkey-changed', state.codes);
 		}
 	} catch {
 		// Keep the platform default; a missing hotkey is not worth surfacing.

@@ -168,7 +168,7 @@ fn models_list_request(
             .bearer_auth(key),
         store::XAI => client.get("https://api.x.ai/v1/models").bearer_auth(key),
         // Listing is public on OpenRouter; key validation uses `/key` instead.
-        store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models"),
+        store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models").query(&[("output_modalities", "all")]),
         store::GOOGLE => {
             let mut request = client
                 .get("https://generativelanguage.googleapis.com/v1beta/models")
@@ -272,7 +272,7 @@ pub async fn list_provider_models(
 
     let key = crate::data::credentials::get(&provider);
     let key = key.trim().to_string();
-    if key.is_empty() {
+    if key.is_empty() && provider != store::OPENROUTER {
         return Err(format!("No saved API key for {provider}."));
     }
 

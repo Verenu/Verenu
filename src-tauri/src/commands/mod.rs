@@ -168,10 +168,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_setting_requires_two_hotkey_parts() {
-        let err = validate_setting(crate::data::store::HOTKEY, &json!(["ControlLeft"]))
-            .expect_err("single hotkey part should fail");
-        assert!(err.contains("Invalid or unsupported setting"));
+    fn validate_setting_accepts_variable_hotkey_parts() {
+        assert!(validate_setting(crate::data::store::HOTKEY, &json!(["F5"])).is_ok());
+        assert!(validate_setting(
+            crate::data::store::HOTKEY,
+            &json!(["ControlLeft", "AltLeft", "ShiftLeft", "KeyK"])
+        )
+        .is_ok());
+        assert!(validate_setting(crate::data::store::HOTKEY, &json!([])).is_err());
     }
 
     #[test]
