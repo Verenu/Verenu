@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:session": "node scripts/dev-session.mjs",
     "dev:fixtures": "node scripts/dev-audio-fixtures.mjs",
-    "test:dev-session": "node --test tests/dev-session/*.test.mjs",
+    "test:dev-session": "node --test --test-concurrency=1 tests/dev-session/*.test.mjs",
     "test:session:owned": "node scripts/test-owned-session.mjs",
     "test:native:webview": "node scripts/test-native-webview.mjs",
     "test:native:fixtures": "node scripts/test-native-fixtures.mjs",

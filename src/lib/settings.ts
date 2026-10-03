@@ -111,6 +111,7 @@ type SettingsValueMap = {
   advanced_model_ui: boolean;
   /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;
+  style_prompt_instructions: Partial<Record<Exclude<CleanupIntensity, 'none'> | ToneId, string>>;
   /** Derived cache of each provider's live model list. Written only by modelCatalogStore. */
   provider_model_cache: Record<string, unknown>;
   legacy_features_enabled: boolean;
