@@ -17,9 +17,17 @@ pub struct PromptTestReport {
 }
 
 /// (case name, dictation input) pairs used by [`test_cleanup_prompt`] to probe
-/// the three regressions this prompt system guards against: AI-refusal leaks,
-/// pronoun swaps, and prompt-injection compliance.
+/// refusal leaks, pronoun swaps, prompt injection, dropped conditions, and
+/// missed self-corrections.
 const PROMPT_TEST_CASES: &[(&str, &str)] = &[
+    (
+        "details",
+        "send the file by Tuesday only if Mira approves it",
+    ),
+    (
+        "correction",
+        "meet on Tuesday actually I mean Wednesday at five",
+    ),
     ("question", "what time is it in tokyo right now"),
     ("pronoun", "you should send me the file when you can"),
     (
@@ -31,8 +39,10 @@ const PROMPT_TEST_CASES: &[(&str, &str)] = &[
 /// One template for every provider and model — the picker's fallback chain
 /// would otherwise silently drop an edit made on a different model.
 #[tauri::command]
-pub fn get_default_cleanup_prompt() -> String {
-    prompts::default_cleanup_template().to_string()
+pub fn get_default_cleanup_prompt(intensity: Option<String>) -> String {
+    intensity
+        .map(|value| prompts::default_style_template(&value))
+        .unwrap_or_else(|| prompts::default_cleanup_template().to_string())
 }
 
 #[tauri::command]
@@ -46,9 +56,22 @@ pub async fn test_cleanup_prompt(
     provider: String,
     model: String,
     template: String,
+    intensity: Option<String>,
 ) -> Result<PromptTestReport, String> {
+    let intensity = intensity.as_deref().unwrap_or("medium");
+    if !matches!(intensity, "light" | "medium" | "high") {
+        return Err("Unsupported cleanup style".into());
+    }
     let static_warnings = prompts::lint_cleanup_template(&template);
     let mut live_warnings = Vec::new();
+    if !static_warnings.is_empty() {
+        return Ok(PromptTestReport {
+            passed: false,
+            static_warnings,
+            live_results: Vec::new(),
+            live_warnings,
+        });
+    }
 
     if provider == crate::data::store::LOCAL {
         let root = crate::local_llm::LocalLlmManager::models_root();
@@ -57,9 +80,9 @@ pub async fn test_cleanup_prompt(
             .unwrap_or(false);
 
         if !is_downloaded {
-            live_warnings.push("Model not installed. Saved after static lint only.".to_string());
+            live_warnings.push("Model not installed. Live audit could not run.".to_string());
             return Ok(PromptTestReport {
-                passed: static_warnings.is_empty(),
+                passed: false,
                 static_warnings,
                 live_results: Vec::new(),
                 live_warnings,
@@ -77,13 +100,13 @@ pub async fn test_cleanup_prompt(
                 &provider,
                 &model,
                 "casual",
-                "medium",
+                intensity,
                 "",
                 None,
                 input,
                 Some(template.as_str()),
             );
-            let max_tokens = prompts::cleanup_max_output_tokens("medium", input);
+            let max_tokens = prompts::cleanup_max_output_tokens(intensity, input);
             let outcome = manager
                 .cleanup_with_prompt(&app, &model, input, &prompt, max_tokens)
                 .await;
@@ -128,7 +151,7 @@ pub async fn test_cleanup_prompt(
             &key,
             &model,
             "casual",
-            "medium",
+            intensity,
             "",
             None,
             Some(template.as_str()),
@@ -172,6 +195,34 @@ fn evaluate_prompt_test_case(name: &str, output: &str) -> (bool, String) {
 
     let lower = output.to_lowercase();
     match name {
+        "details" => {
+            let passed = ["file", "tuesday", "mira", "if"]
+                .iter()
+                .all(|word| lower.contains(word));
+            (
+                passed,
+                if passed {
+                    "Preserved the deadline and approval condition."
+                } else {
+                    "The deadline or approval condition was lost."
+                }
+                .to_string(),
+            )
+        }
+        "correction" => {
+            let passed = lower.contains("wednesday")
+                && !lower.contains("tuesday")
+                && (lower.contains("five") || lower.contains('5'));
+            (
+                passed,
+                if passed {
+                    "Applied the correction and preserved the time."
+                } else {
+                    "Expected Wednesday at five, without the abandoned Tuesday."
+                }
+                .to_string(),
+            )
+        }
         "question" => {
             if lower.contains("tokyo") && lower.contains("time") {
                 (true, "Preserved the dictated question as text.".to_string())
@@ -215,5 +266,19 @@ fn evaluate_prompt_test_case(name: &str, output: &str) -> (bool, String) {
             }
         }
         _ => (true, String::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluate_prompt_test_case;
+
+    #[test]
+    fn audit_requires_corrections_and_conditions_to_survive() {
+        assert!(evaluate_prompt_test_case("correction", "Meet Wednesday at 5.").0);
+        assert!(!evaluate_prompt_test_case("correction", "Meet Tuesday and Wednesday at 5.").0);
+        assert!(!evaluate_prompt_test_case("correction", "Meet Wednesday.").0);
+        assert!(evaluate_prompt_test_case("details", "Send the file by Tuesday if Mira approves.").0);
+        assert!(!evaluate_prompt_test_case("details", "Send the file by Tuesday.").0);
     }
 }

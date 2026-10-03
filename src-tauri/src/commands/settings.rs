@@ -24,6 +24,7 @@ enum SettingKind {
     ModelMap,
     StringArray,
     CleanupPromptOverride,
+    CleanupStylePrompts,
     ProviderModelCache,
     AppearanceMode,
     AccentColor,
@@ -190,6 +191,12 @@ const SETTING_SPECS: &[SettingSpec] = &[
     setting_spec(
         store::CLEANUP_PROMPT_OVERRIDE,
         SettingKind::CleanupPromptOverride,
+        true,
+        true,
+    ),
+    setting_spec(
+        store::CLEANUP_STYLE_PROMPTS,
+        SettingKind::CleanupStylePrompts,
         true,
         true,
     ),
@@ -397,6 +404,12 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
             .is_some_and(|v| store::is_valid_clipboard_phrase(&v)),
         SettingKind::StringArray => is_non_empty_string_array(value),
         SettingKind::CleanupPromptOverride => is_cleanup_prompt_override(value),
+        SettingKind::CleanupStylePrompts => value.as_object().is_some_and(|map| {
+            map.iter().all(|(key, value)| {
+                matches!(key.as_str(), "light" | "medium" | "high")
+                    && is_cleanup_prompt_override(value)
+            })
+        }),
         SettingKind::ProviderModelCache => is_provider_model_cache(value),
         SettingKind::AppearanceMode => value
             .as_str()
@@ -438,6 +451,14 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
 #[cfg(test)]
 mod setting_key_tests {
     use super::*;
+
+    #[test]
+    fn cleanup_style_prompts_only_accept_editable_styles_and_bounded_text() {
+        assert!(validate_setting(store::CLEANUP_STYLE_PROMPTS, &serde_json::json!({"light": "Custom", "high": ""})).is_ok());
+        for invalid in [serde_json::json!({"none": "Custom"}), serde_json::json!({"medium": false}), serde_json::json!({"medium": "x".repeat(20_001)})] {
+            assert!(validate_setting(store::CLEANUP_STYLE_PROMPTS, &invalid).is_err());
+        }
+    }
 
     #[test]
     fn readable_settings_exclude_credential_keys() {
@@ -684,6 +705,7 @@ pub struct AllSettings {
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
     pub cleanup_prompt_override: Option<String>,
+    pub cleanup_style_prompts: Option<serde_json::Value>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
 
@@ -765,6 +787,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
+        cleanup_style_prompts: json_val(store::CLEANUP_STYLE_PROMPTS),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })
 }

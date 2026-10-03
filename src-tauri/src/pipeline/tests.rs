@@ -559,6 +559,7 @@ fn base_config() -> store::PipelineConfig {
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
         cleanup_prompt_override: String::new(),
+        cleanup_style_prompts: Default::default(),
     }
 }
 

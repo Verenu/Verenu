@@ -31,6 +31,7 @@ pub struct PipelineConfig {
     pub advanced_model_ui: bool,
     pub local_model_memory_policy: String,
     pub cleanup_prompt_override: String,
+    pub cleanup_style_prompts: std::collections::HashMap<String, String>,
 }
 
 pub const GROQ: &str = "groq";
@@ -172,9 +173,15 @@ impl PipelineConfig {
     }
 
     /// The user's custom cleanup prompt, or `None` if Advanced Models is off or
-    /// nothing has been saved. One template covers every model — see
-    /// `store::CLEANUP_PROMPT_OVERRIDE`.
+    /// nothing has been saved. Style edits apply across models, independently
+    /// of Advanced Models. An empty style entry explicitly restores built-in
+    /// defaults; an absent entry inherits the shared template.
     pub fn cleanup_override(&self) -> Option<&str> {
+        if self.cleanup_intensity != "none" {
+            if let Some(template) = self.cleanup_style_prompts.get(&self.cleanup_intensity) {
+                return Some(template.as_str()).filter(|s| !s.trim().is_empty());
+            }
+        }
         if !self.advanced_model_ui {
             return None;
         }
@@ -360,6 +367,10 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         cleanup_prompt_override,
+        cleanup_style_prompts: store
+            .get(CLEANUP_STYLE_PROMPTS)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         local_model_memory_policy: supported_or_default(
             LOCAL_MODEL_MEMORY_POLICY,
             "unload_after_5m",
