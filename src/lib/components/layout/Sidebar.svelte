@@ -7,7 +7,7 @@
     parseMemoryBaseline, sampleMemoryBaseline, memoryMeterPercent } from '../../memoryBaseline';
   import { appStore } from '../../stores';
   import { icons } from '../../icons';
-  import { isMac, isWindows } from '../../platform';
+  import { isAndroid, isMac, isWindows } from '../../platform';
   import { MOTION_MS, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx } from '../../motion';
   import { visibleSettingsSections, type SettingsSectionId } from '../../settingsSections';
   import {
@@ -876,7 +876,9 @@
   </div>
 
   <!-- Shown in both modes: "running locally" is app-level status, not page
-       chrome, and keeping it fixed means the rail's bottom never swaps. -->
+       chrome, and keeping it fixed means the rail's bottom never swaps.
+       Hidden on Android, where the memory readout means nothing to the user. -->
+  {#if !isAndroid}
   <div class="local-bar">
     <div class="local-bar-row">
       <span class="local-dot"></span>
@@ -901,6 +903,7 @@
       title={memoryBaseline.samples === 0 ? 'Waiting for memory usage' : `Memory usage relative to your ${memoryBaseline.samples < MEMORY_BASELINE_SAMPLES ? 'learning' : 'saved'} average (${Math.round(memoryBaseline.averageMb)} MB). Average usage fills half the bar.`}
     ><span style="width:{memoryMeterPercent($memoryMb, memoryBaseline.averageMb)}%; background:{$memoryMb >= 150 ? 'var(--accent)' : 'var(--line-strong)'}"></span></div>
   </div>
+  {/if}
 </aside>
 
 {#if contextMenu && menuContext}
@@ -963,6 +966,18 @@
      sidebar briefly loses its elevation and the opaque overlay paints over it. */
   .sidebar {
     z-index: 61;
+  }
+
+  /* Android: the status bar can't be drawn under, so the rail reads as a
+     rounded panel sitting below it instead of a slab that is cut off, and it
+     clears the gesture bar at the bottom. */
+  :global(.app[data-android='true']) .sidebar {
+    margin-top: 6px;
+    margin-left: 6px;
+    border-radius: 22px 22px 0 0;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    padding-bottom: calc(var(--safe-bottom) + 20px);
   }
 
   /*

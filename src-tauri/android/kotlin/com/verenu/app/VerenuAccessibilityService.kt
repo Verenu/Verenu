@@ -13,9 +13,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -51,6 +53,11 @@ import android.widget.Toast
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
+        private const val IME_SETTLE_MS = 140L
+        private const val CONTEXT_CHARS = 200
+        private const val SNOOZE_MS = 15L * 60_000L
+        private val MIC_LABEL = Regex("voice|dictat|microphone|speech|\\bmic\\b", RegexOption.IGNORE_CASE)
+        private val MIC_EXCLUDE = Regex("permission|settings|language|\\bsend\\b", RegexOption.IGNORE_CASE)
         const val TAG = "VerenuA11y"
         const val POLL_VISIBLE_MS = 250L
         const val POLL_IDLE_MS = 2000L
@@ -127,6 +134,21 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayMoveAnimator: ValueAnimator? = null
     @Volatile private var pillPosition = "keyboard-center"
+    @Volatile private var coverKeyboardMic = false
+    private var coverBounds: android.graphics.Rect? = null
+    private var lastCoverState = ""
+    private var coverSizePx = 0
+
+    // Temporary dismissal (long-press and drag to the target) and offline state.
+    private var snoozedUntilMs = 0L
+    private var dragging = false
+    private var snoozeTarget: View? = null
+    private val snoozeTargetRect = android.graphics.Rect()
+    @Volatile private var online = true
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var micCache: android.graphics.Rect? = null
+    private var micCacheKey: android.graphics.Rect? = null
+    private var micCacheAtMs = 0L
     @Volatile private var appearanceMode = "system"
     @Volatile private var backendWasUp = false
     // ------------------------------------------------------------------ setup
@@ -154,10 +176,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         schedulePoll(0L)
         requester?.post { ensureBackendRunning(waitMs = 0L) }
+        startConnectivityWatch()
         Log.i(TAG, "connected")
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        stopConnectivityWatch()
         mainHandler.removeCallbacks(imeVisibilityCheck)
         poller?.removeCallbacksAndMessages(null)
         requester?.removeCallbacksAndMessages(null)
@@ -196,7 +220,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         // IME events describe the keyboard, not the app being edited. Never
         // let Gboard/Samsung Keyboard become the Context or insertion target.
-        if (pkg.isNotEmpty() && pkg != packageName && pkg != imePackage) {
+        if (VerenuFocusPackages.isAppWindow(pkg, packageName, imePackage)) {
             foregroundPackage = pkg
         }
         when (event.eventType) {
@@ -204,7 +228,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val node = event.source
                 try {
                     val editable = node?.isEditable == true && node.isPassword.not()
+                    if (!editable && !VerenuFocusPackages.isInsertionField(pkg, imePackage)) return
                     hasEditableFocus = editable
+                    if (editable) {
+                        val owner = node?.packageName?.toString().orEmpty()
+                        if (VerenuFocusPackages.isAppWindow(owner, packageName, imePackage)) {
+                            foregroundPackage = owner
+                        }
+                    }
                     supportsSetText = editable &&
                         node?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT } == true
                     // Android exposes no reliable keyboard show/hide callback
@@ -301,24 +332,27 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
      * [AccessibilityNodeInfo.findFocus], so fall back to a bounded walk for a
      * focused editable node. Callers own (and recycle) the result.
      */
-    private fun findInputFocus(): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
-        val direct = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+    private fun findInputFocus(
+        budget: VerenuInsertionBudget = VerenuInsertionBudget(SystemClock::elapsedRealtime, 350L),
+    ): AccessibilityNodeInfo? {
+        val direct = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         if (direct != null && direct.isEditable) return direct
         direct?.recycle()
-        var budget = 600
+        if (budget.expired) return null
+        val root = rootInActiveWindow ?: return null
+        var nodesLeft = 64
         fun walk(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-            if (budget-- <= 0) return null
+            if (budget.expired || nodesLeft-- <= 0) return null
             if (node.isFocused && node.isEditable) return AccessibilityNodeInfo.obtain(node)
             for (i in 0 until node.childCount) {
+                if (budget.expired || nodesLeft <= 0) return null
                 val child = node.getChild(i) ?: continue
-                val found = walk(child)
-                child.recycle()
+                val found = try { walk(child) } finally { child.recycle() }
                 if (found != null) return found
             }
             return null
         }
-        return walk(root)
+        return try { walk(root) } finally { root.recycle() }
     }
 
     private fun refreshKeyboardVisibilityFromWindows() {
@@ -430,7 +464,59 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
      * docked) or an error/cancel notice is still fresh.
      */
     private fun shouldShowOverlay(): Boolean =
-        (keyboardVisible && hasEditableFocus) || isDictationActive() || transientNoticeVisible()
+        (keyboardVisible && hasEditableFocus && !suppressedForNow()) ||
+            isDictationActive() ||
+            transientNoticeVisible()
+
+    /**
+     * Hidden on purpose: snoozed by the user, or (when covering the keyboard's
+     * own mic) offline, so the keyboard's offline-capable button stays usable.
+     */
+    private fun suppressedForNow(): Boolean =
+        SystemClock.elapsedRealtime() < snoozedUntilMs || (coverKeyboardMic && !online)
+
+    private fun startConnectivityWatch() {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+        online = hasInternet(cm)
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            private fun update() {
+                val now = hasInternet(cm)
+                if (now == online) return
+                online = now
+                mainHandler.post { refreshOverlayVisibility() }
+            }
+            override fun onAvailable(network: android.net.Network) = update()
+            override fun onLost(network: android.net.Network) = update()
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                capabilities: android.net.NetworkCapabilities,
+            ) = update()
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            netCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "connectivity watch unavailable", e)
+        }
+    }
+
+    private fun stopConnectivityWatch() {
+        val callback = netCallback ?: return
+        netCallback = null
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "connectivity watch stop failed", e)
+        }
+    }
+
+    private fun hasInternet(cm: android.net.ConnectivityManager): Boolean {
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
+    }
 
     private fun transientNoticeVisible(): Boolean =
         (overlayState == VerenuOverlayView.State.ERROR ||
@@ -444,18 +530,26 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         if (shouldShowOverlay()) {
             mainHandler.removeCallbacks(hideOverlayRunnable)
+            hideScheduled = false
             showOverlay()
             applyOverlayPresentation()
         } else if (overlayAttached) {
             // Debounce: IME and focus events routinely bounce for a moment
             // (focus moves between fields, Samsung emits transient window
             // changes). Hiding instantly made the pill blink off and back on.
-            mainHandler.removeCallbacks(hideOverlayRunnable)
-            mainHandler.postDelayed(hideOverlayRunnable, HIDE_DEBOUNCE_MS)
+            // Arm the timer once. This runs on every keyboard poll (~60 ms), so
+            // re-arming it each time pushed the hide back forever.
+            if (!hideScheduled) {
+                hideScheduled = true
+                mainHandler.postDelayed(hideOverlayRunnable, HIDE_DEBOUNCE_MS)
+            }
         }
     }
 
+    private var hideScheduled = false
+
     private val hideOverlayRunnable = Runnable {
+        hideScheduled = false
         if (!shouldShowOverlay()) hideOverlay()
     }
 
@@ -530,7 +624,22 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
         }
 
+        val cover = coverBounds
         when {
+            // Covering the keyboard's own mic button: anchor the pill's right
+            // edge to the button so state changes grow it leftward.
+            cover != null && !docked && imeTop != null -> {
+                val pad = (4 * density).toInt()
+                val size = coverSizePx
+                // Stay inside the keyboard: clamp the disc to its bounds.
+                val imeRight = (imeBounds?.right ?: screenWidth).coerceAtMost(screenWidth)
+                val imeTopEdge = imeBounds?.top ?: 0
+                val right = minOf(cover.centerX() + size / 2, imeRight - (2 * density).toInt())
+                val top = maxOf(cover.centerY() - size / 2, imeTopEdge)
+                params.gravity = Gravity.TOP or Gravity.END
+                params.x = (screenWidth - right - pad).coerceAtLeast(0)
+                params.y = (top - pad).coerceAtLeast(0)
+            }
             // Docked while the keyboard is away: out of the way, at the top.
             docked && followsKeyboard() -> underPunchHole()
             pillPosition == "screen-top" -> top()
@@ -572,7 +681,78 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val view = overlay ?: return
         view.setDark(resolveDark())
         view.setCompact(isDocked())
+        refreshCover(view)
         repositionOverlay()
+    }
+
+    /** Decide whether, and where, the pill covers the keyboard's mic button. */
+    private fun refreshCover(view: VerenuOverlayView) {
+        val rect = if (coverKeyboardMic && followsKeyboard() && !isDocked() && keyboardVisible) {
+            keyboardMicBounds()
+        } else {
+            null
+        }
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            val state = "$rect/$coverKeyboardMic/${followsKeyboard()}/${isDocked()}/$keyboardVisible"
+            if (state != lastCoverState) {
+                lastCoverState = state
+                Log.d(TAG, "cover state rect/enabled/follows/docked/kb=$state")
+            }
+        }
+        coverBounds = rect
+        // Fit the disc to the button, never bigger than a normal key: an
+        // unfolded keyboard can report a much larger node for the same control.
+        val density = resources.displayMetrics.density
+        val size = rect?.let {
+            minOf(minOf(it.width(), it.height()) + (6 * density).toInt(), (56 * density).toInt())
+        } ?: 0
+        coverSizePx = size
+        view.setCoverSize(size)
+    }
+
+    /**
+     * The keyboard's own voice-typing button, found by its accessibility
+     * description in the input-method window. Cached against the keyboard's
+     * bounds because walking another app's node tree is not free and this runs
+     * on every keyboard poll.
+     */
+    private fun keyboardMicBounds(): android.graphics.Rect? {
+        val ime = imeBoundsPx() ?: return null
+        val now = SystemClock.elapsedRealtime()
+        // Re-check often: the keyboard can swap rows (e.g. to symbols) and move or
+        // drop the mic key without its window bounds changing.
+        val fresh = micCacheKey == ime && now - micCacheAtMs < 600L
+        if (fresh) return micCache
+        micCacheKey = android.graphics.Rect(ime)
+        micCacheAtMs = now
+        micCache = try {
+            windows
+                .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+                ?.root
+                ?.let { findMicNode(it, ime.width(), 0) }
+        } catch (e: Exception) {
+            Log.w(TAG, "keyboard mic lookup failed", e)
+            null
+        }
+        if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "keyboard mic lookup ime=$ime found=$micCache")
+        return micCache
+    }
+
+    private fun findMicNode(node: AccessibilityNodeInfo, imeWidth: Int, depth: Int): android.graphics.Rect? {
+        if (depth > 14) return null
+        val label = "${node.contentDescription ?: ""} ${node.text ?: ""} ${node.viewIdResourceName ?: ""}"
+        if (node.isVisibleToUser && MIC_LABEL.containsMatchIn(label) && !MIC_EXCLUDE.containsMatchIn(label)) {
+            val rect = android.graphics.Rect()
+            node.getBoundsInScreen(rect)
+            // A single key, not a whole toolbar that merely mentions voice.
+            if (rect.width() > 0 && rect.height() > 0 && rect.width() < imeWidth / 3) return rect
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findMicNode(child, imeWidth, depth + 1)
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun resolveDark(): Boolean = when (appearanceMode) {
@@ -584,6 +764,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     /** Keep the pill glued to its anchor, easing between positions. */
     private fun repositionOverlay() {
+        if (dragging) return
         val view = overlay ?: return
         val params = overlayParams ?: return
         val fromY = params.y
@@ -638,6 +819,31 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun imeTopPx(): Int? = imeBoundsPx()?.top
 
+    private var settleBounds: android.graphics.Rect? = null
+    private var settleSinceMs = 0L
+
+    /** True once the keyboard's bounds have been unchanged for a short while. */
+    private fun imeBoundsSettled(): Boolean {
+        val bounds = imeBoundsPx()
+        if (bounds == null) {
+            settleBounds = null
+            return false
+        }
+        // While the keyboard slides in, its window is reported hanging off the
+        // bottom of the screen; those bounds are not where it will end up.
+        if (bounds.bottom > realScreenHeightPx() + 2) {
+            settleBounds = null
+            return false
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (settleBounds != bounds) {
+            settleBounds = android.graphics.Rect(bounds)
+            settleSinceMs = now
+            return false
+        }
+        return now - settleSinceMs >= IME_SETTLE_MS
+    }
+
     private fun realScreenWidthPx(): Int =
         if (Build.VERSION.SDK_INT >= 30) {
             windowManager.currentWindowMetrics.bounds.width()
@@ -674,14 +880,17 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun showOverlay() {
         if (overlayAttached) return
-        // A keyboard-relative pill needs the keyboard's bounds; without them it
-        // would spawn mid-screen and visibly jump. The 100 ms IME check retries.
-        if (followsKeyboard() && !isDictationActive() && imeTopPx() == null) return
+        // A keyboard-relative pill needs the keyboard's final bounds. The IME
+        // window reports bounds while it is still sliding up, so wait until
+        // they stop changing; otherwise the pill spawns mid-keyboard and then
+        // jumps. The 60 ms IME check retries.
+        if (followsKeyboard() && !isDictationActive() && !imeBoundsSettled()) return
         try {
             val view = VerenuOverlayView(this).apply {
                 listener = this@VerenuAccessibilityService
                 setDark(resolveDark())
                 setCompact(isDocked())
+                refreshCover(this)
             }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -700,6 +909,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             overlayAttached = true
             setOverlayState(overlayState)
             view.animateIn()
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                view.postDelayed({ Log.d(TAG, "overlay ${view.debugDescribe()}") }, 700L)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "cannot attach overlay", e)
         }
@@ -711,7 +923,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             return
         }
         mainHandler.removeCallbacks(hideOverlayRunnable)
+        hideScheduled = false
         overlayMoveAnimator?.cancel()
+        dragging = false
+        hideSnoozeTarget()
         val view = overlay ?: return
         overlay = null
         overlayParams = null
@@ -773,6 +988,113 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     override fun onPillCancel() = requestCancel()
+
+    // ---------------------------------------------------- snooze by dragging
+
+    override fun onPillDragStart() {
+        if (overlayAttached.not()) return
+        dragging = true
+        overlayMoveAnimator?.cancel()
+        showSnoozeTarget()
+    }
+
+    override fun onPillDragMove(rawX: Int, rawY: Int) {
+        if (!dragging) return
+        val view = overlay ?: return
+        val params = overlayParams ?: return
+        params.gravity = Gravity.TOP or Gravity.START
+        params.x = rawX - view.width / 2
+        params.y = rawY - view.height / 2
+        applyLayout(view, params)
+        snoozeTarget?.let {
+            val hot = isOverSnoozeTarget(rawX, rawY)
+            it.scaleX = if (hot) 1.08f else 1f
+            it.scaleY = if (hot) 1.08f else 1f
+            it.alpha = if (hot) 1f else 0.82f
+        }
+    }
+
+    override fun onPillDragEnd(rawX: Int, rawY: Int) {
+        if (!dragging) return
+        val inside = isOverSnoozeTarget(rawX, rawY)
+        dragging = false
+        hideSnoozeTarget()
+        if (inside) {
+            snoozeFor(SNOOZE_MS)
+        } else {
+            // Not dropped on the target: glide back to where it belongs.
+            applyOverlayPresentation()
+        }
+    }
+
+    private fun snoozeFor(durationMs: Long) {
+        snoozedUntilMs = SystemClock.elapsedRealtime() + durationMs
+        Toast.makeText(this, "Verenu hidden for ${durationMs / 60_000L} minutes", Toast.LENGTH_SHORT).show()
+        mainHandler.removeCallbacks(hideOverlayRunnable)
+        hideOverlay()
+        mainHandler.postDelayed({ refreshOverlayVisibility() }, durationMs + 500L)
+    }
+
+    private fun isOverSnoozeTarget(x: Int, y: Int): Boolean {
+        val slop = (24 * resources.displayMetrics.density).toInt()
+        return snoozeTargetRect.width() > 0 &&
+            x in (snoozeTargetRect.left - slop)..(snoozeTargetRect.right + slop) &&
+            y in (snoozeTargetRect.top - slop)..(snoozeTargetRect.bottom + slop)
+    }
+
+    /** A capsule at the top of the screen to drop the pill on. */
+    private fun showSnoozeTarget() {
+        if (snoozeTarget != null) return
+        val density = resources.displayMetrics.density
+        val label = android.widget.TextView(this).apply {
+            text = "Drop here to hide for 15 min"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding((22 * density).toInt(), (14 * density).toInt(), (22 * density).toInt(), (14 * density).toInt())
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = 40 * density
+                setColor(0xE6141312.toInt())
+                setStroke((1 * density).toInt(), 0x33FFFFFF)
+            }
+            alpha = 0.82f
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarHeightPx() + (24 * density).toInt()
+        }
+        try {
+            windowManager.addView(label, params)
+            snoozeTarget = label
+            label.post {
+                val loc = IntArray(2)
+                label.getLocationOnScreen(loc)
+                snoozeTargetRect.set(loc[0], loc[1], loc[0] + label.width, loc[1] + label.height)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot show snooze target", e)
+        }
+    }
+
+    private fun hideSnoozeTarget() {
+        val target = snoozeTarget ?: return
+        snoozeTarget = null
+        snoozeTargetRect.setEmpty()
+        try {
+            windowManager.removeView(target)
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot remove snooze target", e)
+        }
+    }
 
     private fun requestCancel() {
         if (cancelRequestInFlight) return
@@ -995,9 +1317,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     // -------------------------------------------------------------- insertion
 
-    private fun focusedEditable(): AccessibilityNodeInfo? {
+    private fun focusedEditable(
+        budget: VerenuInsertionBudget = VerenuInsertionBudget(SystemClock::elapsedRealtime, 350L),
+    ): AccessibilityNodeInfo? {
         return try {
-            val focus = findInputFocus()
+            val focus = findInputFocus(budget)
             if (focus != null && focus.isEditable) focus else {
                 focus?.recycle()
                 null
@@ -1016,57 +1340,125 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
      * copies text for them. This is stricter than merely avoiding a read,
      * because a clipboard fallback would still expose dictated content.
      */
-    private fun performInsertion(text: String): Pair<String, Boolean> {
-        val node = focusedEditable()
-        if (node == null) {
-            return Pair("clipboard_fallback", copyToClipboard(text, tryPaste = false))
+    private fun performInsertion(
+        node: AccessibilityNodeInfo,
+        budget: VerenuInsertionBudget,
+        seq: Long,
+        dictated: String,
+    ): Pair<String, Boolean> {
+        if (node.isPassword) return Pair("blocked_password", false)
+        if (budget.expired) return Pair("clipboard_fallback", false)
+        val actions = node.actionList.map { it.id }
+        // An empty field reports its hint ("Search", "Message") as its
+        // text. Treating that as content typed the hint into the field
+        // in front of the dictation.
+        val showingHint = Build.VERSION.SDK_INT >= 26 && node.isShowingHintText
+        val readable = node.text != null || showingHint
+        val before = if (showingHint) "" else node.text?.toString() ?: ""
+        val selKnown = showingHint || node.textSelectionStart >= 0
+        val selStart = if (showingHint) 0 else node.textSelectionStart.takeIf { it >= 0 } ?: before.length
+        val selEnd = if (showingHint) 0 else node.textSelectionEnd.takeIf { it >= 0 } ?: selStart
+        val from = minOf(selStart, selEnd).coerceIn(0, before.length)
+        val to = maxOf(selStart, selEnd).coerceIn(0, before.length)
+
+        // Smart capitalization and spacing: Rust decides, from the text
+        // either side of the caret. Any failure inserts the dictation as is.
+        val reliable = readable && selKnown
+        val text = bridge.formatInsertion(
+            seq,
+            before.substring(0, from).takeLast(CONTEXT_CHARS),
+            before.substring(to).take(CONTEXT_CHARS),
+            reliable,
+            reliable,
+            timeoutMs = budget.remainingMs.coerceAtMost(500L).toInt(),
+        ) ?: dictated
+
+        if (budget.expired) return Pair("clipboard_fallback", false)
+        val edit = VerenuInsertionEdit(before, from, to, text)
+        // SET_TEXT and PASTE can both report success while Android silently
+        // truncates the edit (Samsung launcher search has a 100-unit limit).
+        // Preserve the field and copy the full dictation instead of leaving
+        // a partial insertion that the user might then paste again.
+        if (!edit.fits(node.maxTextLength, node.viewIdResourceName)) return Pair("blocked_length", false)
+        val merged = edit.text
+        if (!actions.contains(AccessibilityNodeInfo.ACTION_SET_TEXT)) {
+            return Pair("clipboard_fallback", pasteAtCaret(node, budget, text, before, merged))
         }
-        try {
-            if (node.isPassword) return Pair("blocked_password", false)
-            val actions = node.actionList.map { it.id }
-            if (!actions.contains(AccessibilityNodeInfo.ACTION_SET_TEXT)) {
-                return Pair("clipboard_fallback", copyToClipboard(text, tryPaste = true, node = node))
-            }
-            val ok = run {
-                // An empty field reports its hint ("Search", "Message") as its
-                // text. Treating that as content typed the hint into the field
-                // in front of the dictation.
-                val showingHint = Build.VERSION.SDK_INT >= 26 && node.isShowingHintText
-                val before = if (showingHint) "" else node.text?.toString() ?: ""
-                val selStart = if (showingHint) 0 else node.textSelectionStart.takeIf { it >= 0 } ?: before.length
-                val selEnd = if (showingHint) 0 else node.textSelectionEnd.takeIf { it >= 0 } ?: selStart
-                val from = selStart.coerceIn(0, before.length)
-                val to = selEnd.coerceIn(0, before.length)
-                val merged = before.substring(0, minOf(from, to)) + text +
-                    before.substring(maxOf(from, to))
-                val set = node.performAction(
-                    AccessibilityNodeInfo.ACTION_SET_TEXT,
-                    Bundle().apply {
-                        putCharSequence(
-                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, merged,
-                        )
-                    },
+        val set = node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, merged,
                 )
-                if (set) {
-                    val cursor = (minOf(from, to) + text.length).coerceAtMost(merged.length)
-                    node.performAction(
-                        AccessibilityNodeInfo.ACTION_SET_SELECTION,
-                        Bundle().apply {
-                            putInt(
-                                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor,
-                            )
-                            putInt(
-                                AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor,
-                            )
-                        },
-                    )
-                }
-                set
-            }
-            if (ok) return Pair("direct_accessibility", true)
-            return Pair("clipboard_fallback", copyToClipboard(text, tryPaste = true, node = node))
-        } finally {
-            node.recycle()
+            },
+        )
+        // Some editors report success and then ignore (or revert) the new
+        // text, especially once the field already has content. Believe
+        // the field, not the return value.
+        val confirmation = if (set) confirmInsertion(node, budget, before, merged)
+            else if (budget.expired) VerenuInsertionBudget.Confirmation.UNAVAILABLE
+            else VerenuInsertionBudget.Confirmation.UNCHANGED
+        if (confirmation == VerenuInsertionBudget.Confirmation.LANDED) {
+            val cursor = edit.cursor
+            if (!budget.expired) node.performAction(
+                AccessibilityNodeInfo.ACTION_SET_SELECTION,
+                Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
+                },
+            )
+            return Pair("direct_accessibility", true)
+        }
+        // An unresponsive/stale node cannot prove that SET_TEXT failed.
+        // A second mutation here can both wait another five seconds and
+        // duplicate text when the first action eventually completes.
+        if (confirmation == VerenuInsertionBudget.Confirmation.UNAVAILABLE) {
+            return Pair("clipboard_fallback", false)
+        }
+        return Pair("clipboard_fallback", pasteAtCaret(node, budget, text, before, merged))
+    }
+
+    private fun confirmInsertion(
+        node: AccessibilityNodeInfo,
+        budget: VerenuInsertionBudget,
+        before: String,
+        expected: String,
+    ): VerenuInsertionBudget.Confirmation = budget.confirm(
+        before,
+        expected,
+        refreshText = {
+            if (node.refresh()) {
+                if (Build.VERSION.SDK_INT >= 26 && node.isShowingHintText) ""
+                else node.text?.toString()
+            } else null
+        },
+        pause = { Thread.sleep(50L) },
+    )
+
+    /**
+     * Paste through the clipboard at the caret, which edits in place and keeps
+     * the field's own formatting. Verified against the field's text; when the
+     * paste did not take, the text stays on the clipboard for the user.
+     */
+    private fun pasteAtCaret(
+        node: AccessibilityNodeInfo,
+        budget: VerenuInsertionBudget,
+        text: String,
+        before: String,
+        expected: String,
+    ): Boolean {
+        return try {
+            if (budget.expired) return false
+            val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("Verenu dictation", text))
+            val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            val landed = pasted && confirmInsertion(node, budget, before, expected) ==
+                VerenuInsertionBudget.Confirmation.LANDED
+            if (landed) clipboard.clearPrimaryClip()
+            landed
+        } catch (e: Exception) {
+            Log.w(TAG, "paste at caret failed", e)
+            false
         }
     }
 
@@ -1141,7 +1533,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun onBridgeState(snapshot: BridgeStateSnapshot) {
         VerenuAnalytics.setEnabled(snapshot.analyticsEnabled)
-        if (snapshot.pillPosition != pillPosition || snapshot.appearanceMode != appearanceMode) {
+        if (snapshot.pillPosition != pillPosition ||
+            snapshot.appearanceMode != appearanceMode ||
+            snapshot.coverKeyboardMic != coverKeyboardMic
+        ) {
+            coverKeyboardMic = snapshot.coverKeyboardMic
             pillPosition = snapshot.pillPosition
             appearanceMode = snapshot.appearanceMode
             mainHandler.post { applyOverlayPresentation() }
@@ -1254,15 +1650,26 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
 
         val now = System.currentTimeMillis()
-        val waitedMs = current.ageMs
+        val lookupStartedAt = SystemClock.elapsedRealtime()
         val canAttempt = now - lastInsertAttemptMs > INSERT_ATTEMPT_MS
         if (!canAttempt) return
 
-        if (insertionTargetAvailable(snapshot.targetPackage)) {
+        val budget = VerenuInsertionBudget(SystemClock::elapsedRealtime)
+        val node = focusedEditable(budget)
+        if (node != null && insertionTargetAvailable(node)) {
             lastInsertAttemptMs = now
+            val insertedPackage = node.packageName?.toString().orEmpty()
             VerenuAnalytics.insertionAttempted(currentRunId)
-            val (strategy, ok) = performInsertion(current.text)
+            val (strategy, ok) = try {
+                performInsertion(node, budget, current.seq, current.text)
+            } catch (e: Exception) {
+                Log.w(TAG, "insertion target unavailable", e)
+                Pair("clipboard_fallback", false)
+            } finally {
+                node.recycle()
+            }
             val blockedPassword = strategy == "blocked_password"
+            val lengthLimited = strategy == "blocked_length"
             // A failed ACTION_PASTE still leaves the text in the clipboard;
             // make the manual-copy result explicit before acknowledging so a
             // successful copy clears the outbox and is not repeated every
@@ -1273,8 +1680,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 current.seq,
                 ok,
                 strategy,
-                if (blockedPassword) "password_field" else null,
-                foregroundPackage,
+                if (blockedPassword) "password_field" else if (lengthLimited) "field_limit" else null,
+                insertedPackage,
                 discard = blockedPassword || manualCopy,
             )
             if (ok || manualCopy) {
@@ -1289,14 +1696,18 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 // second edit while still allowing Rust to clear its outbox.
                 lastInsertedSeq = current.seq
                 lastInsertedStrategy = if (ok) strategy else "clipboard_fallback"
-                lastInsertedPackage = foregroundPackage
+                lastInsertedPackage = insertedPackage
                 lastInsertionAckAttemptMs = System.currentTimeMillis()
                 stopDictationService()
                 if (ok) {
                     setOverlayState(VerenuOverlayView.State.IDLE)
                 } else {
                     mainHandler.post {
-                        showOverlayError("Couldn't insert — copied instead", ErrorAction.DISMISS)
+                        showOverlayError(
+                            if (lengthLimited) "Too long for this field — copied instead"
+                            else "Couldn't insert — copied instead",
+                            ErrorAction.DISMISS,
+                        )
                     }
                 }
             } else if (ack?.optBoolean("ok") == true || !ok) {
@@ -1320,9 +1731,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
             return
         }
+        node?.recycle()
 
         // No usable field right now (keyboard closed, focus moved). Give the
-        // user a few seconds to come back to one, then stop waiting.
+        // user a few seconds to come back to one, then stop waiting. Include
+        // time spent in Android's blocking focus calls, not just snapshot age.
+        val waitedMs = current.ageMs + (SystemClock.elapsedRealtime() - lookupStartedAt)
         if (waitedMs >= INSERT_WAIT_FOR_FIELD_MS) {
             lastInsertAttemptMs = now
             val copied = copyToClipboard(current.text, tryPaste = false)
@@ -1349,20 +1763,13 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     /**
-     * Whether a focused editable field exists that this dictation may fill: it
-     * must belong to the app the dictation started in (when we know it), or at
-     * least to whatever app is in front.
+     * A focused editable app field may receive the dictation. System UI and
+     * keyboard windows must never become targets. Package hints from window
+     * events cannot veto the actual field: privacy indicators and toasts can
+     * change those hints while the user is still editing the same app.
      */
-    private fun insertionTargetAvailable(targetPackage: String): Boolean {
-        val node = focusedEditable() ?: return false
-        val owner = try {
-            node.packageName?.toString().orEmpty()
-        } finally {
-            node.recycle()
-        }
-        return targetPackage.isEmpty() ||
-            owner.isEmpty() ||
-            owner == targetPackage ||
-            owner == foregroundPackage
+    private fun insertionTargetAvailable(node: AccessibilityNodeInfo): Boolean {
+        val owner = node.packageName?.toString().orEmpty()
+        return VerenuFocusPackages.isInsertionField(owner, defaultImePackage())
     }
 }

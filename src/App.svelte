@@ -136,7 +136,7 @@
   );
   // Compact Android windows collapse the desktop rail to the bottom bar.
   // Desktop keeps its rail at every width.
-  const compactNav = $derived(isAndroid && viewport.widthClass === 'compact');
+  const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
 
   // Error toast
   let errorToast = $state('');
@@ -741,16 +741,16 @@
 
   /* Compact windows (phones, narrow foldables, snapped split-screen):
      tighten page rhythm and keep the gesture bar clear of content. */
-  .app[data-width-class='compact'] {
+  .app[data-compact-nav='true'] {
     --page-pad-x: 16px;
     --page-pad-y: 16px;
   }
 
-  .app[data-width-class='compact'] .content {
+  .app[data-compact-nav='true'] .content {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
-  .app[data-width-class='compact'] .page-wrapper {
+  .app[data-compact-nav='true'] .page-wrapper {
     padding-right: 0;
   }
 
