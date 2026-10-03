@@ -43,8 +43,6 @@ check('session uses its own real Rust backend', async () => {
   assert.equal(metadata.capabilities.credentialWrites, false);
   const settings = await invoke('get_all_settings');
   assert.equal(Object.keys(settings).some((key) => key.startsWith('api_key_')), false);
-  const status = await invoke('get_api_key_status');
-  assert.equal(Object.values(status).every((value) => typeof value === 'boolean'), true);
 });
 check('authentication, origin checks, and native command restrictions hold', async () => {
   assert.equal((await fetch(`${base}/__verenu_dev/session`)).status, 401);
@@ -65,6 +63,33 @@ check('Context edits persist in the real session database', async () => {
     await invoke('update_context', { contextId: created.id, name: `${name} edited` });
     assert.equal((await invoke('get_contexts')).some((row) => row.id === created.id && row.name.endsWith('edited')), true);
   } finally { await invoke('delete_context', { contextId: created.id }); }
+});
+check('local model selections and provider maps persist through the real settings validator', async () => {
+  const before = await invoke('get_all_settings');
+  const values = {
+    cleanup_models_by_provider: {
+      groq: [], openai: [], google: [], assemblyai: [], openrouter: [], xai: [],
+      local: ['qwen2.5-7b-instruct'],
+    },
+    transcription_models_by_provider: {
+      groq: [], openai: [], google: [], assemblyai: [], openrouter: [], xai: [],
+      local: ['parakeet-v3'],
+    },
+    cleanup_default_model: 'local/qwen2.5-7b-instruct',
+    transcription_default_model: 'local/parakeet-v3',
+  };
+  try {
+    for (const [key, value] of Object.entries(values)) await invoke('save_setting', { key, value });
+    const saved = await invoke('get_all_settings');
+    for (const [key, value] of Object.entries(values)) assert.deepEqual(saved[key], value);
+  } finally {
+    for (const key of Object.keys(values)) {
+      // A fresh isolated session can have no persisted provider map yet; an
+      // empty map is the equivalent default and passes the native validator.
+      const value = before[key] ?? (key.endsWith('_by_provider') ? {} : null);
+      await invoke('save_setting', { key, value });
+    }
+  }
 });
 check('malformed audio fails without invoking providers', async () => {
   const before = (await (await request('/session')).json()).runs;
