@@ -47,17 +47,18 @@ untouched.
 
 ## The overlay
 
-- Appears **only** while an IME keyboard is visible over an editable field;
-  disappears when the keyboard closes. No permanent bubble.
+- Appears while an IME keyboard is visible over an editable field. During an
+  active dictation it stays available as a docked recorder when the keyboard
+  closes, then returns to the keyboard when it reopens.
 - Never steals focus (`FLAG_NOT_FOCUSABLE` + `FLAG_NOT_TOUCH_MODAL`) and never
   replaces the keyboard — it is not an IME.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
-  inserting, plus error (retry) and cancelled. Live waveform comes from the
-  bridge `audioLevel` polls.
-- Position is anchored just above the keyboard, using the bounds of the IME
-  window from the accessibility window list (re-checked while the keyboard is
-  up, so height changes follow). With no IME window to measure it falls back
-  to the top of the screen below the status bar / camera cutout.
+  inserting, plus error (retry) and cancelled. The recording waveform uses the
+  recorder's peak envelope and redraws each display frame.
+- Settings -> General -> Pill position selects above-keyboard center, left or
+  right, top, middle, or under the camera hole. Keyboard placement follows the
+  IME bounds. The pill waits for those bounds before appearing and animates
+  between positions.
 
 ## Permissions
 

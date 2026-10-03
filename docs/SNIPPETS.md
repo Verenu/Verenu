@@ -2,7 +2,10 @@
 
 Snippets turn a short spoken trigger into saved text. They are useful for email addresses, signatures, boilerplate replies, code fragments, and other text you use often.
 
-Snippets belong to a context. Add them to **Everywhere** for a trigger you want available across Verenu, or add them to a specific context for app- or website-specific text.
+Snippets belong to a context. Add them to **Everywhere** for dictation without
+a matching targeted context, or to a specific context for app- or
+website-specific text. Everywhere is a fallback, not a parent whose snippets
+are inherited by every targeted context.
 
 ## Create a snippet
 

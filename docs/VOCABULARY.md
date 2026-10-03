@@ -2,7 +2,9 @@
 
 Vocabulary tells Verenu about words that transcription models often miss, such as names, brands, product names, and technical terms.
 
-Vocabulary belongs to a context. Add it to **Everywhere** when it should apply to all dictation, or add it to a specific context when it only belongs in certain apps or websites.
+Vocabulary belongs to a context. Add it to **Everywhere** for dictation without
+a matching targeted context, or add it to a specific context when it belongs
+in certain apps or websites. Assign an entry to multiple contexts to reuse it.
 
 ## Add a vocabulary entry
 
