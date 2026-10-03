@@ -46,6 +46,7 @@ const commands = {
   session: [[npm, ['run', 'test:session:owned', '--', '--report', path.join(directory, 'session.json')]]],
   pipeline: [[npm, ['run', 'test:session:owned', '--', '--live', '--report', path.join(directory, 'pipeline.json')]]],
   native: [[npm, ['run', 'test:native:webview', '--', '--report', path.join(directory, 'native.json')]]],
+  'native-integration': [[npm, ['run', 'test:native:fixtures', '--', '--report', path.join(directory, 'native-integration.json')]]],
   migration: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'data::db', '--lib']]],
 };
 if (!args.includes('--inspect-only')) {
@@ -56,7 +57,7 @@ if (!args.includes('--inspect-only')) {
       let status = result.status;
       const childReport = path.join(directory, `${category}.json`);
       let detail;
-      if (['session', 'pipeline', 'native'].includes(category)) {
+      if (['session', 'pipeline', 'native', 'native-integration'].includes(category)) {
         try {
           detail = JSON.parse(fs.readFileSync(childReport, 'utf8'));
           if (detail.identity?.fingerprint !== identity.fingerprint || detail.identity?.worktree !== identity.worktree) status = 'incomplete';

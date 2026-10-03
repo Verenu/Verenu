@@ -38,9 +38,10 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const accessFile = path.join(sessionDirectory, 'access.json');
           const access = JSON.parse(await fs.readFile(accessFile, 'utf8'));
           const response = await fetch(new URL('/__verenu_dev/session', access.localAccessUrl), { headers: { Authorization: `Bearer ${access.token}` }, signal: AbortSignal.timeout(5000) });
+          if (!response.ok) throw new Error(`Session metadata request returned HTTP ${response.status}`);
           const metadata = await response.json();
           const identity = sourceIdentity();
-          if (!response.ok || metadata.fingerprint !== identity.fingerprint || metadata.worktree !== identity.worktree) throw new Error('Rust backend does not match current source');
+          if (metadata.fingerprint !== identity.fingerprint || metadata.worktree !== identity.worktree) throw new Error('Rust backend does not match current source');
           return { child, stop, directory: sessionDirectory, accessFile, access, metadata, identity };
         }
       } catch (error) {
