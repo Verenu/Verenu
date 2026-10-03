@@ -9,18 +9,23 @@
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
   import { clearSettingsSearchNavigation, settingsSearchNavigation } from '../settingsSearch.svelte';
 
-  import GeneralSection from '../components/settings/GeneralSection.svelte';
-  import AppMappingsSection from '../components/settings/AppMappingsSection.svelte';
-  import ApiKeysSection from '../components/settings/ApiKeysSection.svelte';
-  import ModelsSection from '../components/settings/ModelsSection.svelte';
-  import PrivacySection from '../components/settings/PrivacySection.svelte';
-  import SyncSection from '../components/settings/SyncSection.svelte';
-  import AudioSection from '../components/settings/AudioSection.svelte';
-  import PermissionsSection from '../components/settings/PermissionsSection.svelte';
+  import DeferredView from '../components/DeferredView.svelte';
+  import { lazyComponent } from '../lazyComponent.svelte';
   import AboutSection from '../components/settings/AboutSection.svelte';
-  import DeveloperSection from '../components/settings/DeveloperSection.svelte';
-  import SubAppsSection from '../components/settings/SubAppsSection.svelte';
   import { isAndroid, isMac } from '../platform';
+
+  const sections = {
+    general: lazyComponent(() => import('../components/settings/GeneralSection.svelte')),
+    apps: lazyComponent(() => import('../components/settings/AppMappingsSection.svelte')),
+    keys: lazyComponent(() => import('../components/settings/ApiKeysSection.svelte')),
+    models: lazyComponent(() => import('../components/settings/ModelsSection.svelte')),
+    privacy: lazyComponent(() => import('../components/settings/PrivacySection.svelte')),
+    sync: lazyComponent(() => import('../components/settings/SyncSection.svelte')),
+    advanced: lazyComponent(() => import('../components/settings/AudioSection.svelte')),
+    permissions: lazyComponent(() => import('../components/settings/PermissionsSection.svelte')),
+    developer: lazyComponent(() => import('../components/settings/DeveloperSection.svelte')),
+    subapps: lazyComponent(() => import('../components/settings/SubAppsSection.svelte')),
+  };
 
   let settingsPageEl = $state<HTMLDivElement | null>(null);
   let settingsPanelEl = $state<HTMLDivElement | null>(null);
@@ -28,6 +33,7 @@
   let searchHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
   const section = $derived(appStore.settingsSection);
+  const sectionReady = $derived(section === 'about' || !!sections[section].component);
   const animDir = $derived(appStore.settingsAnimDir);
   const appVersion = $derived(appStore.appVersion);
 
@@ -168,7 +174,7 @@
   // still reaches the rail — this is context, not a trap.
   $effect(() => {
     const currentSection = section;
-    if (!appStore.settingsOpen || !settingsPanelEl || !currentSection) return;
+    if (!appStore.settingsOpen || !settingsPanelEl || !currentSection || !sectionReady) return;
     const panel = settingsPanelEl;
     requestAnimationFrame(() => {
       if (!panel.isConnected) return;
@@ -197,7 +203,7 @@
     const request = settingsSearchNavigation.request;
     const currentSection = section;
     const panel = settingsPanelEl;
-    if (!request || !appStore.settingsOpen || request.section !== currentSection || !panel) return;
+    if (!request || !appStore.settingsOpen || request.section !== currentSection || !panel || !sectionReady) return;
 
     let cancelled = false;
     let attempts = 0;
@@ -343,28 +349,10 @@
             out:pageSwap={{ axis: 'y', distance: -animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}
           >
             <div class="panel-inner">
-              {#if section === 'general'}
-                <GeneralSection />
-              {:else if section === 'subapps'}
-                <SubAppsSection />
-              {:else if section === 'apps'}
-                <AppMappingsSection />
-              {:else if section === 'keys'}
-                <ApiKeysSection />
-              {:else if section === 'models'}
-                <ModelsSection />
-              {:else if section === 'privacy'}
-                <PrivacySection />
-              {:else if section === 'sync'}
-                <SyncSection />
-              {:else if section === 'advanced'}
-                <AudioSection />
-              {:else if section === 'permissions' && (isMac || isAndroid)}
-                <PermissionsSection />
-              {:else if section === 'about'}
+              {#if section === 'about'}
                 <AboutSection {appVersion} />
-              {:else if section === 'developer' && appStore.devModeEnabled}
-                <DeveloperSection />
+              {:else if (section !== 'permissions' || isMac || isAndroid) && (section !== 'developer' || appStore.devModeEnabled)}
+                <DeferredView view={sections[section]} />
               {/if}
             </div>
           </div>
