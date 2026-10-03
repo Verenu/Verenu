@@ -457,6 +457,16 @@ def _parse_protocol(output: str) -> tuple[str, Optional[Dict[str, Any]]]:
     return "\n".join(kept).strip(), payload
 
 
+def _contains_skip_marker(output: str) -> bool:
+    if "VERENU_LIVE_SKIP:" in output:
+        return True
+    return bool(re.search(
+        r"(?m)^\s*(?:ℹ\s*)?SKIP(?:PED)?\b(?!\s+\d+\s*(?:tests?|cases?)?\s*$)",
+        output,
+        re.IGNORECASE,
+    ))
+
+
 def _classify_failure(entry_: TestEntry, output: str, timed_out: bool) -> str:
     lower = output.lower()
     infrastructure_markers = [
@@ -526,7 +536,7 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
             if code:
                 result.status = "failed"
         else:
-            skipped = code == 0 and bool(re.search(r"VERENU_LIVE_SKIP:|\bSKIP(?:PED)?\b", output, re.I))
+            skipped = code == 0 and _contains_skip_marker(output)
             status = "skipped" if skipped else "passed" if code == 0 else "failed"
             result = TestResult(status, output=output, duration_s=duration)
         if result.status == "failed" and not result.failure_kind:

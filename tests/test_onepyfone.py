@@ -30,6 +30,12 @@ class RunnerTests(unittest.TestCase):
         with patch.object(runner, 'run_process', return_value=(0, 'VERENU_LIVE_SKIP: no credential\ntest result: ok', 0.1, False)):
             self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'skipped')
 
+    def test_zero_skip_count_in_node_summary_is_not_a_skip(self):
+        selected = runner.entry('summary.output', 'unit', 'Summary output', command=['unused'])
+        output = 'ℹ tests 10\nℹ pass 10\nℹ fail 0\nℹ skipped 0\n'
+        with patch.object(runner, 'run_process', return_value=(0, output, 0.1, False)):
+            self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'passed')
+
     def test_native_prerequisites_match_the_owned_test_runners(self):
         self.assertEqual(runner.NativeCapabilityCheck().run().status, 'passed')
 
