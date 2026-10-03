@@ -26,6 +26,7 @@
 //! | POST | `/v1/recording/stop` | → `{ ok }` (pipeline continues through state/outbox) |
 //! | POST | `/v1/recording/cancel` | → `{ ok }` |
 //! | POST | `/v1/recording/retry` | → `{ ok }` |
+//! | POST | `/v1/insertion/format` | `{ seq, left, right, leftReliable, rightReliable }` → `{ ok, text }` (smart caps/spacing for the caret) |
 //! | POST | `/v1/insertion/ack` | `{ seq, success, strategy, error?, package?, discard? }` → `{ ok }` |
 //! | POST | `/v1/credential` | `{ provider, key }` → `{ ok }` (Keystore unlock push) |
 //! | POST | `/v1/credentials/clear` | → `{ ok }` (drop Rust's in-memory cache) |
@@ -55,10 +56,22 @@ use tauri::{AppHandle, Emitter, Manager};
 // Insertion outbox (app-handle-free so the injection path can publish)
 // ---------------------------------------------------------------------------
 
+/// How the pipeline wants the text fitted to the caret. Kotlin reads the text
+/// around the caret at insertion time and asks for it via `/v1/insertion/format`.
+#[derive(Clone)]
+pub struct InsertionFormat {
+    pub contextual_caps: bool,
+    pub auto_spacing: bool,
+    pub profile: String,
+    pub language: String,
+    pub protected_initial_case: bool,
+}
+
 struct OutboxEntry {
     seq: u64,
     text: String,
     published_at: Instant,
+    format: Option<InsertionFormat>,
 }
 
 struct Outbox {
@@ -81,6 +94,10 @@ fn outbox() -> &'static Mutex<Outbox> {
 /// unacknowledged entry — a new dictation supersedes the previous one, and
 /// history already holds the old text so nothing is lost.
 pub fn publish_android_insertion(text: &str) -> u64 {
+    publish_android_insertion_with(text, None)
+}
+
+pub fn publish_android_insertion_with(text: &str, format: Option<InsertionFormat>) -> u64 {
     let mut guard = outbox().lock().unwrap_or_else(|e| e.into_inner());
     let seq = guard.next_seq;
     guard.next_seq = guard.next_seq.wrapping_add(1).max(1);
@@ -88,12 +105,45 @@ pub fn publish_android_insertion(text: &str) -> u64 {
         seq,
         text: text.to_string(),
         published_at: Instant::now(),
+        format,
     });
     log::info!(
         "android bridge: published insertion seq={seq} chars={}",
         text.chars().count()
     );
     seq
+}
+
+/// Fit the pending insertion `seq` to the caret using the text Kotlin read on
+/// either side of it. Returns the original text when formatting is off, the
+/// entry is gone, or the edges were not readable.
+pub(crate) fn format_pending_insertion(
+    seq: u64,
+    left: &str,
+    right: &str,
+    left_reliable: bool,
+    right_reliable: bool,
+) -> Option<String> {
+    let guard = outbox().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard.current.as_ref().filter(|entry| entry.seq == seq)?;
+    let Some(format) = entry.format.as_ref() else {
+        return Some(entry.text.clone());
+    };
+    if !format.contextual_caps && !format.auto_spacing {
+        return Some(entry.text.clone());
+    }
+    Some(crate::core::injection::format_for_caret_text(
+        &entry.text,
+        left,
+        right,
+        left_reliable,
+        right_reliable,
+        format.contextual_caps,
+        format.auto_spacing,
+        &format.profile,
+        &format.language,
+        format.protected_initial_case,
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -389,6 +439,7 @@ fn state_payload(state: &BridgeState) -> Value {
         "keystorePending": has_keystore_rotation(),
         "analyticsEnabled": analytics_enabled(state),
         "pillPosition": pill_position(state),
+        "coverKeyboardMic": cover_keyboard_mic(state),
         "appearanceMode": appearance_mode(state),
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
@@ -496,6 +547,20 @@ fn setting_string(state: &BridgeState, key: &str) -> Option<String> {
         .as_ref()
         .and_then(|app| crate::data::store::settings_snapshot(app).ok())
         .and_then(|settings| settings.get(key).and_then(Value::as_str).map(String::from))
+}
+
+/// Whether the pill should sit over the keyboard's own mic button (opt-in).
+fn cover_keyboard_mic(state: &BridgeState) -> bool {
+    state
+        .app
+        .as_ref()
+        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// The user's pill placement, or the default when unset/unrecognised.
@@ -760,6 +825,19 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
             match crate::commands::retry_transcription(app.clone(), action).await {
                 Ok(_) => ok(json!({})),
                 Err(e) => err(500, "Internal Server Error", &e),
+            }
+        }
+        ("POST", "/v1/insertion/format") => {
+            let seq = body_json.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            match format_pending_insertion(
+                seq,
+                &str_field("left"),
+                &str_field("right"),
+                bool_field("leftReliable"),
+                bool_field("rightReliable"),
+            ) {
+                Some(text) => ok(json!({ "text": text })),
+                None => err(409, "Conflict", "no pending insertion for that seq"),
             }
         }
         ("POST", "/v1/insertion/ack") => {

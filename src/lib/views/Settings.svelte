@@ -20,7 +20,7 @@
   import AboutSection from '../components/settings/AboutSection.svelte';
   import DeveloperSection from '../components/settings/DeveloperSection.svelte';
   import SubAppsSection from '../components/settings/SubAppsSection.svelte';
-  import { isMac } from '../platform';
+  import { isAndroid, isMac } from '../platform';
 
   let settingsPageEl = $state<HTMLDivElement | null>(null);
   let settingsPanelEl = $state<HTMLDivElement | null>(null);
@@ -359,7 +359,7 @@
                 <SyncSection />
               {:else if section === 'advanced'}
                 <AudioSection />
-              {:else if section === 'permissions' && isMac}
+              {:else if section === 'permissions' && (isMac || isAndroid)}
                 <PermissionsSection />
               {:else if section === 'about'}
                 <AboutSection {appVersion} />
@@ -561,6 +561,10 @@
    * shell fills the window. container-type lets the sections swap their old
    * viewport media queries for container queries against this column.
    */
+  /* Android uses the whole content column: the 680px measure left the right
+     half of an unfolded screen empty and pushed the controls off the edge. */
+  :global(.app[data-android='true']) .panel-inner { width: 100%; }
+
   .panel-inner {
     width: min(100%, 680px);
     margin-inline: auto;
@@ -669,7 +673,7 @@
    * ribbon beside a lonely control. Stacking gives the text the full measure and
    * puts the control on its own line at a comfortable thumb size.
    */
-  @container settings-panel (max-width: 520px) {
+  @container settings-panel (max-width: 440px) {
     .settings-body :global(.setting-row) {
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;
@@ -680,6 +684,19 @@
     .settings-body :global(.setting-row) > :global(*:last-child) {
       justify-self: start;
       margin-left: 0;
+    }
+
+    /* A switch is a one-line control: keep it beside its label, on the right,
+       instead of dropping it under the description like a wide control. */
+    .settings-body :global(.setting-row:has(> .toggle:last-child)) {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 0;
+    }
+
+    .settings-body :global(.setting-row:has(> .toggle:last-child)) > :global(.toggle) {
+      justify-self: end;
     }
 
     .settings-body :global(.desc) { max-width: none; }

@@ -51,6 +51,19 @@
   let selectedMic = $state('');
   let micDropdownOpen = $state(false);
   let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
+  let coverKeyboardMic = $state(false);
+  let coverKeyboardMicError = $state(false);
+
+  async function handleCoverKeyboardMic(value: boolean) {
+    coverKeyboardMic = value;
+    try {
+      await saveSetting('android_pill_cover_keyboard_mic', value);
+    } catch (err) {
+      coverKeyboardMic = !value;
+      coverKeyboardMicError = true;
+      console.error('save android_pill_cover_keyboard_mic failed:', err);
+    }
+  }
   let pillDropdownOpen = $state(false);
   const pillPositionLabel = $derived(
     ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? 'Above keyboard, center',
@@ -183,6 +196,7 @@
       invoke<string | null>('get_setting', { key: 'microphone_device' }),
       invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
       invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
+      invoke<boolean | null>('get_setting', { key: 'android_pill_cover_keyboard_mic' }),
     ]);
 
     const val = <T>(i: number, fallback: T): T =>
@@ -214,6 +228,8 @@
     if (savedPillPosition && ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === savedPillPosition)) {
       pillPosition = savedPillPosition;
     }
+
+    coverKeyboardMic = val<boolean | null>(11, null) ?? false;
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
@@ -643,6 +659,13 @@
         </div>
       {/if}
     </div>
+  </div>
+  <div class="setting-row" data-setting-target="general-cover-keyboard-mic">
+    <div>
+      <div class="label">Cover the keyboard's mic button</div>
+      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button, and hides while you're offline so the keyboard's own voice typing stays usable. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
+    </div>
+    <Toggle checked={coverKeyboardMic} onchange={handleCoverKeyboardMic} label="Cover the keyboard's mic button" bind:error={coverKeyboardMicError} />
   </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">
