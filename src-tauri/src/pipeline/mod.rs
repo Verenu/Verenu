@@ -143,7 +143,10 @@ pub struct CapturedAudio {
 }
 
 impl CapturedAudio {
-    pub fn from_samples(samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
+    pub fn from_samples(mut samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
+        // Capture grows geometrically. Retries can retain this allocation for
+        // ten minutes, so release unused capacity before sharing the take.
+        samples.shrink_to_fit();
         Self {
             wav_cache: Arc::new(Mutex::new(None)),
             samples_16k: Arc::new(samples),
@@ -174,7 +177,7 @@ impl CapturedAudio {
             .unwrap_or(0)
     }
 
-    pub fn clear_wav_cache(&mut self) {
+    pub fn clear_wav_cache(&self) {
         if let Ok(mut cache) = self.wav_cache.lock() {
             *cache = None;
         }
@@ -812,6 +815,9 @@ async fn run_pipeline_with_delivery(
             None
         }
     };
+    // Cleanup and retry storage only need PCM. A later cloud retry can encode
+    // it again; existing upload owners keep their Bytes handles valid.
+    captured_audio.clear_wav_cache();
     let Some(transcribe_outcome) = transcribe_race else {
         state::leave_processing_if_owned(&state, generation);
         return;
