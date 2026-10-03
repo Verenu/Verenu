@@ -5,23 +5,16 @@
   import { isWindows, isLinux } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
-  import DevSessionPanel from './lib/components/DevSessionPanel.svelte';
+  import DeferredView from './lib/components/DeferredView.svelte';
+  import { lazyComponent } from './lib/lazyComponent.svelte';
   import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
-  import Insights from './lib/views/Insights.svelte';
-  import Contexts from './lib/views/Contexts.svelte';
-  import Dictionary from './lib/views/Dictionary.svelte';
-  import Snippets from './lib/views/Snippets.svelte';
-  import Style from './lib/views/Style.svelte';
   import Settings from './lib/views/Settings.svelte';
-  import CleanupPromptModal from './lib/components/settings/CleanupPromptModal.svelte';
-  import SyncPairModal from './lib/components/settings/SyncPairModal.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
   import DictationPill from './lib/components/layout/DictationPill.svelte';
-  import Setup from './lib/views/Setup.svelte';
   import { getVersion, invoke, isTauriRuntime, listen } from './lib/tauri';
   import { startAutomaticUpdateChecks } from './lib/updates';
   import { startPolling } from './lib/polling';
@@ -49,6 +42,17 @@
   } from './lib/android/viewport';
 
   type EffectiveTheme = 'light' | 'dark';
+  const pages = {
+    insights: lazyComponent(() => import('./lib/views/Insights.svelte')),
+    contexts: lazyComponent(() => import('./lib/views/Contexts.svelte')),
+    dictionary: lazyComponent(() => import('./lib/views/Dictionary.svelte')),
+    snippets: lazyComponent(() => import('./lib/views/Snippets.svelte')),
+    style: lazyComponent(() => import('./lib/views/Style.svelte')),
+  };
+  const setup = lazyComponent(() => import('./lib/views/Setup.svelte'));
+  const devPanel = lazyComponent(() => import('./lib/components/DevSessionPanel.svelte'));
+  const cleanupModal = lazyComponent(() => import('./lib/components/settings/CleanupPromptModal.svelte'));
+  const syncModal = lazyComponent(() => import('./lib/components/settings/SyncPairModal.svelte'));
   import type { AppearanceMode } from './lib/settings';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
 
@@ -507,7 +511,7 @@
   });
 </script>
 
-{#if isBrowserDevSession()}<DevSessionPanel />{/if}
+{#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
 
 <div
   class="app"
@@ -521,7 +525,7 @@
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
   {#if appStore.setupComplete === false}
-    <Setup />
+    <DeferredView view={setup} />
   {/if}
   <div class="body" inert={appStore.setupComplete === false}>
     <div class="rail">
@@ -544,16 +548,8 @@
         >
           {#if appStore.currentPage === 'home'}
             <Home />
-          {:else if appStore.currentPage === 'insights'}
-            <Insights />
-          {:else if appStore.currentPage === 'contexts'}
-            <Contexts />
-          {:else if appStore.currentPage === 'dictionary'}
-            <Dictionary />
-          {:else if appStore.currentPage === 'snippets'}
-            <Snippets />
-          {:else if appStore.currentPage === 'style'}
-            <Style />
+          {:else}
+            <DeferredView view={pages[appStore.currentPage]} />
           {/if}
         </div>
       {/key}
@@ -561,10 +557,10 @@
   </div>
   <Settings />
   {#if cleanupPromptEditor.open}
-    <CleanupPromptModal />
+    <DeferredView view={cleanupModal} />
   {/if}
   {#if syncStore.status?.pairing?.kind === 'incoming' && syncStore.status.pairing.phase !== 'failed'}
-    <SyncPairModal />
+    <DeferredView view={syncModal} />
   {/if}
   {#if contextsStore.subAppSheet}
     {#key contextsStore.subAppSheet}
