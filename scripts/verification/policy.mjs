@@ -1,4 +1,5 @@
 export const categories = ['static', 'unit', 'rust', 'renderer', 'session', 'pipeline', 'native', 'native-integration', 'migration', 'inspection'];
+export function incompleteUnlessFailed(status) { return status === 'failed' ? 'failed' : 'incomplete'; }
 export function requirements(files, extra = []) {
   const required = new Set();
   if (files.some((file) => /^(src\/|scripts\/|tests\/|package|vite|playwright|src-tauri\/)/.test(file))) {
