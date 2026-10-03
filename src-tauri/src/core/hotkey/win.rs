@@ -59,6 +59,10 @@ fn vk_matches(vk: u32, key: u32) -> bool {
     }
 }
 
+fn is_hotkey_modifier_vk(vk: u32) -> bool {
+    matches!(vk, 0xA0..=0xA5 | 0x5B | 0x5C)
+}
+
 fn is_cursor_movement_key(vk: u32) -> bool {
     matches!(
         vk,
@@ -178,9 +182,14 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
             }
         };
     }
+    if regular.is_empty() {
+        // A lone modifier would fire on every ordinary Ctrl/Shift/Alt/Win
+        // press and suppress that key, so it cannot be a usable binding.
+        return Ok(false);
+    }
     // Windows exposes reservations only for modifiers plus one trigger key.
     // Arbitrary multi-key chords are recognized by the low-level hook.
-    if regular.len() != 1 {
+    if regular.len() > 1 {
         return Ok(true);
     }
     unsafe {
@@ -442,8 +451,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 } else {
                     keys.clone()
                 };
-                CHORD_MACHINE
-                    .with(|m| *m.borrow_mut() = ChordStateMachine::with_key_count(keys.len()));
+                CHORD_MACHINE.with(|m| {
+                    *m.borrow_mut() = ChordStateMachine::with_partial_passthrough(
+                        keys.iter().map(|key| is_hotkey_modifier_vk(*key)).collect(),
+                    )
+                });
                 LOCAL_KEYS.with(|local| *local.borrow_mut() = keys);
                 LOCAL_GENERATION.with(|local| local.set(generation));
             }
@@ -674,6 +686,18 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     }
 
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modifier_only_bindings_are_unavailable() {
+        for key in ["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft"] {
+            assert!(!is_hotkey_available(&[key.to_string()]).unwrap());
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

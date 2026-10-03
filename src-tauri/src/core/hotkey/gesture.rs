@@ -71,6 +71,7 @@ enum TapState {
 /// silently unhooks it.
 pub(super) struct ChordStateMachine {
     pub(super) keys: Vec<KeyState>,
+    passthrough_if_incomplete: Vec<bool>,
     pub(super) chord_down: bool,
     chord_first_down_ms: u64,
     tap: TapState,
@@ -93,8 +94,18 @@ impl Default for ChordStateMachine {
 }
 impl ChordStateMachine {
     pub(super) fn with_key_count(count: usize) -> Self {
+        Self::with_partial_passthrough(vec![true; count])
+    }
+
+    /// Creates a state machine with one policy per configured key: modifier
+    /// prefixes may pass through while waiting for the rest of the chord, but
+    /// regular keys should be claimed immediately so they cannot leak into the
+    /// focused app before a multi-key chord completes.
+    pub(super) fn with_partial_passthrough(passthrough_if_incomplete: Vec<bool>) -> Self {
+        let count = passthrough_if_incomplete.len();
         Self {
             keys: vec![KeyState::default(); count],
+            passthrough_if_incomplete,
             chord_down: false,
             chord_first_down_ms: 0,
             tap: TapState::None,
@@ -200,10 +211,17 @@ impl ChordStateMachine {
         *self.key_down_since_mut(key) = now_ms;
 
         if !self.keys.iter().all(|key| key.down) {
-            self.mark_key_passed_through(key);
-            // Only one key down so far — not our gesture yet, let it through
-            // untouched (so a lone Ctrl or Win press still behaves normally).
-            return ChordOutcome::passthrough();
+            if self.passthrough_if_incomplete[key.0] {
+                self.mark_key_passed_through(key);
+                // Modifier prefixes remain usable while waiting for the rest
+                // of the chord.
+                return ChordOutcome::passthrough();
+            }
+
+            // Claim regular keys immediately. If we forwarded one here, the
+            // focused app could receive its character before the chord formed.
+            self.set_key_was_chord(key, true);
+            return ChordOutcome::suppress(None);
         }
 
         // Chord-formed edge: both keys just became down together, regardless
@@ -370,6 +388,44 @@ mod chord_tests {
             assert_eq!(second.disposition, KeyDisposition::Suppress);
             assert!(m.chord_down);
         }
+    }
+
+    #[test]
+    fn regular_key_prefix_is_suppressed_even_if_chord_never_completes() {
+        let mut m = ChordStateMachine::with_partial_passthrough(vec![false, false]);
+        let down = m.on_key_event(ChordKey(0), KeyEdge::Down, 0);
+        let up = m.on_key_event(ChordKey(0), KeyEdge::Up, 20);
+
+        assert_eq!(down.action, None);
+        assert_eq!(down.disposition, KeyDisposition::Suppress);
+        assert_eq!(up.action, None);
+        assert_eq!(up.disposition, KeyDisposition::Suppress);
+    }
+
+    #[test]
+    fn regular_key_prefix_stays_suppressed_when_chord_completes() {
+        let mut m = ChordStateMachine::with_partial_passthrough(vec![false, false]);
+
+        let first = m.on_key_event(ChordKey(0), KeyEdge::Down, 0);
+        let second = m.on_key_event(ChordKey(1), KeyEdge::Down, 10);
+        let release = m.on_key_event(ChordKey(0), KeyEdge::Up, 500);
+
+        assert_eq!(first.disposition, KeyDisposition::Suppress);
+        assert_eq!(second.action, Some(ChordAction::FirePress));
+        assert_eq!(second.disposition, KeyDisposition::Suppress);
+        assert_eq!(release.action, Some(ChordAction::FireRelease));
+        assert_eq!(release.disposition, KeyDisposition::Suppress);
+    }
+
+    #[test]
+    fn modifier_prefix_still_passes_through_while_regular_prefix_is_claimed() {
+        let mut m = ChordStateMachine::with_partial_passthrough(vec![true, false, false]);
+
+        let modifier_down = m.on_key_event(ChordKey(0), KeyEdge::Down, 0);
+        let regular_down = m.on_key_event(ChordKey(1), KeyEdge::Down, 10);
+
+        assert_eq!(modifier_down.disposition, KeyDisposition::Passthrough);
+        assert_eq!(regular_down.disposition, KeyDisposition::Suppress);
     }
 
     #[test]
