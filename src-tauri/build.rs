@@ -44,6 +44,13 @@ fn main() {
             .compile("verenu_macos_ax_text_marker");
     }
 
+    // Oboe's default C++ mode links libc++_static, but Rust's linker does not
+    // use the C++ driver to add libc++abi automatically. Ask the NDK linker to
+    // add its static ABI archive so exception and guard symbols resolve.
+    if target_os == "android" {
+        println!("cargo:rustc-link-arg=-lc++abi");
+    }
+
     println!("cargo:rerun-if-changed=Info.plist");
     // Tauri merges this file for `npm run tauri dev`. Its capability rules are
     // compiled into the executable, so a dev-config-only ACL change must also
