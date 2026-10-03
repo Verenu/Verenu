@@ -348,6 +348,8 @@ pub const KEY_GROQ: &str = "api_key_groq";
 pub const KEY_OPENAI: &str = "api_key_openai";
 pub const KEY_GOOGLE: &str = "api_key_google";
 pub const KEY_ASSEMBLYAI: &str = "api_key_assemblyai";
+pub const KEY_OPENROUTER: &str = "api_key_openrouter";
+pub const KEY_XAI: &str = "api_key_xai";
 
 pub const TRANSCRIPTION_PROVIDER: &str = "transcription_provider";
 pub const TRANSCRIPTION_LANGUAGE: &str = "transcription_language";
