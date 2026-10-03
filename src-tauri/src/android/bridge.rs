@@ -45,11 +45,11 @@
 //! History is already written by the pipeline before the handoff, so an ack
 //! only drives pill/events/diagnostics — a lost ack can never lose text.
 
+use serde_json::{json, Value};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 // ---------------------------------------------------------------------------
@@ -395,6 +395,12 @@ fn ok(body: Value) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 fn state_payload(state: &BridgeState) -> Value {
+    // The Android client polls this route frequently. Read the settings store
+    // once for the entire payload instead of cloning its snapshot per field.
+    let settings = state
+        .app
+        .as_ref()
+        .and_then(|app| crate::data::store::settings_snapshot(app).ok());
     let (lifecycle, dictation_active) = match &state.app {
         Some(app) => app
             .try_state::<crate::pipeline::SharedState>()
@@ -430,6 +436,38 @@ fn state_payload(state: &BridgeState) -> Value {
         .map(|snap| json!({ "seq": snap.seq, "text": snap.text, "ageMs": snap.age_ms }));
     let last_error =
         last_bridge_error().map(|(message, age_ms)| json!({ "message": message, "ageMs": age_ms }));
+    let analytics_enabled = settings
+        .as_ref()
+        .map(analytics_enabled_value)
+        .unwrap_or(true);
+    let pill_position = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_POSITION)
+                .and_then(Value::as_str)
+        })
+        .filter(|value| super::ANDROID_PILL_POSITIONS.contains(value))
+        .unwrap_or(super::DEFAULT_ANDROID_PILL_POSITION)
+        .to_string();
+    let cover_keyboard_mic = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
+    let appearance_mode = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::APPEARANCE_MODE)
+                .and_then(Value::as_str)
+        })
+        .filter(|value| matches!(*value, "system" | "light" | "dark"))
+        .unwrap_or("system")
+        .to_string();
     json!({
         "lifecycle": lifecycle,
         "dictationActive": dictation_active,
@@ -437,10 +475,10 @@ fn state_payload(state: &BridgeState) -> Value {
         "audioLevel": last_audio_level(),
         "audioEnvelope": take_audio_envelope(),
         "keystorePending": has_keystore_rotation(),
-        "analyticsEnabled": analytics_enabled(state),
-        "pillPosition": pill_position(state),
-        "coverKeyboardMic": cover_keyboard_mic(state),
-        "appearanceMode": appearance_mode(state),
+        "analyticsEnabled": analytics_enabled,
+        "pillPosition": pill_position,
+        "coverKeyboardMic": cover_keyboard_mic,
+        "appearanceMode": appearance_mode,
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
         "overlay": {
@@ -530,52 +568,6 @@ fn analytics_settings_payload(app: &AppHandle) -> Value {
         .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
         .unwrap_or(0);
     analytics_settings_from_snapshot(&settings, context_group_count)
-}
-
-fn analytics_enabled(state: &BridgeState) -> bool {
-    state
-        .app
-        .as_ref()
-        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
-        .map(|settings| analytics_enabled_value(&settings))
-        .unwrap_or(true)
-}
-
-fn setting_string(state: &BridgeState, key: &str) -> Option<String> {
-    state
-        .app
-        .as_ref()
-        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
-        .and_then(|settings| settings.get(key).and_then(Value::as_str).map(String::from))
-}
-
-/// Whether the pill should sit over the keyboard's own mic button (opt-in).
-fn cover_keyboard_mic(state: &BridgeState) -> bool {
-    state
-        .app
-        .as_ref()
-        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
-        .and_then(|settings| {
-            settings
-                .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
-                .and_then(Value::as_bool)
-        })
-        .unwrap_or(false)
-}
-
-/// The user's pill placement, or the default when unset/unrecognised.
-fn pill_position(state: &BridgeState) -> String {
-    setting_string(state, crate::data::store::ANDROID_PILL_POSITION)
-        .filter(|value| super::ANDROID_PILL_POSITIONS.contains(&value.as_str()))
-        .unwrap_or_else(|| super::DEFAULT_ANDROID_PILL_POSITION.to_string())
-}
-
-/// `system`, `light` or `dark`; the pill follows the app's own appearance
-/// choice rather than only the OS night mode.
-fn appearance_mode(state: &BridgeState) -> String {
-    setting_string(state, crate::data::store::APPEARANCE_MODE)
-        .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
-        .unwrap_or_else(|| "system".to_string())
 }
 
 fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> bool {

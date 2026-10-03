@@ -67,7 +67,7 @@ class VerenuDictationService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                startAsMicrophoneService()
+                startAsMicrophoneService(startId)
                 // If Android kills the process, Rust's recording session is
                 // gone too. Restarting this holder with a null intent would
                 // otherwise create a misleading foreground notification with
@@ -97,7 +97,9 @@ class VerenuDictationService : Service() {
     }
 
     override fun onDestroy() {
-        commandExecutor.shutdownNow()
+        // A failed foreground promotion queues backend cleanup and stops the
+        // service immediately. Let that already-submitted cleanup finish.
+        commandExecutor.shutdown()
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -141,12 +143,12 @@ class VerenuDictationService : Service() {
             )
             .build()
 
-    private fun startAsMicrophoneService() {
+    private fun startAsMicrophoneService(startId: Int) {
         val notification = try {
             buildNotification()
         } catch (e: Exception) {
             Log.e(TAG, "cannot build notification", e)
-            abortBackendRecording()
+            abortBackendRecording(startId)
             return
         }
         try {
@@ -166,7 +168,7 @@ class VerenuDictationService : Service() {
             // pipeline surfaces its own error and onboarding recovery
             // explains the fix.
             Log.e(TAG, "cannot enter foreground", e)
-            abortBackendRecording()
+            abortBackendRecording(startId)
         }
     }
 
@@ -175,15 +177,21 @@ class VerenuDictationService : Service() {
      * refuses to promote us to a microphone foreground service, cancel Rust's
      * session asynchronously before stopping this holder.
      */
-    private fun abortBackendRecording() {
-        commandExecutor.execute {
-            try {
-                VerenuBridge(this@VerenuDictationService).cancelRecording()
-            } catch (e: Exception) {
-                Log.w(TAG, "could not unwind backend after foreground failure", e)
-            } finally {
-                mainHandler.post { stopSelf() }
+    private fun abortBackendRecording(startId: Int) {
+        try {
+            commandExecutor.execute {
+                try {
+                    VerenuBridge(this@VerenuDictationService).cancelRecording()
+                } catch (e: Exception) {
+                    Log.w(TAG, "could not unwind backend after foreground failure", e)
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "could not schedule backend cleanup after foreground failure", e)
+        } finally {
+            // A service launched with startForegroundService() must either
+            // enter foreground immediately or stop before Android's deadline.
+            stopSelfResult(startId)
         }
     }
 }

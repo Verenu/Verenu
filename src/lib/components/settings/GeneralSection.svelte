@@ -65,8 +65,12 @@
     }
   }
   let pillDropdownOpen = $state(false);
+  const defaultPillPositionLabel =
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === DEFAULT_ANDROID_PILL_POSITION)?.label ??
+    ANDROID_PILL_POSITION_OPTIONS[0]?.label ??
+    '';
   const pillPositionLabel = $derived(
-    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? 'Above keyboard, center',
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? defaultPillPositionLabel,
   );
   const microphoneCopy = {
     inputDeviceLabel: 'Input device',
