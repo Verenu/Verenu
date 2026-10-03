@@ -136,8 +136,12 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
         .unwrap_or(default_template);
 
     let active_app = app_context.map(escape_prompt_data).unwrap_or_default();
-    let preset =
-        cleanup_rules::build_preset_block(profile, intensity, !user_overrides.trim().is_empty());
+    // Preset edits carry their own user-authored instructions even when the
+    // dictation has no snippet or Context overrides. Keep their precedence
+    // explicit in the composed prompt as well.
+    let has_explicit_instructions =
+        !user_overrides.trim().is_empty() || template.contains("{{ cleanup_priority }}");
+    let preset = cleanup_rules::build_preset_block(profile, intensity, has_explicit_instructions);
     let overrides_block = cleanup_rules::snippet_overrides_block(user_overrides);
     let evidence_block = cleanup_rules::evidence_block(evidence);
 
