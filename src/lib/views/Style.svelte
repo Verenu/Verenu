@@ -187,7 +187,7 @@
                   <span class="style-sample">"{c.sample}"</span>
                 </button>
                 {#if c.id !== 'none'}
-                  <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
+                  <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
                   </button>
                 {/if}
@@ -211,7 +211,7 @@
                   <span class="desc">{c.desc}</span>
                   <span class="style-sample" style="white-space: pre-wrap;">"{c.sample}"</span>
                 </button>
-                <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                <button class="style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
                 </div>
               {/each}
             </div>
@@ -240,7 +240,7 @@
               <span class="style-sample">"{c.sample}"</span>
             </button>
             {#if c.id !== 'none'}
-              <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
+              <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
               </button>
             {/if}
@@ -269,7 +269,7 @@
               <span class="desc">{c.desc}</span>
               <span class="style-sample" style="white-space: pre-wrap;">"{c.sample}"</span>
             </button>
-            <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+            <button class="style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
             </div>
           {/each}
         </div>
@@ -281,7 +281,10 @@
 <style>
   .style-card-wrap { position: relative; display: flex; }
   .style-card-wrap .style-card-title { padding-right: 30px; }
-  .style-edit { position: absolute; top: 7px; right: 7px; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out); padding: 7px; }
+  .style-edit { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
+  .style-edit:hover { background: var(--control-hover); color: var(--ink-strong); }
+  .style-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: var(--ui-focus-ring); }
+  .style-edit svg { width: 15px; height: 15px; }
   .style-card-wrap:hover .style-edit, .style-card-wrap:focus-within .style-edit { opacity: 1; }
   @media (hover: none) { .style-edit { opacity: 1; } }
   .content-inner {
