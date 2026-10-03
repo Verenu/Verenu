@@ -891,15 +891,44 @@ pub fn run() {
         });
 }
 
-/// See the matching desktop-binary helper in `main.rs`.
 #[cfg(target_os = "linux")]
 fn configure_hyprland_webkit_renderer() {
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-        && std::env::var_os("WAYLAND_DISPLAY").is_some()
-        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-    {
-        // This runs before Tauri initializes GTK/WebKit.
-        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    if should_force_hyprland_webkit_shm(
+        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some(),
+        std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_some(),
+    ) {
+        // WebKit 2.52 returns an empty buffer-transport set when
+        // WEBKIT_DISABLE_DMABUF_RENDERER is enabled, so accelerated
+        // compositing can create a null backing store. Force the supported
+        // shared-memory transport instead. This runs before GTK/WebKit init.
+        unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn should_force_hyprland_webkit_shm(
+    on_hyprland: bool,
+    on_wayland: bool,
+    disable_dmabuf_set: bool,
+    force_shm_set: bool,
+) -> bool {
+    on_hyprland && on_wayland && !disable_dmabuf_set && !force_shm_set
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_webkit_renderer_tests {
+    use super::should_force_hyprland_webkit_shm;
+
+    #[test]
+    fn defaults_hyprland_to_shared_memory_without_overriding_user_renderer_flags() {
+        assert!(should_force_hyprland_webkit_shm(true, true, false, false));
+        assert!(!should_force_hyprland_webkit_shm(false, true, false, false));
+        assert!(!should_force_hyprland_webkit_shm(true, false, false, false));
+        assert!(!should_force_hyprland_webkit_shm(true, true, true, false));
+        assert!(!should_force_hyprland_webkit_shm(true, true, false, true));
+        assert!(!should_force_hyprland_webkit_shm(true, true, true, true));
     }
 }
 #[cfg(target_os = "windows")]
