@@ -739,6 +739,7 @@ pub fn run() {
             commands::get_api_key_status,
             commands::validate_api_key,
             commands::list_provider_models,
+            commands::get_provider_model_catalog,
             commands::open_notifications_settings,
             commands::request_notification_permission,
             commands::check_keychain_access,
