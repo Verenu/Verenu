@@ -40,7 +40,21 @@ When Auto-learn is enabled, Verenu watches the focused text field for correction
 
 - Distinctive terms, such as brand names and technical words, can be promoted after one high-confidence correction.
 - Ordinary words need repeated corrections before Verenu promotes them.
+- Evidence accumulates for 30 days, so occasional corrections can still teach a term.
+- Brand capitalization, an isolated acronym such as `api` to `API` within a sentence, and split names such as `open ai` to `OpenAI` can be learned. Ordinary sentence capitalization, punctuation, and all-caps formatting are ignored.
 - Auto-learned entries show an indicator and confidence information in the Vocabulary list.
+
+Correct the inserted text in the same field within 60 seconds of dictation,
+then pause for about a second before sending it or switching away. Single-word
+dictations count too. Auto-learn reads only a stable correction in the original
+field; switching fields does not teach it a new mapping.
+
+The editor must expose editable text through the operating system's
+accessibility API. Windows uses UI Automation, macOS requires Accessibility
+permission, and Linux uses AT-SPI. Password fields are excluded. Custom editors
+that do not expose text cannot be monitored. On Linux, `NO_AT_BRIDGE=1` disables
+GTK accessibility even when the accessibility bus is enabled; start the editor
+without that variable to make its corrections readable.
 
 The short-lived candidate and pending-observation records stay on the device.
 Once promoted, the persistent correction is stored with the originating
