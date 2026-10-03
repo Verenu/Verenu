@@ -415,7 +415,11 @@
           {:else if group.provider === 'local' && local.runtime?.info?.installed}
             <div class="runtime-note">
               <span>On-device runtime installed{local.runtime.info.backend ? ` (${local.runtime.info.backend})` : ''}.</span>
-              <button class="row-tool" type="button" onclick={() => local.runtime?.onDelete()}>Remove</button>
+              {#if local.runtime.info.approx_download_mb === 0}
+                <span class="row-tool">Included with app</span>
+              {:else}
+                <button class="row-tool" type="button" onclick={() => local.runtime?.onDelete()}>Remove</button>
+              {/if}
             </div>
           {/if}
           {#each group.rows as row, index (row.key)}
