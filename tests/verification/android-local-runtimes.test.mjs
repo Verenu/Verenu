@@ -5,7 +5,7 @@ import { cmakeArguments, LLAMA_COMMIT, LLAMA_ANDROID_BINARY, ORT_VERSION, RUNTIM
 
 test('Android native runtimes are reproducible and support both shipped ABIs', () => {
   assert.match(LLAMA_COMMIT, /^[a-f0-9]{40}$/);
-  assert.equal(ORT_VERSION, '1.24.2');
+  assert.equal(ORT_VERSION, '1.24.3');
   assert.deepEqual(RUNTIME_ABIS, ['arm64-v8a', 'x86_64']);
   for (const abi of RUNTIME_ABIS) {
     const args = cmakeArguments('/source', '/build', '/ndk', abi);

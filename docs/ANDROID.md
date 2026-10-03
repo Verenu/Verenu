@@ -92,8 +92,8 @@ imports Tauri — the bridge works with the main activity dead.
 
 Android uses the shared speech engines, Silero voice detection, and cleanup
 pipeline. `scripts/android-sync.mjs` bundles checksum-pinned ONNX Runtime
-and an NDK-built llama.cpp server for ARM64 and x86_64. Runtime code ships
-inside the APK; only model weights are downloaded into private app storage.
+1.24.3 and an NDK-built llama.cpp server for ARM64 and x86_64. Runtime code
+ships inside the APK; only model weights are downloaded into private app storage.
 Cleanup executes the packaged runtime from Android's native library directory.
 The bundled cleanup runtime cannot be removed separately from the app.
 
