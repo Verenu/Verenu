@@ -1,6 +1,6 @@
 import { invoke } from './tauri';
 import { saveSetting, type ProviderId } from './settings';
-import { modelId } from './components/settings/models';
+import { CATALOG, modelId } from './components/settings/models';
 
 /** How long a good list stays fresh before the next Settings visit refetches. */
 export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
@@ -21,6 +21,9 @@ export const MISS_INTERVAL_MS = 15 * 60 * 1000;
 const SUSPICIOUS_SHRINK = 0.5;
 
 export type MissCounter = { count: number; lastCountedAt: number };
+export const CLOUD_PROVIDERS: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];
+export type ModelCapability = { label: string; tasks: ('transcription' | 'cleanup')[] };
+export type ProviderModelCatalog = { ids: string[]; metadata: Record<string, ModelCapability>; warning: string | null };
 
 export type ProviderCache = {
   ids: string[];
@@ -33,6 +36,8 @@ export type ProviderCache = {
   lastError: string | null;
   /** Keyed by canonical `provider/model` id. */
   missing: Record<string, MissCounter>;
+  metadata?: Record<string, ModelCapability>;
+  warning?: string | null;
 };
 
 export type ModelCatalogCache = Partial<Record<ProviderId, ProviderCache>>;
@@ -56,7 +61,7 @@ export function mergeCatalogCache(raw: unknown): ModelCatalogCache {
   if (!raw || typeof raw !== 'object') return merged;
 
   for (const [provider, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!['groq', 'openai', 'google', 'assemblyai', 'local'].includes(provider)) continue;
+    if (![...CLOUD_PROVIDERS, 'local'].includes(provider)) continue;
     if (!value || typeof value !== 'object') continue;
     const entry = value as Record<string, unknown>;
 
@@ -92,10 +97,30 @@ export function mergeCatalogCache(raw: unknown): ModelCatalogCache {
       lastAttemptAt: timestamp('lastAttemptAt'),
       lastError: typeof entry.lastError === 'string' ? entry.lastError : null,
       missing,
+      metadata: parseMetadata(entry.metadata),
+      warning: typeof entry.warning === 'string' ? entry.warning : null,
     };
   }
 
   return merged;
+}
+
+export function parseMetadata(raw: unknown): Record<string, ModelCapability> {
+  const result: Record<string, ModelCapability> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { label, tasks } = entry as Record<string, unknown>;
+    if (typeof label !== 'string' || !Array.isArray(tasks) ||
+      !tasks.every((task) => task === 'transcription' || task === 'cleanup')) continue;
+    result[id] = { label, tasks: tasks as ModelCapability['tasks'] };
+  }
+  return result;
+}
+
+/** Cached discoveries remain selectable while a provider is offline. */
+export function hasSnapshot(cache: ProviderCache | undefined): boolean {
+  return !!cache && cache.lastSuccessAt > 0;
 }
 
 /** True when a provider's list is complete enough to reason about absence. */
@@ -155,12 +180,15 @@ export function applySuccess(
   }
 
   return {
-    ids,
+    // A truncated 200 must not make the picker drop known models.
+    ids: degraded ? Array.from(new Set([...before.ids, ...ids])) : ids,
     everSeen,
     lastSuccessAt: now,
     lastAttemptAt: now,
-    lastError: null,
+    lastError: degraded ? 'The provider returned an incomplete list. Keeping cached models.' : null,
     missing,
+    metadata: before.metadata,
+    warning: before.warning,
   };
 }
 
@@ -176,15 +204,31 @@ export function applyFailure(
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
-export const modelCatalogStore = $state<{ cache: ModelCatalogCache }>({ cache: {} });
+export const modelCatalogStore = $state<{ cache: ModelCatalogCache; refreshing: Partial<Record<ProviderId, boolean>> }>({ cache: {}, refreshing: {} });
 
 /** One in-flight request per provider, so overlapping triggers coalesce. */
 const inFlight = new Map<ProviderId, Promise<void>>();
 /** Serializes persistence: a per-provider refresh must never clobber another's entry. */
 let writeChain: Promise<unknown> = Promise.resolve();
+let hydrated = false;
+let hydration: Promise<void> | undefined;
 
 export function hydrateCatalogCache(raw: unknown) {
-  modelCatalogStore.cache = mergeCatalogCache(raw);
+  // An in-flight refresh can finish while Models loads settings. Keep its
+  // newer result instead of replacing it with an older persisted snapshot.
+  const saved = mergeCatalogCache(raw);
+  for (const provider of CLOUD_PROVIDERS) {
+    const current = modelCatalogStore.cache[provider];
+    if (current && current.lastAttemptAt >= (saved[provider]?.lastAttemptAt ?? 0)) saved[provider] = current;
+  }
+  modelCatalogStore.cache = saved;
+  hydrated = true;
+}
+
+async function ensureHydrated() {
+  if (hydrated) return;
+  hydration ??= invoke<unknown>('get_setting', { key: 'provider_model_cache' }).then(hydrateCatalogCache).finally(() => { hydration = undefined; });
+  await hydration;
 }
 
 function persist() {
@@ -200,15 +244,20 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
   const pending = inFlight.get(provider);
   if (pending) return pending;
 
-  const request = invoke<string[]>('list_provider_models', { provider })
-    .then((ids) => {
-      modelCatalogStore.cache[provider] = applySuccess(
+  modelCatalogStore.refreshing[provider] = true;
+  const request = ensureHydrated().then(() => invoke<ProviderModelCatalog>('get_provider_model_catalog', { provider }))
+    .then((catalog) => {
+      const updated = applySuccess(
         modelCatalogStore.cache[provider],
         provider,
-        ids,
-        tracked,
+        catalog.ids,
+        trackedIds([...tracked, ...Object.keys(modelCatalogStore.cache[provider]?.missing ?? {})], CATALOG),
         now,
       );
+      // Retain capabilities on a metadata outage, including across restarts.
+      updated.metadata = { ...updated.metadata, ...parseMetadata(catalog.metadata) };
+      updated.warning = catalog.warning;
+      modelCatalogStore.cache[provider] = updated;
     })
     .catch((error) => {
       modelCatalogStore.cache[provider] = applyFailure(
@@ -222,6 +271,7 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
     })
     .finally(() => {
       inFlight.delete(provider);
+      modelCatalogStore.refreshing[provider] = false;
     });
 
   inFlight.set(provider, request);
@@ -229,15 +279,17 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
 }
 
 /** Refreshes every keyed provider whose cache has gone stale. */
-export function refreshStaleCatalogs(
+export async function refreshStaleCatalogs(
   apiKeyStatus: Record<ProviderId, boolean>,
   tracked: string[],
   now = Date.now(),
 ) {
-  const providers: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai'];
+  // Decide freshness after loading the persisted cache. Otherwise opening
+  // Settings launches requests before hydration and refetches on every visit.
+  await ensureHydrated();
   return Promise.all(
-    providers
-      .filter((provider) => apiKeyStatus[provider])
+    CLOUD_PROVIDERS
+      .filter((provider) => apiKeyStatus[provider] || provider === 'openrouter')
       .filter((provider) => shouldRefresh(modelCatalogStore.cache[provider], now))
       .map((provider) => refreshCatalog(provider, tracked, now)),
   );

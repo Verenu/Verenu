@@ -3,10 +3,12 @@
 use super::*;
 
 mod api_keys;
+mod model_catalog;
 mod import_export;
 mod prompts;
 
 pub use api_keys::*;
+pub use model_catalog::*;
 pub use import_export::*;
 pub use prompts::*;
 
@@ -359,6 +361,15 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
                     .is_some_and(|v| v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0))
             };
             string_array("ids")
+                && entry.get("metadata").is_none_or(|metadata| {
+                    metadata.as_object().is_some_and(|models| models.len() <= 10000 && models.values().all(|model| {
+                        model.as_object().is_some_and(|model| {
+                            model.get("label").and_then(serde_json::Value::as_str).is_some_and(|label| label.len() <= 800)
+                                && model.get("tasks").and_then(serde_json::Value::as_array).is_some_and(|tasks| tasks.len() <= 2 && tasks.iter().all(|task| matches!(task.as_str(), Some("transcription" | "cleanup"))))
+                        })
+                    }))
+                })
+                && entry.get("warning").is_none_or(|warning| warning.is_null() || warning.is_string())
                 && string_array("everSeen")
                 && finite_timestamp("lastSuccessAt")
                 && finite_timestamp("lastAttemptAt")
@@ -832,6 +843,17 @@ mod provider_model_cache_tests {
     #[test]
     fn accepts_a_well_formed_cache() {
         check(&well_formed()).expect("well-formed cache should validate");
+    }
+
+    #[test]
+    fn validates_persisted_capabilities_for_new_providers() {
+        let mut value = well_formed();
+        value["openrouter"] = value["groq"].clone();
+        value["openrouter"]["metadata"] = json!({"org/new:free":{"label":"New model","tasks":["cleanup"]}});
+        value["openrouter"]["warning"] = json!(null);
+        assert!(check(&value).is_ok());
+        value["openrouter"]["metadata"]["org/new:free"]["tasks"] = json!(["unknown"]);
+        assert!(check(&value).is_err());
     }
 
     #[test]
