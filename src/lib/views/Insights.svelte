@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContextIcon from '../components/ContextIcon.svelte';
   import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -14,7 +15,6 @@
   import HourStrip from './insights/HourStrip.svelte';
   import WordStats from './insights/WordStats.svelte';
   import type { PricingSnapshot } from './insights/pricing';
-  import { icons } from '../icons';
   import { isAndroid } from '../platform';
   import { contextsStore, loadContexts, orderedContexts } from '../contextsStore.svelte';
   import { EMPTY_INSIGHTS, RANGE_OPTIONS, type InsightsPayload, type InsightsRange } from './insights/types';
@@ -175,8 +175,8 @@
             <span class="ctx-swatch" style={activeContext.color ? `color: ${activeContext.color}` : ''} aria-hidden="true">
               {#if activeContext.is_everywhere}
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2 2.3 3 5 3 8s-1 5.7-3 8c-2-2.3-3-5-3-8s1-5.7 3-8Z"/></svg>
-              {:else if activeContext.icon && icons[activeContext.icon as keyof typeof icons]}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{@html icons[activeContext.icon as keyof typeof icons]}</svg>
+              {:else}
+                <ContextIcon icon={activeContext.icon} size={12} />
               {/if}
             </span>
           {/if}
