@@ -265,8 +265,14 @@ fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
         }
         // Another app/dev session may still own this file. Leave it alone.
         if let Ok(file) = OpenOptions::new().write(true).open(&path) {
-            if FileExt::try_lock_exclusive(&file).is_ok() && fs::remove_file(&path).is_ok() {
-                total = total.saturating_sub(size);
+            if FileExt::try_lock_exclusive(&file).is_ok() {
+                // Windows refuses to remove an open file. Drop the lock handle
+                // before deletion so the same retention pass works everywhere.
+                let unlocked = FileExt::unlock(&file).is_ok();
+                drop(file);
+                if unlocked && fs::remove_file(&path).is_ok() {
+                    total = total.saturating_sub(size);
+                }
             }
         }
     }
