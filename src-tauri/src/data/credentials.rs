@@ -26,6 +26,8 @@ fn user_for(provider: &str) -> Option<&'static str> {
         store::OPENAI => Some(store::KEY_OPENAI),
         store::GOOGLE => Some(store::KEY_GOOGLE),
         store::ASSEMBLYAI => Some(store::KEY_ASSEMBLYAI),
+        store::OPENROUTER => Some(store::KEY_OPENROUTER),
+        store::XAI => Some(store::KEY_XAI),
         _ => None,
     }
 }
@@ -191,6 +193,8 @@ const KEYCHAIN_ACCOUNTS_USED_BY_VERENU: &[&str] = &[
     "api_key_openai",
     "api_key_google",
     "api_key_assemblyai",
+    "api_key_openrouter",
+    "api_key_xai",
     "sync.identity",
 ];
 

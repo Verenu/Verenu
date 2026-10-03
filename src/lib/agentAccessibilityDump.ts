@@ -19,6 +19,8 @@ const REDACT_EXACT = new Set([
   'key_openai',
   'key_google',
   'key_assemblyai',
+  'key_openrouter',
+  'key_xai',
 ]);
 
 const PRIORITY_SETTINGS = [

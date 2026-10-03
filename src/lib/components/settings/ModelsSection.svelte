@@ -73,6 +73,8 @@
     openai: false,
     google: false,
     assemblyai: false,
+    openrouter: false,
+    xai: false,
     local: false,
   });
 

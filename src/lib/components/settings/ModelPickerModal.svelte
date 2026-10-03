@@ -106,7 +106,7 @@
     return () => window.removeEventListener('resize', updatePanelLeft);
   });
 
-  const RAIL_ORDER: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'local'];
+  const RAIL_ORDER: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local'];
 
   const current = $derived(rowForSelection(defaultModel, context));
   // Selections stay listed even after a provider drops them, so a dead choice
