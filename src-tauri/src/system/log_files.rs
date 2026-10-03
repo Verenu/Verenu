@@ -247,15 +247,25 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
 fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
     let mut files = Vec::new();
     for entry in fs::read_dir(directory)? {
-        let entry = entry?;
+        let Ok(entry) = entry else { continue };
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with("session-") || !name.ends_with(".log") || !entry.file_type()?.is_file()
-        {
+        if !name.starts_with("session-") || !name.ends_with(".log") {
             continue;
         }
-        let metadata = entry.metadata()?;
-        files.push((metadata.modified()?, metadata.len(), entry.path()));
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        files.push((modified, metadata.len(), entry.path()));
     }
     files.sort_by_key(|entry| entry.0);
     let mut total: u64 = files.iter().map(|entry| entry.1).sum();
