@@ -1,5 +1,126 @@
 use super::*;
 
+pub(super) struct MonitorText {
+    pub text: String,
+    pub identity: MonitorIdentity,
+}
+
+pub(super) struct MonitorIdentity {
+    #[cfg(windows)]
+    element: windows::Win32::UI::Accessibility::IUIAutomationElement,
+    #[cfg(target_os = "macos")]
+    element: core_foundation::base::CFTypeRef,
+    #[cfg(not(any(windows, target_os = "macos")))]
+    key: String,
+}
+
+impl MonitorIdentity {
+    pub fn matches(&self, other: &Self) -> bool {
+        #[cfg(windows)]
+        {
+            FOCUSED_TEXT_STATE.with(|cell| {
+                let mut state = cell.borrow_mut();
+                if state.com.is_none() {
+                    state.com = Some(ComGuard::init());
+                }
+                let reader = state.reader.get_or_insert_with(FocusedTextReader::new);
+                let Some(reader) = reader.as_ref() else {
+                    return false;
+                };
+                unsafe {
+                    reader
+                        .automation
+                        .CompareElements(&self.element, &other.element)
+                        .is_ok_and(|same| same.as_bool())
+                }
+            })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Compare native objects, not a hash of their labels or contents.
+            if self.element.is_null() || other.element.is_null() {
+                false
+            } else if self.element == other.element {
+                true
+            } else {
+                unsafe { core_foundation::base::CFEqual(self.element, other.element) != 0 }
+            }
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            self.key == other.key
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MonitorIdentity {
+    fn drop(&mut self) {
+        if !self.element.is_null() {
+            unsafe { core_foundation::base::CFRelease(self.element) };
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn read_monitor_text(injected_text: &str, baseline: bool) -> Option<MonitorText> {
+    FOCUSED_TEXT_STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if state.com.is_none() {
+            state.com = Some(ComGuard::init());
+        }
+        let reader = state
+            .reader
+            .get_or_insert_with(FocusedTextReader::new)
+            .as_ref()?;
+        unsafe {
+            let element = reader.automation.GetFocusedElement().ok()?;
+            if element.CurrentIsPassword().ok()?.as_bool() {
+                return None;
+            }
+            let text = if baseline {
+                reader.read_near_injected_text(injected_text)?
+            } else {
+                reader.read_near_caret(injected_text)?
+            };
+            let after = reader.automation.GetFocusedElement().ok()?;
+            if !reader
+                .automation
+                .CompareElements(&element, &after)
+                .ok()?
+                .as_bool()
+            {
+                return None;
+            }
+            Some(MonitorText {
+                text,
+                identity: MonitorIdentity { element },
+            })
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn read_monitor_text(injected_text: &str, _baseline: bool) -> Option<MonitorText> {
+    let focused = linux_focused_text(injected_text)?;
+    Some(MonitorText {
+        text: focused.text,
+        identity: MonitorIdentity {
+            key: format!("{}:{}", focused.pid, focused.identity),
+        },
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn read_monitor_text(injected_text: &str, _baseline: bool) -> Option<MonitorText> {
+    macos_focused_text(injected_text)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub(super) fn read_monitor_text(_injected_text: &str, _baseline: bool) -> Option<MonitorText> {
+    None
+}
+
 #[cfg(windows)]
 pub(super) struct EventModeHookGuard;
 
@@ -715,35 +836,6 @@ pub fn read_focused_text() -> Option<String> {
     }
 }
 
-#[cfg(windows)]
-pub fn read_focused_text_around(injected_text: &str) -> Option<String> {
-    FOCUSED_TEXT_STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if guard.com.is_none() {
-            guard.com = Some(ComGuard::init());
-        }
-        let reader = guard.reader.get_or_insert_with(FocusedTextReader::new);
-        reader
-            .as_ref()
-            .and_then(|reader| reader.read_near_injected_text(injected_text))
-    })
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-pub fn read_focused_text_near_caret(injected_text: &str) -> Option<String> {
-    FOCUSED_TEXT_STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if guard.com.is_none() {
-            guard.com = Some(ComGuard::init());
-        }
-        let reader = guard.reader.get_or_insert_with(FocusedTextReader::new);
-        reader
-            .as_ref()
-            .and_then(|reader| reader.read_near_caret(injected_text))
-    })
-}
-
 #[cfg_attr(not(windows), allow(dead_code))]
 #[cfg(windows)]
 pub fn read_injection_context_probe() -> InjectionContextProbe {
@@ -960,25 +1052,9 @@ pub fn read_focused_text_probe() -> FocusedTextProbe {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn read_focused_text() -> Option<String> {
     linux_focused_text("").map(|focused| focused.text)
-}
-
-/// The caret sits right after freshly pasted text, so a caret-centred window
-/// widened by the injected length contains the whole insertion.
-#[cfg(target_os = "linux")]
-pub fn read_focused_text_around(injected_text: &str) -> Option<String> {
-    if injected_text.is_empty() {
-        return None;
-    }
-    linux_focused_text(injected_text)
-        .map(|focused| focused.text)
-        .filter(|text| text.contains(injected_text))
-}
-
-#[cfg(target_os = "linux")]
-pub fn read_focused_text_near_caret(injected_text: &str) -> Option<String> {
-    linux_focused_text(injected_text).map(|focused| focused.text)
 }
 
 #[allow(dead_code)]
@@ -991,24 +1067,13 @@ pub fn read_injection_context_probe() -> InjectionContextProbe {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn read_focused_text_probe() -> FocusedTextProbe {
     FocusedTextProbe::Unavailable
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn read_focused_text() -> Option<String> {
-    None
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn read_focused_text_around(_injected_text: &str) -> Option<String> {
-    None
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-#[allow(dead_code)]
-pub fn read_focused_text_near_caret(_injected_text: &str) -> Option<String> {
     None
 }
 
@@ -1016,4 +1081,59 @@ pub fn read_focused_text_near_caret(_injected_text: &str) -> Option<String> {
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn read_injection_context_probe() -> InjectionContextProbe {
     InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_focused_text(injected_text: &str) -> Option<MonitorText> {
+    use std::ffi::c_char;
+    #[link(name = "verenu_macos_ax_text_marker", kind = "static")]
+    unsafe extern "C" {
+        fn verenu_macos_read_focused_text(
+            radius: i32,
+            out: *mut c_char,
+            capacity: usize,
+            pid: *mut i32,
+            identity: *mut core_foundation::base::CFTypeRef,
+        ) -> i32;
+    }
+    let mut buffer = vec![0_u8; 131_073];
+    let mut pid = 0;
+    let mut identity = std::ptr::null();
+    let radius = 2048 + injected_text.encode_utf16().count().min(14_336) as i32;
+    // The shim writes bounded UTF-8 and does not retain any Rust memory.
+    let ok = unsafe {
+        verenu_macos_read_focused_text(
+            radius,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut pid,
+            &mut identity,
+        )
+    };
+    if ok == 0 || identity.is_null() {
+        return None;
+    }
+    let identity = MonitorIdentity { element: identity };
+    if pid <= 0 {
+        return None;
+    }
+    crate::system::mac_app::mark_accessibility_verified();
+    let len = buffer.iter().position(|byte| *byte == 0)?;
+    buffer.truncate(len);
+    Some(MonitorText {
+        text: String::from_utf8(buffer).ok()?,
+        identity,
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub fn read_focused_text_probe() -> FocusedTextProbe {
+    read_focused_text().map_or(FocusedTextProbe::Unavailable, FocusedTextProbe::Text)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub fn read_focused_text() -> Option<String> {
+    macos_focused_text("").map(|focused| focused.text)
 }

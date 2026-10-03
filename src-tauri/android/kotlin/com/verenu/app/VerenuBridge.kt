@@ -42,12 +42,16 @@ data class BridgeStateSnapshot(
     val dictationActive: Boolean,
     val pillStage: String,
     val audioLevel: Float,
+    val audioEnvelope: FloatArray = FloatArray(0),
     val keystorePending: Boolean,
     val lastError: BridgeErrorSnapshot?,
     val overlay: BridgeOverlay,
     val pendingInsertion: BridgePendingInsertion?,
     val targetPackage: String,
     val analyticsEnabled: Boolean,
+    val pillPosition: String = "keyboard-center",
+    val coverKeyboardMic: Boolean = false,
+    val appearanceMode: String = "system",
 )
 
 class VerenuBridge(appContext: Context) {
@@ -88,14 +92,19 @@ class VerenuBridge(appContext: Context) {
         return null
     }
 
-    private fun request(method: String, path: String, body: JSONObject? = null): JSONObject? {
+    private fun request(
+        method: String,
+        path: String,
+        body: JSONObject? = null,
+        timeoutMs: Int = TIMEOUT_MS,
+    ): JSONObject? {
         val conn = connection() ?: return null
         var urlConn: HttpURLConnection? = null
         return try {
             urlConn = URL("http://127.0.0.1:${conn.port}$path").openConnection() as HttpURLConnection
             urlConn.requestMethod = method
-            urlConn.connectTimeout = TIMEOUT_MS
-            urlConn.readTimeout = TIMEOUT_MS
+            urlConn.connectTimeout = timeoutMs
+            urlConn.readTimeout = timeoutMs
             // The WebView never calls this client; CORS is irrelevant, but a
             // permissive header costs nothing if the policy ever changes.
             urlConn.setRequestProperty("Authorization", "Bearer ${conn.token}")
@@ -139,6 +148,9 @@ class VerenuBridge(appContext: Context) {
             dictationActive = json.optBoolean("dictationActive", false),
             pillStage = json.optString("pillStage", ""),
             audioLevel = json.optDouble("audioLevel", 0.0).toFloat(),
+            audioEnvelope = json.optJSONArray("audioEnvelope")?.let { array ->
+                FloatArray(array.length()) { array.optDouble(it, 0.0).toFloat() }
+            } ?: FloatArray(0),
             keystorePending = json.optBoolean("keystorePending", false),
             lastError = json.optJSONObject("lastError")?.let { error ->
                 BridgeErrorSnapshot(
@@ -148,6 +160,9 @@ class VerenuBridge(appContext: Context) {
             },
             targetPackage = json.optString("targetPackage", ""),
             analyticsEnabled = json.optBoolean("analyticsEnabled", true),
+            pillPosition = json.optString("pillPosition", "keyboard-center"),
+            coverKeyboardMic = json.optBoolean("coverKeyboardMic", false),
+            appearanceMode = json.optString("appearanceMode", "system"),
             overlay = BridgeOverlay(
                 state = overlay?.optString("state", "hidden") ?: "hidden",
                 visible = overlay?.optBoolean("visible", false) ?: false,
@@ -203,6 +218,31 @@ class VerenuBridge(appContext: Context) {
                 .put("package", pkg)
                 .put("discard", discard),
         )
+
+    /**
+     * Ask Rust to fit the pending dictation to the caret (smart capitalization
+     * and spacing). The text around the caret goes to the local loopback bridge
+     * only, is used for this one decision and is never stored or logged.
+     * Returns null when the bridge is unreachable or the entry is gone.
+     */
+    fun formatInsertion(
+        seq: Long,
+        left: String,
+        right: String,
+        leftReliable: Boolean,
+        rightReliable: Boolean,
+        timeoutMs: Int = 500,
+    ): String? =
+        request(
+            "POST", "/v1/insertion/format",
+            JSONObject()
+                .put("seq", seq)
+                .put("left", left)
+                .put("right", right)
+                .put("leftReliable", leftReliable)
+                .put("rightReliable", rightReliable),
+            timeoutMs = timeoutMs.coerceIn(1, 500),
+        )?.optString("text", "")?.takeIf { it.isNotEmpty() }
 
     /** Push one Keystore-unlocked credential into Rust's memory cache. */
     fun pushCredential(provider: String, key: String): JSONObject? =

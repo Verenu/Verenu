@@ -44,9 +44,9 @@ describe('snapshotForSize', () => {
 });
 
 describe('layout decisions', () => {
-	it('uses bottom nav only on compact', () => {
+	it('uses bottom nav below the expanded breakpoint', () => {
 		expect(shouldUseBottomNav(snapshotForSize(360, 780))).toBe(true);
-		expect(shouldUseBottomNav(snapshotForSize(700, 500))).toBe(false);
+		expect(shouldUseBottomNav(snapshotForSize(700, 500))).toBe(true);
 		expect(shouldUseBottomNav(snapshotForSize(1200, 800))).toBe(false);
 	});
 

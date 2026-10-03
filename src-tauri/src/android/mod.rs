@@ -121,6 +121,18 @@ use std::sync::{Mutex, OnceLock};
 /// `androidx.security` MasterKey paths, notification channels, and the
 /// `AccessibilityService.SoftKeyboardController` show/hide callbacks Verenu's
 /// overlay relies on are all available from here.
+/// Placements for the dictation pill (stored in `android_pill_position`).
+/// Mirrored by the Settings dropdown and `VerenuAccessibilityService.kt`.
+pub const ANDROID_PILL_POSITIONS: [&str; 6] = [
+    "keyboard-center",
+    "keyboard-left",
+    "keyboard-right",
+    "screen-top",
+    "screen-middle",
+    "punch-hole",
+];
+pub const DEFAULT_ANDROID_PILL_POSITION: &str = "keyboard-center";
+
 pub const ANDROID_MIN_SDK: u32 = 26;
 
 /// SDK Verenu targets. Kept in sync with `gen/android/app/build.gradle.kts`.
@@ -262,7 +274,7 @@ pub fn permission_rationale(permission: AndroidPermission) -> &'static str {
             "Verenu uses an Accessibility Service to see when the keyboard is open, show the dictation pill above it, read which app you're typing in (for per-app Contexts), and insert the dictated text into the focused field. It never reads passwords, never clicks for you, and never runs when the keyboard is closed."
         }
         AndroidPermission::BatteryExemption => {
-            "Some manufacturers aggressively kill background audio. Exempting Verenu from battery optimization keeps recordings from being cut off mid-sentence. Verenu still records only while you hold the pill."
+            "Some manufacturers aggressively kill background audio. Exempting Verenu from battery optimization keeps recordings from being cut off mid-sentence. Verenu only records after you tap the pill, and stops when you tap Stop."
         }
         AndroidPermission::Notifications => {
             "Verenu posts a status notification while recording so Android keeps the microphone alive and you can see — and stop — a dictation from anywhere."

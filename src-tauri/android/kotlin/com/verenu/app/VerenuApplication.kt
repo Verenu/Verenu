@@ -1,6 +1,7 @@
 package com.verenu.app
 
 import android.app.Application
+import android.util.Log
 
 class VerenuApplication : Application() {
   override fun onCreate() {
@@ -17,10 +18,10 @@ class VerenuApplication : Application() {
 
   private fun configuredValue(value: String?, variableName: String): String? {
     if (!value.isNullOrBlank()) return value
+    // Unconfigured analytics must never stop the app from launching; builds
+    // without a PostHog token (contributors, emulators) simply run without it.
     if (BuildConfig.DEBUG) {
-      error(
-        "$variableName variable required by product analytics is missing or un-configured, this causes events to be silently missed. This error stops appearing once $variableName is configured",
-      )
+      Log.w("VerenuApplication", "$variableName is not configured; product analytics are disabled")
     }
     return null
   }

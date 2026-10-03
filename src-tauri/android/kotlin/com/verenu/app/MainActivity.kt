@@ -4,15 +4,55 @@ import android.os.Bundle
 import android.content.res.Configuration
 import android.graphics.Color
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
+  private var webView: WebView? = null
+  @Volatile private var navOverlapPx = 0
+  private var navBarPx = 0
+
+  override fun onWebViewCreate(webView: WebView) {
+    this.webView = webView
+    // Read by the frontend (App.svelte) to pad its bottom nav. Exposed as a
+    // bridge instead of pushed into the page so it survives reloads.
+    webView.addJavascriptInterface(object {
+      @JavascriptInterface
+      fun bottomInsetCssPx(): Float = navOverlapPx / resources.displayMetrics.density
+    }, "VerenuInsets")
+    webView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateNavOverlap() }
+  }
+
+  /**
+   * How far the WebView extends under the system navigation/gesture bar. Some
+   * WebViews already shrink to exclude it (overlap 0); others draw under it.
+   */
+  private fun updateNavOverlap() {
+    val view = webView ?: return
+    val root = view.rootView ?: return
+    val location = IntArray(2)
+    view.getLocationInWindow(location)
+    val bottom = location[1] + view.height
+    navOverlapPx = (bottom - (root.height - navBarPx)).coerceAtLeast(0)
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     installSystemBarInsets()
+    // The accessibility service starts this activity only to load the Rust
+    // backend (Tauri hosts it in this process). Don't leave the UI over the
+    // user's app.
+    if (intent?.getBooleanExtra(EXTRA_BACKGROUND_START, false) == true) {
+      moveTaskToBack(true)
+    }
+  }
+
+  companion object {
+    const val EXTRA_BACKGROUND_START = "verenu_background_start"
   }
 
   /**
@@ -37,6 +77,8 @@ class MainActivity : TauriActivity() {
       val bars = insets.getInsets(
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
+      navBarPx = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+      updateNavOverlap()
       view.setPadding(
         baseLeft + bars.left,
         baseTop + bars.top,

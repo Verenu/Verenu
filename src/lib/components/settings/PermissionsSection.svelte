@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from '../../tauri';
   import MacPermissions from '../MacPermissions.svelte';
+  import AndroidPermissionsStep from '../../setup/steps/AndroidPermissionsStep.svelte';
+  import { isAndroid } from '../../platform';
   import type { ProviderId } from '../../settings';
 
   // Surface the Keychain row for whichever provider's key is configured.
@@ -12,14 +14,25 @@
 </script>
 
 <h2 class="settings-h">Permissions</h2>
-<p class="panel-note">
-  Verenu needs these macOS permissions to capture your voice and type into other
-  apps. Anything not granted will stop dictation from working everywhere.
-</p>
+{#if isAndroid}
+  <p class="panel-note">
+    Review what Verenu can do on this device. Reinstalling or updating the app can
+    switch the Accessibility Service off, which hides the dictation pill.
+  </p>
 
-<div data-setting-target="permissions">
-  <MacPermissions variant="settings" {provider} />
-</div>
+  <div data-setting-target="permissions">
+    <AndroidPermissionsStep />
+  </div>
+{:else}
+  <p class="panel-note">
+    Verenu needs these macOS permissions to capture your voice and type into other
+    apps. Anything not granted will stop dictation from working everywhere.
+  </p>
+
+  <div data-setting-target="permissions">
+    <MacPermissions variant="settings" {provider} />
+  </div>
+{/if}
 
 <style>
   h2 { margin-bottom: 6px; }
