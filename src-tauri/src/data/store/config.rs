@@ -33,6 +33,7 @@ pub struct PipelineConfig {
     pub advanced_model_ui: bool,
     pub local_model_memory_policy: String,
     pub cleanup_prompt_override: String,
+    pub style_prompt_instructions: std::collections::HashMap<String, String>,
 }
 
 pub const GROQ: &str = "groq";
@@ -183,14 +184,41 @@ impl PipelineConfig {
         }
     }
 
-    /// The user's custom cleanup prompt, or `None` if Advanced Models is off or
-    /// nothing has been saved. One template covers every model — see
-    /// `store::CLEANUP_PROMPT_OVERRIDE`.
-    pub fn cleanup_override(&self) -> Option<&str> {
-        if !self.advanced_model_ui {
-            return None;
+    pub fn has_style_instructions(&self, profile: &str) -> bool {
+        self.cleanup_intensity != "none"
+            && [self.cleanup_intensity.as_str(), profile]
+                .iter()
+                .any(|key| {
+                    self.style_prompt_instructions
+                        .get(*key)
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+    }
+
+    /// Compose preset edits into the shared system template. Context-selected
+    /// intensity and tone are passed separately by the pipeline.
+    pub fn cleanup_override(&self, profile: &str) -> Option<String> {
+        let shared = self
+            .advanced_model_ui
+            .then_some(self.cleanup_prompt_override.as_str())
+            .filter(|s| !s.trim().is_empty());
+        let instruction = |key: &str| {
+            self.style_prompt_instructions
+                .get(key)
+                .map(String::as_str)
+                .filter(|s| !s.trim().is_empty())
+        };
+        if self.cleanup_intensity == "none" {
+            return shared.map(str::to_string);
         }
-        Some(self.cleanup_prompt_override.as_str()).filter(|s| !s.trim().is_empty())
+        let cleanup = instruction(&self.cleanup_intensity);
+        let tone = instruction(profile);
+        if cleanup.is_none() && tone.is_none() {
+            return shared.map(str::to_string);
+        }
+        Some(crate::api::prompts::with_style_instructions(
+            shared, cleanup, tone,
+        ))
     }
 }
 
@@ -374,6 +402,10 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         cleanup_prompt_override,
+        style_prompt_instructions: store
+            .get(STYLE_PROMPT_INSTRUCTIONS)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         local_model_memory_policy: supported_or_default(
             LOCAL_MODEL_MEMORY_POLICY,
             "unload_after_5m",

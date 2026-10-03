@@ -451,21 +451,67 @@ fn setting_audit_cleanup_override_gated_by_advanced_ui() {
         cleanup_prompt_override: "Custom".to_string(),
         ..Default::default()
     };
-    assert_eq!(base.cleanup_override(), Some("Custom"));
+    assert_eq!(base.cleanup_override("casual").as_deref(), Some("Custom"));
 
     let off = PipelineConfig {
         advanced_model_ui: false,
         cleanup_prompt_override: "Custom".to_string(),
         ..Default::default()
     };
-    assert_eq!(off.cleanup_override(), None);
+    assert_eq!(off.cleanup_override("casual"), None);
 
     let blank = PipelineConfig {
         advanced_model_ui: true,
         cleanup_prompt_override: "   ".to_string(),
         ..Default::default()
     };
-    assert_eq!(blank.cleanup_override(), None);
+    assert_eq!(blank.cleanup_override("casual"), None);
+}
+
+#[test]
+fn style_prompt_override_follows_effective_intensity_without_advanced_ui() {
+    let store = SettingsSnapshot::from_pairs([(
+        STYLE_PROMPT_INSTRUCTIONS.to_string(),
+        serde_json::json!({"light": "Light custom", "high": "Strong custom"}),
+    )]);
+    let mut cfg = load_pipeline_config(&store);
+    cfg.advanced_model_ui = false;
+    cfg.cleanup_intensity = "light".into();
+    let composed = cfg.cleanup_override("formal").unwrap();
+    assert!(composed.contains("Light custom"));
+    assert!(composed.contains("You clean dictated speech"));
+    cfg.cleanup_intensity = "high".into();
+    assert!(cfg
+        .cleanup_override("formal")
+        .unwrap()
+        .contains("Strong custom"));
+    cfg.cleanup_intensity = "medium".into();
+    assert_eq!(cfg.cleanup_override("casual"), None);
+    cfg.cleanup_intensity = "none".into();
+    assert_eq!(cfg.cleanup_override("casual"), None);
+    cfg.advanced_model_ui = true;
+    cfg.cleanup_prompt_override = "Shared custom".into();
+    cfg.cleanup_intensity = "medium".into();
+    assert_eq!(
+        cfg.cleanup_override("casual").as_deref(),
+        Some("Shared custom")
+    );
+    cfg.style_prompt_instructions
+        .insert("medium".into(), String::new());
+    assert_eq!(
+        cfg.cleanup_override("casual").as_deref(),
+        Some("Shared custom")
+    );
+    cfg.style_prompt_instructions
+        .insert("formal".into(), "Use legal terminology.".into());
+    assert!(!cfg
+        .cleanup_override("casual")
+        .unwrap()
+        .contains("legal terminology"));
+    assert!(cfg
+        .cleanup_override("formal")
+        .unwrap()
+        .contains("legal terminology"));
 }
 
 /// An edit saved under the retired per-model map still applies after the
