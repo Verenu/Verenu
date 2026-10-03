@@ -38,7 +38,7 @@ export function modalFocusTrap(node: HTMLElement, options: ModalFocusOptions) {
     const target = current.restoreFocus?.() ?? previousFocus;
     previousFocus = null;
     if (target?.isConnected) {
-      requestAnimationFrame(() => target.focus());
+      target.focus();
     }
   }
 
