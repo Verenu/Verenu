@@ -15,6 +15,7 @@
   import StatsCard from './home/StatsCard.svelte';
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
   import type { ShortcutStatus } from '../shortcutStatus.svelte';
+  import type { InstalledApp } from '../appMappings';
 
   let hotkey = defaultHotkey;
   $: hk1 = formatKeyLabel(hotkey[0]);
@@ -48,6 +49,7 @@
   let debouncedSearch = '';
   let appFilter: string | null = null;
   let apps: string[] = [];
+  let installedApps: InstalledApp[] = [];
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let loadSeq = 0;
 
@@ -222,6 +224,9 @@
   }
 
   onMount(() => {
+    invoke<InstalledApp[]>('get_installed_apps')
+      .then(list => { installedApps = list ?? []; })
+      .catch(() => { installedApps = []; });
     getVersion().then(v => currentVersion = v);
     invoke<string[] | null>('get_history_apps')
       .then(list => { apps = list ?? []; })
@@ -380,6 +385,7 @@
         android={isAndroid}
         {search}
         {apps}
+        {installedApps}
         {appFilter}
         onSearchChange={handleSearchChange}
         onAppFilterChange={handleAppFilterChange}
@@ -447,6 +453,10 @@
     .desktop-home .stat-stack { display: none; }
   }
 
+  /* Android windows (foldable inner display, tablets, split-screen) are
+     narrower than that desktop floor once the sidebar takes its share. */
+  :global(.app[data-android='true']) .home-grid { min-width: 0; }
+
   /*
    * Phone composition: hero at the top, the history (or its empty state) taking
    * the slack in the middle, stats settling at the foot of the screen. Stacked
@@ -468,6 +478,8 @@
       align-items: stretch;
       grid-template-rows: 1fr auto;
       gap: 16px;
+      /* Undo the narrow-desktop floor above; a phone is narrower than it. */
+      min-width: 0;
     }
 
     .home-grid > div:first-child {

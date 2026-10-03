@@ -36,6 +36,33 @@ VERENU_FORMAT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml at
 
 This verifies real AT-SPI Collection discovery and cursor formatting for empty fields, continuation text, sentence endings, and existing whitespace. It changes only the disposable entry; it does not paste or call providers. Close the window afterward; it also closes after five minutes.
 
+## Auto-learn verification
+
+The shared regression matrix uses the detector's real confidence scores and
+checks how many independent dictations each correction needs before promotion:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml api::auto_learn --lib
+```
+
+On a live Hyprland desktop with Python GTK3 installed, also run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml auto_learn_native_disposable_fields --lib -- --ignored
+```
+
+This test launches and closes its own disposable GTK window, removes
+`NO_AT_BRIDGE` only from that process, and exercises native focused-text reads,
+same-control identity, stable edits, real promotion, vocabulary prompt reuse,
+and exclusion of password fields. It uses synthetic text and an in-memory
+database. It does not capture audio, paste into other applications, or call
+providers. The browser dev-session bridge deliberately disables automatic
+learning, so browser tests do not replace this native check.
+
+Windows UI Automation and macOS Accessibility still need native editor checks
+on those systems before claiming platform verification. The PR Rust matrix
+builds and tests the platform code on Windows and macOS.
+
 ## Linux hotkey gesture verification
 
 For Linux hotkey gesture changes, run the Rust classifier tests and the generated

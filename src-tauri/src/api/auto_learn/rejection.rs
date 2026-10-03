@@ -98,9 +98,14 @@ pub(super) fn is_target_window_focused(target_hwnd: usize) -> bool {
     unsafe { GetForegroundWindow().0 as usize == target_hwnd }
 }
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn is_target_window_focused(target_id: usize) -> bool {
+    target_id != 0 && crate::core::window_context::get_foreground_hwnd() == target_id
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub(super) fn is_target_window_focused(_target_hwnd: usize) -> bool {
-    true
+    false
 }
 
 fn run_rejection_monitor(
@@ -112,105 +117,97 @@ fn run_rejection_monitor(
 ) {
     let key = rejection_monitor_key(&injected_text, &target);
     let inserted = match active_monitors().lock() {
-        Ok(mut active) => active.insert(key.clone()),
+        Ok(mut active) if active.len() < 32 => active.insert(key.clone()),
         Err(_) => false,
+        _ => false,
     };
     if !inserted {
         return;
     }
 
-    tauri::async_runtime::spawn(async move {
-        let _guard = MonitorKeyGuard::new(key);
-        let prefix = target.monitor_key_prefix();
-
-        tokio::time::sleep(std::time::Duration::from_millis(BASELINE_CAPTURE_DELAY_MS)).await;
-        let mut baseline = tokio::task::spawn_blocking({
-            let text = injected_text.clone();
-            move || capture_baseline_text_any(&text)
-        })
-        .await
-        .ok()
-        .flatten();
-
-        if baseline.is_none() {
-            tokio::time::sleep(std::time::Duration::from_millis(BASELINE_RETRY_DELAY_MS)).await;
-            baseline = tokio::task::spawn_blocking({
-                let text = injected_text.clone();
-                move || capture_baseline_text_any(&text)
-            })
-            .await
-            .ok()
-            .flatten();
-        }
-
-        let Some(baseline_text) = baseline else {
-            // Text not found at capture time — either UIAutomation is unavailable,
-            // or the user deleted the output before the 250ms baseline window.
-            // Only fire if the original window is still focused; a window switch
-            // in that 750ms window would cause a false positive otherwise.
-            let should_fire = tokio::task::spawn_blocking(move || {
-                read_focused_text().is_some() && is_target_window_focused(target_hwnd)
-            })
-            .await
-            .unwrap_or(false);
-            if should_fire {
-                log::info!("{prefix}: text absent at baseline, firing rejection");
-                apply_rejection(&target, &db, &app, prefix);
-            } else {
-                log::debug!("{prefix}: anchor miss or window switched, skipping");
-            }
-            return;
-        };
-        let Some(anchor) = find_last_anchor(&baseline_text, &injected_text) else {
-            log::debug!("{prefix}: anchor not found");
-            return;
-        };
-
-        let rejection_threshold = injected_text.chars().count() / 10;
-        let baseline_char_count = baseline_text.chars().count();
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(target.window_secs());
-
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(REJECTION_POLL_MS)).await;
-
-            let current = match tokio::task::spawn_blocking(read_focused_text).await {
-                Ok(Some(t)) => t,
-                _ => continue,
+    let guard = MonitorKeyGuard::new(key);
+    // Keep native accessibility identities on one OS thread. In particular,
+    // UIA elements belong to the COM apartment that read the baseline.
+    let spawned = std::thread::Builder::new()
+        .name("auto_learn_rejection".into())
+        .spawn(move || {
+            let _guard = guard;
+            let prefix = target.monitor_key_prefix();
+            let read_anchored_baseline = || {
+                read_monitor_text(&injected_text, true).and_then(|text| {
+                    find_unique_anchor(&text.text, &injected_text).map(|anchor| (text, anchor))
+                })
             };
 
-            let rejected = match current_anchored_span(&baseline_text, &current, anchor) {
-                Some(span) => span.chars().count() <= rejection_threshold,
-                // Anchor tracking lost (edit too complex for prefix/suffix heuristic).
-                // Reject if the injected text is completely absent AND the document
-                // shrank — confirming deletion rather than a stale baseline.
-                None => {
-                    !current.contains(injected_text.as_str())
-                        && current.chars().count() < baseline_char_count
-                }
-            };
+            std::thread::sleep(std::time::Duration::from_millis(BASELINE_CAPTURE_DELAY_MS));
+            if !is_target_window_focused(target_hwnd) {
+                return;
+            }
+            let mut baseline = read_anchored_baseline();
 
-            if rejected {
-                // Guard against false positives from window switches: only fire
-                // if the original injection window is still in the foreground.
-                let still_focused =
-                    tokio::task::spawn_blocking(move || is_target_window_focused(target_hwnd))
-                        .await
-                        .unwrap_or(false);
-                if still_focused {
-                    log::info!("{prefix}: deletion detected, firing rejection");
-                    apply_rejection(&target, &db, &app, prefix);
+            if baseline.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(BASELINE_RETRY_DELAY_MS));
+                if !is_target_window_focused(target_hwnd) {
                     return;
                 }
-                log::debug!("{prefix}: rejection signal but window switched, ignoring");
+                baseline = read_anchored_baseline();
             }
-        }
-        log::debug!("{prefix}: window expired, no rejection detected");
-    });
+
+            let Some((baseline, anchor)) = baseline else {
+                // Missing text can mean focus moved to another field in the same
+                // app. Without an observed insertion there is no proof of deletion.
+                log::debug!("{prefix}: no verified baseline, skipping");
+                return;
+            };
+
+            let rejection_threshold = injected_text.chars().count() / 10;
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(target.window_secs());
+            let mut stable_gate = StableTextGate::default();
+
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(REJECTION_POLL_MS));
+                if !is_target_window_focused(target_hwnd) {
+                    stable_gate = StableTextGate::default();
+                    continue;
+                }
+                let current = match read_monitor_text(&injected_text, false) {
+                    Some(text) if baseline.identity.matches(&text.identity) => text.text,
+                    _ => {
+                        stable_gate = StableTextGate::default();
+                        continue;
+                    }
+                };
+                let Some(current) = stable_gate.observe(current) else {
+                    continue;
+                };
+
+                let rejected = match current_anchored_span(&baseline.text, current, anchor) {
+                    Some(span) => span.chars().count() <= rejection_threshold,
+                    None => false,
+                };
+
+                if rejected {
+                    // Guard against false positives from window switches: only fire
+                    // if the original injection window is still in the foreground.
+                    let still_focused = is_target_window_focused(target_hwnd);
+                    if still_focused {
+                        log::info!("{prefix}: deletion detected, firing rejection");
+                        apply_rejection(&target, &db, &app, prefix);
+                        return;
+                    }
+                    log::debug!("{prefix}: rejection signal but window switched, ignoring");
+                }
+            }
+            log::debug!("{prefix}: window expired, no rejection detected");
+        });
+    if let Err(error) = spawned {
+        log::warn!("auto-learn rejection thread failed: {error}");
+    }
 }
 
 pub fn start_rejection_monitor(

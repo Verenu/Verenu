@@ -7,7 +7,13 @@
   import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
-  import { saveSetting, type AppearanceMode } from '../../settings';
+  import {
+    saveSetting,
+    ANDROID_PILL_POSITION_OPTIONS,
+    DEFAULT_ANDROID_PILL_POSITION,
+    type AndroidPillPosition,
+    type AppearanceMode,
+  } from '../../settings';
   import { modalFocusTrap } from '../../modalFocus';
   import { MOTION_MS, MOTION_PX, modalBackdrop, modalCard, motionMs, motionPx, animateWidth } from '../../motion';
   import {
@@ -44,6 +50,28 @@
   let microphones = $state<string[]>([]);
   let selectedMic = $state('');
   let micDropdownOpen = $state(false);
+  let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
+  let coverKeyboardMic = $state(false);
+  let coverKeyboardMicError = $state(false);
+
+  async function handleCoverKeyboardMic(value: boolean) {
+    coverKeyboardMic = value;
+    try {
+      await saveSetting('android_pill_cover_keyboard_mic', value);
+    } catch (err) {
+      coverKeyboardMic = !value;
+      coverKeyboardMicError = true;
+      console.error('save android_pill_cover_keyboard_mic failed:', err);
+    }
+  }
+  let pillDropdownOpen = $state(false);
+  const defaultPillPositionLabel =
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === DEFAULT_ANDROID_PILL_POSITION)?.label ??
+    ANDROID_PILL_POSITION_OPTIONS[0]?.label ??
+    '';
+  const pillPositionLabel = $derived(
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? defaultPillPositionLabel,
+  );
   const microphoneCopy = {
     inputDeviceLabel: 'Input device',
     inputDeviceDescription: 'Choose which microphone Verenu should record from',
@@ -62,6 +90,7 @@
   const HOTKEY_ERROR_MS   = 900;
   const LANGUAGE_MENU_ID = 'spoken-language-menu';
   const MIC_MENU_ID = 'microphone-menu';
+  const PILL_MENU_ID = 'pill-position-menu';
   let keybindEl: HTMLElement | null = $state(null);
   let capturedWidth = 0;
   let segmentEl: HTMLElement | null = $state(null);
@@ -170,6 +199,8 @@
       invoke<string[]>('get_microphones'),
       invoke<string | null>('get_setting', { key: 'microphone_device' }),
       invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
+      invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
+      invoke<boolean | null>('get_setting', { key: 'android_pill_cover_keyboard_mic' }),
     ]);
 
     const val = <T>(i: number, fallback: T): T =>
@@ -197,6 +228,12 @@
     microphones = val<string[]>(7, []);
     selectedMic = val<string | null>(8, null) ?? '';
     appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
+    const savedPillPosition = val<AndroidPillPosition | null>(10, null);
+    if (savedPillPosition && ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === savedPillPosition)) {
+      pillPosition = savedPillPosition;
+    }
+
+    coverKeyboardMic = val<boolean | null>(11, null) ?? false;
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
@@ -206,7 +243,18 @@
   function handleWindowClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
     if (micDropdownOpen && !target.closest('.mic-dropdown')) micDropdownOpen = false;
+    if (pillDropdownOpen && !target.closest('.pill-dropdown')) pillDropdownOpen = false;
     if (languageDropdownOpen && !target.closest('.language-dropdown')) languageDropdownOpen = false;
+  }
+
+  async function savePillPosition(position: AndroidPillPosition) {
+    pillPosition = position;
+    pillDropdownOpen = false;
+    try {
+      await saveSetting('android_pill_position', position);
+    } catch (err) {
+      console.error('savePillPosition failed:', err);
+    }
   }
 
   async function saveMic(name: string) {
@@ -578,6 +626,50 @@
   <div class="setting-row" data-setting-target="general-hotkey">
     <div><div class="label">Dictation control</div><div class="desc">Open a text field and use the Verenu pill above your keyboard.</div></div>
     <span class="badge key-badge">Keyboard pill</span>
+  </div>
+  <div class="setting-row" data-setting-target="general-pill-position">
+    <div>
+      <div class="label">Pill position</div>
+      <div class="desc">Where the dictation pill appears. It follows the keyboard, and docks to the screen edge while a dictation continues without it.</div>
+    </div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="ui-dropdown pill-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
+      <button
+        class="btn-ghost ui-dropdown-trigger mic-btn"
+        onclick={() => (pillDropdownOpen = !pillDropdownOpen)}
+        aria-haspopup="true"
+        aria-expanded={pillDropdownOpen}
+        aria-controls={PILL_MENU_ID}
+        aria-label="Pill position"
+      >
+        <span class="mic-btn-label">{pillPositionLabel}</span>
+        <svg class:open={pillDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      {#if pillDropdownOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
+          id={PILL_MENU_ID}
+          class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          aria-label="Pill position options"
+          onclick={(e) => e.stopPropagation()}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
+          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+        >
+          {#each ANDROID_PILL_POSITION_OPTIONS as option}
+            <button class="ui-dropdown-option mic-item" class:active={pillPosition === option.id} onclick={() => savePillPosition(option.id)}>{option.label}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
+  <div class="setting-row" data-setting-target="general-cover-keyboard-mic">
+    <div>
+      <div class="label">Cover the keyboard's mic button</div>
+      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button, and hides while you're offline so the keyboard's own voice typing stays usable. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
+    </div>
+    <Toggle checked={coverKeyboardMic} onchange={handleCoverKeyboardMic} label="Cover the keyboard's mic button" bind:error={coverKeyboardMicError} />
   </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">

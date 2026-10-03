@@ -72,7 +72,7 @@
 	.mobile-nav {
 		display: flex;
 		gap: 2px;
-		padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+		padding: 4px 6px calc(4px + var(--safe-bottom, 0px));
 		padding-left: calc(8px + env(safe-area-inset-left, 0px));
 		padding-right: calc(8px + env(safe-area-inset-right, 0px));
 		background: var(--sidebar-bg);

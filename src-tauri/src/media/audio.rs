@@ -30,9 +30,22 @@ fn finite_sample_or_zero(v: f32) -> f32 {
 
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
-    host.input_devices()
+    let names: Vec<String> = host
+        .input_devices()
         .map(|iter| iter.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Android reports every input endpoint (built-in mic, telephony, bus, …)
+    // under the same product name, and devices are selected by name, so the
+    // duplicates are indistinguishable and only clutter the picker.
+    #[cfg(target_os = "android")]
+    let names = {
+        let mut seen = std::collections::HashSet::new();
+        names
+            .into_iter()
+            .filter(|name| seen.insert(name.clone()))
+            .collect::<Vec<_>>()
+    };
+    names
 }
 
 /// WirePlumber can remember an output-only profile for a card that Verenu has

@@ -178,7 +178,10 @@
   });
 
   function requiredModelsInstalled(target: PresetTarget): boolean {
-    return target.requiredLocalModels.every((model) => installedLocal[model.task]?.includes(model.id) ?? false);
+    return target.requiredLocalModels.every((model) =>
+      (installedLocal[model.task]?.includes(model.id) ?? false)
+      && (model.task !== 'cleanup' || localLlmStore.runtime.installed),
+    );
   }
 
   function clearPendingPreset() {
@@ -219,7 +222,8 @@
     if (!target) return;
 
     const missing = target.requiredLocalModels.filter(
-      (model) => !installedLocal[model.task]?.includes(model.id),
+      (model) => !installedLocal[model.task]?.includes(model.id)
+        || (model.task === 'cleanup' && !localLlmStore.runtime.installed),
     );
     if (missing.length > 0) {
       // Kick off the downloads and defer activation until they land (see the
@@ -269,6 +273,7 @@
   }
 
   function isExpectedModelDownloading(model: RequiredLocalModel): boolean {
+    if (model.task === 'cleanup' && localLlmStore.runtime.is_downloading) return true;
     if (downloadingLocal[model.task] === model.id) return true;
     if (model.task === 'transcription') {
       return localSttStore.models.some((entry) => entry.id === model.id && entry.is_downloading);
