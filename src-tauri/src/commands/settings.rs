@@ -28,6 +28,7 @@ enum SettingKind {
     AppearanceMode,
     AccentColor,
     CustomTheme,
+    AndroidPillPosition,
     Bool,
     MicGain,
     SoundEffectsVolume,
@@ -183,6 +184,18 @@ const SETTING_SPECS: &[SettingSpec] = &[
     ),
     setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
     setting_spec(store::CUSTOM_THEME, SettingKind::CustomTheme, true, true),
+    setting_spec(
+        store::ANDROID_PILL_POSITION,
+        SettingKind::AndroidPillPosition,
+        true,
+        true,
+    ),
+    setting_spec(
+        store::ANDROID_PILL_COVER_KEYBOARD_MIC,
+        SettingKind::Bool,
+        true,
+        true,
+    ),
     setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
     setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
     setting_spec(store::DEV_MODE_ON_STARTUP, SettingKind::Bool, true, true),
@@ -401,6 +414,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::AppearanceMode => value
             .as_str()
             .is_some_and(|v| matches!(v, "system" | "light" | "dark" | "omarchy" | "custom")),
+        SettingKind::AndroidPillPosition => value
+            .as_str()
+            .is_some_and(|v| crate::android::ANDROID_PILL_POSITIONS.contains(&v)),
         SettingKind::AccentColor => {
             value.is_null()
                 || value
@@ -479,6 +495,19 @@ mod setting_key_tests {
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(100)).is_ok());
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(-1)).is_err());
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(101)).is_err());
+    }
+
+    #[test]
+    fn android_pill_position_accepts_only_known_placements() {
+        for position in crate::android::ANDROID_PILL_POSITIONS {
+            assert!(
+                validate_setting(store::ANDROID_PILL_POSITION, &serde_json::json!(position)).is_ok()
+            );
+        }
+        assert!(
+            validate_setting(store::ANDROID_PILL_POSITION, &serde_json::json!("floating")).is_err()
+        );
+        assert!(validate_setting(store::ANDROID_PILL_POSITION, &serde_json::Value::Null).is_err());
     }
 
     #[test]
@@ -683,6 +712,8 @@ pub struct AllSettings {
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
+    pub android_pill_position: Option<String>,
+    pub android_pill_cover_keyboard_mic: Option<bool>,
     pub cleanup_prompt_override: Option<String>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
@@ -764,6 +795,8 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         accent_color: str_val(store::ACCENT_COLOR),
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
+        android_pill_position: str_val(store::ANDROID_PILL_POSITION),
+        android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })

@@ -54,10 +54,10 @@ untouched.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
   inserting, plus error (retry) and cancelled. Live waveform comes from the
   bridge `audioLevel` polls.
-- Position is top-anchored below the status bar on purpose: keyboard height is
-  not queryable from a service on every supported API, so a bottom-anchored
-  pill would occlude the field or the IME somewhere. Top placement is
-  deterministic on API 26–34 and never fights either.
+- Position is anchored just above the keyboard, using the bounds of the IME
+  window from the accessibility window list (re-checked while the keyboard is
+  up, so height changes follow). With no IME window to measure it falls back
+  to the top of the screen below the status bar / camera cutout.
 
 ## Permissions
 
@@ -140,6 +140,28 @@ are the truth.
 
 Minimum SDK is 26 (Android 8.0); target is 36. ARM64 (`arm64-v8a`) first;
 x86_64 for emulators.
+
+## Testing on an emulator
+
+An x86_64 API 34+ AVD is enough for the full dictation path:
+
+```bash
+node scripts/android-sync.mjs            # after `npm run build`
+npx tauri android build --debug --target x86_64 --apk
+adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+adb shell pm grant com.verenu.app android.permission.RECORD_AUDIO
+adb shell settings put secure enabled_accessibility_services \
+  com.verenu.app/com.verenu.app.VerenuAccessibilityService
+```
+
+Enter a provider key under Settings → API Keys (it goes straight into the
+Android Keystore). To feed speech to the emulated microphone, start the
+emulator with `-grpc 8554` and stream PCM to the emulator controller's
+`injectAudio` RPC (16 kHz mono S16 works); host-audio passthrough is
+unreliable. Open any text field (for example
+`adb shell am start -a android.intent.action.INSERT -t vnd.android.cursor.dir/contact`),
+tap the pill, inject audio, then tap Stop. `adb shell setprop log.tag.VerenuA11y DEBUG`
+turns on the accessibility service's event log (event types only, never text).
 
 ## Testing
 

@@ -174,13 +174,30 @@ function mergeManifest() {
     const s = snippet.indexOf(start);
     const e = snippet.indexOf(end);
     if (s === -1 || e === -1) fail(`snippet block missing: ${start}`);
-    const block = snippet.slice(s, e + end.length);
-    if (manifest.includes(start)) {
+    let block = snippet.slice(s, e + end.length);
+    const existingStart = manifest.indexOf(start);
+    const existingEnd = manifest.indexOf(end);
+    let baseManifest = manifest;
+    if (existingStart !== -1) {
+      if (existingEnd < existingStart) fail(`generated manifest has unbalanced verenu markers near: ${start}`);
+      // Exclude our previous merged block while comparing against permissions
+      // supplied by the generated Tauri template. This keeps repeated syncs
+      // idempotent without duplicating a permission such as INTERNET.
+      baseManifest = manifest.slice(0, existingStart) + manifest.slice(existingEnd + end.length);
+    }
+    if (start.includes('permissions')) {
+      const basePermissions = new Set(
+        [...baseManifest.matchAll(/<uses-permission\b[^>]*android:name="([^"]+)"[^>]*\/>/g)]
+          .map((match) => match[1]),
+      );
+      block = block.replace(
+        /^[ \t]*<uses-permission\b[^>]*android:name="([^"]+)"[^>]*\/>[ \t]*\r?$/gm,
+        (line, name) => basePermissions.has(name) ? '' : line,
+      );
+    }
+    if (existingStart !== -1) {
       // Replace the previously merged block in place (idempotent).
-      const ms = manifest.indexOf(start);
-      const me = manifest.indexOf(end);
-      if (me === -1) fail(`generated manifest has unbalanced verenu markers near: ${start}`);
-      manifest = manifest.slice(0, ms) + block + manifest.slice(me + end.length);
+      manifest = manifest.slice(0, existingStart) + block + manifest.slice(existingEnd + end.length);
       continue;
     }
     if (start.includes('permissions')) {
@@ -314,6 +331,7 @@ if (initOnly) process.exit(0);
 
 syncWebAssets();
 copyTree(join(androidSrc, 'kotlin'), javaSourceDir());
+copyTree(join(androidSrc, 'tests'), join(genAndroid, 'app', 'src', 'test', 'java'));
 copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'));
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');

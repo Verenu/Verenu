@@ -136,7 +136,7 @@
   );
   // Compact Android windows collapse the desktop rail to the bottom bar.
   // Desktop keeps its rail at every width.
-  const compactNav = $derived(isAndroid && viewport.widthClass === 'compact');
+  const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
 
   // Error toast
   let errorToast = $state('');
@@ -458,8 +458,31 @@
       (snapshot) => { viewport = snapshot; },
     );
 
+    // The WebView draws under the system navigation/gesture bar on most
+    // devices but CSS env() reports no inset for it. MainActivity exposes how
+    // far the WebView actually overlaps the bar (0 where the viewport already
+    // excludes it), and the shell pads by that amount.
+    let stopInsets = () => {};
+    if (isAndroid) {
+      const applyInsets = () => {
+        const px = Number((window as any).VerenuInsets?.bottomInsetCssPx?.());
+        document.documentElement.style.setProperty(
+          '--android-safe-bottom',
+          `${Number.isFinite(px) ? Math.max(0, px) : 0}px`,
+        );
+      };
+      applyInsets();
+      const timers = [150, 600, 1500].map((ms) => window.setTimeout(applyInsets, ms));
+      window.addEventListener('resize', applyInsets);
+      stopInsets = () => {
+        timers.forEach((t) => window.clearTimeout(t));
+        window.removeEventListener('resize', applyInsets);
+      };
+    }
+
     return () => {
       mounted = false;
+      stopInsets();
       if (cleanupFn) cleanupFn();
       if (stopNotificationClickListener) stopNotificationClickListener();
       if (stopConnectivityRecheckListener) stopConnectivityRecheckListener();
@@ -688,12 +711,14 @@
     --mobile-nav-h: calc(60px + var(--safe-bottom));
   }
 
-  /* MainActivity applies the real Android WindowInsets to the WebView content
-     root. Do not add the WebView's CSS env() values again on Android, since
-     some devices expose them inconsistently and would otherwise double-pad. */
+  /* MainActivity applies the top/side WindowInsets to the WebView content root,
+     and reports only the part of the navigation bar the WebView really draws
+     under (--android-safe-bottom). Do not add the WebView's CSS env() values
+     again on Android, since some devices expose them inconsistently and would
+     otherwise double-pad. */
   .app[data-android='true'] {
     --safe-top: 0px;
-    --safe-bottom: 0px;
+    --safe-bottom: var(--android-safe-bottom, 0px);
     --safe-left: 0px;
     --safe-right: 0px;
   }
@@ -716,16 +741,16 @@
 
   /* Compact windows (phones, narrow foldables, snapped split-screen):
      tighten page rhythm and keep the gesture bar clear of content. */
-  .app[data-width-class='compact'] {
+  .app[data-compact-nav='true'] {
     --page-pad-x: 16px;
     --page-pad-y: 16px;
   }
 
-  .app[data-width-class='compact'] .content {
+  .app[data-compact-nav='true'] .content {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
-  .app[data-width-class='compact'] .page-wrapper {
+  .app[data-compact-nav='true'] .page-wrapper {
     padding-right: 0;
   }
 

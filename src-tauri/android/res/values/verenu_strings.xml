@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Verenu string resources. Installed by scripts/android-sync.mjs. -->
+<resources>
+    <string name="verenu_accessibility_desc">Shows the Verenu dictation pill above your keyboard and inserts dictated text into the focused field. Only runs while the keyboard is open.</string>
+    <string name="verenu_dictation_channel">Dictation</string>
+    <string name="verenu_dictation_channel_desc">Shows while Verenu is recording so you can see — and stop — a dictation from anywhere.</string>
+    <string name="verenu_recording_title">Verenu is recording</string>
+    <string name="verenu_recording_text">Tap Stop in the pill or here to finish dictating.</string>
+    <string name="verenu_action_stop">Stop</string>
+    <string name="verenu_action_cancel">Cancel</string>
+</resources>
