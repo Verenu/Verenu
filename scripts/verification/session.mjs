@@ -5,6 +5,13 @@ import { spawn } from 'node:child_process';
 import { root, sourceIdentity } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
+export function ownedSessionStartupState(manifest, launcherPid) {
+  if (!manifest || manifest.launcherPid !== launcherPid) return null;
+  if (manifest.status === 'ready') return 'ready';
+  if (manifest.status === 'starting') return 'starting';
+  return 'stopped';
+}
+
 export async function startOwnedSession({ id, fixtures, native = false, directory, synthetic = true }) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(id)) {
     throw new TypeError('startOwnedSession requires a valid session ID');
@@ -39,9 +46,11 @@ export async function startOwnedSession({ id, fixtures, native = false, director
     const deadline = Date.now() + 900_000;
     while (Date.now() < deadline) {
       if (childError || child.exitCode !== null || child.signalCode !== null) throw new Error('Owned session failed to start; inspect its private startup log');
-      try {
-        const manifest = JSON.parse(await fs.readFile(path.join(sessionDirectory, 'session.json'), 'utf8'));
-        if (manifest.status === 'ready' && manifest.launcherPid === child.pid) {
+      const manifest = await fs.readFile(path.join(sessionDirectory, 'session.json'), 'utf8').then(JSON.parse).catch(() => null);
+      const state = ownedSessionStartupState(manifest, child.pid);
+      if (state === 'stopped') throw new Error('Owned session stopped before ready; inspect its private startup log');
+      if (state === 'ready') {
+        try {
           const accessFile = path.join(sessionDirectory, 'access.json');
           const access = JSON.parse(await fs.readFile(accessFile, 'utf8'));
           const response = await fetch(new URL('/__verenu_dev/session', access.localAccessUrl), { headers: { Authorization: `Bearer ${access.token}` }, signal: AbortSignal.timeout(5000) });
@@ -50,9 +59,9 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const identity = sourceIdentity();
           if (metadata.fingerprint !== identity.fingerprint || metadata.worktree !== identity.worktree) throw new Error('Rust backend does not match current source');
           return { child, stop, directory: sessionDirectory, accessFile, access, metadata, identity };
+        } catch (error) {
+          if (error.message === 'Rust backend does not match current source') throw error;
         }
-      } catch (error) {
-        if (error.message === 'Rust backend does not match current source') throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }

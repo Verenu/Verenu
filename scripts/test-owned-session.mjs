@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
+import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { run } from './verification/process.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
 
@@ -49,8 +50,8 @@ try {
   await invokeSession(session, 'delete_context', { contextId: context.id });
   report.checks.push({ name: 'Context and settings survive real backend restart', status: 'passed' });
   report.status = report.checks.some((row) => row.status === 'failed') ? 'failed' : 'verified';
-  if (args.includes('--live') && report.checks.some((row) => row.status === 'skipped')) report.status = 'incomplete';
-  if (sourceIdentity().fingerprint !== identity.fingerprint) { report.status = 'incomplete'; report.reason = 'Source changed during verification'; }
+  if (args.includes('--live') && report.checks.some((row) => row.status === 'skipped')) report.status = incompleteUnlessFailed(report.status);
+  if (sourceIdentity().fingerprint !== identity.fingerprint) { report.status = incompleteUnlessFailed(report.status); report.reason = 'Source changed during verification'; }
 } catch (error) {
   report.status = 'failed'; report.reason = error.message;
 } finally {
