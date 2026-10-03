@@ -33,9 +33,17 @@ async function execute(argv, cwd, log) {
       const child = spawn(argv[0], argv.slice(1), { cwd, stdio: ['ignore', output.fd, output.fd], detached: process.platform !== 'win32' });
       let forceTimer;
       let timedOut = false;
+      let settled = false;
       const timer = setTimeout(() => { timedOut = true; stopOwned(child); forceTimer = setTimeout(() => stopOwned(child, 'SIGKILL'), 5000); }, timeout);
-      child.once('error', () => { clearTimeout(timer); clearTimeout(forceTimer); resolve({ code: null, durationMs: Date.now() - started }); });
-      child.once('exit', (code) => { clearTimeout(timer); clearTimeout(forceTimer); resolve({ code: timedOut ? null : code, durationMs: Date.now() - started, timedOut }); });
+      const finish = (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(forceTimer);
+        resolve({ code: timedOut ? null : code, durationMs: Date.now() - started, timedOut });
+      };
+      child.once('error', () => finish(null));
+      child.once('close', (code) => finish(code));
     });
   } finally { await output.close(); }
 }
