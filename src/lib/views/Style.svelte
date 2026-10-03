@@ -5,6 +5,9 @@
   import { expoOut } from 'svelte/easing';
   import { saveSetting, type CleanupIntensity, type ToneId } from '../settings';
   import { appStore } from '../stores';
+  import { openCleanupPromptEditor } from '../stores.svelte';
+  import { splitModelId } from '../components/settings/models';
+  import { formatIpcError } from '../errors';
   import { MOTION_MS, MOTION_PX, STYLE_TAB_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from '../motion';
 
   const [send, receive] = crossfade({
@@ -17,6 +20,18 @@
   let mountedTabs = $state<Record<string, boolean>>({});
   let intensity = $state('medium');
   let tone = $state('casual');
+  let editorError = $state('');
+
+  async function editStyle(id: string, event: MouseEvent) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    editorError = '';
+    try {
+      const modelId = await invoke<string | null>('get_setting', { key: 'cleanup_default_model' });
+      const target = splitModelId(modelId ?? 'groq/openai/gpt-oss-20b');
+      if (!target) throw new Error('Choose a cleanup model in Settings first.');
+      openCleanupPromptEditor(target.provider, target.model, rect, id as 'light' | 'medium' | 'high');
+    } catch (error) { editorError = formatIpcError(error, 'Could not open the prompt editor'); }
+  }
 
   const tabs = [
     { id: 'cleanup', label: 'Cleanup', pill: '' },
@@ -103,6 +118,7 @@
 <div class="content-inner">
   <h1 class="page-h">Style</h1>
   <p class="page-sub">How Verenu shapes your dictation.</p>
+  {#if editorError}<p role="alert">{editorError}</p>{/if}
 
   {#if !appStore.cleanupEnabled}
     <div class="cleanup-off-banner">
@@ -155,6 +171,7 @@
             <p class="style-intro">Cleanup runs after transcription unless it is turned Off. <span>Choose how much rewriting Verenu does.</span></p>
             <div class="style-grid four">
               {#each cleanupCards as c}
+                <div class="style-card-wrap">
                 <button
                   type="button"
                   class="style-card"
@@ -167,6 +184,12 @@
                   <span class="desc">{c.desc}</span>
                   <span class="style-sample">"{c.sample}"</span>
                 </button>
+                {#if c.id !== 'none'}
+                  <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
+                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
+                  </button>
+                {/if}
+                </div>
               {/each}
             </div>
           {:else if tab === 'personal'}
@@ -198,6 +221,7 @@
         <p class="style-intro">Cleanup runs after transcription unless it is turned Off. <span>Choose how much rewriting Verenu does.</span></p>
         <div class="style-grid four">
           {#each cleanupCards as c}
+            <div class="style-card-wrap">
             <button
               type="button"
               class="style-card"
@@ -210,6 +234,12 @@
               <span class="desc">{c.desc}</span>
               <span class="style-sample">"{c.sample}"</span>
             </button>
+            {#if c.id !== 'none'}
+              <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
+              </button>
+            {/if}
+            </div>
           {/each}
         </div>
       </section>
@@ -241,6 +271,11 @@
 </div>
 
 <style>
+  .style-card-wrap { position: relative; display: flex; }
+  .style-card-wrap .style-card-title { padding-right: 30px; }
+  .style-edit { position: absolute; top: 7px; right: 7px; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out); padding: 7px; }
+  .style-card-wrap:hover .style-edit, .style-card-wrap:focus-within .style-edit { opacity: 1; }
+  @media (hover: none) { .style-edit { opacity: 1; } }
   .content-inner {
     width: min(100%, var(--page-max));
     margin-inline: auto;

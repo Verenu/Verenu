@@ -220,12 +220,14 @@ export const cleanupPromptStore = $state<{ override: string }>({ override: '' })
 
 export const cleanupPromptEditor = $state<{
   open: boolean;
+  intensity: 'light' | 'medium' | 'high' | null;
   /** The model the editor tests the prompt against — not what it saves under. */
   provider: ProviderId | null;
   model: string | null;
   origin: { x: number; y: number } | null;
 }>({
   open: false,
+  intensity: null,
   provider: null,
   model: null,
   origin: null,
@@ -234,8 +236,10 @@ export const cleanupPromptEditor = $state<{
 export function openCleanupPromptEditor(
   provider: ProviderId,
   model: string,
-  triggerRect: DOMRect
+  triggerRect: DOMRect,
+  intensity: 'light' | 'medium' | 'high' | null = null
 ) {
+  cleanupPromptEditor.intensity = intensity;
   cleanupPromptEditor.provider = provider;
   cleanupPromptEditor.model = model;
   cleanupPromptEditor.origin = {

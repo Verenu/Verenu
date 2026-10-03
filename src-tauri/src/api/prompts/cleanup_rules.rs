@@ -17,7 +17,7 @@ pub(super) fn formatting_rules(intensity: &str) -> &'static str {
     }
 }
 
-fn intensity_rules(intensity: &str) -> &'static str {
+pub(super) fn intensity_rules(intensity: &str) -> &'static str {
     match intensity {
         "none" => {
             "Cleanup: Off. If two transcripts must be reconciled, preserve raw speech, including fillers and repetition, while choosing only better-supported candidate wording. Otherwise bypass cleanup."
@@ -153,6 +153,13 @@ pub(super) fn render_cleanup_template(
     // interpreted as another template token.
     let placeholders = [
         ("{{ cleanup_preset }}", cleanup_preset),
+        (
+            "{{ cleanup_tone }}",
+            cleanup_preset
+                .split_once('\n')
+                .map(|(_, tone)| tone)
+                .unwrap_or(cleanup_preset),
+        ),
         ("{{ formatting_rules }}", formatting_rules),
         ("{{ snippet_overrides }}", snippet_overrides),
         ("{{ evidence }}", evidence),

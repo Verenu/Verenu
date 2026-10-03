@@ -26,6 +26,7 @@
     '{{ cleanup_preset }}',
     '{{ formatting_rules }}',
     '{{ snippet_overrides }}',
+    '{{ evidence }}',
   ];
 
   interface PromptTestCaseResult {
@@ -54,6 +55,9 @@
   let loading = $state(false);
   let testState = $state<TestStatus>({ status: 'idle' });
   let liveWarnings = $state<string[]>([]);
+  let stylePrompts: Partial<Record<'light' | 'medium' | 'high', string>> = {};
+  const intensity = cleanupPromptEditor.intensity;
+  const styleName = intensity === 'high' ? 'Strong' : intensity === 'light' ? 'Light' : 'Medium';
 
   let isMounted = true;
   let lintTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -110,10 +114,14 @@
   // it exists, unless the user has already moved inside the dialog.
   $effect(() => {
     if (!cleanupPromptEditor.open || loading) return;
-    const textarea = modalEl?.querySelector<HTMLElement>('textarea');
+    const textarea = modalEl?.querySelector<HTMLTextAreaElement>('textarea');
     if (!textarea) return;
     const active = document.activeElement;
-    if (active === modalEl || active === document.body) textarea.focus();
+    if (active === modalEl || active === document.body || active === textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(0, 0);
+      textarea.scrollTop = 0;
+    }
   });
 
   async function loadDraft() {
@@ -123,10 +131,18 @@
     testState = { status: 'idle' };
     liveWarnings = [];
     try {
-      const def = await invoke<string>('get_default_cleanup_prompt');
+      const def = await invoke<string>('get_default_cleanup_prompt', { intensity });
       if (!isMounted) return;
       defaultText = def;
-      const saved = cleanupPromptStore.override.trim();
+      if (intensity) stylePrompts = await invoke<typeof stylePrompts>('get_setting', { key: 'cleanup_style_prompts' }) ?? {};
+      let saved = (intensity ? stylePrompts[intensity] ?? '' : cleanupPromptStore.override).trim();
+      if (intensity && !(intensity in stylePrompts)) {
+        const [advanced, shared] = await Promise.all([
+          invoke<boolean | null>('get_setting', { key: 'advanced_model_ui' }),
+          invoke<string | null>('get_setting', { key: 'cleanup_prompt_override' }),
+        ]);
+        if (advanced && shared?.trim()) saved = shared.trim();
+      }
       const text = saved || def;
       draft = text;
       runLint(text);
@@ -142,7 +158,7 @@
     lintTimeout = setTimeout(async () => {
       try {
         const warnings = await invoke<string[]>('lint_cleanup_prompt', { template: text });
-        if (isMounted) liveWarnings = warnings;
+        if (isMounted && draft === text) liveWarnings = warnings;
       } catch {
         // lint errors are non-critical
       }
@@ -158,14 +174,25 @@
   }
 
   /** Matching the default is how you clear the override, not a value to store. */
-  function applyOverride(text: string) {
-    cleanupPromptStore.override = text.trim() === defaultText.trim() ? '' : text;
+  async function persistDraft() {
+    const override = draft.trim() === defaultText.trim() ? '' : draft;
+    if (intensity) {
+      const next = { ...stylePrompts, [intensity]: override };
+      await saveSetting('cleanup_style_prompts', next);
+      stylePrompts = next;
+    } else {
+      await saveSetting('cleanup_prompt_override', override);
+      cleanupPromptStore.override = override;
+    }
   }
 
   async function handleSave(force = false) {
     if (force) {
-      applyOverride(draft);
-      await saveSetting('cleanup_prompt_override', cleanupPromptStore.override);
+      testState = { status: 'testing' };
+      try { await persistDraft(); } catch (err) {
+        testState = { status: 'failed', error: formatIpcError(err, 'Could not save this cleanup prompt') };
+        return;
+      }
       if (!isMounted) return;
       testState = { status: 'passed' };
       setTimeout(() => { if (isMounted) closeCleanupPromptEditor(); }, 500);
@@ -178,11 +205,11 @@
         provider,
         model,
         template: draft,
+        intensity,
       });
       if (!isMounted) return;
       if (report.passed) {
-        applyOverride(draft);
-        await saveSetting('cleanup_prompt_override', cleanupPromptStore.override);
+        await persistDraft();
         if (!isMounted) return;
         testState = { status: 'passed' };
         setTimeout(() => { if (isMounted) closeCleanupPromptEditor(); }, 600);
@@ -265,7 +292,7 @@
     }}
     role="dialog"
     aria-modal="true"
-    aria-label="Edit cleanup prompt"
+    aria-label={intensity ? `Edit ${styleName} cleanup prompt` : 'Edit cleanup prompt'}
     tabindex="-1"
     onkeydown={onKeydown}
     in:expandFromOrigin={{ origin, duration: 240 }}
@@ -281,8 +308,8 @@
     <!-- Header bar — paper bg like settings sidebar -->
     <div class="prompt-head">
       <div class="prompt-head-info">
-        <span class="prompt-head-provider">Cleanup prompt</span>
-        <span class="prompt-head-model">used by every model · tested on {testedAgainst}</span>
+        <span class="prompt-head-provider">{intensity ? `${styleName} cleanup prompt` : 'Cleanup prompt'}</span>
+        <span class="prompt-head-model">{intensity ? 'Overrides the shared prompt for this style' : 'Used by every model'} · audited on {testedAgainst}</span>
       </div>
       <div class="prompt-head-actions">
         {#if statusKind() !== 'clean'}
@@ -304,9 +331,9 @@
         <button
           class="prompt-btn"
           type="button"
-          disabled={loading || testState.status === 'testing'}
+          disabled={loading || testState.status === 'testing' || !draft.trim() || draft.length > 20000}
           onclick={() => handleSave(false)}
-        >{testState.status === 'testing' ? 'Testing…' : 'Save'}</button>
+        >{testState.status === 'testing' ? 'Auditing…' : 'Audit & save'}</button>
       </div>
     </div>
 
@@ -334,7 +361,7 @@
     <!-- Tags -->
     <div class="prompt-tags-row">
       {#each CLEANUP_PROMPT_TAGS as tag}
-        <span class="prompt-tag">{tag}</span>
+        <span class="prompt-tag">{intensity && !draft.includes('{{ cleanup_preset }}') && tag === '{{ cleanup_preset }}' ? '{{ cleanup_tone }}' : tag}</span>
       {/each}
     </div>
 
@@ -349,6 +376,7 @@
           value={draft}
           oninput={onInput}
           spellcheck={false}
+          maxlength={20000}
           disabled={testState.status === 'testing'}
           aria-label="Cleanup prompt template"
         ></textarea>
@@ -563,7 +591,8 @@
     padding: 8px 16px 10px;
     font-family: var(--sans);
     font-size: 12px;
-    overflow: hidden;
+    overflow: auto;
+    max-height: 40%;
     border-bottom: 1px solid transparent;
   }
   .prompt-result--fail {
@@ -640,4 +669,11 @@
   }
   .prompt-textarea:focus { outline: none; border-color: var(--accent); }
   .prompt-textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  @media (max-width: 600px) {
+    .prompt-head { flex-direction: column; align-items: flex-start; }
+    .prompt-head-info { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .prompt-head-model { white-space: normal; }
+    .prompt-head-actions { flex-wrap: wrap; }
+  }
 </style>

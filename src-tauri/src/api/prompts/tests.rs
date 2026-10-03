@@ -10,6 +10,29 @@ use super::{
 };
 use crate::data::{db, dictionary};
 
+#[test]
+fn style_templates_keep_dynamic_tone_and_context() {
+    for (intensity, label) in [("light", "Light"), ("medium", "Medium"), ("high", "Strong")] {
+        let template = super::default_style_template(intensity);
+        assert!(lint_cleanup_template(&template).is_empty());
+        let rendered = get_cleanup_prompt_with_alternate_and_evidence("groq", "test", "formal", intensity, "Use bullets", "Mira", Some("Editor"), "hello", Some(&template), None);
+        assert!(rendered.contains(&format!("Cleanup: {label}")));
+        assert!(rendered.contains("Tone: Formal"));
+        assert!(rendered.contains("Mira"));
+        assert!(rendered.contains("Editor"));
+        assert!(rendered.contains("Use bullets"));
+        assert!(!rendered.contains("{{"));
+    }
+}
+
+#[test]
+fn style_prompt_lint_catches_broken_tags() {
+    let default = super::default_style_template("light");
+    for tag in ["{{ unknown }}", "{{cleanup_tone}}", "{{ unclosed"] {
+        assert!(!lint_cleanup_template(&format!("{default}\n{tag}")).is_empty());
+    }
+}
+
 fn prompt(profile: &str, intensity: &str, input: &str) -> String {
     get_cleanup_prompt_with_alternate_and_evidence(
         "groq",

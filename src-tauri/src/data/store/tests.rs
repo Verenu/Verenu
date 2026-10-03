@@ -468,6 +468,29 @@ fn setting_audit_cleanup_override_gated_by_advanced_ui() {
     assert_eq!(blank.cleanup_override(), None);
 }
 
+#[test]
+fn style_prompt_override_follows_effective_intensity_without_advanced_ui() {
+    let store = SettingsSnapshot::from_pairs([(
+        CLEANUP_STYLE_PROMPTS.to_string(), serde_json::json!({"light": "Light custom", "high": "Strong custom"}),
+    )]);
+    let mut cfg = load_pipeline_config(&store);
+    cfg.advanced_model_ui = false;
+    cfg.cleanup_intensity = "light".into();
+    assert_eq!(cfg.cleanup_override(), Some("Light custom"));
+    cfg.cleanup_intensity = "high".into();
+    assert_eq!(cfg.cleanup_override(), Some("Strong custom"));
+    cfg.cleanup_intensity = "medium".into();
+    assert_eq!(cfg.cleanup_override(), None);
+    cfg.cleanup_intensity = "none".into();
+    assert_eq!(cfg.cleanup_override(), None);
+    cfg.advanced_model_ui = true;
+    cfg.cleanup_prompt_override = "Shared custom".into();
+    cfg.cleanup_intensity = "medium".into();
+    assert_eq!(cfg.cleanup_override(), Some("Shared custom"));
+    cfg.cleanup_style_prompts.insert("medium".into(), String::new());
+    assert_eq!(cfg.cleanup_override(), None);
+}
+
 /// An edit saved under the retired per-model map still applies after the
 /// upgrade — losing a hand-written prompt to a schema change is not acceptable.
 #[test]
