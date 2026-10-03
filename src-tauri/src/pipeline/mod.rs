@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::api::{auto_learn, cleanup, prompts, transcription, ProviderId};
+use crate::api::{auto_learn, cleanup, prompts, transcription};
 use crate::core::{browser_probe, injection, window_context};
 use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
@@ -258,6 +258,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
             &app,
             &captured_audio,
             &provider_id,
+            &cfg.custom_providers,
             if key.is_empty() {
                 None
             } else {
@@ -383,7 +384,6 @@ async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
         }
     }
 }
-
 
 /// Concatenates a previous (interrupted) dictation's audio onto a freshly
 /// captured one — both are already resampled to the fixed 16kHz mono target,

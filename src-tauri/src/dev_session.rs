@@ -385,6 +385,7 @@ fn allowed(command: &str) -> bool {
             | "get_all_settings"
             | "get_setting"
             | "save_setting"
+            | "delete_custom_provider"
             | "get_api_key_status"
             | "list_provider_models"
             | "get_recent"

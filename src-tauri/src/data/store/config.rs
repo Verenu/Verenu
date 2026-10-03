@@ -22,6 +22,10 @@ pub struct PipelineConfig {
     pub key_assemblyai: String,
     pub key_openrouter: String,
     pub key_xai: String,
+    /// User-defined providers and their keys. A custom id with no key here
+    /// resolves to an empty key, never to a built-in provider's key.
+    pub custom_providers: Vec<crate::api::custom::CustomProvider>,
+    pub custom_keys: std::collections::HashMap<String, String>,
     pub default_tone: String,
     pub cleanup_intensity: String,
     pub app_context_hint: bool,
@@ -172,6 +176,13 @@ pub fn transcription_language_label(code: &str) -> &'static str {
 
 impl PipelineConfig {
     pub fn key_for(&self, provider: &str) -> &str {
+        if crate::api::custom::is_custom_id(provider) {
+            return self
+                .custom_keys
+                .get(provider)
+                .map(String::as_str)
+                .unwrap_or("");
+        }
         match provider {
             "openai" => &self.key_openai,
             "google" => &self.key_google,
@@ -181,6 +192,14 @@ impl PipelineConfig {
             "local" => "",
             _ => &self.key_groq,
         }
+    }
+
+    pub fn provider_has_auth(&self, provider: &str) -> bool {
+        !self.key_for(provider).is_empty()
+            || self
+                .custom_providers
+                .iter()
+                .any(|p| p.id == provider && !p.requires_key)
     }
 
     /// The user's custom cleanup prompt, or `None` if Advanced Models is off or
@@ -216,7 +235,9 @@ pub fn parse_model_id(id: &str) -> Option<(String, String)> {
     let mut parts = id.splitn(2, '/');
     let provider = parts.next()?.trim().to_lowercase();
     let model = parts.next()?.trim().to_string();
-    if PROVIDERS.contains(&provider.as_str()) && !model.is_empty() {
+    if (PROVIDERS.contains(&provider.as_str()) || crate::api::custom::is_custom_id(&provider))
+        && !model.is_empty()
+    {
         Some((provider, model))
     } else {
         None
@@ -318,6 +339,13 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         .or_else(|| legacy_cleanup_prompt_override(store))
         .unwrap_or_default();
 
+    let custom_providers = crate::api::custom::parse_stored(store.get(CUSTOM_PROVIDERS));
+    let custom_keys = custom_providers
+        .iter()
+        .filter(|_| crate::api::custom::native_credentials_available())
+        .map(|p| (p.id.clone(), crate::data::credentials::get(&p.id)))
+        .collect();
+
     PipelineConfig {
         transcription_provider,
         transcription_language: language_or_default(TRANSCRIPTION_LANGUAGE, "en"),
@@ -337,6 +365,8 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         key_assemblyai: crate::data::credentials::get(ASSEMBLYAI),
         key_openrouter: crate::data::credentials::get(OPENROUTER),
         key_xai: crate::data::credentials::get(XAI),
+        custom_providers,
+        custom_keys,
         default_tone: supported_or_default(DEFAULT_TONE, "casual", is_supported_default_tone),
         cleanup_intensity: supported_or_default(
             CLEANUP_INTENSITY,

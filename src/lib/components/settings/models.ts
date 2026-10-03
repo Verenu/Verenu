@@ -1,4 +1,5 @@
 import type { ProviderId, ProviderModelMap } from '../../settings';
+import { customProvider, isCustomProviderId } from '../../customProviders.svelte';
 
 export type TaskType = 'transcription' | 'cleanup';
 export type UiProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai';
@@ -29,6 +30,7 @@ export type ProviderSection = {
 };
 
 export type AllSettingsPayload = {
+  custom_providers?: import('../../customProviders.svelte').CustomProvider[];
   transcription_model?: string | null;
   cleanup_model?: string | null;
   transcription_models_by_provider?: unknown;
@@ -215,7 +217,7 @@ export function splitModelId(id: string): { provider: ProviderId; model: string 
 
   const provider = id.slice(0, idx) as ProviderId;
   const model = id.slice(idx + 1).trim();
-  if (!ALL_PROVIDER_IDS.includes(provider) || !model) return null;
+  if ((!ALL_PROVIDER_IDS.includes(provider) && !isCustomProviderId(provider)) || !model) return null;
 
   return { provider, model };
 }
@@ -224,7 +226,7 @@ export function mergeProviderModelMap(raw: unknown): ProviderModelMap {
   const base = emptyProviderModelMap();
   if (!raw || typeof raw !== 'object') return base;
 
-  for (const provider of ALL_PROVIDER_IDS) {
+  for (const provider of [...ALL_PROVIDER_IDS, ...Object.keys(raw).filter(isCustomProviderId)]) {
     const values = (raw as Record<string, unknown>)[provider];
     if (Array.isArray(values)) {
       base[provider] = values
@@ -243,6 +245,7 @@ export function taskLabel(type: TaskType): string {
 }
 
 export function providerDisplayLabel(provider: ProviderId): string {
+  if (isCustomProviderId(provider)) return customProvider(provider)?.name ?? 'Removed provider';
   switch (provider) {
     case 'openai':
       return 'OpenAI';

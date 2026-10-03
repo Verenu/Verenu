@@ -39,6 +39,7 @@ export function clearSettingsSearchNavigation(nonce: number): void {
 }
 
 const BASE_ENTRIES: SettingsSearchEntry[] = [
+  { id: 'custom-providers', section: 'keys', label: 'Custom providers', description: 'Connect a compatible endpoint with your own models and API key', target: 'custom-providers', keywords: ['endpoint', 'anthropic', 'openai compatible', 'xai compatible', 'base url'] },
   { id: 'general-hotkey', section: 'general', label: 'Hotkey', description: 'Hold to record and release to transcribe', target: 'general-hotkey', keywords: ['shortcut', 'keyboard', 'keybind', 'record'] },
   { id: 'general-copy-last', section: 'general', label: 'Copy last dictation', description: 'Copy the previous dictation to the clipboard', target: 'general-copy-last', keywords: ['clipboard', 'shortcut'] },
   { id: 'general-language', section: 'general', label: 'Spoken language', description: 'Choose the language transcription should expect', target: 'general-language', keywords: ['locale', 'speech', 'transcription'] },

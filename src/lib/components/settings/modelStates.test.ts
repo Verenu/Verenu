@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { customProviderStore, type CustomProvider } from '../../customProviders.svelte';
+import { splitModelId, mergeProviderModelMap, providerDisplayLabel } from './models';
 import type { ProviderId } from '../../settings';
 import type { ModelCatalogCache, ProviderCache } from '../../modelCatalogStore.svelte';
 import type { Hardware } from './modelPresets';
@@ -14,6 +16,38 @@ import {
 } from './modelStates';
 
 const T0 = 1_700_000_000_000;
+
+describe('custom providers', () => {
+  const provider: CustomProvider = {
+    id: 'custom:4c28f3de-9e72-46e8-9f80-2680b9028d1b', name: 'Fixture endpoint', protocol: 'openai',
+    base_url: 'http://localhost:8000/v1', requires_key: true,
+    supports_cleanup: true, supports_transcription: false, auth_header: null,
+    extra_headers: {}, body_overrides: null, transcription_models: [], cleanup_models: ['vendor/model'],
+  };
+  it('keeps nested model IDs and shows missing keys, disabled tasks, and removed providers', () => {
+    customProviderStore.providers = [provider];
+    try {
+      const id = `${provider.id}/vendor/model`;
+      expect(splitModelId(id)).toEqual({ provider: provider.id, model: 'vendor/model' });
+      expect(mergeProviderModelMap({ [provider.id]: ['vendor/model'] })[provider.id]).toEqual(['vendor/model']);
+      expect(providerDisplayLabel(provider.id)).toBe('Fixture endpoint');
+      const context = ctx({ task: 'cleanup' });
+      expect(rowForSelection(id, context)?.state).toBe('needs-setup');
+      expect(curatedRows(context).find(r => r.key === id)?.remedy).toBe('add-key');
+      context.apiKeyStatus[provider.id] = true;
+      expect(rowForSelection(id, context)?.state).toBe('ready');
+      expect(rowForSelection(id, { ...context, task: 'transcription' })?.state).toBe('unavailable');
+      customProviderStore.providers = [];
+      expect(rowForSelection(id, context)?.note).toBe('Provider removed');
+    } finally { customProviderStore.providers = []; }
+  });
+  it('makes keyless models selectable without adding a key', () => {
+    customProviderStore.providers = [{ ...provider, requires_key: false }];
+    try {
+      expect(curatedRows(ctx({ task: 'cleanup' })).find(r => r.provider === provider.id)?.state).toBe('ready');
+    } finally { customProviderStore.providers = []; }
+  });
+});
 const CAPABLE: Hardware = { totalRamMb: 32768, freeRamMb: 24576, gpus: [], unknown: false };
 const TINY: Hardware = { totalRamMb: 4096, freeRamMb: 2048, gpus: [], unknown: false };
 
