@@ -225,7 +225,13 @@ mod linux {
         if direct.is_absolute() {
             return direct.is_file().then(|| direct.to_path_buf());
         }
-        if direct.extension().is_some() {
+        // Reverse-DNS theme names (`org.vinegarhq.Sober`) also have an
+        // "extension", so only treat known image suffixes as file names.
+        let has_image_ext = direct
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["png", "svg", "xpm"].iter().any(|k| e.eq_ignore_ascii_case(k)));
+        if has_image_ext {
             for dir in data_dirs() {
                 let hicolor = dir.join("icons/hicolor");
                 for size in [
@@ -844,6 +850,8 @@ mod tests {
         assert_eq!(super::linux::icon_if_matches(entry, "t3code", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "firefox"), None);
+        // A dotted theme name is not a file name.
+        assert!(super::linux::resolve_icon_path("org.vinegarhq.NoSuchIcon").is_none());
         assert_eq!(
             super::linux::exec_basename("\"/opt/My App/bin/T3Code\" %u").as_deref(),
             Some("t3code")
