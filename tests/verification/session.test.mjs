@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createNativeSession } from '../../scripts/verification/native-session.mjs';
+import { replacePromptArgument } from '../../scripts/verification/prompt.mjs';
 import { startOwnedSession } from '../../scripts/verification/session.mjs';
 
 test('native WebDriver session creation retries transient HTTP errors', async () => {
@@ -25,4 +26,18 @@ test('owned session requires an artifact directory', async () => {
     startOwnedSession({ id: 'missing-directory' }),
     { name: 'TypeError', message: 'startOwnedSession requires a directory path' },
   );
+});
+
+test('owned session rejects unsafe IDs before constructing a session path', async () => {
+  for (const id of ['../escape', 'has spaces', '', 'x'.repeat(81)]) {
+    await assert.rejects(
+      startOwnedSession({ id, directory: '/tmp/unused-session' }),
+      { name: 'TypeError', message: 'startOwnedSession requires a valid session ID' },
+    );
+  }
+});
+
+test('agent prompt replacement preserves JavaScript replacement tokens literally', () => {
+  const prompt = 'Budget $$5, shell $HOME, regex $1, match $&';
+  assert.equal(replacePromptArgument('prefix {prompt} suffix', prompt), `prefix ${prompt} suffix`);
 });
