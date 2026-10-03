@@ -49,11 +49,12 @@ ROOT = Path(__file__).parent.parent.resolve()
 TESTS_DIR = Path(__file__).parent.resolve()
 SMOKE_DIR = TESTS_DIR / "smoke"
 INTEGRATION_DIR = TESTS_DIR / "integration"
-AUDIO_WAV = SMOKE_DIR / "smoke_test.wav"
+AUDIO_WAV = Path(os.environ.get("VERENU_LIVE_AUDIO_WAV", str(SMOKE_DIR / "smoke_test.wav")))
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
 DEFAULT_JSON_REPORT = ROOT / "test-results" / "onepyfone.json"
 NPM = "npm.cmd" if sys.platform == "win32" else "npm"
 PORT = 1420
+RUN_DIR = ROOT / "test-results" / ("runner-" + str(os.getpid()) + "-" + str(time.time_ns()))
 RESULT_PREFIX = "VERENU_TEST_RESULT="
 _OUTPUT_LOCK = threading.Lock()
 
@@ -70,6 +71,7 @@ SUITE_ORDER = [
     "animation",
     "pipeline",
     "native",
+    "native-prerequisites",
 ]
 
 PROFILE_SUITES = {
@@ -86,6 +88,7 @@ PROFILE_SUITES = {
     ],
     "live": ["preflight", "pipeline"],
     "native": ["preflight", "native"],
+    "native-prerequisites": ["preflight", "native-prerequisites"],
     "full": SUITE_ORDER,
 }
 
@@ -107,6 +110,7 @@ class TestResult:
     failure_kind: Optional[str] = None
     regression_status: str = "unknown"
     skip_reason: Optional[str] = None
+    previous_failures: List[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -332,17 +336,15 @@ class AudioFixtureCheck(PythonTest):
 
 class NativeCapabilityCheck(PythonTest):
     def run(self) -> TestResult:
-        if sys.platform != "win32":
-            return TestResult("skipped", expected="Windows native harness prerequisites exist", observed=f"Platform is {sys.platform}", skip_reason="Native profile currently targets Windows hotkey and injection paths", regression_area="native platform coverage")
-        exists = (TESTS_DIR / "manual/hotkey.cjs").is_file()
-        return TestResult("passed" if exists else "failed", expected="The manual Windows hotkey harness exists", observed="Harness exists" if exists else "Harness is missing", failure_kind="infrastructure" if not exists else None, regression_area="native platform coverage")
+        exists = (TESTS_DIR / "native/wdio.conf.mjs").is_file()
+        return TestResult("passed" if exists else "failed", expected="Native WebDriver configuration exists; this is not behavior verification", observed="Native configuration exists" if exists else "Native configuration is missing", failure_kind="infrastructure" if not exists else None, regression_area="native prerequisites")
 
 
 PYTHON_ENTRIES = [
     entry("preflight.environment", "preflight", "Environment", expected="Required local test tools are installed", regression_area="local test environment", failure_kind="infrastructure"),
     entry("preflight.registry", "preflight", "Test registry integrity", expected="The test registry contains unique IDs and existing files", regression_area="test registry", failure_kind="infrastructure"),
     entry("contract.settings", "contract", "Settings contract sync", expected="Frontend, backend, and IPC settings contracts match", regression_area="settings contract"),
-    entry("native.prerequisites", "native", "Native workflow prerequisites", expected="Platform-specific manual harnesses exist", regression_area="native platform coverage", required=False, failure_kind="infrastructure"),
+    entry("native.prerequisites", "native-prerequisites", "Native workflow prerequisites", expected="Native test configuration exists", regression_area="native prerequisites", failure_kind="infrastructure"),
 ]
 
 PYTHON_ENTRIES[0].python_test = EnvironmentCheck()
@@ -351,6 +353,8 @@ PYTHON_ENTRIES[2].python_test = SettingsContractCheck()
 PYTHON_ENTRIES[3].python_test = NativeCapabilityCheck()
 
 COMMAND_TESTS = [
+    entry("unit.verification", "unit", "Verification infrastructure", command=[NPM, "run", "test:verification"], timeout_s=90, expected="Verification cannot accept stale, skipped, missing, or failed evidence", regression_area="verification infrastructure"),
+    entry("native.webview", "native", "Real native WebView", command=[NPM, "run", "test:native:webview"], timeout_s=900, expected="An isolated native app executes real IPC and window operations", regression_area="native desktop integration"),
     entry("unit.frontend", "unit", "Frontend unit tests", command=[NPM, "run", "test:unit"], timeout_s=240, expected="All deterministic TypeScript unit tests pass", regression_area="frontend logic"),
     entry("unit.runner", "unit", "Runner self-tests", command=[sys.executable, str(TESTS_DIR / "test_onepyfone.py")], timeout_s=90, expected="Filtering, protocol parsing, and report serialization stay correct", regression_area="test infrastructure", failure_kind="infrastructure"),
     entry("frontend.typecheck", "frontend", "Frontend typecheck", command=[NPM, "run", "check"], timeout_s=300, expected="Svelte and TypeScript compile without diagnostics", regression_area="frontend compile contract"),
@@ -433,7 +437,9 @@ def _parse_protocol(output: str) -> tuple[str, Optional[Dict[str, Any]]]:
             try:
                 candidate = json.loads(line[prefix_index + len(RESULT_PREFIX):])
                 if isinstance(candidate, dict):
-                    payload = candidate
+                    rank = {"passed": 0, "skipped": 1, "failed": 2}
+                    if payload is None or rank.get(str(candidate.get("status")), 2) >= rank.get(str(payload.get("status")), 2):
+                        payload = candidate
                     human_prefix = line[:prefix_index].rstrip()
                     if human_prefix:
                         kept.append(human_prefix)
@@ -487,6 +493,9 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
         command = entry_.command or ["node", str(TESTS_DIR / str(entry_.script))]
         env = dict(os.environ)
         env["TEST_URL"] = test_url
+        if entry_.script and entry_.needs_server:
+            env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --require " + json.dumps(str(TESTS_DIR / "runtime/owned-browser.cjs"))).strip()
+            env["VERENU_TEST_ARTIFACT_DIR"] = str(RUN_DIR / entry_.id)
         code, raw_output, duration, timed_out = run_process(command, entry_.timeout_s, env)
         output, protocol = _parse_protocol(raw_output)
         if protocol:
@@ -506,10 +515,10 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
                 regression_status=str(protocol.get("regression_status", "unknown")),
                 skip_reason=protocol.get("skip_reason"),
             )
-            if code and result.status == "passed":
+            if code:
                 result.status = "failed"
         else:
-            skipped = code == 0 and bool(re.search(r"\bSKIP(?:PED)?\b", output, re.I))
+            skipped = code == 0 and bool(re.search(r"VERENU_LIVE_SKIP:|\bSKIP(?:PED)?\b", output, re.I))
             status = "skipped" if skipped else "passed" if code == 0 else "failed"
             result = TestResult(status, output=output, duration_s=duration)
         if result.status == "failed" and not result.failure_kind:
@@ -535,18 +544,24 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
 
 def run_with_retries(entry_: TestEntry, test_url: str, verbose: bool) -> TestResult:
     result = TestResult("failed")
+    failures = []
     total_started = time.monotonic()
     for attempt in range(1, entry_.retries + 2):
         with _OUTPUT_LOCK:
             print(f"  RUN   {entry_.id} ({attempt}/{entry_.retries + 1})", flush=True)
         result = execute(entry_, test_url)
         result.attempts = attempt
+        if result.status == "failed":
+            failures.append(result.observed)
         if result.passed or result.skipped:
             break
         if attempt <= entry_.retries:
             with _OUTPUT_LOCK:
                 print(f"  RETRY {entry_.id}: {result.observed}", flush=True)
     result.duration_s = time.monotonic() - total_started
+    result.previous_failures = failures
+    if failures and result.passed:
+        result.regression_status = "flaky"
     status = "PASS" if result.passed else "SKIP" if result.skipped else "FAIL"
     with _OUTPUT_LOCK:
         print(f"  {status:<5} {entry_.id} [{result.duration_s:.2f}s]")
@@ -561,7 +576,10 @@ def run_with_retries(entry_: TestEntry, test_url: str, verbose: bool) -> TestRes
 class ServerManager:
     def __init__(self) -> None:
         self.proc: Optional[subprocess.Popen[Any]] = None
-        self.port = PORT
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.port = listener.getsockname()[1]
+        self.log = None
         atexit.register(self.stop)
 
     @staticmethod
@@ -575,12 +593,12 @@ class ServerManager:
         return False
 
     def start(self, tauri: bool = False) -> bool:
-        if self.is_ready(self.port):
-            print(f"  Server: reusing http://localhost:{self.port}")
-            self.warm_up()
-            return True
-        command = [NPM, "run", "tauri", "dev"] if tauri else [NPM, "run", "dev"]
-        kwargs: Dict[str, Any] = {"cwd": ROOT, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if tauri:
+            raise ValueError("Use npm run test:dev-session for real Rust verification; this runner owns a renderer-only server")
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        self.log = (RUN_DIR / "vite.log").open("w", encoding="utf-8")
+        command = [NPM, "run", "dev", "--", "--port", str(self.port), "--strictPort"]
+        kwargs: Dict[str, Any] = {"cwd": ROOT, "stdout": self.log, "stderr": subprocess.STDOUT}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
@@ -611,50 +629,13 @@ class ServerManager:
         if self.proc is not None:
             _terminate_process_tree(self.proc)
             self.proc = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
 
 
 def kill_port_owner(port: int) -> bool:
-    if sys.platform != "win32":
-        try:
-            probe = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
-        pids = [pid.strip() for pid in probe.stdout.splitlines() if pid.strip().isdigit()]
-        killed = False
-        for pid in pids:
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-                killed = True
-            except (ProcessLookupError, PermissionError):
-                continue
-        if killed and not wait_for_port_closed(port):
-            for pid in pids:
-                try:
-                    os.kill(int(pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    continue
-            wait_for_port_closed(port)
-        return killed
-    command = (
-        "try { $id = Get-NetTCPConnection -LocalPort " + str(port) +
-        " -State Listen | Select-Object -First 1 -ExpandProperty OwningProcess; "
-        "if ($id) { Stop-Process -Id $id -Force; 'killed' } } catch {}"
-    )
-    try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-    return "killed" in proc.stdout
+    raise RuntimeError("Port-owner termination is forbidden. The runner allocates its own port.")
 
 
 def wait_for_port_closed(port: int, timeout_s: float = 10.0) -> bool:
@@ -727,16 +708,14 @@ def execute_plan(entries: Sequence[TestEntry], args: argparse.Namespace) -> Dict
     results.update(run_group(no_server, url, args.verbose, False, args.workers))
 
     server = ServerManager()
+    url = args.test_url if args.no_server else f"http://localhost:{server.port}"
     try:
         if server_tests and not args.no_server:
-            if args.fresh_server:
-                if kill_port_owner(PORT):
-                    wait_for_port_closed(PORT)
             if not server.start(args.tauri):
                 for test in server_tests:
                     results[test.id] = TestResult(
                         "failed",
-                        output=f"Could not start the {'Tauri' if args.tauri else 'Vite'} server on port {PORT}",
+                        output=f"Could not start the owned Vite server on port {server.port}; inspect {RUN_DIR / 'vite.log'}",
                         expected=test.expected,
                         observed="The test server did not become ready within 180 seconds",
                         regression_area="test server lifecycle",
@@ -783,35 +762,11 @@ def merge_loop_results(accumulated: Dict[str, TestResult], current: Dict[str, Te
 
 
 def cleanup_artifacts() -> int:
-    files = [
-        SMOKE_DIR / "screenshot.png",
-        SMOKE_DIR / "screenshot-general.png",
-        SMOKE_DIR / "screenshot-language-anim.png",
-        SMOKE_DIR / "screenshot-privacy.png",
-        SMOKE_DIR / "screenshot-apps.png",
-        Path(tempfile.gettempdir()) / "verenu-history-filter-fail.png",
-    ]
-    directories = [ROOT / "tmp-screenshots", SMOKE_DIR / "tmp-screenshots", INTEGRATION_DIR / "tmp-screenshots"]
-    removed = 0
-    for path in files:
-        if not path.is_file():
-            continue
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            pass
-    for path in directories:
-        if path.is_dir():
-            try:
-                shutil.rmtree(path)
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    # Preserve evidence in RUN_DIR. Never remove another session's artifacts.
+    return 0
 
 
-def summary(results: Dict[str, TestResult], entries: Sequence[TestEntry], elapsed_s: float) -> int:
+def summary(results: Dict[str, TestResult], entries: Sequence[TestEntry], elapsed_s: float, strict: bool = False) -> int:
     lookup = {test.id: test for test in entries}
     passed = sum(result.passed for result in results.values())
     skipped = sum(result.skipped for result in results.values())
@@ -832,7 +787,9 @@ def summary(results: Dict[str, TestResult], entries: Sequence[TestEntry], elapse
         print("\nSlowest")
         for test_id, result in slowest:
             print(f"  - {test_id}: {result.duration_s:.2f}s")
-    return 1 if required_failures else 0
+    if failures or (strict and any(result.skipped or result.regression_status == "flaky" for result in results.values())):
+        return 1
+    return 0
 
 
 def _git_metadata() -> Dict[str, Any]:
@@ -950,13 +907,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--tauri", action="store_true", help="Use the full Tauri dev host instead of Vite")
     parser.add_argument("--vite", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-server", action="store_true", help="Use an already-running server")
-    parser.add_argument("--fresh-server", action="store_true", help="Stop the current port 1420 listener before starting")
+    parser.add_argument("--test-url", default="", help="Explicit owned renderer URL; required with --no-server")
+    parser.add_argument("--fresh-server", action="store_true", help="Compatibility flag; all default servers are fresh and owned")
+    parser.add_argument("--strict", action="store_true", help="Fail on skipped or flaky selected tests as well as any failure")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--json-report", default=str(DEFAULT_JSON_REPORT), help="Structured report path (default: test-results/onepyfone.json)")
     parser.add_argument("--no-json-report", action="store_true", help="Do not write the default structured report")
     parser.add_argument("--junit-report", default="", help="Optional JUnit XML report path")
     parser.add_argument("--keep-artifacts", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.tauri:
+        parser.error("Use npm run test:dev-session for real Rust verification")
+    if args.no_server and not args.test_url:
+        parser.error("--no-server requires --test-url for your own renderer session")
     args.workers = max(1, args.workers)
 
     if args.list:
@@ -982,10 +945,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"\nLoop {loop}/{args.loops}")
         started = time.monotonic()
         results = execute_plan(entries, args)
-        exit_code = summary(results, entries, time.monotonic() - started)
+        exit_code = summary(results, entries, time.monotonic() - started, args.strict)
         accumulated_results = merge_loop_results(accumulated_results, results)
         if args.until_pass and exit_code == 0:
-            overall_exit = 0
             break
         overall_exit = max(overall_exit, exit_code)
 
@@ -1007,4 +969,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
