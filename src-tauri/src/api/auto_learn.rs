@@ -118,9 +118,10 @@ impl StableTextGate {
         }
 
         if self.pending_observations < STABLE_TEXT_OBSERVATIONS_REQUIRED
-            || self
-                .pending_since
-                .is_none_or(|since| now.duration_since(since) < STABLE_TEXT_MIN_DURATION)
+            || self.pending_since.is_none_or(|since| {
+                now.checked_duration_since(since)
+                    .is_none_or(|elapsed| elapsed < STABLE_TEXT_MIN_DURATION)
+            })
         {
             return None;
         }
@@ -529,6 +530,26 @@ mod tests {
                 "use OpenAI".into(),
                 now + std::time::Duration::from_millis(1250)
             ),
+            Some("use OpenAI")
+        );
+    }
+
+    #[test]
+    fn out_of_order_stability_timestamps_do_not_pass_or_panic() {
+        let mut gate = StableTextGate::default();
+        let since = std::time::Instant::now();
+        assert_eq!(gate.observe_at("use OpenAI".into(), since), None);
+        assert_eq!(
+            gate.observe_at(
+                "use OpenAI".into(),
+                since
+                    .checked_sub(std::time::Duration::from_millis(1))
+                    .unwrap()
+            ),
+            None
+        );
+        assert_eq!(
+            gate.observe_at("use OpenAI".into(), since + STABLE_TEXT_MIN_DURATION),
             Some("use OpenAI")
         );
     }
