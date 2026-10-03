@@ -12,6 +12,7 @@ test('Android native runtimes are reproducible and support both shipped ABIs', (
     assert.deepEqual(args.slice(0, 2), ['-G', 'Ninja']);
     assert.ok(args.includes(`-DANDROID_ABI=${abi}`));
     assert.ok(args.includes('-DANDROID_PLATFORM=android-28'));
+    assert.ok(args.includes('-DANDROID_STL=c++_static'));
     assert.ok(args.includes('-DGGML_NATIVE=OFF'));
     assert.ok(args.includes('-DBUILD_SHARED_LIBS=OFF'));
     assert.ok(args.includes('-DGGML_OPENMP=OFF'));
@@ -28,8 +29,18 @@ test('Cargo launched by Tauri from the repository root uses Android 16 KB linker
     const targetConfig = rootConfig.split(`[target.${target}]`)[1]?.split('\n[target.')[0] ?? '';
     assert.match(targetConfig, /link-arg=-Wl,-z,max-page-size=16384/);
     assert.match(targetConfig, /link-arg=-Wl,-z,common-page-size=16384/);
+    assert.doesNotMatch(targetConfig, /c\+\+_shared|--no-as-needed/);
   }
   assert.equal(existsSync(crateConfig), false, 'Cargo config must be discoverable from the Tauri CLI repository-root working directory');
+});
+
+test('Android sync does not package a shared NDK C++ runtime', () => {
+  const build = readFileSync(new URL('../../src-tauri/build.rs', import.meta.url), 'utf8');
+  const sync = readFileSync(new URL('../../scripts/android-sync.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(build, /rustc-link-lib=dylib=c\+\+_shared/);
+  assert.match(sync, /function removeBundledCppRuntime\(\)/);
+  assert.match(sync, /rmSync\(join\(jniRoot, abi, 'libc\+\+_shared\.so'\), \{ force: true \}\)/);
+  assert.match(sync, /await syncAndroidLocalRuntimes\(root\);\s+removeBundledCppRuntime\(\);/);
 });
 
 test('packaged executable name matches the native resolver', () => {

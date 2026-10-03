@@ -145,9 +145,10 @@ Native runtime preparation also requires CMake, Ninja, `curl`, and the JDK's
 The repository-root `.cargo/config.toml` sets 16 KB ELF and RELRO linker
 alignment for both Android Rust targets. Keep these target flags at the
 repository root: Tauri launches Cargo from there while building the manifest in
-`src-tauri/`. For release checks, inspect every packaged `.so` LOAD alignment
-and GNU_RELRO end, then run `zipalign -c -P 16 -v 4 <apk>`; the Android
-developer guide documents the 16 KB checks and linker requirements.
+`src-tauri/`. Oboe and llama.cpp use the NDK's static C++ runtime, so the APK
+does not include `libc++_shared.so`. For release checks, inspect every packaged
+`.so` LOAD alignment and GNU_RELRO end, then run `zipalign -c -P 16 -v 4 <apk>`;
+the Android developer guide documents the 16 KB checks and linker requirements.
 
 `scripts/android-sync.mjs` is idempotent — re-run it after CLI upgrades or a
 fresh `tauri android init`. `src-tauri/gen/` stays gitignored; these sources

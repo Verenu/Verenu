@@ -20,7 +20,7 @@ export function cmakeArguments(source, build, ndk, abi) {
     '-S', source, '-B', build,
     `-DCMAKE_TOOLCHAIN_FILE=${join(ndk, 'build', 'cmake', 'android.toolchain.cmake')}`,
     `-DANDROID_ABI=${abi}`, '-DANDROID_PLATFORM=android-28',
-    '-DANDROID_STL=c++_shared', '-DCMAKE_BUILD_TYPE=Release',
+    '-DANDROID_STL=c++_static', '-DCMAKE_BUILD_TYPE=Release',
     '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
     // A single PIE executable avoids missing/versioned llama/ggml shared libs.
     '-DBUILD_SHARED_LIBS=OFF', '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF',
