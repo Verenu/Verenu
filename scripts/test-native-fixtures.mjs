@@ -8,7 +8,11 @@ import { run, stopOwned } from './verification/process.mjs';
 const args = process.argv.slice(2);
 const index = args.indexOf('--report');
 const directory = path.join(root, 'test-results', `native-fixture-${randomUUID()}`);
-const reportPath = index < 0 ? path.join(directory, 'verification.json') : path.resolve(args[index + 1]);
+const reportArgument = index >= 0 ? args[index + 1] : undefined;
+if (index >= 0 && (!reportArgument || reportArgument.startsWith('--'))) {
+  throw new Error('--report requires a file path');
+}
+const reportPath = index < 0 ? path.join(directory, 'verification.json') : path.resolve(reportArgument);
 const report = { schemaVersion: 1, identity: sourceIdentity(), status: 'incomplete', scope: ['focused-text'], platform: process.platform, checks: [], artifacts: [] };
 let fixture;
 try {

@@ -18,7 +18,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   }
   let childError;
   child.once('error', (error) => { childError = error; });
-  const stop = async () => {
+  let stopPromise;
+  const stop = () => stopPromise ??= (async () => {
     const exited = new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null || childError) resolve(); else child.once('exit', resolve); });
     stopOwned(child);
     await Promise.race([exited, new Promise((resolve) => { const timer = setTimeout(resolve, 15_000); timer.unref(); })]);
@@ -26,7 +27,7 @@ export async function startOwnedSession({ id, fixtures, native = false, director
       if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Owned child exited. */ } }
     }
     await log.close();
-  };
+  })();
   try {
     const deadline = Date.now() + 900_000;
     while (Date.now() < deadline) {

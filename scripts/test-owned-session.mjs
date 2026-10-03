@@ -28,9 +28,9 @@ try {
   const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
   const tested = await run(process.execPath, ['--test', 'tests/dev-session/session.test.mjs'], { directory, name: 'session-tests', env });
   report.artifacts.push(artifact(tested.log));
+  assert.equal(tested.status, 'passed', 'Real-session regression failed');
   const suite = JSON.parse(await fs.readFile(path.join(session.directory, 'verification.json'), 'utf8'));
   report.checks.push(...suite.checks);
-  assert.equal(tested.status, 'passed', 'Real-session regression failed');
   const playwright = await run(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
   report.artifacts.push(artifact(playwright.log));
   assert.equal(playwright.status, 'passed', 'Real-session Playwright flows failed');

@@ -494,7 +494,8 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
         env = dict(os.environ)
         env["TEST_URL"] = test_url
         if entry_.script and entry_.needs_server:
-            env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --require " + json.dumps(str(TESTS_DIR / "runtime/owned-browser.cjs"))).strip()
+            owned_browser = (TESTS_DIR / "runtime/owned-browser.cjs").resolve().as_posix()
+            env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + f' --require "{owned_browser}"').strip()
             env["VERENU_TEST_ARTIFACT_DIR"] = str(RUN_DIR / entry_.id)
         code, raw_output, duration, timed_out = run_process(command, entry_.timeout_s, env)
         output, protocol = _parse_protocol(raw_output)
