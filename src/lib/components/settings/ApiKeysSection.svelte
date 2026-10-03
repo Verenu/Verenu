@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
+  import CustomProvidersSection from './CustomProvidersSection.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import { isAndroid } from '../../platform';
@@ -213,6 +214,8 @@
 <p class="trademark-note">
   The logos above belong to their respective companies. Verenu is not affiliated with, endorsed by, or sponsored by Groq, OpenAI, Google, AssemblyAI, OpenRouter, or xAI — they are shown solely to indicate provider compatibility.
 </p>
+
+{#if !isAndroid}<CustomProvidersSection />{/if}
 
 <style>
   .trademark-note {

@@ -702,6 +702,7 @@ pub fn run() {
             commands::check_hotkey,
             commands::save_api_key,
             commands::delete_api_key,
+            commands::delete_custom_provider,
             commands::get_api_key_status,
             commands::validate_api_key,
             commands::list_provider_models,

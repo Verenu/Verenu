@@ -66,5 +66,6 @@ const ASSEMBLYAI_MODEL_LANGUAGES: Record<string, LanguageSupportScope> = {
 export function getLanguageSupport(provider: ProviderId, modelId: string): LanguageSupportScope {
   if (provider === 'local') return LOCAL_MODEL_LANGUAGES[modelId] ?? 'all';
   if (provider === 'assemblyai') return ASSEMBLYAI_MODEL_LANGUAGES[modelId] ?? 'all';
-  return CLOUD_PROVIDER_LANGUAGES[provider] ?? 'all';
+  if (provider.startsWith('custom:')) return 'all';
+  return CLOUD_PROVIDER_LANGUAGES[provider as keyof typeof CLOUD_PROVIDER_LANGUAGES] ?? 'all';
 }

@@ -19,23 +19,46 @@ const SERVICE: &str = "verenu";
 #[cfg(windows)]
 const HRESULT_NOT_FOUND: i32 = 0x80070490_u32 as i32;
 
-fn user_for(provider: &str) -> Option<&'static str> {
+fn user_for(provider: &str) -> Option<String> {
     use crate::data::store;
-    match provider {
-        store::GROQ => Some(store::KEY_GROQ),
-        store::OPENAI => Some(store::KEY_OPENAI),
-        store::GOOGLE => Some(store::KEY_GOOGLE),
-        store::ASSEMBLYAI => Some(store::KEY_ASSEMBLYAI),
-        store::OPENROUTER => Some(store::KEY_OPENROUTER),
-        store::XAI => Some(store::KEY_XAI),
-        _ => None,
+    if provider.starts_with(crate::api::custom::CUSTOM_PREFIX) {
+        return crate::api::custom::credential_account(provider);
     }
+    Some(
+        match provider {
+            store::GROQ => store::KEY_GROQ,
+            store::OPENAI => store::KEY_OPENAI,
+            store::GOOGLE => store::KEY_GOOGLE,
+            store::ASSEMBLYAI => store::KEY_ASSEMBLYAI,
+            store::OPENROUTER => store::KEY_OPENROUTER,
+            store::XAI => store::KEY_XAI,
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 fn normalize_key(key: &str) -> &str {
     key.trim()
         .trim_end_matches(|c: char| c == '\0' || c.is_control())
         .trim()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+#[ignore = "Writes and removes an isolated synthetic Secret Service credential"]
+fn custom_provider_credential_roundtrip() {
+    let id = crate::api::custom::new_custom_id();
+    let result = set(&id, "synthetic-credential-fixture");
+    let saved = result.is_ok() && get(&id) == "synthetic-credential-fixture";
+    let removed = delete(&id);
+    result.unwrap();
+    removed.unwrap();
+    assert!(
+        saved,
+        "Custom credential did not round-trip through Secret Service"
+    );
+    assert!(!has(&id));
 }
 
 #[cfg(windows)]
@@ -63,7 +86,7 @@ pub fn set(provider: &str, key: &str) -> Result<(), String> {
             }
         }
     } else {
-        let mut user_wide = wide_null(user);
+        let mut user_wide = wide_null(&user);
         // Encode as UTF-16-LE — Windows-native format for credential blobs
         let utf16: Vec<u16> = key.encode_utf16().collect();
         let mut blob: Vec<u8> = utf16.iter().flat_map(|c| c.to_le_bytes()).collect();
@@ -426,18 +449,18 @@ fn load_legacy_cred_files(app: &AppHandle) -> Vec<LegacyCredFile> {
 
 #[cfg(target_os = "macos")]
 fn legacy_file_contains_provider_key(file: &LegacyCredFile, provider: &str) -> bool {
-    user_for(provider).is_some_and(|user| file.map.contains_key(user))
+    user_for(provider).is_some_and(|user| file.map.contains_key(&user))
 }
 
 #[cfg(target_os = "macos")]
-fn keychain_user(provider: &str) -> Result<&'static str, String> {
+fn keychain_user(provider: &str) -> Result<String, String> {
     user_for(provider).ok_or_else(|| format!("Unknown provider: {provider}"))
 }
 
 #[cfg(target_os = "macos")]
 fn read_keychain_service(service: &str, provider: &str) -> Result<Option<String>, String> {
     let user = keychain_user(provider)?;
-    match get_generic_password(service, user) {
+    match get_generic_password(service, &user) {
         Ok(bytes) => String::from_utf8(bytes)
             .map(Some)
             .map_err(|e| format!("Keychain value for {provider} was not valid UTF-8: {e}")),
@@ -456,16 +479,16 @@ pub fn set(provider: &str, key: &str) -> Result<(), String> {
     let key = normalize_key(key);
     let user = keychain_user(provider)?;
     if key.is_empty() {
-        match delete_generic_password(keychain_service(), user) {
+        match delete_generic_password(keychain_service(), &user) {
             Ok(()) => Ok(()),
             Err(err) if err.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
             Err(err) => Err(format!("Keychain delete failed for {provider}: {err}")),
         }
     } else {
-        match set_generic_password(keychain_service(), user, key.as_bytes()) {
+        match set_generic_password(keychain_service(), &user, key.as_bytes()) {
             Ok(()) => Ok(()),
             Err(err) if err.code() == KEYCHAIN_DUPLICATE_ITEM => {
-                match delete_generic_password(keychain_service(), user) {
+                match delete_generic_password(keychain_service(), &user) {
                     Ok(()) => {}
                     Err(err) if err.code() == KEYCHAIN_ITEM_NOT_FOUND => {}
                     Err(err) => {
@@ -475,7 +498,7 @@ pub fn set(provider: &str, key: &str) -> Result<(), String> {
                     }
                 }
 
-                set_generic_password(keychain_service(), user, key.as_bytes())
+                set_generic_password(keychain_service(), &user, key.as_bytes())
                     .map_err(|err| format!("Keychain overwrite failed for {provider}: {err}"))
             }
             Err(err) => Err(format!("Keychain write failed for {provider}: {err}")),
@@ -502,7 +525,7 @@ fn cleanup_legacy_plaintext_entries(app: &AppHandle, providers: &[&str]) {
         let mut changed = false;
         for provider in providers {
             if let Some(user) = user_for(provider) {
-                if legacy.map.remove(user).is_some() {
+                if legacy.map.remove(&user).is_some() {
                     changed = true;
                 }
             }
@@ -665,7 +688,7 @@ pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
 const LINUX_SECRET_SERVICE: &str = "com.verenu.app";
 
 #[cfg(target_os = "linux")]
-fn linux_account(provider: &str) -> Result<&'static str, String> {
+fn linux_account(provider: &str) -> Result<String, String> {
     user_for(provider).ok_or_else(|| format!("Unknown provider: {provider}"))
 }
 
@@ -695,7 +718,7 @@ where
 }
 
 #[cfg(target_os = "linux")]
-fn linux_attributes(account: &'static str) -> std::collections::HashMap<&'static str, &'static str> {
+fn linux_attributes(account: &str) -> std::collections::HashMap<&str, &str> {
     // Keep keyring-compatible attribute names so entries written during an
     // interrupted older build remain discoverable without copying secrets.
     std::collections::HashMap::from([("service", LINUX_SECRET_SERVICE), ("username", account)])
@@ -721,17 +744,16 @@ pub fn set(provider: &str, key: &str) -> Result<(), String> {
         let item = collection
             .create_item(
                 &format!("Verenu {provider_name} API key"),
-                linux_attributes(account),
+                linux_attributes(&account),
                 key.as_bytes(),
                 true,
                 "text/plain",
             )
             .await
             .map_err(|err| format!("Secret Service could not save {provider_name}: {err}"))?;
-        let verified = item
-            .get_secret()
-            .await
-            .map_err(|err| format!("Secret Service saved {provider_name}, but could not verify it: {err}"))?;
+        let verified = item.get_secret().await.map_err(|err| {
+            format!("Secret Service saved {provider_name}, but could not verify it: {err}")
+        })?;
         if normalize_key(&String::from_utf8_lossy(&verified)) != key {
             return Err(format!("Secret Service could not verify the saved {provider_name} key."));
         }
@@ -745,9 +767,16 @@ pub fn get(provider: &str) -> String {
     match linux_secret_service(async move {
         use secret_service::{EncryptionType, SecretService};
 
-        let service = SecretService::connect(EncryptionType::Dh).await.map_err(|err| err.to_string())?;
-        let items = service.search_items(linux_attributes(account)).await.map_err(|err| err.to_string())?;
-        let Some(item) = items.unlocked.first() else { return Ok(String::new()); };
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        let items = service
+            .search_items(linux_attributes(&account))
+            .await
+            .map_err(|err| err.to_string())?;
+        let Some(item) = items.unlocked.first() else {
+            return Ok(String::new());
+        };
         let secret = item.get_secret().await.map_err(|err| err.to_string())?;
         Ok(String::from_utf8_lossy(&secret).into_owned())
     }) {
@@ -772,10 +801,14 @@ pub fn delete(provider: &str) -> Result<(), String> {
         let service = SecretService::connect(EncryptionType::Dh).await.map_err(|err| {
             format!("Secret Service is unavailable or locked. Unlock GNOME Keyring/KWallet and try again: {err}")
         })?;
-        let items = service.search_items(linux_attributes(account)).await
+        let items = service
+            .search_items(linux_attributes(&account))
+            .await
             .map_err(|err| format!("Secret Service could not find {provider_name}: {err}"))?;
         for item in items.unlocked {
-            item.delete().await.map_err(|err| format!("Secret Service delete failed for {provider_name}: {err}"))?;
+            item.delete().await.map_err(|err| {
+                format!("Secret Service delete failed for {provider_name}: {err}")
+            })?;
         }
         if !items.locked.is_empty() {
             return Err(format!("Secret Service has a locked {provider_name} key. Unlock GNOME Keyring/KWallet and try again."));
@@ -852,7 +885,7 @@ pub fn migrate_from_store(_app: &AppHandle, settings: &crate::data::store::Setti
             .and_then(|user| {
                 legacy_files.iter().find_map(|file| {
                     file.map
-                        .get(user)
+                        .get(&user)
                         .and_then(|v| v.as_str())
                         .filter(|value| !normalize_key(value).is_empty())
                         .map(|value| normalize_key(value).to_string())
@@ -890,7 +923,7 @@ pub fn migrate_from_store(_app: &AppHandle, settings: &crate::data::store::Setti
         #[cfg(target_os = "macos")]
         if let Some(user) = user_for(provider) {
             for legacy in &mut legacy_files {
-                if legacy.map.remove(user).is_some() {
+                if legacy.map.remove(&user).is_some() {
                     log::debug!("Migration: removed legacy plaintext entry for {provider}");
                 }
             }

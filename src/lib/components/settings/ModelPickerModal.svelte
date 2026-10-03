@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { customProviderStore } from '../../customProviders.svelte';
   import { fade, fly, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { modalFocusTrap } from '../../modalFocus';
@@ -106,7 +107,8 @@
     return () => window.removeEventListener('resize', updatePanelLeft);
   });
 
-  const RAIL_ORDER: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local'];
+  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local',
+    ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
   const current = $derived(rowForSelection(defaultModel, context));
   // Selections stay listed even after a provider drops them, so a dead choice
@@ -1131,4 +1133,3 @@
     }
   }
 </style>
-
