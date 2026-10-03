@@ -6,11 +6,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const ORT_VERSION = '1.24.2'; // Matches ort 2.0.0-rc.12's C API.
+export const ORT_VERSION = '1.24.3'; // 1.24.x patch release; matches ort 2.0.0-rc.12's C API.
 export const LLAMA_COMMIT = '6f4f53f2b7da54fcdbbecaaa734337c337ad6176'; // b9842
 export const RUNTIME_ABIS = ['arm64-v8a', 'x86_64'];
 export const LLAMA_ANDROID_BINARY = 'libverenu_llama_server.so';
-const ORT_SHA256 = 'bc461499a735653dff285a6a3477d28b9cfd119a09c7753eaf003426b577f223';
+const ORT_SHA256 = '67397e4a970e75617f765d2015ceaf911917e1d822276cfb5792744e8085cbce';
 const LLAMA_SHA256 = 'c5200c3e3c98590a72c7751df17fb5b03ddceec90ed5914d7ebd960e821d3fa4';
 
 export function cmakeArguments(source, build, ndk, abi) {
