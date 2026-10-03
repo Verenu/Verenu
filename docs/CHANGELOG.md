@@ -4,6 +4,11 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Split frontend IPC routing from browser mocks and their model/Insights fixtures,
+  preserving existing imports and loading mocks only in preview mode. Corrected
+  contributor setup and verification instructions, consolidated stale agent
+  planning notes, and ignored local environment and test-report artifacts.
+
 - Added source-bound agent verification, owned real-backend browser sessions,
   synthetic speech checks, native WebView tests, and independent agent test
   evaluations. Test reporting now distinguishes unavailable live checks from
