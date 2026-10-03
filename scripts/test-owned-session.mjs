@@ -10,7 +10,11 @@ import { startOwnedSession, invokeSession } from './verification/session.mjs';
 const args = process.argv.slice(2);
 const reportIndex = args.indexOf('--report');
 const directory = path.join(root, 'test-results', `session-${randomUUID()}`);
-const reportPath = reportIndex < 0 ? path.join(directory, 'verification.json') : path.resolve(args[reportIndex + 1]);
+const reportArgument = reportIndex >= 0 ? args[reportIndex + 1] : undefined;
+if (reportIndex >= 0 && (!reportArgument || reportArgument.startsWith('--'))) {
+  throw new Error('--report requires a file path');
+}
+const reportPath = reportIndex < 0 ? path.join(directory, 'verification.json') : path.resolve(reportArgument);
 const identity = sourceIdentity();
 const report = { schemaVersion: 1, identity, status: 'incomplete', checks: [], artifacts: [], checkedAt: new Date().toISOString() };
 let session;
@@ -47,7 +51,13 @@ try {
 } catch (error) {
   report.status = 'failed'; report.reason = error.message;
 } finally {
-  if (session) await session.stop();
+  if (session) {
+    try { await session.stop(); }
+    catch (error) {
+      report.status = 'failed';
+      report.reason = `Could not stop owned session: ${error.message}`;
+    }
+  }
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   await fs.writeFile(reportPath, JSON.stringify(report, null, 2), { mode: 0o600 });
 }

@@ -41,6 +41,15 @@ class RunnerTests(unittest.TestCase):
         selected = runner.entry('optional', 'pipeline', 'Optional', required=False)
         self.assertEqual(runner.summary({'optional': runner.TestResult('failed')}, [selected], 0), 1)
 
+    def test_until_pass_returns_success_after_later_clean_loop(self):
+        selected = runner.select_tests(['preflight'], 'environment')
+        outcomes = [
+            {selected[0].id: runner.TestResult('failed', observed='first run failed')},
+            {selected[0].id: runner.TestResult('passed')},
+        ]
+        with patch.object(runner, 'execute_plan', side_effect=outcomes):
+            self.assertEqual(runner.main(['--test', 'environment', '--until-pass', '--loops', '2', '--no-json-report']), 0)
+
     def test_strict_skip_and_flake_fail(self):
         selected = runner.entry('required', 'pipeline', 'Required')
         for result in [runner.TestResult('skipped'), runner.TestResult('passed', regression_status='flaky')]:

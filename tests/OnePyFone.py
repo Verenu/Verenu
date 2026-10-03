@@ -948,6 +948,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         exit_code = summary(results, entries, time.monotonic() - started, args.strict)
         accumulated_results = merge_loop_results(accumulated_results, results)
         if args.until_pass and exit_code == 0:
+            overall_exit = 0
             break
         overall_exit = max(overall_exit, exit_code)
 
