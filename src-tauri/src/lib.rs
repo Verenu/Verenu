@@ -94,7 +94,10 @@ fn start_storage_maintenance(
                 if let Err(err) = db::prune_auto_learn_retention(&db_for_work) {
                     log::warn!("maintenance: auto-learn retention failed: {err}");
                 }
-                if let Err(err) = db::prune_pending_corrections(&db_for_work, 2) {
+                if let Err(err) = db::prune_pending_corrections(
+                    &db_for_work,
+                    crate::api::auto_learn::PENDING_RETENTION_DAYS,
+                ) {
                     log::warn!("maintenance: pending-correction retention failed: {err}");
                 }
                 if let Some(days) = retention_days {
