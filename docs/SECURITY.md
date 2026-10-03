@@ -13,7 +13,7 @@ Email [security@verenu.com](mailto:security@verenu.com). GitHub private vulnerab
 Good reports include:
 
 - A short description of the issue.
-- Affected platform: Windows, macOS, or both.
+- Affected platforms: Windows, macOS, Linux, or Android.
 - Affected version or commit.
 - Reproduction steps using fake data.
 - Expected impact.
