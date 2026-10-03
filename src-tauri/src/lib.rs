@@ -294,6 +294,7 @@ pub fn run() {
                 // process-lifetime global reference to the Application
                 // context instead.
                 init_android_audio_context()?;
+                crate::android::local_ai::initialize()?;
             }
             // Android does not provide a useful HOME environment variable.
             // Resolve the canonical shared data directory through Tauri while
@@ -883,6 +884,8 @@ pub fn run() {
             commands::sync_now,
             commands::sync_get_diagnostics,
             commands::android_get_platform_info,
+            #[cfg(all(debug_assertions, feature = "android-local-testing", target_os = "android"))]
+            commands::android_test_local_audio,
             commands::android_on_keyboard_visibility,
             commands::android_decide_insertion,
             commands::android_context_for_package,
