@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContextIcon from '../ContextIcon.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import { startPolling } from '../../polling';
@@ -715,10 +716,8 @@
               <span class="ctx-icon" style={context.color ? `color: ${context.color}` : ''} aria-hidden="true">
                 {#if context.is_everywhere}
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2 2.3 3 5 3 8s-1 5.7-3 8c-2-2.3-3-5-3-8s1-5.7 3-8Z"/></svg>
-                {:else if context.icon && icons[context.icon as keyof typeof icons]}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{@html icons[context.icon as keyof typeof icons]}</svg>
                 {:else}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6M7 16h3"/></svg>
+                  <ContextIcon icon={context.icon} />
                 {/if}
               </span>
               <span class="ctx-name">{context.name}</span>
