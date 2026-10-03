@@ -175,7 +175,17 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
     {
         return Ok(true);
     }
+    if let Some(manager) = MANAGER.get() {
+        return probe_hotkey_availability(manager, hk);
+    }
     let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
+    probe_hotkey_availability(&manager, hk)
+}
+
+fn probe_hotkey_availability(
+    manager: &GlobalHotKeyManager,
+    hk: HotKey,
+) -> Result<bool, String> {
     if manager.register(hk).is_err() {
         return Ok(false);
     }
