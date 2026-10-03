@@ -128,7 +128,11 @@ impl Writer {
                 .join(format!("{}-{:04}.log", self.session, self.part));
             self.part += 1;
             let mut lease_options = OpenOptions::new();
-            lease_options.read(true).write(true).create(true);
+            lease_options
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
@@ -289,6 +293,7 @@ fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lease_path)
         {
             if FileExt::try_lock_exclusive(&lease).is_err() {
@@ -376,6 +381,7 @@ mod tests {
         let active = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(active_log.with_extension("lock"))
             .unwrap();
         FileExt::try_lock_exclusive(&active).unwrap();
