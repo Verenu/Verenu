@@ -47,7 +47,11 @@ class NativeDriver {
 const args = process.argv.slice(2);
 const directory = path.join(root, 'test-results', `native-${randomUUID()}`);
 const index = args.indexOf('--report');
-const reportPath = index < 0 ? path.join(directory, 'verification.json') : path.resolve(args[index + 1]);
+const reportArgument = index >= 0 ? args[index + 1] : undefined;
+if (index >= 0 && (!reportArgument || reportArgument.startsWith('--'))) {
+  throw new Error('--report requires a file path');
+}
+const reportPath = index < 0 ? path.join(directory, 'verification.json') : path.resolve(reportArgument);
 const report = { schemaVersion: 1, identity: sourceIdentity(), status: 'incomplete', scope: ['webview', 'ipc', 'windows'], platform: process.platform, checks: [], artifacts: [], nativeIntegration: { status: 'not-tested', reason: 'Global shortcuts, external insertion, permissions and microphone require dedicated platform fixtures' } };
 let session, browser;
 try {
@@ -85,7 +89,13 @@ try {
 } catch (error) { report.status = 'failed'; report.reason = error.message; }
 finally {
   if (browser) await browser.deleteSession().catch(() => {});
-  if (session) await session.stop();
+  if (session) {
+    try { await session.stop(); }
+    catch (error) {
+      report.status = 'failed';
+      report.reason = `Could not stop owned session: ${error.message}`;
+    }
+  }
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   await fs.writeFile(reportPath, JSON.stringify(report, null, 2), { mode: 0o600 });
 }
