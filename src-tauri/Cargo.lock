@@ -6656,6 +6656,7 @@ dependencies = [
  "hound",
  "if-addrs",
  "image",
+ "jni",
  "libc",
  "libproc",
  "log",

@@ -18,6 +18,26 @@ export type ToneId = 'casual' | 'formal' | 'very_casual';
 export type CleanupIntensity = 'none' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
+
+/** Where the Android dictation pill sits. Mirrors `ANDROID_PILL_POSITIONS` in Rust. */
+export type AndroidPillPosition =
+  | 'keyboard-center'
+  | 'keyboard-left'
+  | 'keyboard-right'
+  | 'screen-top'
+  | 'screen-middle'
+  | 'punch-hole';
+
+export const ANDROID_PILL_POSITION_OPTIONS: { id: AndroidPillPosition; label: string }[] = [
+  { id: 'keyboard-center', label: 'Above keyboard, center' },
+  { id: 'keyboard-left', label: 'Above keyboard, left' },
+  { id: 'keyboard-right', label: 'Above keyboard, right' },
+  { id: 'screen-top', label: 'Top of screen' },
+  { id: 'screen-middle', label: 'Middle of screen' },
+  { id: 'punch-hole', label: 'Under the camera' },
+];
+
+export const DEFAULT_ANDROID_PILL_POSITION: AndroidPillPosition = 'keyboard-center';
 export type LocalModelMemoryPolicy =
   | 'keep_loaded'
   | 'unload_after_5m'
@@ -85,6 +105,9 @@ type SettingsValueMap = {
   accent_color: string | null;
   /** Hex palette for the Custom appearance mode. */
   custom_theme: CustomTheme | null;
+  android_pill_position: AndroidPillPosition;
+  /** Android: sit the pill over the keyboard's own mic button when it can be found. */
+  android_pill_cover_keyboard_mic: boolean;
   advanced_model_ui: boolean;
   /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;
