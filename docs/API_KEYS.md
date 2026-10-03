@@ -11,6 +11,12 @@ Verenu does not require an account or subscription. Cloud providers use API keys
 | **OpenAI** | `gpt-4o-transcribe` | `gpt-4o-mini` | Cloud transcription and cleanup |
 | **Gemini (Google)** | `gemini-3.5-transcribe` | `gemini-3.5-flash-lite` | Dedicated transcription plus cloud cleanup |
 | **AssemblyAI** | `universal-3-5-pro` or `universal-2` | Not available | Transcription-only provider |
+| **OpenRouter** | Configurable model ID | Configurable model ID | Add a key in Settings, then select models in Advanced Models. |
+| **xAI** | `grok-voice-transcribe-2.0` | `grok-4-fast-non-reasoning` | Add a key in Settings, then select models in Advanced Models. |
+
+Model names here are examples from the app catalog. OpenRouter and xAI do not
+appear in setup or one-click presets, and their model lists are not live-synced.
+Use Advanced Models to enter a custom model ID supported by the provider.
 
 One cloud provider key is enough to start dictating. You can add other keys and configure model fallbacks later in Settings. The local path needs no key.
 
@@ -57,6 +63,9 @@ Your API key never touches Verenu's database or settings file. It is stored usin
 
 - **Windows**: Windows Credential Manager
 - **macOS**: Keychain
+- **Linux**: Freedesktop Secret Service
+- **Android**: Android Keystore-backed encrypted preferences; the Rust backend
+  holds only an in-memory copy. See [Android](ANDROID.md).
 
 On macOS, if you are prompted for your login password the first time Verenu saves a key, choose **Always Allow** so you are not asked again.
 

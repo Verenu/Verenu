@@ -1,6 +1,6 @@
 # Contributing to Verenu
 
-Verenu is a Tauri desktop app for Windows and macOS. Keep changes focused, lightweight, privacy-aware, and grounded in how the app actually works.
+Verenu is a Tauri desktop app for Windows, macOS, and Linux. Keep changes focused, lightweight, privacy-aware, and grounded in how the app actually works.
 
 ## Branch Flow
 
@@ -58,7 +58,7 @@ git diff --cached
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 24 LTS, matching CI
 - Rust and Cargo
 - Python 3.8+ (required by `npm test` because the OnePyFone test runner is a Python script)
 - Windows: WebView2
@@ -76,11 +76,18 @@ npm install
 npm run tauri dev
 ```
 
-### Frontend-only server
+### Browser development
+
+`npm run dev` starts a frontend-only preview with local browser mocks. It does
+not exercise persistence, providers, or native integration. For application
+verification, start an isolated real Rust-backed session:
 
 ```bash
-npm run dev
+npm run dev:session -- --synthetic-seed
 ```
+
+Open the private access link printed by the launcher. See
+[Browser dev sessions](DEV_SESSIONS.md) for prerequisites and ownership rules.
 
 ## Platform Notes
 
@@ -101,7 +108,7 @@ npm run dev
 
 ### Linux (Omarchy / Hyprland)
 
-- Default hold-to-record hotkey is <kbd>Ctrl</kbd> + <kbd>Space</kbd>.
+- Default hold-to-record hotkey is <kbd>Ctrl</kbd> + <kbd>Super</kbd>.
 - Global shortcuts must go through the XDG Desktop Portal; do not add input snooping or privileged helpers.
 - API keys use Freedesktop Secret Service and must never be written to settings or SQLite.
 - Do not edit Omarchy-owned files under `/usr/share/omarchy`; user Hyprland changes belong under `~/.config/hypr/`.
@@ -113,7 +120,7 @@ npm run dev
 - Use constants from [`../src-tauri/src/data/store/mod.rs`](../src-tauri/src/data/store/mod.rs) for store keys. Do not add raw string keys.
 - Keep [`../tests/smoke/`](../tests/smoke/) as a contract. Fix app code when smoke tests fail.
 - Keep dependencies lean. The app has a low idle RAM target.
-- Follow existing Rust, Svelte, TypeScript, and Tailwind patterns before inventing new abstractions.
+- Follow existing Rust, Svelte, TypeScript, and shared CSS patterns before inventing new abstractions.
 - If you change how data moves on or off device, document it clearly.
 - Privacy-impacting logs must use redacted metadata only. Do not log dictated text, prompt bodies, snippet expansions, raw dictionary terms, API keys, or full local paths.
 
@@ -143,7 +150,7 @@ npm run lint
 npm run build
 npm run test:rust
 npm run test:smoke
-npm audit --audit-level=moderate
+npm audit --omit=dev --audit-level=moderate
 ```
 
 ### Dependency and security audit notes
@@ -155,8 +162,7 @@ npm audit --audit-level=moderate
 ### Targeted UI and state checks
 
 ```bash
-npm run dev
-python3 tests/OnePyFone.py --suite ui,state --no-server
+python3 tests/OnePyFone.py --suite ui,state
 ```
 
 On Windows, use `python` instead of `python3` if `python3` is not available in your shell.
@@ -166,7 +172,8 @@ Rules:
 - Live API checks are opt-in.
 - Never print API keys, clipboard contents, or real dictated text in test output.
 - Keep [`../tests/smoke/`](../tests/smoke/) frozen.
-- Add coverage in Rust tests or [`../tests/integration/`](../tests/integration/) when behavior changes.
+- Add focused coverage in Rust tests, frontend unit tests, or
+  [`../tests/browser/`](../tests/browser/) for real-session browser behavior.
 - For UI-facing changes, use Playwright when it makes sense and say what you tested.
 
 ## Version Changes

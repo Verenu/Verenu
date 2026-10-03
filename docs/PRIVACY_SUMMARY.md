@@ -1,13 +1,16 @@
 # Privacy & Data
 
-Verenu doesn't run an account system. Desktop builds don't collect telemetry or
-analytics. Android builds may include optional pseudonymous product analytics, but
-only explicit aggregate dictation events are sent when the build is configured
-for it; dictated content and identifiers are not.
+Verenu doesn't run an account system. Configured desktop and Android builds
+include optional pseudonymous product analytics, enabled by default. Disable
+it during onboarding or in Settings -> Privacy. Dictated content and private
+account or device identifiers are excluded; random analytics identifiers are
+sent. See the [analytics contract](ANALYTICS.md) for the exact event and identity
+rules.
 
 ## What stays on your device
 
-- Your API keys (Windows Credential Manager / macOS Keychain)
+- Your API keys in Windows Credential Manager, macOS Keychain, Linux Secret
+  Service, or Android Keystore-backed encrypted preferences
 - Your settings, provider preferences, context groups, targets, and tone preferences
 - Your transcription history
 - Your context vocabulary, snippets, and Auto-learn data
@@ -23,20 +26,24 @@ for it; dictated content and identifiers are not.
 - **Update checks** request GitHub release metadata without sending dictated text, history, or keys
 - **Verenu service checks** optionally request public provider status and health data from `api.verenu.com`; disable them in Settings → Privacy
 
-## Optional Android analytics
+## Optional product analytics
 
-When configured at build time, Android sends explicit dictation lifecycle and
-delivery categories, a safe settings summary, and categorized pipeline
-failures with a fresh random per-process identifier. Automatic capture,
-replay, crashes, raw error messages, app names, and dictated content are
-excluded. This is pseudonymous rather than mathematically anonymous; the
-identifier is deliberately not persistent across app launches.
+Configured builds send approved usage events, safe settings summaries, and
+sanitized failure categories. Analytics uses a persisted random installation
+ID, a fresh session ID, and per-dictation run IDs. The installation ID allows
+cross-launch usage measurement and is deleted when analytics is disabled.
+Re-enabling creates a new ID. These IDs are not derived from accounts,
+hardware, pairing identity, or user content. See [Data and privacy](DATA_AND_PRIVACY.md)
+and the [analytics contract](ANALYTICS.md) for exclusions and opt-out behavior.
 
 ## One important caveat
 
 Once your audio or text reaches a third-party AI provider like Groq, OpenAI, Google, or AssemblyAI, that provider's own retention and privacy policies apply. Verenu has no control over what happens on their end.
 
-If you want the strictest local path today, use local transcription with `Cleanup: Off`. Local transcription with cloud cleanup still sends transcript text to the cleanup provider.
+For on-device dictation processing, use local transcription with local cleanup
+or Cleanup Off. Local transcription with cloud cleanup still sends transcript
+text to the cleanup provider. Model downloads, update checks, and optional
+analytics are separate network activity.
 
 ## Want the full breakdown?
 

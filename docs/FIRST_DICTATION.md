@@ -6,6 +6,12 @@ Verenu works with a single hold-to-record hotkey. You do not need to click the a
 
 - **Windows**: hold <kbd>Ctrl</kbd> + <kbd>Windows</kbd>
 - **macOS**: hold <kbd>Option</kbd> + <kbd>Space</kbd>
+- **Linux**: hold <kbd>Ctrl</kbd> + <kbd>Super</kbd>. On Omarchy Quattro,
+  approve the portal request and use the managed Hyprland bindings. See
+  [Install Verenu](INSTALL.md).
+
+On Android, enable the required permissions and use the dictation pill over
+the keyboard instead of a desktop hotkey. See [Android](ANDROID.md).
 
 Click into any text field, then hold the hotkey and start talking.
 
