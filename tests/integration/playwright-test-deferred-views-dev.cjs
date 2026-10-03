@@ -51,6 +51,26 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     await page.locator('h2.settings-h', { hasText: 'Developer' }).waitFor({ state: 'visible', timeout: TIMEOUT });
     assert.equal(developerAttempts, 2, 'retry must fetch the failed module again');
     assert.deepEqual(errors, [], 'deferred loading must not cause uncaught errors');
+
+    const phone = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36',
+    });
+    const phoneRequests = [];
+    phone.on('request', (request) => phoneRequests.push(request.url()));
+    phone.on('pageerror', (error) => errors.push(error.message));
+    await seedDevState(phone, { settings: { setup_complete: true } });
+    await phone.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
+    assert(!phoneRequests.some((url) => url.includes('/PermissionsSection.svelte')),
+      'Android permissions must remain deferred on Home');
+    await phone.locator('.mobile-nav').getByRole('button', { name: 'Settings', exact: true }).click();
+    await phone.getByRole('tab', { name: 'Permissions', exact: true }).click();
+    await phone.locator('h2.settings-h', { hasText: 'Permissions' }).waitFor({ state: 'visible', timeout: TIMEOUT });
+    await phone.locator('.android-perms').waitFor({ state: 'visible', timeout: TIMEOUT });
+    assert.equal(await phone.locator('.android-perms .perm-row').count(), 4,
+      'the deferred Android section must render its permission controls');
+    assert.deepEqual(errors, [], 'Android deferred loading must not cause uncaught errors');
+    await phone.close();
     console.log('PASS - deferred features, slow search navigation, and load retry verified.');
   } catch (error) {
     console.error(`FAIL - deferred views: ${error.message}`);
