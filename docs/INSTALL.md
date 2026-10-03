@@ -45,7 +45,7 @@ If macOS prompts for your login password when Verenu first saves your API key to
 If you'd rather build Verenu yourself:
 
 **Prerequisites**
-- Node.js 18+
+- Node.js 24 LTS, matching CI
 - Rust and Cargo
 - Windows: WebView2 (usually already installed)
 - macOS: Xcode Command Line Tools (recommended)

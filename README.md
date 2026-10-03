@@ -60,7 +60,7 @@ macOS support is not an afterthought anymore. It is part of the normal app flow,
 ### Linux (Wayland)
 
 - Arch Linux with Omarchy Quattro and Hyprland is the primary supported setup
-- Default hold-to-record hotkey: <kbd>Ctrl</kbd> + <kbd>Space</kbd>
+- Default hold-to-record hotkey: <kbd>Ctrl</kbd> + <kbd>Super</kbd>
 - Global shortcuts use the XDG Desktop Portal; API keys use Freedesktop Secret Service
 - Native Wayland clipboard/focus integration is used for paste and clipboard restoration
 
@@ -104,7 +104,12 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 
 Supported builds may use PostHog for privacy-preserving product analytics. Analytics is enabled by default so we can understand coarse feature usage, settings adoption, and reliability, but you can turn it off during onboarding or at any time in **Settings → Privacy**.
 
-Analytics uses temporary randomized pseudonymous identifiers, not accounts or device identifiers. It does not include dictated audio, transcripts, cleaned text, prompts, clipboard contents, window or app contents, URLs, accessibility text, credentials, microphone names, or raw error messages. See the [full privacy breakdown](docs/DATA_AND_PRIVACY.md) for details.
+Analytics uses random installation, session, and dictation identifiers. The
+installation ID persists across launches until opt-out; it is not derived from
+an account or device identifier. Analytics excludes dictated audio, transcripts,
+cleaned text, prompts, clipboard contents, window or app contents, URLs,
+accessibility text, credentials, microphone names, and raw error messages. See
+the [analytics contract](docs/ANALYTICS.md) and [privacy breakdown](docs/DATA_AND_PRIVACY.md).
 
 Read the full breakdown in [docs/DATA_AND_PRIVACY.md](docs/DATA_AND_PRIVACY.md).
 
@@ -119,6 +124,13 @@ You choose the providers. Verenu does not lock you into one stack.
 | OpenAI | `gpt-4o-transcribe` | `gpt-4o-mini` |
 | Google | `gemini-3.5-transcribe` | `gemini-3.5-flash-lite` |
 | AssemblyAI | `universal-3-5-pro` or `universal-2` | not available |
+| OpenRouter | Configurable model ID | Configurable model ID |
+| xAI | `grok-voice-transcribe-2.0` | `grok-4-fast-non-reasoning` |
+
+These are examples from the app's model catalog. OpenRouter and xAI are available
+in Settings -> API Keys and Advanced Models, rather than the setup wizard or
+one-click presets. Their catalogs are not live-synced; Advanced Models accepts
+custom model IDs. See [API keys](docs/API_KEYS.md).
 
 If you care about privacy, speed, retention, or cost, judge the provider on its own policy. Once data leaves Verenu and hits a provider API, that provider's rules apply. Local transcription with cloud cleanup is still not fully local because the transcript text leaves the device.
 
@@ -132,7 +144,7 @@ For more details: [Add Your API Key](docs/API_KEYS.md) and [Privacy & Data](docs
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 24 LTS, matching CI
 - Rust and Cargo
 - Python 3.8+ (required by `npm test`; the OnePyFone test runner is a Python script)
 - Windows: WebView2
@@ -183,7 +195,7 @@ For more details: [Release Process](docs/RELEASE.md), [Changelog](docs/CHANGELOG
 - Native OS integrations where they actually matter
 - Better fit for a background dictation tool than a browser-shaped desktop app
 
-For more details: [Architecture](docs/ARCHITECTURE.md) and [Transcription RAM and reliability plan](docs/transcription-ram-reliability-plan.md).
+For more details: [Architecture](docs/ARCHITECTURE.md).
 
 ## Contact
 

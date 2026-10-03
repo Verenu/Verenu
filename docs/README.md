@@ -28,6 +28,10 @@ Contexts are the current home for app and website targets, cleanup settings, voc
 - [Contributing](CONTRIBUTING.md)
 - [Architecture](ARCHITECTURE.md)
 - [Testing](TESTING.md)
+- [Browser dev sessions](DEV_SESSIONS.md)
+- [Agent verification](AGENT_VERIFICATION.md)
+- [Android development](ANDROID.md)
+- [LAN sync](lan-sync.md)
 - [Release Process](RELEASE.md)
 - [Changelog](CHANGELOG.md)
 - [Security Policy](SECURITY.md)
@@ -35,7 +39,6 @@ Contexts are the current home for app and website targets, cleanup settings, voc
 - [Code Of Conduct](CODE_OF_CONDUCT.md)
 - [Roadmap](ROADMAP.md)
 - [macOS code signing](macos-code-signing.md)
-- [Transcription RAM and reliability plan](transcription-ram-reliability-plan.md)
 - [Design system colors](colors.md)
 
 ## Maintainer Notes
