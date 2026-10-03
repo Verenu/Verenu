@@ -4,7 +4,7 @@ use reqwest::multipart;
 
 use super::gemini_types::GeminiResp;
 use super::prompts::{gemini_generation_config, get_transcription_prompt};
-use super::ProviderId;
+use super::{Target, TranscriptionAdapter, Wire};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WhisperFormFields {
@@ -16,42 +16,69 @@ struct WhisperFormFields {
 
 pub async fn transcribe(
     wav: Bytes,
-    provider: ProviderId,
+    provider: impl Into<Target>,
     api_key: &str,
     language: &str,
     model: &str,
     gen: u64,
 ) -> Result<String> {
+    let target: Target = provider.into();
     #[cfg(any(test, debug_assertions))]
     if let Some(result) =
-        crate::testing::resolve_provider_fixture("transcription", provider.as_str(), model)
+        crate::testing::resolve_provider_fixture("transcription", target.id_str(), model)
     {
         return result;
     }
 
     log::debug!(
-        "transcription: start gen={} provider={:?} language={} wav_bytes={}",
+        "transcription: start gen={} provider={} language={} wav_bytes={}",
         gen,
-        provider,
+        target.id_str(),
         language,
         wav.len()
     );
-    match provider {
-        ProviderId::Google => transcribe_gemini(wav, api_key, language, model, gen).await,
-        ProviderId::AssemblyAi => transcribe_assemblyai(wav, api_key, language, model, gen).await,
-        ProviderId::Local => {
-            anyhow::bail!("Local provider must not reach api::transcription::transcribe")
+    let provider = match &target {
+        Target::Builtin(provider) => *provider,
+        Target::Custom(custom) => {
+            return transcribe_custom(wav, custom, api_key, language, model, gen).await;
         }
-        ProviderId::Groq | ProviderId::OpenAI => {
-            let url = provider
-                .whisper_url()
-                .expect("Groq/OpenAI always have a whisper_url");
+    };
+    let wire = Wire::default();
+    match provider.transcription_adapter() {
+        TranscriptionAdapter::Gemini => transcribe_gemini(wav, api_key, language, model, gen).await,
+        TranscriptionAdapter::AssemblyAi => {
+            transcribe_assemblyai(wav, api_key, language, model, gen).await
+        }
+        TranscriptionAdapter::Unsupported => {
+            anyhow::bail!(
+                "{} has no transcription endpoint; choose another transcription provider",
+                provider.label()
+            )
+        }
+        TranscriptionAdapter::OpenAiMultipart { url } => {
             transcribe_whisper(
                 wav,
                 api_key,
                 url,
+                &wire,
                 provider.label(),
                 provider.as_str(),
+                model,
+                language,
+                gen,
+            )
+            .await
+        }
+        TranscriptionAdapter::OpenRouterJson { url } => {
+            transcribe_openrouter(wav, api_key, url, provider.label(), model, language, gen).await
+        }
+        TranscriptionAdapter::XaiStt { url } => {
+            transcribe_xai(
+                wav,
+                api_key,
+                url,
+                &wire,
+                provider.label(),
                 model,
                 language,
                 gen,
@@ -61,11 +88,62 @@ pub async fn transcribe(
     }
 }
 
+/// A user-defined endpoint. The shapes match the built-in adapters; only the
+/// URL, auth, and extra headers differ.
+async fn transcribe_custom(
+    wav: Bytes,
+    custom: &super::custom::CustomProvider,
+    api_key: &str,
+    language: &str,
+    model: &str,
+    gen: u64,
+) -> Result<String> {
+    use super::custom::CustomProtocol;
+    let Some(url) = custom.transcription_url() else {
+        anyhow::bail!("{} has no transcription endpoint", custom.name);
+    };
+    if !custom.supports_transcription {
+        anyhow::bail!("Transcription is turned off for {}", custom.name);
+    }
+    let wire = custom.wire();
+    match custom.protocol {
+        CustomProtocol::Openai => {
+            transcribe_whisper(
+                wav,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                "custom",
+                model,
+                language,
+                gen,
+            )
+            .await
+        }
+        CustomProtocol::Xai => {
+            transcribe_xai(
+                wav,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                model,
+                language,
+                gen,
+            )
+            .await
+        }
+        CustomProtocol::Anthropic => anyhow::bail!("Anthropic has no transcription endpoint"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn transcribe_whisper(
     wav: Bytes,
     api_key: &str,
     url: &str,
+    wire: &Wire,
     provider_label: &str,
     provider_id: &str,
     model: &str,
@@ -93,12 +171,12 @@ async fn transcribe_whisper(
     let form = build_whisper_form(wav, &fields)?;
 
     let request_started = std::time::Instant::now();
-    let resp = super::client::get()
-        .post(url)
-        .bearer_auth(api_key)
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
         .multipart(form)
         .send()
         .await?;
+    let resp = wire.check_status(resp, provider_label, model)?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
     log::debug!(
@@ -154,7 +232,7 @@ async fn transcribe_whisper(
         }
     };
 
-    let body: WhisperResponse = resp.json().await?;
+    let body: WhisperResponse = wire.json(resp).await?;
     log::debug!(
         "transcription: whisper parsed gen={} chars={}",
         gen,
@@ -603,6 +681,157 @@ async fn transcribe_assemblyai(
     }
 }
 
+/// Shared status handling for the JSON and xAI transcription adapters.
+async fn checked_transcription_response(
+    resp: reqwest::Response,
+    provider_label: &str,
+    model: &str,
+    gen: u64,
+) -> Result<reqwest::Response> {
+    let status = resp.status();
+    let request_id = super::response_request_id(&resp);
+    log::debug!(
+        "transcription: response gen={} provider={} status={} request_id={}",
+        gen,
+        provider_label,
+        status,
+        request_id
+    );
+    match super::ensure_provider_success(resp, model, Some((provider_label, model))).await {
+        Ok(resp) => Ok(resp),
+        Err(super::ProviderHttpError::Quota(e)) => Err(e),
+        Err(super::ProviderHttpError::Auth {
+            error,
+            status,
+            request_id,
+            preview,
+        }) => {
+            log::warn!(
+                "transcription: unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
+                gen,
+                provider_label,
+                model,
+                status,
+                request_id,
+                preview
+            );
+            Err(error)
+        }
+        Err(super::ProviderHttpError::NonSuccess {
+            source,
+            status,
+            request_id,
+            preview,
+        }) => {
+            log::warn!(
+                "transcription: non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
+                gen,
+                provider_label,
+                model,
+                status,
+                request_id,
+                preview
+            );
+            Err(anyhow::Error::new(source).context(format!(
+                "Transcription API error provider={} model={} status={} request_id={} body_preview={}",
+                provider_label, model, status, request_id, preview
+            )))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TextResponse {
+    text: String,
+}
+
+fn build_openrouter_transcription_request(
+    wav: &[u8],
+    model: &str,
+    language: &str,
+) -> serde_json::Value {
+    use base64::Engine;
+    serde_json::json!({
+        "model": model,
+        "language": language,
+        "input_audio": {
+            "data": base64::engine::general_purpose::STANDARD.encode(wav),
+            "format": "wav",
+        },
+    })
+}
+
+async fn transcribe_openrouter(
+    wav: Bytes,
+    api_key: &str,
+    url: &str,
+    provider_label: &str,
+    model: &str,
+    language: &str,
+    gen: u64,
+) -> Result<String> {
+    let body = build_openrouter_transcription_request(&wav, model, language);
+    log::debug!(
+        "transcription: openrouter request gen={} model={} language={} wav_bytes={}",
+        gen,
+        model,
+        language,
+        wav.len()
+    );
+    let resp = super::client::get()
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await?;
+    let resp = checked_transcription_response(resp, provider_label, model, gen).await?;
+    let body: TextResponse = resp.json().await?;
+    Ok(body.text.trim().to_owned())
+}
+
+/// xAI requires `file` to be the last multipart field.
+fn build_xai_form(wav: Bytes, model: &str, language: &str) -> Result<multipart::Form> {
+    let part =
+        multipart::Part::stream_with_length(reqwest::Body::from(wav.clone()), wav.len() as u64)
+            .file_name("audio.wav")
+            .mime_str("audio/wav")?;
+    Ok(multipart::Form::new()
+        .text("model", model.to_owned())
+        .text("language", language.to_owned())
+        .text("format", "true")
+        .part("file", part))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_xai(
+    wav: Bytes,
+    api_key: &str,
+    url: &str,
+    wire: &Wire,
+    provider_label: &str,
+    model: &str,
+    language: &str,
+    gen: u64,
+) -> Result<String> {
+    log::debug!(
+        "transcription: xai request gen={} model={} language={} wav_bytes={}",
+        gen,
+        model,
+        language,
+        wav.len()
+    );
+    let form = build_xai_form(wav, model, language)?;
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
+        .multipart(form)
+        .send()
+        .await?;
+    let resp = wire.check_status(resp, provider_label, model)?;
+    let resp = checked_transcription_response(resp, provider_label, model, gen).await?;
+    let body: TextResponse = wire.json(resp).await?;
+    Ok(body.text.trim().to_owned())
+}
+
 fn build_whisper_form_fields(model: &str, language: &str, prompt: &str) -> WhisperFormFields {
     WhisperFormFields {
         model: model.to_owned(),
@@ -670,6 +899,26 @@ mod tests {
         assert_eq!(json["speech_models"][0], "universal-3-5-pro");
         assert_eq!(json["language_code"], "en");
         assert_eq!(json["prompt"], "prompt text");
+    }
+
+    #[test]
+    fn openrouter_transcription_request_embeds_base64_wav() {
+        let body =
+            super::build_openrouter_transcription_request(b"RIFF", "openai/whisper-large-v3", "en");
+        assert_eq!(body["model"], "openai/whisper-large-v3");
+        assert_eq!(body["language"], "en");
+        assert_eq!(body["input_audio"]["format"], "wav");
+        assert_eq!(body["input_audio"]["data"], "UklGRg==");
+    }
+
+    #[test]
+    fn xai_form_builds_with_file_present() {
+        let form = super::build_xai_form(
+            bytes::Bytes::from_static(b"RIFF"),
+            "grok-voice-transcribe-2.0",
+            "en",
+        );
+        assert!(form.is_ok());
     }
 
     #[test]

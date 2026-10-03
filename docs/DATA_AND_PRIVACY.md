@@ -20,6 +20,7 @@ This document explains what Verenu keeps on device, what it sends off device, an
 - Windows: stored in Windows Credential Manager
 - macOS: stored in Keychain
 - Linux: stored through Freedesktop Secret Service (GNOME Keyring/KWallet)
+- Custom provider keys use separate credential-store entries identified by a stable provider UUID. Renaming a provider keeps its key. Removing a provider deletes its key.
 - Legacy plaintext storage is migrated away from older formats where possible
 
 ### App data
@@ -28,6 +29,7 @@ Stored locally in app storage and SQLite:
 
 - Settings
 - Provider and model preferences
+- Custom provider definitions, including base URLs, task-specific model IDs, and non-secret request options. Definitions are included in settings backups; their API keys are not. Custom definitions are device-local and do not participate in LAN settings sync.
 - Context groups, their app/website targets, per-context tone/cleanup overrides, vocabulary, and snippets
 - Transcription history
 - Auto-learn events and candidate data
@@ -80,6 +82,9 @@ That can be:
 - Groq
 - OpenAI
 - Google
+- AssemblyAI
+- OpenRouter, which forwards the audio to the speech model you choose there
+- xAI
 
 If transcription is local, audio stays on the device after the model download.
 

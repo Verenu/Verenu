@@ -3,11 +3,13 @@
     checked = false,
     onchange,
     label = '',
+    disabled = false,
     error = $bindable(false),
   }: {
     checked: boolean;
     onchange: (value: boolean) => void;
     label?: string;
+    disabled?: boolean;
     /** Set true to flash the toggle red with an X, e.g. when a save fails. Auto-resets itself. */
     error?: boolean;
   } = $props();
@@ -28,6 +30,7 @@
   aria-checked={checked}
   aria-label={label || 'Toggle'}
   tabindex="0"
+  {disabled}
   onclick={() => onchange(!checked)}
 >
   <span class="toggle-thumb" aria-hidden="true">
@@ -76,6 +79,8 @@
   .toggle.on {
     background: var(--accent);
   }
+
+  .toggle:disabled { opacity: 0.45; cursor: default; }
 
   .toggle.on .toggle-thumb {
     left: 16px;

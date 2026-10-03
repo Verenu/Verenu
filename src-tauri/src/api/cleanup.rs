@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::gemini_types::{GeminiGenerateReq, GeminiReqContent, GeminiReqPart};
 use super::prompts::{cleanup_max_output_tokens, gemini_generation_config};
-use super::ProviderId;
+use super::{CleanupAdapter, ProviderId, Target, Wire};
 
 // Cleanup should be fast enough to run inline with dictation delivery. Keep
 // this shorter than the shared client timeout so a stalled provider can fall
@@ -14,7 +14,7 @@ const CLEANUP_REQUEST_TIMEOUT_SECS: u64 = 45;
 #[allow(clippy::too_many_arguments)]
 pub async fn cleanup(
     text: &str,
-    provider: ProviderId,
+    provider: impl Into<Target>,
     api_key: &str,
     model: &str,
     profile: &str,
@@ -43,7 +43,7 @@ pub async fn cleanup(
 #[allow(clippy::too_many_arguments)]
 pub async fn cleanup_with_alternate(
     text: &str,
-    provider: ProviderId,
+    provider: impl Into<Target>,
     api_key: &str,
     model: &str,
     profile: &str,
@@ -74,7 +74,7 @@ pub async fn cleanup_with_alternate(
 #[allow(clippy::too_many_arguments)]
 pub async fn cleanup_with_alternate_and_evidence(
     text: &str,
-    provider: ProviderId,
+    provider: impl Into<Target>,
     api_key: &str,
     model: &str,
     profile: &str,
@@ -86,8 +86,14 @@ pub async fn cleanup_with_alternate_and_evidence(
     alternate_transcript: Option<&str>,
     gen: u64,
 ) -> Result<String> {
-    if provider == ProviderId::AssemblyAi {
-        anyhow::bail!("AssemblyAI provides transcription only; choose a cleanup provider")
+    let target: Target = provider.into();
+    if let Target::Builtin(provider) = &target {
+        if provider.cleanup_adapter() == CleanupAdapter::Unsupported {
+            anyhow::bail!(
+                "{} provides no cleanup endpoint; choose a cleanup provider",
+                provider.label()
+            )
+        }
     }
     if intensity == "none" && alternate_transcript.is_none() {
         // The pipeline normally bypasses this function for Off. Keep the API
@@ -95,9 +101,17 @@ pub async fn cleanup_with_alternate_and_evidence(
         // model operation at this intensity.
         return Ok(text.to_owned());
     }
-    let provider_id = provider.as_str();
+    // Prompt selection and the reasoning policy key off the provider family.
+    // A custom endpoint never borrows a built-in's behavior by sharing its
+    // display name, so it is always "custom" here.
+    let provider_id = match &target {
+        Target::Builtin(provider) => provider.as_str(),
+        Target::Custom(_) => "custom",
+    };
     #[cfg(any(test, debug_assertions))]
-    if let Some(result) = crate::testing::resolve_provider_fixture("cleanup", provider_id, model) {
+    if let Some(result) =
+        crate::testing::resolve_provider_fixture("cleanup", target.id_str(), model)
+    {
         return result;
     }
 
@@ -121,9 +135,9 @@ pub async fn cleanup_with_alternate_and_evidence(
         cleanup_max_output_tokens(intensity, text)
     };
     log::debug!(
-        "cleanup: start gen={} provider={:?} model={} profile={} intensity={} input_chars={} prompt_chars={} max_output_tokens={} snippet_rule_lines={} app_context={} custom_template={}",
+        "cleanup: start gen={} provider={} model={} profile={} intensity={} input_chars={} prompt_chars={} max_output_tokens={} snippet_rule_lines={} app_context={} custom_template={}",
         gen,
-        provider,
+        target.id_str(),
         model,
         profile,
         intensity,
@@ -145,30 +159,56 @@ pub async fn cleanup_with_alternate_and_evidence(
         );
     }
     let request = async {
-        if let Some(url) = provider.cleanup_url() {
-            openai_compat(
-                text,
-                api_key,
-                url,
-                provider.label(),
-                model,
-                &prompt,
-                max_output_tokens,
-                alternate_transcript,
-                gen,
-            )
-            .await
-        } else {
-            google_cleanup(
-                text,
-                api_key,
-                &prompt,
-                model,
-                max_output_tokens,
-                alternate_transcript,
-                gen,
-            )
-            .await
+        let provider = match &target {
+            Target::Builtin(provider) => *provider,
+            Target::Custom(custom) => {
+                return custom_cleanup(
+                    text,
+                    api_key,
+                    custom,
+                    model,
+                    &prompt,
+                    max_output_tokens,
+                    alternate_transcript,
+                    gen,
+                )
+                .await;
+            }
+        };
+        match provider.cleanup_adapter() {
+            CleanupAdapter::OpenAiChat { url } => {
+                openai_compat(
+                    text,
+                    api_key,
+                    url,
+                    &Wire::default(),
+                    provider.label(),
+                    provider.label(),
+                    model,
+                    &prompt,
+                    max_output_tokens,
+                    alternate_transcript,
+                    None,
+                    gen,
+                )
+                .await
+            }
+            CleanupAdapter::Gemini => {
+                google_cleanup(
+                    text,
+                    api_key,
+                    &prompt,
+                    model,
+                    max_output_tokens,
+                    alternate_transcript,
+                    gen,
+                )
+                .await
+            }
+            CleanupAdapter::Unsupported => anyhow::bail!(
+                "{} provides no cleanup endpoint; choose a cleanup provider",
+                provider.label()
+            ),
         }
     };
 
@@ -183,13 +223,13 @@ pub async fn cleanup_with_alternate_and_evidence(
             log::warn!(
                 "cleanup: request timeout gen={} provider={} model={} timeout_secs={}",
                 gen,
-                provider.label(),
+                target.label(),
                 model,
                 CLEANUP_REQUEST_TIMEOUT_SECS
             );
             Err(anyhow::anyhow!(
                 "Cleanup API timeout provider={} model={} timeout_secs={}",
-                provider.label(),
+                target.label(),
                 model,
                 CLEANUP_REQUEST_TIMEOUT_SECS
             ))
@@ -233,22 +273,27 @@ async fn openai_compat(
     text: &str,
     api_key: &str,
     url: &str,
+    wire: &Wire,
     provider_label: &str,
+    policy_key: &str,
     model: &str,
     prompt: &str,
     max_tokens: u32,
     alternate_transcript: Option<&str>,
+    overrides: Option<&serde_json::Map<String, serde_json::Value>>,
     gen: u64,
 ) -> Result<String> {
-    ensure_openai_compat_reasoning_policy(provider_label, model)?;
-    let body = build_openai_compat_request_with_alternate(
+    ensure_openai_compat_reasoning_policy(policy_key, model)?;
+    let request_body = build_openai_compat_request_with_alternate(
         text,
         model,
         prompt,
         max_tokens,
         alternate_transcript,
-        provider_label,
+        policy_key,
     );
+    let mut body = serde_json::to_value(&request_body)?;
+    merge_overrides(&mut body, overrides);
 
     log::debug!(
         "cleanup: openai_compat request gen={} provider={} model={} url={} input_chars={} prompt_chars={}",
@@ -260,9 +305,8 @@ async fn openai_compat(
         prompt.chars().count()
     );
     let request_started = std::time::Instant::now();
-    let resp = super::client::get()
-        .post(url)
-        .bearer_auth(api_key)
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
         .json(&body)
         .send()
         .await?;
@@ -277,15 +321,169 @@ async fn openai_compat(
         request_started.elapsed().as_millis()
     );
 
-    let resp = match super::ensure_provider_success(
-        resp,
+    let resp = wire.check_status(resp, provider_label, model)?;
+    let resp = checked_cleanup_response(resp, provider_label, model, gen).await?;
+
+    let data: ChatResp = wire.json(resp).await?;
+    let output = data
+        .choices
+        .first()
+        .map(|c| c.message.content.trim().to_owned())
+        .ok_or_else(|| anyhow::anyhow!("No choices in OpenAI response"))?;
+    log::debug!(
+        "cleanup: openai_compat parsed gen={} chars={}",
+        gen,
+        output.chars().count()
+    );
+    Ok(output)
+}
+
+/// Adds user-supplied body fields. Protected keys were rejected when the
+/// provider was saved; `safe_overrides` strips them again before this runs.
+fn merge_overrides(
+    body: &mut serde_json::Value,
+    overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+) {
+    let (Some(overrides), Some(object)) = (overrides, body.as_object_mut()) else {
+        return;
+    };
+    for (key, value) in overrides {
+        object.insert(key.clone(), value.clone());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn custom_cleanup(
+    text: &str,
+    api_key: &str,
+    custom: &super::custom::CustomProvider,
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+    alternate_transcript: Option<&str>,
+    gen: u64,
+) -> Result<String> {
+    use super::custom::CustomProtocol;
+    if !custom.supports_cleanup {
+        anyhow::bail!("Cleanup is turned off for {}", custom.name);
+    }
+    let wire = custom.wire();
+    let url = custom.cleanup_url();
+    let overrides = custom.safe_overrides();
+    match custom.protocol {
+        CustomProtocol::Anthropic => {
+            anthropic_cleanup(
+                text,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                model,
+                prompt,
+                max_tokens,
+                alternate_transcript,
+                overrides.as_ref(),
+                gen,
+            )
+            .await
+        }
+        CustomProtocol::Openai | CustomProtocol::Xai => {
+            openai_compat(
+                text,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                "custom",
+                model,
+                prompt,
+                max_tokens,
+                alternate_transcript,
+                overrides.as_ref(),
+                gen,
+            )
+            .await
+        }
+    }
+}
+
+fn build_anthropic_request(
+    text: &str,
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+    alternate_transcript: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": prompt,
+        "messages": [{
+            "role": "user",
+            "content": format_transcript_input(text, alternate_transcript),
+        }],
+    })
+}
+
+/// Joins the text blocks of an Anthropic messages response.
+fn parse_anthropic_text(body: &serde_json::Value) -> Option<String> {
+    let text: String = body
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+        .collect();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn anthropic_cleanup(
+    text: &str,
+    api_key: &str,
+    url: &str,
+    wire: &Wire,
+    provider_label: &str,
+    model: &str,
+    prompt: &str,
+    max_tokens: u32,
+    alternate_transcript: Option<&str>,
+    overrides: Option<&serde_json::Map<String, serde_json::Value>>,
+    gen: u64,
+) -> Result<String> {
+    let mut body = build_anthropic_request(text, model, prompt, max_tokens, alternate_transcript);
+    merge_overrides(&mut body, overrides);
+    log::debug!(
+        "cleanup: anthropic request gen={} provider={} model={} input_chars={}",
+        gen,
         provider_label,
-        Some((provider_label, model)),
-    )
-    .await
+        model,
+        text.chars().count()
+    );
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
+        .json(&body)
+        .send()
+        .await?;
+    let resp = wire.check_status(resp, provider_label, model)?;
+    let resp = checked_cleanup_response(resp, provider_label, model, gen).await?;
+    let data: serde_json::Value = wire.json(resp).await?;
+    parse_anthropic_text(&data)
+        .ok_or_else(|| anyhow::anyhow!("No text content in {provider_label} response"))
+}
+
+/// Shared status handling for chat-style cleanup responses.
+async fn checked_cleanup_response(
+    resp: reqwest::Response,
+    provider_label: &str,
+    model: &str,
+    gen: u64,
+) -> Result<reqwest::Response> {
+    match super::ensure_provider_success(resp, provider_label, Some((provider_label, model))).await
     {
-        Ok(resp) => resp,
-        Err(super::ProviderHttpError::Quota(e)) => return Err(e),
+        Ok(resp) => Ok(resp),
+        Err(super::ProviderHttpError::Quota(e)) => Err(e),
         Err(super::ProviderHttpError::Auth {
             error,
             status,
@@ -301,7 +499,7 @@ async fn openai_compat(
                 request_id,
                 preview
             );
-            return Err(error);
+            Err(error)
         }
         Err(super::ProviderHttpError::NonSuccess {
             source,
@@ -318,25 +516,12 @@ async fn openai_compat(
                 request_id,
                 preview
             );
-            return Err(anyhow::Error::new(source).context(format!(
+            Err(anyhow::Error::new(source).context(format!(
                 "Cleanup API error provider={} model={} status={} request_id={} body_preview={}",
                 provider_label, model, status, request_id, preview
-            )));
+            )))
         }
-    };
-
-    let data: ChatResp = resp.json().await?;
-    let output = data
-        .choices
-        .first()
-        .map(|c| c.message.content.trim().to_owned())
-        .ok_or_else(|| anyhow::anyhow!("No choices in OpenAI response"))?;
-    log::debug!(
-        "cleanup: openai_compat parsed gen={} chars={}",
-        gen,
-        output.chars().count()
-    );
-    Ok(output)
+    }
 }
 
 fn ensure_openai_compat_reasoning_policy(provider_label: &str, model: &str) -> Result<()> {
@@ -352,6 +537,11 @@ fn ensure_openai_compat_reasoning_policy(provider_label: &str, model: &str) -> R
 fn is_groq_qwen_no_reasoning_model(model: &str) -> bool {
     let model = model.trim().to_ascii_lowercase();
     model.starts_with("qwen/qwen3.6-") || model.starts_with("qwen/qwen3.8-")
+}
+
+fn is_openai_o_series(model: &str) -> bool {
+    let mut chars = model.chars();
+    chars.next() == Some('o') && chars.next().is_some_and(|c| c.is_ascii_digit())
 }
 
 fn is_openai_gpt_51_no_reasoning_model(model: &str) -> bool {
@@ -370,6 +560,28 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
         // reasoning field at all.
         return !model.starts_with("qwen/qwen3") || is_groq_qwen_no_reasoning_model(&model);
     }
+    if provider == "openrouter" {
+        // Model ids are `vendor/model`. Judge the model by its own name and
+        // refuse families that always reason, since OpenRouter has no uniform
+        // switch that turns reasoning off.
+        let bare = model.rsplit('/').next().unwrap_or(&model);
+        return !(model.ends_with(":thinking")
+            || bare.contains("-thinking")
+            || bare.contains("reasoner")
+            || bare.contains("-r1")
+            || is_openai_o_series(bare)
+            || (bare.starts_with("gpt-5") && !is_openai_gpt_51_no_reasoning_model(bare)));
+    }
+    if provider == "xai" {
+        // Grok 4 and the *-reasoning / mini lines always think; only the
+        // explicit non-reasoning variants and older Grok 2/3 chat models fit.
+        if model.contains("non-reasoning") {
+            return true;
+        }
+        return !(model.contains("reasoning")
+            || model.starts_with("grok-4")
+            || model.starts_with("grok-3-mini"));
+    }
     if provider == "openai" {
         // OpenAI's o-series and GPT-5 before 5.1 do not support none. GPT-5.1
         // does; all ordinary GPT-4.x chat models are non-reasoning.
@@ -382,6 +594,21 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
     true
 }
 
+/// Chain-level version of the reasoning-policy check that also understands
+/// custom providers. A deleted or cleanup-disabled custom provider is skipped.
+/// Custom models are not policed: the user chose the endpoint and the model.
+pub fn chain_entry_supports_cleanup(
+    customs: &[super::custom::CustomProvider],
+    provider: &str,
+    model: &str,
+) -> bool {
+    match Target::resolve(provider, customs) {
+        None => false,
+        Some(Target::Builtin(provider)) => model_supports_cleanup_reasoning_policy(provider, model),
+        Some(Target::Custom(custom)) => custom.supports_cleanup,
+    }
+}
+
 /// Whether a selected cleanup backend satisfies the dictation reasoning
 /// policy. Google Gemini 3.x is the deliberate exception to "off": it is
 /// accepted only when the request can carry the supported minimum level.
@@ -392,6 +619,8 @@ pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str
         ProviderId::Groq => openai_compat_model_supports_no_reasoning("Groq", model),
         ProviderId::Google => super::prompts::gemini_generation_reasoning_supported(model),
         ProviderId::OpenAI => openai_compat_model_supports_no_reasoning("OpenAI", model),
+        ProviderId::OpenRouter => openai_compat_model_supports_no_reasoning("OpenRouter", model),
+        ProviderId::Xai => openai_compat_model_supports_no_reasoning("xAI", model),
         ProviderId::Local => true,
         // AssemblyAI is transcription-only and has no cleanup endpoint.
         ProviderId::AssemblyAi => false,
@@ -708,6 +937,95 @@ mod tests {
         assert!(!model_supports_cleanup_reasoning_policy(
             crate::api::ProviderId::AssemblyAi,
             "universal-2"
+        ));
+    }
+
+    #[test]
+    fn anthropic_request_puts_the_prompt_in_system() {
+        let body = super::build_anthropic_request("hello", "claude-x", "be brief", 256, None);
+        assert_eq!(body["model"], "claude-x");
+        assert_eq!(body["system"], "be brief");
+        assert_eq!(body["max_tokens"], 256);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("hello"));
+    }
+
+    #[test]
+    fn anthropic_response_joins_text_blocks_only() {
+        let body = serde_json::json!({"content": [
+            {"type": "thinking", "thinking": "hmm"},
+            {"type": "text", "text": "Hello "},
+            {"type": "text", "text": "world. "},
+        ]});
+        assert_eq!(
+            super::parse_anthropic_text(&body).as_deref(),
+            Some("Hello world.")
+        );
+        assert!(super::parse_anthropic_text(&serde_json::json!({"content": []})).is_none());
+        assert!(super::parse_anthropic_text(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn overrides_add_fields_but_a_custom_name_never_borrows_a_builtin_policy() {
+        let mut body = serde_json::json!({"model": "m", "temperature": 0.0});
+        let mut extra = serde_json::Map::new();
+        extra.insert("temperature".into(), serde_json::json!(0.7));
+        extra.insert("top_p".into(), serde_json::json!(0.9));
+        super::merge_overrides(&mut body, Some(&extra));
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["model"], "m");
+
+        // A provider the user names "Groq" must not trigger Groq's
+        // reasoning_effort rewrite: custom requests use the policy key "custom".
+        let req = super::build_openai_compat_request_with_alternate(
+            "t",
+            "qwen/qwen3.8-27b",
+            "p",
+            10,
+            None,
+            "custom",
+        );
+        assert!(req.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn openrouter_and_xai_cleanup_skip_always_reasoning_models() {
+        use crate::api::ProviderId::{OpenRouter, Xai};
+        let ok = |p, m| super::model_supports_cleanup_reasoning_policy(p, m);
+        assert!(ok(OpenRouter, "openai/gpt-4o-mini"));
+        assert!(ok(OpenRouter, "meta-llama/llama-3.3-70b-instruct"));
+        assert!(!ok(OpenRouter, "openai/o3-mini"));
+        assert!(!ok(OpenRouter, "openai/gpt-oss-20b"));
+        assert!(!ok(OpenRouter, "deepseek/deepseek-r1"));
+        assert!(!ok(OpenRouter, "qwen/qwen3-235b-a22b:thinking"));
+        assert!(ok(Xai, "grok-4-fast-non-reasoning"));
+        assert!(!ok(Xai, "grok-4-fast-reasoning"));
+        assert!(!ok(Xai, "grok-3-mini"));
+        assert!(!ok(Xai, "grok-4"));
+    }
+
+    #[test]
+    fn transcription_only_and_cleanup_only_providers_are_distinct() {
+        use crate::api::{CleanupAdapter, ProviderId, TranscriptionAdapter};
+        assert_eq!(
+            ProviderId::AssemblyAi.cleanup_adapter(),
+            CleanupAdapter::Unsupported
+        );
+        assert_ne!(
+            ProviderId::OpenRouter.transcription_adapter(),
+            TranscriptionAdapter::Unsupported
+        );
+        assert!(matches!(
+            ProviderId::Xai.cleanup_adapter(),
+            CleanupAdapter::OpenAiChat { .. }
+        ));
+        assert!(matches!(
+            ProviderId::Xai.transcription_adapter(),
+            TranscriptionAdapter::XaiStt { .. }
         ));
     }
 

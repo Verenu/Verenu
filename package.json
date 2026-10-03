@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:session": "node scripts/dev-session.mjs",
     "dev:fixtures": "node scripts/dev-audio-fixtures.mjs",
-    "test:dev-session": "node --test tests/dev-session/*.test.mjs",
+    "test:dev-session": "node --test --test-concurrency=1 tests/dev-session/*.test.mjs",
     "dev:tauri-host": "node scripts/vite-dev-server.mjs",
     "test:unit": "vitest run src",
     "test:quality": "npm run check && npm run test:unit",

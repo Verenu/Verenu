@@ -97,6 +97,8 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
         store::KEY_OPENAI,
         store::KEY_GOOGLE,
         store::KEY_ASSEMBLYAI,
+        store::KEY_OPENROUTER,
+        store::KEY_XAI,
     ] {
         settings.remove(key);
     }
@@ -383,6 +385,7 @@ fn allowed(command: &str) -> bool {
             | "get_all_settings"
             | "get_setting"
             | "save_setting"
+            | "delete_custom_provider"
             | "get_api_key_status"
             | "list_provider_models"
             | "get_recent"
@@ -503,6 +506,8 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 | store::KEY_OPENAI
                 | store::KEY_GOOGLE
                 | store::KEY_ASSEMBLYAI
+                | store::KEY_OPENROUTER
+                | store::KEY_XAI
                 | store::SYNC_ENABLED
                 | store::ANALYTICS_ENABLED
                 | store::AUTO_LEARN_ENABLED

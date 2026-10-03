@@ -5,7 +5,15 @@ import type { CustomTheme } from './customTheme';
 
 export const SETTINGS_SAVE_ERROR_EVENT = 'verenu:setting-save-error';
 
-export type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'local';
+export type ProviderId =
+  | 'groq'
+  | 'openai'
+  | 'google'
+  | 'assemblyai'
+  | 'openrouter'
+  | 'xai'
+  | `custom:${string}`
+  | 'local';
 export type ProviderModelMap = Record<ProviderId, string[]>;
 export type ToneId = 'casual' | 'formal' | 'very_casual';
 export type CleanupIntensity = 'none' | 'light' | 'medium' | 'high';
@@ -26,6 +34,7 @@ export interface AppMapping {
 }
 
 type SettingsValueMap = {
+  custom_providers: import('./customProviders.svelte').CustomProvider[];
   transcription_provider: ProviderId;
   transcription_language: TranscriptionLanguageCode;
   cleanup_provider: ProviderId;

@@ -20,6 +20,12 @@ pub struct PipelineConfig {
     pub key_openai: String,
     pub key_google: String,
     pub key_assemblyai: String,
+    pub key_openrouter: String,
+    pub key_xai: String,
+    /// User-defined providers and their keys. A custom id with no key here
+    /// resolves to an empty key, never to a built-in provider's key.
+    pub custom_providers: Vec<crate::api::custom::CustomProvider>,
+    pub custom_keys: std::collections::HashMap<String, String>,
     pub default_tone: String,
     pub cleanup_intensity: String,
     pub app_context_hint: bool,
@@ -37,13 +43,17 @@ pub const GROQ: &str = "groq";
 pub const OPENAI: &str = "openai";
 pub const GOOGLE: &str = "google";
 pub const ASSEMBLYAI: &str = "assemblyai";
+pub const OPENROUTER: &str = "openrouter";
+pub const XAI: &str = "xai";
 pub(crate) const LOCAL: &str = "local";
 pub const GROQ_GPT_OSS_20B_MODEL: &str = "openai/gpt-oss-20b";
 pub const GROQ_QWEN_3_6_27B_MODEL: &str = "qwen/qwen3.6-27b";
 pub const GROQ_QWEN_3_8_27B_MODEL: &str = "qwen/qwen3.8-27b";
 pub const DEPRECATED_GROQ_LLAMA_8B_MODEL: &str = "llama-3.1-8b-instant";
 pub const DEPRECATED_GROQ_LLAMA_70B_MODEL: &str = "llama-3.3-70b-versatile";
-pub const PROVIDERS: [&str; 5] = [GROQ, OPENAI, GOOGLE, ASSEMBLYAI, LOCAL];
+pub const PROVIDERS: [&str; 7] = [
+    GROQ, OPENAI, GOOGLE, ASSEMBLYAI, OPENROUTER, XAI, LOCAL,
+];
 
 pub fn default_transcription_model_for(provider: &str) -> &'static str {
     match provider {
@@ -51,6 +61,8 @@ pub fn default_transcription_model_for(provider: &str) -> &'static str {
         OPENAI => "gpt-4o-transcribe",
         GOOGLE => "gemini-3.5-transcribe",
         ASSEMBLYAI => "universal-3-5-pro",
+        OPENROUTER => "openai/whisper-large-v3",
+        XAI => "grok-voice-transcribe-2.0",
         _ => "whisper-large-v3-turbo",
     }
 }
@@ -60,6 +72,8 @@ pub fn default_cleanup_model_for(provider: &str) -> &'static str {
         LOCAL => "gemma-4-e2b",
         OPENAI => "gpt-4o-mini",
         GOOGLE => "gemini-3.5-flash-lite",
+        OPENROUTER => "openai/gpt-4o-mini",
+        XAI => "grok-4-fast-non-reasoning",
         _ => GROQ_QWEN_3_8_27B_MODEL,
     }
 }
@@ -162,13 +176,30 @@ pub fn transcription_language_label(code: &str) -> &'static str {
 
 impl PipelineConfig {
     pub fn key_for(&self, provider: &str) -> &str {
+        if crate::api::custom::is_custom_id(provider) {
+            return self
+                .custom_keys
+                .get(provider)
+                .map(String::as_str)
+                .unwrap_or("");
+        }
         match provider {
             "openai" => &self.key_openai,
             "google" => &self.key_google,
             "assemblyai" => &self.key_assemblyai,
+            "openrouter" => &self.key_openrouter,
+            "xai" => &self.key_xai,
             "local" => "",
             _ => &self.key_groq,
         }
+    }
+
+    pub fn provider_has_auth(&self, provider: &str) -> bool {
+        !self.key_for(provider).is_empty()
+            || self
+                .custom_providers
+                .iter()
+                .any(|p| p.id == provider && !p.requires_key)
     }
 
     /// The user's custom cleanup prompt, or `None` if Advanced Models is off or
@@ -204,7 +235,9 @@ pub fn parse_model_id(id: &str) -> Option<(String, String)> {
     let mut parts = id.splitn(2, '/');
     let provider = parts.next()?.trim().to_lowercase();
     let model = parts.next()?.trim().to_string();
-    if PROVIDERS.contains(&provider.as_str()) && !model.is_empty() {
+    if (PROVIDERS.contains(&provider.as_str()) || crate::api::custom::is_custom_id(&provider))
+        && !model.is_empty()
+    {
         Some((provider, model))
     } else {
         None
@@ -306,6 +339,13 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         .or_else(|| legacy_cleanup_prompt_override(store))
         .unwrap_or_default();
 
+    let custom_providers = crate::api::custom::parse_stored(store.get(CUSTOM_PROVIDERS));
+    let custom_keys = custom_providers
+        .iter()
+        .filter(|_| crate::api::custom::native_credentials_available())
+        .map(|p| (p.id.clone(), crate::data::credentials::get(&p.id)))
+        .collect();
+
     PipelineConfig {
         transcription_provider,
         transcription_language: language_or_default(TRANSCRIPTION_LANGUAGE, "en"),
@@ -323,6 +363,10 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         key_openai: crate::data::credentials::get(OPENAI),
         key_google: crate::data::credentials::get(GOOGLE),
         key_assemblyai: crate::data::credentials::get(ASSEMBLYAI),
+        key_openrouter: crate::data::credentials::get(OPENROUTER),
+        key_xai: crate::data::credentials::get(XAI),
+        custom_providers,
+        custom_keys,
         default_tone: supported_or_default(DEFAULT_TONE, "casual", is_supported_default_tone),
         cleanup_intensity: supported_or_default(
             CLEANUP_INTENSITY,

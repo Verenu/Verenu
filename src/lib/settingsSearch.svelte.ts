@@ -39,6 +39,7 @@ export function clearSettingsSearchNavigation(nonce: number): void {
 }
 
 const BASE_ENTRIES: SettingsSearchEntry[] = [
+  { id: 'custom-providers', section: 'keys', label: 'Custom providers', description: 'Connect a compatible endpoint with your own models and API key', target: 'custom-providers', keywords: ['endpoint', 'anthropic', 'openai compatible', 'xai compatible', 'base url'] },
   { id: 'general-hotkey', section: 'general', label: 'Hotkey', description: 'Hold to record and release to transcribe', target: 'general-hotkey', keywords: ['shortcut', 'keyboard', 'keybind', 'record'] },
   { id: 'general-copy-last', section: 'general', label: 'Copy last dictation', description: 'Copy the previous dictation to the clipboard', target: 'general-copy-last', keywords: ['clipboard', 'shortcut'] },
   { id: 'general-language', section: 'general', label: 'Spoken language', description: 'Choose the language transcription should expect', target: 'general-language', keywords: ['locale', 'speech', 'transcription'] },
@@ -55,6 +56,8 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'keys-openai', section: 'keys', label: 'OpenAI API key', description: 'Save or remove the key used for OpenAI models', target: 'api-key-openai', keywords: ['gpt', 'whisper'] },
   { id: 'keys-google', section: 'keys', label: 'Gemini API key', description: 'Save or remove the key used for Gemini models', target: 'api-key-google', keywords: ['google'] },
   { id: 'keys-assemblyai', section: 'keys', label: 'AssemblyAI API key', description: 'Save or remove the key used for AssemblyAI models', target: 'api-key-assemblyai', keywords: ['universal'] },
+  { id: 'keys-openrouter', section: 'keys', label: 'OpenRouter API key', description: 'Save or remove the key used for OpenRouter models', target: 'api-key-openrouter', keywords: ['router', 'gateway'] },
+  { id: 'keys-xai', section: 'keys', label: 'xAI API key', description: 'Save or remove the key used for xAI Grok models', target: 'api-key-xai', keywords: ['grok'] },
 
   { id: 'models-presets', section: 'models', label: 'Model presets', description: 'Apply a recommended model configuration', target: 'model-presets', keywords: ['recommended', 'balanced', 'local', 'cloud'] },
   { id: 'models-advanced', section: 'models', label: 'Advanced models', description: 'Choose specific models, fallbacks, prompts, and downloads', target: 'advanced-models', keywords: ['custom', 'fallback', 'download'] },

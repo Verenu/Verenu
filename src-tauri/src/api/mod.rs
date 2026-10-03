@@ -1,6 +1,7 @@
 pub mod auto_learn;
 pub mod cleanup;
 pub mod client;
+pub mod custom;
 pub mod gemini_types;
 pub mod openrouter;
 pub mod prompts;
@@ -19,7 +20,174 @@ pub enum ProviderId {
     OpenAI,
     Google,
     AssemblyAi,
+    OpenRouter,
+    Xai,
     Local,
+}
+
+/// Largest provider response Verenu will read from a custom endpoint.
+const MAX_CUSTOM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// How requests to one provider are authenticated and sent. Built-in
+/// providers use the default; custom endpoints override it.
+#[derive(Clone, Debug, Default)]
+pub struct Wire {
+    /// Send the key raw in this header instead of as a bearer token.
+    pub auth_header: Option<String>,
+    /// Anthropic-style `x-api-key` plus `anthropic-version`.
+    pub anthropic: bool,
+    pub headers: Vec<(String, String)>,
+    /// Custom endpoint: no redirects, capped response size.
+    pub hardened: bool,
+}
+
+impl Wire {
+    /// Custom response bodies can echo audio, text, or credentials. Drop error
+    /// responses without reading or logging those bodies.
+    pub fn check_status(
+        &self,
+        response: reqwest::Response,
+        label: &str,
+        model: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        if !self.hardened || response.status().is_success() {
+            return Ok(response);
+        }
+        let status = response.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(auth_status_error(
+                label,
+                model,
+                "",
+                status,
+                AuthErrorCategory::UnknownUnauthorized,
+            ));
+        }
+        anyhow::bail!("Custom provider request failed status={status}");
+    }
+    pub fn client(&self) -> &'static reqwest::Client {
+        if self.hardened {
+            client::hardened()
+        } else {
+            client::get()
+        }
+    }
+
+    pub fn apply(&self, request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
+        let mut request = if self.hardened && key.is_empty() {
+            if self.anthropic {
+                request.header("anthropic-version", "2023-06-01")
+            } else {
+                request
+            }
+        } else if self.anthropic {
+            // The version header is always required; the key header may be
+            // renamed for gateways that expect something other than x-api-key.
+            request
+                .header(self.auth_header.as_deref().unwrap_or("x-api-key"), key)
+                .header("anthropic-version", "2023-06-01")
+        } else if let Some(name) = &self.auth_header {
+            request.header(name.as_str(), key)
+        } else {
+            request.bearer_auth(key)
+        };
+        for (name, value) in &self.headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        request
+    }
+
+    /// Reads a JSON body. Custom endpoints are size-capped so a hostile or
+    /// broken server can't stream unbounded data into memory.
+    pub async fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        mut resp: reqwest::Response,
+    ) -> anyhow::Result<T> {
+        if !self.hardened {
+            return Ok(resp.json::<T>().await?);
+        }
+        let mut body: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            if body.len() + chunk.len() > MAX_CUSTOM_RESPONSE_BYTES {
+                anyhow::bail!("The provider's response was larger than 4 MB and was discarded");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(serde_json::from_slice(&body)?)
+    }
+}
+
+/// Who a request goes to: a built-in provider or a user-defined endpoint.
+#[derive(Clone, Debug)]
+pub enum Target {
+    Builtin(ProviderId),
+    Custom(Box<custom::CustomProvider>),
+}
+
+impl From<ProviderId> for Target {
+    fn from(id: ProviderId) -> Self {
+        Self::Builtin(id)
+    }
+}
+
+impl Target {
+    /// Resolves a provider string from settings. An unknown custom id (its
+    /// provider was deleted) yields `None` so callers skip it.
+    pub fn resolve(id: &str, customs: &[custom::CustomProvider]) -> Option<Self> {
+        if custom::is_custom_id(id) {
+            return customs
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| Self::Custom(Box::new(p.clone())));
+        }
+        crate::data::store::PROVIDERS
+            .contains(&id)
+            .then(|| Self::Builtin(ProviderId::from_str(id)))
+    }
+
+    pub fn id_str(&self) -> &str {
+        match self {
+            Self::Builtin(id) => id.as_str(),
+            Self::Custom(p) => &p.id,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Builtin(id) => id.label(),
+            Self::Custom(p) => &p.name,
+        }
+    }
+}
+
+/// How a provider turns a transcript into cleaned text. Identity (which key,
+/// which label) stays on `ProviderId`; the wire format is a separate axis so a
+/// provider can mix adapters (xAI chats like OpenAI but transcribes its own way).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CleanupAdapter {
+    OpenAiChat { url: &'static str },
+    Gemini,
+    Unsupported,
+}
+
+/// How a provider turns audio into text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranscriptionAdapter {
+    /// OpenAI-style multipart upload with a bearer key.
+    OpenAiMultipart {
+        url: &'static str,
+    },
+    /// JSON body with base64 `input_audio`.
+    OpenRouterJson {
+        url: &'static str,
+    },
+    /// xAI's multipart `/v1/stt`, where `file` must be the last field.
+    XaiStt {
+        url: &'static str,
+    },
+    Gemini,
+    AssemblyAi,
+    Unsupported,
 }
 
 impl ProviderId {
@@ -28,6 +196,8 @@ impl ProviderId {
             "openai" => Self::OpenAI,
             "google" => Self::Google,
             "assemblyai" => Self::AssemblyAi,
+            "openrouter" => Self::OpenRouter,
+            "xai" => Self::Xai,
             "local" => Self::Local,
             _ => Self::Groq,
         }
@@ -39,6 +209,8 @@ impl ProviderId {
             Self::OpenAI => "openai",
             Self::Google => "google",
             Self::AssemblyAi => "assemblyai",
+            Self::OpenRouter => "openrouter",
+            Self::Xai => "xai",
             Self::Local => "local",
         }
     }
@@ -49,27 +221,48 @@ impl ProviderId {
             Self::OpenAI => "OpenAI",
             Self::Google => "Google",
             Self::AssemblyAi => "AssemblyAI",
+            Self::OpenRouter => "OpenRouter",
+            Self::Xai => "xAI",
             Self::Local => "Local",
         }
     }
 
-    pub fn whisper_url(self) -> Option<&'static str> {
+    pub fn cleanup_adapter(self) -> CleanupAdapter {
         match self {
-            Self::Groq => Some("https://api.groq.com/openai/v1/audio/transcriptions"),
-            Self::OpenAI => Some("https://api.openai.com/v1/audio/transcriptions"),
-            Self::Google => None,
-            Self::AssemblyAi => None,
-            Self::Local => None,
+            Self::Groq => CleanupAdapter::OpenAiChat {
+                url: "https://api.groq.com/openai/v1/chat/completions",
+            },
+            Self::OpenAI => CleanupAdapter::OpenAiChat {
+                url: "https://api.openai.com/v1/chat/completions",
+            },
+            Self::OpenRouter => CleanupAdapter::OpenAiChat {
+                url: "https://openrouter.ai/api/v1/chat/completions",
+            },
+            Self::Xai => CleanupAdapter::OpenAiChat {
+                url: "https://api.x.ai/v1/chat/completions",
+            },
+            Self::Google => CleanupAdapter::Gemini,
+            Self::AssemblyAi | Self::Local => CleanupAdapter::Unsupported,
         }
     }
 
-    pub fn cleanup_url(self) -> Option<&'static str> {
+    pub fn transcription_adapter(self) -> TranscriptionAdapter {
         match self {
-            Self::Groq => Some("https://api.groq.com/openai/v1/chat/completions"),
-            Self::OpenAI => Some("https://api.openai.com/v1/chat/completions"),
-            Self::Google => None,
-            Self::AssemblyAi => None,
-            Self::Local => None,
+            Self::Groq => TranscriptionAdapter::OpenAiMultipart {
+                url: "https://api.groq.com/openai/v1/audio/transcriptions",
+            },
+            Self::OpenAI => TranscriptionAdapter::OpenAiMultipart {
+                url: "https://api.openai.com/v1/audio/transcriptions",
+            },
+            Self::OpenRouter => TranscriptionAdapter::OpenRouterJson {
+                url: "https://openrouter.ai/api/v1/audio/transcriptions",
+            },
+            Self::Xai => TranscriptionAdapter::XaiStt {
+                url: "https://api.x.ai/v1/stt",
+            },
+            Self::Google => TranscriptionAdapter::Gemini,
+            Self::AssemblyAi => TranscriptionAdapter::AssemblyAi,
+            Self::Local => TranscriptionAdapter::Unsupported,
         }
     }
 }

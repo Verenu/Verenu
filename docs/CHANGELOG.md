@@ -4,9 +4,13 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added custom providers in Settings > API Keys. Connect an OpenAI, Anthropic, or xAI compatible base URL, name the transcription and cleanup models it offers, and optionally configure an API key header, non-secret headers, and cleanup request options. Models appear under the provider's name in Settings > Models. Keys stay in the native credential store; local endpoints can work without a key. Removing a provider removes its selected models and repairs the fallback chain.
+
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
 
 - Reworked parts of onboarding. The analytics arrow is now a centred icon. The models step is titled "Speed or accuracy?" and no longer offers Local AI to people who picked a cloud provider. English leads the language list. The Try It result eases in with a short glow instead of snapping. The API key walkthrough ends on a fifth "paste your key" slide, replacing "I've got my key", and the existing Skip for now still applies. The final summary is compact, shows each choice (models, writing, language, audio), and its step numbers are centred.
+
+- Added OpenRouter and xAI as bring-your-own providers in Settings > API Keys and the model picker. OpenRouter transcribes through its JSON `audio/transcriptions` endpoint and cleans up through chat completions; xAI transcribes with Grok Voice Transcribe (`/v1/stt`) and cleans up through chat completions. Providers now declare a separate cleanup and transcription adapter, so one provider can mix wire formats. Cleanup skips always-reasoning models on both. Neither provider appears in the one-click presets or the setup wizard, and their model lists are not live-synced, so any model id can be entered in Advanced Models.
 
 - Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
 

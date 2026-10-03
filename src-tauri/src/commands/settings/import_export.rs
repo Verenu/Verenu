@@ -312,6 +312,13 @@ pub async fn import_data(
             log::warn!("import_data: 'settings' field is not a JSON object — skipping settings restore");
         }
         if let Some(obj) = payload.settings.as_object() {
+            // A backup may reuse a UUID with a different destination. Never
+            // carry its previous host credential into that restored endpoint.
+            if let Some(value) = obj.get(store::CUSTOM_PROVIDERS) {
+                if let Ok(providers) = crate::api::custom::normalize_list(value) {
+                    clear_changed_custom_provider_keys(&app, &providers)?;
+                }
+            }
             for (key, value) in obj {
                 if !is_exportable_setting_key(key) {
                     settings_skipped += 1;
@@ -319,7 +326,11 @@ pub async fn import_data(
                 }
                 match validate_setting(key, value) {
                     Ok(()) => {
-                        settings.set(key.clone(), value.clone())?;
+                        let value_to_save = if key == store::CUSTOM_PROVIDERS {
+                            serde_json::to_value(crate::api::custom::normalize_list(value)?)
+                                .map_err(|_| "Could not encode restored providers.".to_string())?
+                        } else { value.clone() };
+                        settings.set(key.clone(), value_to_save)?;
                         if crate::app_tray::setting_updates_runtime_icons(key) {
                             runtime_icon_setting_applied = true;
                         }

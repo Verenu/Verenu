@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { customProviderStore } from '../../customProviders.svelte';
   import { fade, fly, slide } from 'svelte/transition';
   import { cubicOut, expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
@@ -73,6 +74,8 @@
     openai: false,
     google: false,
     assemblyai: false,
+    openrouter: false,
+    xai: false,
     local: false,
   });
 
@@ -397,8 +400,8 @@
 
   function ensureModelsContainSelection(type: TaskType, provider: ProviderId, modelName: string) {
     const map = taskMap(type);
-    if (!map[provider].includes(modelName)) {
-      setTaskMap(type, { ...map, [provider]: [...map[provider], modelName] });
+    if (!(map[provider] ?? []).includes(modelName)) {
+      setTaskMap(type, { ...map, [provider]: [...(map[provider] ?? []), modelName] });
     }
   }
 
@@ -538,6 +541,7 @@
     ]);
 
     apiKeyStatus = { ...apiKeyStatus, ...keyStatus, local: true };
+    customProviderStore.providers = all.custom_providers ?? [];
     hydrateCatalogCache(all.provider_model_cache);
     if (typeof cleanupRaw === 'boolean') {
       cleanupEnabled = cleanupRaw;

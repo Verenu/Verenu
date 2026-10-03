@@ -17,15 +17,27 @@ pub async fn delete_api_key(app: AppHandle, provider: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub async fn get_api_key_status(_app: AppHandle) -> Result<serde_json::Value, String> {
+pub async fn get_api_key_status(app: AppHandle) -> Result<serde_json::Value, String> {
     use crate::data::{credentials, store};
+    let customs = crate::api::custom::parse_stored(
+        store::settings_snapshot(&app)?.get(store::CUSTOM_PROVIDERS),
+    );
     run_blocking("get_api_key_status", move || {
-        Ok(serde_json::json!({
+        let mut status = serde_json::json!({
             "groq":       credentials::has(store::GROQ),
             "openai":     credentials::has(store::OPENAI),
             "google":     credentials::has(store::GOOGLE),
             "assemblyai": credentials::has(store::ASSEMBLYAI),
-        }))
+            "openrouter": credentials::has(store::OPENROUTER),
+            "xai":        credentials::has(store::XAI),
+        });
+        for provider in customs {
+            status[&provider.id] = serde_json::json!(
+                crate::api::custom::native_credentials_available()
+                    && credentials::has(&provider.id)
+            );
+        }
+        Ok(status)
     })
     .await
 }
@@ -82,6 +94,7 @@ pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationRes
 /// Anything short of a clean 2xx/401/403 is treated as inconclusive rather than a hard fail.
 #[tauri::command]
 pub async fn validate_api_key(
+    app: AppHandle,
     provider: String,
     key: String,
 ) -> Result<KeyValidationResult, String> {
@@ -94,6 +107,31 @@ pub async fn validate_api_key(
         });
     }
 
+    if crate::api::custom::is_custom_id(&provider) {
+        let customs = crate::api::custom::parse_stored(
+            store::settings_snapshot(&app)?.get(store::CUSTOM_PROVIDERS),
+        );
+        let custom = customs
+            .iter()
+            .find(|p| p.id == provider)
+            .ok_or_else(|| "This provider was removed.".to_string())?;
+        let wire = custom.wire();
+        let response = wire
+            .apply(wire.client().get(custom.models_url()), trimmed)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+        return Ok(match response {
+            Ok(response) => classify_validation_response(response.status().as_u16(), ""),
+            Err(_) => KeyValidationResult {
+                ok: false,
+                status: "unknown".into(),
+                message:
+                    "Could not reach this endpoint to verify the key. The key can still be saved."
+                        .into(),
+            },
+        });
+    }
     let client = crate::api::client::get();
     let request = match provider.as_str() {
         // AssemblyAI has no models endpoint, so its key check is the odd one
@@ -101,6 +139,11 @@ pub async fn validate_api_key(
         store::ASSEMBLYAI => client
             .get("https://api.assemblyai.com/v2/transcript?limit=1")
             .header("authorization", trimmed),
+        // OpenRouter's model list is public, so it can't prove a key works.
+        // `/key` answers 401 for a bad key and spends nothing.
+        store::OPENROUTER => client
+            .get("https://openrouter.ai/api/v1/key")
+            .bearer_auth(trimmed),
         _ => match models_list_request(client, &provider, trimmed, None) {
             Some(request) => request,
             None => return Err(format!("Unknown provider: {provider}")),
@@ -159,6 +202,9 @@ fn models_list_request(
         store::OPENAI => client
             .get("https://api.openai.com/v1/models")
             .bearer_auth(key),
+        store::XAI => client.get("https://api.x.ai/v1/models").bearer_auth(key),
+        // Listing is public on OpenRouter; key validation uses `/key` instead.
+        store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models"),
         store::GOOGLE => {
             let mut request = client
                 .get("https://generativelanguage.googleapis.com/v1beta/models")

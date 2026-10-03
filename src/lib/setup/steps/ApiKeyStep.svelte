@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { ProviderId } from '../../settings';
-  import { providerGuides } from '../setupData';
+  import { providerGuides, type WizardProviderId } from '../setupData';
   import { isMac } from '../../platform';
   import { fade } from 'svelte/transition';
   import { onMount } from 'svelte';
@@ -26,7 +25,7 @@
     keyError,
     keyValidation,
   }: {
-    provider: ProviderId;
+    provider: WizardProviderId;
     providerName: string;
     apiKeyDraft: string;
     showKey: boolean;

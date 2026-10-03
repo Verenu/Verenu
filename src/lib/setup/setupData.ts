@@ -1,7 +1,11 @@
 import type { AppearanceMode, CleanupIntensity, ProviderId, ToneId } from '../settings';
 
+// OpenRouter and xAI are bring-your-own providers set up from Settings, so the
+// wizard has no card or key tutorial for them.
+export type WizardProviderId = Exclude<ProviderId, 'openrouter' | 'xai'>;
+
 type SetupProvider = {
-  id: ProviderId;
+  id: WizardProviderId;
   name: string;
   badge: string;
   desc: string;
@@ -39,7 +43,7 @@ export const providers: SetupProvider[] = [
 export type ProviderGuideStep = { caption: string; alt: string };
 export type ProviderGuide = { url: string; steps: ProviderGuideStep[] };
 
-export const providerGuides: Record<ProviderId, ProviderGuide> = {
+export const providerGuides: Record<WizardProviderId, ProviderGuide> = {
   local: {
     url: 'No API key needed',
     steps: [

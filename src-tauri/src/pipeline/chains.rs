@@ -57,6 +57,11 @@ pub(super) fn validate_transcription_chain(
                     selected_local_missing = true;
                 }
                 is_downloaded
+            } else if crate::api::custom::is_custom_id(provider) {
+                cfg.custom_providers
+                    .iter()
+                    .any(|p| p.id == *provider && p.supports_transcription)
+                    && cfg.provider_has_auth(provider)
             } else {
                 !cfg.key_for(provider).is_empty()
             }
@@ -73,8 +78,9 @@ pub(super) fn validate_transcription_chain(
 
 pub(super) fn has_cleanup_key_in_chain(cfg: &store::PipelineConfig) -> bool {
     cleanup_model_chain(cfg).iter().any(|(provider, model)| {
-        if !crate::api::cleanup::model_supports_cleanup_reasoning_policy(
-            crate::api::ProviderId::from_str(provider),
+        if !crate::api::cleanup::chain_entry_supports_cleanup(
+            &cfg.custom_providers,
+            provider,
             model,
         ) {
             return false;
@@ -86,7 +92,7 @@ pub(super) fn has_cleanup_key_in_chain(cfg: &store::PipelineConfig) -> bool {
                 })
                 .unwrap_or(false)
         } else {
-            !cfg.key_for(provider).is_empty()
+            cfg.provider_has_auth(provider)
         }
     })
 }
