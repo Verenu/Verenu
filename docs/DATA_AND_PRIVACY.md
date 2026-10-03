@@ -39,6 +39,10 @@ Stored locally in app storage and SQLite:
 ### Logs
 
 - Recent logs stay local unless you explicitly export them.
+- Redacted session logs are written automatically to `logs/` under the app
+  data directory. Each launch starts fresh files. Files are retained for up to
+  30 days within a 256 MiB budget; low disk space pauses persistence. See
+  [session log locations and limits](TROUBLESHOOTING.md#session-logs-for-agents).
 - Exported logs are created only when you trigger that action.
 - Unlocking Developer mode does not enable verbose logging by itself.
 - Verbose logging must be enabled explicitly from the Developer panel.

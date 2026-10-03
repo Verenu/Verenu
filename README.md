@@ -87,7 +87,8 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 - Transcription history in local SQLite
 - Context groups, vocabulary, snippets, and auto-learn data in local SQLite
 - Update-dismiss state, model preferences, and context group targets
-- Local logs unless you explicitly export them
+- Local session logs retained for up to 30 days within a 256 MiB budget, with
+  low-disk pauses. [Locations and agent diagnosis](docs/TROUBLESHOOTING.md#session-logs-for-agents)
 
 ### Leaves your device
 
