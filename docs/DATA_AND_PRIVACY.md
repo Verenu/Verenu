@@ -61,8 +61,9 @@ Current backup export includes:
 - Derived stats
 
 Short-lived AutoLearn candidate/pending evidence is intentionally local-only
-and is not exported or synchronized. Persistent promoted mappings retain their
-originating Context during backup restore and LAN sync.
+and is not exported or synchronized. Pending correction evidence expires after
+30 days. Persistent promoted mappings retain their originating Context during
+backup restore and LAN sync.
 
 Current backup export does not include full transcription history.
 

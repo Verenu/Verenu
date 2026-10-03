@@ -1,5 +1,45 @@
 [
   {
+    "name": "isolated acronym casing", "original": "please call the api today",
+    "corrected": "please call the API today", "expect": [["api", "API"]], "promotion_sessions": 1
+  },
+  {
+    "name": "mixed case pronoun is not a brand", "original": "please use this today",
+    "corrected": "please use tHis today", "expect": [], "promotion_sessions": null
+  },
+  {
+    "name": "split all caps is formatting", "original": "openai",
+    "corrected": "OPEN AI", "expect": [], "promotion_sessions": null
+  },
+  {
+    "name": "brand capitalization", "original": "please use github today",
+    "corrected": "please use GitHub today", "expect": [["github", "GitHub"]], "promotion_sessions": 1
+  },
+  {
+    "name": "merged spoken brand", "original": "please use open ai today",
+    "corrected": "please use OpenAI today", "expect": [["open ai", "OpenAI"]], "promotion_sessions": 1
+  },
+  {
+    "name": "split branded acronym", "original": "please use OpenAI today",
+    "corrected": "please use Open AI today", "expect": [["OpenAI", "Open AI"]], "promotion_sessions": 1
+  },
+  {
+    "name": "single word dictation", "original": "vsc0de",
+    "corrected": "vscode", "expect": [["vsc0de", "vscode"]], "promotion_sessions": 1
+  },
+  {
+    "name": "ordinary title casing", "original": "ask me later",
+    "corrected": "Ask Me Later", "expect": [], "promotion_sessions": null
+  },
+  {
+    "name": "all caps is formatting", "original": "please use github today",
+    "corrected": "PLEASE USE GITHUB TODAY", "expect": [], "promotion_sessions": null
+  },
+  {
+    "name": "ordinary word merge", "original": "some thing happened",
+    "corrected": "something happened", "expect": [], "promotion_sessions": null
+  },
+  {
     "name": "technical brand qroq from rock",
     "original": "bran rock hosting",
     "corrected": "bran qroq hosting",
