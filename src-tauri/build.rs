@@ -44,15 +44,6 @@ fn main() {
             .compile("verenu_macos_ax_text_marker");
     }
 
-    // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
-    // runtime as a real Cargo link dependency so the final cdylib retains a
-    // DT_NEEDED entry for libc++_shared.so. Rustflags alone can be reordered
-    // behind the linker’s --as-needed default and silently drop it.
-    if target_os == "android" {
-        println!("cargo:rustc-link-lib=dylib=c++_shared");
-        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
-    }
-
     println!("cargo:rerun-if-changed=Info.plist");
     // Tauri merges this file for `npm run tauri dev`. Its capability rules are
     // compiled into the executable, so a dev-config-only ACL change must also
