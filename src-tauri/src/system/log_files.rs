@@ -82,6 +82,7 @@ struct Writer {
     session: String,
     part: u32,
     file: Option<File>,
+    lease: Option<File>,
     written: u64,
     paused: bool,
     space_checked: Option<Instant>,
@@ -99,6 +100,7 @@ impl Writer {
             ),
             part: 0,
             file: None,
+            lease: None,
             written: 0,
             paused: false,
             space_checked: None,
@@ -117,6 +119,7 @@ impl Writer {
         }
         if self.file.is_none() || self.written + bytes.len() as u64 > PART_BYTES {
             self.file = None;
+            self.lease = None;
             // Reserve one part so the directory stays bounded as this file grows.
             prune(&self.directory, SystemTime::now(), TOTAL_BYTES - PART_BYTES)?;
             self.cleaned = Instant::now();
@@ -124,6 +127,15 @@ impl Writer {
                 .directory
                 .join(format!("{}-{:04}.log", self.session, self.part));
             self.part += 1;
+            let mut lease_options = OpenOptions::new();
+            lease_options.read(true).write(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                lease_options.mode(0o600);
+            }
+            let lease = lease_options.open(path.with_extension("lock"))?;
+            FileExt::try_lock_exclusive(&lease)?;
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
@@ -132,8 +144,8 @@ impl Writer {
                 options.mode(0o600);
             }
             let file = options.open(path)?;
-            FileExt::try_lock_exclusive(&file)?;
             self.file = Some(file);
+            self.lease = Some(lease);
             self.written = 0;
         }
         let file = self.file.as_mut().unwrap();
@@ -270,20 +282,28 @@ fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
     files.sort_by_key(|entry| entry.0);
     let mut total: u64 = files.iter().map(|entry| entry.1).sum();
     for (modified, size, path) in files {
-        if now.duration_since(modified).unwrap_or_default() <= RETENTION && total <= budget {
-            continue;
-        }
-        // Another app/dev session may still own this file. Leave it alone.
-        if let Ok(file) = OpenOptions::new().write(true).open(&path) {
-            if FileExt::try_lock_exclusive(&file).is_ok() {
-                // Windows refuses to remove an open file. Drop the lock handle
-                // before deletion so the same retention pass works everywhere.
-                let unlocked = FileExt::unlock(&file).is_ok();
-                drop(file);
-                if unlocked && fs::remove_file(&path).is_ok() {
-                    total = total.saturating_sub(size);
-                }
+        // Lock a sidecar so agents can read the active log on Windows too.
+        // Another writer owns this lease while it is writing the matching file.
+        let lease_path = path.with_extension("lock");
+        if let Ok(lease) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lease_path)
+        {
+            if FileExt::try_lock_exclusive(&lease).is_err() {
+                continue;
             }
+            if (now.duration_since(modified).unwrap_or_default() > RETENTION || total > budget)
+                && fs::remove_file(&path).is_ok()
+            {
+                total = total.saturating_sub(size);
+            }
+            // Drop the lease before removing its sidecar. Session IDs are
+            // unique, so no new writer can reuse this path.
+            let _ = FileExt::unlock(&lease);
+            drop(lease);
+            let _ = fs::remove_file(lease_path);
         }
     }
     if total > budget {
@@ -320,10 +340,10 @@ mod tests {
         assert!(first.write(b"rotated\n", RESUME_FREE).unwrap());
         let mut second = Writer::new(dir.0.clone());
         assert!(second.write(b"second\n", RESUME_FREE).unwrap());
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 3);
-        let logs: String = fs::read_dir(&dir.0)
-            .unwrap()
-            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        assert_eq!(log_paths(&dir.0).len(), 3);
+        let logs: String = log_paths(&dir.0)
+            .into_iter()
+            .map(|path| fs::read_to_string(path).unwrap())
             .collect();
         assert!(
             logs.contains("first\n") && logs.contains("rotated\n") && logs.contains("second\n")
@@ -341,15 +361,7 @@ mod tests {
         assert!(!writer.write(b"discarded\n", 0).unwrap());
         assert!(writer.write(b"resumed\n", RESUME_FREE).unwrap());
         assert_eq!(
-            fs::read_to_string(
-                fs::read_dir(&dir.0)
-                    .unwrap()
-                    .next()
-                    .unwrap()
-                    .unwrap()
-                    .path()
-            )
-            .unwrap(),
+            fs::read_to_string(log_paths(&dir.0).into_iter().next().unwrap()).unwrap(),
             "recovered\nresumed\n"
         );
     }
@@ -359,13 +371,14 @@ mod tests {
         let dir = Directory::new();
         fs::write(dir.0.join("session-old.log"), b"old").unwrap();
         fs::write(dir.0.join("notes.txt"), b"keep").unwrap();
+        let active_log = dir.0.join("session-active.log");
+        fs::write(&active_log, b"active file").unwrap();
         let active = OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(dir.0.join("session-active.log"))
+            .create(true)
+            .open(active_log.with_extension("lock"))
             .unwrap();
         FileExt::try_lock_exclusive(&active).unwrap();
-        active.set_len(10).unwrap();
         prune(
             &dir.0,
             SystemTime::now() + RETENTION + Duration::from_secs(1),
@@ -374,11 +387,11 @@ mod tests {
         .unwrap();
         assert!(!dir.0.join("session-old.log").exists());
         assert!(dir.0.join("notes.txt").exists());
-        assert!(dir.0.join("session-active.log").exists());
+        assert!(active_log.exists());
         assert!(prune(&dir.0, SystemTime::now(), 0).is_err());
         drop(active);
         prune(&dir.0, SystemTime::now(), 0).unwrap();
-        assert!(!dir.0.join("session-active.log").exists());
+        assert!(!active_log.exists());
     }
 
     #[test]
@@ -390,8 +403,7 @@ mod tests {
         tx.send(Message::Line("safe metadata".into())).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         let path = loop {
-            if let Some(entry) = fs::read_dir(&dir.0).unwrap().next() {
-                let path = entry.unwrap().path();
+            if let Some(path) = log_paths(&dir.0).into_iter().next() {
                 if fs::read_to_string(&path).unwrap() == "safe metadata\n" {
                     break path;
                 }
@@ -410,4 +422,14 @@ mod tests {
         drop(tx);
         worker.join().unwrap();
     }
+}
+
+#[cfg(test)]
+fn log_paths(directory: &Path) -> Vec<PathBuf> {
+    fs::read_dir(directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect()
 }
