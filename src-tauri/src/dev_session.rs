@@ -154,7 +154,9 @@ fn scrub_history(path: &Path) -> anyhow::Result<()> {
 
 #[derive(Clone)]
 struct Bridge {
-    app: AppHandle,
+    // Axum clones its state on multiple worker threads. Share the native
+    // handle instead of cloning Wry's main-thread Rc state in each request.
+    app: Arc<AppHandle>,
     token: String,
     origins: Vec<String>,
     events: Arc<Mutex<EventBuffer>>,
@@ -206,7 +208,7 @@ pub(crate) fn start(app: AppHandle) -> anyhow::Result<()> {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
     let bridge = Bridge {
-        app,
+        app: Arc::new(app),
         token,
         origins,
         events: Default::default(),
@@ -629,41 +631,68 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
         .map_err(|message| error(StatusCode::BAD_REQUEST, message))
 }
 
-async fn dispatch(app: &AppHandle, command: Command) -> Result<Value, String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or("Native command window unavailable")?;
-    // Tauri's unstable custom invoke API is isolated here and exercised by the
-    // bridge regression. The invoke key never crosses the browser transport.
-    let request = tauri::webview::InvokeRequest {
-        cmd: command.command,
-        callback: CallbackFn(0),
-        error: CallbackFn(1),
-        url: window.url().map_err(|e| e.to_string())?,
-        body: InvokeBody::Json(command.args),
-        headers: Default::default(),
-        invoke_key: app.invoke_key().to_owned(),
-    };
+async fn clone_native_handle(app: &Arc<AppHandle>) -> Result<AppHandle, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    window.as_ref().clone().on_message(
-        request,
-        Box::new(move |_, _, response, _, _| {
-            let result = match response {
-                InvokeResponse::Ok(InvokeResponseBody::Json(value)) => {
-                    serde_json::from_str(&value).map_err(|_| "Invalid command response".into())
-                }
-                InvokeResponse::Ok(InvokeResponseBody::Raw(_)) => {
-                    Err("Binary command responses are unsupported".into())
-                }
-                InvokeResponse::Err(error) => Err(error
-                    .0
-                    .as_str()
-                    .unwrap_or("Native command failed")
-                    .to_owned()),
+    let owner = Arc::clone(app);
+    app.run_on_main_thread(move || {
+        let _ = tx.send(owner.as_ref().clone());
+    })
+    .map_err(|error| error.to_string())?;
+    rx.await
+        .map_err(|_| "Native handle unavailable".to_string())
+}
+
+async fn dispatch(app: &Arc<AppHandle>, command: Command) -> Result<Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let owner = Arc::clone(app);
+    app.run_on_main_thread(move || {
+        // Window lookup and command dispatch clone native runtime state. Keep
+        // those operations on the same thread as Tauri's native IPC handler.
+        let request = (|| {
+            let window = owner
+                .get_webview_window("main")
+                .ok_or("Native command window unavailable")?;
+            // Tauri's unstable custom invoke API is isolated here and exercised by the
+            // bridge regression. The invoke key never crosses the browser transport.
+            let request = tauri::webview::InvokeRequest {
+                cmd: command.command,
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: window.url().map_err(|e| e.to_string())?,
+                body: InvokeBody::Json(command.args),
+                headers: Default::default(),
+                invoke_key: owner.invoke_key().to_owned(),
             };
-            let _ = tx.send(result);
-        }),
-    );
+            Ok::<_, String>((window, request))
+        })();
+        let (window, request) = match request {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = tx.send(Err(error));
+                return;
+            }
+        };
+        window.as_ref().clone().on_message(
+            request,
+            Box::new(move |_, _, response, _, _| {
+                let result = match response {
+                    InvokeResponse::Ok(InvokeResponseBody::Json(value)) => {
+                        serde_json::from_str(&value).map_err(|_| "Invalid command response".into())
+                    }
+                    InvokeResponse::Ok(InvokeResponseBody::Raw(_)) => {
+                        Err("Binary command responses are unsupported".into())
+                    }
+                    InvokeResponse::Err(error) => Err(error
+                        .0
+                        .as_str()
+                        .unwrap_or("Native command failed")
+                        .to_owned()),
+                };
+                let _ = tx.send(result);
+            }),
+        );
+    })
+    .map_err(|error| error.to_string())?;
     tokio::time::timeout(Duration::from_secs(180), rx)
         .await
         .map_err(|_| "Native command timed out")?
@@ -825,7 +854,9 @@ async fn audio(
         .inner()
         .clone();
     let outcome = crate::pipeline::run_provided_audio(
-        bridge.app.clone(),
+        clone_native_handle(&bridge.app)
+            .await
+            .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?,
         state,
         audio,
         crate::core::context::ResolvedContextIdentity::from_context(&context),
