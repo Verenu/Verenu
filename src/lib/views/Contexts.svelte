@@ -1,4 +1,8 @@
 <script lang="ts">
+  import ContextIcon from '../components/ContextIcon.svelte';
+  import ColorSwatches from '../components/ColorSwatches.svelte';
+  import { portal } from '../portal';
+  import { encodeContextIcon, parseContextIcon, iconText, iconKindFor } from '../contextIcon';
   import { onMount, tick } from 'svelte';
   import { fly, slide } from 'svelte/transition';
   import { crossfade } from 'svelte/transition';
@@ -81,6 +85,27 @@
     { id: 'blue', label: 'Blue', value: 'oklch(0.65 0.09 250)' },
     { id: 'mauve', label: 'Mauve', value: 'oklch(0.63 0.09 350)' },
     { id: 'gold', label: 'Gold', value: 'oklch(0.72 0.11 90)' },
+    { id: 'rose', label: 'Rose', value: 'oklch(0.65 0.12 15)' },
+    { id: 'teal', label: 'Teal', value: 'oklch(0.66 0.08 195)' },
+    { id: 'violet', label: 'Violet', value: 'oklch(0.62 0.11 295)' },
+  ] as const;
+  const ICON_KINDS = [{ value: 'symbol', label: 'Symbol' }, { value: 'custom', label: 'Custom' }] as const;
+  const BADGE_COLOR_CHOICES = [
+    { id: 'teal', label: 'Teal', value: '#164e63' },
+    { id: 'indigo', label: 'Indigo', value: '#3730a3' },
+    { id: 'plum', label: 'Plum', value: '#6b21a8' },
+    { id: 'rose', label: 'Rose', value: '#9f1239' },
+    { id: 'amber', label: 'Amber', value: '#92400e' },
+    { id: 'forest', label: 'Forest', value: '#166534' },
+    { id: 'slate', label: 'Slate', value: '#334155' },
+  ] as const;
+  const TEXT_COLOR_CHOICES = [
+    { id: 'white', label: 'White', value: '#ffffff' },
+    { id: 'sky', label: 'Sky', value: '#7dd3fc' },
+    { id: 'mint', label: 'Mint', value: '#86efac' },
+    { id: 'sand', label: 'Sand', value: '#fde68a' },
+    { id: 'blush', label: 'Blush', value: '#fda4af' },
+    { id: 'ink', label: 'Ink', value: '#111827' },
   ] as const;
   const MODAL_APP_MATCH_LIMIT = 40;
   // Mirrors `MAX_USER_CONTEXTS` in src-tauri/src/data/db/contexts.rs — the
@@ -131,9 +156,22 @@
   let modalWebsiteInput = $state('');
   let modalWebsites = $state<string[]>([]);
   let modalIcon = $state<string | null>(null);
+  let modalIconKind = $state<'symbol' | 'custom'>('symbol');
+  let modalIconText = $state('');
+  let modalIconBackground = $state('#164e63');
+  let modalIconForeground = $state('#ffffff');
+  function updateCustomIcon() {
+    if (modalIconKind === 'symbol') return;
+    modalIconText = iconText(modalIconText);
+    modalIcon = encodeContextIcon({ text: modalIconText, background: modalIconBackground, foreground: modalIconForeground });
+  }
+  function selectIconKind(kind: typeof modalIconKind) {
+    if (kind === modalIconKind) return;
+    modalIconKind = kind;
+    if (kind === 'symbol') modalIcon = null;
+    else updateCustomIcon();
+  }
   let modalColor = $state<string | null>(null);
-  let modalColorPickerOpen = $state(false);
-  let modalColorPickerPos = $state<{ top: number; left: number } | null>(null);
   let modalTone = $state<string | null>(null);
   let modalCleanupIntensity = $state<string | null>(null);
   let modalCustomInstructions = $state('');
@@ -630,8 +668,12 @@
     editingContextId = editing?.id ?? null;
     contextName = editing?.name ?? '';
     modalIcon = editing?.icon ?? null;
+    const customIcon = parseContextIcon(modalIcon);
+    modalIconKind = customIcon ? 'custom' : 'symbol';
+    modalIconText = customIcon?.text ?? '';
+    modalIconBackground = customIcon?.background ?? '#164e63';
+    modalIconForeground = customIcon?.foreground ?? '#ffffff';
     modalColor = editing?.color ?? null;
-    closeModalColorPicker();
     modalTone = editing?.tone ?? null;
     modalCleanupIntensity = editing?.cleanup_intensity ?? null;
     modalCustomInstructions = editing?.custom_instructions ?? '';
@@ -856,40 +898,6 @@
     }
   }
 
-  // Same picker, but for a context still being created/edited in the modal —
-  // there's no context row to right-click yet, so this sets local modal
-  // state instead of calling update_context_color directly; saveContext()
-  // persists it alongside the rest of the form.
-  function closeModalColorPicker() {
-    modalColorPickerOpen = false;
-    modalColorPickerPos = null;
-  }
-
-  function openModalColorPicker(event: MouseEvent) {
-    event.preventDefault();
-    modalColorPickerPos = { top: event.clientY + 4, left: event.clientX };
-    modalColorPickerOpen = true;
-  }
-
-  function pickModalColor(color: string | null) {
-    modalColor = color;
-    closeModalColorPicker();
-  }
-
-  $effect(() => {
-    if (!modalColorPickerOpen) return;
-    const handleClose = () => closeModalColorPicker();
-    const timeout = window.setTimeout(() => {
-      window.addEventListener('pointerdown', handleClose);
-      window.addEventListener('scroll', handleClose, { capture: true, passive: true });
-    });
-    return () => {
-      window.clearTimeout(timeout);
-      window.removeEventListener('pointerdown', handleClose);
-      window.removeEventListener('scroll', handleClose, { capture: true });
-    };
-  });
-
   async function toggleAppPicker() {
     subAppPickerOpen = false;
     if (appPickerOpen) {
@@ -1016,7 +1024,6 @@
     modal = null;
     contextError = '';
     dictionaryModalContextId = null;
-    closeModalColorPicker();
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -1027,7 +1034,6 @@
       closeWebsitePicker();
       subAppPickerOpen = false;
       closeFieldMenu();
-      closeModalColorPicker();
     }
   }
 </script>
@@ -1385,41 +1391,6 @@
   </div>
 </div>
 
-{#if modalColorPickerOpen && modalColorPickerPos}
-  <div
-    class="ui-dropdown-menu color-picker-fixed"
-    role="menu"
-    tabindex="-1"
-    style="top: {modalColorPickerPos.top}px; left: {modalColorPickerPos.left}px;"
-    onpointerdown={(event) => event.stopPropagation()}
-    in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}
-  >
-    <div class="color-swatch-row">
-      {#each CONTEXT_COLOR_CHOICES as choice (choice.id)}
-        <button
-          type="button"
-          class="color-swatch"
-          class:is-selected={modalColor === choice.value}
-          style="background: {choice.value};"
-          aria-label={choice.label}
-          title={choice.label}
-          onclick={() => pickModalColor(choice.value)}
-        ></button>
-      {/each}
-      <button
-        type="button"
-        class="color-swatch color-swatch-none"
-        class:is-selected={!modalColor}
-        aria-label="Default"
-        title="Default"
-        onclick={() => pickModalColor(null)}
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-  </div>
-{/if}
-
 {#if openRowMenu && rowMenuPos}
   <div
     class="ui-dropdown-menu row-menu-fixed"
@@ -1490,9 +1461,10 @@
     onSaved={handleSnippetSaved}
   />
 {:else if modal === 'context'}
-  <div class="ui-modal-backdrop" in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></div>
+  <div class="ui-modal-backdrop context-modal-backdrop" use:portal in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></div>
   <div
-    class="modal-card ui-modal-card context-modal"
+    class="modal-card ui-modal-card ui-modal-card--portalled context-modal"
+    use:portal
     use:modalFocusTrap={{ active: true, initialFocus: () => contextInput }}
     role="dialog"
     aria-modal="true"
@@ -1515,24 +1487,45 @@
       <input id="context-name" class="ui-input" bind:this={contextInput} bind:value={contextName} maxlength={CONTEXT_NAME_MAX_LENGTH} placeholder="e.g. Development, Writing, Work" autocomplete="off" />
 
       <span class="field-label">Icon</span>
-      <div class="icon-grid" role="radiogroup" aria-label="Context group icon">
-        {#each CONTEXT_ICON_CHOICES as iconKey}
-          <button
-            type="button"
-            class="icon-choice"
-            class:is-selected={modalIcon === iconKey}
-            style={modalIcon === iconKey && modalColor ? `color: ${modalColor}; border-color: ${modalColor};` : ''}
-            role="radio"
-            aria-checked={modalIcon === iconKey}
-            aria-label={iconKey}
-            onclick={() => modalIcon = modalIcon === iconKey ? null : iconKey}
-            oncontextmenu={openModalColorPicker}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{@html icons[iconKey]}</svg>
-          </button>
-        {/each}
+      <div class="icon-editor">
+        <div class="icon-editor-head">
+          <div class="icon-kind-row" role="group" aria-label="Icon type">
+            {#each ICON_KINDS as choice}
+              <button type="button" aria-pressed={modalIconKind === choice.value} onclick={() => selectIconKind(choice.value)}>{choice.label}</button>
+            {/each}
+          </div>
+          <span class="icon-preview" style:color={modalColor ?? undefined}><ContextIcon icon={modalIcon} size={20} /></span>
+        </div>
+        {#if modalIconKind === 'symbol'}
+          <div class="icon-grid" role="radiogroup" aria-label="Context group icon">
+            {#each CONTEXT_ICON_CHOICES as iconKey}
+              <button
+                type="button"
+                class="icon-choice"
+                class:is-selected={modalIcon === iconKey}
+                style={modalIcon === iconKey && modalColor ? `color: ${modalColor}; border-color: ${modalColor};` : ''}
+                role="radio"
+                aria-checked={modalIcon === iconKey}
+                aria-label={iconKey}
+                onclick={() => modalIcon = modalIcon === iconKey ? null : iconKey}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{@html icons[iconKey]}</svg>
+              </button>
+            {/each}
+          </div>
+          <ColorSwatches label="Icon color" choices={CONTEXT_COLOR_CHOICES} value={modalColor} defaultLabel="Default color" onchange={(color) => modalColor = color} />
+        {:else}
+          <label class="field-label" for="context-icon-text">Letters or emoji</label>
+          <input id="context-icon-text" class="ui-input" value={modalIconText} placeholder="WE or 💻" autocomplete="off" oninput={(event) => { modalIconText = event.currentTarget.value; updateCustomIcon(); event.currentTarget.value = modalIconText; }} />
+          <p class="field-hint">Use up to two characters.</p>
+          {#if iconKindFor(modalIconText) === 'letters'}
+            <span class="field-label">Badge color</span>
+            <ColorSwatches label="Badge color" choices={BADGE_COLOR_CHOICES} value={modalIconBackground} customFallback={modalIconBackground} onchange={(color) => { if (color) { modalIconBackground = color; updateCustomIcon(); } }} />
+            <span class="field-label">Text color</span>
+            <ColorSwatches label="Text color" choices={TEXT_COLOR_CHOICES} value={modalIconForeground} customFallback={modalIconForeground} onchange={(color) => { if (color) { modalIconForeground = color; updateCustomIcon(); } }} />
+          {/if}
+        {/if}
       </div>
-      <p class="field-hint">Right-click an icon to set its color.</p>
 
       <div class="field-row">
         <div class="field-col">
@@ -1870,6 +1863,16 @@
     pointer-events: auto;
   }
   .icon-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 4px 0 2px; }
+  .icon-editor { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-elev) 55%, transparent); }
+  .icon-editor .field-label:first-child { margin-top: 0; }
+  .icon-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .icon-kind-row { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-elev); }
+  .icon-kind-row button { height: 26px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-mute); font: inherit; font-size: 12px; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+  .icon-kind-row button:hover { color: var(--ink-soft); }
+  .icon-kind-row button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); }
+  .icon-kind-row button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .icon-preview { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--bg); border: 1px solid var(--line-soft); }
+  .icon-grid { margin-bottom: 6px; }
   .icon-choice { display: grid; place-items: center; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-elev); color: var(--ink-mute); cursor: pointer; }
   .icon-choice:hover { color: var(--ink-soft); background: var(--control-hover); }
   .icon-choice.is-selected { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
@@ -1930,29 +1933,6 @@
   .row-menu-move-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; }
   .row-menu-move-list .ui-dropdown-option { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row-menu-back { color: var(--ink-mute); }
-  /* .ui-dropdown-menu sets right:0 for its normal absolute-positioned usage;
-     this popup is positioned with an inline `left`, so right must be reset or
-     the browser stretches the box from left all the way to the viewport edge. */
-  .color-picker-fixed { position: fixed; right: auto; z-index: 60; padding: 8px; width: max-content; }
-  .color-swatch-row { display: flex; align-items: center; gap: 7px; }
-  .color-swatch {
-    width: 22px;
-    height: 22px;
-    border-radius: 7px;
-    border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-    cursor: pointer;
-    padding: 0;
-    transition: transform .12s ease;
-  }
-  .color-swatch:hover { transform: scale(1.12); }
-  .color-swatch.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; }
-  .color-swatch-none {
-    display: grid;
-    place-items: center;
-    background: var(--bg-elev);
-    color: var(--ink-faint);
-    border-color: var(--line);
-  }
   .row-menu-delete { transition: color .15s ease, background-color .15s ease; }
   .row-menu-delete:hover { color: var(--danger); }
   .row-menu-delete.is-armed { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
@@ -1961,7 +1941,11 @@
     .item-meta { display: none; }
   }
   .context-loading, .context-empty { padding: 52px 10px; color: var(--ink-mute); font-size: 12px; text-align: center; }
-  .context-modal { width: min(460px, calc(100vw - 32px)); }
+  .context-modal-backdrop { z-index: 69; }
+  .context-modal { width: min(460px, calc(100vw - 32px)); display: flex; flex-direction: column; z-index: 70; }
+  .context-modal .ui-modal-head, .context-modal .ui-modal-foot { flex-shrink: 0; }
+  .context-modal .ui-modal-body { min-height: 0; }
+  .context-modal .ui-modal-body > :global(*) { flex-shrink: 0; }
   .context-modal .ui-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .ui-modal-body { display: flex; flex-direction: column; gap: 5px; }
   .field-label { color: var(--ink-soft); font-size: 11.5px; font-weight: 500; margin-top: 10px; }
