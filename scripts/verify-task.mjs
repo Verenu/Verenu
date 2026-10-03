@@ -15,6 +15,7 @@ function option(name, fallback) {
 }
 if (args.includes('--help')) {
   console.log('npm run verify:task -- [--task private-task.json] [--evidence report.json] [--require session,native] [--base master] [--report PATH] [--inspect-only]');
+  console.log('A changed task without acceptance criteria stays incomplete; provide --task to record observable outcomes.');
   process.exit(0);
 }
 const identity = sourceIdentity();
