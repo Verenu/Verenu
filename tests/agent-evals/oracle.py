@@ -4,6 +4,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+if len(sys.argv) != 2:
+    print(f"Usage: {sys.argv[0]} <checkout-path>", file=sys.stderr)
+    sys.exit(2)
+
 spec = importlib.util.spec_from_file_location("evaluated_runner", Path(sys.argv[1]) / "tests/OnePyFone.py")
 runner = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = runner
