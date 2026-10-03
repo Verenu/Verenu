@@ -691,7 +691,7 @@ def run_group(entries: Sequence[TestEntry], url: str, verbose: bool, parallel: b
 
 def execute_plan(entries: Sequence[TestEntry], args: argparse.Namespace) -> Dict[str, TestResult]:
     results: Dict[str, TestResult] = {}
-    url = f"http://localhost:{PORT}"
+    url = args.test_url if args.no_server else f"http://localhost:{PORT}"
     preflight = [test for test in entries if test.suite == "preflight"]
     no_server = [test for test in entries if test.suite != "preflight" and not test.needs_server]
     server_tests = [test for test in entries if test.needs_server]
