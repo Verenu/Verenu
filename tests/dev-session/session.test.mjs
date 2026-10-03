@@ -66,6 +66,28 @@ check('Context edits persist in the real session database', async () => {
     assert.equal((await invoke('get_contexts')).some((row) => row.id === created.id && row.name.endsWith('edited')), true);
   } finally { await invoke('delete_context', { contextId: created.id }); }
 });
+check('local model selections and provider maps persist through the real settings validator', async () => {
+  const before = await invoke('get_all_settings');
+  const values = {
+    cleanup_models_by_provider: {
+      groq: [], openai: [], google: [], assemblyai: [], openrouter: [], xai: [],
+      local: ['qwen2.5-7b-instruct'],
+    },
+    transcription_models_by_provider: {
+      groq: [], openai: [], google: [], assemblyai: [], openrouter: [], xai: [],
+      local: ['parakeet-v3'],
+    },
+    cleanup_default_model: 'local/qwen2.5-7b-instruct',
+    transcription_default_model: 'local/parakeet-v3',
+  };
+  try {
+    for (const [key, value] of Object.entries(values)) await invoke('save_setting', { key, value });
+    const saved = await invoke('get_all_settings');
+    for (const [key, value] of Object.entries(values)) assert.deepEqual(saved[key], value);
+  } finally {
+    for (const key of Object.keys(values)) await invoke('save_setting', { key, value: before[key] });
+  }
+});
 check('malformed audio fails without invoking providers', async () => {
   const before = (await (await request('/session')).json()).runs;
   assert.equal((await request('/audio', { method: 'POST', body: 'not a WAV' })).status, 400);
