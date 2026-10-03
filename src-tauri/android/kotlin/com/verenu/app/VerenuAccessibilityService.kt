@@ -475,8 +475,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private fun cutoutRect(): android.graphics.Rect? {
         if (Build.VERSION.SDK_INT < 28) return null
         val cutout = try {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay?.cutout
+            if (Build.VERSION.SDK_INT >= 30) {
+                // Window metrics follow the active display, so the outer and
+                // inner screens of a foldable each report their own camera.
+                windowManager.currentWindowMetrics.windowInsets.displayCutout
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay?.cutout
+            }
         } catch (e: Exception) {
             null
         } ?: return null
@@ -503,8 +509,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val margin = (12 * density).toInt()
         val docked = isDocked()
         val imeTop = if (keyboardVisible) imeTopPx() else null
-        val screenWidth = resources.displayMetrics.widthPixels
+        val screenWidth = realScreenWidthPx()
         val cutout = cutoutRect()
+        val imeBounds = if (keyboardVisible) imeBoundsPx() else null
 
         fun top(offset: Int = 0) {
             params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -536,18 +543,23 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             imeTop != null -> {
                 val above = (realScreenHeightPx() - imeTop + (8 * density).toInt()).coerceAtLeast(0)
                 params.y = above
+                // Anchor to the keyboard's own bounds, not the screen's: on an
+                // unfolded foldable the keyboard is often split, floating or
+                // one-handed, so the screen edge is nowhere near it.
+                val left = (imeBounds?.left ?: 0).coerceIn(0, screenWidth)
+                val right = (imeBounds?.right ?: screenWidth).coerceIn(left, screenWidth)
                 when (pillPosition) {
                     "keyboard-left" -> {
                         params.gravity = Gravity.BOTTOM or Gravity.START
-                        params.x = margin
+                        params.x = left + margin
                     }
                     "keyboard-right" -> {
                         params.gravity = Gravity.BOTTOM or Gravity.END
-                        params.x = margin
+                        params.x = screenWidth - right + margin
                     }
                     else -> {
                         params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                        params.x = 0
+                        params.x = (left + right) / 2 - screenWidth / 2
                     }
                 }
             }
@@ -612,16 +624,42 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    private fun imeTopPx(): Int? = try {
+    private fun imeBoundsPx(): android.graphics.Rect? = try {
         val rect = android.graphics.Rect()
         windows
             .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let {
                 it.getBoundsInScreen(rect)
-                if (rect.height() > 0) rect.top else null
+                if (rect.height() > 0) rect else null
             }
     } catch (e: Exception) {
         null
+    }
+
+    private fun imeTopPx(): Int? = imeBoundsPx()?.top
+
+    private fun realScreenWidthPx(): Int =
+        if (Build.VERSION.SDK_INT >= 30) {
+            windowManager.currentWindowMetrics.bounds.width()
+        } else {
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            metrics.widthPixels
+        }
+
+    /**
+     * Fold, unfold, rotation and split-screen change the display under a
+     * running service without any accessibility event. Re-place the pill so it
+     * does not keep the previous screen's coordinates.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post {
+            if (overlayAttached) applyOverlayPresentation()
+            // The IME resizes a moment after the posture change.
+            mainHandler.postDelayed({ if (overlayAttached) applyOverlayPresentation() }, 250)
+        }
     }
 
     private fun realScreenHeightPx(): Int =
