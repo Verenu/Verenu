@@ -4,6 +4,7 @@ import type { ModelCatalogCache, ProviderCache } from '../../modelCatalogStore.s
 import type { Hardware } from './modelPresets';
 import {
   curatedRows,
+  discoveredRows,
   firstRunnable,
   rowForSelection,
   suggestReplacement,
@@ -70,7 +71,7 @@ describe('curatedRows', () => {
   });
 
   it('trusts a live list over the mere presence of a key', () => {
-    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'] }) };
+    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'], missing: missed('groq/whisper-large-v3-turbo') }) };
     const rows = curatedRows(ctx({ cache }));
     expect(rows.find((r) => r.key === 'groq/whisper-large-v3')!.state).toBe('ready');
     // A model the provider no longer lists simply drops out — the picker shows
@@ -79,7 +80,7 @@ describe('curatedRows', () => {
   });
 
   it('keeps a retired model listed while it is still selected', () => {
-    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'] }) };
+    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'], missing: missed('groq/whisper-large-v3-turbo') }) };
     const rows = curatedRows(ctx({ cache }), ['groq/whisper-large-v3-turbo']);
     // Otherwise a dead selection has nowhere to show its state or be replaced.
     expect(rows.find((r) => r.key === 'groq/whisper-large-v3-turbo')?.state).toBe('unavailable');
@@ -112,6 +113,37 @@ describe('curatedRows', () => {
 });
 
 describe('unverifiedRows', () => {
+  it('automatically offers compatible discoveries for all cloud providers', () => {
+    const cache: ModelCatalogCache = {
+      google: providerCache({ ids: ['gemini-new'], metadata: { 'gemini-new': { label: 'New Gemini', tasks: ['transcription', 'cleanup'] } } }),
+      openrouter: providerCache({ ids: ['org/new:free'], metadata: { 'org/new:free': { label: 'New Router model', tasks: ['cleanup'] } } }),
+      xai: providerCache({ ids: ['grok-new'], metadata: { 'grok-new': { label: 'New Grok', tasks: ['cleanup'] } } }),
+    };
+    expect(discoveredRows(ctx({ cache })).map((row) => row.key)).toEqual(['google/gemini-new']);
+    expect(discoveredRows(ctx({ task: 'cleanup', cache })).map((row) => row.key)).toEqual(['google/gemini-new', 'openrouter/org/new:free', 'xai/grok-new']);
+    expect(unverifiedRows(ctx({ task: 'cleanup', cache }))).toEqual([]);
+  });
+
+  it('keeps offline capabilities and requests a key for public discoveries', () => {
+    const cache: ModelCatalogCache = { openrouter: providerCache({ ids: ['org/new'], lastError: 'offline', metadata: { 'org/new': { label: 'New', tasks: ['cleanup'] } } }) };
+    const context = ctx({ task: 'cleanup', cache });
+    expect(discoveredRows(context)[0].state).toBe('ready');
+    expect(discoveredRows(context)[0].note).toMatch(/Cached/);
+    context.apiKeyStatus.openrouter = false;
+    expect(discoveredRows(context)[0].remedy).toBe('add-key');
+    expect(rowForSelection('openrouter/org/new', context)?.state).toBe('needs-setup');
+  });
+
+  it('does not offer known incompatible metadata in the unverified tail', () => {
+    const cache: ModelCatalogCache = { openrouter: providerCache({ ids: ['org/special'], metadata: { 'org/special': { label: 'Special', tasks: [] } } }) };
+    expect(unverifiedRows(ctx({ task: 'cleanup', cache }))).toEqual([]);
+    expect(discoveredRows(ctx({ task: 'cleanup', cache }))).toEqual([]);
+  });
+
+  it('keeps models after one miss while waiting for confirmation', () => {
+    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'], missing: { 'groq/whisper-large-v3-turbo': { count: 1, lastCountedAt: T0 } } }) };
+    expect(curatedRows(ctx({ cache })).find((row) => row.id === 'whisper-large-v3-turbo')?.state).toBe('ready');
+  });
   it('only surfaces ids the catalog does not know', () => {
     const cache: ModelCatalogCache = {
       groq: providerCache({ ids: ['whisper-large-v3', 'distil-whisper-large-v3-en'] }),
@@ -140,9 +172,9 @@ describe('unverifiedRows', () => {
     expect(unverifiedRows(ctx({ task: 'cleanup', cache })).map((r) => r.id)).toEqual(['llama-chat']);
   });
 
-  it('stays silent while a provider has no trustworthy list', () => {
-    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['x'], lastError: 'boom' }) };
-    expect(unverifiedRows(ctx({ cache }))).toEqual([]);
+  it('retains cached discoveries while a provider is offline', () => {
+    const cache: ModelCatalogCache = { groq: providerCache({ ids: ['new-transcribe'], lastError: 'boom' }) };
+    expect(unverifiedRows(ctx({ cache })).map((row) => row.id)).toEqual(['new-transcribe']);
   });
 });
 
@@ -314,7 +346,7 @@ describe('unavailableMessages', () => {
 describe('firstRunnable', () => {
   it('skips over models that cannot run right now', () => {
     const cache: ModelCatalogCache = {
-      groq: providerCache({ ids: [] }),
+      groq: providerCache({ ids: [], missing: missed('groq/whisper-large-v3') }),
       openai: providerCache({ ids: ['gpt-4o-transcribe'] }),
     };
     const chain = ['groq/whisper-large-v3', 'openai/gpt-4o-transcribe'];

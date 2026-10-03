@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Save and Clear labels overlapping on the API Keys page when the inactive action was disabled.
+- Added automatic cloud model discovery with capability metadata, daily and manual refresh, an updateable AssemblyAI catalog, and cached model lists for offline use.
+
 - Added source-bound agent verification, owned real-backend browser sessions,
   synthetic speech checks, native WebView tests, and independent agent test
   evaluations. Test reporting now distinguishes unavailable live checks from

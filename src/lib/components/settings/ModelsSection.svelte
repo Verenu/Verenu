@@ -809,8 +809,16 @@
       // held in JS, and list_provider_models only ever reads the stored one.
       await refreshCatalog(provider, trackedModelIds());
     };
+    const onKeyDeleted = (event: Event) => {
+      const provider = (event as CustomEvent<{ provider: ProviderId }>).detail?.provider;
+      if (provider) apiKeyStatus = { ...apiKeyStatus, [provider]: false };
+    };
     window.addEventListener('verenu:api-key-saved', onKeySaved);
-    return () => window.removeEventListener('verenu:api-key-saved', onKeySaved);
+    window.addEventListener('verenu:api-key-deleted', onKeyDeleted);
+    return () => {
+      window.removeEventListener('verenu:api-key-saved', onKeySaved);
+      window.removeEventListener('verenu:api-key-deleted', onKeyDeleted);
+    };
   });
 
   // Settings just opened: top up any provider whose list has gone stale, or
