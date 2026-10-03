@@ -7,9 +7,9 @@
 //! auto_learn test module; this was a behavior-preserving move.
 
 use super::{
-    read_focused_text, read_focused_text_around, AlignOp, CandidateCorrection, CorrectionMetrics,
-    TextAnchor, WordToken, MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN,
-    MAX_SPAN_GROWTH_WORDS, MIN_CANDIDATE_NORM_LEN,
+    AlignOp, CandidateCorrection, CorrectionMetrics, TextAnchor, WordToken,
+    MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN, MAX_SPAN_GROWTH_WORDS,
+    MIN_CANDIDATE_NORM_LEN,
 };
 use crate::system::text::has_distinctive_features;
 
@@ -250,12 +250,24 @@ pub(super) fn candidate_confidence(
     let mut score = ratio_score * 0.55;
     if has_distinctive_features(&original.raw) || has_distinctive_features(&corrected.raw) {
         score += 0.25;
+    } else if corrected.raw.chars().next().is_some_and(char::is_uppercase)
+        && metrics.b_len >= 4
+        && !is_common_word(&corrected.norm)
+    {
+        // A manually restored proper noun is useful evidence even without a
+        // digit or internal capital.
+        score += 0.20;
     }
     if is_common_word(&original.norm) && is_common_word(&corrected.norm) {
         score -= 0.2;
     }
     score -= (changed_ops.saturating_sub(1) as f64) * 0.07;
     score -= (replacements_len.saturating_sub(1) as f64) * 0.08;
+    if changed_ops == 1 && replacements_len == 1 && has_distinctive_features(&corrected.raw) {
+        // Short technical names can be phonetically close but several edits
+        // apart. Keep them eligible for repeated evidence, never fast learning.
+        score = score.max(0.50);
+    }
     score.clamp(0.0, 1.0)
 }
 
@@ -420,35 +432,6 @@ fn current_span_from_surrounding_context<'a>(
     }
 }
 
-pub(super) fn find_last_anchor(haystack: &str, needle: &str) -> Option<TextAnchor> {
-    if needle.trim().is_empty() {
-        return None;
-    }
-    let start = haystack.rfind(needle)?;
-    Some(TextAnchor {
-        start,
-        end: start + needle.len(),
-    })
-}
-
-pub(super) fn capture_baseline_text(injected_text: &str) -> Option<String> {
-    let current_text = read_focused_text_around(injected_text)?;
-    if find_unique_anchor(&current_text, injected_text).is_some() {
-        Some(current_text)
-    } else {
-        None
-    }
-}
-
-pub(super) fn capture_baseline_text_any(injected_text: &str) -> Option<String> {
-    let current_text = read_focused_text()?;
-    if current_text.contains(injected_text) {
-        Some(current_text)
-    } else {
-        None
-    }
-}
-
 pub(super) fn align_word_ops(
     original: &[WordToken],
     current: &[WordToken],
@@ -590,10 +573,119 @@ pub(super) fn detect_span_corrections(
         return vec![];
     }
 
+    // Group adjacent edits so a speech model's split/merged name is learned
+    // as one mapping instead of unrelated word replacements.
+    let mut runs = Vec::new();
+    let mut old_indices = Vec::new();
+    let mut new_indices = Vec::new();
+    let isolated_case_edit = ops
+        .iter()
+        .filter(|(_, old, new)| {
+            old.zip(*new).is_some_and(|(a, b)| {
+                original[a].norm == current[b].norm && original[a].raw != current[b].raw
+            })
+        })
+        .count()
+        == 1
+        && ops.iter().any(|(op, old, new)| {
+            *op == AlignOp::Equal
+                && old.zip(*new).is_some_and(|(a, b)| {
+                    original[a].raw == current[b].raw
+                        && current[b].raw.chars().any(char::is_lowercase)
+                })
+        });
+    for (op, old, new) in &ops {
+        let branded_case = *op == AlignOp::Equal
+            && old.zip(*new).is_some_and(|(a, b)| {
+                original[a].raw != current[b].raw
+                    && (canonical_brand_case(&current[b].raw)
+                        || (isolated_case_edit && acronym_case(&current[b].raw)))
+            });
+        if *op == AlignOp::Equal && !branded_case {
+            if !old_indices.is_empty() || !new_indices.is_empty() {
+                runs.push((
+                    std::mem::take(&mut old_indices),
+                    std::mem::take(&mut new_indices),
+                ));
+            }
+        } else {
+            if let Some(index) = old {
+                old_indices.push(*index);
+            }
+            if let Some(index) = new {
+                new_indices.push(*index);
+            }
+        }
+    }
+    if !old_indices.is_empty() || !new_indices.is_empty() {
+        runs.push((old_indices, new_indices));
+    }
+    let phrase_candidates: Vec<_> = runs
+        .iter()
+        .filter_map(|(old, new)| {
+            if old.is_empty() || new.is_empty() || old.len().max(new.len()) > 3 {
+                return None;
+            }
+            let mistake = old
+                .iter()
+                .map(|index| original[*index].raw.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let correction = new
+                .iter()
+                .map(|index| current[*index].raw.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if mistake.chars().count() > 120 || correction.chars().count() > 120 {
+                return None;
+            }
+            let old_norm = normalize_word(&mistake);
+            let new_norm = normalize_word(&correction);
+            let case_only = old.len() == 1
+                && new.len() == 1
+                && old_norm == new_norm
+                && (canonical_brand_case(&correction)
+                    || (isolated_case_edit && acronym_case(&correction)));
+            let boundary_change = old.len() != new.len()
+                && old_norm == new_norm
+                && new_norm.chars().count() >= 4
+                && correction.chars().any(char::is_lowercase)
+                && correction.split_whitespace().any(|word| {
+                    canonical_brand_case(word)
+                        || (word.chars().count() >= 2 && word.chars().all(char::is_uppercase))
+                });
+            if !case_only && !boundary_change {
+                return None;
+            }
+            // Internal mixed case makes the desired spelling explicit. All-caps
+            // edits and ordinary title/sentence casing are intentionally ignored.
+            Some(CandidateCorrection {
+                mistake,
+                correction,
+                confidence: 0.75,
+            })
+        })
+        .collect();
+
+    let boundary_edits: std::collections::HashSet<usize> = runs
+        .iter()
+        .filter(|(old, new)| {
+            old.len() != new.len()
+                && old
+                    .iter()
+                    .map(|index| original[*index].norm.as_str())
+                    .collect::<String>()
+                    == new
+                        .iter()
+                        .map(|index| current[*index].norm.as_str())
+                        .collect::<String>()
+        })
+        .flat_map(|(old, _)| old.iter().copied())
+        .collect();
     let replacements: Vec<_> = ops
         .iter()
         .filter_map(|(op, old_idx, new_idx)| {
-            if *op == AlignOp::Replace {
+            if *op == AlignOp::Replace && !boundary_edits.contains(&old_idx.unwrap()) {
                 Some((old_idx.unwrap(), new_idx.unwrap()))
             } else {
                 None
@@ -607,12 +699,18 @@ pub(super) fn detect_span_corrections(
     }
 
     let replacements_len = replacements.len();
-    replacements
+    if phrase_candidates.len() + replacements_len > MAX_REPLACEMENTS_PER_SPAN {
+        return vec![];
+    }
+    let mut candidates: Vec<_> = replacements
         .into_iter()
         .filter_map(|(old_idx, new_idx)| {
             let old = &original[old_idx];
             let new = &current[new_idx];
             if old.norm.is_empty() || new.norm.is_empty() || old.norm == new.norm {
+                return None;
+            }
+            if old.raw.chars().count() > 120 || new.raw.chars().count() > 120 {
                 return None;
             }
             let metrics = compute_correction_metrics(old, new);
@@ -633,7 +731,30 @@ pub(super) fn detect_span_corrections(
                 None
             }
         })
-        .collect()
+        .collect();
+    for phrase in phrase_candidates {
+        candidates.retain(|candidate| {
+            !phrase
+                .mistake
+                .split_whitespace()
+                .any(|word| word == candidate.mistake)
+        });
+        candidates.push(phrase);
+    }
+    candidates
+}
+
+fn canonical_brand_case(word: &str) -> bool {
+    word.chars().count() >= 4
+        && !is_common_word(&normalize_word(word))
+        && word.chars().any(char::is_lowercase)
+        && word.chars().skip(1).any(char::is_uppercase)
+}
+
+fn acronym_case(word: &str) -> bool {
+    (2..=8).contains(&word.len())
+        && word.chars().all(|ch| ch.is_ascii_uppercase())
+        && !is_common_word(&normalize_word(word))
 }
 
 pub(super) fn detect_corrections_from_anchored_text(

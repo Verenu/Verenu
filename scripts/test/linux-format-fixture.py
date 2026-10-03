@@ -1,15 +1,47 @@
 """Disposable GTK entry for the opt-in AT-SPI formatting test."""
 
+import argparse
+import json
 import os
+import sys
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--auto-learn", action="store_true", help="Accept synthetic text commands on stdin")
+args = parser.parse_args()
 window = Gtk.Window(title="Verenu formatting verification")
 entry = Gtk.Entry()
-window.add(entry)
+if args.auto_learn:
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    alternate = Gtk.Entry()
+    secure = Gtk.Entry()
+    secure.set_visibility(False)
+    for field in [entry, alternate, secure]:
+        box.pack_start(field, False, False, 0)
+    window.add(box)
+
+    def command(source, condition):
+        if condition & GLib.IO_HUP:
+            window.destroy()
+            return False
+        try:
+            payload = json.loads(source.readline())
+            field = [entry, alternate, secure][payload["field"]]
+            field.set_text(payload["text"])
+            field.set_position(-1)
+            field.grab_focus()
+            print("[SUCCESS] Synthetic edit applied", flush=True)
+        except (ValueError, KeyError, IndexError) as error:
+            print(f"[ERROR] Invalid fixture command: {type(error).__name__}", flush=True)
+        return True
+
+    GLib.io_add_watch(sys.stdin, GLib.IO_IN | GLib.IO_HUP, command)
+else:
+    window.add(entry)
 window.connect("destroy", Gtk.main_quit)
 window.show_all()
 entry.grab_focus()
