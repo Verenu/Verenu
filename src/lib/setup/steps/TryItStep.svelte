@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fade, slide } from 'svelte/transition';
+  import { motionMs } from '../../motion';
   import { invoke, listen } from '../../tauri';
   import { isAndroid, isMac } from '../../platform';
   import { classifyIpcError, formatIpcError, type ErrorKind } from '../../errors';
@@ -138,6 +140,11 @@
     };
   });
 
+  // Feedback swaps between hint, error and success. The old panel leaves first
+  // and the new one grows in after it, so the layout eases instead of snapping.
+  const feedbackIn = () => ({ duration: motionMs(260), delay: motionMs(140) });
+  const feedbackOut = () => ({ duration: motionMs(140) });
+
   function reset() {
     sampleText = '';
     errorMessage = '';
@@ -172,7 +179,7 @@
   ></textarea>
 
   {#if errorMessage}
-    <div class="tryit-feedback tryit-error" role="alert">
+    <div class="tryit-feedback tryit-error" role="alert" in:slide={feedbackIn()} out:fade={feedbackOut()}>
       <span class="feedback-icon" aria-hidden="true">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/></svg>
       </span>
@@ -183,9 +190,9 @@
       <button class="btn-ghost btn-compact tryit-reset" onclick={reset}>Try again</button>
     </div>
   {:else if status === 'success'}
-    <div class="tryit-feedback tryit-success" role="status">
+    <div class="tryit-feedback tryit-success" role="status" in:slide={feedbackIn()} out:fade={feedbackOut()}>
       <span class="feedback-icon" aria-hidden="true">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.6 2.6L16.5 9"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path class="check-draw" d="m8 12 2.6 2.6L16.5 9" pathLength="1"/></svg>
       </span>
       <span class="feedback-copy">
         <strong>Everything works</strong>
@@ -194,7 +201,7 @@
       <button class="btn-ghost btn-compact tryit-reset" onclick={reset}>Try again</button>
     </div>
   {:else}
-    <p class="tryit-hint">{isAndroid ? 'Nothing happens until you tap the Verenu pill; this field does not auto-fill.' : "Nothing happens until you hold the hotkey; this field doesn't auto-fill."}</p>
+    <p class="tryit-hint" in:fade={{ duration: motionMs(180), delay: motionMs(140) }} out:fade={feedbackOut()}>{isAndroid ? 'Nothing happens until you tap the Verenu pill; this field does not auto-fill.' : "Nothing happens until you hold the hotkey; this field doesn't auto-fill."}</p>
   {/if}
 </div>
 
@@ -240,11 +247,32 @@
     line-height: 1.5;
     padding: 12px 14px;
     outline: none;
-    transition: border-color 0.2s, background 0.2s;
+    transition: border-color 0.45s var(--ui-ease-out), background 0.45s var(--ui-ease-out), box-shadow 0.45s var(--ui-ease-out);
   }
 
   .tryit-field:focus { border-color: var(--accent); }
-  .tryit-field.filled { border-color: var(--success-line); background: var(--success-bg); }
+  .tryit-field.filled {
+    border-color: var(--success-line);
+    background: var(--success-bg);
+    animation: tryit-glow 0.9s var(--ui-ease-out);
+  }
+
+  @keyframes tryit-glow {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 40%, transparent); }
+    100% { box-shadow: 0 0 0 9px transparent; }
+  }
+
+  .check-draw {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    animation: tryit-check 0.45s 0.3s var(--ui-ease-out) backwards;
+  }
+
+  @keyframes tryit-check { from { stroke-dashoffset: 1; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tryit-field.filled, .check-draw { animation: none; }
+  }
 
   .tryit-hint { font-size: 12px; color: var(--ink-faint); margin: 0; }
 

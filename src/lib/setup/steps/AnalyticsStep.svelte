@@ -14,7 +14,9 @@
 
 <div class="step analytics-step">
   <div class="analytics-intro">
-    <div class="analytics-mark" aria-hidden="true">↗</div>
+    <div class="analytics-mark" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+    </div>
     <div>
       <h3>Help improve Verenu</h3>
       <p>Verenu uses product analytics to find rough edges and make dictation more reliable.</p>
@@ -65,8 +67,6 @@
     border-radius: 50%;
     background: var(--accent-soft);
     color: var(--accent);
-    font-size: 18px;
-    font-weight: 600;
   }
   .analytics-intro h3 { margin: 0 0 4px; font-size: 17px; font-weight: 600; color: var(--ink-strong); }
   .analytics-intro p { margin: 0; color: var(--ink-mute); font-size: 13px; line-height: 1.45; }

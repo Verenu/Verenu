@@ -11,12 +11,12 @@
   let listEl = $state<HTMLDivElement | null>(null);
   let searchInput = $state<HTMLInputElement | null>(null);
 
-  // Common dictation languages float to the top of an otherwise A–Z list, so
-  // the usual answer is one click away without hiding the other 51.
-  const commonCodes = new Set<TranscriptionLanguageCode>(['en', 'es', 'fr', 'de', 'pt', 'zh']);
+  // English is the default, so it leads; the other common dictation languages
+  // follow, then the rest A–Z. Nothing is hidden, only reordered.
+  const commonOrder: TranscriptionLanguageCode[] = ['en', 'es', 'fr', 'de', 'pt', 'zh'];
   const ordered = [
-    ...transcriptionLanguages.filter((l) => commonCodes.has(l.code)),
-    ...transcriptionLanguages.filter((l) => !commonCodes.has(l.code)),
+    ...commonOrder.flatMap((code) => transcriptionLanguages.filter((l) => l.code === code)),
+    ...transcriptionLanguages.filter((l) => !commonOrder.includes(l.code)),
   ];
 
   const filtered = $derived.by(() => {
