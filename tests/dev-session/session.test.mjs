@@ -68,6 +68,26 @@ check('malformed audio fails without invoking providers', async () => {
   const after = (await (await request('/session')).json()).runs;
   assert.equal(before, after);
 });
+check('custom Context artwork survives native saves and duplication', async () => {
+  const artwork = (kind, text) => 'custom-icon:' + JSON.stringify({ kind, text, background: '#164e63', foreground: '#38bdf8' });
+  const icon = artwork('letters', 'WE');
+  const created = await invoke('create_context', { name: 'Custom icon regression', icon, contextualFormattingDisabled: false });
+  let duplicate;
+  try {
+    await invoke('update_context_color', { contextId: created.id, color: '#a855f7' });
+    duplicate = await invoke('duplicate_context', { contextId: created.id });
+    assert.equal(duplicate.icon, icon);
+    assert.equal(duplicate.color, '#a855f7');
+    const emoji = artwork('emoji', '👩🏽‍💻');
+    await invoke('update_context_settings', { contextId: created.id, icon: emoji, contextualFormattingDisabled: false });
+    const saved = (await invoke('get_contexts')).find(row => row.id === created.id);
+    assert.equal(saved.icon, emoji);
+    assert.equal(saved.color, '#a855f7');
+  } finally {
+    if (duplicate) await invoke('delete_context', { contextId: duplicate.id });
+    await invoke('delete_context', { contextId: created.id });
+  }
+});
 check('production audio gates reject silence and deliver backend events', async () => {
   const before = await (await request('/events?after=0')).json();
   const fixture = await request('/fixtures/silence.wav'); assert.equal(fixture.status, 200, 'Generate synthetic fixtures before running session regression');
