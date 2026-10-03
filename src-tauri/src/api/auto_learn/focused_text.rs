@@ -19,16 +19,20 @@ impl MonitorIdentity {
         #[cfg(windows)]
         {
             FOCUSED_TEXT_STATE.with(|cell| {
-                cell.borrow()
-                    .reader
-                    .as_ref()
-                    .and_then(|reader| reader.as_ref())
-                    .is_some_and(|reader| unsafe {
-                        reader
-                            .automation
-                            .CompareElements(&self.element, &other.element)
-                            .is_ok_and(|same| same.as_bool())
-                    })
+                let mut state = cell.borrow_mut();
+                if state.com.is_none() {
+                    state.com = Some(ComGuard::init());
+                }
+                let reader = state.reader.get_or_insert_with(FocusedTextReader::new);
+                let Some(reader) = reader.as_ref() else {
+                    return false;
+                };
+                unsafe {
+                    reader
+                        .automation
+                        .CompareElements(&self.element, &other.element)
+                        .is_ok_and(|same| same.as_bool())
+                }
             })
         }
         #[cfg(target_os = "macos")]
