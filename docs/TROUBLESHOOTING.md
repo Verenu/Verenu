@@ -88,6 +88,44 @@ python3 tests/OnePyFone.py --suite ui,state --fresh-server
 
 On Windows, use `python` instead of `python3` if `python3` is not available in your shell.
 
+## Session logs for agents
+
+Verenu automatically writes redacted logs under its app data directory:
+
+| Platform | Folder |
+| --- | --- |
+| Linux | `${XDG_CONFIG_HOME:-$HOME/.config}/Verenu/logs/` |
+| macOS | `~/Library/Application Support/Verenu/logs/` |
+| Windows | `%APPDATA%\Verenu\logs\` |
+
+Each app launch starts new `session-<UTC timestamp>-<UUID>-<part>.log` files.
+The in-app recent log buffer starts fresh on launch; historical files remain.
+Parts rotate at 8 MiB. Files older than 30 days are removed on the next write
+at startup and hourly while logs are being written. A 256 MiB folder budget
+also removes the oldest inactive files, so heavy logging can shorten retention.
+Files still owned by another running instance are never deleted.
+
+Writes run on a separate thread, batching for up to 250 ms or 64 KiB. They
+flush to the operating system without forcing a physical disk sync per batch.
+An abrupt crash can lose the last queued batch. The queue holds at most 1,024
+records, each capped at 16 KiB; overload drops records rather than delaying
+dictation. The next successful batch reports omitted records.
+
+Disk space is checked at most every five seconds during normal writes.
+Logging pauses below 256 MiB free and resumes at 512 MiB free. Disk/query
+errors also pause writes, with retries no more often than every five seconds.
+Logs during a pause are discarded, not accumulated in memory. The in-app
+recent buffer remains available. Normal shutdown requests a bounded flush.
+
+For diagnosis, inspect the newest session and relevant prior sessions. Default
+logs include info, warnings, and errors. Developer verbose logging adds debug
+records only when explicitly enabled. Logs can contain operational details;
+review them before sharing. Never put keys or dictated content into an issue.
+
+Browser dev sessions write only to their private `<session>/data/logs/` folder,
+as described in [dev sessions](DEV_SESSIONS.md). They do not write to the
+installed app's logs.
+
 ## Reporting A Problem
 
 Use the GitHub issue forms. Include:

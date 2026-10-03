@@ -196,6 +196,7 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
         .map_err(|e| e.to_string())??;
 
         // Exit immediately so the binary is free before the installer starts.
+        log::logger().flush();
         std::process::exit(0)
     }
 }
