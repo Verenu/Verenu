@@ -18,6 +18,10 @@ its private `access.json` in the collaborative browser. The URL fragment carries
 an ephemeral session token; the page removes it and keeps it in session storage.
 The UI requires the live backend and never falls back to preview mocks.
 
+Use `--synthetic-seed` for public settings without copying installed
+customization. `npm run test:session:owned` owns the regression run and verifies
+a backend restart. See [agent verification](AGENT_VERIFICATION.md).
+
 `--share` creates a private Tailscale HTTPS listener on a separate port. Use
 `shareAccessUrl`, or the panel's **Copy phone access link**, for a phone signed
 into the same tailnet. Keep access links private. HTTPS supports browser mic
@@ -36,6 +40,9 @@ stale lock or listener. Never reset all Tailscale Serve routes.
 Restart after changing Rust code. The launcher deliberately disables backend
 watching. Vite still reloads frontend changes. Reusing `--id NAME` retains that
 session's data after a normal shutdown; use a fresh ID for a fresh snapshot.
+
+The compiled backend exposes a source fingerprint. Verification rejects stale
+workers and workers from another worktree, including uncommitted source edits.
 
 ## Data and credentials
 

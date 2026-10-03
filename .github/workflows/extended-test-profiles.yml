@@ -29,6 +29,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build and synthetic audio prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev \
+            espeak-ng ffmpeg
+
+      - name: Generate public synthetic speech
+        run: npm run dev:fixtures -- --out test-results/audio
+
       - name: Detect live API secrets
         id: live-secrets
         shell: bash
@@ -45,7 +58,9 @@ jobs:
 
       - name: Run live profile
         if: steps.live-secrets.outputs.enabled == 'true'
-        run: npm run test:live -- --json-report test-results/live-profile.json --junit-report test-results/live-profile.xml
+        env:
+          VERENU_LIVE_AUDIO_WAV: ${{ github.workspace }}/test-results/audio/plain.wav
+        run: npm run test:live -- --strict --json-report test-results/live-profile.json --junit-report test-results/live-profile.xml
 
       - name: Upload live regression results
         if: always() && steps.live-secrets.outputs.enabled == 'true'
@@ -55,8 +70,12 @@ jobs:
           path: test-results/
 
   native-profile:
-    name: Native profile
-    runs-on: windows-latest
+    name: Native WebView (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -70,12 +89,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
+
       - name: Run native profile
-        run: npm run test:native -- --json-report test-results/native-profile.json --junit-report test-results/native-profile.xml
+        if: runner.os != 'Linux'
+        run: npm run test:native:webview -- --report test-results/native-profile.json
+
+      - name: Run Linux native WebView
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report test-results/native-profile.json
 
       - name: Upload native regression results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-regression-results
+          name: native-regression-results-${{ matrix.os }}
           path: test-results/

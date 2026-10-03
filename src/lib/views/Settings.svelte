@@ -139,14 +139,26 @@
       previousFocusEl = document.activeElement;
     }
 
-    requestAnimationFrame(() => {
-      if (document.querySelector('[role="dialog"]')) return;
+    let cancelled = false;
+    let attempts = 0;
+    const focusSettingsPage = () => {
+      if (cancelled || !appStore.settingsOpen) return;
+      const active = document.activeElement;
+      const dialog = document.querySelector('[role="dialog"]');
+      if (active instanceof HTMLElement && dialog?.contains(active)) {
+        // A dialog from the outgoing page may still be running its close
+        // transition. Let it finish if it still owns focus before moving focus
+        // into Settings.
+        if (attempts++ < 60) requestAnimationFrame(focusSettingsPage);
+        return;
+      }
       // Don't steal focus if the user already moved inside the shell while it
       // was opening (keyboard flows race the entrance transition).
-      const active = document.activeElement;
       if (active instanceof HTMLElement && settingsPageEl?.contains(active)) return;
       (firstFocusableInShell() ?? settingsPageEl)?.focus();
-    });
+    };
+    requestAnimationFrame(focusSettingsPage);
+    return () => { cancelled = true; };
   });
 
   // Announce the section that just loaded: move focus to the panel heading

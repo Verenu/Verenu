@@ -95,6 +95,16 @@ fn environment_credentials_allowed() -> bool {
         || std::env::var("VERENU_ALLOW_ENV_CREDENTIALS").is_ok_and(|value| value == "1")
 }
 
+fn report_live_skip(reason: &str) {
+    println!(
+        "VERENU_TEST_RESULT={}",
+        serde_json::json!({
+            "status": "skipped", "skip_reason": reason, "observed": reason,
+            "regression_area": "live provider verification"
+        })
+    );
+}
+
 fn first_environment_provider() -> Option<String> {
     if !environment_credentials_allowed() {
         return None;
@@ -620,7 +630,7 @@ async fn run_gemini_eval(model: &str, cases: &[LiveCase], api_key: &str) -> Mode
 async fn live_gemini_cleanup_comparison() {
     let api_key = credential_for("google");
     if api_key.is_empty() {
-        println!("VERENU_LIVE_SKIP: Google credential is unavailable");
+        report_live_skip("Google credential is unavailable");
         return;
     }
     let fixtures: FixtureFile = serde_json::from_str(include_str!(
@@ -654,7 +664,7 @@ async fn live_gemini_cleanup_comparison() {
         fixtures.live_cases
     };
     if selected_cases.is_empty() {
-        println!("VERENU_LIVE_SKIP: VERENU_LIVE_CASE did not match the corpus");
+        report_live_skip("VERENU_LIVE_CASE did not match the corpus");
         return;
     }
     let target = run_gemini_eval(target_model, &selected_cases, &api_key).await;
@@ -689,18 +699,16 @@ async fn live_gemini_cleanup_comparison() {
 #[ignore = "uses the configured provider and may incur API cost"]
 async fn live_prompt_regression() {
     let Some((provider, model)) = configured_cleanup() else {
-        println!("VERENU_LIVE_SKIP: no configured cleanup provider/model was found");
+        report_live_skip("No configured cleanup provider/model was found");
         return;
     };
     if provider == "local" || provider == "assemblyai" {
-        println!(
-            "VERENU_LIVE_SKIP: configured cleanup provider has no supported cloud cleanup path"
-        );
+        report_live_skip("Configured cleanup provider has no supported cloud cleanup path");
         return;
     }
     let api_key = credential_for(&provider);
     if api_key.is_empty() {
-        println!("VERENU_LIVE_SKIP: configured provider credential is unavailable");
+        report_live_skip("Configured provider credential is unavailable");
         return;
     }
 
@@ -785,26 +793,30 @@ async fn live_prompt_regression() {
 #[tokio::test]
 #[ignore = "uses the configured provider and may incur API cost"]
 async fn live_transcription_regression() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("tests")
-        .join("smoke")
-        .join("smoke_test.wav");
+    let fixture = std::env::var_os("VERENU_LIVE_AUDIO_WAV")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("tests")
+                .join("smoke")
+                .join("smoke_test.wav")
+        });
     if !fixture.is_file() {
-        println!("VERENU_LIVE_SKIP: optional smoke_test.wav fixture is unavailable");
+        report_live_skip("Optional synthetic WAV fixture is unavailable");
         return;
     }
     let Some((provider, model, language)) = configured_transcription() else {
-        println!("VERENU_LIVE_SKIP: no configured transcription provider/model was found");
+        report_live_skip("No configured transcription provider/model was found");
         return;
     };
     if provider == "local" {
-        println!("VERENU_LIVE_SKIP: local transcription requires the native runtime harness");
+        report_live_skip("Local transcription requires the native runtime verification");
         return;
     }
     let api_key = credential_for(&provider);
     if api_key.is_empty() {
-        println!("VERENU_LIVE_SKIP: configured provider credential is unavailable");
+        report_live_skip("Configured provider credential is unavailable");
         return;
     }
     let wav = std::fs::read(&fixture).expect("read smoke_test.wav");
