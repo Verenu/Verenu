@@ -336,8 +336,15 @@ class AudioFixtureCheck(PythonTest):
 
 class NativeCapabilityCheck(PythonTest):
     def run(self) -> TestResult:
-        exists = (TESTS_DIR / "native/wdio.conf.mjs").is_file()
-        return TestResult("passed" if exists else "failed", expected="Native WebDriver configuration exists; this is not behavior verification", observed="Native configuration exists" if exists else "Native configuration is missing", failure_kind="infrastructure" if not exists else None, regression_area="native prerequisites")
+        runners = [ROOT / "scripts/test-native-webview.mjs", ROOT / "scripts/test-native-fixtures.mjs"]
+        missing = [path.name for path in runners if not path.is_file()]
+        return TestResult(
+            "failed" if missing else "passed",
+            expected="Native WebView and desktop fixture runners exist; this is not behavior verification",
+            observed=f"Missing native runners: {', '.join(missing)}" if missing else "Native runner scripts exist",
+            failure_kind="infrastructure" if missing else None,
+            regression_area="native prerequisites",
+        )
 
 
 PYTHON_ENTRIES = [
