@@ -1,13 +1,12 @@
 <script lang="ts">
-  import type { ProviderId } from '../../settings';
-  import { providers } from '../setupData';
+  import { providers, type WizardProviderId } from '../setupData';
   import { getProviderLogo } from '../ProviderLogos';
 
   let {
     provider = $bindable(),
     localSupported = true,
     localUnsupportedReason = '',
-  }: { provider: ProviderId; localSupported?: boolean; localUnsupportedReason?: string } = $props();
+  }: { provider: WizardProviderId; localSupported?: boolean; localUnsupportedReason?: string } = $props();
 
   const visibleProviders = $derived(providers.filter((candidate) => candidate.id !== 'local' || localSupported));
 

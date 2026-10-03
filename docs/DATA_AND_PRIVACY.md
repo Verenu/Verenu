@@ -76,6 +76,9 @@ That can be:
 - Groq
 - OpenAI
 - Google
+- AssemblyAI
+- OpenRouter, which forwards the audio to the speech model you choose there
+- xAI
 
 If transcription is local, audio stays on the device after the model download.
 

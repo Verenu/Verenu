@@ -22,6 +22,8 @@ const ALL_KEYS: Record<ProviderId, boolean> = {
   openai: true,
   google: true,
   assemblyai: true,
+  openrouter: true,
+  xai: true,
   local: true,
 };
 
