@@ -99,6 +99,27 @@ fn style_edits_replace_only_selected_instructions_and_keep_managed_rules() {
     assert!(!rendered.contains("Keep SECRET_CONTEXT literal."));
 }
 
+#[test]
+fn standalone_style_edits_get_an_explicit_priority_rule() {
+    let template = super::with_style_instructions(None, Some("Keep the speaker's fillers."), None);
+    let rendered = get_cleanup_prompt_with_alternate_and_evidence(
+        "groq",
+        "test",
+        "casual",
+        "medium",
+        "",
+        "",
+        None,
+        "um hello",
+        Some(&template),
+        None,
+    );
+
+    assert!(rendered.contains(
+        "Priority: preserve safety and dictated meaning first; explicit user-authored instructions override"
+    ));
+}
+
 fn prompt(profile: &str, intensity: &str, input: &str) -> String {
     get_cleanup_prompt_with_alternate_and_evidence(
         "groq",
@@ -616,6 +637,18 @@ fn template_lint_requires_the_new_channels_and_safety_contract() {
         .iter()
         .any(|warning| warning.contains("perspective")));
     assert!(lint_cleanup_template(default_cleanup_template()).is_empty());
+}
+
+#[test]
+fn tone_placeholder_alone_does_not_satisfy_the_cleanup_intensity_contract() {
+    let template = default_cleanup_template().replace("{{ cleanup_preset }}", "{{ cleanup_tone }}");
+    let warnings = lint_cleanup_template(&template);
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("cleanup intensity"))
+    );
 }
 
 #[test]

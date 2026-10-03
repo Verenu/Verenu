@@ -336,11 +336,15 @@ pub fn lint_cleanup_template(template: &str) -> Vec<String> {
         }
     }
 
-    if !template.contains("{{ cleanup_preset }}") && !template.contains("{{ cleanup_tone }}") {
-        warnings.push(
-            "Missing {{ cleanup_preset }} - cleanup intensity and tone will not be injected."
-                .to_string(),
-        );
+    if !template.contains("{{ cleanup_preset }}") {
+        let missing = if template.contains("{{ cleanup_tone }}") {
+            "cleanup intensity"
+        } else {
+            "cleanup intensity and tone"
+        };
+        warnings.push(format!(
+            "Missing {{{{ cleanup_preset }}}} - {missing} will not be injected."
+        ));
     }
     if !template.contains("{{ formatting_rules }}") {
         warnings.push(
