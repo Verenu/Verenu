@@ -11,7 +11,7 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
   let child;
   try {
-    child = spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, '--fixtures', fixtures, ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' });
+    child = spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, ...(fixtures ? ['--fixtures', fixtures] : []), ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' });
   } catch (error) {
     await log.close();
     throw error;

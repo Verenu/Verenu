@@ -56,11 +56,13 @@ if (args.includes('--list')) {
 
 async function start() {
   if (args.includes('--help')) {
-    console.log('npm run dev:session -- [--share] [--synthetic-seed] [--native-test] [--seed-dir PATH] [--private-history] [--host-mic] [--max-runs N] [--fixtures PATH] [--id NAME] [--list]');
+    console.log('npm run dev:session -- [--share] [--synthetic-seed] [--native-test] [--seed-dir PATH] [--private-history] [--host-mic] [--max-runs N] [--fixtures PATH] [--startup-timeout SEC] [--id NAME] [--list]');
     return;
   }
   const id = option('--id', `${path.basename(root).replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()}-${randomUUID().slice(0, 8)}`);
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error('Session ID must contain 1 to 80 letters, numbers, or hyphens');
+  const startupTimeout = Number(option('--startup-timeout', '900'));
+  if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) throw new Error('--startup-timeout must be a positive number of seconds');
   const directory = path.join(stateRoot, id);
   await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
   await fs.chmod(stateRoot, 0o700);
@@ -160,7 +162,7 @@ async function start() {
     run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort), '--strictPort'], env);
     run(process.execPath, [path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'dev', '--features', args.includes('--native-test') ? 'native-testing' : 'dev-session', '--no-watch', '--config', config], env);
     console.log(`Session ${id}\nLocal: ${localUrl}\nPhone: ${shareUrl || 'Use --share to create a private Tailscale URL'}\nAccess links: ${path.join(directory, 'access.json')}\nManifest: ${path.join(directory, 'session.json')}\nWaiting for this worktree's Rust backend...`);
-    const deadline = Date.now() + Number(option('--startup-timeout', '900')) * 1000;
+    const deadline = Date.now() + startupTimeout * 1000;
     while (!closing) {
       if (Date.now() > deadline) throw new Error('Rust session startup timed out');
       const ready = await fs.readFile(path.join(directory, 'ready'), 'utf8').catch(() => null);
