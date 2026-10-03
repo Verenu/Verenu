@@ -13,7 +13,7 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 // Bump this whenever cleanup instructions change so previously generated
 // output cannot mask the new prompt through the cleanup-result cache.
-const CLEANUP_PROMPT_VERSION: &str = "dictation-v8";
+const CLEANUP_PROMPT_VERSION: &str = "dictation-v9";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -816,10 +816,15 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
 
         match guarded {
             Some(cleaned) => {
+                // These backstops enforce built-in style preferences. An edited
+                // preset may explicitly retain fillers, dashes, or omit periods.
+                // Meaning and safety guards above still apply to every result.
+                let use_default_style =
+                    cfg.cleanup_intensity != "none" && !cfg.has_style_instructions(profile);
                 // Strip em dashes the model introduced (vs. ones the speaker
                 // actually dictated) before caching, so a poisoned-by-style
                 // result never gets baked into the cache.
-                let cleaned = if cfg.cleanup_intensity == "none" {
+                let cleaned = if !use_default_style {
                     cleaned
                 } else {
                     crate::system::text::strip_unspoken_em_dashes(&expanded, &cleaned)
@@ -833,7 +838,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 // regardless of model behavior. The helper only removes
                 // "you know" in an unambiguously discourse-filler position;
                 // meaningful uses remain intact.
-                let cleaned = if cfg.cleanup_intensity != "none" {
+                let cleaned = if use_default_style {
                     crate::system::text::strip_filler_hesitations(&cleaned)
                 } else {
                     cleaned
@@ -841,7 +846,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 // Punctuate before caching + overrides so the cache stores the
                 // normalized text and snippet "no period" instructions can still
                 // override it afterward.
-                let cleaned = if cfg.cleanup_intensity == "none" {
+                let cleaned = if !use_default_style {
                     cleaned
                 } else {
                     ensure_terminal_punctuation(&cleaned, profile, &cfg.cleanup_intensity)

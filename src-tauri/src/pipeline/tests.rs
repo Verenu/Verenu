@@ -1209,6 +1209,45 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_preserves_style_edits_through_postprocessing() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("um send the file"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("um send — the file"),
+        None,
+        None,
+    );
+    for key in ["medium", "casual", "formal"] {
+        let mut config = base_config();
+        config.style_prompt_instructions.insert(
+            key.into(),
+            "Keep fillers, use em dashes, and omit terminal punctuation.".into(),
+        );
+        let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+        if key == "formal" {
+            assert!(!result.injected_text.to_lowercase().contains("um"));
+            assert!(!result.injected_text.contains('—'));
+            assert!(result.injected_text.ends_with('.'));
+        } else {
+            assert_eq!(result.injected_text, "um send — the file");
+        }
+    }
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_fixture_skips_cleanup_for_formal_when_intensity_is_off() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
