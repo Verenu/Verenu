@@ -18,7 +18,8 @@ if (args.includes('--help')) {
   process.exit(0);
 }
 const identity = sourceIdentity();
-const task = JSON.parse(option('--task', null) ? fs.readFileSync(option('--task'), 'utf8') : '{}');
+const taskPath = option('--task', null);
+const task = JSON.parse(taskPath ? fs.readFileSync(taskPath, 'utf8') : '{}');
 const files = changedFiles(option('--base', 'master'));
 const required = requirements(files, [...(task.require || []), ...option('--require', '').split(',').filter(Boolean)]);
 const directory = path.join(root, 'test-results', `task-${randomUUID()}`);

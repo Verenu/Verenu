@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
@@ -8,6 +9,8 @@ import { run } from './verification/process.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
 
 const args = process.argv.slice(2);
+const require = createRequire(import.meta.url);
+const playwrightCli = require.resolve('@playwright/test/cli');
 const reportIndex = args.indexOf('--report');
 const directory = path.join(root, 'test-results', `session-${randomUUID()}`);
 const reportArgument = reportIndex >= 0 ? args[reportIndex + 1] : undefined;
@@ -31,7 +34,7 @@ try {
   assert.equal(tested.status, 'passed', 'Real-session regression failed');
   const suite = JSON.parse(await fs.readFile(path.join(session.directory, 'verification.json'), 'utf8'));
   report.checks.push(...suite.checks);
-  const playwright = await run(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
+  const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
   report.artifacts.push(artifact(playwright.log));
   assert.equal(playwright.status, 'passed', 'Real-session Playwright flows failed');
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
