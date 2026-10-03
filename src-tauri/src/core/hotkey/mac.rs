@@ -483,6 +483,7 @@ pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
         if let Some(hk) = *current {
             manager.unregister(hk).map_err(|e| e.to_string())?;
             *current = None;
+            MAIN_HOTKEY_ID.store(0, Ordering::SeqCst);
         }
         if let Some(hk) = COPY_LAST_HOTKEY.get() {
             let _ = manager.unregister(*hk);
