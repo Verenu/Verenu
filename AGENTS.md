@@ -24,6 +24,7 @@ features on them without an explicit request.
 - Check the `Unreleased` section of `docs/CHANGELOG.md`; the latest release is
   currently 0.18.0.
 - Read the task-specific playbook in `Agent-Skills/` when one applies.
+- For implementation, load `Agent-Skills/verify-work/SKILL.md` before handoff.
 
 ## Branches, commits, and files
 
@@ -71,6 +72,12 @@ npm run test:smoke
   when configured. Record missing credentials or skipped native checks honestly.
 - Add focused regression coverage for the behavior you change. Restart the
   dev session after Rust edits; its backend does not watch source files.
+- Run `npm run verify:task` with task acceptance criteria and observed outcomes
+  before handoff. See `docs/AGENT_VERIFICATION.md`. Automatic checks are a minimum.
+- Evidence must match final source and this worktree. Skips, missing capabilities,
+  and successful retries are incomplete verification; never call them a pass.
+- Native WebView/IPC tests do not prove OS shortcuts, permissions, clipboard
+  insertion, or focus restoration. Record separate platform checks.
 
 ## Safety and contracts
 

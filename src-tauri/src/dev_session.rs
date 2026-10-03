@@ -354,6 +354,8 @@ async fn session(State(bridge): State<Bridge>) -> ApiResult {
         "id": std::env::var("VERENU_DEV_SESSION_ID").unwrap_or_default(),
         "branch": std::env::var("VERENU_DEV_BRANCH").unwrap_or_default(),
         "commit": std::env::var("VERENU_DEV_COMMIT").unwrap_or_default(),
+        "fingerprint": env!("VERENU_BUILD_FINGERPRINT"),
+        "worktree": std::env::var("VERENU_DEV_WORKTREE").unwrap_or_default(),
         "transport": "rust-live",
         "platform": std::env::consts::OS,
         "shareUrl": std::env::var("VERENU_DEV_SHARE_URL").unwrap_or_default(),
