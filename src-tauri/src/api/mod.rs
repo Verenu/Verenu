@@ -19,7 +19,39 @@ pub enum ProviderId {
     OpenAI,
     Google,
     AssemblyAi,
+    OpenRouter,
+    Xai,
     Local,
+}
+
+/// How a provider turns a transcript into cleaned text. Identity (which key,
+/// which label) stays on `ProviderId`; the wire format is a separate axis so a
+/// provider can mix adapters (xAI chats like OpenAI but transcribes its own way).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CleanupAdapter {
+    OpenAiChat { url: &'static str },
+    Gemini,
+    Unsupported,
+}
+
+/// How a provider turns audio into text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranscriptionAdapter {
+    /// OpenAI-style multipart upload with a bearer key.
+    OpenAiMultipart {
+        url: &'static str,
+    },
+    /// JSON body with base64 `input_audio`.
+    OpenRouterJson {
+        url: &'static str,
+    },
+    /// xAI's multipart `/v1/stt`, where `file` must be the last field.
+    XaiStt {
+        url: &'static str,
+    },
+    Gemini,
+    AssemblyAi,
+    Unsupported,
 }
 
 impl ProviderId {
@@ -28,6 +60,8 @@ impl ProviderId {
             "openai" => Self::OpenAI,
             "google" => Self::Google,
             "assemblyai" => Self::AssemblyAi,
+            "openrouter" => Self::OpenRouter,
+            "xai" => Self::Xai,
             "local" => Self::Local,
             _ => Self::Groq,
         }
@@ -39,6 +73,8 @@ impl ProviderId {
             Self::OpenAI => "openai",
             Self::Google => "google",
             Self::AssemblyAi => "assemblyai",
+            Self::OpenRouter => "openrouter",
+            Self::Xai => "xai",
             Self::Local => "local",
         }
     }
@@ -49,27 +85,48 @@ impl ProviderId {
             Self::OpenAI => "OpenAI",
             Self::Google => "Google",
             Self::AssemblyAi => "AssemblyAI",
+            Self::OpenRouter => "OpenRouter",
+            Self::Xai => "xAI",
             Self::Local => "Local",
         }
     }
 
-    pub fn whisper_url(self) -> Option<&'static str> {
+    pub fn cleanup_adapter(self) -> CleanupAdapter {
         match self {
-            Self::Groq => Some("https://api.groq.com/openai/v1/audio/transcriptions"),
-            Self::OpenAI => Some("https://api.openai.com/v1/audio/transcriptions"),
-            Self::Google => None,
-            Self::AssemblyAi => None,
-            Self::Local => None,
+            Self::Groq => CleanupAdapter::OpenAiChat {
+                url: "https://api.groq.com/openai/v1/chat/completions",
+            },
+            Self::OpenAI => CleanupAdapter::OpenAiChat {
+                url: "https://api.openai.com/v1/chat/completions",
+            },
+            Self::OpenRouter => CleanupAdapter::OpenAiChat {
+                url: "https://openrouter.ai/api/v1/chat/completions",
+            },
+            Self::Xai => CleanupAdapter::OpenAiChat {
+                url: "https://api.x.ai/v1/chat/completions",
+            },
+            Self::Google => CleanupAdapter::Gemini,
+            Self::AssemblyAi | Self::Local => CleanupAdapter::Unsupported,
         }
     }
 
-    pub fn cleanup_url(self) -> Option<&'static str> {
+    pub fn transcription_adapter(self) -> TranscriptionAdapter {
         match self {
-            Self::Groq => Some("https://api.groq.com/openai/v1/chat/completions"),
-            Self::OpenAI => Some("https://api.openai.com/v1/chat/completions"),
-            Self::Google => None,
-            Self::AssemblyAi => None,
-            Self::Local => None,
+            Self::Groq => TranscriptionAdapter::OpenAiMultipart {
+                url: "https://api.groq.com/openai/v1/audio/transcriptions",
+            },
+            Self::OpenAI => TranscriptionAdapter::OpenAiMultipart {
+                url: "https://api.openai.com/v1/audio/transcriptions",
+            },
+            Self::OpenRouter => TranscriptionAdapter::OpenRouterJson {
+                url: "https://openrouter.ai/api/v1/audio/transcriptions",
+            },
+            Self::Xai => TranscriptionAdapter::XaiStt {
+                url: "https://api.x.ai/v1/stt",
+            },
+            Self::Google => TranscriptionAdapter::Gemini,
+            Self::AssemblyAi => TranscriptionAdapter::AssemblyAi,
+            Self::Local => TranscriptionAdapter::Unsupported,
         }
     }
 }

@@ -210,7 +210,7 @@ function messageForKind(kind: ErrorKind, raw: string): string {
   switch (kind) {
     case 'auth-401': {
       if (raw.includes('AUTH_401')) {
-        const provider = raw.match(/provider=(Groq|OpenAI|Google|Gemini|AssemblyAI)\b/i)?.[1] ?? 'The provider';
+        const provider = raw.match(/provider=(Groq|OpenAI|Google|Gemini|AssemblyAI|OpenRouter|xAI)\b/i)?.[1] ?? 'The provider';
         if (lower.includes('category=invalid_or_revoked_key')) {
           return `${provider} API key looks invalid or revoked. Replace it in Settings > API Keys.`;
         }
@@ -222,7 +222,7 @@ function messageForKind(kind: ErrorKind, raw: string): string {
     }
     case 'quota': {
       // "QUOTA_EXCEEDED: Groq quota reached" or the already-friendly message.
-      const provider = raw.match(/\b(Groq|OpenAI|Google|Gemini|AssemblyAI)\b/i)?.[0];
+      const provider = raw.match(/\b(Groq|OpenAI|Google|Gemini|AssemblyAI|OpenRouter|xAI)\b/i)?.[0];
       return `${provider ?? 'Your provider'} request limit reached. Wait for the limit to reset, check your provider plan, or choose another provider.`;
     }
     case 'model-download':

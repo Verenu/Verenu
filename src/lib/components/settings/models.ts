@@ -1,7 +1,18 @@
 import type { ProviderId, ProviderModelMap } from '../../settings';
 
 export type TaskType = 'transcription' | 'cleanup';
-export type UiProviderId = 'groq' | 'openai' | 'google' | 'assemblyai';
+export type UiProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai';
+
+/** Every provider the settings schema accepts, in picker order. */
+export const ALL_PROVIDER_IDS: ProviderId[] = [
+  'groq',
+  'openai',
+  'google',
+  'assemblyai',
+  'openrouter',
+  'xai',
+  'local',
+];
 
 export const GROQ_GPT_OSS_20B_MODEL = 'openai/gpt-oss-20b';
 export const GROQ_QWEN_3_6_27B_MODEL = 'qwen/qwen3.6-27b';
@@ -37,6 +48,8 @@ export const providerSections: ProviderSection[] = [
   { id: 'openai', label: 'OpenAI', storeProvider: 'openai', tasks: ['transcription', 'cleanup'] },
   { id: 'google', label: 'Gemini', storeProvider: 'google', tasks: ['transcription', 'cleanup'] },
   { id: 'assemblyai', label: 'AssemblyAI', storeProvider: 'assemblyai', tasks: ['transcription'] },
+  { id: 'openrouter', label: 'OpenRouter', storeProvider: 'openrouter', tasks: ['transcription', 'cleanup'] },
+  { id: 'xai', label: 'xAI', storeProvider: 'xai', tasks: ['transcription', 'cleanup'] },
 ];
 
 export type ModelTag = 'accurate' | 'fast' | 'cheap';
@@ -83,6 +96,12 @@ export const CATALOG: CatalogEntry[] = [
   { provider: 'google', id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', tasks: ['cleanup'], tags: ['fast', 'cheap'] },
   { provider: 'assemblyai', id: 'universal-3-5-pro', label: 'Universal 3.5 Pro', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
   { provider: 'assemblyai', id: 'universal-2', label: 'Universal-2', tasks: ['transcription'], tags: ['fast', 'cheap'], tier: 'standard' },
+  // OpenRouter and xAI carry no tier: they are bring-your-own endpoints, so the
+  // one-click presets never pick them. They are chosen in the model picker.
+  { provider: 'openrouter', id: 'openai/whisper-large-v3', label: 'Whisper Large v3', tasks: ['transcription'], tags: ['accurate'] },
+  { provider: 'openrouter', id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', tasks: ['cleanup'], tags: ['fast', 'cheap'] },
+  { provider: 'xai', id: 'grok-voice-transcribe-2.0', label: 'Grok Voice Transcribe 2.0', tasks: ['transcription'], tags: ['accurate'] },
+  { provider: 'xai', id: 'grok-4-fast-non-reasoning', label: 'Grok 4 Fast', tasks: ['cleanup'], tags: ['fast'] },
   { provider: 'local', id: 'parakeet-v3', label: 'Parakeet V3', tasks: ['transcription'], tags: ['accurate'] },
   { provider: 'local', id: 'parakeet-v2', label: 'Parakeet V2', tasks: ['transcription'], tags: ['accurate'] },
   { provider: 'local', id: 'moonshine-base', label: 'Moonshine Base', tasks: ['transcription'], tags: ['fast'] },
@@ -181,6 +200,8 @@ export const emptyProviderModelMap = (): ProviderModelMap => ({
   openai: [],
   google: [],
   assemblyai: [],
+  openrouter: [],
+  xai: [],
   local: [],
 });
 
@@ -194,7 +215,7 @@ export function splitModelId(id: string): { provider: ProviderId; model: string 
 
   const provider = id.slice(0, idx) as ProviderId;
   const model = id.slice(idx + 1).trim();
-  if (!['groq', 'openai', 'google', 'assemblyai', 'local'].includes(provider) || !model) return null;
+  if (!ALL_PROVIDER_IDS.includes(provider) || !model) return null;
 
   return { provider, model };
 }
@@ -203,7 +224,7 @@ export function mergeProviderModelMap(raw: unknown): ProviderModelMap {
   const base = emptyProviderModelMap();
   if (!raw || typeof raw !== 'object') return base;
 
-  for (const provider of ['groq', 'openai', 'google', 'assemblyai', 'local'] as ProviderId[]) {
+  for (const provider of ALL_PROVIDER_IDS) {
     const values = (raw as Record<string, unknown>)[provider];
     if (Array.isArray(values)) {
       base[provider] = values
@@ -229,6 +250,10 @@ export function providerDisplayLabel(provider: ProviderId): string {
       return 'Gemini';
     case 'assemblyai':
       return 'AssemblyAI';
+    case 'openrouter':
+      return 'OpenRouter';
+    case 'xai':
+      return 'xAI';
     case 'local':
       return 'Local';
     default:

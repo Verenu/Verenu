@@ -44,6 +44,8 @@ static LOG_SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
 /// attached later by [`attach_app`], which enables `verenu:log` emission.
 pub fn init_early() {
     crate::system::diagnostics::init();
+    #[cfg(not(target_os = "android"))]
+    super::log_files::init(crate::app_data_dir().join("logs"));
     let _ = LOG_BUFFER.set(Mutex::new(VecDeque::with_capacity(MAX_LOG_LINES)));
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(LevelFilter::Debug);
@@ -53,6 +55,8 @@ pub fn init_early() {
 /// Attaches the app handle so buffered records are forwarded to the frontend
 /// as `verenu:log` events. Safe to call once, after `init_early`.
 pub fn attach_app(app: &AppHandle) {
+    #[cfg(target_os = "android")]
+    super::log_files::init(crate::app_data_dir().join("logs"));
     let _ = APP_HANDLE.set(app.clone());
     log::info!("session logger initialized");
 }
@@ -336,6 +340,7 @@ impl Log for SessionLogger {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let redacted = redact_message(&msg);
         let line = format!("[{}] {:<5} {}", timestamp, record.level(), redacted);
+        super::log_files::append(&line);
         let structured = crate::system::diagnostics::record_log(
             record.level().as_str(),
             record.target(),
@@ -377,7 +382,9 @@ impl Log for SessionLogger {
         }
     }
 
-    fn flush(&self) {}
+    fn flush(&self) {
+        super::log_files::flush();
+    }
 }
 
 #[cfg(test)]

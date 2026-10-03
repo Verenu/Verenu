@@ -8,7 +8,13 @@
   import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
-  import { providers, cleanupCards, toneCards, SETUP_APPEARANCE_MODE } from '../setup/setupData';
+  import {
+    providers,
+    cleanupCards,
+    toneCards,
+    SETUP_APPEARANCE_MODE,
+    type WizardProviderId,
+  } from '../setup/setupData';
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import SetupShell from '../setup/SetupShell.svelte';
@@ -47,7 +53,7 @@
   let animating = $state(false);
   let stepWrapEl = $state<HTMLDivElement | null>(null);
 
-  let provider = $state<ProviderId>('groq');
+  let provider = $state<WizardProviderId>('groq');
   let localAiSupported = $state(!isAndroid);
   let localAiUnsupportedReason = $state('');
   let apiKeyDraft = $state('');
@@ -58,6 +64,8 @@
     openai: false,
     google: false,
     assemblyai: false,
+    openrouter: false,
+    xai: false,
     local: true,
   });
   let previousProvider = $state<ProviderId | null>(null);
@@ -119,7 +127,7 @@
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
       ]);
       if (savedLanguage && transcriptionLanguages.some((o) => o.code === savedLanguage)) language = savedLanguage;
-      if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider;
+      if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider as WizardProviderId;
       if (savedIntensity && cleanupCards.some((c) => c.id === savedIntensity)) cleanupIntensity = savedIntensity;
       if (savedTone && toneCards.some((t) => t.id === savedTone)) tone = savedTone;
       if (keyStatus) {
@@ -303,6 +311,8 @@
       openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
       google: ['gemini-2.5-flash', 'gemini-3.5-transcribe'],
       assemblyai: [],
+      openrouter: [],
+      xai: [],
       local: ['parakeet-v3'],
     };
     for (const id of selected) {
@@ -321,6 +331,8 @@
       openai: ['gpt-4o-mini', 'gpt-4o'],
       google: ['gemini-3.5-flash-lite'],
       assemblyai: [],
+      openrouter: [],
+      xai: [],
       local: ['qwen2.5-3b-instruct'],
     };
     for (const id of selected) {

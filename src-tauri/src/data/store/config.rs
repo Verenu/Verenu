@@ -20,6 +20,8 @@ pub struct PipelineConfig {
     pub key_openai: String,
     pub key_google: String,
     pub key_assemblyai: String,
+    pub key_openrouter: String,
+    pub key_xai: String,
     pub default_tone: String,
     pub cleanup_intensity: String,
     pub app_context_hint: bool,
@@ -37,13 +39,17 @@ pub const GROQ: &str = "groq";
 pub const OPENAI: &str = "openai";
 pub const GOOGLE: &str = "google";
 pub const ASSEMBLYAI: &str = "assemblyai";
+pub const OPENROUTER: &str = "openrouter";
+pub const XAI: &str = "xai";
 pub(crate) const LOCAL: &str = "local";
 pub const GROQ_GPT_OSS_20B_MODEL: &str = "openai/gpt-oss-20b";
 pub const GROQ_QWEN_3_6_27B_MODEL: &str = "qwen/qwen3.6-27b";
 pub const GROQ_QWEN_3_8_27B_MODEL: &str = "qwen/qwen3.8-27b";
 pub const DEPRECATED_GROQ_LLAMA_8B_MODEL: &str = "llama-3.1-8b-instant";
 pub const DEPRECATED_GROQ_LLAMA_70B_MODEL: &str = "llama-3.3-70b-versatile";
-pub const PROVIDERS: [&str; 5] = [GROQ, OPENAI, GOOGLE, ASSEMBLYAI, LOCAL];
+pub const PROVIDERS: [&str; 7] = [
+    GROQ, OPENAI, GOOGLE, ASSEMBLYAI, OPENROUTER, XAI, LOCAL,
+];
 
 pub fn default_transcription_model_for(provider: &str) -> &'static str {
     match provider {
@@ -51,6 +57,8 @@ pub fn default_transcription_model_for(provider: &str) -> &'static str {
         OPENAI => "gpt-4o-transcribe",
         GOOGLE => "gemini-3.5-transcribe",
         ASSEMBLYAI => "universal-3-5-pro",
+        OPENROUTER => "openai/whisper-large-v3",
+        XAI => "grok-voice-transcribe-2.0",
         _ => "whisper-large-v3-turbo",
     }
 }
@@ -60,6 +68,8 @@ pub fn default_cleanup_model_for(provider: &str) -> &'static str {
         LOCAL => "gemma-4-e2b",
         OPENAI => "gpt-4o-mini",
         GOOGLE => "gemini-3.5-flash-lite",
+        OPENROUTER => "openai/gpt-4o-mini",
+        XAI => "grok-4-fast-non-reasoning",
         _ => GROQ_QWEN_3_8_27B_MODEL,
     }
 }
@@ -166,6 +176,8 @@ impl PipelineConfig {
             "openai" => &self.key_openai,
             "google" => &self.key_google,
             "assemblyai" => &self.key_assemblyai,
+            "openrouter" => &self.key_openrouter,
+            "xai" => &self.key_xai,
             "local" => "",
             _ => &self.key_groq,
         }
@@ -323,6 +335,8 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         key_openai: crate::data::credentials::get(OPENAI),
         key_google: crate::data::credentials::get(GOOGLE),
         key_assemblyai: crate::data::credentials::get(ASSEMBLYAI),
+        key_openrouter: crate::data::credentials::get(OPENROUTER),
+        key_xai: crate::data::credentials::get(XAI),
         default_tone: supported_or_default(DEFAULT_TONE, "casual", is_supported_default_tone),
         cleanup_intensity: supported_or_default(
             CLEANUP_INTENSITY,
