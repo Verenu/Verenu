@@ -407,7 +407,7 @@ pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
 /// edit silently vanished. `CLEANUP_PROMPT_OVERRIDES` is the retired per-model
 /// map, still read once so an existing edit survives the change.
 pub const CLEANUP_PROMPT_OVERRIDE: &str = "cleanup_prompt_override";
-pub const CLEANUP_STYLE_PROMPTS: &str = "cleanup_style_prompts";
+pub const STYLE_PROMPT_INSTRUCTIONS: &str = "style_prompt_instructions";
 pub const CLEANUP_PROMPT_OVERRIDES: &str = "cleanup_prompt_overrides";
 /// Per-provider snapshot of the live model lists, written only by the model
 /// catalog store. Derived cache state, so it is readable but never exported —

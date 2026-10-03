@@ -4,7 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
-- Added prompt editors to the Light, Medium, and Strong cleanup tiles, with style-specific overrides, a reset to built-in defaults, and an audit for dictated questions, pronouns, injection, corrections, and detail preservation before saving.
+- Added instruction editors to the cleanup and Personal Tone tiles. Edits change only the instructions injected by each preset, with reset to built-in defaults and an audit against the composed system prompt before saving.
 
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
 

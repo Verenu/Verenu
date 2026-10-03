@@ -9,10 +9,11 @@ mod transcription;
 
 pub use cleanup_rules::{cleanup_max_output_tokens, fusion_max_output_tokens};
 pub use cleanup_templates::{
-    default_cleanup_template, default_style_template, hardened_retry_template,
-    lint_cleanup_template, looks_like_degenerate_repetition, looks_like_excessive_content_loss,
+    default_cleanup_template, default_style_template, default_tone_instructions,
+    hardened_retry_template, lint_cleanup_template, lint_style_instructions,
+    looks_like_degenerate_repetition, looks_like_excessive_content_loss,
     looks_like_fabricated_content, looks_like_model_artifact_leak, looks_like_perspective_flip,
-    looks_like_refusal, looks_like_unwanted_expansion,
+    looks_like_refusal, looks_like_unwanted_expansion, with_style_instructions,
 };
 #[cfg(test)]
 pub use cleanup_templates::{default_static_prompt_token_estimate, prompt_token_estimate};
