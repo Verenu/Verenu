@@ -28,6 +28,8 @@ test("selectReviewModels returns Gemini then Claude defaults", () => {
 test("legacy configured model names migrate to the current review models", () => {
   assert.equal(normalizeReviewModel("gemini-3.6-flash-high", DEFAULT_MODEL), DEFAULT_MODEL);
   assert.equal(normalizeReviewModel("claude-sonnet-4.6", DEFAULT_FALLBACK_MODEL), DEFAULT_FALLBACK_MODEL);
+  assert.equal(normalizeReviewModel("claude-sonnet-4-6", DEFAULT_FALLBACK_MODEL), "claude-sonnet-4-6(low)");
+  assert.equal(normalizeReviewModel("claude-sonnet-4-6(high)", DEFAULT_FALLBACK_MODEL), "claude-sonnet-4-6(high)");
   assert.deepEqual(selectReviewModels({
     apiKey: "present",
     primaryModel: "gemini-3.6-flash-high",
@@ -74,6 +76,9 @@ test("quota, rate-limit, and model-unavailable failures are fallback eligible", 
     [{ code: 1, stderr: "no available model for this request" }, "model_unavailable"],
     [{ code: 1, stderr: "model gemini-3.7-flash-high\nnot found" }, "model_unavailable"],
     [{ code: 1, stderr: "MODEL_NOT_FOUND: gemini-3.7-flash-high" }, "model_unavailable"],
+    [{ code: 1, stderr: '503 {"error":{"message":"auth_unavailable: no auth available"}}' }, "model_unavailable"],
+    [{ code: 1, stderr: "auth_not_found: no auth candidates" }, "model_unavailable"],
+    [{ code: 1, stderr: "all 2 file review(s) failed", providerFailureReason: "quota" }, "quota"],
   ];
 
   for (const [result, reason] of cases) {
@@ -90,6 +95,9 @@ test("unrelated failures, preview failures, and successful reviews do not fallba
   assert.equal(failureCategory({ code: 1, previewFailed: true }), "preview_failed");
   assert.equal(failureCategory({ code: 1, stderr: "401 unauthorized" }), "review_failed");
   assert.equal(failureCategory({ code: 0, stderr: "success" }), null);
+  assert.equal(fallbackReason({ code: 1, providerFailureReason: "untrusted raw error" }), null);
+  assert.equal(fallbackReason({ code: 0, providerFailureReason: "quota" }), null);
+  assert.equal(shouldFallback({ code: 1, providerFailureReason: "quota" }, DEFAULT_FALLBACK_MODEL, null), false);
 });
 
 test("clean reviews pass and reviews with findings fail", () => {

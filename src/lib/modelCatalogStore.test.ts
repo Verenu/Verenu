@@ -126,7 +126,8 @@ describe('applySuccess', () => {
     // Still recorded as a success — the response was a 200, just not trustworthy
     // enough to prove three models vanished at once.
     expect(after.lastSuccessAt).toBe(T0 + 1);
-    expect(after.ids).toEqual(['a']);
+    expect(after.ids).toEqual(['a', 'b', 'c', 'd']);
+    expect(isTrustworthy(after)).toBe(false);
   });
 
   it('carries existing counters through a degraded response untouched', () => {
@@ -151,6 +152,14 @@ describe('applySuccess', () => {
 });
 
 describe('mergeCatalogCache', () => {
+  it('hydrates OpenRouter and xAI discoveries and rejects malformed capabilities', () => {
+    const merged = mergeCatalogCache({
+      openrouter: cache({ ids: ['org/new:free'], metadata: { 'org/new:free': { label: 'New', tasks: ['cleanup'] } } }),
+      xai: { ...cache(), metadata: { bad: { label: 'Bad', tasks: ['arbitrary'] }, good: { label: 'Good', tasks: ['cleanup'] } } },
+    });
+    expect(merged.openrouter?.metadata?.['org/new:free'].tasks).toEqual(['cleanup']);
+    expect(merged.xai?.metadata).toEqual({ good: { label: 'Good', tasks: ['cleanup'] } });
+  });
   it('returns an empty cache for junk', () => {
     expect(mergeCatalogCache(null)).toEqual({});
     expect(mergeCatalogCache('nope')).toEqual({});

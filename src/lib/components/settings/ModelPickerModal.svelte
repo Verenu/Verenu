@@ -4,7 +4,7 @@
   import { cubicOut } from 'svelte/easing';
   import { modalFocusTrap } from '../../modalFocus';
   import { portal } from '../../portal';
-  import { isTrustworthy } from '../../modelCatalogStore.svelte';
+  import { isTrustworthy, CLOUD_PROVIDERS, modelCatalogStore, refreshCatalog, trackedIds } from '../../modelCatalogStore.svelte';
   import { expandFromOrigin, modalBackdrop, MOTION_MS, motionMs } from '../../motion';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import LocalDownloadProgress from './LocalDownloadProgress.svelte';
@@ -12,6 +12,7 @@
   import { modelId, providerDisplayLabel, splitModelId, taskLabel, type TaskType } from './models';
   import {
     curatedRows,
+    discoveredRows,
     unverifiedRows,
     rowForSelection,
     type LocalControls,
@@ -113,7 +114,18 @@
   // still has somewhere to show its state and be swapped out.
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
   const supportedHere = (row: ModelRow) => local.supported || row.provider !== 'local';
-  const curated = $derived(curatedRows(context, pinned).filter(supportedHere));
+  const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
+  const refreshing = $derived(Object.values(modelCatalogStore.refreshing).some(Boolean));
+  const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
+    (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
+  async function refreshModels() {
+    await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
+  }
+  const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
+    ? 'Refresh unavailable. Keeping cached models.'
+    : refreshProviders.some((provider) => context.cache[provider]?.warning)
+      ? 'Some capability metadata is unavailable. Keeping known models.'
+      : 'Model lists refresh daily. Your selections stay the same.');
   const unverified = $derived(unverifiedRows(context).filter(supportedHere));
   /** What the search box says it searches — the collapsed tail isn't in it. */
   const listedCount = $derived(curated.length + (showUnverified ? unverified.length : 0));
@@ -178,6 +190,10 @@
     // A model that isn't on disk yet can't be chosen, so the row's job is to
     // fetch it. Selecting it afterwards is a second, deliberate click.
     if (row.remedy === 'download') return local.onDownload(row.id);
+    if (row.provider === 'local' && runtimePending) {
+      if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
+      return;
+    }
     if (mode === 'fallback') {
       if (isActive(row.key) || isFallback(row.key)) return;
       onAddFallback(row.key);
@@ -188,6 +204,10 @@
   }
 
   function addFallback(row: ModelRow) {
+    if (row.provider === 'local' && runtimePending) {
+      if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
+      return;
+    }
     if (isActive(row.key) || isFallback(row.key)) return;
     onAddFallback(row.key);
   }
@@ -319,6 +339,13 @@
       />
     </div>
 
+    <div class="catalog-refresh">
+      <span role="status">{refreshing ? 'Refreshing model lists…' : catalogNote}</span>
+      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || refreshProviders.length === 0}>
+        {refreshing ? 'Refreshing…' : 'Refresh models'}
+      </button>
+    </div>
+
     <div class="picker-body">
       <nav class="picker-rail" aria-label="Filter by provider">
         <button
@@ -382,6 +409,7 @@
                   On-device cleanup needs a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
                   Downloading any model below fetches it too.
                 </span>
+                <button class="btn-ghost btn-compact" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
               {/if}
             </div>
           {:else if group.provider === 'local' && local.runtime?.info?.installed}
@@ -548,6 +576,8 @@
 </div>
 
 <style>
+  .catalog-refresh { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 20px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--ink-mute); }
+  .catalog-refresh .btn-ghost { flex-shrink: 0; }
   .picker-wrap {
     position: fixed;
     inset: 0;
@@ -1131,4 +1161,3 @@
     }
   }
 </style>
-

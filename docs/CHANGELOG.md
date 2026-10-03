@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Save and Clear labels overlapping on the API Keys page when the inactive action was disabled.
+- Added automatic cloud model discovery with capability metadata, daily and manual refresh, an updateable AssemblyAI catalog, and cached model lists for offline use.
+
 - Split frontend IPC routing from browser mocks and their model/Insights fixtures,
   preserving existing imports and loading mocks only in preview mode. Corrected
   contributor setup and verification instructions, consolidated stale agent
@@ -17,7 +20,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed history rows and app filters displaying Linux window IDs instead of installed app names, including existing history entries and Wayland IDs that correspond to a short desktop window class.
 
+- Hotkey capture now records the full held combination and saves on release, with no fixed two-key limit. Windows tracks arbitrary key chords; macOS and Linux support multiple modifiers with one trigger key. Detected conflicts and unsupported combinations report an error and keep the previous binding. Home and setup display the entire saved combination.
 - Added native macOS correction reads for Auto-learn and tied learning and rejection to the original editable control on Windows, macOS, and Linux. Monitoring now anchors the text actually inserted, retries slow accessibility reads, accepts single-word dictation, and requires a stable edit before recording evidence. Learned brand capitalization and split names apply to later dictations, short technical corrections can accumulate real evidence, and pending observations last 30 days. The regression matrix now checks real detector confidence and promotion instead of supplying invented scores.
+- Fixed local cleanup model downloads omitting the shared engine. Local AI presets wait for the engine as well as model weights, and the picker offers engine installation for existing downloads. The dictation pill now replays its context label after startup.
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
 - Added custom icons for Context groups: emoji, and one- or two-character badges with a softened background and chosen text color. Icon colors use a permanent row of preset swatches plus a native custom-color button. Emoji render without a background, including saved ones. The right-click color popup in the Context editor is gone.
 

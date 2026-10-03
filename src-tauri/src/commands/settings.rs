@@ -3,10 +3,12 @@
 use super::*;
 
 mod api_keys;
+mod model_catalog;
 mod import_export;
 mod prompts;
 
 pub use api_keys::*;
+pub use model_catalog::*;
 pub use import_export::*;
 pub use prompts::*;
 
@@ -359,6 +361,15 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
                     .is_some_and(|v| v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0))
             };
             string_array("ids")
+                && entry.get("metadata").is_none_or(|metadata| {
+                    metadata.as_object().is_some_and(|models| models.len() <= 10000 && models.values().all(|model| {
+                        model.as_object().is_some_and(|model| {
+                            model.get("label").and_then(serde_json::Value::as_str).is_some_and(|label| label.len() <= 800)
+                                && model.get("tasks").and_then(serde_json::Value::as_array).is_some_and(|tasks| tasks.len() <= 2 && tasks.iter().all(|task| matches!(task.as_str(), Some("transcription" | "cleanup"))))
+                        })
+                    }))
+                })
+                && entry.get("warning").is_none_or(|warning| warning.is_null() || warning.is_string())
                 && string_array("everSeen")
                 && finite_timestamp("lastSuccessAt")
                 && finite_timestamp("lastAttemptAt")
@@ -433,14 +444,11 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         }
         SettingKind::AppMappings => is_valid_app_mappings(value),
         SettingKind::Hotkey => value.as_array().is_some_and(|keys| {
-            keys.len() == 2
-                && keys.iter().all(serde_json::Value::is_string)
-                && keys[0]
-                    .as_str()
-                    .is_some_and(crate::core::hotkey::is_known_key_code)
-                && keys[1].as_str().is_none_or(|second| {
-                    second.is_empty() || crate::core::hotkey::is_known_key_code(second)
-                })
+            let codes: Option<Vec<String>> = keys
+                .iter()
+                .map(|key| key.as_str().map(String::from))
+                .collect();
+            codes.is_some_and(|codes| crate::core::hotkey::normalize_codes(&codes).is_ok())
         }),
     };
 
@@ -454,6 +462,44 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
 #[cfg(test)]
 mod setting_key_tests {
     use super::*;
+
+    #[test]
+    fn hotkeys_accept_variable_length_and_legacy_single_key_settings() {
+        for codes in [
+            serde_json::json!(["F5"]),
+            serde_json::json!(["F5", ""]),
+            serde_json::json!(["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft", "KeyK"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_ok());
+        }
+        for codes in [
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!(["ControlLeft", "ControlRight"]),
+            serde_json::json!(["KeyK", "KeyK"]),
+            serde_json::json!(["ControlLeft", "", "KeyK"]),
+            serde_json::json!(["ControlLeft", 3]),
+            serde_json::json!(["NoSuchKey"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_err());
+        }
+    }
+
+    #[test]
+    fn local_model_maps_accept_all_picker_providers_and_reject_invalid_values() {
+        let value = serde_json::json!({
+            "groq": [], "openai": [], "google": [], "assemblyai": [],
+            "openrouter": [], "xai": [], "local": ["qwen2.5-7b-instruct"]
+        });
+        for key in [
+            store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+            store::CLEANUP_MODELS_BY_PROVIDER,
+        ] {
+            assert!(validate_setting(key, &value).is_ok());
+            assert!(validate_setting(key, &serde_json::json!({"local": [""]})).is_err());
+            assert!(validate_setting(key, &serde_json::json!({"unknown": ["model"]})).is_err());
+        }
+    }
 
     #[test]
     fn readable_settings_exclude_credential_keys() {
@@ -832,6 +878,17 @@ mod provider_model_cache_tests {
     #[test]
     fn accepts_a_well_formed_cache() {
         check(&well_formed()).expect("well-formed cache should validate");
+    }
+
+    #[test]
+    fn validates_persisted_capabilities_for_new_providers() {
+        let mut value = well_formed();
+        value["openrouter"] = value["groq"].clone();
+        value["openrouter"]["metadata"] = json!({"org/new:free":{"label":"New model","tasks":["cleanup"]}});
+        value["openrouter"]["warning"] = json!(null);
+        assert!(check(&value).is_ok());
+        value["openrouter"]["metadata"]["org/new:free"]["tasks"] = json!(["unknown"]);
+        assert!(check(&value).is_err());
     }
 
     #[test]

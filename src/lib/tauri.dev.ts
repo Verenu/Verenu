@@ -1485,8 +1485,13 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'set_dev_logging_enabled':
       writeDevSetting('dev_logging_enabled', Boolean(args?.enabled));
       return undefined as T;
-    case 'set_autostart':
+    case 'get_shortcut_status':
+      return [] as T;
     case 'save_hotkey':
+      writeDevSetting('hotkey', args?.keys);
+      return undefined as T;
+    case 'set_hotkey_capture':
+    case 'set_autostart':
     case 'open_accessibility_settings':
     case 'open_microphone_settings':
     case 'open_notifications_settings':
