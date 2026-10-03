@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { cmakeArguments, LLAMA_COMMIT, LLAMA_ANDROID_BINARY, ORT_VERSION, RUNTIME_ABIS } from '../../scripts/android-local-runtimes.mjs';
 
@@ -16,9 +16,20 @@ test('Android native runtimes are reproducible and support both shipped ABIs', (
     assert.ok(args.includes('-DBUILD_SHARED_LIBS=OFF'));
     assert.ok(args.includes('-DGGML_OPENMP=OFF'));
     assert.ok(args.includes('-DMTMD_VIDEO=OFF'));
-    assert.ok(args.includes('-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384'));
+    assert.ok(args.includes('-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'));
   }
   assert.throws(() => cmakeArguments('/s', '/b', '/n', 'armeabi-v7a'), /Unsupported/);
+});
+
+test('Cargo launched by Tauri from the repository root uses Android 16 KB linker flags', () => {
+  const rootConfig = readFileSync(new URL('../../.cargo/config.toml', import.meta.url), 'utf8');
+  const crateConfig = new URL('../../src-tauri/.cargo/config.toml', import.meta.url);
+  for (const target of ['aarch64-linux-android', 'x86_64-linux-android']) {
+    const targetConfig = rootConfig.split(`[target.${target}]`)[1]?.split('\n[target.')[0] ?? '';
+    assert.match(targetConfig, /link-arg=-Wl,-z,max-page-size=16384/);
+    assert.match(targetConfig, /link-arg=-Wl,-z,common-page-size=16384/);
+  }
+  assert.equal(existsSync(crateConfig), false, 'Cargo config must be discoverable from the Tauri CLI repository-root working directory');
 });
 
 test('packaged executable name matches the native resolver', () => {
