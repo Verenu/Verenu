@@ -478,7 +478,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let keys = keys.borrow();
                 CHORD_MACHINE.with(|m| {
                     let mut machine = m.borrow_mut();
-                    for (other, id) in keys.iter().enumerate().filter(|(other, _)| *other != index) {
+                    for (other, id) in keys.iter().enumerate().filter(|(other, _)| *other != index)
+                    {
                         machine.reconcile_stale_key(ChordKey(other), modifier_held(*id), now);
                     }
                     let menu_key_passed_through = keys.iter().enumerate().any(|(other, id)| {
@@ -490,7 +491,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         machine.on_key_event(key, edge, now),
                         menu_key_passed_through,
                     )
-                });
+                })
             });
             let mut action = outcome.action;
             let mut disposition = outcome.disposition;
