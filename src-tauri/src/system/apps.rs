@@ -29,6 +29,9 @@ pub struct AppMapping {
 
 /// Discovers user-facing app registrations into a single deduplicated list.
 pub fn list_installed_apps() -> Vec<InstalledApp> {
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    return Vec::new();
+
     #[cfg(target_os = "linux")]
     return list_linux_desktop_apps();
 

@@ -34,18 +34,18 @@
 //!
 //! # Local AI
 //!
-//! [`local_ai_supported_on_android`] returns `false`: neither the
-//! `transcribe-rs`/ORT speech models nor the `llama-server` cleanup runtime
-//! ship an Android ARM64 build, and their multi-hundred-MB/GB payloads are not
-//! realistic on phones. Cloud providers are the supported path; the settings
-//! UI hides or clearly marks local options on Android while keeping the code
-//! structured so they can be added later (see `docs/ANDROID.md`).
+//! ONNX Runtime and an NDK-built llama-server are packaged with the APK.
+//! Model weights are optional, checksum-verified downloads in private app
+//! storage. The shared pipeline runs offline after download.
 
 // The bridge server only starts on Android (see main.rs setup) and is
 // exercised by unit tests everywhere else; allow its (then-)unused surface
 // on desktop non-test builds so `clippy -D warnings` stays green there.
 #[cfg_attr(not(any(test, target_os = "android")), allow(dead_code))]
 pub mod bridge;
+
+#[cfg_attr(not(any(test, target_os = "android")), allow(dead_code))]
+pub mod local_ai;
 
 /// Tauri mobile-plugin glue for Android's real permission prompts and
 /// settings intents. The Kotlin class is copied into the generated project by
@@ -142,17 +142,13 @@ pub const ANDROID_TARGET_SDK: u32 = 36;
 /// release testing targets real ARM64 devices.
 pub const ANDROID_SUPPORTED_ABI: &str = "arm64-v8a";
 
-/// Why local AI is unavailable on Android. Returned alongside `false` from
-/// [`local_ai_supported_on_android`] so the settings UI can show a truthful,
-/// non-generic explanation instead of a dead toggle.
-pub const LOCAL_AI_ANDROID_UNSUPPORTED_REASON: &str = "On-device speech and cleanup models aren't available on Android yet — the desktop runtimes (ONNX Runtime speech models and the llama-server cleanup runtime) don't ship Android ARM64 builds. Cloud providers work normally; local options will light up here if a compatible mobile runtime lands.";
+/// Recovery message for builds missing their APK-owned native libraries.
+pub const LOCAL_AI_ANDROID_UNSUPPORTED_REASON: &str = "Local AI needs Android 9 or newer and a build with bundled inference runtimes. Update Android or reinstall a build with local AI support. Cloud providers are still available.";
 
 /// Whether on-device transcription/cleanup runtimes are supported on Android.
 ///
-/// Always `false` today. Kept as a function (not a constant) so a future
-/// mobile runtime can switch on capability detection without touching callers.
 pub fn local_ai_supported_on_android() -> bool {
-    false
+    local_ai::supported()
 }
 
 /// How the final dictated text reaches the focused field on Android.
@@ -736,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn local_ai_is_explicitly_unsupported() {
+    fn local_ai_requires_initialized_packaged_runtimes() {
         assert!(!local_ai_supported_on_android());
         assert!(LOCAL_AI_ANDROID_UNSUPPORTED_REASON.contains("Android"));
     }

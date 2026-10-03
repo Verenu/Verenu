@@ -1,0 +1,16 @@
+# Cargo is launched from the repository root by Tauri's Android build. Keep
+# Android target flags here so Cargo discovers them for `src-tauri/Cargo.toml`
+# regardless of whether the command uses the repository or crate directory.
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+    "-C", "link-arg=-Wl,--no-undefined",
+]
+
+[target.x86_64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+    "-C", "link-arg=-Wl,--no-undefined",
+]

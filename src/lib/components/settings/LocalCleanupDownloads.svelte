@@ -196,7 +196,11 @@
           {:else if runtimeInfo.installed}
             <div class="runtime-banner-row">
               <span class="runtime-banner-label">Local cleanup runtime installed ({backendLabel(runtimeInfo.backend)})</span>
-              <button class="card-btn ghost" type="button" onclick={onDeleteRuntime}>Remove</button>
+              {#if runtimeInfo.approx_download_mb === 0}
+                <span class="runtime-banner-label">Included with app</span>
+              {:else}
+                <button class="card-btn ghost" type="button" onclick={onDeleteRuntime}>Remove</button>
+              {/if}
             </div>
           {:else}
             <span class="runtime-banner-label">
