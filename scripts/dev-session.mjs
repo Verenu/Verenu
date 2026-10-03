@@ -63,6 +63,9 @@ async function start() {
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error('Session ID must contain 1 to 80 letters, numbers, or hyphens');
   const startupTimeout = Number(option('--startup-timeout', '900'));
   if (!Number.isFinite(startupTimeout) || startupTimeout <= 0) throw new Error('--startup-timeout must be a positive number of seconds');
+  const seedDirectory = option('--seed-dir', null);
+  const syntheticSeed = args.includes('--synthetic-seed');
+  if (syntheticSeed && (seedDirectory || args.includes('--private-history'))) throw new Error('--synthetic-seed cannot copy installed data');
   const directory = path.join(stateRoot, id);
   await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
   await fs.chmod(stateRoot, 0o700);
@@ -144,15 +147,14 @@ async function start() {
     const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target') };
     env.VERENU_BUILD_FINGERPRINT = identity.fingerprint;
     env.VERENU_DEV_WORKTREE = identity.worktree;
-    if (args.includes('--synthetic-seed')) {
-      if (option('--seed-dir', null) || args.includes('--private-history')) throw new Error('--synthetic-seed cannot copy installed data');
+    if (syntheticSeed) {
       const seed = path.join(directory, 'synthetic-seed');
       await fs.mkdir(seed, { recursive: true });
       await fs.writeFile(path.join(seed, 'settings.json'), JSON.stringify({ setup_complete: true, noise_reduction: false, analytics_enabled: false }), { mode: 0o600 });
       env.VERENU_DEV_SEED_DIR = seed;
     }
     if (args.includes('--native-test')) { delete env.VITE_VERENU_SESSION; env.VITE_VERENU_NATIVE_TEST = '1'; }
-    if (option('--seed-dir', null)) env.VERENU_DEV_SEED_DIR = path.resolve(option('--seed-dir'));
+    if (seedDirectory) env.VERENU_DEV_SEED_DIR = path.resolve(seedDirectory);
     // No inherited environment credential fallback in local dev sessions.
     env.VITE_VERENU_SESSION_ID = id;
     env.VERENU_DEV_SHARE_URL = shareUrl || '';
