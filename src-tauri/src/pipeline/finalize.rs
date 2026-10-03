@@ -374,10 +374,15 @@ pub(super) async fn finalize_pipeline_completion(
     // Clipboard-expanded output is intentionally not monitored: its exact
     // text must stay out of correction/focused-text probes, and the private
     // placeholder cannot match the text that was delivered to the editor.
-    if ctx.clipboard_plan.is_none() {
+    if ctx.clipboard_plan.is_none()
+        && !matches!(
+            injected.case_decision,
+            "inject_failed" | "clipboard_fallback" | "android_accessibility_handoff"
+        )
+    {
         if !ctx.cleanup_cache_key.is_empty() {
             auto_learn::start_cache_rejection_monitor(
-                private_text.clone(),
+                injected_text.clone(),
                 ctx.cleanup_cache_key,
                 ctx.target_hwnd,
                 db_handle.inner().clone(),
@@ -387,7 +392,7 @@ pub(super) async fn finalize_pipeline_completion(
         if ctx.cfg.auto_learn_enabled {
             if !applied_dict_ids.is_empty() {
                 auto_learn::start_rejection_monitor(
-                    private_text.clone(),
+                    injected_text.clone(),
                     applied_dict_ids,
                     ctx.target_hwnd,
                     ctx.context.clone(),
@@ -396,7 +401,8 @@ pub(super) async fn finalize_pipeline_completion(
                 );
             }
             auto_learn::start_monitor(
-                private_text,
+                injected_text,
+                ctx.target_hwnd,
                 ctx.context.clone(),
                 db_handle.inner().clone(),
                 app.clone(),
