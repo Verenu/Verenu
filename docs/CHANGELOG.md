@@ -10,6 +10,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
   passes, fails executed optional checks, and retains retry failures. Test
   servers use owned ports instead of reusing or stopping another session.
 
+- Reworked parts of onboarding. The analytics arrow is now a centred icon. The models step is titled "Speed or accuracy?" and no longer offers Local AI to people who picked a cloud provider. English leads the language list. The Try It result eases in with a short glow instead of snapping. The API key walkthrough ends on a fifth "paste your key" slide, replacing "I've got my key", and the existing Skip for now still applies. The final summary is compact, shows each choice (models, writing, language, audio), and its step numbers are centred.
+
 - Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
 
 - Calibrated the sidebar RAM bar to a locally saved average from the first hour of sampled usage. Typical usage fills half the bar on each device instead of topping out at a fixed 400 MB; calibration resumes across restarts and the MB reading stays unchanged.

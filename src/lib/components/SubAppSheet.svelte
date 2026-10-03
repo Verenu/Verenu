@@ -173,6 +173,12 @@
     flex-direction: column;
   }
 
+  /* The title-match menu opens downward; the body's scroll clipping would
+     hide it behind the footer. */
+  .sub-app-sheet .ui-modal-body {
+    overflow: visible;
+  }
+
   .sub-app-app {
     align-items: center;
     color: var(--ink-mute);
