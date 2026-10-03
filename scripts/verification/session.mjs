@@ -6,6 +6,9 @@ import { root, sourceIdentity } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
 export async function startOwnedSession({ id, fixtures, native = false, directory, synthetic = true }) {
+  if (typeof directory !== 'string' || directory.length === 0) {
+    throw new TypeError('startOwnedSession requires a directory path');
+  }
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
