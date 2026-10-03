@@ -147,31 +147,25 @@ These are plain GET requests with no request body. They never include your dicta
 
 ### Optional desktop and Android product analytics
 
-Product analytics is available only when the build is configured with
-`POSTHOG_PROJECT_TOKEN` and `POSTHOG_HOST`. Windows and macOS use the shared
-Rust transport; Android uses its native SDK boundary.
-When enabled, Verenu sends a fresh random per-process identifier and only explicit
-aggregate product events: dictation lifecycle/delivery events, a safe settings
-summary, and categorized pipeline failures. Event properties are limited to
-booleans, fixed categories, and coarse pipeline stages. Failures never include
-raw error messages or stack traces.
+Product analytics requires a configured PostHog ingestion token and host.
+Desktop builds use the shared Rust transport; Android uses its native SDK
+boundary. It is enabled by default in configured builds and can be disabled
+during onboarding or in Settings -> Privacy.
 
-The Android SDK's automatic lifecycle, screen, deep-link, push, session replay,
-feature-flag, person-profile, and crash/error capture are disabled. Verenu does
-not call identify and does not send dictated audio, transcripts, prompts,
-history, snippets, vocabulary, app/window names, package names, email
-addresses, device IDs, or stack traces to PostHog. Settings summaries exclude
-prompts, context targets, model names, microphone names, hotkeys, and API keys.
-The random session
-identifier is regenerated for each app process and is not linked to an account.
-This is pseudonymous usage analytics, not a claim of mathematical anonymity;
-the tradeoff is that cross-launch retention cannot be measured.
+Analytics sends approved usage events, safe settings summaries, and sanitized
+failure reports. It uses a persisted random installation ID, a fresh process
+session ID, and per-dictation run IDs. The installation ID allows cross-launch
+usage measurement. These IDs are not derived from accounts, hardware, pairing
+identity, or user content. Opt-out deletes the installation identity and stops
+new events; re-enabling creates a new identity. Previously queued Android
+events may remain in its offline queue.
 
-The Settings → Privacy toggle persists the choice. Turning analytics off opts
-the SDK out immediately, resets its random identity, clears its local
-deduplication state, and prevents new events while off. Events already accepted
-by the SDK before opt-out may remain in its offline queue; they contain only the
-safe contract fields above.
+Dictated audio and text, prompts, clipboard contents, history, vocabulary,
+snippets, app/window contents, URLs, credentials, microphone names, and raw
+error messages are excluded. The [analytics contract](ANALYTICS.md) documents
+the exact event allowlists, sanitized Error Tracking fields, transport controls,
+identity storage, and opt-out behavior. Analytics is pseudonymous, not
+mathematically anonymous.
 See [the event contract](ANALYTICS.md) for the complete allowlist.
 
 ## History Loading
@@ -187,7 +181,7 @@ This changes UI loading behavior, not storage location. The full history databas
 - transcription history
 - context vocabulary and snippets by default
 - local settings backups by default
-- analytics events to Verenu-owned servers (optional Android product events go only to the separately configured PostHog host)
+- analytics events to Verenu-owned servers, optional product events go to the separately configured PostHog host
 - user profiles
 - payment data
 
@@ -208,10 +202,10 @@ That said, once data is sent to a third-party AI provider, that provider's reten
 | Update check | current app state stays local | GitHub release metadata request |
 | Connectivity check | current app state stays local | native OS network-state check; a short active probe only after a real request fails |
 | Provider status check | current app state stays local | optional periodic GET to `api.verenu.com/v1/provider-status` (every 5 min, plus an immediate recheck after a provider-side pipeline failure) |
-| API health check | current app state stays local | optional periodic GET to `api.verenu.com/v1/health` (every 20 min) |
+| API health check | current app state stays local | on-demand GET to `api.verenu.com/v1/health`; no automatic polling |
 | Export data | backup file on local disk | nothing unless you share the file yourself |
 | Logs export | log file on local disk | nothing unless you share the file yourself |
-| Optional desktop/Android product analytics | nothing beyond local SDK queue until delivery | explicit aggregate dictation events with a fresh random per-process identifier |
+| Optional desktop/Android product analytics | random installation identity, first-seen version, milestone state, and local queues | approved events with random installation/session/run IDs and sanitized failure reports; see [contract](ANALYTICS.md) |
 
 ## macOS And Windows Key Storage
 

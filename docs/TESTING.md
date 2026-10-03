@@ -140,13 +140,20 @@ On Windows, use `python` instead of `python3` if `python3` is not available in y
 Use Playwright for UI-facing changes when the app can be exercised through the browser dev server.
 
 ```bash
-npm run dev
-node tests/smoke/playwright-test-ui.cjs
-node tests/smoke/playwright-test-fixes.cjs
-node tests/smoke/playwright-test-state.cjs
+# Owns isolated renderer servers and adapts the frozen smoke URLs.
+python3 tests/OnePyFone.py --suite ui,state
+
+# Owns a real Rust backend, browser checks, and a persistence restart.
+npm run test:session:owned
 ```
 
-[`../tests/smoke/`](../tests/smoke/) is a frozen contract. Do not edit those files unless the user explicitly asks. Fix app code to satisfy them. Add new browser coverage in [`../tests/integration/`](../tests/integration/).
+For interactive inspection, start your own
+`npm run dev:session -- --synthetic-seed` and use its private access link.
+See [Browser dev sessions](DEV_SESSIONS.md). A mock preview cannot establish
+backend or native behavior.
+
+[`../tests/smoke/`](../tests/smoke/) is a frozen contract. Do not edit those files unless the user explicitly asks. Fix app code to satisfy them. Add real-session browser coverage in [`../tests/browser/`](../tests/browser/).
+Existing mock integration checks live in [`../tests/integration/`](../tests/integration/).
 
 ## Rust Tests
 
