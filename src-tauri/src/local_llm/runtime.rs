@@ -60,42 +60,51 @@ fn llama_server_binary_name() -> &'static str {
 }
 
 fn resolve_llama_server_binary(app: &AppHandle) -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("VERENU_LLAMA_SERVER_PATH") {
-        return Ok(PathBuf::from(path));
-    }
-
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "android")]
     {
-        let bin_dir = crate::app_data_dir().join("models").join("bin");
-        let candidate = bin_dir.join(llama_server_binary_name());
-        if candidate.is_file() && !bin_dir.join("libllama-common.0.dylib").exists() {
-            log::warn!("local-llm: local runtime dynamic library libllama-common.0.dylib not found, deleting corrupt runtime directory to force download repair");
-            let _ = std::fs::remove_dir_all(&bin_dir);
-        }
+        let _ = app;
+        return crate::android::local_ai::llama_binary();
     }
 
-    let candidates = [
-        crate::app_data_dir()
-            .join("models")
-            .join("bin")
-            .join(llama_server_binary_name()),
-        app.path()
-            .resolve(
-                std::path::PathBuf::from("bin").join(llama_server_binary_name()),
-                tauri::path::BaseDirectory::Resource,
-            )
-            .unwrap_or_else(|_| PathBuf::from(llama_server_binary_name())),
-    ];
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Some(path) = std::env::var_os("VERENU_LLAMA_SERVER_PATH") {
+            return Ok(PathBuf::from(path));
         }
-    }
 
-    anyhow::bail!(
+        #[cfg(target_os = "macos")]
+        {
+            let bin_dir = crate::app_data_dir().join("models").join("bin");
+            let candidate = bin_dir.join(llama_server_binary_name());
+            if candidate.is_file() && !bin_dir.join("libllama-common.0.dylib").exists() {
+                log::warn!("local-llm: local runtime dynamic library libllama-common.0.dylib not found, deleting corrupt runtime directory to force download repair");
+                let _ = std::fs::remove_dir_all(&bin_dir);
+            }
+        }
+
+        let candidates = [
+            crate::app_data_dir()
+                .join("models")
+                .join("bin")
+                .join(llama_server_binary_name()),
+            app.path()
+                .resolve(
+                    std::path::PathBuf::from("bin").join(llama_server_binary_name()),
+                    tauri::path::BaseDirectory::Resource,
+                )
+                .unwrap_or_else(|_| PathBuf::from(llama_server_binary_name())),
+        ];
+
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+
+        anyhow::bail!(
         "Local cleanup runtime not installed. Go to Settings \u{2192} Models \u{2192} Cleanup downloads to download it."
     )
+    }
 }
 
 fn pick_local_port() -> anyhow::Result<u16> {
@@ -111,6 +120,33 @@ fn start_server_process(
     port: u16,
 ) -> anyhow::Result<(Child, Arc<Mutex<VecDeque<String>>>)> {
     let mut command = Command::new(binary);
+    #[cfg(target_os = "android")]
+    {
+        command.env(
+            "LD_LIBRARY_PATH",
+            crate::android::local_ai::native_library_dir()?,
+        );
+        command.args([
+            "--threads",
+            "2",
+            "--threads-batch",
+            "2",
+            // Avoid busy waits on thermally constrained mobile CPUs.
+            "--poll",
+            "0",
+            "--poll-batch",
+            "0",
+            "--parallel",
+            "1",
+            "--batch-size",
+            "128",
+            "--ubatch-size",
+            "128",
+            "--n-gpu-layers",
+            "0",
+            "--no-warmup",
+        ]);
+    }
     command
         .arg("-m")
         .arg(model_path)

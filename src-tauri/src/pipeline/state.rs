@@ -321,7 +321,13 @@ fn next_pipeline_generation() -> u64 {
     PIPELINE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+#[cfg(all(
+    debug_assertions,
+    any(
+        all(feature = "dev-session", desktop),
+        all(feature = "android-local-testing", target_os = "android")
+    )
+))]
 pub(super) fn reserve_provided_capture(state: &SharedState) -> Result<u64, String> {
     let mut st = lock_state(state).map_err(|e| e.to_string())?;
     if !st.lifecycle.is_idle() {

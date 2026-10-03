@@ -146,7 +146,7 @@ fn process_accounted_kb(pid: u32) -> Option<u64> {
     read_status_kb(pid, "RssAnon").or_else(|| read_status_kb(pid, "VmRSS"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn system_meminfo() -> Option<ProcMeminfo> {
     parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }

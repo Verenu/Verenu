@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { cmakeArguments, LLAMA_COMMIT, LLAMA_ANDROID_BINARY, ORT_VERSION, RUNTIME_ABIS } from '../../scripts/android-local-runtimes.mjs';
+
+test('Android native runtimes are reproducible and support both shipped ABIs', () => {
+  assert.match(LLAMA_COMMIT, /^[a-f0-9]{40}$/);
+  assert.equal(ORT_VERSION, '1.24.2');
+  assert.deepEqual(RUNTIME_ABIS, ['arm64-v8a', 'x86_64']);
+  for (const abi of RUNTIME_ABIS) {
+    const args = cmakeArguments('/source', '/build', '/ndk', abi);
+    assert.deepEqual(args.slice(0, 2), ['-G', 'Ninja']);
+    assert.ok(args.includes(`-DANDROID_ABI=${abi}`));
+    assert.ok(args.includes('-DANDROID_PLATFORM=android-28'));
+    assert.ok(args.includes('-DGGML_NATIVE=OFF'));
+    assert.ok(args.includes('-DBUILD_SHARED_LIBS=OFF'));
+    assert.ok(args.includes('-DGGML_OPENMP=OFF'));
+    assert.ok(args.includes('-DMTMD_VIDEO=OFF'));
+    assert.ok(args.includes('-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384'));
+  }
+  assert.throws(() => cmakeArguments('/s', '/b', '/n', 'armeabi-v7a'), /Unsupported/);
+});
+
+test('packaged executable name matches the native resolver', () => {
+  const source = readFileSync(new URL('../../src-tauri/src/android/local_ai.rs', import.meta.url), 'utf8');
+  assert.ok(source.includes(`pub const LLAMA_BINARY: &str = "${LLAMA_ANDROID_BINARY}";`));
+});
+
+test('Android fixture IPC is opt-in and prohibited in release builds', () => {
+  const build = readFileSync(new URL('../../src-tauri/build.rs', import.meta.url), 'utf8');
+  assert.match(build, /CARGO_FEATURE_ANDROID_LOCAL_TESTING/);
+  assert.match(build, /PROFILE.*release/);
+  const source = readFileSync(new URL('../../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.match(source, /#\[cfg\(all\(debug_assertions, feature = "android-local-testing", target_os = "android"\)\)\]\s+commands::android_test_local_audio/);
+});

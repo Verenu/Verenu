@@ -43,7 +43,7 @@ untouched.
 | Audio capture | Rust `cpal` (AAudio); Kotlin foreground service (microphone type) holds priority/liveness |
 | Permissions onboarding | `AndroidPermissionsStep` + `android_*` commands; rationale matches Rust strings |
 | Adaptive shell | Width classes (600/840dp) in `src/lib/android/viewport.ts` + `App.svelte`; bottom nav on compact; safe-area edge-to-edge |
-| Local AI | Explicitly unsupported (see below); UI hides via `local_models_supported_on_this_platform == false` |
+| Local AI | On-device speech and cleanup on Android 9+, with bundled inference runtimes and downloaded model weights |
 
 ## The overlay
 
@@ -88,26 +88,30 @@ request per connection. Endpoints are listed in the module docs; behavior is
 pinned by `bridge.rs` unit tests (real TCP, run on desktop CI). Kotlin never
 imports Tauri — the bridge works with the main activity dead.
 
-## Local AI status
+## Local AI
 
-Neither `transcribe-rs`/ONNX Runtime nor `llama-server` ships Android ARM64
-builds, and their payloads (tens of MB to GBs) are unrealistic on phones:
+Android uses the shared speech engines, Silero voice detection, and cleanup
+pipeline. `scripts/android-sync.mjs` bundles checksum-pinned ONNX Runtime
+and an NDK-built llama.cpp server for ARM64 and x86_64. Runtime code ships
+inside the APK; only model weights are downloaded into private app storage.
+Cleanup executes the packaged runtime from Android's native library directory.
+The bundled cleanup runtime cannot be removed separately from the app.
 
-- `transcribe-rs` is a desktop-only dependency (`cfg(not(target_os =
-  "android"))`); `local_stt/engine.rs` and `media/vad.rs` expose the same
-  surface as explicit errors, and callers already fall back (cloud
-  transcription, RMS speech gate).
-- `local_models_supported_on_this_platform` returns `false` on Android, so
-  Settings and Setup hide local options; `android_get_platform_info` carries
-  the user-facing reason.
-- Structure is ready for a future mobile runtime: re-add the dependency,
-  implement the two stubs, flip the gate.
+Local AI requires Android 9 (API 28) or newer. Android 8 can still use cloud
+providers. The capability check also verifies that both runtimes are present;
+Settings and Setup hide local options when the installed build lacks them.
 
-Also on Android: `reqwest` must move from `native-tls` to `rustls-tls`
-(OpenSSL does not cross-compile under the NDK). The exact per-target edit is
-marked `ANDROID BUILD NOTE` in `src-tauri/Cargo.toml` — apply it as part of
-the first SDK build (it needs one networked `cargo build` to resolve the
-`rustls-tls` feature set).
+Phone presets start with Moonshine Tiny (English speech, about 31 MB) and
+Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer speech
+without AI cleanup. Larger cleanup models remain available in Advanced Models.
+Downloads require a connection; inference works offline afterward. The existing
+memory policy controls unloading both engines.
+
+For emulator pipeline checks, a debug APK can opt into `android-local-testing`.
+Its `android_test_local_audio` command accepts bounded 16 kHz mono PCM WAV
+fixtures and runs the production pipeline without inserting text. It requires
+local speech and cleanup selections and empty cloud fallback lists. This feature
+is rejected by release builds and is absent from ordinary debug APKs.
 
 ## Adaptive UI
 
@@ -133,6 +137,10 @@ node scripts/android-sync.mjs   # tauri android init + sources + manifest + grad
 npx tauri android dev           # device or emulator
 npx tauri android build         # signed/unsigned APK + AAB in gen/android
 ```
+
+Native runtime preparation also requires CMake, Ninja, `curl`, and the JDK's
+`jar` command. Pinned sources and build outputs are cached under this worktree's
+`src-tauri/target/android-local-runtimes`; no host CPU tuning is used.
 
 `scripts/android-sync.mjs` is idempotent — re-run it after CLI upgrades or a
 fresh `tauri android init`. `src-tauri/gen/` stays gitignored; these sources

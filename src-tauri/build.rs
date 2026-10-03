@@ -4,10 +4,11 @@ fn main() {
         "cargo:rustc-env=VERENU_BUILD_FINGERPRINT={}",
         std::env::var("VERENU_BUILD_FINGERPRINT").unwrap_or_default()
     );
-    if std::env::var_os("CARGO_FEATURE_NATIVE_TESTING").is_some()
+    if (std::env::var_os("CARGO_FEATURE_NATIVE_TESTING").is_some()
+        || std::env::var_os("CARGO_FEATURE_ANDROID_LOCAL_TESTING").is_some())
         && std::env::var("PROFILE").as_deref() == Ok("release")
     {
-        panic!("native-testing is forbidden in release builds");
+        panic!("native testing features are forbidden in release builds");
     }
     // The public PostHog ingestion token is compiled into desktop builds only
     // when the local/release environment provides it. No administrative key

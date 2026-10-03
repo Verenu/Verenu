@@ -25,6 +25,7 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { syncAndroidLocalRuntimes } from './android-local-runtimes.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -237,6 +238,13 @@ function mergeManifest() {
   const appAt = manifest.indexOf(appAnchor);
   if (appAt === -1) fail('application anchor not found; check the Tauri CLI template.');
   const appAttrs = [];
+  // llama-server is APK-owned executable code, installed by Android rather
+  // than downloaded into writable app storage.
+  if (/android:extractNativeLibs="[^"]*"/.test(manifest)) {
+    manifest = manifest.replace(/android:extractNativeLibs="[^"]*"/, 'android:extractNativeLibs="true"');
+  } else {
+    appAttrs.push('android:extractNativeLibs="true"');
+  }
   if (!manifest.includes('android:networkSecurityConfig=')) {
     appAttrs.push('android:networkSecurityConfig="@xml/verenu_network_security_config"');
   }
@@ -262,6 +270,14 @@ function patchGradle() {
   const gradlePath = join(genAndroid, 'app', 'build.gradle.kts');
   if (!existsSync(gradlePath)) fail(`app build script missing: ${gradlePath}`);
   let gradle = readFileSync(gradlePath, 'utf8');
+  if (!gradle.includes('// Verenu APK-owned inference executables.')) {
+    const anchor = 'android {';
+    const at = gradle.indexOf(anchor);
+    if (at === -1) fail('gradle android block not found');
+    gradle = gradle.slice(0, at + anchor.length) +
+      '\n    // Verenu APK-owned inference executables.\n    packaging { jniLibs.useLegacyPackaging = true }\n' +
+      gradle.slice(at + anchor.length);
+  }
   // Keep the runtime capability report and the packaged APK metadata aligned
   // even when `tauri android init` was produced by a different CLI template.
   gradle = gradle.replace(/targetSdk\s*=\s*\d+/, 'targetSdk = 36');
@@ -336,6 +352,7 @@ copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'))
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');
 syncCppRuntime();
+await syncAndroidLocalRuntimes(root);
 mergeManifest();
 patchRootGradle();
 patchGradle();
