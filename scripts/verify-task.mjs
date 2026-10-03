@@ -50,6 +50,13 @@ const commands = {
   migration: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'data::db', '--lib']]],
 };
 if (!args.includes('--inspect-only')) {
+  // Run fresh evidence for any automated category. Preserve supplied records
+  // only for manual categories and task acceptance outcomes.
+  for (let index = records.length - 1; index >= 0; index--) {
+    if (commands[records[index].category]?.length) records.splice(index, 1);
+  }
+}
+if (!args.includes('--inspect-only')) {
   for (const category of required) {
     for (const [index, [command, argv]] of (commands[category] || []).entries()) {
       console.log(`Checking ${category} ${index + 1}...`);
