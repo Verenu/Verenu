@@ -9,10 +9,11 @@ mod transcription;
 
 pub use cleanup_rules::{cleanup_max_output_tokens, fusion_max_output_tokens};
 pub use cleanup_templates::{
-    default_cleanup_template, hardened_retry_template, lint_cleanup_template,
+    default_cleanup_template, default_style_template, default_tone_instructions,
+    hardened_retry_template, lint_cleanup_template, lint_style_instructions,
     looks_like_degenerate_repetition, looks_like_excessive_content_loss,
     looks_like_fabricated_content, looks_like_model_artifact_leak, looks_like_perspective_flip,
-    looks_like_refusal, looks_like_unwanted_expansion,
+    looks_like_refusal, looks_like_unwanted_expansion, with_style_instructions,
 };
 #[cfg(test)]
 pub use cleanup_templates::{default_static_prompt_token_estimate, prompt_token_estimate};
@@ -135,8 +136,12 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
         .unwrap_or(default_template);
 
     let active_app = app_context.map(escape_prompt_data).unwrap_or_default();
-    let preset =
-        cleanup_rules::build_preset_block(profile, intensity, !user_overrides.trim().is_empty());
+    // Preset edits carry their own user-authored instructions even when the
+    // dictation has no snippet or Context overrides. Keep their precedence
+    // explicit in the composed prompt as well.
+    let has_explicit_instructions =
+        !user_overrides.trim().is_empty() || template.contains("{{ cleanup_priority }}");
+    let preset = cleanup_rules::build_preset_block(profile, intensity, has_explicit_instructions);
     let overrides_block = cleanup_rules::snippet_overrides_block(user_overrides);
     let evidence_block = cleanup_rules::evidence_block(evidence);
 

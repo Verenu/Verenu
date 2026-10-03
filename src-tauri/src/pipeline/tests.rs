@@ -85,6 +85,15 @@ fn dual_cleanup_cache_key_changes_with_cleanup_context() {
     );
 
     assert_ne!(first.key, second.key);
+    config
+        .style_prompt_instructions
+        .insert("formal".into(), "Use legal wording.".into());
+    let tone_changed =
+        dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    assert_ne!(
+        changed_context, tone_changed,
+        "Context tone edits invalidate cached cleanup"
+    );
 }
 use crate::api::prompts::looks_like_refusal;
 use crate::data::store;
@@ -561,6 +570,7 @@ fn base_config() -> store::PipelineConfig {
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
         cleanup_prompt_override: String::new(),
+        style_prompt_instructions: Default::default(),
     }
 }
 
@@ -1195,6 +1205,45 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
         .expect("setting disabled should leave output unchanged");
     assert_eq!(result.injected_text, "Send the report now.");
     assert_eq!(result.history_entry.clean_text, "Send the report now.");
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_preserves_style_edits_through_postprocessing() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("um send the file"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("um send — the file"),
+        None,
+        None,
+    );
+    for key in ["medium", "casual", "formal"] {
+        let mut config = base_config();
+        config.style_prompt_instructions.insert(
+            key.into(),
+            "Keep fillers, use em dashes, and omit terminal punctuation.".into(),
+        );
+        let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+        if key == "formal" {
+            assert!(!result.injected_text.to_lowercase().contains("um"));
+            assert!(!result.injected_text.contains('—'));
+            assert!(result.injected_text.ends_with('.'));
+        } else {
+            assert_eq!(result.injected_text, "um send — the file");
+        }
+    }
     reset();
 }
 
