@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { createNativeSession } from '../../scripts/verification/native-session.mjs';
 import { replacePromptArgument } from '../../scripts/verification/prompt.mjs';
@@ -42,6 +47,18 @@ test('owned session startup fails fast for a stopped manifest owned by its launc
   assert.equal(ownedSessionStartupState({ launcherPid: 42, status: 'ready' }, 42), 'ready');
   assert.equal(ownedSessionStartupState({ launcherPid: 42, status: 'stopped' }, 42), 'stopped');
   assert.equal(ownedSessionStartupState({ launcherPid: 24, status: 'stopped' }, 42), null);
+});
+
+test('dev-session rejects invalid synthetic seed arguments before creating a session', async () => {
+  const script = new URL('../../scripts/dev-session.mjs', import.meta.url);
+  const stateRoot = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions');
+  for (const args of [['--synthetic-seed', '--seed-dir'], ['--synthetic-seed', '--seed-dir', '/tmp/private-seed']]) {
+    const id = `invalid-seed-${randomUUID()}`;
+    const result = spawnSync(process.execPath, [script.pathname, '--id', id, ...args], { encoding: 'utf8', timeout: 5_000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, args.at(-1) === '--seed-dir' ? /--seed-dir requires a value/ : /--synthetic-seed cannot copy installed data/);
+    await assert.rejects(fs.access(path.join(stateRoot, id)), { code: 'ENOENT' });
+  }
 });
 
 test('agent prompt replacement preserves JavaScript replacement tokens literally', () => {
