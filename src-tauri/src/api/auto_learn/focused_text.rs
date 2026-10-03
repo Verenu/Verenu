@@ -38,7 +38,13 @@ impl MonitorIdentity {
         #[cfg(target_os = "macos")]
         {
             // Compare native objects, not a hash of their labels or contents.
-            unsafe { core_foundation::base::CFEqual(self.element, other.element) != 0 }
+            if self.element.is_null() || other.element.is_null() {
+                false
+            } else if self.element == other.element {
+                true
+            } else {
+                unsafe { core_foundation::base::CFEqual(self.element, other.element) != 0 }
+            }
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
