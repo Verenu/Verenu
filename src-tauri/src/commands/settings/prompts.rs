@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::{cleanup, prompts, ProviderId};
+use crate::api::{cleanup, prompts, Target};
 
 #[derive(serde::Serialize)]
 pub struct PromptTestCaseResult {
@@ -109,22 +109,31 @@ pub async fn test_cleanup_prompt(
     }
 
     let key_provider = provider.clone();
+    if crate::api::custom::is_custom_id(&provider)
+        && !crate::api::custom::native_credentials_available()
+    {
+        return Err("Custom provider prompt tests with saved keys require the desktop app.".into());
+    }
     let key = run_blocking("test_cleanup_prompt", move || {
         Ok(crate::data::credentials::get(&key_provider))
     })
     .await?;
-    if key.trim().is_empty() {
+    let customs = crate::api::custom::parse_stored(
+        store::settings_snapshot(&app)?.get(store::CUSTOM_PROVIDERS),
+    );
+    let cp = Target::resolve(&provider, &customs)
+        .ok_or_else(|| "This provider was removed.".to_string())?;
+    if key.trim().is_empty() && !matches!(&cp, Target::Custom(p) if !p.requires_key) {
         return Err(format!(
             "Add a {provider} API key to test custom cleanup prompts."
         ));
     }
 
-    let cp = ProviderId::from_str(&provider);
     let mut live_results = Vec::with_capacity(PROMPT_TEST_CASES.len());
     for &(name, input) in PROMPT_TEST_CASES {
         let outcome = cleanup::cleanup(
             input,
-            cp,
+            cp.clone(),
             &key,
             &model,
             "casual",

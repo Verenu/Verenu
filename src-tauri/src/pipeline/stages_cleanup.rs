@@ -147,6 +147,7 @@ pub(super) async fn guard_cleanup_refusal(
     raw: &str,
     expanded: &str,
     provider_id: &str,
+    customs: &[crate::api::custom::CustomProvider],
     model: &str,
     key: &str,
     profile: &str,
@@ -187,7 +188,9 @@ pub(super) async fn guard_cleanup_refusal(
         )
         .await
     } else {
-        let cp = ProviderId::from_str(provider_id);
+        let Some(cp) = crate::api::Target::resolve(provider_id, customs) else {
+            return Some(cleaned);
+        };
         cleanup::cleanup_with_alternate_and_evidence(
             expanded,
             cp,
@@ -440,8 +443,9 @@ async fn run_cleanup_provider_chain(
                 }
             }
         }
-        if !crate::api::cleanup::model_supports_cleanup_reasoning_policy(
-            ProviderId::from_str(&provider_id),
+        if !crate::api::cleanup::chain_entry_supports_cleanup(
+            &cfg.custom_providers,
+            &provider_id,
             &model,
         ) {
             log::warn!(
@@ -453,7 +457,7 @@ async fn run_cleanup_provider_chain(
         }
         let is_local = provider_id == store::LOCAL;
         let key = cfg.key_for(&provider_id).to_owned();
-        if key.is_empty() && !is_local {
+        if !cfg.provider_has_auth(&provider_id) && !is_local {
             continue;
         }
         let attempts = if is_local { 1 } else { CLEANUP_FAST_ATTEMPTS };
@@ -485,7 +489,10 @@ async fn run_cleanup_provider_chain(
                 )
                 .await
             } else {
-                let cp = ProviderId::from_str(&provider_id);
+                let Some(cp) = crate::api::Target::resolve(&provider_id, &cfg.custom_providers)
+                else {
+                    continue;
+                };
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS),
                     cleanup::cleanup_with_alternate_and_evidence(
@@ -788,6 +795,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                     raw,
                     &expanded,
                     &success.provider_id,
+                    &cfg.custom_providers,
                     &success.model,
                     &success.key,
                     profile,
@@ -895,7 +903,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
 fn configured_cleanup_api_used(cfg: &store::PipelineConfig) -> String {
     cleanup_model_chain(cfg)
         .into_iter()
-        .find(|(provider, _)| provider == store::LOCAL || !cfg.key_for(provider).is_empty())
+        .find(|(provider, _)| provider == store::LOCAL || cfg.provider_has_auth(provider))
         .map(|(provider, model)| format!("{provider}/{model}"))
         .unwrap_or_default()
 }

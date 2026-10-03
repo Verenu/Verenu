@@ -550,6 +550,8 @@ fn base_config() -> store::PipelineConfig {
         key_assemblyai: "fixture-assemblyai-key".into(),
         key_openrouter: "fixture-openrouter-key".into(),
         key_xai: "fixture-xai-key".into(),
+        custom_providers: Vec::new(),
+        custom_keys: Default::default(),
         default_tone: "casual".into(),
         cleanup_intensity: "medium".into(),
         clipboard_phrase_enabled: false,
@@ -769,6 +771,59 @@ async fn pipeline_fixture_requires_transcription_key_before_provider_calls() {
     assert!(err
         .to_string()
         .contains("No configured transcription backend is available"));
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_resolves_keyless_custom_provider_and_skips_deleted_endpoint() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    let id = crate::api::custom::new_custom_id();
+    let provider = crate::api::custom::CustomProvider {
+        id: id.clone(),
+        name: "Fixture endpoint".into(),
+        protocol: crate::api::custom::CustomProtocol::Openai,
+        base_url: "http://localhost:8000/v1".into(),
+        requires_key: false,
+        supports_transcription: true,
+        supports_cleanup: true,
+        auth_header: None,
+        extra_headers: Default::default(),
+        body_overrides: None,
+        transcription_models: vec!["vendor/speech".into()],
+        cleanup_models: vec!["vendor/chat".into()],
+    };
+    config.custom_providers = vec![provider];
+    config.transcription_default_model = format!("{}/deleted", crate::api::custom::new_custom_id());
+    config.transcription_fallback_models = vec![format!("{id}/vendor/speech")];
+    config.cleanup_default_model = format!("{id}/vendor/chat");
+    config.cleanup_fallback_models.clear();
+    assert!(super::chains::validate_transcription_chain(&config, None).is_ok());
+    assert!(super::chains::has_cleanup_key_in_chain(&config));
+    fixture(
+        "transcription",
+        &id,
+        "vendor/speech",
+        Some("custom provider fixture"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        &id,
+        "vendor/chat",
+        Some("Custom provider fixture."),
+        None,
+        None,
+    );
+    let result = run_pipeline_fixture(base_request(config))
+        .await
+        .expect("custom fallback should run");
+    assert_eq!(result.raw_text, "custom provider fixture");
+    assert_eq!(result.api_used, format!("{id}/vendor/speech/transcription"));
+    assert_eq!(result.injected_text, "Custom provider fixture.");
     reset();
 }
 
