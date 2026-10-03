@@ -416,7 +416,9 @@ fn analytics_settings_from_snapshot(
         let normalized = match key {
             crate::data::store::TRANSCRIPTION_PROVIDER | crate::data::store::CLEANUP_PROVIDER => {
                 match value {
-                    "groq" | "openai" | "google" | "assemblyai" | "local" => value,
+                    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" | "local" => {
+                        value
+                    }
                     _ => "unknown",
                 }
             }

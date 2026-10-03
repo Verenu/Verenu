@@ -410,6 +410,8 @@ pub fn credential_input(provider: &str, key: &str) -> Result<(String, String), S
         crate::data::store::OPENAI => crate::data::store::OPENAI,
         crate::data::store::GOOGLE => crate::data::store::GOOGLE,
         crate::data::store::ASSEMBLYAI => crate::data::store::ASSEMBLYAI,
+        crate::data::store::OPENROUTER => crate::data::store::OPENROUTER,
+        crate::data::store::XAI => crate::data::store::XAI,
         _ => return Err("Unknown provider".to_string()),
     };
     let normalized_key = key

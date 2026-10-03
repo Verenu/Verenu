@@ -10,7 +10,7 @@
 
   function providerLogo(alert: ProviderStatusAlert): string | null {
     const id = alert.providerId.toLowerCase();
-    if (!['groq', 'openai', 'google', 'assemblyai', 'local'].includes(id)) return null;
+    if (!['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local'].includes(id)) return null;
     return getProviderLogo(id as ProviderId);
   }
 

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::gemini_types::{GeminiGenerateReq, GeminiReqContent, GeminiReqPart};
 use super::prompts::{cleanup_max_output_tokens, gemini_generation_config};
-use super::ProviderId;
+use super::{CleanupAdapter, ProviderId};
 
 // Cleanup should be fast enough to run inline with dictation delivery. Keep
 // this shorter than the shared client timeout so a stalled provider can fall
@@ -86,8 +86,11 @@ pub async fn cleanup_with_alternate_and_evidence(
     alternate_transcript: Option<&str>,
     gen: u64,
 ) -> Result<String> {
-    if provider == ProviderId::AssemblyAi {
-        anyhow::bail!("AssemblyAI provides transcription only; choose a cleanup provider")
+    if provider.cleanup_adapter() == CleanupAdapter::Unsupported {
+        anyhow::bail!(
+            "{} provides no cleanup endpoint; choose a cleanup provider",
+            provider.label()
+        )
     }
     if intensity == "none" && alternate_transcript.is_none() {
         // The pipeline normally bypasses this function for Off. Keep the API
@@ -145,30 +148,37 @@ pub async fn cleanup_with_alternate_and_evidence(
         );
     }
     let request = async {
-        if let Some(url) = provider.cleanup_url() {
-            openai_compat(
-                text,
-                api_key,
-                url,
-                provider.label(),
-                model,
-                &prompt,
-                max_output_tokens,
-                alternate_transcript,
-                gen,
-            )
-            .await
-        } else {
-            google_cleanup(
-                text,
-                api_key,
-                &prompt,
-                model,
-                max_output_tokens,
-                alternate_transcript,
-                gen,
-            )
-            .await
+        match provider.cleanup_adapter() {
+            CleanupAdapter::OpenAiChat { url } => {
+                openai_compat(
+                    text,
+                    api_key,
+                    url,
+                    provider.label(),
+                    model,
+                    &prompt,
+                    max_output_tokens,
+                    alternate_transcript,
+                    gen,
+                )
+                .await
+            }
+            CleanupAdapter::Gemini => {
+                google_cleanup(
+                    text,
+                    api_key,
+                    &prompt,
+                    model,
+                    max_output_tokens,
+                    alternate_transcript,
+                    gen,
+                )
+                .await
+            }
+            CleanupAdapter::Unsupported => anyhow::bail!(
+                "{} provides no cleanup endpoint; choose a cleanup provider",
+                provider.label()
+            ),
         }
     };
 
@@ -354,6 +364,11 @@ fn is_groq_qwen_no_reasoning_model(model: &str) -> bool {
     model.starts_with("qwen/qwen3.6-") || model.starts_with("qwen/qwen3.8-")
 }
 
+fn is_openai_o_series(model: &str) -> bool {
+    let mut chars = model.chars();
+    chars.next() == Some('o') && chars.next().is_some_and(|c| c.is_ascii_digit())
+}
+
 fn is_openai_gpt_51_no_reasoning_model(model: &str) -> bool {
     model.trim().to_ascii_lowercase().starts_with("gpt-5.1")
 }
@@ -369,6 +384,28 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
         // no-thinking mode used here. Known ordinary Groq models need no
         // reasoning field at all.
         return !model.starts_with("qwen/qwen3") || is_groq_qwen_no_reasoning_model(&model);
+    }
+    if provider == "openrouter" {
+        // Model ids are `vendor/model`. Judge the model by its own name and
+        // refuse families that always reason, since OpenRouter has no uniform
+        // switch that turns reasoning off.
+        let bare = model.rsplit('/').next().unwrap_or(&model);
+        return !(model.ends_with(":thinking")
+            || bare.contains("-thinking")
+            || bare.contains("reasoner")
+            || bare.contains("-r1")
+            || is_openai_o_series(bare)
+            || (bare.starts_with("gpt-5") && !is_openai_gpt_51_no_reasoning_model(bare)));
+    }
+    if provider == "xai" {
+        // Grok 4 and the *-reasoning / mini lines always think; only the
+        // explicit non-reasoning variants and older Grok 2/3 chat models fit.
+        if model.contains("non-reasoning") {
+            return true;
+        }
+        return !(model.contains("reasoning")
+            || model.starts_with("grok-4")
+            || model.starts_with("grok-3-mini"));
     }
     if provider == "openai" {
         // OpenAI's o-series and GPT-5 before 5.1 do not support none. GPT-5.1
@@ -392,6 +429,8 @@ pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str
         ProviderId::Groq => openai_compat_model_supports_no_reasoning("Groq", model),
         ProviderId::Google => super::prompts::gemini_generation_reasoning_supported(model),
         ProviderId::OpenAI => openai_compat_model_supports_no_reasoning("OpenAI", model),
+        ProviderId::OpenRouter => openai_compat_model_supports_no_reasoning("OpenRouter", model),
+        ProviderId::Xai => openai_compat_model_supports_no_reasoning("xAI", model),
         ProviderId::Local => true,
         // AssemblyAI is transcription-only and has no cleanup endpoint.
         ProviderId::AssemblyAi => false,
@@ -708,6 +747,43 @@ mod tests {
         assert!(!model_supports_cleanup_reasoning_policy(
             crate::api::ProviderId::AssemblyAi,
             "universal-2"
+        ));
+    }
+
+    #[test]
+    fn openrouter_and_xai_cleanup_skip_always_reasoning_models() {
+        use crate::api::ProviderId::{OpenRouter, Xai};
+        let ok = |p, m| super::model_supports_cleanup_reasoning_policy(p, m);
+        assert!(ok(OpenRouter, "openai/gpt-4o-mini"));
+        assert!(ok(OpenRouter, "meta-llama/llama-3.3-70b-instruct"));
+        assert!(!ok(OpenRouter, "openai/o3-mini"));
+        assert!(!ok(OpenRouter, "openai/gpt-oss-20b"));
+        assert!(!ok(OpenRouter, "deepseek/deepseek-r1"));
+        assert!(!ok(OpenRouter, "qwen/qwen3-235b-a22b:thinking"));
+        assert!(ok(Xai, "grok-4-fast-non-reasoning"));
+        assert!(!ok(Xai, "grok-4-fast-reasoning"));
+        assert!(!ok(Xai, "grok-3-mini"));
+        assert!(!ok(Xai, "grok-4"));
+    }
+
+    #[test]
+    fn transcription_only_and_cleanup_only_providers_are_distinct() {
+        use crate::api::{CleanupAdapter, ProviderId, TranscriptionAdapter};
+        assert_eq!(
+            ProviderId::AssemblyAi.cleanup_adapter(),
+            CleanupAdapter::Unsupported
+        );
+        assert_ne!(
+            ProviderId::OpenRouter.transcription_adapter(),
+            TranscriptionAdapter::Unsupported
+        );
+        assert!(matches!(
+            ProviderId::Xai.cleanup_adapter(),
+            CleanupAdapter::OpenAiChat { .. }
+        ));
+        assert!(matches!(
+            ProviderId::Xai.transcription_adapter(),
+            TranscriptionAdapter::XaiStt { .. }
         ));
     }
 
