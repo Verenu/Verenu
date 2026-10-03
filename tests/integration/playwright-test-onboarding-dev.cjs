@@ -48,8 +48,13 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.locator('.shot-nav').last().click();
     const secondCaption = (await page.locator('.shot-text').textContent()) || '';
     if (firstCaption === secondCaption) errors.push('Tutorial carousel did not advance between steps');
-    await page.locator('.btn-got-key').click();
-    await page.locator('.key-input').waitFor({ state: 'visible', timeout: TIMEOUT });
+    // The walkthrough ends on a paste slide, so there is no separate
+    // "I've got my key" button: page forward until the key field appears.
+    if (await page.locator('.btn-got-key').count()) errors.push('Tutorial still offers the removed "I\'ve got my key" button');
+    const nextShot = page.getByRole('button', { name: 'Next step' });
+    for (let i = 0; i < 6 && await nextShot.isEnabled(); i++) await nextShot.click();
+    await page.locator('.paste-slide .key-input').waitFor({ state: 'visible', timeout: TIMEOUT });
+    if (!(await page.getByRole('button', { name: 'Skip for now' }).count())) errors.push('Tutorial paste slide has no Skip for now');
     await page.getByRole('button', { name: 'Continue' }).click();
 
     const permissionHeading = page.getByRole('heading', { name: 'Check your macOS permissions' });
@@ -64,9 +69,10 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       await page.getByRole('button', { name: 'Next' }).click();
     }
 
-    // Models step reuses the Settings preset picker. No key was saved above, so
-    // only the local presets are offered — and every one needs a download, which
-    // must NOT be pre-selected on the user's behalf.
+    // Models step reuses the Settings preset picker. No key was saved above and
+    // the provider is a cloud one, so no local preset is offered and nothing is
+    // pre-selected on the user's behalf.
+    if (await page.locator('.preset-card:has-text("Local AI")').count()) errors.push('Local AI preset was offered to a cloud-provider setup');
     await page.locator('.preset-grid').waitFor({ state: 'visible', timeout: TIMEOUT });
     if (await page.locator('.preset-card.preset-active').count()) {
       errors.push('A preset requiring a download was pre-selected during setup');
@@ -87,6 +93,10 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.getByRole('button', { name: 'Next' }).click();
 
     // Spoken language is its own step now — a searchable list, not chips.
+    await page.locator('.lang-search-input').fill('span');
+    await page.locator('.lang-row:has-text("Spanish")').click();
+    await page.locator('.lang-search-input').fill('');
+    if (!((await page.locator('.lang-row').first().textContent()) || '').includes('English')) errors.push('English should lead the language list');
     await page.locator('.lang-search-input').fill('span');
     await page.locator('.lang-row:has-text("Spanish")').click();
     await page.getByRole('button', { name: 'Next' }).click();
