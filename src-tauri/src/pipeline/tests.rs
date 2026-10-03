@@ -377,6 +377,37 @@ fn captured_audio_materializes_wav_only_when_a_cloud_provider_requests_it() {
 }
 
 #[test]
+fn captured_audio_releases_spare_capacity_without_changing_samples() {
+    let mut samples = Vec::with_capacity(16_000 * 120);
+    samples.extend(std::iter::repeat_n(0.25, 16_000 * 60));
+    let before_bytes = samples.capacity() * std::mem::size_of::<f32>();
+    let audio = super::CapturedAudio::from_samples(samples, 16_000, 60_000);
+    assert_eq!(audio.samples_16k.len(), 16_000 * 60);
+    assert_eq!(audio.samples_16k.capacity(), audio.samples_16k.len());
+    assert!(audio.samples_16k.iter().all(|&sample| sample == 0.25));
+    println!(
+        "60s retained PCM capacity bytes: before={before_bytes} after={}",
+        audio.samples_16k.capacity() * std::mem::size_of::<f32>()
+    );
+}
+
+#[test]
+fn cleared_wav_cache_preserves_uploads_and_can_regenerate_for_retry() {
+    let audio = super::CapturedAudio::from_samples(vec![0.25; 16_000], 16_000, 1_000);
+    let retry = audio.clone();
+    let upload = audio.wav_bytes().unwrap();
+    assert_eq!(retry.wav_bytes().unwrap().as_ptr(), upload.as_ptr());
+    audio.clear_wav_cache();
+    assert_eq!(audio.wav_len(), 0);
+    assert_eq!(retry.wav_len(), 0);
+    assert_eq!(upload.len(), 44 + 16_000 * 2);
+    let regenerated = retry.wav_bytes().unwrap();
+    assert_eq!(upload, regenerated);
+    assert_ne!(upload.as_ptr(), regenerated.as_ptr());
+    assert_eq!(audio.samples_16k.as_ptr(), retry.samples_16k.as_ptr());
+}
+
+#[test]
 fn terminal_punctuation_added_for_casual_bare_word() {
     assert_eq!(
         ensure_terminal_punctuation("smart decision", "casual", "medium"),

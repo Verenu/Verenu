@@ -16,6 +16,14 @@ import type {
   LocalLlmRuntimeEventPayload,
 } from './tauri';
 
+type CommandArgs = Record<string, unknown>;
+type EventEnvelope<T> = {
+  event: string;
+  id: number;
+  payload: T;
+};
+type EventHandler<T> = (event: EventEnvelope<T>) => void;
+type UnlistenFn = () => void;
 type CreatedRecordMeta = { id: number; created_at: string };
 type DevSnippet = {
   id: number;
@@ -29,6 +37,17 @@ type DevDictionaryEntry = {
   id: number;
   term: string;
   mistake: string | null;
+  auto_learned: boolean;
+  correction_count: number;
+  confidence_tier: 'manual' | 'low' | 'medium' | 'high';
+  last_seen_at: string | null;
+  created_at: string;
+};
+type DevDictionaryCorrection = {
+  id: number;
+  dictionary_id: number;
+  context_id: number;
+  mistake: string;
   auto_learned: boolean;
   correction_count: number;
   confidence_tier: 'manual' | 'low' | 'medium' | 'high';
@@ -66,19 +85,13 @@ type DevContextWebsiteTarget = {
 };
 type DevPermissionStatus = 'authorized' | 'needs_permission' | 'not_determined' | 'denied' | 'restricted' | 'unknown';
 type DevKeychainStatus = 'available' | 'configuration_error' | 'authentication_required' | 'interaction_unavailable' | 'not_checked' | 'unknown' | 'error';
-
-type CommandArgs = Record<string, unknown>;
-type EventEnvelope<T> = { event: string; id: number; payload: T };
-type EventHandler<T> = (event: EventEnvelope<T>) => void;
-type UnlistenFn = () => void;
-
 const DEV_STORAGE_KEY = 'verenu:dev-settings';
 const DEV_SNIPPETS_KEY = 'verenu:dev-snippets';
 const DEV_DICTIONARY_KEY = 'verenu:dev-dictionary';
+const DEV_DICTIONARY_CORRECTIONS_KEY = 'verenu:dev-dictionary-corrections';
 const DEV_CONTEXTS_KEY = 'verenu:dev-contexts';
 const DEV_CONTEXT_TARGETS_KEY = 'verenu:dev-context-targets';
 const DEV_CONTEXT_WEBSITE_TARGETS_KEY = 'verenu:dev-context-website-targets';
-const DEV_CONTEXT_SUB_APPS_KEY = 'verenu:dev-context-sub-apps';
 const DEV_CONTEXT_ASSIGNMENTS_KEY = 'verenu:dev-context-assignments';
 const DEV_EVERYWHERE_CONTEXT_ID = 1;
 const DEV_LOCAL_STT_MODELS_KEY = 'verenu:dev-local-stt-models';
@@ -98,7 +111,7 @@ let devSyncPairing: {
 // Bumped each time a dev-mock model download starts. Captured per-call below
 // so `stillDownloading`/`stillDownloadingLlm` can tell a cancelled-then-
 // restarted download's stale `setTimeout` steps apart from the current
-// session's Ã¢â‚¬â€ without this, orphaned timers from a prior cancelled download
+// session's — without this, orphaned timers from a prior cancelled download
 // of the same model ID would fire alongside the new session's timers.
 let devSttDownloadSession = 0;
 let devLlmDownloadSession = 0;
@@ -143,7 +156,6 @@ const defaultSettings: Record<string, unknown> = {
   app_mappings: [],
   noise_reduction: true,
   mute_audio: false,
-  mic_mute_button_dictation: false,
   pause_media_during_dictation: false,
   play_start_stop_sounds: true,
   sound_effects_volume: 100,
@@ -165,6 +177,8 @@ const defaultSettings: Record<string, unknown> = {
 };
 
 let devStorageFullSimulation = false;
+let devDiagnosticsMonitoring = false;
+let devDiagnosticsRecording = false;
 
 function readDevSettings(): Record<string, unknown> {
   if (typeof localStorage === 'undefined') return {};
@@ -246,24 +260,6 @@ function readDevContextTargets() {
   return readDevList<DevContextTarget>(DEV_CONTEXT_TARGETS_KEY);
 }
 
-type DevContextSubApp = {
-  id: number;
-  uuid: string;
-  context_id: number | null;
-  executable: string;
-  app_name: string | null;
-  label: string;
-  icon: string | null;
-  title_pattern: string;
-  match_mode: 'contains' | 'starts_with' | 'equals';
-  platform: string | null;
-  created_at: string;
-};
-
-function readDevContextSubApps() {
-  return readDevList<DevContextSubApp>(DEV_CONTEXT_SUB_APPS_KEY);
-}
-
 function readDevContextWebsiteTargets() {
   return readDevList<DevContextWebsiteTarget>(DEV_CONTEXT_WEBSITE_TARGETS_KEY);
 }
@@ -296,6 +292,138 @@ function writeDevContextAssignments(assignments: DevContextAssignments) {
   }
 }
 
+function readDevDictionaryCorrections(): DevDictionaryCorrection[] {
+  return readDevList<DevDictionaryCorrection>(DEV_DICTIONARY_CORRECTIONS_KEY);
+}
+
+function writeDevDictionaryCorrections(rows: DevDictionaryCorrection[]) {
+  writeDevList(DEV_DICTIONARY_CORRECTIONS_KEY, rows);
+}
+
+function devDictionaryCorrection(dictionaryId: number, contextId: number): DevDictionaryCorrection | null {
+  return readDevDictionaryCorrections().find(
+    (row) => row.dictionary_id === dictionaryId && row.context_id === contextId,
+  ) ?? null;
+}
+
+function ensureDevEverywhereDictionaryAssignment(
+  assignments: DevContextAssignments,
+  rows: DevDictionaryEntry[],
+) {
+  const key = String(DEV_EVERYWHERE_CONTEXT_ID);
+  assignments.dictionary[key] = [...new Set(
+    assignments.dictionary[key] ?? rows.map((row) => row.id),
+  )];
+}
+
+function setDevDictionaryCorrection(
+  dictionaryId: number,
+  contextId: number,
+  mistake: string | null,
+  metadata: Partial<Pick<DevDictionaryCorrection, 'auto_learned' | 'correction_count' | 'confidence_tier' | 'last_seen_at'>> = {},
+): number | null {
+  const rows = readDevDictionaryCorrections();
+  const index = rows.findIndex(
+    (row) => row.dictionary_id === dictionaryId && row.context_id === contextId,
+  );
+  if (!mistake) {
+    if (index !== -1) {
+      rows.splice(index, 1);
+      writeDevDictionaryCorrections(rows);
+    }
+    return null;
+  }
+
+  if (index === -1) {
+    const created = devCreated(nextDevId(rows));
+    rows.push({
+      id: created.id,
+      dictionary_id: dictionaryId,
+      context_id: contextId,
+      mistake,
+      auto_learned: metadata.auto_learned ?? false,
+      correction_count: metadata.correction_count ?? 0,
+      confidence_tier: metadata.confidence_tier ?? 'manual',
+      last_seen_at: metadata.last_seen_at ?? null,
+      created_at: created.created_at,
+    });
+    writeDevDictionaryCorrections(rows);
+    return created.id;
+  }
+
+  rows[index] = {
+    ...rows[index],
+    mistake,
+    auto_learned: metadata.auto_learned ?? rows[index].auto_learned,
+    correction_count: metadata.correction_count ?? rows[index].correction_count,
+    confidence_tier: metadata.confidence_tier ?? rows[index].confidence_tier,
+    last_seen_at: metadata.last_seen_at !== undefined
+      ? metadata.last_seen_at
+      : rows[index].last_seen_at,
+  };
+  writeDevDictionaryCorrections(rows);
+  return rows[index].id;
+}
+
+function removeDevDictionaryAssignment(
+  assignments: DevContextAssignments,
+  rows: DevDictionaryEntry[],
+  contextId: number,
+  dictionaryId: number,
+) {
+  if (contextId === DEV_EVERYWHERE_CONTEXT_ID) {
+    ensureDevEverywhereDictionaryAssignment(assignments, rows);
+  }
+  const key = String(contextId);
+  assignments.dictionary[key] = (assignments.dictionary[key] ?? []).filter((id) => id !== dictionaryId);
+  setDevDictionaryCorrection(dictionaryId, contextId, null);
+}
+
+function devDictionaryIsAssignedAnywhere(assignments: DevContextAssignments, dictionaryId: number): boolean {
+  const everywhere = assignments.dictionary[String(DEV_EVERYWHERE_CONTEXT_ID)];
+  if (everywhere === undefined) return true;
+  return Object.values(assignments.dictionary).some((ids) => ids.includes(dictionaryId));
+}
+
+function devContextDictionaryRows(contextId: number) {
+  const rows = devContextRows(contextId, readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY), 'dictionary');
+  const corrections = readDevDictionaryCorrections();
+  return rows.map((row) => {
+    const correction = corrections.find(
+      (candidate) => candidate.dictionary_id === row.id && candidate.context_id === contextId,
+    );
+    return correction
+      ? {
+          ...row,
+          id: row.id,
+          dictionary_id: row.id,
+          context_id: contextId,
+          correction_id: correction.id,
+          mistake: correction.mistake,
+          auto_learned: correction.auto_learned,
+          correction_count: correction.correction_count,
+          confidence_tier: correction.confidence_tier,
+          last_seen_at: correction.last_seen_at,
+          created_at: row.created_at,
+          corrections: [correction],
+        }
+      : {
+          ...row,
+          dictionary_id: row.id,
+          context_id: contextId,
+          correction_id: null,
+          // Keep legacy unscoped entries visible in browser-dev mode. New
+          // Context-owned mappings take precedence through the branch above.
+          mistake: row.mistake,
+          auto_learned: false,
+          correction_count: 0,
+          confidence_tier: 'manual',
+          last_seen_at: null,
+          corrections: [],
+        };
+  });
+}
+
 function devContextRows<T extends { id: number }>(
   contextId: number,
   rows: T[],
@@ -306,40 +434,6 @@ function devContextRows<T extends { id: number }>(
   if (contextId === DEV_EVERYWHERE_CONTEXT_ID && scopedIds === undefined) return rows;
   const ids = new Set(scopedIds ?? []);
   return rows.filter((row) => ids.has(row.id));
-}
-
-function devItemContextIds(key: keyof DevContextAssignments, itemId: number): number[] {
-  const contexts = readDevContexts();
-  const assignments = readDevContextAssignments()[key];
-  return contexts
-    .filter((context) => {
-      const bucket = assignments[String(context.id)];
-      // Older browser-dev data did not persist the Everywhere bucket because
-      // Everywhere was the implicit default for every library row.
-      if (context.id === DEV_EVERYWHERE_CONTEXT_ID && bucket === undefined) return true;
-      return bucket?.includes(itemId) ?? false;
-    })
-    .map((context) => context.id);
-}
-
-function moveDevItemToContext(key: keyof DevContextAssignments, itemId: number, targetContextId: number) {
-  if (targetContextId === DEV_EVERYWHERE_CONTEXT_ID) {
-    throw new Error('The Everywhere context cannot be the move destination');
-  }
-  if (!readDevContexts().some((context) => context.id === targetContextId)) {
-    throw new Error(`Context ${targetContextId} was not found`);
-  }
-  const assignments = readDevContextAssignments();
-  const everywhere = assignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)]
-    ?? (key === 'dictionary'
-      ? readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY).map((row) => row.id)
-      : readDevList<DevSnippet>(DEV_SNIPPETS_KEY).map((row) => row.id));
-  if (!everywhere.includes(itemId)) throw new Error('The item is not assigned to Everywhere');
-  assignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)] = everywhere.filter((id) => id !== itemId);
-  assignments[key][String(targetContextId)] = [
-    ...new Set([...(assignments[key][String(targetContextId)] ?? []), itemId]),
-  ];
-  writeDevContextAssignments(assignments);
 }
 
 function emitDevTauriEvent<T>(event: string, payload: T) {
@@ -925,7 +1019,6 @@ function devPermissionSnapshot(provider?: unknown) {
  */
 function devInsights(days: number, contextId: number | null): unknown {
   const span = days > 0 ? days : 120;
-  const lifetimeSpan = 365;
   // Deterministic per-context scaling: enough for the filter to visibly change
   // the page in browser dev mode without inventing a second fake dataset.
   const scale = contextId === null ? 1 : 1 / (1 + (contextId % 5));
@@ -933,9 +1026,9 @@ function devInsights(days: number, contextId: number | null): unknown {
     ((Math.sin((n + (contextId ?? 0) * 7) * 12.9898) * 43758.5453) % 1 + 1) % 1;
 
   const today = new Date();
-  const lifetimeDaily = Array.from({ length: lifetimeSpan }, (_, i) => {
+  const daily = Array.from({ length: span }, (_, i) => {
     const date = new Date(today);
-    date.setDate(today.getDate() - (lifetimeSpan - 1 - i));
+    date.setDate(today.getDate() - (span - 1 - i));
     const weekend = date.getDay() === 0 || date.getDay() === 6;
     const r = noise(i + 1);
     const idle = r < (weekend ? 0.45 : 0.12);
@@ -970,15 +1063,11 @@ function devInsights(days: number, contextId: number | null): unknown {
     };
   });
 
-  for (const d of lifetimeDaily) {
+  for (const d of daily) {
     d.words = Math.round(d.words * scale);
     d.transcriptions = d.words === 0 ? 0 : Math.max(1, Math.round(d.transcriptions * scale));
     d.speaking_ms = Math.round(d.speaking_ms * scale);
   }
-
-  const daily = lifetimeDaily.slice(-span);
-  const lifetimeWords = lifetimeDaily.reduce((sum, d) => sum + d.words, 0) + 218_400;
-  const contextLifetimeWords = lifetimeDaily.reduce((sum, d) => sum + d.words, 0);
 
   const wordsInRange = daily.reduce((sum, d) => sum + d.words, 0);
   const transcriptions = daily.reduce((sum, d) => sum + d.transcriptions, 0);
@@ -1016,7 +1105,7 @@ function devInsights(days: number, contextId: number | null): unknown {
     range_days: days,
     generated_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
     totals: {
-      total_words: contextId === null ? lifetimeWords : contextLifetimeWords,
+      total_words: contextId === null ? wordsInRange + 218_400 : wordsInRange,
       total_transcriptions: transcriptions,
       total_speaking_ms: speakingMs,
       avg_words_per_transcription: transcriptions ? Math.round(wordsInRange / transcriptions) : 0,
@@ -1102,7 +1191,7 @@ function assertDevText(value: unknown, field: string): string {
   return value;
 }
 
-async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promise<T> {
+export async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
   switch (command) {
     case 'frontend_ready':
       return undefined as T;
@@ -1159,35 +1248,6 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       writeDevList(DEV_CONTEXTS_KEY, [...rows, context]);
       return context as T;
     }
-    case 'duplicate_context': {
-      const sourceId = Number(args?.contextId ?? args?.context_id);
-      const rows = readDevContexts();
-      const source = rows.find((row) => row.id === sourceId);
-      if (!source) throw new Error(`Context ${sourceId} was not found`);
-      if (source.is_everywhere) throw new Error('The Everywhere context cannot be duplicated');
-      if (rows.filter((row) => !row.is_everywhere).length >= 200) {
-        throw new Error("You've reached the limit of 200 context groups");
-      }
-      const names = new Set(rows.map((row) => row.name.toLowerCase()));
-      let copyNumber = 1;
-      let name = '';
-      do {
-        const suffix = copyNumber === 1 ? ' copy' : ` copy ${copyNumber}`;
-        const base = [...source.name].slice(0, Math.max(0, 30 - [...suffix].length)).join('');
-        name = `${base}${suffix}`;
-        copyNumber += 1;
-      } while (names.has(name.toLowerCase()));
-      const now = devNow();
-      const duplicate: DevContext = { ...source, id: nextDevId(rows), name, pinned_at: null, created_at: now, updated_at: now };
-      writeDevList(DEV_CONTEXTS_KEY, [...rows, duplicate]);
-      const assignments = readDevContextAssignments();
-      for (const key of ['dictionary', 'snippets'] as const) {
-        const sourceItems = assignments[key][String(sourceId)] ?? [];
-        assignments[key][String(duplicate.id)] = [...sourceItems];
-      }
-      writeDevContextAssignments(assignments);
-      return duplicate as T;
-    }
     case 'update_context': {
       const id = Number(args?.contextId ?? args?.context_id);
       const name = assertDevText(args?.name, 'Context name').trim();
@@ -1222,7 +1282,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       // Real Tauri IPC auto-converts camelCase JS args to the snake_case Rust
       // param names; this browser-only mock doesn't, so accept whichever
       // casing the caller actually used instead of assuming snake_case like
-      // the other cases below (a pre-existing mismatch Ã¢â‚¬â€ call sites in
+      // the other cases below (a pre-existing mismatch — call sites in
       // Contexts.svelte pass `contextId`, not `context_id`).
       const id = Number(args?.contextId ?? args?.context_id);
       const rows = readDevContexts();
@@ -1267,6 +1327,10 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         dictionary: { ...assignments.dictionary },
         snippets: { ...assignments.snippets },
       };
+      ensureDevEverywhereDictionaryAssignment(
+        nextAssignments,
+        readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY),
+      );
       for (const key of ['dictionary', 'snippets'] as const) {
         const moved = nextAssignments[key][String(id)] ?? [];
         nextAssignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)] = [
@@ -1275,12 +1339,33 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         delete nextAssignments[key][String(id)];
       }
       writeDevContextAssignments(nextAssignments);
+      const corrections = readDevDictionaryCorrections();
+      const nextCorrections: DevDictionaryCorrection[] = [];
+      for (const correction of corrections) {
+        if (correction.context_id !== id) {
+          nextCorrections.push(correction);
+          continue;
+        }
+        const alreadyEverywhere = corrections.some(
+          (candidate) => candidate.context_id === DEV_EVERYWHERE_CONTEXT_ID
+            && candidate.dictionary_id === correction.dictionary_id,
+        ) || nextCorrections.some(
+          (candidate) => candidate.context_id === DEV_EVERYWHERE_CONTEXT_ID
+            && candidate.dictionary_id === correction.dictionary_id,
+        );
+        if (!alreadyEverywhere) {
+          nextCorrections.push({ ...correction, context_id: DEV_EVERYWHERE_CONTEXT_ID });
+        }
+      }
+      writeDevDictionaryCorrections(nextCorrections);
       return undefined as T;
     }
     case 'get_context_targets': {
       const rawContextId = args?.contextId ?? args?.context_id;
-      const contextId = rawContextId == null ? null : Number(rawContextId);
-      return readDevContextTargets().filter((target) => contextId == null || target.context_id === contextId) as T;
+      const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
+      return readDevContextTargets().filter(
+        (target) => contextId === null || target.context_id === contextId,
+      ) as T;
     }
     case 'assign_context_target': {
       const contextId = Number(args?.contextId ?? args?.context_id);
@@ -1315,8 +1400,10 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     }
     case 'get_context_websites': {
       const rawContextId = args?.contextId ?? args?.context_id;
-      const contextId = rawContextId == null ? null : Number(rawContextId);
-      return readDevContextWebsiteTargets().filter((target) => contextId == null || target.context_id === contextId) as T;
+      const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
+      return readDevContextWebsiteTargets().filter(
+        (target) => contextId === null || target.context_id === contextId,
+      ) as T;
     }
     case 'check_domain_exists': {
       const domain = String(args?.domain ?? '').trim().toLowerCase();
@@ -1349,88 +1436,16 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       );
       return undefined as T;
     }
-    case 'get_sub_apps':
-      return readDevContextSubApps() as T;
-    case 'create_sub_app': {
-      const rows = readDevContextSubApps();
-      const row: DevContextSubApp = {
-        id: nextDevId(rows),
-        uuid: crypto.randomUUID(),
-        context_id: null,
-        executable: assertDevText(args?.executable, 'App').trim().toLowerCase(),
-        app_name: (args?.appName as string | null) ?? null,
-        label: assertDevText(args?.label, 'Sub-app name').trim(),
-        icon: (args?.icon as string | null) ?? null,
-        title_pattern: assertDevText(args?.titlePattern, 'Title pattern').trim(),
-        match_mode: (args?.matchMode as DevContextSubApp['match_mode']) ?? 'contains',
-        platform: null,
-        created_at: devNow(),
-      };
-      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, [...rows, row]);
-      return row as T;
-    }
-    case 'assign_sub_app': {
-      const id = Number(args?.id);
-      const contextId = args?.contextId == null ? null : Number(args.contextId);
-      if (contextId === DEV_EVERYWHERE_CONTEXT_ID) throw new Error('The Everywhere context cannot have sub-apps');
-      const rows = readDevContextSubApps();
-      const current = rows.find((row) => row.id === id);
-      if (!current) throw new Error(`Sub-app ${id} was not found`);
-      const updated = { ...current, context_id: contextId };
-      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, rows.map((row) => (row.id === id ? updated : row)));
-      return updated as T;
-    }
-    case 'delete_sub_app': {
-      const id = Number(args?.id);
-      writeDevList(DEV_CONTEXT_SUB_APPS_KEY, readDevContextSubApps().filter((row) => row.id !== id));
-      return undefined as T;
-    }
-    case 'take_pending_sub_app_capture':
-      return null as T;
     case 'get_app_icon':
     case 'get_site_icon':
       return null as T;
     case 'get_context_dictionary': {
       const contextId = Number(args?.contextId ?? args?.context_id);
-      return devContextRows(contextId, readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY), 'dictionary') as T;
+      return devContextDictionaryRows(contextId) as T;
     }
     case 'get_context_snippets': {
       const contextId = Number(args?.contextId ?? args?.context_id);
       return devContextRows(contextId, readDevList<DevSnippet>(DEV_SNIPPETS_KEY), 'snippets') as T;
-    }
-    case 'get_dictionary_entry_contexts': {
-      const term = assertDevText(args?.term, 'Term').trim();
-      const entry = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY).find((row) => row.term === term);
-      if (!entry) return [] as T;
-      return readDevContexts()
-        .filter((context) => devItemContextIds('dictionary', entry.id).includes(context.id))
-        .map((context) => ({ id: context.id, name: context.name, is_everywhere: context.is_everywhere })) as T;
-    }
-    case 'get_snippet_entry_contexts': {
-      const trigger = assertDevText(args?.trigger, 'Trigger').trim();
-      const snippet = readDevList<DevSnippet>(DEV_SNIPPETS_KEY).find((row) => row.trigger === trigger);
-      if (!snippet) return [] as T;
-      return readDevContexts()
-        .filter((context) => devItemContextIds('snippets', snippet.id).includes(context.id))
-        .map((context) => ({ id: context.id, name: context.name, is_everywhere: context.is_everywhere })) as T;
-    }
-    case 'move_dictionary_entry_by_term_to_context': {
-      const term = assertDevText(args?.term, 'Term').trim();
-      const contextId = Number(args?.contextId ?? args?.context_id);
-      const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
-      const entry = rows.find((row) => row.term === term);
-      if (!entry) throw new Error(`"${term}" was not found`);
-      moveDevItemToContext('dictionary', entry.id, contextId);
-      return entry as T;
-    }
-    case 'move_snippet_entry_to_context': {
-      const trigger = assertDevText(args?.trigger, 'Trigger').trim();
-      const contextId = Number(args?.contextId ?? args?.context_id);
-      const rows = readDevList<DevSnippet>(DEV_SNIPPETS_KEY);
-      const snippet = rows.find((row) => row.trigger === trigger);
-      if (!snippet) throw new Error(`"${trigger}" was not found`);
-      moveDevItemToContext('snippets', snippet.id, contextId);
-      return snippet as T;
     }
     case 'set_dictionary_context_assignment':
     case 'set_snippet_context_assignment': {
@@ -1446,12 +1461,17 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         : readDevList<DevSnippet>(DEV_SNIPPETS_KEY);
       if (!rows.some((row) => row.id === itemId)) throw new Error(`Library item ${itemId} was not found`);
       const assignments = readDevContextAssignments();
-      if (assignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)] === undefined) {
+      if (key === 'dictionary') {
+        ensureDevEverywhereDictionaryAssignment(assignments, rows as DevDictionaryEntry[]);
+      } else if (assignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)] === undefined) {
         assignments[key][String(DEV_EVERYWHERE_CONTEXT_ID)] = rows.map((row) => row.id);
       }
       const current = new Set(assignments[key][String(contextId)] ?? []);
       if (assigned) current.add(itemId); else current.delete(itemId);
       assignments[key][String(contextId)] = [...current];
+      if (key === 'dictionary' && !assigned) {
+        setDevDictionaryCorrection(itemId, contextId, null);
+      }
       writeDevContextAssignments(assignments);
       return undefined as T;
     }
@@ -1467,85 +1487,57 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'get_cancelled_capture':
       return null as T;
     case 'android_get_platform_info':
-      return {
-        isAndroidRuntime: false,
-        minSdk: 26,
-        targetSdk: 34,
-        supportedAbi: 'arm64-v8a',
-        localAiSupported: false,
-        localAiUnsupportedReason: 'On-device models are unavailable in browser dev mode.',
-      } as T;
+      return { localAiSupported: true, localAiUnsupportedReason: '' } as T;
     case 'android_permission_rationale':
-      return [
-        { id: 'microphone', required: true, rationale: 'Dev preview copy.' },
-        { id: 'accessibility_service', required: true, rationale: 'Dev preview copy.' },
-        { id: 'battery_exemption', required: false, rationale: 'Dev preview copy.' },
-        { id: 'notifications', required: false, rationale: 'Dev preview copy.' },
-      ] as T;
+      return [] as T;
     case 'android_read_permissions':
       return { microphone: 'granted', accessibility_service: 'granted', battery_exemption: 'granted', notifications: 'granted' } as T;
-    case 'android_evaluate_permissions': {
-      const snapshot = (args?.snapshot ?? {}) as Record<string, string>;
-      const functional =
-        snapshot.microphone === 'granted' && snapshot.accessibility_service === 'granted';
-      const missingRequired: string[] = [];
-      if (snapshot.microphone !== 'granted') missingRequired.push('microphone');
-      if (snapshot.accessibility_service !== 'granted') missingRequired.push('accessibility_service');
-      return { functional, missingRequired } as T;
-    }
+    case 'android_evaluate_permissions':
+      return { functional: true } as T;
     case 'android_request_permission':
       return undefined as T;
-    case 'android_on_keyboard_visibility': {
-      const visible = Boolean(args?.keyboardVisible) && Boolean(args?.hasEditableFocus);
-      const current = typeof args?.current === 'string' ? args.current : 'hidden';
-      let state = 'hidden';
-      if (visible) {
-        state = 'visible_idle';
-      } else if (current === 'recording') {
-        state = 'recording';
-      }
-      return { state, visible, dictationActive: state === 'recording' } as T;
-    }
-    case 'android_decide_insertion':
-      return (args?.hasEditableFocus && args?.supportsSetText
-        ? 'direct_accessibility'
-        : 'clipboard_fallback') as T;
-    case 'android_context_for_package': {
-      const pkg = String(args?.package ?? '');
-      const label = pkg.split('.').pop() || 'Everywhere';
-      return { package: pkg, label, isGeneric: true } as T;
-    }
-    case 'android_provide_credential':
-    case 'android_clear_credentials':
-    case 'android_keystore_save':
-    case 'android_on_permission_revoked':
-    case 'android_insert_text_result':
+    case 'set_diagnostics_monitoring':
+      devDiagnosticsMonitoring = Boolean(args?.enabled);
       return undefined as T;
-    case 'android_has_credential':
-      return false as T;
-    case 'android_width_class': {
-      const width = Number(args?.widthDp ?? 0);
-      let widthClass = 'expanded';
-      if (width < 600) {
-        widthClass = 'compact';
-      } else if (width < 840) {
-        widthClass = 'medium';
-      }
-      return widthClass as T;
-    }
-    case 'get_diagnostics_snapshot':
+    case 'set_diagnostics_profiling':
+      devDiagnosticsRecording = Boolean(args?.enabled);
+      return undefined as T;
+    case 'clear_diagnostics':
+      return undefined as T;
+    case 'subscribe_log_stream':
+    case 'unsubscribe_log_stream':
+      return undefined as T;
+    case 'get_diagnostics_snapshot': {
+      const now = Date.now();
       return {
-        generated_at_ms: Date.now(), profiler_enabled: false, profiling_recording: false,
-        current_resource: null, resource_samples: [], latest_failures: [], failure_groups: [],
-        active_pipelines: [], recent_pipelines: [], logs: [], operations: [], runtime: {},
-        health: { initialized: true, profiler_enabled: false, retained_log_count: 0,
-          retained_failure_count: 0, retained_trace_count: 0, retained_operation_count: 0,
-          retained_resource_sample_count: 0, active_trace_count: 0, active_span_count: 0,
-          total_logs_recorded: 0, total_failures_recorded: 0, total_traces_started: 0,
-          total_traces_completed: 0, total_operations_recorded: 0, dropped_logs: 0,
-          dropped_failures: 0, dropped_traces: 0, dropped_spans: 0, collector_samples: 0,
-          collector_duration_us_total: 0 },
+        generated_at_ms: now,
+        profiler_enabled: devDiagnosticsMonitoring,
+        profiling_recording: devDiagnosticsRecording,
+        current_resource: null,
+        resource_samples: [],
+        latest_failures: [],
+        failure_groups: [],
+        active_pipelines: [],
+        recent_pipelines: [],
+        logs: [],
+        operations: [],
+        runtime: {},
+        health: {
+          initialized: true, profiler_enabled: devDiagnosticsMonitoring,
+          retained_log_count: 0, retained_failure_count: 0, retained_trace_count: 0,
+          retained_operation_count: 0, retained_resource_sample_count: 0,
+          active_trace_count: 0, active_span_count: 0, total_logs_recorded: 0,
+          total_failures_recorded: 0, total_traces_started: 0, total_traces_completed: 0,
+          total_operations_recorded: 0, dropped_logs: 0, dropped_failures: 0,
+          dropped_traces: 0, dropped_spans: 0, dropped_resource_samples: 0,
+          collector_samples: 0, collector_duration_us_total: 0,
+        },
       } as T;
+    }
+    case 'download_diagnostics_bundle':
+      return (args?.format === 'text'
+        ? 'browser-dev://verenu-logs.txt'
+        : 'browser-dev://verenu-diagnostics.json') as T;
     case 'get_recent_auto_learn_activity':
     case 'get_microphones':
     case 'get_recent_logs':
@@ -1556,10 +1548,6 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         { name: 'Discord', exe: 'discord.exe', developer: 'Discord Inc.' },
         { name: 'Windows Terminal', exe: 'wt.exe', developer: 'Microsoft Corporation' },
       ] as T;
-    case 'download_diagnostics_bundle':
-      return (args?.format === 'text'
-        ? 'browser-dev://verenu-logs.txt'
-        : 'browser-dev://verenu-diagnostics.json') as T;
     case 'get_stats':
       return { total_words: 0, avg_wpm: 0, day_streak: 0 } as T;
     case 'get_insights': {
@@ -1659,7 +1647,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         session === devSttDownloadSession &&
         readDevLocalTranscriptionState().downloading_model_id === modelId;
 
-      // Walk the full download Ã¢â€ â€™ verify Ã¢â€ â€™ extract Ã¢â€ â€™ done cycle so the browser
+      // Walk the full download → verify → extract → done cycle so the browser
       // dev preview exercises every stage the real backend emits (STT models
       // are archives, so they extract after verifying).
       const steps: Array<() => void> = [];
@@ -1745,8 +1733,8 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         session === devLlmDownloadSession &&
         readDevLocalLlmState().downloading_model_id === modelId;
 
-      // Cleanup models are raw weight files, so the cycle is download Ã¢â€ â€™ verify
-      // Ã¢â€ â€™ done (no extraction stage, unlike the STT archives above).
+      // Cleanup models are raw weight files, so the cycle is download → verify
+      // → done (no extraction stage, unlike the STT archives above).
       const llmSteps: Array<() => void> = [];
       for (const percent of [20, 52, 81, 100]) {
         llmSteps.push(() => {
@@ -1970,7 +1958,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'check_provider_status':
       return [] as T;
     case 'check_provider_status_raw':
-      return { dev: true, note: 'Not running in Tauri Ã¢â‚¬â€ no real fetch performed.' } as T;
+      return { dev: true, note: 'Not running in Tauri — no real fetch performed.' } as T;
     case 'check_global_message':
       return null as T;
     case 'check_verenu_api_health':
@@ -1999,7 +1987,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
     case 'save_api_key':
     case 'delete_api_key': {
       // Round-trip "saved" state through dev storage so the API Keys section
-      // (saved indicator + SaveÃ¢â€¡â€žClear flip) is actually demoable in browser dev.
+      // (saved indicator + Save⇄Clear flip) is actually demoable in browser dev.
       const provider = String(args?.provider ?? '');
       if (provider) {
         const current = (getDevSetting('__provider_connected') as Record<string, boolean> | null) ?? {};
@@ -2051,9 +2039,9 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         if (bucket.includes(existing.id)) {
           throw new Error(`"${trigger}" is already in this context`);
         }
-        if (existing.expansion !== expansion || existing.instructions !== instructions) {
-          throw new Error(`"${trigger}" already exists with different content`);
-        }
+        existing.expansion = expansion;
+        existing.instructions = instructions;
+        writeDevList(DEV_SNIPPETS_KEY, rows);
         bucket.push(existing.id);
         writeDevContextAssignments(snippetAssignments);
         return devCreated(existing.id) as T;
@@ -2070,8 +2058,10 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       });
       writeDevList(DEV_SNIPPETS_KEY, rows);
       const assignContext = targetContext ?? DEV_EVERYWHERE_CONTEXT_ID;
-      (snippetAssignments.snippets[String(assignContext)] ??= []).push(id);
-      writeDevContextAssignments(snippetAssignments);
+      if (snippetAssignments.snippets[String(assignContext)] !== undefined) {
+        snippetAssignments.snippets[String(assignContext)].push(id);
+        writeDevContextAssignments(snippetAssignments);
+      }
       return created as T;
     }
     case 'edit_snippet': {
@@ -2113,31 +2103,39 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       }
 
       const contextIdArg = args?.contextId ?? args?.context_id;
-      const targetContext = Number.isFinite(Number(contextIdArg)) && Number(contextIdArg) !== DEV_EVERYWHERE_CONTEXT_ID
-        ? Number(contextIdArg)
-        : null;
+      const parsedContextId = contextIdArg === null || contextIdArg === undefined
+        ? DEV_EVERYWHERE_CONTEXT_ID
+        : Number(contextIdArg);
+      if (!Number.isFinite(parsedContextId)) throw new Error('Context id is invalid.');
+      const targetContext = parsedContextId;
+      const scopedContext = contextIdArg !== null && contextIdArg !== undefined;
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       const existing = rows.find((row) => row.term === term);
       const dictionaryAssignments = readDevContextAssignments();
       if (existing) {
-        if (!targetContext) throw new Error('UNIQUE constraint failed: dictionary.term');
+        if (!scopedContext) throw new Error('UNIQUE constraint failed: dictionary.term');
+        ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
         const bucket = (dictionaryAssignments.dictionary[String(targetContext)] ??= []);
         if (bucket.includes(existing.id)) {
           throw new Error(`"${term}" is already in this context`);
         }
-        if (existing.mistake !== mistake) {
-          throw new Error(`"${term}" already exists with a different correction`);
-        }
         bucket.push(existing.id);
         writeDevContextAssignments(dictionaryAssignments);
-        return devCreated(existing.id) as T;
+        // Even when the spelling matches the legacy canonical projection, the
+        // Context needs its own mapping so later edits or rejection stay scoped.
+        const correctionId = setDevDictionaryCorrection(existing.id, targetContext, mistake);
+        emitDevTauriEvent('verenu:dictionary-updated', { context_id: targetContext, dictionary_id: existing.id, correction_id: correctionId });
+        return { ...devCreated(existing.id), dictionary_id: existing.id, correction_id: correctionId, context_id: targetContext } as T;
       }
       const id = nextDevId(rows);
       const created = devCreated(id);
       rows.unshift({
         id,
         term,
-        mistake,
+        // A targeted Context owns its mistake mapping; keeping it off the
+        // canonical row prevents this new item from leaking through another
+        // Context that later shares the same canonical term.
+        mistake: scopedContext ? null : mistake,
         auto_learned: false,
         correction_count: 0,
         confidence_tier: 'manual',
@@ -2145,10 +2143,15 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         created_at: created.created_at,
       });
       writeDevList(DEV_DICTIONARY_KEY, rows);
-      const assignContext = targetContext ?? DEV_EVERYWHERE_CONTEXT_ID;
-      (dictionaryAssignments.dictionary[String(assignContext)] ??= []).push(id);
+      ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
+      const bucket = (dictionaryAssignments.dictionary[String(targetContext)] ??= []);
+      bucket.push(id);
       writeDevContextAssignments(dictionaryAssignments);
-      return created as T;
+      const correctionId = scopedContext
+        ? setDevDictionaryCorrection(id, targetContext, mistake)
+        : null;
+      emitDevTauriEvent('verenu:dictionary-updated', { context_id: targetContext, dictionary_id: id, correction_id: correctionId });
+      return { ...created, dictionary_id: id, correction_id: correctionId, context_id: targetContext } as T;
     }
     case 'edit_dictionary_entry': {
       const id = Number(args?.id);
@@ -2162,22 +2165,107 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
         throw new Error('Often mistranscribed as must be 120 characters or fewer');
       }
 
+      const contextIdArg = args?.contextId ?? args?.context_id;
+      const contextId = contextIdArg === null || contextIdArg === undefined ? null : Number(contextIdArg);
+      if (contextIdArg !== null && contextIdArg !== undefined && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       if (rows.some((row) => row.id !== id && row.term === term)) {
         throw new Error('UNIQUE constraint failed: dictionary.term');
       }
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Dictionary entry ${id} was not found`);
-      rows[index] = { ...rows[index], term, mistake };
-      writeDevList(DEV_DICTIONARY_KEY, rows);
+      if (contextId !== null) {
+        rows[index] = { ...rows[index], term };
+        const correctionId = setDevDictionaryCorrection(id, contextId, mistake);
+        writeDevList(DEV_DICTIONARY_KEY, rows);
+        emitDevTauriEvent('verenu:dictionary-updated', { context_id: contextId, dictionary_id: id, correction_id: correctionId });
+      } else {
+        // The legacy Dictionary page edits the canonical/default fields.  It
+        // must not be used to rewrite any Context-owned correction rows.
+        rows[index] = { ...rows[index], term, mistake };
+        writeDevList(DEV_DICTIONARY_KEY, rows);
+        emitDevTauriEvent('verenu:dictionary-updated', { context_id: null, dictionary_id: id });
+      }
       return undefined as T;
     }
     case 'remove_dictionary_entry': {
       const id = Number(args?.id);
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
-      const next = rows.filter((row) => row.id !== id);
-      if (next.length === rows.length) throw new Error(`Dictionary entry ${id} was not found`);
-      writeDevList(DEV_DICTIONARY_KEY, next);
+      if (!rows.some((row) => row.id === id)) throw new Error(`Dictionary entry ${id} was not found`);
+      const contextIdArg = args?.contextId ?? args?.context_id;
+      const contextId = contextIdArg === null || contextIdArg === undefined ? null : Number(contextIdArg);
+      if (contextIdArg !== null && contextIdArg !== undefined && !Number.isFinite(contextId)) throw new Error('Context id is invalid.');
+      if (contextId !== null) {
+        const assignments = readDevContextAssignments();
+        removeDevDictionaryAssignment(assignments, rows, contextId, id);
+        writeDevContextAssignments(assignments);
+        if (!devDictionaryIsAssignedAnywhere(assignments, id)) {
+          writeDevList(DEV_DICTIONARY_KEY, rows.filter((row) => row.id !== id));
+          writeDevDictionaryCorrections(readDevDictionaryCorrections().filter((row) => row.dictionary_id !== id));
+        }
+        emitDevTauriEvent('verenu:dictionary-updated', { context_id: contextId, dictionary_id: id });
+        return undefined as T;
+      }
+
+      writeDevList(DEV_DICTIONARY_KEY, rows.filter((row) => row.id !== id));
+      writeDevDictionaryCorrections(readDevDictionaryCorrections().filter((row) => row.dictionary_id !== id));
+      const assignments = readDevContextAssignments();
+      for (const ids of Object.values(assignments.dictionary)) {
+        const index = ids.indexOf(id);
+        if (index !== -1) ids.splice(index, 1);
+      }
+      writeDevContextAssignments(assignments);
+      emitDevTauriEvent('verenu:dictionary-updated', { context_id: null, dictionary_id: id });
+      return undefined as T;
+    }
+    case 'move_dictionary_entry_to_context': {
+      const dictionaryId = Number(args?.dictionaryId ?? args?.dictionary_id ?? args?.id);
+      const sourceContextId = Number(args?.sourceContextId ?? args?.source_context_id);
+      const targetContextId = Number(args?.targetContextId ?? args?.target_context_id);
+      if (![dictionaryId, sourceContextId, targetContextId].every(Number.isFinite)) {
+        throw new Error('Dictionary move requires source, target, and dictionary ids.');
+      }
+      if (sourceContextId === targetContextId) return undefined as T;
+      if (!readDevContexts().some((context) => context.id === sourceContextId)) {
+        throw new Error(`Context ${sourceContextId} was not found`);
+      }
+      if (!readDevContexts().some((context) => context.id === targetContextId)) {
+        throw new Error(`Context ${targetContextId} was not found`);
+      }
+      const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
+      if (!rows.some((row) => row.id === dictionaryId)) throw new Error(`Dictionary entry ${dictionaryId} was not found`);
+      const assignments = readDevContextAssignments();
+      ensureDevEverywhereDictionaryAssignment(assignments, rows);
+      const source = (assignments.dictionary[String(sourceContextId)] ??= []);
+      const target = (assignments.dictionary[String(targetContextId)] ??= []);
+      if (!source.includes(dictionaryId)) throw new Error('The dictionary entry is not assigned to the source context.');
+      if (target.includes(dictionaryId)) throw new Error('The dictionary entry is already assigned to the target context.');
+
+      const sourceCorrection = devDictionaryCorrection(dictionaryId, sourceContextId);
+      const targetCorrection = devDictionaryCorrection(dictionaryId, targetContextId);
+      if (sourceCorrection && targetCorrection && sourceCorrection.mistake !== targetCorrection.mistake) {
+        throw new Error('The target context already has a different correction for this term.');
+      }
+      target.push(dictionaryId);
+      source.splice(source.indexOf(dictionaryId), 1);
+      const corrections = readDevDictionaryCorrections();
+      const sourceIndex = corrections.findIndex(
+        (row) => row.dictionary_id === dictionaryId && row.context_id === sourceContextId,
+      );
+      if (sourceIndex !== -1) {
+        const targetIndex = corrections.findIndex(
+          (row) => row.dictionary_id === dictionaryId && row.context_id === targetContextId,
+        );
+        if (targetIndex === -1) {
+          corrections[sourceIndex] = { ...corrections[sourceIndex], context_id: targetContextId };
+        } else {
+          corrections.splice(sourceIndex, 1);
+        }
+      }
+      writeDevDictionaryCorrections(corrections);
+      writeDevContextAssignments(assignments);
+      emitDevTauriEvent('verenu:dictionary-updated', { context_id: sourceContextId, dictionary_id: dictionaryId });
+      emitDevTauriEvent('verenu:dictionary-updated', { context_id: targetContextId, dictionary_id: dictionaryId });
       return undefined as T;
     }
     case 'save_app_mappings':
@@ -2185,7 +2273,7 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       return undefined as T;
     case 'download_logs':
       return 'browser-dev://verenu-logs.txt' as T;
-    // LAN sync Ã¢â‚¬â€ browser dev mode has no backend to sync with; return a quiet
+    // LAN sync — browser dev mode has no backend to sync with; return a quiet
     // empty snapshot so the Sync settings section renders its empty states.
     case 'sync_get_status':
       return {
@@ -2224,13 +2312,13 @@ async function devInvokeInternal<T>(command: string, args?: CommandArgs): Promis
       throw new Error(`Tauri command "${command}" is unavailable in browser dev mode.`);
   }
 }
-export async function devInvoke<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
-  return devInvokeInternal<T>(command, args);
-}
 
-export function devListen<T>(event: string, handler: EventHandler<T>): Promise<UnlistenFn> {
+export function devListen<T>(
+  event: string,
+  handler: EventHandler<T>,
+): Promise<UnlistenFn> {
   if (typeof window === 'undefined') return Promise.resolve(() => {});
-  const eventName = 'tauri:' + event;
+  const eventName = `tauri:${event}`;
   const listener = (ev: Event) => {
     if (event === 'verenu:sync-pair-request') {
       const payload: unknown = (ev as CustomEvent<unknown>).detail;
@@ -2246,7 +2334,11 @@ export function devListen<T>(event: string, handler: EventHandler<T>): Promise<U
         };
       }
     }
-    handler({ event, id: ++devEventId, payload: (ev as CustomEvent<T>).detail });
+    handler({
+      event,
+      id: ++devEventId,
+      payload: (ev as CustomEvent<T>).detail,
+    });
   };
   window.addEventListener(eventName, listener);
   return Promise.resolve(() => window.removeEventListener(eventName, listener));
@@ -2254,7 +2346,7 @@ export function devListen<T>(event: string, handler: EventHandler<T>): Promise<U
 
 export function devEmit<T>(event: string, payload?: T): Promise<void> {
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('tauri:' + event, { detail: payload }));
+    window.dispatchEvent(new CustomEvent(`tauri:${event}`, { detail: payload }));
   }
   return Promise.resolve();
 }

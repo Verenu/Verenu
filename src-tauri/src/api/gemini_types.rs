@@ -48,7 +48,10 @@ pub struct GeminiInteractionTranscribeReq {
 #[serde(tag = "type")]
 pub enum GeminiInteractionInput {
     #[serde(rename = "audio")]
-    Audio { data: String, mime_type: String },
+    Audio {
+        data: super::base64_audio::Base64Audio,
+        mime_type: String,
+    },
     #[serde(rename = "text")]
     Text { text: String },
 }
@@ -80,7 +83,7 @@ pub struct GeminiReqPart {
 #[serde(rename_all = "camelCase")]
 pub struct GeminiInlineData {
     pub mime_type: String,
-    pub data: String,
+    pub data: super::base64_audio::Base64Audio,
 }
 
 #[derive(Serialize, Debug)]
