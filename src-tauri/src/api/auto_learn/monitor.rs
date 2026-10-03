@@ -299,6 +299,7 @@ struct MonitorRequest {
     db: DbHandle,
     app: AppHandle,
     event_mode: bool,
+    target_id: usize,
 }
 
 struct MonitorTask {
@@ -309,6 +310,8 @@ struct MonitorTask {
     app: AppHandle,
     event_mode: bool,
     baseline_text: Option<String>,
+    baseline_identity: Option<MonitorIdentity>,
+    target_id: usize,
     baseline_attempts: u8,
     next_action: std::time::Instant,
     deadline: std::time::Instant,
@@ -358,6 +361,8 @@ impl MonitorTask {
             app: request.app,
             event_mode: request.event_mode,
             baseline_text: None,
+            baseline_identity: None,
+            target_id: request.target_id,
             baseline_attempts: 0,
             next_action: now + std::time::Duration::from_millis(BASELINE_CAPTURE_DELAY_MS),
             deadline: now + std::time::Duration::from_secs(MONITOR_WINDOW_SECS),
@@ -381,13 +386,32 @@ impl MonitorTask {
             return false;
         }
 
+        if !store::settings_handle(&self.app)
+            .ok()
+            .and_then(|settings| settings.get(store::AUTO_LEARN_ENABLED))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if !rejection::is_target_window_focused(self.target_id) {
+            self.stable_text_gate = StableTextGate::default();
+            self.next_action = now + std::time::Duration::from_secs(POLL_INTERVAL_SECS);
+            return false;
+        }
+
         if self.baseline_text.is_none() {
             self.baseline_attempts += 1;
-            if let Some(baseline_text) = capture_baseline_text(&self.injected_text) {
-                self.baseline_text = Some(baseline_text);
+            if let Some(baseline) =
+                read_monitor_text(&self.injected_text, true).filter(|baseline| {
+                    find_unique_anchor(&baseline.text, &self.injected_text).is_some()
+                })
+            {
+                self.baseline_text = Some(baseline.text);
+                self.baseline_identity = Some(baseline.identity);
                 log_context_event(&self.db, &self.context, "anchor", "anchor_ok", "", "", 0.0);
                 self.next_action = now + std::time::Duration::from_secs(POLL_INTERVAL_SECS);
-            } else if self.baseline_attempts < 2 {
+            } else if self.baseline_attempts < 6 {
                 self.next_action = now + std::time::Duration::from_millis(BASELINE_RETRY_DELAY_MS);
             } else {
                 log::debug!("auto-learn: could not anchor injected text in focused control");
@@ -453,7 +477,12 @@ impl MonitorTask {
             }
         }
 
-        let Some(current_text) = read_focused_text_near_caret(&self.injected_text) else {
+        let Some(current) = read_monitor_text(&self.injected_text, false).filter(|current| {
+            self.baseline_identity
+                .as_ref()
+                .is_some_and(|identity| identity.matches(&current.identity))
+        }) else {
+            self.stable_text_gate = StableTextGate::default();
             self.next_action = now
                 + if self.event_mode {
                     event_mode_poll_sleep_duration(true)
@@ -462,7 +491,7 @@ impl MonitorTask {
                 };
             return false;
         };
-        let Some(stable_text) = self.stable_text_gate.observe(current_text) else {
+        let Some(stable_text) = self.stable_text_gate.observe(current.text) else {
             self.next_action = now
                 + if self.event_mode {
                     event_mode_poll_sleep_duration(true)
@@ -570,11 +599,12 @@ fn run_coordinator(receiver: std::sync::mpsc::Receiver<MonitorRequest>) {
 
 pub fn start_monitor(
     injected_text: String,
+    target_id: usize,
     context: ResolvedContextIdentity,
     db: DbHandle,
     app: AppHandle,
 ) {
-    if injected_text.split_whitespace().count() < 2 {
+    if tokenize_words(&injected_text).is_empty() {
         log_context_event(&db, &context, "monitor", "too_short", "", "", 0.0);
         return;
     }
@@ -598,6 +628,7 @@ pub fn start_monitor(
         db,
         app,
         event_mode,
+        target_id,
     };
     if let Err(error) = coordinator_sender().try_send(request) {
         let request = match error {

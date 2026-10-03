@@ -1,4 +1,5 @@
 import type { icons } from './icons';
+import { isAndroid } from './platform';
 
 export type SettingsSectionId =
   | 'general'
@@ -20,6 +21,7 @@ interface SettingsSection {
   icon: keyof typeof icons;
   group: string;
   /** Only render on macOS. */
+  /** macOS permissions; Android shows its own permission list in the same tab. */
   macOnly?: boolean;
   /** Only render once Developer mode is unlocked. */
   devOnly?: boolean;
@@ -76,7 +78,7 @@ export function visibleSettingsSections(opts: {
 }): SettingsSectionGroup[] {
   const groups: SettingsSectionGroup[] = [];
   for (const section of SETTINGS_SECTIONS) {
-    if (section.macOnly && !opts.isMac) continue;
+    if (section.macOnly && !opts.isMac && !isAndroid) continue;
     if (section.devOnly && !opts.devMode) continue;
     if (section.legacyOnly && !opts.legacyMode) continue;
     if (section.syncOnly && !opts.syncEnabled) continue;

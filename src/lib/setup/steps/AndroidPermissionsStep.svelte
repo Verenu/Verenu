@@ -192,7 +192,7 @@
 	}
 </script>
 
-<div class="android-perms">
+<div class="step android-perms">
 	{#if !isAndroid}
 		<p class="preview-note" role="note">
 			Android permission preview. On a device, each row opens its Android prompt or Settings page.

@@ -102,7 +102,19 @@
       // clipboard/Ctrl+V injection), so this event is the only way text reaches the
       // textarea. Always take the latest payload so trying multiple dictations in a
       // row keeps showing the most recent result instead of requiring "Try again".
-      if (ev.payload) sampleText = ev.payload;
+      if (ev.payload) {
+        if (isAndroid) {
+          // On Android the pill inserts into the focused field through the
+          // accessibility service, so assigning here as well would type the
+          // text twice. Only fall back to the event if nothing arrived.
+          const payload = ev.payload;
+          setTimeout(() => {
+            if (!destroyed && sampleText.trim().length === 0) sampleText = payload;
+          }, 1500);
+        } else {
+          sampleText = ev.payload;
+        }
+      }
     }).then((unsub) => {
       if (destroyed) unsub();
       else unlistenTranscribed = unsub;
