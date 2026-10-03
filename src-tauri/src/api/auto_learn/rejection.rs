@@ -133,31 +133,30 @@ fn run_rejection_monitor(
         .spawn(move || {
             let _guard = guard;
             let prefix = target.monitor_key_prefix();
+            let read_anchored_baseline = || {
+                read_monitor_text(&injected_text, true).and_then(|text| {
+                    find_unique_anchor(&text.text, &injected_text).map(|anchor| (text, anchor))
+                })
+            };
 
             std::thread::sleep(std::time::Duration::from_millis(BASELINE_CAPTURE_DELAY_MS));
             if !is_target_window_focused(target_hwnd) {
                 return;
             }
-            let mut baseline = read_monitor_text(&injected_text, true)
-                .filter(|text| find_unique_anchor(&text.text, &injected_text).is_some());
+            let mut baseline = read_anchored_baseline();
 
             if baseline.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(BASELINE_RETRY_DELAY_MS));
                 if !is_target_window_focused(target_hwnd) {
                     return;
                 }
-                baseline = read_monitor_text(&injected_text, true)
-                    .filter(|text| find_unique_anchor(&text.text, &injected_text).is_some());
+                baseline = read_anchored_baseline();
             }
 
-            let Some(baseline) = baseline else {
+            let Some((baseline, anchor)) = baseline else {
                 // Missing text can mean focus moved to another field in the same
                 // app. Without an observed insertion there is no proof of deletion.
                 log::debug!("{prefix}: no verified baseline, skipping");
-                return;
-            };
-            let Some(anchor) = find_unique_anchor(&baseline.text, &injected_text) else {
-                log::debug!("{prefix}: anchor not found");
                 return;
             };
 
