@@ -18,8 +18,7 @@
   import type { InstalledApp } from '../appMappings';
 
   let hotkey = defaultHotkey;
-  $: hk1 = formatKeyLabel(hotkey[0]);
-  $: hk2 = formatKeyLabel(hotkey[1]);
+  $: keyLabels = hotkey.filter(Boolean).map(formatKeyLabel);
 
   let copiedId: number | null = null;
   let currentVersion = '';
@@ -271,6 +270,9 @@
       const dictation = event.payload.find((item) => item.id === 'dictation');
       if (dictation) hotkey = dictation.codes.length ? dictation.codes : ['Unavailable', ''];
     }));
+    trackListener(listen<string[]>('verenu:hotkey-changed', (event) => {
+      hotkey = event.payload;
+    }));
     trackListener(listen('verenu:transcribed', () => {
       failedEntry = null;
       if (failedTimer) { clearTimeout(failedTimer); failedTimer = null; }
@@ -346,7 +348,7 @@
       <h1 class="page-h">Welcome back</h1>
       <p class="page-sub">{greeting}</p>
 
-      <HomeHero {hk1} {hk2} android={isAndroid} />
+      <HomeHero {keyLabels} android={isAndroid} />
 
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
@@ -380,8 +382,7 @@
         {retrying}
         {resumingCancelled}
         {copiedId}
-        {hk1}
-        {hk2}
+        {keyLabels}
         android={isAndroid}
         {search}
         {apps}
