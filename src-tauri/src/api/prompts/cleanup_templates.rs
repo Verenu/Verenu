@@ -249,13 +249,55 @@ pub fn default_cleanup_template() -> &'static str {
 }
 
 pub fn default_style_template(intensity: &str) -> String {
-    default_cleanup_template().replace(
-        "{{ cleanup_preset }}",
-        &format!(
-            "{}\n{{{{ cleanup_tone }}}}",
-            super::cleanup_rules::intensity_rules(intensity)
-        ),
-    )
+    super::cleanup_rules::intensity_rules(intensity).to_string()
+}
+
+pub fn default_tone_instructions(tone: &str) -> String {
+    super::cleanup_rules::build_preset_block(tone, "medium", false)
+        .split_once('\n')
+        .unwrap()
+        .1
+        .to_string()
+}
+
+/// Substitute only the selected preset instructions; the system template and
+/// runtime context remain managed separately. Tags in edits are plain text.
+pub fn with_style_instructions(
+    base: Option<&str>,
+    cleanup: Option<&str>,
+    tone: Option<&str>,
+) -> String {
+    let base = base.unwrap_or(default_cleanup_template());
+    // Edits are instructions, not templates; literal braces never expand into
+    // runtime context or other instruction slots.
+    let literal = |text: &str| text.replace("{{", "{ {").replace("}}", "} }");
+    let preset = format!(
+        "{}\n{}\n{{{{ cleanup_priority }}}}",
+        cleanup
+            .map(literal)
+            .unwrap_or_else(|| "{{ cleanup_intensity }}".into()),
+        tone.map(literal)
+            .unwrap_or_else(|| "{{ cleanup_tone }}".into())
+    );
+    if base.contains("{{ cleanup_preset }}") {
+        base.replace("{{ cleanup_preset }}", &preset)
+    } else {
+        format!("{base}\n\n{preset}")
+    }
+}
+
+pub fn lint_style_instructions(text: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if text.trim().is_empty() {
+        warnings.push("Enter instructions, or reset to the built-in defaults.".into());
+    }
+    if text.chars().count() > 20_000 {
+        warnings.push("Instructions must be at most 20,000 characters.".into());
+    }
+    if text.contains("{{") || text.contains("}}") {
+        warnings.push("Style instructions cannot contain template tags. Verenu adds tone, formatting, and context separately.".into());
+    }
+    warnings
 }
 
 pub fn hardened_retry_template() -> &'static str {
@@ -279,8 +321,12 @@ pub fn lint_cleanup_template(template: &str) -> Vec<String> {
     let mut warnings = Vec::new();
     let lower = template.to_lowercase();
     let allowed = [
-        "active_app", "cleanup_preset", "cleanup_tone", "formatting_rules",
-        "snippet_overrides", "evidence",
+        "active_app",
+        "cleanup_preset",
+        "cleanup_tone",
+        "formatting_rules",
+        "snippet_overrides",
+        "evidence",
     ];
     for token in template.split("{{").skip(1) {
         match token.split_once("}}") {

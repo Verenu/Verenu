@@ -154,10 +154,19 @@ pub(super) fn render_cleanup_template(
     let placeholders = [
         ("{{ cleanup_preset }}", cleanup_preset),
         (
+            "{{ cleanup_intensity }}",
+            cleanup_preset.lines().next().unwrap_or(""),
+        ),
+        (
+            "{{ cleanup_priority }}",
+            cleanup_preset.lines().nth(3).unwrap_or(""),
+        ),
+        (
             "{{ cleanup_tone }}",
+            // Priority is injected independently when composing edited presets.
             cleanup_preset
                 .split_once('\n')
-                .map(|(_, tone)| tone)
+                .map(|(_, tone)| tone.split("\nPriority:").next().unwrap_or(tone))
                 .unwrap_or(cleanup_preset),
         ),
         ("{{ formatting_rules }}", formatting_rules),

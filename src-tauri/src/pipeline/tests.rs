@@ -85,6 +85,15 @@ fn dual_cleanup_cache_key_changes_with_cleanup_context() {
     );
 
     assert_ne!(first.key, second.key);
+    config
+        .style_prompt_instructions
+        .insert("formal".into(), "Use legal wording.".into());
+    let tone_changed =
+        dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    assert_ne!(
+        changed_context, tone_changed,
+        "Context tone edits invalidate cached cleanup"
+    );
 }
 use crate::api::prompts::looks_like_refusal;
 use crate::data::store;
@@ -561,7 +570,7 @@ fn base_config() -> store::PipelineConfig {
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
         cleanup_prompt_override: String::new(),
-        cleanup_style_prompts: Default::default(),
+        style_prompt_instructions: Default::default(),
     }
 }
 

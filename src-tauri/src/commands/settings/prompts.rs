@@ -39,15 +39,26 @@ const PROMPT_TEST_CASES: &[(&str, &str)] = &[
 /// One template for every provider and model — the picker's fallback chain
 /// would otherwise silently drop an edit made on a different model.
 #[tauri::command]
-pub fn get_default_cleanup_prompt(intensity: Option<String>) -> String {
+pub fn get_default_cleanup_prompt(intensity: Option<String>, tone: Option<String>) -> String {
+    if let Some(tone) = tone {
+        return prompts::default_tone_instructions(&tone);
+    }
     intensity
         .map(|value| prompts::default_style_template(&value))
         .unwrap_or_else(|| prompts::default_cleanup_template().to_string())
 }
 
 #[tauri::command]
-pub fn lint_cleanup_prompt(template: String) -> Vec<String> {
-    prompts::lint_cleanup_template(&template)
+pub fn lint_cleanup_prompt(
+    template: String,
+    intensity: Option<String>,
+    tone: Option<String>,
+) -> Vec<String> {
+    if intensity.is_some() || tone.is_some() {
+        prompts::lint_style_instructions(&template)
+    } else {
+        prompts::lint_cleanup_template(&template)
+    }
 }
 
 #[tauri::command]
@@ -57,12 +68,33 @@ pub async fn test_cleanup_prompt(
     model: String,
     template: String,
     intensity: Option<String>,
+    tone: Option<String>,
 ) -> Result<PromptTestReport, String> {
-    let intensity = intensity.as_deref().unwrap_or("medium");
-    if !matches!(intensity, "light" | "medium" | "high") {
-        return Err("Unsupported cleanup style".into());
-    }
-    let static_warnings = prompts::lint_cleanup_template(&template);
+    let style_edit = intensity.is_some() || tone.is_some();
+    let mut config = if style_edit {
+        Some(store::load_pipeline_config(&store::settings_snapshot(&app)?))
+    } else {
+        None
+    };
+    let configured_intensity = config
+        .as_ref()
+        .map(|cfg| cfg.cleanup_intensity.as_str())
+        .unwrap_or("medium");
+    let default_tone = config
+        .as_ref()
+        .map(|cfg| cfg.default_tone.as_str())
+        .unwrap_or("casual");
+    let (intensity, profile) = resolve_prompt_test_style(
+        intensity.as_deref(),
+        tone.as_deref(),
+        configured_intensity,
+        default_tone,
+    )?;
+    let static_warnings = if style_edit {
+        prompts::lint_style_instructions(&template)
+    } else {
+        prompts::lint_cleanup_template(&template)
+    };
     let mut live_warnings = Vec::new();
     if !static_warnings.is_empty() {
         return Ok(PromptTestReport {
@@ -72,6 +104,23 @@ pub async fn test_cleanup_prompt(
             live_warnings,
         });
     }
+
+    // Audit the same composed system prompt used by the production pipeline.
+    // Existing edits to the other dimension remain active during the probe.
+    let template = if let Some(cfg) = config.as_mut() {
+        cfg.cleanup_intensity = intensity.clone();
+        let key = if tone.is_some() {
+            profile.as_str()
+        } else {
+            intensity.as_str()
+        };
+        cfg.style_prompt_instructions
+            .insert(key.to_string(), template);
+        cfg.cleanup_override(&profile)
+            .unwrap_or_else(|| prompts::default_cleanup_template().to_string())
+    } else {
+        template
+    };
 
     if provider == crate::data::store::LOCAL {
         let root = crate::local_llm::LocalLlmManager::models_root();
@@ -99,14 +148,14 @@ pub async fn test_cleanup_prompt(
             let prompt = prompts::get_cleanup_prompt_with_extras(
                 &provider,
                 &model,
-                "casual",
-                intensity,
+                &profile,
+                &intensity,
                 "",
                 None,
                 input,
                 Some(template.as_str()),
             );
-            let max_tokens = prompts::cleanup_max_output_tokens(intensity, input);
+            let max_tokens = prompts::cleanup_max_output_tokens(&intensity, input);
             let outcome = manager
                 .cleanup_with_prompt(&app, &model, input, &prompt, max_tokens)
                 .await;
@@ -150,8 +199,8 @@ pub async fn test_cleanup_prompt(
             cp,
             &key,
             &model,
-            "casual",
-            intensity,
+            &profile,
+            &intensity,
             "",
             None,
             Some(template.as_str()),
@@ -178,6 +227,27 @@ pub async fn test_cleanup_prompt(
         live_results,
         live_warnings,
     })
+}
+
+fn resolve_prompt_test_style(
+    requested_intensity: Option<&str>,
+    requested_tone: Option<&str>,
+    configured_intensity: &str,
+    default_tone: &str,
+) -> Result<(String, String), String> {
+    let intensity = requested_intensity.unwrap_or(if configured_intensity == "none" {
+        "medium"
+    } else {
+        configured_intensity
+    });
+    let profile = requested_tone.unwrap_or(default_tone);
+    if !matches!(intensity, "light" | "medium" | "high") {
+        return Err("Unsupported cleanup style".into());
+    }
+    if !matches!(profile, "casual" | "formal" | "very_casual") {
+        return Err("Unsupported tone".into());
+    }
+    Ok((intensity.to_string(), profile.to_string()))
 }
 
 /// Heuristic pass/fail for one [`PROMPT_TEST_CASES`] case's live output.
@@ -271,14 +341,38 @@ fn evaluate_prompt_test_case(name: &str, output: &str) -> (bool, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::evaluate_prompt_test_case;
+    use super::{evaluate_prompt_test_case, resolve_prompt_test_style};
+
+    #[test]
+    fn prompt_audit_keeps_the_other_preset_and_uses_medium_when_cleanup_is_off() {
+        assert_eq!(
+            resolve_prompt_test_style(Some("light"), None, "high", "formal").unwrap(),
+            ("light".into(), "formal".into())
+        );
+        assert_eq!(
+            resolve_prompt_test_style(None, Some("formal"), "high", "casual").unwrap(),
+            ("high".into(), "formal".into())
+        );
+        assert_eq!(
+            resolve_prompt_test_style(None, Some("casual"), "none", "formal").unwrap(),
+            ("medium".into(), "casual".into())
+        );
+    }
+
+    #[test]
+    fn prompt_audit_rejects_unsupported_presets() {
+        assert!(resolve_prompt_test_style(Some("none"), None, "medium", "casual").is_err());
+        assert!(resolve_prompt_test_style(None, Some("unknown"), "medium", "casual").is_err());
+    }
 
     #[test]
     fn audit_requires_corrections_and_conditions_to_survive() {
         assert!(evaluate_prompt_test_case("correction", "Meet Wednesday at 5.").0);
         assert!(!evaluate_prompt_test_case("correction", "Meet Tuesday and Wednesday at 5.").0);
         assert!(!evaluate_prompt_test_case("correction", "Meet Wednesday.").0);
-        assert!(evaluate_prompt_test_case("details", "Send the file by Tuesday if Mira approves.").0);
+        assert!(
+            evaluate_prompt_test_case("details", "Send the file by Tuesday if Mira approves.").0
+        );
         assert!(!evaluate_prompt_test_case("details", "Send the file by Tuesday.").0);
     }
 }

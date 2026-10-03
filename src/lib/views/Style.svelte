@@ -22,14 +22,16 @@
   let tone = $state('casual');
   let editorError = $state('');
 
-  async function editStyle(id: string, event: MouseEvent) {
+  async function editStyle(id: string, event: MouseEvent, isTone = false) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     editorError = '';
     try {
       const modelId = await invoke<string | null>('get_setting', { key: 'cleanup_default_model' });
       const target = splitModelId(modelId ?? 'groq/openai/gpt-oss-20b');
       if (!target) throw new Error('Choose a cleanup model in Settings first.');
-      openCleanupPromptEditor(target.provider, target.model, rect, id as 'light' | 'medium' | 'high');
+      openCleanupPromptEditor(target.provider, target.model, rect,
+        isTone ? null : id as 'light' | 'medium' | 'high',
+        isTone ? id as ToneId : null);
     } catch (error) { editorError = formatIpcError(error, 'Could not open the prompt editor'); }
   }
 
@@ -196,6 +198,7 @@
             <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
             <div class="style-grid">
               {#each personalCards as c}
+                <div class="style-card-wrap">
                 <button
                   type="button"
                   class="style-card"
@@ -208,6 +211,8 @@
                   <span class="desc">{c.desc}</span>
                   <span class="style-sample" style="white-space: pre-wrap;">"{c.sample}"</span>
                 </button>
+                <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -251,6 +256,7 @@
         <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
         <div class="style-grid">
           {#each personalCards as c}
+                <div class="style-card-wrap">
             <button
               type="button"
               class="style-card"
@@ -263,6 +269,8 @@
               <span class="desc">{c.desc}</span>
               <span class="style-sample" style="white-space: pre-wrap;">"{c.sample}"</span>
             </button>
+            <button class="btn-ghost btn-compact style-edit" aria-label="Edit {c.name} tone instructions" onclick={(event) => editStyle(c.id, event, true)}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg></button>
+            </div>
           {/each}
         </div>
       </section>

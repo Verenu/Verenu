@@ -55,9 +55,12 @@
   let loading = $state(false);
   let testState = $state<TestStatus>({ status: 'idle' });
   let liveWarnings = $state<string[]>([]);
-  let stylePrompts: Partial<Record<'light' | 'medium' | 'high', string>> = {};
+  let stylePrompts: Partial<Record<'light' | 'medium' | 'high' | 'casual' | 'formal' | 'very_casual', string>> = {};
   const intensity = cleanupPromptEditor.intensity;
-  const styleName = intensity === 'high' ? 'Strong' : intensity === 'light' ? 'Light' : 'Medium';
+  const tone = cleanupPromptEditor.tone;
+  const styleKey = intensity ?? tone;
+  const styleName = tone ? (tone === 'very_casual' ? 'Very Casual' : tone === 'formal' ? 'Formal' : 'Casual') : intensity === 'high' ? 'Strong' : intensity === 'light' ? 'Light' : 'Medium';
+  const editorTitle = styleKey ? `${styleName} ${tone ? 'tone' : 'cleanup'} instructions` : 'Cleanup prompt';
 
   let isMounted = true;
   let lintTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -131,18 +134,11 @@
     testState = { status: 'idle' };
     liveWarnings = [];
     try {
-      const def = await invoke<string>('get_default_cleanup_prompt', { intensity });
+      const def = await invoke<string>('get_default_cleanup_prompt', { intensity, tone });
       if (!isMounted) return;
       defaultText = def;
-      if (intensity) stylePrompts = await invoke<typeof stylePrompts>('get_setting', { key: 'cleanup_style_prompts' }) ?? {};
-      let saved = (intensity ? stylePrompts[intensity] ?? '' : cleanupPromptStore.override).trim();
-      if (intensity && !(intensity in stylePrompts)) {
-        const [advanced, shared] = await Promise.all([
-          invoke<boolean | null>('get_setting', { key: 'advanced_model_ui' }),
-          invoke<string | null>('get_setting', { key: 'cleanup_prompt_override' }),
-        ]);
-        if (advanced && shared?.trim()) saved = shared.trim();
-      }
+      if (styleKey) stylePrompts = await invoke<typeof stylePrompts>('get_setting', { key: 'style_prompt_instructions' }) ?? {};
+      const saved = (styleKey ? stylePrompts[styleKey] ?? '' : cleanupPromptStore.override).trim();
       const text = saved || def;
       draft = text;
       runLint(text);
@@ -157,7 +153,7 @@
     clearTimeout(lintTimeout);
     lintTimeout = setTimeout(async () => {
       try {
-        const warnings = await invoke<string[]>('lint_cleanup_prompt', { template: text });
+        const warnings = await invoke<string[]>('lint_cleanup_prompt', { template: text, intensity, tone });
         if (isMounted && draft === text) liveWarnings = warnings;
       } catch {
         // lint errors are non-critical
@@ -176,9 +172,9 @@
   /** Matching the default is how you clear the override, not a value to store. */
   async function persistDraft() {
     const override = draft.trim() === defaultText.trim() ? '' : draft;
-    if (intensity) {
-      const next = { ...stylePrompts, [intensity]: override };
-      await saveSetting('cleanup_style_prompts', next);
+    if (styleKey) {
+      const next = { ...stylePrompts, [styleKey]: override };
+      await saveSetting('style_prompt_instructions', next);
       stylePrompts = next;
     } else {
       await saveSetting('cleanup_prompt_override', override);
@@ -206,6 +202,7 @@
         model,
         template: draft,
         intensity,
+        tone,
       });
       if (!isMounted) return;
       if (report.passed) {
@@ -292,7 +289,7 @@
     }}
     role="dialog"
     aria-modal="true"
-    aria-label={intensity ? `Edit ${styleName} cleanup prompt` : 'Edit cleanup prompt'}
+    aria-label={styleKey ? `Edit ${editorTitle}` : 'Edit cleanup prompt'}
     tabindex="-1"
     onkeydown={onKeydown}
     in:expandFromOrigin={{ origin, duration: 240 }}
@@ -308,8 +305,8 @@
     <!-- Header bar — paper bg like settings sidebar -->
     <div class="prompt-head">
       <div class="prompt-head-info">
-        <span class="prompt-head-provider">{intensity ? `${styleName} cleanup prompt` : 'Cleanup prompt'}</span>
-        <span class="prompt-head-model">{intensity ? 'Overrides the shared prompt for this style' : 'Used by every model'} · audited on {testedAgainst}</span>
+        <span class="prompt-head-provider">{editorTitle}</span>
+        <span class="prompt-head-model">{styleKey ? 'Added when this preset is selected' : 'Used by every model'} · audited on {testedAgainst}</span>
       </div>
       <div class="prompt-head-actions">
         {#if statusKind() !== 'clean'}
@@ -359,11 +356,11 @@
     {/if}
 
     <!-- Tags -->
-    <div class="prompt-tags-row">
+    {#if !styleKey}<div class="prompt-tags-row">
       {#each CLEANUP_PROMPT_TAGS as tag}
-        <span class="prompt-tag">{intensity && !draft.includes('{{ cleanup_preset }}') && tag === '{{ cleanup_preset }}' ? '{{ cleanup_tone }}' : tag}</span>
+        <span class="prompt-tag">{tag}</span>
       {/each}
-    </div>
+    </div>{:else}<p class="prompt-scope">Edit only this preset’s instructions. Verenu keeps the system prompt, safety rules, formatting, and context separate.</p>{/if}
 
     <!-- Editor -->
     <div class="prompt-editor-body">
@@ -378,7 +375,7 @@
           spellcheck={false}
           maxlength={20000}
           disabled={testState.status === 'testing'}
-          aria-label="Cleanup prompt template"
+          aria-label={styleKey ? 'Preset instructions' : 'Cleanup prompt template'}
         ></textarea>
       {/if}
     </div>
@@ -626,6 +623,7 @@
     gap: 4px;
     padding: 4px 16px 8px;
   }
+  .prompt-scope { margin: 0; padding: 4px 16px 0; color: var(--ink-mute); font-size: 12px; }
 
   .prompt-tag {
     font-family: var(--mono);
