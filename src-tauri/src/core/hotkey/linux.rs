@@ -461,10 +461,14 @@ pub fn update_keys(keys: &[u32]) -> Result<(), String> {
 }
 
 pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
+    eval_hyprland(&suspend_shortcuts_snippet(active))
+}
+
+fn suspend_shortcuts_snippet(active: bool) -> String {
     let enabled = if active { "false" } else { "true" };
-    eval_hyprland(&format!(
-        "if not _verenu_dictation_bindings then error('Verenu shortcut is not ready') end; for _, handle in ipairs(_verenu_dictation_bindings) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end; for _, handle in pairs({{_verenu_copy_binding, _verenu_capture_binding}}) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end"
-    ))
+    format!(
+        "if _verenu_dictation_bindings then for _, handle in ipairs(_verenu_dictation_bindings) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end end; for _, handle in pairs({{_verenu_copy_binding, _verenu_capture_binding}}) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end"
+    )
 }
 
 /// Called by the Linux single-instance handoff from Hyprland's keyboard-event
@@ -1249,6 +1253,14 @@ fn pick_portal_id(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcut_suspension_tolerates_bindings_not_initialized_yet() {
+        let snippet = super::suspend_shortcuts_snippet(true);
+        assert!(snippet.contains("if _verenu_dictation_bindings then"));
+        assert!(snippet.contains("handle:set_enabled(false)"));
+        assert!(!snippet.contains("error("));
+    }
+
     #[test]
     fn multi_modifier_shortcuts_keep_every_key_and_release_code() {
         let keys = [

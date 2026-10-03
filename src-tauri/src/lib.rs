@@ -342,6 +342,22 @@ pub fn run() {
                             ) {
                                 log::warn!("Failed to migrate unsupported hotkey: {error}");
                             }
+                            let default_codes = defaults
+                                .iter()
+                                .map(|code| (*code).to_string())
+                                .collect::<Vec<_>>();
+                            match crate::core::hotkey::mapped_codes(&default_codes) {
+                                Ok(default_ids) => {
+                                    if let Err(error) =
+                                        crate::core::hotkey::update_keys(&default_ids)
+                                    {
+                                        log::warn!("Failed to apply default hotkey after migration: {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    log::warn!("Failed to map default hotkey after migration: {error}");
+                                }
+                            }
                         }
                     }
                 }
