@@ -184,6 +184,17 @@ impl PipelineConfig {
         }
     }
 
+    pub fn has_style_instructions(&self, profile: &str) -> bool {
+        self.cleanup_intensity != "none"
+            && [self.cleanup_intensity.as_str(), profile]
+                .iter()
+                .any(|key| {
+                    self.style_prompt_instructions
+                        .get(*key)
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+    }
+
     /// Compose preset edits into the shared system template. Context-selected
     /// intensity and tone are passed separately by the pipeline.
     pub fn cleanup_override(&self, profile: &str) -> Option<String> {
