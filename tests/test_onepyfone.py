@@ -30,6 +30,9 @@ class RunnerTests(unittest.TestCase):
         with patch.object(runner, 'run_process', return_value=(0, 'VERENU_LIVE_SKIP: no credential\ntest result: ok', 0.1, False)):
             self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'skipped')
 
+    def test_native_prerequisites_match_the_owned_test_runners(self):
+        self.assertEqual(runner.NativeCapabilityCheck().run().status, 'passed')
+
     def test_protocol_never_hides_process_failure_or_earlier_skip(self):
         selected = runner.entry('protocol', 'pipeline', 'Protocol', command=['unused'])
         with patch.object(runner, 'run_process', return_value=(1, 'VERENU_TEST_RESULT={"status":"skipped"}', 0.1, False)):
