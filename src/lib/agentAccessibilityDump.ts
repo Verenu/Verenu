@@ -14,6 +14,7 @@ const REDACT_KEY = /api_key_|password|secret|token|credential/i;
 const REDACT_EXACT = new Set([
   'clipboard_phrase',
   'cleanup_prompt_override',
+  'cleanup_style_prompts',
   'key_groq',
   'key_openai',
   'key_google',

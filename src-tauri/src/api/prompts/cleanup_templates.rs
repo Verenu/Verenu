@@ -248,6 +248,16 @@ pub fn default_cleanup_template() -> &'static str {
     DEFAULT_CLEANUP_TEMPLATE
 }
 
+pub fn default_style_template(intensity: &str) -> String {
+    default_cleanup_template().replace(
+        "{{ cleanup_preset }}",
+        &format!(
+            "{}\n{{{{ cleanup_tone }}}}",
+            super::cleanup_rules::intensity_rules(intensity)
+        ),
+    )
+}
+
 pub fn hardened_retry_template() -> &'static str {
     DEFAULT_CLEANUP_TEMPLATE
 }
@@ -268,8 +278,19 @@ pub fn default_static_prompt_token_estimate() -> usize {
 pub fn lint_cleanup_template(template: &str) -> Vec<String> {
     let mut warnings = Vec::new();
     let lower = template.to_lowercase();
+    let allowed = [
+        "active_app", "cleanup_preset", "cleanup_tone", "formatting_rules",
+        "snippet_overrides", "evidence",
+    ];
+    for token in template.split("{{").skip(1) {
+        match token.split_once("}}") {
+            Some((name, _))
+                if allowed.contains(&name.trim()) && name == format!(" {} ", name.trim()) => {}
+            _ => warnings.push("Unknown or malformed placeholder. Keep the supported tags exactly as shown in the editor.".to_string()),
+        }
+    }
 
-    if !template.contains("{{ cleanup_preset }}") {
+    if !template.contains("{{ cleanup_preset }}") && !template.contains("{{ cleanup_tone }}") {
         warnings.push(
             "Missing {{ cleanup_preset }} - cleanup intensity and tone will not be injected."
                 .to_string(),
