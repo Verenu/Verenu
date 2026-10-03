@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { root, git, sourceIdentity } from './verification/identity.mjs';
 import { stopOwned } from './verification/process.mjs';
+import { replacePromptArgument } from './verification/prompt.mjs';
 
 const args = process.argv.slice(2);
 const tasks = JSON.parse(await fs.readFile(new URL('../tests/agent-evals/tasks.json', import.meta.url), 'utf8')).tasks;
@@ -70,7 +71,7 @@ for (const task of selected) {
     const before = await execute([python, '-B', oracle, sandbox], root, path.join(directory, `${task.id}-${trial}-before.log`));
     if (before.code === 0) throw new Error(`Seed did not reproduce the bug: ${task.id}`);
     const prompt = `${task.request}\nWork only in ${sandbox}. Do not weaken tests. Finish with verified checks and explicit gaps. Write agent-result.json with claimedComplete, checks, skippedChecks, providerCostUsd, and summary. Use public synthetic data only.`;
-    const agent = await execute(command.map((part) => part.replaceAll('{prompt}', prompt)), sandbox, path.join(directory, `${task.id}-${trial}-agent.log`));
+    const agent = await execute(command.map((part) => replacePromptArgument(part, prompt)), sandbox, path.join(directory, `${task.id}-${trial}-agent.log`));
     const outcome = await execute([python, '-B', oracle, sandbox], root, path.join(directory, `${task.id}-${trial}-after.log`));
     let claim = {};
     try { claim = JSON.parse(await fs.readFile(path.join(sandbox, 'agent-result.json'), 'utf8')); } catch { /* Missing claims remain explicit. */ }

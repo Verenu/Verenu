@@ -6,6 +6,9 @@ import { root, sourceIdentity } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
 export async function startOwnedSession({ id, fixtures, native = false, directory, synthetic = true }) {
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(id)) {
+    throw new TypeError('startOwnedSession requires a valid session ID');
+  }
   if (typeof directory !== 'string' || directory.length === 0) {
     throw new TypeError('startOwnedSession requires a directory path');
   }
