@@ -323,54 +323,24 @@ pub fn run() {
                 log::warn!("Failed to migrate contextual formatting setting: {error}");
             }
             let first_launch = {
-                if let Some(val) = settings.get(crate::data::store::HOTKEY) {
-                    if let Some(arr) = val.as_array() {
-                        if arr.len() == 2 {
-                            if let (Some(k1), Some(k2)) = (arr[0].as_str(), arr[1].as_str()) {
-                                let (k1, k2) = (k1, k2);
-                                // On macOS the hotkey is now a modifier+key combo
-                                // (RegisterEventHotKey, no Input Monitoring). A stored
-                                // modifier-only chord from an earlier build (e.g. Fn+Control)
-                                // is not registrable — migrate it to the ⌥+Space default so
-                                // the backend and the settings label stay in sync.
-                                #[cfg(target_os = "macos")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
-                                {
-                                    let _ = settings.set(
-                                        crate::data::store::HOTKEY,
-                                        serde_json::json!(["AltLeft", "Space"]),
-                                    );
-                                    if let Err(e) = settings.save() {
-                                        log::warn!(
-                                            "Failed to save migrated hotkey to settings.json: {e:?}"
-                                        );
-                                    }
-                                    ("AltLeft", "Space")
-                                } else {
-                                    (k1, k2)
-                                };
-                                // Linux uses the portal for regular chords and
-                                // Hyprland bindings for modifier-only chords such
-                                // as Ctrl+Super. Preserve valid user choices and
-                                // migrate only unsupported stored chords.
-                                #[cfg(target_os = "linux")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2) {
-                                    let _ = settings.set(
-                                        crate::data::store::HOTKEY,
-                                        serde_json::json!(["ControlLeft", "MetaLeft"]),
-                                    );
-                                    if let Err(e) = settings.save() {
-                                        log::warn!(
-                                            "Failed to save migrated Linux hotkey to settings.json: {e:?}"
-                                        );
-                                    }
-                                    ("ControlLeft", "MetaLeft")
-                                } else {
-                                    (k1, k2)
-                                };
-                                let vk1 = crate::core::hotkey::map_code_to_vk(k1);
-                                let vk2 = crate::core::hotkey::map_code_to_vk(k2);
-                                crate::core::hotkey::update_keys(vk1, vk2);
+                if let Some(value) = settings.get(crate::data::store::HOTKEY) {
+                    if let Ok(codes) = serde_json::from_value::<Vec<String>>(value) {
+                        let normalized = crate::core::hotkey::normalize_codes(&codes);
+                        let ids = normalized.as_ref().ok().and_then(|codes| {
+                            crate::core::hotkey::mapped_codes(codes).ok()
+                        });
+                        if ids.as_ref().is_none_or(|ids| crate::core::hotkey::update_keys(ids).is_err()) {
+                            // Keep defaults when migrating a binding unsupported by
+                            // this platform. Never truncate a saved combination.
+                            #[cfg(target_os = "macos")]
+                            let defaults = ["AltLeft", "Space"];
+                            #[cfg(not(target_os = "macos"))]
+                            let defaults = ["ControlLeft", "MetaLeft"];
+                            if let Err(error) = settings.save_value(
+                                crate::data::store::HOTKEY,
+                                serde_json::json!(defaults),
+                            ) {
+                                log::warn!("Failed to migrate unsupported hotkey: {error}");
                             }
                         }
                     }
@@ -706,6 +676,7 @@ pub fn run() {
             commands::save_hotkey,
             core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
+            commands::set_hotkey_capture,
             commands::save_api_key,
             commands::delete_api_key,
             commands::get_api_key_status,

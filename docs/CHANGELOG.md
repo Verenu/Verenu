@@ -11,6 +11,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
   servers use owned ports instead of reusing or stopping another session.
 
 - Fixed history rows and app filters displaying Linux window IDs instead of installed app names, including existing history entries and Wayland IDs that correspond to a short desktop window class.
+
+- Hotkey capture now records the full held combination and saves on release, with no fixed two-key limit. Windows tracks arbitrary key chords; macOS and Linux support multiple modifiers with one trigger key. Detected conflicts and unsupported combinations report an error and keep the previous binding. Home and setup display the entire saved combination.
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
 - Added custom icons for Context groups: emoji, and one- or two-character badges with a softened background and chosen text color. Icon colors use a permanent row of preset swatches plus a native custom-color button. Emoji render without a background, including saved ones. The right-click color popup in the Context editor is gone.
 
