@@ -1,8 +1,7 @@
 <script lang="ts">
   import { isAndroid } from '../../platform';
 
-  export let hk1: string;
-  export let hk2: string;
+  export let keyLabels: string[];
   export let android = false;
 
   // Svelte's legacy prop bridge can briefly supply the default value while
@@ -17,7 +16,7 @@
       {#if showAndroid}
         Tap the Verenu pill to dictate
       {:else}
-        Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to dictate
+        Hold {#each keyLabels as label}<kbd>{label}</kbd>{' '}{/each}to dictate
       {/if}
     </h2>
     <p class="hero-photo-sub">

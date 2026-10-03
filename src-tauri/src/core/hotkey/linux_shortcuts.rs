@@ -45,7 +45,7 @@ fn copy_config(current: &str, portal_id: &str, chord: &str) -> Result<String, St
         .hyprland();
     let chord = lua_string(&chord);
     let block = format!(
-        "{START}\nhl.bind({chord}, hl.dsp.global({id}), {{ description = \"Verenu copy last dictation\", submap_universal = true }})\n{END}"
+        "{START}\n_verenu_copy_binding = hl.bind({chord}, hl.dsp.global({id}), {{ description = \"Verenu copy last dictation\", submap_universal = true }})\n{END}"
     );
     match (current.find(START), current.find(END)) {
         (Some(a), Some(b)) if a < b => Ok(format!(
