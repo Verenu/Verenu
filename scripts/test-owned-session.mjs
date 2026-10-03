@@ -55,7 +55,7 @@ try {
     try { await session.stop(); }
     catch (error) {
       report.status = 'failed';
-      report.reason = `Could not stop owned session: ${error.message}`;
+      report.reason = [report.reason, `Could not stop owned session: ${error.message}`].filter(Boolean).join('; ');
     }
   }
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
