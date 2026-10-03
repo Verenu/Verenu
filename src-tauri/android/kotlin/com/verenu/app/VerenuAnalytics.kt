@@ -311,7 +311,7 @@ object VerenuAnalytics {
       val value = json.optString(it, "")
       val normalized = when (it) {
         "transcription_provider", "cleanup_provider" -> when (value) {
-          "groq", "openai", "google", "assemblyai", "local" -> value
+          "groq", "openai", "google", "assemblyai", "openrouter", "xai", "local" -> value
           else -> "unknown"
         }
         "cleanup_intensity" -> when (value) {
