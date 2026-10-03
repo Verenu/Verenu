@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { requirements, evaluate } from '../../scripts/verification/policy.mjs';
+import { requirements, evaluate, incompleteUnlessFailed } from '../../scripts/verification/policy.mjs';
 const identity = { fingerprint: 'current', worktree: '/owned' };
 const passed = { category: 'session', status: 'passed', ...identity };
 test('backend setting writes require Rust and real session checks', () => {
@@ -31,4 +31,9 @@ test('requirements can only be extended and unknown categories are rejected', ()
   assert.ok(requirements(['src/App.svelte'], ['native']).includes('inspection'));
   assert.ok(requirements(['src/App.svelte'], ['native']).includes('native'));
   assert.throws(() => requirements([], ['made-up']));
+});
+test('incomplete outcomes never downgrade a failed verification', () => {
+  assert.equal(incompleteUnlessFailed('failed'), 'failed');
+  assert.equal(incompleteUnlessFailed('verified'), 'incomplete');
+  assert.equal(incompleteUnlessFailed('incomplete'), 'incomplete');
 });
