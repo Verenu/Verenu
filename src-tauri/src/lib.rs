@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(desktop)]
+// Compiled everywhere so shared pipeline code can look up the managed state;
+// only registered on desktop (Android reports through VerenuAnalytics.kt).
 #[allow(dead_code)]
 mod analytics;
 mod android;
@@ -121,6 +122,35 @@ fn start_storage_maintenance(
             .await;
         }
     });
+}
+
+/// Registers the Application context with ndk-context (needed by CPAL/Oboe).
+/// The Application outlives every Activity, so unlike the Activity pointer tao
+/// hands out it never goes stale.
+#[cfg(target_os = "android")]
+fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
+    use jni::objects::JObject;
+    use jni::JavaVM;
+
+    let context = tauri::tao::platform::android::prelude::main_android_context()
+        .ok_or_else(|| std::io::Error::other("Android activity context unavailable"))?;
+    let vm = unsafe { JavaVM::from_raw(context.java_vm.cast())? };
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
+    let application = env
+        .call_method(
+            &activity,
+            "getApplicationContext",
+            "()Landroid/content/Context;",
+            &[],
+        )?
+        .l()?;
+    let global = env.new_global_ref(application)?;
+    let raw = global.as_obj().as_raw();
+    // Intentionally leaked: ndk-context keeps the pointer for the whole process.
+    std::mem::forget(global);
+    unsafe { ndk_context::initialize_android_context(context.java_vm, raw.cast()) };
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -256,19 +286,14 @@ pub fn run() {
             #[cfg(target_os = "android")]
             {
                 // CPAL's Android/Oboe backend uses ndk-context from its audio
-                // worker. Tauri/tao has already registered the activity in
-                // its own Android glue by the time setup runs; copy the same
-                // VM/context pointers into ndk-context exactly once so a
-                // native recording request cannot abort the process with
-                // "android context was not initialized".
-                let context = tauri::tao::platform::android::prelude::main_android_context()
-                    .ok_or_else(|| std::io::Error::other("Android activity context unavailable"))?;
-                unsafe {
-                    ndk_context::initialize_android_context(
-                        context.java_vm,
-                        context.context_jobject,
-                    );
-                }
+                // worker (recording and device enumeration). tao's activity
+                // reference is freed when the Activity is destroyed, but this
+                // setup closure runs once per process, so handing ndk-context
+                // that reference leaves a stale pointer after the user backs
+                // out and reopens the app (JNI aborts the process). Give it a
+                // process-lifetime global reference to the Application
+                // context instead.
+                init_android_audio_context()?;
             }
             // Android does not provide a useful HOME environment variable.
             // Resolve the canonical shared data directory through Tauri while

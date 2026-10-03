@@ -453,6 +453,10 @@
     .desktop-home .stat-stack { display: none; }
   }
 
+  /* Android windows (foldable inner display, tablets, split-screen) are
+     narrower than that desktop floor once the sidebar takes its share. */
+  :global(.app[data-android='true']) .home-grid { min-width: 0; }
+
   /*
    * Phone composition: hero at the top, the history (or its empty state) taking
    * the slack in the middle, stats settling at the foot of the screen. Stacked
@@ -474,6 +478,8 @@
       align-items: stretch;
       grid-template-rows: 1fr auto;
       gap: 16px;
+      /* Undo the narrow-desktop floor above; a phone is narrower than it. */
+      min-width: 0;
     }
 
     .home-grid > div:first-child {
