@@ -1,8 +1,11 @@
 import importlib.util
+import contextlib
+import io
 import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -16,6 +19,65 @@ SPEC.loader.exec_module(runner)
 
 
 class RunnerTests(unittest.TestCase):
+    def setUp(self):
+        # Synthetic summary output must not look like a real suite skip.
+        self.output = contextlib.redirect_stdout(io.StringIO())
+        self.output.__enter__()
+        self.addCleanup(self.output.__exit__, None, None, None)
+
+    def test_rust_live_skip_is_not_passed(self):
+        selected = next(entry for entry in runner.ALL_TESTS if entry.id == 'pipeline.prompt-live')
+        with patch.object(runner, 'run_process', return_value=(0, 'VERENU_LIVE_SKIP: no credential\ntest result: ok', 0.1, False)):
+            self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'skipped')
+
+    def test_zero_skip_count_in_node_summary_is_not_a_skip(self):
+        selected = runner.entry('summary.output', 'unit', 'Summary output', command=['unused'])
+        output = 'ℹ tests 10\nℹ pass 10\nℹ fail 0\nℹ skipped 0\n'
+        with patch.object(runner, 'run_process', return_value=(0, output, 0.1, False)):
+            self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'passed')
+
+    def test_native_prerequisites_match_the_owned_test_runners(self):
+        self.assertEqual(runner.NativeCapabilityCheck().run().status, 'passed')
+
+    def test_protocol_never_hides_process_failure_or_earlier_skip(self):
+        selected = runner.entry('protocol', 'pipeline', 'Protocol', command=['unused'])
+        with patch.object(runner, 'run_process', return_value=(1, 'VERENU_TEST_RESULT={"status":"skipped"}', 0.1, False)):
+            self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'failed')
+        _, payload = runner._parse_protocol('VERENU_TEST_RESULT={"status":"skipped"}\nVERENU_TEST_RESULT={"status":"passed"}')
+        self.assertEqual(payload['status'], 'skipped')
+
+    def test_optional_failure_still_fails(self):
+        selected = runner.entry('optional', 'pipeline', 'Optional', required=False)
+        self.assertEqual(runner.summary({'optional': runner.TestResult('failed')}, [selected], 0), 1)
+
+    def test_until_pass_returns_success_after_later_clean_loop(self):
+        selected = runner.select_tests(['preflight'], 'environment')
+        outcomes = [
+            {selected[0].id: runner.TestResult('failed', observed='first run failed')},
+            {selected[0].id: runner.TestResult('passed')},
+        ]
+        with patch.object(runner, 'execute_plan', side_effect=outcomes):
+            self.assertEqual(runner.main(['--test', 'environment', '--until-pass', '--loops', '2', '--no-json-report']), 0)
+
+    def test_strict_skip_and_flake_fail(self):
+        selected = runner.entry('required', 'pipeline', 'Required')
+        for result in [runner.TestResult('skipped'), runner.TestResult('passed', regression_status='flaky')]:
+            self.assertEqual(runner.summary({'required': result}, [selected], 0, strict=True), 1)
+
+    def test_retry_keeps_original_failure(self):
+        selected = runner.entry('retry', 'ui', 'Retry', retries=1)
+        with patch.object(runner, 'execute', side_effect=[runner.TestResult('failed', observed='original bug'), runner.TestResult('passed')]):
+            result = runner.run_with_retries(selected, 'http://localhost:1', False)
+        self.assertEqual(result.previous_failures, ['original bug'])
+        self.assertEqual(result.regression_status, 'flaky')
+
+    def test_servers_allocate_ports_and_never_kill_listener(self):
+        first, second = runner.ServerManager(), runner.ServerManager()
+        self.assertNotEqual(first.port, runner.PORT)
+        self.assertNotEqual(second.port, runner.PORT)
+        with self.assertRaisesRegex(RuntimeError, 'forbidden'):
+            runner.kill_port_owner(runner.PORT)
+
     def test_protocol_payload_is_removed_from_human_output(self):
         raw = 'before\ntest name ... VERENU_TEST_RESULT={"status":"failed","observed":"broken"}\nafter'
         output, payload = runner._parse_protocol(raw)
@@ -52,6 +114,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(test["observed"], "cargo missing")
         self.assertEqual(test["measurements"], {"cargo": False})
 
+    def test_no_server_plan_uses_explicit_renderer_url_for_local_checks(self):
+        selected = [
+            runner.entry("preflight.test", "preflight", "Preflight"),
+            runner.entry("contract.test", "contract", "Contract"),
+        ]
+        args = type("Args", (), {
+            "test_url": "http://127.0.0.1:4173",
+            "no_server": True,
+            "verbose": False,
+            "workers": 1,
+            "tauri": False,
+        })()
+        urls = []
+
+        def capture_url(entries, url, *_args):
+            urls.append(url)
+            return {}
+
+        with patch.object(runner, "run_group", side_effect=capture_url):
+            runner.execute_plan(selected, args)
+
+        self.assertEqual(urls, [args.test_url, args.test_url])
+
     def test_junit_escapes_failure_attributes(self):
         selected = runner.select_tests(["preflight"], "environment")
         result = runner.TestResult("failed", observed='expected "quoted" value', output="bad <value>")
@@ -73,4 +158,3 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

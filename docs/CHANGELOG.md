@@ -6,7 +6,13 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added instruction editors to the cleanup and Personal Tone tiles. Edits change only the instructions injected by each preset, with reset to built-in defaults and an audit against the composed system prompt before saving.
 
+- Added source-bound agent verification, owned real-backend browser sessions,
+  synthetic speech checks, native WebView tests, and independent agent test
+  evaluations. Test reporting now distinguishes unavailable live checks from
+  passes, fails executed optional checks, and retains retry failures. Test
+  servers use owned ports instead of reusing or stopping another session.
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
+- Added custom icons for Context groups: emoji, and one- or two-character badges with a softened background and chosen text color. Icon colors use a permanent row of preset swatches plus a native custom-color button. Emoji render without a background, including saved ones. The right-click color popup in the Context editor is gone.
 
 - Reworked parts of onboarding. The analytics arrow is now a centred icon. The models step is titled "Speed or accuracy?" and no longer offers Local AI to people who picked a cloud provider. English leads the language list. The Try It result eases in with a short glow instead of snapping. The API key walkthrough ends on a fifth "paste your key" slide, replacing "I've got my key", and the existing Skip for now still applies. The final summary is compact, shows each choice (models, writing, language, audio), and its step numbers are centred.
 
@@ -27,6 +33,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Fixed LAN sync skipping edits made during snapshots, partially applying failed batches, losing Context snippet assignments across batches, retaining removed app targets, and lowering lifetime totals from stale relayed counters. Manual sync now waits for the result, receiving peers update their status, and incomplete transfers or settings-save failures report errors. Pairing uses its full approval deadline and confirms only after trust is saved. Added a focused `npm run test:sync` gate with encrypted two-device fixtures and three-device relay coverage on one machine.
 
 - Reduced Linux memory retention by disabling WebKit's browser resource and back/forward page caches in the main window and dictation pill. On glibc builds, freed native allocations are returned to the OS during the existing idle maintenance cycle, including after local models unload.
+- Fixed a WebKitGTK crash on Hyprland/Wayland by forcing the shared-memory renderer transport. Disabling DMA-BUF left accelerated compositing without a backing store.
 - Fixed the September 21 nightly build failure: bumped `@tauri-apps/plugin-notification` to 2.4.0 to match the Rust crate (Cargo had resolved `tauri-plugin-notification` to 2.4.0 while the npm lockfile still pinned 2.3.3, and the Tauri CLI aborts on any major/minor mismatch). Also added a PR check that fails fast when any Tauri plugin's Rust and npm versions disagree, so this class of drift breaks a PR instead of a release.
 - Fixed Linux automatic spacing and capitalization focus lookup: AT-SPI Collection queries now use valid match modes and find editable fields directly instead of focused browser document containers. Accessibility is requested at startup, metadata queries activate Chromium/Electron renderer trees, and rich-text cursor reads follow embedded paragraphs to their actual text and caret. Insertion logs report context availability without user text.
 - Fixed Linux dictation reliability for hold-to-talk and hands-free: the portal hotkey thread now reconnects with backoff instead of dying silently (a dead thread stranded recordings with no way to stop them), and releasing then quickly double-tapping the chord carries the just-recorded audio into the new hands-free session instead of stranding it behind a Continue offer.

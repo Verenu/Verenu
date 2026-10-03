@@ -437,7 +437,8 @@ input[type='range'].ui-range:focus-visible {
  * to work with than the desktop card's `calc(100vh - 40px)` allowed for.
  */
 .app[data-compact-nav='true'] .ui-modal-card,
-.app[data-compact-nav='true'] .modal-card {
+.app[data-compact-nav='true'] .modal-card,
+:root:has(.app[data-compact-nav='true']) .ui-modal-card--portalled {
   left: 0;
   right: 0;
   top: auto;
@@ -453,7 +454,8 @@ input[type='range'].ui-range:focus-visible {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-.app[data-compact-nav='true'] .ui-modal-foot {
+.app[data-compact-nav='true'] .ui-modal-foot,
+:root:has(.app[data-compact-nav='true']) .ui-modal-card--portalled .ui-modal-foot {
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
