@@ -9,6 +9,7 @@
 
 import { invoke } from '../../tauri';
 import type { ProviderId } from '../../settings';
+import { isAndroid } from '../../platform';
 import {
   GROQ_QWEN_3_8_27B_MODEL,
   modelId,
@@ -97,7 +98,9 @@ export async function getHardware(): Promise<Hardware> {
       unknown: false,
     };
   } catch {
-    return CAPABLE_DEFAULT;
+    // The platform probe is only a fallback when native hardware IPC fails.
+    // Prefer the backend's is_android value whenever the command succeeds.
+    return { ...CAPABLE_DEFAULT, isAndroid };
   }
 }
 
