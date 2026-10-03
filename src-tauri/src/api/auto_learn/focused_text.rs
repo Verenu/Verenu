@@ -56,7 +56,9 @@ impl MonitorIdentity {
 #[cfg(target_os = "macos")]
 impl Drop for MonitorIdentity {
     fn drop(&mut self) {
-        unsafe { core_foundation::base::CFRelease(self.element) };
+        if !self.element.is_null() {
+            unsafe { core_foundation::base::CFRelease(self.element) };
+        }
     }
 }
 
