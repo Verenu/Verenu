@@ -9,7 +9,13 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const sessionDirectory = path.join(os.homedir(), '.local/state/verenu/dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
-  const child = spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, '--fixtures', fixtures, ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' });
+  let child;
+  try {
+    child = spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, '--fixtures', fixtures, ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' });
+  } catch (error) {
+    await log.close();
+    throw error;
+  }
   let childError;
   child.once('error', (error) => { childError = error; });
   const stop = async () => {
