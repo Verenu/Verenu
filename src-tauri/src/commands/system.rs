@@ -27,8 +27,7 @@ pub fn frontend_ready(
     // pill was still installing its listeners. Replay the backend's current
     // state after readiness so a mapped overlay can never remain blank.
     if window.label() == "pill" {
-        app.emit_to("pill", "pill-state", crate::pipeline::current_pill_state())
-            .ok();
+        crate::pipeline::replay_pill_state(&app);
     }
     Ok(())
 }
