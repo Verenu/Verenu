@@ -25,6 +25,8 @@ pub async fn get_api_key_status(_app: AppHandle) -> Result<serde_json::Value, St
             "openai":     credentials::has(store::OPENAI),
             "google":     credentials::has(store::GOOGLE),
             "assemblyai": credentials::has(store::ASSEMBLYAI),
+            "openrouter": credentials::has(store::OPENROUTER),
+            "xai":        credentials::has(store::XAI),
         }))
     })
     .await
@@ -101,6 +103,11 @@ pub async fn validate_api_key(
         store::ASSEMBLYAI => client
             .get("https://api.assemblyai.com/v2/transcript?limit=1")
             .header("authorization", trimmed),
+        // OpenRouter's model list is public, so it can't prove a key works.
+        // `/key` answers 401 for a bad key and spends nothing.
+        store::OPENROUTER => client
+            .get("https://openrouter.ai/api/v1/key")
+            .bearer_auth(trimmed),
         _ => match models_list_request(client, &provider, trimmed, None) {
             Some(request) => request,
             None => return Err(format!("Unknown provider: {provider}")),
@@ -159,6 +166,9 @@ fn models_list_request(
         store::OPENAI => client
             .get("https://api.openai.com/v1/models")
             .bearer_auth(key),
+        store::XAI => client.get("https://api.x.ai/v1/models").bearer_auth(key),
+        // Listing is public on OpenRouter; key validation uses `/key` instead.
+        store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models"),
         store::GOOGLE => {
             let mut request = client
                 .get("https://generativelanguage.googleapis.com/v1beta/models")
