@@ -182,6 +182,12 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init());
+    #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
+    }
     #[cfg(target_os = "android")]
     {
         builder = builder.plugin(crate::android::permissions_plugin::init());

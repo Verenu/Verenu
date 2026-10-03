@@ -4,6 +4,12 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added source-bound agent verification, owned real-backend browser sessions,
+  synthetic speech checks, native WebView tests, and independent agent test
+  evaluations. Test reporting now distinguishes unavailable live checks from
+  passes, fails executed optional checks, and retains retry failures. Test
+  servers use owned ports instead of reusing or stopping another session.
+
 - Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
 
 - Calibrated the sidebar RAM bar to a locally saved average from the first hour of sampled usage. Typical usage fills half the bar on each device instead of topping out at a fixed 400 MB; calibration resumes across restarts and the MB reading stays unchanged.

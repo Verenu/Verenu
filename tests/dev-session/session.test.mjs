@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { sourceIdentity } from '../../scripts/verification/identity.mjs';
 
 const accessFile = process.env.VERENU_SESSION_ACCESS_FILE;
 if (!accessFile) throw new Error('Set VERENU_SESSION_ACCESS_FILE to the private access.json produced by npm run dev:session. These tests require a real running Rust session.');
@@ -10,10 +11,11 @@ const access = JSON.parse(await fs.readFile(accessFile, 'utf8'));
 const base = new URL(access.localAccessUrl).origin;
 const headers = { Authorization: `Bearer ${access.token}` };
 const results = [];
+const identity = sourceIdentity();
 let metadata;
 
 async function request(route, init = {}) {
-  return fetch(`${base}/__verenu_dev${route}`, { ...init, headers: { ...headers, ...init.headers } });
+  return fetch(`${base}/__verenu_dev${route}`, { ...init, headers: { ...headers, ...init.headers }, signal: AbortSignal.timeout(120_000) });
 }
 async function invoke(command, args = {}) {
   const response = await request('/invoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }) });
@@ -28,13 +30,15 @@ function check(name, run) {
   });
 }
 after(async () => {
-  await fs.writeFile(path.join(path.dirname(accessFile), 'verification.json'), JSON.stringify({ schemaVersion: 1, session: metadata ? { id: metadata.id, branch: metadata.branch, commit: metadata.commit, transport: metadata.transport, privateHistory: metadata.privateHistory } : null, checkedAt: new Date().toISOString(), checks: results, native: { status: 'not-tested', reason: 'Browser verification does not establish hotkeys, native insertion, OS permissions, or pill placement.' } }, null, 2), { mode: 0o600 });
+  await fs.writeFile(path.join(path.dirname(accessFile), 'verification.json'), JSON.stringify({ schemaVersion: 2, identity, session: metadata ? { id: metadata.id, branch: metadata.branch, commit: metadata.commit, fingerprint: metadata.fingerprint, transport: metadata.transport, privateHistory: metadata.privateHistory } : null, checkedAt: new Date().toISOString(), checks: results, native: { status: 'not-tested', reason: 'Browser verification does not establish hotkeys, native insertion, OS permissions, or pill placement.' } }, null, 2), { mode: 0o600 });
 });
 
 check('session uses its own real Rust backend', async () => {
   const response = await request('/session'); assert.equal(response.status, 200);
   metadata = await response.json();
   assert.equal(metadata.transport, 'rust-live');
+  assert.equal(metadata.fingerprint, identity.fingerprint, 'Restart the Rust backend after source edits');
+  assert.equal(metadata.worktree, identity.worktree, 'Use this worktree\'s own session');
   assert.equal(metadata.capabilities.nativeInjection, false);
   assert.equal(metadata.capabilities.credentialWrites, false);
   const settings = await invoke('get_all_settings');
@@ -162,18 +166,39 @@ check('sub-app pattern Enter saves into the isolated database on desktop and pho
     await browser.close();
   }
 });
-check('live synthetic dictation reaches providers and session history', async (t, row) => {
+check('live synthetic corpus reaches providers, Context rules, events, and exact new history', async (t, row) => {
   if (process.env.VERENU_DEV_REQUIRE_LIVE !== '1') {
     row.status = 'skipped'; row.reason = 'Set VERENU_DEV_REQUIRE_LIVE=1 to require paid provider verification';
     t.skip(row.reason); return;
   }
-  const fixture = await request('/fixtures/plain.wav'); assert.equal(fixture.status, 200);
-  const response = await request('/audio', { method: 'POST', body: await fixture.arrayBuffer() });
-  assert.equal(response.status, 200, 'Real provider dictation must complete; inspect local redacted logs on failure');
-  const result = await response.json();
-  assert.equal(result.pipeline, 'production');
-  const text = result.text.toLowerCase();
-  assert.equal(['orange', 'notebook', 'kitchen', 'table'].every((word) => text.includes(word)), true, 'Synthetic dictation lost expected meaning');
-  const history = await invoke('get_recent');
-  assert.equal(history.some((entry) => entry.clean_text?.toLowerCase().includes('orange')), true, 'Dictation must persist to the real database');
+  const corpus = JSON.parse(await fs.readFile(new URL('../fixtures/dev-audio.json', import.meta.url), 'utf8'));
+  const context = await invoke('create_context', { name: 'Synthetic speech', tone: 'casual', cleanupIntensity: 'medium', contextualFormattingDisabled: true });
+  const snippet = await invoke('create_snippet', { trigger: 'insert the test signature', expansion: 'Synthetic signature confirmed.', instructions: '', contextId: context.id });
+  const vocabulary = await invoke('create_dictionary_entry', { term: 'Verenu', mistake: 'Verenoo', contextId: context.id });
+  try {
+    row.cases = [];
+    for (const item of corpus) {
+      const beforeHistory = new Set((await invoke('get_recent')).map((entry) => entry.id));
+      const beforeEvents = await (await request('/events?after=0')).json();
+      const fixture = await request(`/fixtures/${item.name}.wav`); assert.equal(fixture.status, 200);
+      const response = await request(`/audio?context=${context.id}&process=synthetic-fixture`, { method: 'POST', body: await fixture.arrayBuffer() });
+      assert.equal(response.status, 200, `Production dictation failed for ${item.name}; inspect private redacted events`);
+      const result = await response.json();
+      assert.equal(result.pipeline, 'production');
+      const text = result.text.toLowerCase();
+      const required = item.name === 'snippet' ? ['synthetic', 'signature', 'confirmed'] : item.contains;
+      assert.ok(required.every((word) => text.includes(word.toLowerCase())), `Required meaning missing in ${item.name}`);
+      if (item.name === 'correction') assert.equal(/\btuesday\b/i.test(result.text), false, 'Correction retained the superseded day');
+      const created = (await invoke('get_recent')).filter((entry) => !beforeHistory.has(entry.id));
+      assert.equal(created.length, 1, `Fixture ${item.name} must create exactly one history row`);
+      assert.equal(created[0].clean_text, result.text, 'History must contain this run\'s exact returned output');
+      const events = await (await request(`/events?after=${beforeEvents.cursor}`)).json();
+      assert.ok(events.events.some((event) => event.event === 'verenu:transcribed' && event.payload === result.text), 'Missing matching completion event');
+      row.cases.push({ fixture: item.name, historyId: created[0].id, status: 'passed' });
+    }
+  } finally {
+    await invoke('remove_snippet', { id: snippet.id });
+    await invoke('remove_dictionary_entry', { id: vocabulary.id });
+    await invoke('delete_context', { contextId: context.id });
+  }
 });

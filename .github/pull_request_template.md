@@ -27,6 +27,10 @@
 
 ## Verification
 
+<!-- Include the final-source verify:task report and acceptance outcomes.
+     Name incomplete checks/platforms. Skips and successful retries are not
+     complete verification. Native WebView checks do not prove OS integration. -->
+
 <!--
   How can a reviewer confirm this works?
   Include test commands, manual steps, or both.
@@ -70,6 +74,7 @@
 - [ ] `npm run test:rust` passes
 - [ ] Smoke tests pass (see `Agent-Skills/SmokeTest.md` for commands)
 - [ ] Tests added or updated where applicable
+- [ ] `verify:task` report matches final source and verifies task acceptance
 - [ ] UI changes include before/after screenshots
 - [ ] No API keys, secrets, or personal data in code or logs
 - [ ] If version bumped: all three files updated together (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`)
