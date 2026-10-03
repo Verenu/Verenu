@@ -6,28 +6,13 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { startOwnedSession } from './verification/session.mjs';
+import { createNativeSession } from './verification/native-session.mjs';
 
 class NativeDriver {
   constructor(port, id) { this.base = `http://127.0.0.1:${port}/session/${id}`; }
   static async start(port) {
-    const deadline = Date.now() + 15_000;
-    let lastError;
-    while (Date.now() < deadline) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/session`, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ capabilities: { alwaysMatch: { 'wdio:tauriServiceOptions': { windowLabel: 'main' } } } }),
-        });
-        const body = await response.json();
-        assert.ok(response.ok && body.value?.sessionId, `Could not start native WebDriver session: ${body.value?.message || response.status}`);
-        return new NativeDriver(port, body.value.sessionId);
-      } catch (error) {
-        if (error instanceof assert.AssertionError) throw error;
-        lastError = error;
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-    }
-    throw new Error(`Native WebDriver server did not become ready: ${lastError?.message || 'timed out'}`);
+    const id = await createNativeSession(port);
+    return new NativeDriver(port, id);
   }
   async command(method, endpoint, body) {
     const response = await fetch(`${this.base}${endpoint}`, {
