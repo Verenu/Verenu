@@ -353,7 +353,11 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
         .flat_map(|entry| {
             effective_correction_variants(entry)
                 .into_iter()
-                .filter(|correction| has_distinctive_features(correction.mistake))
+                .filter(|correction| {
+                    has_distinctive_features(correction.mistake)
+                        || (has_distinctive_features(&entry.term)
+                            && joined_spelling(correction.mistake) == joined_spelling(&entry.term))
+                })
                 .map(|correction| (correction.id, correction.mistake, entry.term.as_str()))
         })
         .collect();
@@ -398,7 +402,10 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
                     i += 1;
                     continue;
                 }
-                if result[i..end].eq_ignore_ascii_case(mistake) && is_boundary(&result, i, end) {
+                if result[i..end].eq_ignore_ascii_case(mistake)
+                    && &result[i..end] != *term
+                    && is_boundary(&result, i, end)
+                {
                     positions.push(i);
                 }
                 i += 1;
@@ -424,6 +431,14 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
         }
     }
     (result, applied_ids)
+}
+
+fn joined_spelling(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]

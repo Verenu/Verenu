@@ -42,6 +42,8 @@
     contextsStore,
     loadContexts as loadSharedContexts,
     EVERYWHERE_ID,
+    orderedContexts,
+    selectContext,
   } from '../contextsStore.svelte';
   import AppIcon from '../components/AppIcon.svelte';
   import { subAppCaptureKeys } from '../subApps';
@@ -1048,6 +1050,28 @@
     </div>
   {/if}
 
+  <!-- The sidebar's context list is hidden with the rail on phones and an
+       unfolded foldable, so this strip is how those layouts switch and add
+       context groups. -->
+  <div class="ctx-chips" role="tablist" aria-label="Context groups">
+    {#each orderedContexts(contextsStore.contexts) as chipContext (chipContext.id)}
+      <button
+        type="button"
+        role="tab"
+        class="ctx-chip ui-focus-ring"
+        class:active={contextsStore.selectedId === chipContext.id}
+        aria-selected={contextsStore.selectedId === chipContext.id}
+        onclick={() => selectContext(chipContext.id)}
+      >{chipContext.name}</button>
+    {/each}
+    <button
+      type="button"
+      class="ctx-chip ctx-chip-add ui-focus-ring"
+      aria-label="New context group"
+      onclick={() => (contextsStore.modalRequest = { mode: 'create' })}
+    >+ New</button>
+  </div>
+
   <div class="contexts-shell">
     <main class="context-main">
       {#key selectedContextId}
@@ -1760,6 +1784,42 @@
     gap: 10px;
   }
   .contexts-page { min-width: 0; }
+
+  .ctx-chips { display: none; }
+
+  :global(.app[data-compact-nav='true']) .ctx-chips {
+    display: flex;
+    gap: 8px;
+    margin: 0 calc(-1 * var(--page-pad-x)) 14px;
+    padding: 2px var(--page-pad-x);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  :global(.app[data-compact-nav='true']) .ctx-chips::-webkit-scrollbar { display: none; }
+
+  .ctx-chip {
+    flex: 0 0 auto;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink-mute);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .ctx-chip.active {
+    background: var(--control-active);
+    border-color: var(--line-strong);
+    color: var(--ink-strong);
+  }
+
+  .ctx-chip-add { border-style: dashed; }
   .contexts-page:not(.modal-open) ~ :global(.modal-card),
   .contexts-page:not(.modal-open) ~ :global(.ui-modal-backdrop) { pointer-events: none; }
   .contexts-shell { min-width: 0; }

@@ -68,9 +68,13 @@ export function shouldUseMultiPane(snapshot: ViewportSnapshot): boolean {
 	return snapshot.widthClass === 'expanded';
 }
 
-/** Whether primary navigation collapses to the bottom bar. */
+/**
+ * Whether primary navigation collapses to the bottom bar. Medium windows (an
+ * unfolded foldable) use it too: a side rail would take about a third of the
+ * width and leave pages cramped into a phone-sized column beside it.
+ */
 export function shouldUseBottomNav(snapshot: ViewportSnapshot): boolean {
-	return snapshot.widthClass === 'compact';
+	return snapshot.widthClass !== 'expanded';
 }
 
 export type ViewportListener = (snapshot: ViewportSnapshot) => void;
