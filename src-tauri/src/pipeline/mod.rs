@@ -35,6 +35,8 @@ mod pill {
         "idle".to_string()
     }
 
+    pub(crate) fn replay_pill_state(_app: &AppHandle) {}
+
     pub(crate) fn show_pill(_app: &AppHandle, _state: &str) {}
 
     pub(crate) fn update_pill_state(_app: &AppHandle, _state: &str) {}
@@ -97,8 +99,8 @@ use gates::{
 #[cfg(target_os = "linux")]
 pub(crate) use pill::initialize_pill;
 pub(crate) use pill::{
-    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_hit_rect,
-    set_pill_interactive,
+    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, replay_pill_state,
+    set_pill_hit_rect, set_pill_interactive,
     show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
 };
 use pill::{

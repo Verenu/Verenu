@@ -60,7 +60,25 @@ static LINUX_PILL_INPUT: Mutex<LinuxPillInput> = Mutex::new(LinuxPillInput {
 /// Last state emitted to the pill WebView. A lazily-created GTK/WebKit window
 /// can finish mounting after the backend has already revealed its first state;
 /// the frontend readiness handshake replays this value to close that race.
-static CURRENT_PILL_STATE: Mutex<String> = Mutex::new(String::new());
+#[derive(Clone, Default)]
+struct PillSnapshot {
+    state: String,
+    context: Option<String>,
+}
+
+impl PillSnapshot {
+    fn set_state(&mut self, state: &str) {
+        self.state = state.to_string();
+        if !matches!(state, "processing" | "loading_local_model" | "handsfree") {
+            self.context = None;
+        }
+    }
+}
+
+static CURRENT_PILL_SNAPSHOT: Mutex<PillSnapshot> = Mutex::new(PillSnapshot {
+    state: String::new(),
+    context: None,
+});
 
 /// Whether the pill has ever had a real, monitor-resolved placement applied
 /// in this process. `false` only for the very first `show_pill_msg` call —
@@ -92,12 +110,30 @@ pub(crate) fn queue_pill_context(context: &str) {
 }
 
 pub(crate) fn current_pill_state() -> String {
-    CURRENT_PILL_STATE
+    CURRENT_PILL_SNAPSHOT
         .lock()
         .ok()
-        .filter(|state| !state.is_empty())
-        .map(|state| state.clone())
+        .filter(|snapshot| !snapshot.state.is_empty())
+        .map(|snapshot| snapshot.state.clone())
         .unwrap_or_else(|| "idle".to_string())
+}
+
+pub(crate) fn replay_pill_state(app: &AppHandle) {
+    let snapshot = CURRENT_PILL_SNAPSHOT
+        .lock()
+        .ok()
+        .map(|snapshot| snapshot.clone());
+    if let Some(snapshot) = snapshot {
+        let state = if snapshot.state.is_empty() {
+            "idle"
+        } else {
+            &snapshot.state
+        };
+        app.emit_to("pill", "pill-state", state).ok();
+        if let Some(context) = snapshot.context {
+            app.emit_to("pill", "pill-context", context).ok();
+        }
+    }
 }
 
 fn create_pill_if_needed(app: &AppHandle) -> bool {
@@ -580,8 +616,8 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     if let Some(msg) = message {
         pill.emit("pill-error", msg).ok();
     }
-    if let Ok(mut current) = CURRENT_PILL_STATE.lock() {
-        *current = state.to_string();
+    if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
+        current.set_state(state);
     }
     pill.emit("pill-state", state).ok();
 
@@ -593,7 +629,7 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
         .ok()
         .and_then(|mut slot| slot.take())
     {
-        pill.emit("pill-context", context).ok();
+        emit_pill_context(app, &context);
     }
 
     #[cfg(target_os = "linux")]
@@ -757,8 +793,8 @@ pub(crate) fn hide_pill(app: &AppHandle) {
 
         #[cfg(target_os = "linux")]
         let was_idle = current_pill_state() == "idle";
-        if let Ok(mut current) = CURRENT_PILL_STATE.lock() {
-            *current = "idle".to_string();
+        if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
+            current.set_state("idle");
         }
         pill.emit("pill-state", "idle").ok();
         // Re-enable click-through: after a button-bearing state (handsfree,
@@ -856,6 +892,9 @@ pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
 /// can show where the current dictation is headed. Emitted from the pipeline
 /// itself — the frontend never re-resolves it.
 pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
+    if let Ok(mut snapshot) = CURRENT_PILL_SNAPSHOT.lock() {
+        snapshot.context = Some(context.to_string());
+    }
     if crate::is_dev_session() {
         app.emit("verenu:pill-context", context).ok();
         return;
@@ -866,6 +905,51 @@ pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
             log::debug!("pill: context={context} sent={sent}");
         }
         None => log::debug!("pill: context={context} sent=false (no pill window)"),
+    }
+}
+
+#[cfg(test)]
+mod context_replay_tests {
+    use super::PillSnapshot;
+
+    #[test]
+    fn context_survives_local_model_loading_and_processing() {
+        let mut snapshot = PillSnapshot::default();
+        snapshot.set_state("recording");
+        snapshot.context = Some("Synthetic context".to_string());
+        for state in [
+            "handsfree",
+            "processing",
+            "loading_local_model",
+            "processing",
+        ] {
+            snapshot.set_state(state);
+            assert_eq!(snapshot.context.as_deref(), Some("Synthetic context"));
+        }
+        let replay = snapshot.clone();
+        assert_eq!(replay.state, "processing");
+        assert_eq!(replay.context, snapshot.context);
+    }
+
+    #[test]
+    fn new_and_terminal_states_do_not_replay_a_previous_context() {
+        for state in [
+            "recording",
+            "idle",
+            "error",
+            "cancelled",
+            "interrupted",
+            "paste_failed",
+            "copied",
+            "clipboard_warning",
+        ] {
+            let mut snapshot = PillSnapshot {
+                state: "processing".to_string(),
+                context: Some("Previous context".to_string()),
+            };
+            snapshot.set_state(state);
+            assert!(snapshot.context.is_none(), "stale context in {state}");
+        }
     }
 }
 

@@ -35,10 +35,13 @@ pub(super) fn bindings(action: &str) -> Result<Vec<Binding>, String> {
         let Some(active) = status.active else {
             continue;
         };
-        let triggers = if status.id == "dictation" && status.codes.len() == 2 {
-            super::shortcut_configuration(
-                super::map_code_to_vk(&status.codes[0]),
-                super::map_code_to_vk(&status.codes[1]),
+        let triggers = if status.id == "dictation" {
+            super::shortcut_configuration_for(
+                &status
+                    .codes
+                    .iter()
+                    .map(|code| super::map_code_to_vk(code))
+                    .collect::<Vec<_>>(),
             )
             .map(|(_, triggers)| triggers)
             .unwrap_or_default()
@@ -129,13 +132,18 @@ fn keycode(key: &str) -> Option<u32> {
         _ if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => {
             key.parse::<u32>().ok().map(|n| 9 + n)
         }
-        _ => key
-            .strip_prefix('F')
-            .and_then(|n| n.parse::<u32>().ok())
-            .and_then(|n| match n {
-                1..=10 => Some(66 + n),
-                11..=12 => Some(84 + n),
-                _ => None,
+        _ => super::REGULAR_KEYS
+            .iter()
+            .find(|(_, name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, _, code)| *code)
+            .or_else(|| {
+                key.strip_prefix('F')
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .and_then(|n| match n {
+                        1..=10 => Some(66 + n),
+                        11..=12 => Some(84 + n),
+                        _ => None,
+                    })
             }),
     }
 }
@@ -186,6 +194,13 @@ pub(super) fn status(id: &str, requested: String, active: Option<String>, codes:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newly_supported_regular_keys_check_numeric_desktop_bindings() {
+        let bindings = [Binding { modmask: 12, keycode: 111, ..Binding::default() }];
+        assert!(!free(&bindings, &["CTRL+ALT+Up".into()], false));
+        assert!(free(&bindings, &["CTRL+ALT+Down".into()], false));
+    }
     #[test]
     fn keysym_bindings_accept_negative_keycodes_and_plus_keys() {
         let bindings: Vec<Binding> = serde_json::from_str(r#"[{"modmask":4,"key":"C","keycode":-1}]"#).unwrap();

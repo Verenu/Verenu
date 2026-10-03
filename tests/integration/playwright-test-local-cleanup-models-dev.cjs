@@ -64,7 +64,13 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
       errors.push('Picker did not mark the installed local cleanup model as installed');
     }
 
-    // Clicking the installed local model row selects it as the active cleanup
+    // Installed weights still need the shared engine before activation.
+    await picker.getByRole('button', { name: 'Install engine', exact: true }).waitFor({ state: 'visible', timeout: TIMEOUT });
+    await installedLocalRow.locator('.row-main').click();
+    await picker.locator('.runtime-note').filter({ hasText: 'Fetching' }).waitFor({ state: 'visible', timeout: TIMEOUT });
+    const pending = await page.evaluate(() => JSON.parse(localStorage.getItem('verenu:dev-settings') || '{}'));
+    if (pending.cleanup_default_model?.startsWith('local/')) errors.push('Local cleanup activated before its engine was installed');
+    await picker.locator('.runtime-note').filter({ hasText: 'installed' }).waitFor({ state: 'visible', timeout: TIMEOUT });
     await installedLocalRow.locator('.row-main').click();
     await page.waitForFunction(
       () => {
@@ -119,4 +125,3 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     await browser.close();
   }
 })();
-
