@@ -49,6 +49,9 @@ cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- -
 
 ## Default Gate
 
+For task acceptance, source-bound evidence, real sessions, native scope, and
+agent evaluations, read [AGENT_VERIFICATION.md](AGENT_VERIFICATION.md).
+
 ```bash
 npm test
 ```
@@ -82,7 +85,8 @@ npm run test:prompt
 | --- | --- |
 | `fast` | Default deterministic suite for unit, compile, backend, UI, accessibility, state, and performance regressions |
 | `live` | Configured-provider transcription and semantic prompt checks; skips when credentials or the optional WAV fixture are absent |
-| `native` | Platform and manual-adjacent checks |
+| `native` | Actual isolated native WebView and IPC checks |
+| `native-prerequisites` | Configuration presence only; no behavior verification |
 | `full` | Fast, live, and native profiles |
 
 You can target suites directly:
