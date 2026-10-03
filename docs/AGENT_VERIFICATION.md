@@ -95,7 +95,7 @@ npm run test:native:fixtures
 npm run test:native:prerequisites
 ```
 
-WebdriverIO connects to the embedded driver in an isolated native worker. The
+An isolated client connects to the embedded WebDriver in a native worker. The
 WebDriver executes real native IPC. Tests check the actual WebView, Context reload
 persistence, window geometry, and a screenshot. They do not prove external
 insertion or shortcuts. `native-testing` is opt-in and forbidden in release
