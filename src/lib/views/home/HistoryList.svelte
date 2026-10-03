@@ -7,6 +7,7 @@
   import { motionMs } from '../../motion';
   import { fmtDuration } from '../insights/helpers';
   import HistoryToolbar from './HistoryToolbar.svelte';
+  import type { InstalledApp } from '../../appMappings';
   import { fmtDate, fmtTime, formatAppLabel, localDayKey, type Entry, type RenderItem } from './helpers';
 
   export let recents: Entry[];
@@ -25,6 +26,7 @@
   export let android = false;
   export let search = '';
   export let apps: string[] = [];
+  export let installedApps: InstalledApp[] = [];
   export let appFilter: string | null = null;
   export let onSearchChange: (value: string) => void = () => {};
   export let onAppFilterChange: (app: string | null) => void = () => {};
@@ -52,16 +54,16 @@
 
   const APP_LABEL_MAX_CHARS = 40;
 
-  function capAppLabel(appName: string): string {
-    const label = formatAppLabel(appName);
+  function capAppLabel(appName: string, inventory: InstalledApp[]): string {
+    const label = formatAppLabel(appName, inventory);
     return label.length > APP_LABEL_MAX_CHARS
       ? `${label.slice(0, APP_LABEL_MAX_CHARS - 1)}…`
       : label;
   }
 
-  function rowMeta(entry: Entry): string {
+  function rowMeta(entry: Entry, inventory: InstalledApp[]): string {
     const parts: string[] = [];
-    if (entry.app_name) parts.push(formatAppLabel(entry.app_name));
+    if (entry.app_name) parts.push(formatAppLabel(entry.app_name, inventory));
     const duration = durationText(entry);
     if (duration) parts.push(duration);
     return parts.join(' · ');
@@ -365,7 +367,7 @@
   {#if hasBanner}
     <div class="day-head day-head-row">
       <span>Today</span>
-      <HistoryToolbar {search} {apps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
+      <HistoryToolbar {search} {apps} {installedApps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
     </div>
     <div class="day-table">
       {#if cancelledEntry}
@@ -429,7 +431,7 @@
     {#if filtersActive}
       <div class="day-head day-head-row">
         <span></span>
-        <HistoryToolbar {search} {apps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
+        <HistoryToolbar {search} {apps} {installedApps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
       </div>
     {/if}
     {#if filtersActive}
@@ -452,7 +454,7 @@
     {#if !hasBanner}
       <div class="day-head day-head-row">
         <span>{firstLabel}</span>
-        <HistoryToolbar {search} {apps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
+        <HistoryToolbar {search} {apps} {installedApps} {appFilter} {onSearchChange} {onAppFilterChange} {onClearFilters} />
       </div>
     {/if}
     <div bind:this={listContainer}>
@@ -466,10 +468,10 @@
           <div use:measureItem={item.key} class="day-row" class:meta-stacked={stackedMeta[item.key]} class:first-in-table={(index === 0 && !hasBanner) || flatItems[index - 1]?.type === 'header'}>
             <div class="day-time">
               {fmtTime(item.entry.created_at)}
-              {#if rowMeta(item.entry)}
+              {#if rowMeta(item.entry, installedApps)}
                 <div class="day-meta day-meta-left" aria-hidden={!stackedMeta[item.key]}>
                   {#if item.entry.app_name}
-                    <div class="day-meta-app">{capAppLabel(item.entry.app_name)}</div>
+                    <div class="day-meta-app">{capAppLabel(item.entry.app_name, installedApps)}</div>
                   {/if}
                   {#if durationText(item.entry)}
                     <div class="day-meta-line">{durationText(item.entry)}</div>
@@ -479,11 +481,11 @@
             </div>
             <div class="day-main">
               <div class="day-text">{item.entry.clean_text}</div>
-              {#if rowMeta(item.entry)}
+              {#if rowMeta(item.entry, installedApps)}
                 <!-- Always in the DOM: removing it changed the row height, which
                      flipped the measured stacked/below decision, which put it
                      back — a self-feeding hover jitter loop. -->
-                <div class="day-meta day-meta-below" aria-hidden={!!stackedMeta[item.key]}>{rowMeta(item.entry)}</div>
+                <div class="day-meta day-meta-below" aria-hidden={!!stackedMeta[item.key]}>{rowMeta(item.entry, installedApps)}</div>
               {/if}
             </div>
             <button

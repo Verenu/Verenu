@@ -15,6 +15,7 @@
   import StatsCard from './home/StatsCard.svelte';
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
   import type { ShortcutStatus } from '../shortcutStatus.svelte';
+  import type { InstalledApp } from '../appMappings';
 
   let hotkey = defaultHotkey;
   $: hk1 = formatKeyLabel(hotkey[0]);
@@ -48,6 +49,7 @@
   let debouncedSearch = '';
   let appFilter: string | null = null;
   let apps: string[] = [];
+  let installedApps: InstalledApp[] = [];
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let loadSeq = 0;
 
@@ -222,6 +224,9 @@
   }
 
   onMount(() => {
+    invoke<InstalledApp[]>('get_installed_apps')
+      .then(list => { installedApps = list ?? []; })
+      .catch(() => { installedApps = []; });
     getVersion().then(v => currentVersion = v);
     invoke<string[] | null>('get_history_apps')
       .then(list => { apps = list ?? []; })
@@ -380,6 +385,7 @@
         android={isAndroid}
         {search}
         {apps}
+        {installedApps}
         {appFilter}
         onSearchChange={handleSearchChange}
         onAppFilterChange={handleAppFilterChange}
