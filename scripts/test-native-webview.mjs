@@ -39,7 +39,7 @@ class NativeDriver {
     return result.value;
   }
   execute(script) { return this.command('POST', '/execute/sync', { script, args: [] }); }
-  executeAsync(fn, ...args) { return this.command('POST', '/execute/async', { script: `(${fn.toString()})(...${JSON.stringify(args)}, arguments[arguments.length - 1]);`, args }); }
+  executeAsync(fn, ...args) { return this.command('POST', '/execute/async', { script: `(${fn.toString()})(...arguments);`, args }); }
   async waitForApp() {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
@@ -104,7 +104,7 @@ finally {
     try { await session.stop(); }
     catch (error) {
       report.status = 'failed';
-      report.reason = `Could not stop owned session: ${error.message}`;
+      report.reason = [report.reason, `Could not stop owned session: ${error.message}`].filter(Boolean).join('; ');
     }
   }
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
