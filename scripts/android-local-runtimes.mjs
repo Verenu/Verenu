@@ -28,7 +28,7 @@ export function cmakeArguments(source, build, ndk, abi) {
     '-DLLAMA_CURL=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF',
     '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_SERVER=ON',
     '-DMTMD_VIDEO=OFF', // Dictation cleanup never invokes ffmpeg/posix_spawn.
-    '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384',
+    '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384',
   ];
 }
 
