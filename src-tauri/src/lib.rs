@@ -886,6 +886,7 @@ pub fn run() {
                 #[cfg(target_os = "windows")]
                 app_tray::cleanup_runtime_icon_files();
                 log::info!("app shutdown complete");
+                log::logger().flush();
             }
         });
 }
