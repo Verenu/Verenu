@@ -88,14 +88,17 @@ try {
     await browser.refresh(); await browser.waitForApp();
     const contexts = await invoke('get_contexts');
     assert.ok(contexts.some((row) => row.id === created.id && row.name === 'Synthetic native'));
-  } finally { await invoke('delete_context', { contextId: created.id }); }
+  } finally {
+    try { await invoke('delete_context', { contextId: created.id }); }
+    catch (error) { report.checks.push({ name: 'Temporary context cleanup', status: 'failed', reason: error.message }); }
+  }
   assert.ok((await browser.getWindowHandles()).length >= 1);
   const rect = await browser.getWindowRect();
   assert.ok(rect.width > 0 && rect.height > 0);
   const screenshot = path.join(directory, 'native-webview.png'); await browser.saveScreenshot(screenshot);
   report.artifacts.push(artifact(screenshot));
   report.checks.push({ name: 'Actual native WebView, IPC, reload persistence and window geometry', status: 'passed' });
-  report.status = 'verified';
+  report.status = report.checks.some((row) => row.status === 'failed') ? 'failed' : 'verified';
   if (sourceIdentity().fingerprint !== report.identity.fingerprint) { report.status = 'incomplete'; report.reason = 'Source changed during native verification'; }
 } catch (error) { report.status = 'failed'; report.reason = error.message; }
 finally {

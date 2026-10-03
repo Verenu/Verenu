@@ -56,7 +56,7 @@ for (const task of selected) {
     const target = path.join(sandbox, task.file);
     const original = await fs.readFile(target, 'utf8');
     if (!original.includes(task.before)) throw new Error(`Evaluation seed drifted: ${task.id}`);
-    await fs.writeFile(target, original.replace(task.before, task.after));
+    await fs.writeFile(target, original.replace(task.before, () => task.after));
     const oracle = path.join(root, 'tests/agent-evals/oracle.py');
     const python = process.platform === 'win32' ? 'python' : 'python3';
     const before = await execute([python, '-B', oracle, sandbox], root, path.join(directory, `${task.id}-${trial}-before.log`));
