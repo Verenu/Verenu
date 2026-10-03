@@ -46,18 +46,14 @@ const ID_FN: u32 = 5;
 const ID_CAPS: u32 = 6;
 const REGULAR_BASE: u32 = 0x100;
 
-// macOS virtual keycode for Space — the trigger key of the default ⌥+Space hotkey.
-const MAC_KEYCODE_SPACE: u32 = 49;
-
 // Double-tap window for handsfree toggle, and the max hold treated as a "tap".
 const HANDSFREE_DOUBLE_TAP_MS: u64 = 350;
 const TAP_MAX_HOLD_MS: u64 = 250;
 
 // --- state -----------------------------------------------------------------
 
-// Default hotkey: ⌥ Option + Space. KEY1 is the Option modifier, KEY2 the Space key.
-static KEY1: AtomicU32 = AtomicU32::new(ID_ALT);
-static KEY2: AtomicU32 = AtomicU32::new(REGULAR_BASE + MAC_KEYCODE_SPACE);
+// An empty saved configuration uses the default Option + Space binding.
+static KEYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 static PRESS_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static RELEASE_CB: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -132,11 +128,13 @@ pub fn is_win_key_down() -> bool {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn force_release_win_key() {}
 
-pub fn update_keys(k1: u32, k2: u32) {
-    KEY1.store(k1, Ordering::SeqCst);
-    KEY2.store(k2, Ordering::SeqCst);
+pub fn update_keys(ids: &[u32]) -> Result<(), String> {
+    let hk = build_hotkey_from(ids)
+        .ok_or("Use modifiers plus one regular key, or a single function key on macOS")?;
+    register_hotkey(hk)?;
+    *KEYS.lock().map_err(|_| "Shortcut state unavailable")? = ids.to_vec();
     reset_chord_state();
-    register_main_hotkey();
+    Ok(())
 }
 
 pub fn reset_chord_state() {
@@ -165,8 +163,24 @@ pub fn caps_lock_is_on() -> bool {
 
 /// A hotkey is registrable as long as the (modifiers, key) pair resolves to a
 /// real key — Carbon hotkeys cannot be modifier-only.
-pub fn is_hotkey_available(key1: &str, key2: &str) -> bool {
-    build_hotkey(map_code_to_vk(key1), map_code_to_vk(key2)).is_some()
+pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+    let ids = super::mapped_codes(keys)?;
+    let hk = build_hotkey_from(&ids)
+        .ok_or("Use modifiers plus one regular key, or a single function key on macOS")?;
+    if CURRENT_HOTKEY
+        .lock()
+        .map_err(|_| "Shortcut state unavailable")?
+        .as_ref()
+        == Some(&hk)
+    {
+        return Ok(true);
+    }
+    let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
+    if manager.register(hk).is_err() {
+        return Ok(false);
+    }
+    manager.unregister(hk).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Map a JS `KeyboardEvent.code` to this backend's private key id.
@@ -355,14 +369,13 @@ fn modifier_id_to_mods(id: u32) -> Option<Modifiers> {
         ID_SHIFT => Some(Modifiers::SHIFT),
         ID_ALT => Some(Modifiers::ALT),
         ID_COMMAND => Some(Modifiers::META),
-        // Fn / Caps Lock can't be Carbon hotkey modifiers — ignore them.
-        ID_FN | ID_CAPS => Some(Modifiers::empty()),
         _ => None,
     }
 }
 
 /// Resolve the two private key ids into a single registrable `HotKey`, or `None`
 /// if there is no real trigger key (e.g. a modifier-only combination).
+#[cfg(test)]
 fn build_hotkey(k1: u32, k2: u32) -> Option<HotKey> {
     build_hotkey_from(&[k1, k2])
 }
@@ -377,9 +390,12 @@ fn build_hotkey_from(ids: &[u32]) -> Option<HotKey> {
         if let Some(m) = modifier_id_to_mods(id) {
             mods |= m;
         } else if id >= REGULAR_BASE {
-            if let Some(c) = mac_keycode_to_code(id - REGULAR_BASE) {
-                code = Some(c);
+            if code.is_some() {
+                return None;
             }
+            code = Some(mac_keycode_to_code(id - REGULAR_BASE)?);
+        } else {
+            return None;
         }
     }
     let trigger = code?;
@@ -413,11 +429,15 @@ fn is_function_key(code: Code) -> bool {
 
 // --- registration ----------------------------------------------------------
 
-fn register_main_hotkey() {
-    let Some(mgr) = MANAGER.get() else {
-        return;
-    };
-    let hk = match build_hotkey(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst)) {
+fn register_main_hotkey() -> Result<(), String> {
+    let ids = KEYS.lock().map(|keys| {
+        if keys.is_empty() {
+            vec![ID_ALT, REGULAR_BASE + 49]
+        } else {
+            keys.clone()
+        }
+    }).map_err(|_| "Shortcut state unavailable")?;
+    let hk = match build_hotkey_from(&ids) {
         Some(hk) => hk,
         None => {
             // Fall back to ⌥+Space so the app always has a working hotkey rather
@@ -426,22 +446,60 @@ fn register_main_hotkey() {
             HotKey::new(Some(Modifiers::ALT), Code::Space)
         }
     };
-    if let Ok(mut cur) = CURRENT_HOTKEY.lock() {
-        if let Some(prev) = cur.take() {
-            let _ = mgr.unregister(prev);
-        }
-        match mgr.register(hk) {
-            Ok(()) => {
-                *cur = Some(hk);
-                MAIN_HOTKEY_ID.store(hk.id(), Ordering::SeqCst);
-                log::info!("hotkey: registered global hotkey id={}", hk.id());
-            }
-            Err(e) => {
-                MAIN_HOTKEY_ID.store(0, Ordering::SeqCst);
-                log::error!("hotkey: failed to register global hotkey: {e}");
-            }
-        }
+    register_hotkey(hk)
+}
+
+fn register_hotkey(hk: HotKey) -> Result<(), String> {
+    let Some(manager) = MANAGER.get() else {
+        return Ok(());
+    };
+    let mut current = CURRENT_HOTKEY
+        .lock()
+        .map_err(|_| "Shortcut state unavailable")?;
+    if current.as_ref() == Some(&hk) {
+        return Ok(());
     }
+    // Register the replacement before removing the old binding. A conflict
+    // leaves the old binding intact.
+    manager
+        .register(hk)
+        .map_err(|e| format!("Shortcut registration failed: {e}"))?;
+    if let Some(previous) = current.take() {
+        let _ = manager.unregister(previous);
+    }
+    *current = Some(hk);
+    MAIN_HOTKEY_ID.store(hk.id(), Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
+    let Some(manager) = MANAGER.get() else {
+        return Ok(());
+    };
+    if active {
+        let mut current = CURRENT_HOTKEY
+            .lock()
+            .map_err(|_| "Shortcut state unavailable")?;
+        if let Some(hk) = *current {
+            manager.unregister(hk).map_err(|e| e.to_string())?;
+            *current = None;
+        }
+        if let Some(hk) = COPY_LAST_HOTKEY.get() {
+            let _ = manager.unregister(*hk);
+        }
+        if let Some(hk) = SUB_APP_HOTKEY
+            .lock()
+            .map_err(|_| "Shortcut state unavailable")?
+            .take()
+        {
+            let _ = manager.unregister(hk);
+        }
+    } else {
+        register_main_hotkey()?;
+        register_copy_last_hotkey();
+        register_sub_app_hotkey();
+    }
+    Ok(())
 }
 
 fn register_copy_last_hotkey() {
@@ -538,6 +596,9 @@ fn refresh_escape_listening() {
 // --- event handling --------------------------------------------------------
 
 fn handle_hotkey_event(ev: GlobalHotKeyEvent) {
+    if super::capture_active() {
+        return;
+    }
     if ESCAPE_HOTKEY.get().is_some_and(|h| h.id() == ev.id) {
         if matches!(ev.state, HotKeyState::Pressed) {
             on_escape_pressed();
@@ -675,7 +736,7 @@ where
         log::warn!("hotkey: global hotkey manager already initialized");
         return Ok(std::thread::spawn(|| {}));
     }
-    register_main_hotkey();
+    register_main_hotkey()?;
     register_copy_last_hotkey();
     register_sub_app_hotkey();
 
@@ -695,6 +756,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retains_all_modifiers_and_rejects_multiple_trigger_keys() {
+        let ids = [
+            ID_CONTROL,
+            ID_ALT,
+            ID_SHIFT,
+            ID_COMMAND,
+            map_code_to_vk("KeyK"),
+        ];
+        let hk = build_hotkey_from(&ids).unwrap();
+        assert_eq!(
+            hk,
+            HotKey::new(
+                Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::META),
+                Code::KeyK
+            )
+        );
+        assert!(
+            build_hotkey_from(&[ID_CONTROL, map_code_to_vk("KeyK"), map_code_to_vk("KeyJ")])
+                .is_none()
+        );
+        assert!(build_hotkey_from(&[ID_FN, map_code_to_vk("F5")]).is_none());
+    }
 
     fn hk(code1: &str, code2: &str) -> Option<HotKey> {
         build_hotkey(map_code_to_vk(code1), map_code_to_vk(code2))

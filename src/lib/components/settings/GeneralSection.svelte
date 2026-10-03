@@ -24,6 +24,8 @@
   import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent } from '../../accentTheme';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
   import DesktopShortcutStatus from './DesktopShortcutStatus.svelte';
+  import { HotkeyCapture } from '../../hotkeyCapture';
+  import { loadHotkey } from '../../hotkey.svelte';
 
   let selectedLanguage = $state<TranscriptionLanguageCode>('en');
   let languageDropdownOpen = $state(false);
@@ -57,6 +59,10 @@
   let hotkey = $state(defaultHotkey);
   let recordingHotkey = $state(false);
   let capturedKeys = $state<string[]>([]);
+  let hotkeyError = $state('');
+  const capture = new HotkeyCapture();
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let destroyed = false;
   let hotkeyState = $state<'idle' | 'armed' | 'first' | 'saving' | 'success' | 'error'>('idle');
   const HOTKEY_SUCCESS_MS = 700;
   const HOTKEY_ERROR_MS   = 900;
@@ -113,11 +119,8 @@
 
   let buttonText = $derived(
     recordingHotkey
-      ? capturedKeys[0] === '__bad__'
-        ? isMac ? 'Pick a key like F5' : 'Must be Alt/Ctrl/Shift/Win'
-        : capturedKeys.length === 0
-          ? isMac ? 'Press a key (e.g. F5)…' : 'Press Alt/Ctrl/Shift/Win...'
-          : isLinux ? 'Press 2nd key or modifier...' : 'Press 2nd key...'
+      ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Hold your shortcut...'
+      : hotkeyState === 'saving' ? 'Saving...'
       : isLinux && !isAndroid && desktopShortcut('dictation') ? desktopShortcut('dictation')?.active?.split('+').join(' + ') ?? 'Unavailable' : formatHotkeyDisplay(hotkey)
   );
 
@@ -153,11 +156,6 @@
     ...(!isAndroid ? [{ id: 'custom' as const, label: 'Custom' }] : []),
   ]);
 
-  const MODIFIER_CODES = new Set([
-    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
-    'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
-  ]);
-
   async function loadSettings() {
     const results = await Promise.allSettled([
       invoke<boolean | null>('get_setting', { key: 'autostart_enabled' }),
@@ -181,7 +179,7 @@
     capsLockUppercase = val<boolean | null>(6, null) ?? false;
 
     const hk = val<string[] | null>(1, null);
-    if (hk && hk.length === 2) hotkey = hk;
+    if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
 
     const appearance = val<AppearanceMode | null>(2, null);
     if (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom') {
@@ -474,97 +472,110 @@
     }
   }
 
-  function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
+  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
     e.stopPropagation();
-    if (recordingHotkey) return;
+    if (recordingHotkey || hotkeyState === 'saving') return;
+    clearTimeout(feedbackTimer);
+    hotkeyError = '';
+    capture.reset();
+    hotkeyState = 'saving';
+    try {
+      await invoke('set_hotkey_capture', { active: true });
+      if (destroyed) {
+        await invoke('set_hotkey_capture', { active: false });
+        return;
+      }
+    } catch (error) {
+      hotkeyState = 'error';
+      hotkeyError = formatIpcError(error, 'Could not start shortcut capture');
+      return;
+    }
     recordingHotkey = true;
     hotkeyState = 'armed';
     capturedKeys = [];
     window.addEventListener('keydown', handleHotkeyKeydown, { capture: true });
     window.addEventListener('keyup', handleHotkeyKeyup, { capture: true });
     window.addEventListener('mousedown', cancelRecordingHotkey, { capture: true });
+    window.addEventListener('blur', handleCaptureBlur);
   }
 
   function removeHotkeyCaptureListeners() {
     window.removeEventListener('keydown', handleHotkeyKeydown, { capture: true });
     window.removeEventListener('keyup', handleHotkeyKeyup, { capture: true });
     window.removeEventListener('mousedown', cancelRecordingHotkey, { capture: true });
+    window.removeEventListener('blur', handleCaptureBlur);
   }
 
-  function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
+  async function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
     if (e && (e.target as HTMLElement).closest('.keybind-btn')) return;
     if (recordingHotkey) {
       removeHotkeyCaptureListeners();
       recordingHotkey = false;
-      hotkeyState = 'idle';
+      hotkeyState = 'saving';
       capturedKeys = [];
+      capture.reset();
+      try {
+        await invoke('set_hotkey_capture', { active: false });
+        hotkeyState = 'idle';
+      } catch (error) {
+        hotkeyState = 'error';
+        hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
+      }
     }
   }
+
+  function handleCaptureBlur() { cancelRecordingHotkey(); }
 
   function handleHotkeyKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.repeat) return;
-    if (capturedKeys.length === 0) {
-      if (e.code === 'Escape') { cancelRecordingHotkey(); return; }
-      if (MODIFIER_CODES.has(e.code)) {
-        // A modifier first — wait for the key it pairs with (modifier+key chord).
-        capturedKeys = [e.code];
-        hotkeyState = 'first';
-      } else if (isMac && /^F([1-9]|1[0-2])$/.test(e.code)) {
-        // macOS allows a single-key hotkey, but only function keys (F1–F12):
-        // a bare letter/Space would be consumed system-wide and hijack typing.
-        capturedKeys = [e.code, ''];
-        hotkeyState = 'saving';
-        finishRecordingHotkey();
-      } else {
-        capturedKeys = ['__bad__'];
-        setTimeout(() => { capturedKeys = []; }, 800);
-      }
-    } else if (capturedKeys.length === 1 && e.code !== capturedKeys[0]) {
-      capturedKeys = [...capturedKeys, e.code];
-      hotkeyState = 'saving';
-      finishRecordingHotkey();
+    if (e.code === 'Escape' && capturedKeys.length === 0) {
+      cancelRecordingHotkey();
+      return;
     }
+    capturedKeys = capture.press(e.code, e.repeat, { Control: e.ctrlKey, Alt: e.altKey, Shift: e.shiftKey, Meta: e.metaKey });
+    hotkeyState = capturedKeys.length ? 'first' : 'armed';
   }
 
   function handleHotkeyKeyup(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
+    const keys = capture.release(e.code);
+    if (keys) void finishRecordingHotkey(keys);
   }
 
-  async function finishRecordingHotkey() {
+  async function finishRecordingHotkey(keys: string[]) {
     removeHotkeyCaptureListeners();
     recordingHotkey = false;
-    if (capturedKeys.length === 2) {
+    hotkeyState = 'saving';
+    let outcome: 'success' | 'error' = 'success';
+    try {
+      const available = await invoke<boolean>('check_hotkey', { keys });
+      if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
+      await invoke('save_hotkey', { keys });
+      hotkey = keys;
+      await loadHotkey();
+    } catch (error) {
+      outcome = 'error';
+      hotkeyError = formatIpcError(error, 'Could not save this shortcut');
+    } finally {
       try {
-        let available = true;
-        try {
-          available = await invoke<boolean>('check_hotkey', { key1: capturedKeys[0], key2: capturedKeys[1] });
-        } catch (e) {
-          console.warn('check_hotkey failed (likely running in browser dev mode)', e);
-        }
-        if (!available) {
-          hotkeyState = 'error';
-          await emit('verenu:error', 'That shortcut is unavailable and may be used by another app. Choose a different key combination in Settings > General.');
-          setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
-          return;
-        }
-        await invoke('save_hotkey', { key1: capturedKeys[0], key2: capturedKeys[1] });
-        hotkey = capturedKeys;
-        hotkeyState = 'success';
-        setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_SUCCESS_MS);
-      } catch (e) {
-        console.error('Failed to save hotkey', e);
-        hotkeyState = 'error';
-        await emit('verenu:error', formatIpcError(e, 'Could not save this shortcut'));
-        setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
+        await invoke('set_hotkey_capture', { active: false });
+      } catch (error) {
+        outcome = 'error';
+        hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
       }
+      hotkeyState = outcome;
+      feedbackTimer = setTimeout(() => { hotkeyState = 'idle'; }, outcome === 'success' ? HOTKEY_SUCCESS_MS : HOTKEY_ERROR_MS);
     }
   }
 
   onDestroy(() => {
+    destroyed = true;
+    if (recordingHotkey) void invoke('set_hotkey_capture', { active: false }).catch(() => {});
+    clearTimeout(feedbackTimer);
     removeHotkeyCaptureListeners();
+    capture.reset();
     recordingHotkey = false;
   });
 
@@ -581,11 +592,14 @@
   </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">
-    <div><div class="label">Hotkey</div><div class="desc">{isLinux ? 'Hold to record, release to transcribe. Desktop conflicts automatically use an available alternative.' : 'Hold to record, release to transcribe'}</div></div>
+    <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div></div>
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
       onclick={startRecordingHotkey}
+      disabled={hotkeyState === 'saving'}
+      aria-label={recordingHotkey ? 'Recording shortcut' : 'Change dictation hotkey'}
+      aria-describedby="hotkey-help"
       class:recording={recordingHotkey}
       class:armed={hotkeyState === 'armed'}
       class:first={hotkeyState === 'first'}
@@ -594,10 +608,13 @@
       class:error={hotkeyState === 'error'}
     >
       {#key buttonText}
-        <span in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
+        <span aria-live="polite" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
       {/key}
     </button>
   </div>
+  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={Boolean(hotkeyError)} role={hotkeyError ? 'alert' : undefined}>
+    {hotkeyError || (recordingHotkey ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+  </p>
 {/if}
 {#if isMac && hotkey[0] === 'F5'}
   <p class="hotkey-tip">
@@ -864,9 +881,11 @@
       opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1);
     user-select: none;
     transform-origin: center;
-    white-space: nowrap;
-    overflow: hidden;
+    white-space: normal;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
+  .hotkey-error { color: var(--danger); }
   .keybind-btn:hover { background: var(--control-hover); }
   .keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }

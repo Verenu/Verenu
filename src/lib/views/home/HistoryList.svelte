@@ -21,8 +21,7 @@
   export let retrying: boolean;
   export let resumingCancelled: boolean;
   export let copiedId: number | null;
-  export let hk1: string;
-  export let hk2: string;
+  export let keyLabels: string[];
   export let android = false;
   export let search = '';
   export let apps: string[] = [];
@@ -446,7 +445,7 @@
         {#if android}
           <p class="empty-sub">Open a text field and tap the Verenu pill above your keyboard to start dictating.</p>
         {:else}
-          <p class="empty-sub">Hold <kbd>{hk1}</kbd> <kbd>{hk2}</kbd> to start your first dictation.</p>
+          <p class="empty-sub">Hold {#each keyLabels as label}<kbd>{label}</kbd>{' '}{/each}to start your first dictation.</p>
         {/if}
       </div>
     {/if}

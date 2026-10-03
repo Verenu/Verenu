@@ -417,14 +417,11 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         }
         SettingKind::AppMappings => is_valid_app_mappings(value),
         SettingKind::Hotkey => value.as_array().is_some_and(|keys| {
-            keys.len() == 2
-                && keys.iter().all(serde_json::Value::is_string)
-                && keys[0]
-                    .as_str()
-                    .is_some_and(crate::core::hotkey::is_known_key_code)
-                && keys[1].as_str().is_none_or(|second| {
-                    second.is_empty() || crate::core::hotkey::is_known_key_code(second)
-                })
+            let codes: Option<Vec<String>> = keys
+                .iter()
+                .map(|key| key.as_str().map(String::from))
+                .collect();
+            codes.is_some_and(|codes| crate::core::hotkey::normalize_codes(&codes).is_ok())
         }),
     };
 
@@ -438,6 +435,28 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
 #[cfg(test)]
 mod setting_key_tests {
     use super::*;
+
+    #[test]
+    fn hotkeys_accept_variable_length_and_legacy_single_key_settings() {
+        for codes in [
+            serde_json::json!(["F5"]),
+            serde_json::json!(["F5", ""]),
+            serde_json::json!(["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft", "KeyK"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_ok());
+        }
+        for codes in [
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!(["ControlLeft", "ControlRight"]),
+            serde_json::json!(["KeyK", "KeyK"]),
+            serde_json::json!(["ControlLeft", "", "KeyK"]),
+            serde_json::json!(["ControlLeft", 3]),
+            serde_json::json!(["NoSuchKey"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_err());
+        }
+    }
 
     #[test]
     fn readable_settings_exclude_credential_keys() {

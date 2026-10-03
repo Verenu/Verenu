@@ -449,7 +449,7 @@ fn sub_app_capture_binding_block(chord: &str, capture_command: &str) -> String {
     let (start, end) = SUB_APP_CAPTURE_MARKERS;
     let command = capture_command.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
-        "{start}\nhl.bind(\"{chord}\", hl.dsp.exec_cmd(\"{command}\"), {{ description = \"Verenu capture sub-app\" }})\n{end}"
+        "{start}\n_verenu_capture_binding = hl.bind(\"{chord}\", hl.dsp.exec_cmd(\"{command}\"), {{ description = \"Verenu capture sub-app\" }})\n{end}"
     )
 }
 
@@ -462,6 +462,7 @@ const NON_COMBO_KEYCODES: [u32; 11] = [9, 65, 66, 37, 105, 50, 62, 64, 108, 133,
 const GLOBAL_SHORTCUT_TEMPLATE: &str = r#"{start}
 -- Portal action: {press_portal_id}
 local verenu_dictate = hl.dsp.global("{press_portal_id}")
+_verenu_dictation_bindings = {}
 local verenu_cancel = hl.dsp.global("{cancel_portal_id}")
 local verenu_release = hl.dsp.exec_cmd("{release_command}")
 local verenu_handsfree = hl.dsp.exec_cmd("{handsfree_command}")
@@ -585,7 +586,7 @@ fn global_shortcut_binding_block(
         .iter()
         .map(|binding| {
             format!(
-                "hl.bind(\"{binding}\", verenu_press, {{ description = \"Verenu dictation\", submap_universal = true }})"
+                "_verenu_dictation_bindings[#_verenu_dictation_bindings + 1] = hl.bind(\"{binding}\", verenu_press, {{ description = \"Verenu dictation\", submap_universal = true }})"
             )
         })
         .collect::<Vec<_>>()
