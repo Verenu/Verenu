@@ -117,7 +117,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     @Volatile private var cancelRequestInFlight = false
     @Volatile private var lastSeenPendingSeq = -1L
     @Volatile private var lastInsertAttemptMs = 0L
-    @Volatile private var insertionStartedAtMs = 0L
     // ACTION_SET_TEXT is not idempotent: if the insertion succeeds but the
     // follow-up ack packet is lost, repeating it would duplicate the dictated
     // text. Remember the successful handoff and retry only the ack until Rust
@@ -583,9 +582,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return cutout.boundingRects.firstOrNull { !it.isEmpty }
     }
 
-    private fun statusBarHeightPx(): Int = resources.getDimensionPixelSize(
-        resources.getIdentifier("status_bar_height", "dimen", "android"),
-    )
+    private fun statusBarHeightPx(): Int {
+        val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (resourceId != 0) resources.getDimensionPixelSize(resourceId) else 0
+    }
 
     /** Whether the placement follows the keyboard (as opposed to the screen). */
     private fun followsKeyboard() = pillPosition.startsWith("keyboard-")
@@ -726,10 +726,20 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         micCacheKey = android.graphics.Rect(ime)
         micCacheAtMs = now
         micCache = try {
-            windows
-                .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
-                ?.root
-                ?.let { findMicNode(it, ime.width(), 0) }
+            val visibleWindows = windows
+            try {
+                val imeWindow = visibleWindows.firstOrNull {
+                    it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                } ?: return null
+                val root = imeWindow.root ?: return null
+                try {
+                    findMicNode(root, ime.width(), 0)
+                } finally {
+                    root.recycle()
+                }
+            } finally {
+                visibleWindows.forEach { it.recycle() }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "keyboard mic lookup failed", e)
             null
@@ -749,7 +759,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findMicNode(child, imeWidth, depth + 1)
+            val found = try {
+                findMicNode(child, imeWidth, depth + 1)
+            } finally {
+                child.recycle()
+            }
             if (found != null) return found
         }
         return null
@@ -1625,7 +1639,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         if (current.seq != lastSeenPendingSeq) {
             lastSeenPendingSeq = current.seq
-            insertionStartedAtMs = System.currentTimeMillis() - current.ageMs
             lastInsertAttemptMs = 0L
         }
         if (current.seq == lastInsertedSeq) {
