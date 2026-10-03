@@ -188,7 +188,7 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
 pub(crate) fn start_frontend_watchdog(app: &AppHandle, _readiness: FrontendReadiness) {
     #[cfg(target_os = "linux")]
     crate::pipeline::initialize_pill(app);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     if !crate::pipeline::failover::offer_restored_capture_pill(app) {
         crate::pipeline::show_pill(app, "idle");
     }

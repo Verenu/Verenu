@@ -25,6 +25,7 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { syncAndroidLocalRuntimes } from './android-local-runtimes.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -68,59 +69,6 @@ function javaSourceDir() {
   return join(genAndroid, 'app', 'src', 'main', 'java');
 }
 
-function androidSdkRoots() {
-  return [process.env.ANDROID_NDK_HOME, process.env.ANDROID_NDK_ROOT]
-    .filter(Boolean)
-    .concat(
-      [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT]
-        .filter(Boolean)
-        .map((sdk) => join(sdk, 'ndk')),
-    );
-}
-
-function findNdkRuntime(abi) {
-  const names = [
-    'windows-x86_64',
-    'linux-x86_64',
-    'darwin-x86_64',
-    'darwin-arm64',
-  ];
-  const target = abi === 'arm64-v8a' ? 'aarch64-linux-android' : 'x86_64-linux-android';
-  for (const root of androidSdkRoots()) {
-    const candidates = [];
-    if (root.endsWith('ndk')) {
-      if (existsSync(root)) {
-        for (const version of readdirSync(root).sort().reverse()) candidates.push(join(root, version));
-      }
-    } else {
-      candidates.push(root);
-    }
-    for (const ndk of candidates) {
-      for (const host of names) {
-        const runtime = join(ndk, 'toolchains', 'llvm', 'prebuilt', host, 'sysroot', 'usr', 'lib', target, 'libc++_shared.so');
-        if (existsSync(runtime)) return runtime;
-      }
-    }
-  }
-  return null;
-}
-
-function syncCppRuntime() {
-  const jniRoot = join(genAndroid, 'app', 'src', 'main', 'jniLibs');
-  const abis = { 'arm64-v8a': 'arm64-v8a', x86_64: 'x86_64' };
-  for (const [abi, targetAbi] of Object.entries(abis)) {
-    const runtime = findNdkRuntime(abi);
-    if (!runtime) {
-      if (abi === 'arm64-v8a') fail('NDK libc++_shared.so not found. Install the NDK and set ANDROID_HOME/ANDROID_SDK_ROOT or ANDROID_NDK_HOME.');
-      continue;
-    }
-    const dest = join(jniRoot, targetAbi, 'libc++_shared.so');
-    mkdirSync(dirname(dest), { recursive: true });
-    copyFileSync(runtime, dest);
-  }
-  console.log('android-sync: NDK C++ runtime installed');
-}
-
 function copyTree(src, dest) {
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src)) {
@@ -129,6 +77,14 @@ function copyTree(src, dest) {
     if (statSync(from).isDirectory()) copyTree(from, to);
     else copyFileSync(from, to);
   }
+}
+
+function removeBundledCppRuntime() {
+  const jniRoot = join(genAndroid, 'app', 'src', 'main', 'jniLibs');
+  for (const abi of ['arm64-v8a', 'x86_64']) {
+    rmSync(join(jniRoot, abi, 'libc++_shared.so'), { force: true });
+  }
+  console.log('android-sync: removed stale shared C++ runtime');
 }
 
 function syncWebAssets() {
@@ -237,6 +193,13 @@ function mergeManifest() {
   const appAt = manifest.indexOf(appAnchor);
   if (appAt === -1) fail('application anchor not found; check the Tauri CLI template.');
   const appAttrs = [];
+  // llama-server is APK-owned executable code, installed by Android rather
+  // than downloaded into writable app storage.
+  if (/android:extractNativeLibs="[^"]*"/.test(manifest)) {
+    manifest = manifest.replace(/android:extractNativeLibs="[^"]*"/, 'android:extractNativeLibs="true"');
+  } else {
+    appAttrs.push('android:extractNativeLibs="true"');
+  }
   if (!manifest.includes('android:networkSecurityConfig=')) {
     appAttrs.push('android:networkSecurityConfig="@xml/verenu_network_security_config"');
   }
@@ -262,6 +225,14 @@ function patchGradle() {
   const gradlePath = join(genAndroid, 'app', 'build.gradle.kts');
   if (!existsSync(gradlePath)) fail(`app build script missing: ${gradlePath}`);
   let gradle = readFileSync(gradlePath, 'utf8');
+  if (!gradle.includes('// Verenu APK-owned inference executables.')) {
+    const anchor = 'android {';
+    const at = gradle.indexOf(anchor);
+    if (at === -1) fail('gradle android block not found');
+    gradle = gradle.slice(0, at + anchor.length) +
+      '\n    // Verenu APK-owned inference executables.\n    packaging { jniLibs.useLegacyPackaging = true }\n' +
+      gradle.slice(at + anchor.length);
+  }
   // Keep the runtime capability report and the packaged APK metadata aligned
   // even when `tauri android init` was produced by a different CLI template.
   gradle = gradle.replace(/targetSdk\s*=\s*\d+/, 'targetSdk = 36');
@@ -335,7 +306,8 @@ copyTree(join(androidSrc, 'tests'), join(genAndroid, 'app', 'src', 'test', 'java
 copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'));
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');
-syncCppRuntime();
+await syncAndroidLocalRuntimes(root);
+removeBundledCppRuntime();
 mergeManifest();
 patchRootGradle();
 patchGradle();

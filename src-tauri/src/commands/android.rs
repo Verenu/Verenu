@@ -24,6 +24,80 @@ use crate::android::{
 };
 use tauri::{AppHandle, Emitter};
 
+/// Opt-in debug APK fixture entry point. Uses the real production pipeline,
+/// returns through its normal events/history, and never inserts into another app.
+#[cfg(all(
+    debug_assertions,
+    feature = "android-local-testing",
+    target_os = "android"
+))]
+#[tauri::command]
+pub async fn android_test_local_audio(app: AppHandle, wav_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    use tauri::Manager;
+    let settings = crate::data::store::settings_snapshot(&app)?;
+    let selected = |key| {
+        settings
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    };
+    if !selected(crate::data::store::TRANSCRIPTION_DEFAULT_MODEL).starts_with("local/")
+        || !selected(crate::data::store::CLEANUP_DEFAULT_MODEL).starts_with("local/")
+    {
+        return Err("Android local fixtures require local transcription and cleanup models".into());
+    }
+    for key in [
+        crate::data::store::TRANSCRIPTION_FALLBACK_MODELS,
+        crate::data::store::CLEANUP_FALLBACK_MODELS,
+    ] {
+        if settings
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|models| !models.is_empty())
+        {
+            return Err("Android local fixtures require empty fallback chains".into());
+        }
+    }
+    if wav_base64.len() > 6 * 1024 * 1024 {
+        return Err("Test audio is limited to 120 seconds".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(wav_base64)
+        .map_err(|_| "Invalid fixture encoding")?;
+    let mut reader =
+        hound::WavReader::new(std::io::Cursor::new(bytes)).map_err(|_| "Invalid WAV fixture")?;
+    let spec = reader.spec();
+    if spec.channels != 1
+        || spec.sample_rate != 16_000
+        || spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+        || reader.duration() > 120 * 16_000
+    {
+        return Err("Use 16 kHz mono PCM16 WAV audio, at most 120 seconds".into());
+    }
+    let samples = reader
+        .samples::<i16>()
+        .map(|s| s.map(|v| f32::from(v) / 32768.0))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "Invalid fixture samples")?;
+    let duration = samples.len() as u64 * 1000 / 16_000;
+    let audio = crate::pipeline::CapturedAudio::from_samples(samples, 16_000, duration);
+    let db = app.state::<crate::DbHandle>();
+    let context = crate::data::db::query_context(&db, crate::data::db::EVERYWHERE_CONTEXT_ID)
+        .map_err(|e| e.to_string())?;
+    let state = app.state::<crate::pipeline::SharedState>().inner().clone();
+    crate::pipeline::run_provided_audio(
+        app,
+        state,
+        audio,
+        crate::core::context::ResolvedContextIdentity::from_context(&context),
+        "android-local-fixture".into(),
+        None,
+    )
+    .await
+}
+
 /// Static Android platform facts for the frontend (SDK floor/target, ABI,
 /// local-AI support). Same shape on every OS so Settings/Setup can render
 /// without branching on `isAndroid` first.
@@ -46,7 +120,11 @@ pub fn android_get_platform_info() -> AndroidPlatformInfo {
         target_sdk: android::ANDROID_TARGET_SDK,
         supported_abi: android::ANDROID_SUPPORTED_ABI.to_string(),
         local_ai_supported: android::local_ai_supported_on_android(),
-        local_ai_unsupported_reason: android::LOCAL_AI_ANDROID_UNSUPPORTED_REASON.to_string(),
+        local_ai_unsupported_reason: if android::local_ai_supported_on_android() {
+            String::new()
+        } else {
+            android::LOCAL_AI_ANDROID_UNSUPPORTED_REASON.to_string()
+        },
     }
 }
 
