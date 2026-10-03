@@ -443,7 +443,7 @@
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
-    if (s === modelsStep) return { name: 'Models', title: 'How should Verenu run?', subtitle: 'Each option picks a transcription and cleanup model for you.' };
+    if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: 'Pick the balance you want. Each option sets the transcription and cleanup models for you.' };
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
@@ -620,7 +620,7 @@
     {:else if isAndroid && step === permissionStep}
       <AndroidPermissionsStep bind:allCoreGranted />
     {:else if step === modelsStep}
-      <ModelsStep apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
+      <ModelsStep {provider} apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
     {:else if step === writingStyleStep}
       <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone />
     {:else if step === languageStep}
