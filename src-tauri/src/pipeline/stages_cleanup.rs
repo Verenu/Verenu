@@ -338,8 +338,18 @@ pub(super) fn dual_cleanup_context_fingerprint(
     context.push('\n');
     context.push_str(app_context.unwrap_or(""));
     context.push('\n');
-    if let Some(template) = cfg.cleanup_override() {
-        context.push_str(template);
+    // Tone may come from a Context rather than the global default. Include
+    // every preset edit so cached cleanup never survives an instruction edit.
+    let mut edits: Vec<_> = cfg.style_prompt_instructions.iter().collect();
+    edits.sort_by_key(|(key, _)| *key);
+    for (key, instructions) in edits {
+        context.push_str(key);
+        context.push('\n');
+        context.push_str(instructions);
+        context.push('\n');
+    }
+    if let Some(template) = cfg.cleanup_override(&cfg.default_tone) {
+        context.push_str(&template);
         context.push('\n');
     }
     snippet_instructions_fingerprint(&context)
@@ -469,7 +479,7 @@ async fn run_cleanup_provider_chain(
                     }
                 }
             }
-            let custom_template = cfg.cleanup_override();
+            let custom_template = cfg.cleanup_override(profile);
             let outcome = if is_local {
                 run_local_cleanup_request(
                     app,
@@ -480,7 +490,7 @@ async fn run_cleanup_provider_chain(
                     extra_rules,
                     evidence,
                     app_context,
-                    custom_template,
+                    custom_template.as_deref(),
                     alternate_transcript,
                 )
                 .await
@@ -498,7 +508,7 @@ async fn run_cleanup_provider_chain(
                         extra_rules,
                         evidence,
                         app_context,
-                        custom_template,
+                        custom_template.as_deref(),
                         alternate_transcript,
                         gen,
                     ),

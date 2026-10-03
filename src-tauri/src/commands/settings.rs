@@ -24,7 +24,7 @@ enum SettingKind {
     ModelMap,
     StringArray,
     CleanupPromptOverride,
-    CleanupStylePrompts,
+    StylePromptInstructions,
     ProviderModelCache,
     AppearanceMode,
     AccentColor,
@@ -195,8 +195,8 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
     ),
     setting_spec(
-        store::CLEANUP_STYLE_PROMPTS,
-        SettingKind::CleanupStylePrompts,
+        store::STYLE_PROMPT_INSTRUCTIONS,
+        SettingKind::StylePromptInstructions,
         true,
         true,
     ),
@@ -404,10 +404,12 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
             .is_some_and(|v| store::is_valid_clipboard_phrase(&v)),
         SettingKind::StringArray => is_non_empty_string_array(value),
         SettingKind::CleanupPromptOverride => is_cleanup_prompt_override(value),
-        SettingKind::CleanupStylePrompts => value.as_object().is_some_and(|map| {
+        SettingKind::StylePromptInstructions => value.as_object().is_some_and(|map| {
             map.iter().all(|(key, value)| {
-                matches!(key.as_str(), "light" | "medium" | "high")
-                    && is_cleanup_prompt_override(value)
+                matches!(
+                    key.as_str(),
+                    "light" | "medium" | "high" | "casual" | "formal" | "very_casual"
+                ) && is_cleanup_prompt_override(value)
             })
         }),
         SettingKind::ProviderModelCache => is_provider_model_cache(value),
@@ -453,10 +455,18 @@ mod setting_key_tests {
     use super::*;
 
     #[test]
-    fn cleanup_style_prompts_only_accept_editable_styles_and_bounded_text() {
-        assert!(validate_setting(store::CLEANUP_STYLE_PROMPTS, &serde_json::json!({"light": "Custom", "high": ""})).is_ok());
-        for invalid in [serde_json::json!({"none": "Custom"}), serde_json::json!({"medium": false}), serde_json::json!({"medium": "x".repeat(20_001)})] {
-            assert!(validate_setting(store::CLEANUP_STYLE_PROMPTS, &invalid).is_err());
+    fn style_prompt_instructions_only_accept_editable_styles_and_bounded_text() {
+        assert!(validate_setting(
+            store::STYLE_PROMPT_INSTRUCTIONS,
+            &serde_json::json!({"light": "Custom", "high": "", "formal": "Professional wording"})
+        )
+        .is_ok());
+        for invalid in [
+            serde_json::json!({"none": "Custom"}),
+            serde_json::json!({"medium": false}),
+            serde_json::json!({"medium": "x".repeat(20_001)}),
+        ] {
+            assert!(validate_setting(store::STYLE_PROMPT_INSTRUCTIONS, &invalid).is_err());
         }
     }
 
@@ -515,7 +525,11 @@ mod setting_key_tests {
         let theme = serde_json::json!({"background": "#101315", "foreground": "#cacccc"});
         assert!(validate_setting(store::CUSTOM_THEME, &theme).is_ok());
         assert!(validate_setting(store::CUSTOM_THEME, &serde_json::Value::Null).is_ok());
-        assert!(validate_setting(store::CUSTOM_THEME, &serde_json::json!({"background": "#101315"})).is_err());
+        assert!(validate_setting(
+            store::CUSTOM_THEME,
+            &serde_json::json!({"background": "#101315"})
+        )
+        .is_err());
         assert!(validate_setting(store::APPEARANCE_MODE, &serde_json::json!("custom")).is_ok());
     }
 }
@@ -705,7 +719,7 @@ pub struct AllSettings {
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
     pub cleanup_prompt_override: Option<String>,
-    pub cleanup_style_prompts: Option<serde_json::Value>,
+    pub style_prompt_instructions: Option<serde_json::Value>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
 
@@ -787,7 +801,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
-        cleanup_style_prompts: json_val(store::CLEANUP_STYLE_PROMPTS),
+        style_prompt_instructions: json_val(store::STYLE_PROMPT_INSTRUCTIONS),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })
 }
@@ -885,7 +899,11 @@ pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
     let chord = store::settings_handle(app)
         .ok()
         .and_then(|settings| settings.get(store::SUB_APP_CAPTURE_HOTKEY))
-        .and_then(|value| value.as_str().and_then(crate::core::hotkey::chord::Chord::parse))
+        .and_then(|value| {
+            value
+                .as_str()
+                .and_then(crate::core::hotkey::chord::Chord::parse)
+        })
         .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
     crate::core::hotkey::set_sub_app_capture_chord(chord);
 }
