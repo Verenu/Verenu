@@ -466,14 +466,9 @@
   /* Container query, not viewport: the rail + sidebar decide how wide this
      column actually is. Below ~560px the title and both dropdowns stack and
      left-align instead of squeezing into one row. */
-  @container insights (max-width: 560px) {
-    /*
-     * Filters lead on a phone header instead of trailing the title: with the
-     * subtitle gone there's nothing to its right for them to visually pair
-     * with, and "here's the scope, here's the page" reads better than the
-     * reverse order in a single narrow column.
-     */
-    .head { flex-direction: column-reverse; align-items: stretch; }
+  @container insights (max-width: 420px) {
+    /* Title first, then the scope filters beneath it. */
+    .head { flex-direction: column; align-items: stretch; margin-bottom: 18px; }
     /*
      * flex-basis follows the main axis, so the 240px basis that reserves a
      * sensible title column in row layout becomes a 240px minimum *height*

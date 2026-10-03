@@ -179,6 +179,27 @@ fn full_text_confirms_paste(injected: &str, full_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caret_text_formatting_matches_the_desktop_rules() {
+        let fmt = |left: &str, right: &str, text: &str| {
+            format_for_caret_text(text, left, right, true, true, true, true, "casual", "en", false)
+        };
+        assert_eq!(fmt("", "", "hello there"), "Hello there");
+        assert_eq!(fmt("Hello.", "", "next sentence"), " Next sentence");
+        assert_eq!(fmt("Hello", "", "World"), " world");
+        assert_eq!(fmt("Hello ", "", "World"), "world");
+        // Both options off leaves the dictation exactly as spoken.
+        assert_eq!(
+            format_for_caret_text("World", "Hello", "", true, true, false, false, "casual", "en", false),
+            "World"
+        );
+        // An unreadable left edge must not invent a sentence boundary.
+        assert_eq!(
+            format_for_caret_text("world", "", "", false, false, true, true, "casual", "en", false),
+            "world"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -480,6 +501,52 @@ fn unavailable_injection_probe() -> InjectionContextProbe {
     InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
 }
 
+/// Smart capitalization and spacing for a caret whose surrounding text the
+/// caller already read (Android's accessibility service reports the text on
+/// either side of the caret). Same rules as the desktop probes.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub fn format_for_caret_text(
+    text: &str,
+    left: &str,
+    right: &str,
+    left_reliable: bool,
+    right_reliable: bool,
+    contextual_caps: bool,
+    auto_spacing: bool,
+    profile: &str,
+    language: &str,
+    protected_initial_case: bool,
+) -> String {
+    let empty = left.is_empty() && right.is_empty() && left_reliable && right_reliable;
+    let probe = InjectionContextProbe {
+        context: text_context::SentenceContext::Unknown,
+        source: if empty {
+            ContextProbeSource::EmptyField
+        } else {
+            ContextProbeSource::CaretLocal
+        },
+        context_tail: left.to_owned(),
+        context_head: right.to_owned(),
+        left_reliable,
+        right_reliable,
+        selection_state: SelectionState::CollapsedCaret,
+        control_identity_hash: String::new(),
+        control_type: "android_edit_text".to_owned(),
+        target_id: 0,
+    };
+    apply_probe_adjustments(
+        text,
+        contextual_caps,
+        auto_spacing,
+        profile,
+        language,
+        protected_initial_case,
+        &probe,
+    )
+    .0
+}
+
 fn apply_probe_adjustments(
     text: &str,
     contextual_caps: bool,
@@ -760,7 +827,16 @@ pub async fn inject_text(
         // pipeline's perspective — delivery failures surface via the ack.
         #[cfg(target_os = "android")]
         {
-            let seq = crate::android::bridge::publish_android_insertion(text);
+            let seq = crate::android::bridge::publish_android_insertion_with(
+                text,
+                Some(crate::android::bridge::InsertionFormat {
+                    contextual_caps,
+                    auto_spacing,
+                    profile: profile.to_string(),
+                    language: language.to_string(),
+                    protected_initial_case,
+                }),
+            );
             log::info!(
                 "inject_text(android): handoff seq={seq} target={} chars={}", target.id,
                 text.chars().count()

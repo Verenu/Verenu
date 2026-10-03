@@ -15,7 +15,10 @@ import android.os.SystemClock
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.util.Log
 import android.view.Choreographer
+import android.view.HapticFeedbackConstants
+import android.view.ViewConfiguration
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -29,6 +32,7 @@ import android.widget.TextView
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
@@ -50,7 +54,7 @@ import kotlin.math.sin
  *   where distance from the middle means AGE, driven by the recorder's 10 ms
  *   peak envelope and redrawn every display frame (see [WaveView]).
  * - [setCompact] is the docked form used while a dictation continues without
- *   the keyboard: smaller, just the wave, timer and stop button.
+ *   the keyboard: smaller, just the wave and stop button.
  *
  * Rendering only — the [Listener] (implemented by
  * [VerenuAccessibilityService]) owns recording, insertion, and bridge calls.
@@ -65,6 +69,10 @@ class VerenuOverlayView @JvmOverloads constructor(
         fun onPillCancel()
         fun onPillRetry()
         fun onPillDismiss()
+        /** Long-press on the idle pill: it can now be dragged (raw screen px). */
+        fun onPillDragStart()
+        fun onPillDragMove(rawX: Int, rawY: Int)
+        fun onPillDragEnd(rawX: Int, rawY: Int)
     }
 
     enum class State {
@@ -78,7 +86,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         val muted: Int,
         val errorBg: Int,
         val errorFg: Int,
-        val recordDot: Int,
     )
 
     var listener: Listener? = null
@@ -92,6 +99,20 @@ class VerenuOverlayView @JvmOverloads constructor(
             Configuration.UI_MODE_NIGHT_YES
     private var palette = paletteFor(dark)
     private var compact = false
+    private var coverSize = 0
+    private var entered = false
+    private var dragging = false
+    private var suppressClick = false
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private val longPress = Runnable {
+        if (state == State.IDLE) {
+            dragging = true
+            suppressClick = true
+            pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener?.onPillDragStart()
+        }
+    }
 
     private var state: State = State.IDLE
     private var errorMessage = "Something went wrong"
@@ -103,21 +124,10 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
     private val background = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE }
     private var wave: WaveView? = null
-    private var timerView: TextView? = null
-    private var recordingStartedAt = 0L
 
     private var widthAnimator: ValueAnimator? = null
     private var bgAnimator: ValueAnimator? = null
     private var lastBg: Int? = null
-
-    private val timerTick = object : Runnable {
-        override fun run() {
-            val view = timerView ?: return
-            val seconds = ((SystemClock.elapsedRealtime() - recordingStartedAt) / 1000L).toInt()
-            view.text = "%d:%02d".format(seconds / 60, seconds % 60)
-            postDelayed(this, 250L)
-        }
-    }
 
     init {
         // Window margin so the capsule's border isn't clipped by the window edge.
@@ -126,15 +136,38 @@ class VerenuOverlayView @JvmOverloads constructor(
         clipToPadding = false
 
         pill.background = background
-        pill.minimumHeight = dpi(44f)
+        applyMinimumSize()
         pill.isClickable = true
         pill.isFocusable = false
-        pill.setOnClickListener { listener?.onPillTap() }
+        pill.setOnClickListener {
+            // A drag ends with the finger lifting over the pill; that is not a tap.
+            if (suppressClick) suppressClick = false else listener?.onPillTap()
+        }
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         pill.setOnTouchListener { view, event ->
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(80).start()
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                MotionEvent.ACTION_DOWN -> {
+                    suppressClick = false
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+                    view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(80).start()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (dragging) {
+                        listener?.onPillDragMove(event.rawX.toInt(), event.rawY.toInt())
+                    } else if (hypot(event.rawX - downRawX, event.rawY - downRawY) > touchSlop) {
+                        removeCallbacks(longPress)
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    removeCallbacks(longPress)
                     view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                    if (dragging) {
+                        dragging = false
+                        listener?.onPillDragEnd(event.rawX.toInt(), event.rawY.toInt())
+                    }
+                }
             }
             false
         }
@@ -174,12 +207,30 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = false)
     }
 
-    /** Docked form: smaller, wave + timer + stop only. */
+    /** Docked form: smaller, wave + stop only. */
     fun setCompact(value: Boolean) {
         if (compact == value) return
         compact = value
-        pill.minimumHeight = dpi(if (value) 36f else 44f)
+        applyMinimumSize()
         render(animated = true)
+    }
+
+    /**
+     * Cover mode: the pill sits over the keyboard's own mic button. [sizePx] is
+     * the button's size (0 turns it off). While idle it shrinks to an opaque
+     * disc of that size so the button underneath cannot show through.
+     */
+    fun setCoverSize(sizePx: Int) {
+        if (coverSize == sizePx) return
+        coverSize = sizePx
+        applyMinimumSize()
+        applyChrome(animated = false)
+        render(animated = true)
+    }
+
+    private fun applyMinimumSize() {
+        pill.minimumHeight = if (coverSize > 0) coverSize else dpi(36f)
+        pill.minimumWidth = if (coverSize > 0) coverSize else 0
     }
 
     /** 10 ms peak-envelope samples (linear 0..1) from the recorder. */
@@ -192,6 +243,11 @@ class VerenuOverlayView @JvmOverloads constructor(
         wave?.pushLevel(level.coerceIn(0f, 1f))
     }
 
+    /** Debug aid: what the pill looks like right now. */
+    fun debugDescribe(): String =
+        "pill a=${pill.alpha} s=${pill.scaleX} ${pill.width}x${pill.height} vis=${pill.visibility} " +
+            "row a=${row.alpha} ${row.width}x${row.height} children=${row.childCount} cover=$coverSize state=$state"
+
     fun animateIn() {
         pill.alpha = 0f
         pill.scaleX = 0.88f
@@ -201,7 +257,20 @@ class VerenuOverlayView @JvmOverloads constructor(
             .alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
             .setDuration(190)
             .setInterpolator(PathInterpolator(0.2f, 0.9f, 0.25f, 1f))
+            .withEndAction { entered = true }
             .start()
+        // A window that gets no frames while it is being shown would otherwise
+        // stay stuck at its start values (invisible). Land on the final state.
+        postDelayed({
+            if (!entered && isAttachedToWindow) {
+                Log.w("VerenuA11y", "pill entrance did not finish; forcing final state")
+                pill.animate().cancel()
+                pill.alpha = 1f
+                pill.scaleX = 1f
+                pill.scaleY = 1f
+                pill.translationY = 0f
+            }
+        }, 400L)
     }
 
     fun animateOut(onEnd: () -> Unit) {
@@ -219,7 +288,6 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        removeCallbacks(timerTick)
         widthAnimator?.cancel()
         bgAnimator?.cancel()
         wave?.stop()
@@ -228,18 +296,22 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     // ------------------------------------------------------------- rendering
 
+    // Mirrors the desktop pill tokens (--pill-* in theme.css): white with dark
+    // bars in light mode, near-black with white bars in dark mode. The fill is
+    // slightly translucent so the pill can sit right on top of the keyboard.
     private fun paletteFor(dark: Boolean) = Palette(
-        bg = if (dark) 0xFF1D1C1B.toInt() else 0xFF141312.toInt(),
-        border = if (dark) 0x40FFFFFF else 0x26000000,
-        fg = 0xFFF6F5F3.toInt(),
-        muted = 0xA6F6F5F3.toInt(),
-        errorBg = 0xFF3B1814.toInt(),
+        bg = if (dark) 0xE00F0E0E.toInt() else 0xE6FFFFFF.toInt(),
+        border = if (dark) 0x12FFFFFF else 0x1F111110,
+        fg = if (dark) 0xFFFFFFFF.toInt() else 0xFF111110.toInt(),
+        muted = if (dark) 0x73FFFFFF else 0x73111110,
+        errorBg = 0xEB351613.toInt(),
         errorFg = 0xFFFFA194.toInt(),
-        recordDot = 0xFFFF5A4D.toInt(),
     )
 
     private fun applyChrome(animated: Boolean) {
-        val target = if (state == State.ERROR) palette.errorBg else palette.bg
+        val base = if (state == State.ERROR) palette.errorBg else palette.bg
+        // Covering the keyboard's own button needs an opaque fill.
+        val target = if (coverSize > 0) base or 0xFF000000.toInt() else base
         background.cornerRadius = dp(40f)
         background.setStroke(dpi(1f), if (state == State.ERROR) 0x33FF8F80 else palette.border)
         val from = lastBg
@@ -257,68 +329,38 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
 
     private fun render(animated: Boolean) {
-        removeCallbacks(timerTick)
         wave?.stop()
         wave = null
-        timerView = null
 
         val fromWidth = pill.width
         row.removeAllViews()
-        val padH = dpi(if (compact) 10f else 14f)
+        val covering = coverSize > 0 && state == State.IDLE
+        val padH = if (covering) 0 else dpi(if (compact) 10f else 14f)
         row.setPadding(padH, 0, padH, 0)
 
         when (state) {
             State.IDLE -> {
                 row.addView(icon(IconView.Kind.MIC, 18f, palette.fg), iconParams(18f))
-                row.addView(label("Tap to dictate", palette.fg), gapStart())
+                if (!covering) row.addView(label("Tap to dictate", palette.fg), gapStart())
             }
             State.RECORDING -> {
                 if (!compact) {
-                    row.addView(circleButton(IconView.Kind.CLOSE, palette.muted, "Cancel") { listener?.onPillCancel() }, LinearLayout.LayoutParams(dpi(36f), dpi(36f)))
+                    row.addView(circleButton(IconView.Kind.CLOSE, palette.fg, "Cancel") { listener?.onPillCancel() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
                 }
-                val dot = View(context).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(palette.recordDot)
-                    }
-                    val pulse = ValueAnimator.ofFloat(1f, 0.35f).apply {
-                        duration = 700
-                        repeatMode = ValueAnimator.REVERSE
-                        repeatCount = ValueAnimator.INFINITE
-                        addUpdateListener { alpha = it.animatedValue as Float }
-                    }
-                    addOnAttachStateChangeListener(object : OnAttachStateChangeListener {
-                        override fun onViewAttachedToWindow(v: View) = pulse.start()
-                        override fun onViewDetachedFromWindow(v: View) = pulse.cancel()
-                    })
-                }
-                row.addView(dot, LinearLayout.LayoutParams(dpi(8f), dpi(8f)).apply {
-                    marginStart = dpi(if (compact) 0f else 4f)
-                })
                 val w = WaveView(context, palette.fg, compact).also { wave = it }
                 row.addView(w, LinearLayout.LayoutParams(w.preferredWidth(), w.preferredHeight()).apply {
-                    marginStart = dpi(10f)
-                    marginEnd = dpi(10f)
+                    marginStart = dpi(if (compact) 4f else 8f)
+                    marginEnd = dpi(8f)
                 })
-                val timer = label("0:00", palette.muted).apply {
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, if (compact) 12f else 13f)
-                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-                    minWidth = dpi(30f)
-                    gravity = Gravity.CENTER_VERTICAL or Gravity.END
-                }
-                timerView = timer
-                row.addView(timer)
-                val stopSize = dpi(if (compact) 30f else 34f)
+                val stopSize = dpi(if (compact) 26f else 28f)
                 row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginStart = dpi(6f) })
-                recordingStartedAt = SystemClock.elapsedRealtime()
-                post(timerTick)
                 w.start()
             }
             State.TRANSCRIBING -> busyRow("Transcribing…")
             State.CLEANING -> busyRow("Cleaning up…")
             State.INSERTING -> busyRow("Pasting…")
             State.ERROR -> {
-                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(36f), dpi(36f)))
+                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)))
                 row.addView(icon(IconView.Kind.ALERT, 18f, palette.errorFg), iconParams(18f, 4f))
                 row.addView(
                     label(errorMessage, palette.errorFg).apply {
@@ -327,7 +369,7 @@ class VerenuOverlayView @JvmOverloads constructor(
                     },
                     gapStart(8f),
                 )
-                row.addView(circleButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, LinearLayout.LayoutParams(dpi(36f), dpi(36f)).apply { marginStart = dpi(4f) })
+                row.addView(circleButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)).apply { marginStart = dpi(4f) })
             }
             State.CANCELLED -> {
                 row.addView(icon(IconView.Kind.CLOSE, 16f, palette.muted), iconParams(16f))
@@ -346,7 +388,7 @@ class VerenuOverlayView @JvmOverloads constructor(
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
         )
-        val target = max(row.measuredWidth, dpi(60f))
+        val target = max(row.measuredWidth, if (coverSize > 0) coverSize else dpi(60f))
         if (!animated || fromWidth <= 0 || fromWidth == target) {
             params.width = LayoutParams.WRAP_CONTENT
             pill.layoutParams = params
@@ -400,7 +442,7 @@ class VerenuOverlayView @JvmOverloads constructor(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { marginStart = dpi(valueDp) }
 
-    /** A 36dp touch target around a 16dp glyph. */
+    /** A faint disc with a small glyph: the quiet counterpart to the solid stop button. */
     private fun circleButton(
         kind: IconView.Kind,
         color: Int,
@@ -411,16 +453,20 @@ class VerenuOverlayView @JvmOverloads constructor(
         isClickable = true
         isFocusable = false
         layoutParams = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor((color and 0x00FFFFFF) or 0x1F000000)
+        }
         addView(
             IconView(context, kind, color),
-            LayoutParams(dpi(16f), dpi(16f), Gravity.CENTER),
+            LayoutParams(dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), Gravity.CENTER),
         )
         setOnClickListener { onClick() }
     }
 
     /** Solid light disc with a dark rounded square: the unmistakable stop. */
     private fun stopButton(): View {
-        val size = if (compact) 30f else 34f
+        val size = if (compact) 26f else 28f
         return FrameLayout(context).apply {
             contentDescription = "Stop and transcribe"
             isClickable = true
@@ -435,7 +481,7 @@ class VerenuOverlayView @JvmOverloads constructor(
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
                         cornerRadius = dp(3f)
-                        setColor(palette.bg)
+                        setColor(palette.bg or 0xFF000000.toInt())
                     }
                 },
                 LayoutParams(dpi(11f), dpi(11f), Gravity.CENTER),
@@ -458,7 +504,7 @@ class VerenuOverlayView @JvmOverloads constructor(
 
         override fun onDraw(canvas: Canvas) {
             val s = min(width, height).toFloat()
-            paint.strokeWidth = max(1.6f, s * 0.11f)
+            paint.strokeWidth = max(1.6f, s * if (kind == Kind.CLOSE) 0.17f else 0.11f)
             val cx = width / 2f
             val cy = height / 2f
             val left = cx - s / 2f
@@ -476,7 +522,7 @@ class VerenuOverlayView @JvmOverloads constructor(
                     canvas.drawLine(cx, top + s * 0.8f, cx, top + s * 0.94f, paint)
                 }
                 Kind.CLOSE -> {
-                    val inset = s * 0.18f
+                    val inset = s * 0.1f
                     canvas.drawLine(left + inset, top + inset, left + s - inset, top + s - inset, paint)
                     canvas.drawLine(left + s - inset, top + inset, left + inset, top + s - inset, paint)
                 }

@@ -190,6 +190,12 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
         true,
     ),
+    setting_spec(
+        store::ANDROID_PILL_COVER_KEYBOARD_MIC,
+        SettingKind::Bool,
+        true,
+        true,
+    ),
     setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
     setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
     setting_spec(store::DEV_MODE_ON_STARTUP, SettingKind::Bool, true, true),
@@ -707,6 +713,7 @@ pub struct AllSettings {
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
     pub android_pill_position: Option<String>,
+    pub android_pill_cover_keyboard_mic: Option<bool>,
     pub cleanup_prompt_override: Option<String>,
     pub provider_model_cache: Option<serde_json::Value>,
 }
@@ -789,6 +796,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
         android_pill_position: str_val(store::ANDROID_PILL_POSITION),
+        android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
     })

@@ -314,6 +314,7 @@ if (initOnly) process.exit(0);
 
 syncWebAssets();
 copyTree(join(androidSrc, 'kotlin'), javaSourceDir());
+copyTree(join(androidSrc, 'tests'), join(genAndroid, 'app', 'src', 'test', 'java'));
 copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'));
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');

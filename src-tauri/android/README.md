@@ -41,6 +41,31 @@ resources, merges the manifest snippet, and pins `minSdk 26` +
 `security-crypto` in the app module. It is idempotent and fails loudly if a
 generated anchor it patches is missing (pin the Tauri CLI in package.json).
 
+## Insertion regression tests
+
+`android:sync` also copies `tests/` into the generated app's unit-test sources.
+After syncing, run these from `src-tauri/gen/android`:
+
+```bash
+./gradlew :app:testUniversalDebugUnitTest -x rustBuildUniversalDebug
+```
+
+The insertion tests cover delayed editor updates, five-second Android IPC
+timeouts, failed refreshes, repeated text, and editor rewrites. A failed or
+timed-out readback must stop further mutations, because the first edit may
+already have succeeded.
+
+Focus-package tests cover System UI privacy indicators, keyboard windows,
+launcher search fields, and real app changes. Window-event package hints must
+not override a currently focused editable app field.
+
+Edit tests cover advertised field length limits, selection replacement, exact
+boundaries, and UTF-16 lengths. Oversized edits must copy the full dictation
+without partially changing the field.
+Samsung launcher search needs a 100-unit fallback for its specific resource ID:
+on the tested One UI device it reports no limit but silently truncates longer
+edits. Other fields without advertised limits remain unrestricted.
+
 ## First-SDK-build verification checklist
 
 The environment that authored this code has no Android SDK, so these
