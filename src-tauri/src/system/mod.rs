@@ -11,6 +11,7 @@ pub mod linux_proc;
 pub mod linux_titlebar;
 #[cfg(target_os = "linux")]
 pub mod linux_webview;
+mod log_files;
 pub mod media_control;
 pub mod memory;
 pub mod notify;
