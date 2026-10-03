@@ -28,10 +28,13 @@
   } from '../../localLlmStore.svelte';
 
   let {
+    provider,
     apiKeyStatus,
     preset = $bindable(),
     onOpenApiKeys,
   }: {
+    /** The provider chosen earlier. Local presets only appear when it is 'local'. */
+    provider: ProviderId;
     apiKeyStatus: Record<ProviderId, boolean>;
     /** The chosen preset. Written to settings by Setup's finish(), not here. */
     preset: Preset | null;
@@ -41,7 +44,10 @@
   // Same "assume capable" default as the Models tab — never flash a degraded
   // preset list while the real hardware read is in flight.
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
-  let localSupported = $state(true);
+  let platformLocalSupported = $state(true);
+  // Someone who picked a cloud provider didn't ask for a multi-gigabyte local
+  // model; Settings → Models still offers one. Local stays for the local path.
+  const localSupported = $derived(platformLocalSupported && provider === 'local');
 
   const presets = $derived(buildPresets(apiKeyStatus, hardware, localSupported));
 
@@ -126,7 +132,7 @@
     // Only an explicit false hides local presets — an older backend or a
     // transient error must not strip the offline option for everyone else.
     invoke<boolean>('local_models_supported_on_this_platform')
-      .then((supported) => { if (supported === false) localSupported = false; })
+      .then((supported) => { if (supported === false) platformLocalSupported = false; })
       .catch(() => {});
     getHardware().then((hw) => { hardware = hw; }).catch(() => {});
   });

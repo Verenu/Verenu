@@ -86,7 +86,8 @@ async function layoutState(page) {
           await page.getByRole('button', { name: 'Next step' }).press('ArrowRight');
           const after = await page.locator('.shot-text').textContent();
           if (before === after) errors.push(`[${viewport.label}] ArrowRight did not advance tutorial`);
-          await page.locator('.btn-got-key').click();
+          const nextShot = page.getByRole('button', { name: 'Next step' });
+          for (let i = 0; i < 6 && await nextShot.isEnabled(); i++) await nextShot.click();
         }
 
         const final = page.getByRole('button', { name: 'Start dictating' });

@@ -59,8 +59,11 @@
   }
 
   let slide = $state(0);
-  const slideCount = $derived(guide.steps.length);
+  // The walkthrough ends on one extra slide that takes the key, so nobody has to
+  // leave the tutorial to paste it.
+  const slideCount = $derived(guide.steps.length + 1);
   const safeSlide = $derived(Math.min(slide, Math.max(0, slideCount - 1)));
+  const onPasteSlide = $derived(safeSlide === guide.steps.length);
   const currentShot = $derived(shotsByKey.get(`${provider}-${safeSlide + 1}`));
   const localModel = $derived(localSttStore.models.find((model) => model.id === 'parakeet-v3'));
   const localDownloading = $derived(
@@ -90,7 +93,7 @@
 
   function step(delta: number) {
     if (slideCount <= 0) return;
-    slide = (safeSlide + delta + slideCount) % slideCount;
+    slide = Math.min(slideCount - 1, Math.max(0, safeSlide + delta));
   }
 
   function onTutorialKeydown(event: KeyboardEvent) {
@@ -110,6 +113,52 @@
   }
 
 </script>
+
+{#snippet keyField()}
+  <div class="key-input-row">
+    <input
+      class="key-input"
+      type={showKey ? 'text' : 'password'}
+      bind:value={apiKeyDraft}
+      placeholder="Paste your {providerName} API key here…"
+      aria-label="API key"
+      spellcheck="false"
+      autocomplete="off"
+    />
+    <button class="show-btn" onclick={() => { showKey = !showKey; }} title={showKey ? 'Hide' : 'Show'} aria-label={showKey ? 'Hide API key' : 'Show API key'}>
+      {#if showKey}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+      {:else}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      {/if}
+    </button>
+  </div>
+
+  {#if keyError}
+    <p class="key-error" role="alert">{keyError}</p>
+  {/if}
+
+  {#if keySaved && !apiKeyDraft}
+    <div class="key-status" role="status" aria-live="polite" class:is-bad={keyValidation.status === 'invalid'} class:is-warn={keyValidation.status === 'unknown'}>
+      {#if keyValidation.status === 'checking'}
+        <span class="status-spinner" aria-hidden="true"></span>
+        <span>Verifying key…</span>
+      {:else if keyValidation.status === 'invalid'}
+        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
+        <span>{keyValidation.message || 'This key was rejected. You can re-enter it or continue anyway.'}</span>
+      {:else if keyValidation.status === 'unknown'}
+        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.86.85c0 1.65-2.46 2.5-2.46 2.5"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
+        <span>{keyValidation.message || "Couldn't verify the key right now — saved anyway."}</span>
+      {:else if keyValidation.status === 'valid'}
+        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+        <span>Key verified — {providerName} accepted it.</span>
+      {:else}
+        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+        <span>Key saved for {providerName}.</span>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
 <div class="step apikey-step">
   {#if provider === 'local'}
@@ -187,8 +236,16 @@
       <div class="shot-frame">
         {#key slide}
           <div class="shot-inner" in:fade={{ duration: motionMs(150) }}>
-            {#if currentShot}
-              <img class="shot-img" src={currentShot} alt={guide.steps[safeSlide].alt} />
+            {#if onPasteSlide}
+              <div class="paste-slide">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                <div class="paste-slide-field">
+                  {@render keyField()}
+                </div>
+                <p class="paste-slide-note">Stored in your OS credential manager. It never leaves this machine.</p>
+              </div>
+            {:else if currentShot}
+              <img class="shot-img" src={currentShot} alt={guide.steps[safeSlide]?.alt ?? ''} />
             {:else}
               <!-- No screenshot for this step yet (see src/assets/setup/README.md).
                    The step number and caption are both already in the row below,
@@ -207,18 +264,18 @@
           class="shot-nav ui-focus-ring"
           onclick={() => step(-1)}
           onkeydown={onTutorialKeydown}
-          disabled={slideCount < 2}
+          disabled={safeSlide === 0}
           aria-label="Previous step"
         ><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg></button>
         <div class="shot-caption-text">
           <span class="shot-step">Step {safeSlide + 1} of {slideCount}</span>
-          <span class="shot-text">{guide.steps[safeSlide].caption}</span>
+          <span class="shot-text">{onPasteSlide ? 'Paste your key here, or skip and add it later' : guide.steps[safeSlide].caption}</span>
         </div>
         <button
           class="shot-nav ui-focus-ring"
           onclick={() => step(1)}
           onkeydown={onTutorialKeydown}
-          disabled={slideCount < 2}
+          disabled={safeSlide >= slideCount - 1}
           aria-label="Next step"
         ><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg></button>
       </div>
@@ -228,55 +285,12 @@
           Open {guide.url}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
         </button>
-        <button class="btn-ghost btn-got-key" onclick={() => { mode = 'paste'; }}>I've got my key →</button>
       </div>
     </div>
 
   {:else}
     <div class="key-input-wrap" in:fade={{ duration: motionMs(180) }}>
-      <div class="key-input-row">
-        <input
-          class="key-input"
-          type={showKey ? 'text' : 'password'}
-          bind:value={apiKeyDraft}
-          placeholder="Paste your {providerName} API key here…"
-          aria-label="API key"
-          spellcheck="false"
-          autocomplete="off"
-        />
-        <button class="show-btn" onclick={() => { showKey = !showKey; }} title={showKey ? 'Hide' : 'Show'} aria-label={showKey ? 'Hide API key' : 'Show API key'}>
-          {#if showKey}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-          {:else}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          {/if}
-        </button>
-      </div>
-
-      {#if keyError}
-        <p class="key-error" role="alert">{keyError}</p>
-      {/if}
-
-      {#if keySaved && !apiKeyDraft}
-        <div class="key-status" role="status" aria-live="polite" class:is-bad={keyValidation.status === 'invalid'} class:is-warn={keyValidation.status === 'unknown'}>
-          {#if keyValidation.status === 'checking'}
-            <span class="status-spinner" aria-hidden="true"></span>
-            <span>Verifying key…</span>
-          {:else if keyValidation.status === 'invalid'}
-            <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
-            <span>{keyValidation.message || 'This key was rejected. You can re-enter it or continue anyway.'}</span>
-          {:else if keyValidation.status === 'unknown'}
-            <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.86.85c0 1.65-2.46 2.5-2.46 2.5"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
-            <span>{keyValidation.message || "Couldn't verify the key right now — saved anyway."}</span>
-          {:else if keyValidation.status === 'valid'}
-            <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-            <span>Key verified — {providerName} accepted it.</span>
-          {:else}
-            <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-            <span>Key saved for {providerName}.</span>
-          {/if}
-        </div>
-      {/if}
+      {@render keyField()}
 
       {#if !keySaved}
         <div class="key-warning">
@@ -448,13 +462,18 @@
 
   .btn-open:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--paper-2)); }
 
-  .btn-got-key {
-    border-radius: var(--r-sm);
-    padding: 9px 14px;
-    font-family: var(--sans);
-    font-size: 12.5px;
-    flex-shrink: 0;
+  .paste-slide {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: 440px;
+    padding: 0 20px;
+    color: var(--accent);
   }
+  .paste-slide-field { width: 100%; display: flex; flex-direction: column; gap: 9px; }
+  .paste-slide-note { margin: 0; font-size: 11.5px; color: var(--ink-faint); text-align: center; }
 
   /* ── Paste ────────────────────────────────────────────────────────── */
   .local-setup { display: flex; flex-direction: column; gap: 12px; }
