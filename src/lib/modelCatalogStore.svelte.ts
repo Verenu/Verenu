@@ -245,7 +245,11 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
   if (pending) return pending;
 
   modelCatalogStore.refreshing[provider] = true;
-  const request = ensureHydrated().then(() => invoke<ProviderModelCatalog>('get_provider_model_catalog', { provider }))
+  let loaded = false;
+  const request = ensureHydrated().then(() => {
+    loaded = true;
+    return invoke<ProviderModelCatalog>('get_provider_model_catalog', { provider });
+  })
     .then((catalog) => {
       const updated = applySuccess(
         modelCatalogStore.cache[provider],
@@ -260,6 +264,10 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
       modelCatalogStore.cache[provider] = updated;
     })
     .catch((error) => {
+      if (!loaded) {
+        console.warn('Could not load the saved model catalog before refreshing', error);
+        return;
+      }
       modelCatalogStore.cache[provider] = applyFailure(
         modelCatalogStore.cache[provider],
         String(error),
@@ -267,7 +275,8 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
       );
     })
     .then(() => {
-      return persist();
+      // Never replace a saved cache with an empty snapshot after a failed read.
+      if (loaded) return persist();
     })
     .finally(() => {
       inFlight.delete(provider);
