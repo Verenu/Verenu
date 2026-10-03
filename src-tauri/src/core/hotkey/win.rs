@@ -448,11 +448,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 LOCAL_GENERATION.with(|local| local.set(generation));
             }
         }
-        let keys = LOCAL_KEYS.with(|keys| keys.borrow().clone());
-        let chord_key = keys
-            .iter()
-            .position(|key| *key == vk)
-            .or_else(|| keys.iter().position(|key| vk_matches(vk, *key)));
+        let chord_key = LOCAL_KEYS.with(|keys| {
+            let keys = keys.borrow();
+            keys.iter()
+                .position(|key| *key == vk)
+                .or_else(|| keys.iter().position(|key| vk_matches(vk, *key)))
+        });
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
@@ -473,18 +474,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let key = ChordKey(index);
             let edge = if is_down { KeyEdge::Down } else { KeyEdge::Up };
             let now = GetTickCount64();
-            let (outcome, menu_key_passed_through) = CHORD_MACHINE.with(|m| {
-                let mut machine = m.borrow_mut();
-                for (other, id) in keys.iter().enumerate().filter(|(other, _)| *other != index) {
-                    machine.reconcile_stale_key(ChordKey(other), modifier_held(*id), now);
-                }
-                let menu_key_passed_through = keys.iter().enumerate().any(|(other, id)| {
-                    other != index && machine.keys[other].passed_through && is_menu_trigger_vk(*id)
+            let (outcome, menu_key_passed_through) = LOCAL_KEYS.with(|keys| {
+                let keys = keys.borrow();
+                CHORD_MACHINE.with(|m| {
+                    let mut machine = m.borrow_mut();
+                    for (other, id) in keys.iter().enumerate().filter(|(other, _)| *other != index) {
+                        machine.reconcile_stale_key(ChordKey(other), modifier_held(*id), now);
+                    }
+                    let menu_key_passed_through = keys.iter().enumerate().any(|(other, id)| {
+                        other != index
+                            && machine.keys[other].passed_through
+                            && is_menu_trigger_vk(*id)
+                    });
+                    (
+                        machine.on_key_event(key, edge, now),
+                        menu_key_passed_through,
+                    )
                 });
-                (
-                    machine.on_key_event(key, edge, now),
-                    menu_key_passed_through,
-                )
             });
             let mut action = outcome.action;
             let mut disposition = outcome.disposition;
@@ -502,7 +508,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if edge == KeyEdge::Down
                 && disposition == KeyDisposition::Suppress
                 && menu_key_passed_through
-                && keys.iter().all(|id| MODIFIER_VKS.contains(id))
+                && LOCAL_KEYS.with(|keys| keys.borrow().iter().all(|id| MODIFIER_VKS.contains(id)))
             {
                 // Keep the modifier-only Win/Alt chord's OS edges balanced.
                 disposition = KeyDisposition::Passthrough;
