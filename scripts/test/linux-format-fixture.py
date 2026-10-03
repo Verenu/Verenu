@@ -29,7 +29,11 @@ if args.auto_learn:
             window.destroy()
             return False
         try:
-            payload = json.loads(source.readline())
+            line = sys.stdin.readline()
+            if not line:
+                window.destroy()
+                return False
+            payload = json.loads(line)
             field = [entry, alternate, secure][payload["field"]]
             field.set_text(payload["text"])
             field.set_position(-1)
