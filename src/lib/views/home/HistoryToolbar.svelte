@@ -4,11 +4,13 @@
   import { cubicOut } from 'svelte/easing';
   import Dropdown from '../../components/Dropdown.svelte';
   import { formatAppLabel } from './helpers';
+  import type { InstalledApp } from '../../appMappings';
   import { motionMs, MOTION_MS } from '../../motion';
 
   type Props = {
     search: string;
     apps?: string[];
+    installedApps?: InstalledApp[];
     appFilter: string | null;
     onSearchChange: (value: string) => void;
     onAppFilterChange: (app: string | null) => void;
@@ -18,6 +20,7 @@
   let {
     search,
     apps = [],
+    installedApps = [],
     appFilter,
     onSearchChange,
     onAppFilterChange,
@@ -111,14 +114,14 @@
             aria-controls="history-app-menu"
             onclick={() => (appDropdownOpen = !appDropdownOpen)}
           >
-            <span>{appFilter ? formatAppLabel(appFilter) : 'All apps'}</span>
+            <span>{appFilter ? formatAppLabel(appFilter, installedApps) : 'All apps'}</span>
             <svg class="ui-chevron" class:open={appDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
           </button>
           {#if appDropdownOpen}
             <div id="history-app-menu" class="ui-dropdown-menu history-app-menu scroll-styled" role="listbox" aria-label="Filter history by app" out:scale={{ duration: motionMs(MOTION_MS.fast), start: 0.96, opacity: 0 }}>
               <button class="ui-dropdown-option" class:active={!appFilter} role="option" aria-selected={!appFilter} onclick={() => selectAppFilter(null)}>All apps</button>
               {#each apps as app}
-                <button class="ui-dropdown-option" class:active={appFilter === app} role="option" aria-selected={appFilter === app} onclick={() => selectAppFilter(app)}>{formatAppLabel(app)}</button>
+                <button class="ui-dropdown-option" class:active={appFilter === app} role="option" aria-selected={appFilter === app} onclick={() => selectAppFilter(app)}>{formatAppLabel(app, installedApps)}</button>
               {/each}
             </div>
           {/if}

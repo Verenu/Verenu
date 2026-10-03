@@ -1,4 +1,5 @@
 import type { UpdateInfo } from '../../stores';
+import { normalizeExe, type InstalledApp } from '../../appMappings';
 
 export interface Entry {
   id: number;
@@ -16,7 +17,19 @@ export type RenderItem =
 
 export const HISTORY_PAGE_SIZE = 100;
 
-export function formatAppLabel(value: string): string {
+export function formatAppLabel(value: string, installedApps: InstalledApp[] = []): string {
+  const identity = normalizeExe(value);
+  const installed = installedApps.find((app) => normalizeExe(app.exe) === identity);
+  if (installed?.name.trim()) return installed.name.trim();
+
+  // Wayland app IDs may be namespaced while an XWayland desktop registration
+  // uses a short StartupWMClass. Only accept an unambiguous installed match.
+  if (/^[a-z0-9_-]+(?:\.[a-z0-9_-]+){2,}$/i.test(identity)) {
+    const shortIdentity = identity.slice(identity.lastIndexOf('.') + 1);
+    const matches = installedApps.filter((app) => normalizeExe(app.exe) === shortIdentity);
+    if (matches.length === 1 && matches[0].name.trim()) return matches[0].name.trim();
+  }
+
   return value
     .replace(/\.exe$/i, '')
     .replace(/[-_]+/g, ' ')
