@@ -4,7 +4,7 @@ import path from 'node:path';
 import { root } from './identity.mjs';
 
 export function stopOwned(child, signal = 'SIGTERM') {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === 'win32') {
     const killer = spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
     killer.on('error', () => child.kill());
