@@ -1472,6 +1472,8 @@ fn normalize_provider(value: &str) -> &'static str {
         "openai" => "openai",
         "google" => "google",
         "assemblyai" => "assemblyai",
+        "openrouter" => "openrouter",
+        "xai" => "xai",
         "local" => "local",
         _ => "unknown",
     }
@@ -1560,7 +1562,7 @@ fn normalize_context_result(value: &str) -> &'static str {
 
 fn normalize_category(value: &str) -> &'static str {
     match value {
-        "groq" | "openai" | "google" | "assemblyai" => "cloud",
+        "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" => "cloud",
         "local" => "local",
         "none" => "none",
         "light" => "light",

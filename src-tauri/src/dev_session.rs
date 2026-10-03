@@ -97,6 +97,8 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
         store::KEY_OPENAI,
         store::KEY_GOOGLE,
         store::KEY_ASSEMBLYAI,
+        store::KEY_OPENROUTER,
+        store::KEY_XAI,
     ] {
         settings.remove(key);
     }
@@ -503,6 +505,8 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 | store::KEY_OPENAI
                 | store::KEY_GOOGLE
                 | store::KEY_ASSEMBLYAI
+                | store::KEY_OPENROUTER
+                | store::KEY_XAI
                 | store::SYNC_ENABLED
                 | store::ANALYTICS_ENABLED
                 | store::AUTO_LEARN_ENABLED

@@ -40,10 +40,17 @@ const LOCAL_MODEL_LANGUAGES: Record<string, LanguageSupportScope> = {
  * any current cloud model. Modeled per-provider (not hardcoded globally to
  * 'all') so this stays correct if a future cloud model has narrower support.
  */
-const CLOUD_PROVIDER_LANGUAGES: Record<'groq' | 'openai' | 'google', LanguageSupportScope> = {
+const CLOUD_PROVIDER_LANGUAGES: Record<
+  'groq' | 'openai' | 'google' | 'openrouter' | 'xai',
+  LanguageSupportScope
+> = {
   groq: 'all',
   openai: 'all',
   google: 'all',
+  // Both route to several speech models; the language is sent and the model
+  // decides, so don't grey out the dropdown.
+  openrouter: 'all',
+  xai: 'all',
 };
 
 /**
