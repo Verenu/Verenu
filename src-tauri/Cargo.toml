@@ -18,6 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 custom-protocol = ["tauri/custom-protocol"]
 dev-session = ["dep:axum"]
 native-testing = ["dev-session", "dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+android-local-testing = []
 
 [build-dependencies]
 cc = "1"
@@ -72,18 +73,17 @@ zip         = { version = "2", default-features = false, features = ["deflate"] 
 # "onnx" already requires — no separate ort dependency or hand-rolled ONNX
 # plumbing needed for local speech detection.
 #
-# Android has no ONNX Runtime / transcribe-rs build (no ARM64 prebuilts, and
-# multi-hundred-MB model payloads are unrealistic on phones), so this stays a
-# desktop-only dependency — see the target table below, `local_stt/engine.rs`
-# and `media/vad.rs` Android stubs, `crate::android`, and docs/ANDROID.md.
+# Android uses the official ONNX Runtime library packaged by android:sync;
+# the same transcribe-rs engines run against its C API.
+transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
 image       = { version = "0.25", default-features = false, features = ["png"] }
 libc        = "0.2"     # POSIX host/system calls
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
-transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+ort = { version = "=2.0.0-rc.12", features = ["load-dynamic"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # CPAL's Android backend (Oboe) reads the process-wide JNI context through
 # ndk-context. Tauri/tao owns the same activity context, so initialize this

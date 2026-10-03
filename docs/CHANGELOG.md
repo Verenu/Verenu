@@ -7,6 +7,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Added instruction editors to the cleanup and Personal Tone tiles. Edits change only the instructions injected by each preset, with reset to built-in defaults and an audit against the composed system prompt before saving.
 - Fixed Save and Clear labels overlapping on the API Keys page when the inactive action was disabled.
 - Added automatic cloud model discovery with capability metadata, daily and manual refresh, an updateable AssemblyAI catalog, and cached model lists for offline use.
+- Added Android local speech recognition and cleanup with APK-bundled ONNX
+  Runtime and llama.cpp. Android 9+ can download models and dictate offline;
+  phone presets favor Moonshine Tiny and small Qwen cleanup models, with
+  transcription-only presets on low-memory devices.
 
 - Added source-bound agent verification, owned real-backend browser sessions,
   synthetic speech checks, native WebView tests, and independent agent test

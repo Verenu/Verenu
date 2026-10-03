@@ -16,7 +16,7 @@
     "verify:task": "node scripts/verify-task.mjs",
     "test:agent-evals": "node scripts/agent-evals.mjs",
     "dev:tauri-host": "node scripts/vite-dev-server.mjs",
-    "test:unit": "vitest run src",
+    "test:unit": "vitest run --dir src",
     "test:quality": "npm run check && npm run test:unit",
     "test:prompt": "node scripts/run-onepyfone.mjs --test prompt",
     "build": "vite build",

@@ -9,6 +9,7 @@
 
 import { invoke } from '../../tauri';
 import type { ProviderId } from '../../settings';
+import { isAndroid } from '../../platform';
 import {
   GROQ_QWEN_3_8_27B_MODEL,
   modelId,
@@ -18,6 +19,8 @@ import {
 } from './models';
 
 export type Hardware = {
+  /** Native platform capability, independent of the window width or user-agent. */
+  isAndroid?: boolean;
   totalRamMb: number;
   freeRamMb: number;
   gpus: { vramTotalMb: number; vramUsedMb: number }[];
@@ -72,6 +75,7 @@ export type ActiveConfig = {
 const CAPABLE_DEFAULT: Hardware = { totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true };
 
 type RawHardware = {
+  is_android?: boolean;
   total_ram_mb?: number;
   free_ram_mb?: number;
   gpus?: { vram_total_mb?: number; vram_used_mb?: number }[];
@@ -82,8 +86,9 @@ export async function getHardware(): Promise<Hardware> {
     const raw = await invoke<RawHardware>('get_hardware_capabilities');
     // total_ram_mb === 0 is the backend's "read failed" sentinel — treat it the
     // same as a thrown error and fall back to the capable default.
-    if (!raw || !raw.total_ram_mb) return CAPABLE_DEFAULT;
+    if (!raw || !raw.total_ram_mb) return { ...CAPABLE_DEFAULT, isAndroid: raw?.is_android ?? false };
     return {
+      isAndroid: raw.is_android ?? false,
       totalRamMb: raw.total_ram_mb,
       freeRamMb: raw.free_ram_mb ?? 0,
       gpus: (raw.gpus ?? []).map((gpu) => ({
@@ -93,7 +98,9 @@ export async function getHardware(): Promise<Hardware> {
       unknown: false,
     };
   } catch {
-    return CAPABLE_DEFAULT;
+    // The platform probe is only a fallback when native hardware IPC fails.
+    // Prefer the backend's is_android value whenever the command succeeds.
+    return { ...CAPABLE_DEFAULT, isAndroid };
   }
 }
 
@@ -127,6 +134,7 @@ const STT_COHERE = { id: 'cohere', sizeMb: 1708 };
 const LLM_QWEN_1_5B = { id: 'qwen2.5-1.5b-instruct', sizeMb: 1080 };
 const LLM_QWEN_3B = { id: 'qwen2.5-3b-instruct', sizeMb: 1960 };
 const LLM_QWEN_7B = { id: 'qwen2.5-7b-instruct', sizeMb: 4680 };
+const LLM_QWEN_0_5B = { id: 'qwen2.5-0.5b-instruct', sizeMb: 430 };
 
 type LocalTier = {
   key: string;
@@ -165,6 +173,26 @@ const LOCAL_TIERS: LocalTier[] = [
   },
 ];
 
+// Keep phone defaults small. Larger models remain available in Advanced.
+const ANDROID_LOCAL_TIERS: LocalTier[] = [
+  {
+    key: 'fastest', name: 'Fastest',
+    tagline: 'Small English speech and cleanup models. Private and offline.',
+    position: 0.85, stt: STT_MOONSHINE_TINY, llm: LLM_QWEN_0_5B,
+  },
+  {
+    key: 'balanced', name: 'Balanced',
+    tagline: 'English speech with stronger cleanup. Private and offline.',
+    position: 0.6, stt: STT_MOONSHINE_TINY, llm: LLM_QWEN_1_5B,
+  },
+];
+
+function localTiers(hardware: Hardware): LocalTier[] {
+  // Unknown phone RAM gets the smallest pair rather than desktop-sized defaults.
+  if (hardware.isAndroid) return hardware.unknown ? ANDROID_LOCAL_TIERS.slice(0, 1) : ANDROID_LOCAL_TIERS;
+  return LOCAL_TIERS;
+}
+
 function localTierSizes(tier: LocalTier): number[] {
   return tier.llm ? [tier.stt.sizeMb, tier.llm.sizeMb] : [tier.stt.sizeMb];
 }
@@ -198,7 +226,7 @@ function localTierPreset(tier: LocalTier, idPrefix: string): Preset {
 // The floor: transcription with no cleanup, for machines too small for a local
 // LLM (or with no key to run cloud cleanup). Uses the lightest STT that fits.
 function transcriptionOnlyPreset(hardware: Hardware): Preset {
-  const stt = fitsHardware(hardware, [STT_PARAKEET_V3.sizeMb]) ? STT_PARAKEET_V3 : STT_MOONSHINE_TINY;
+  const stt = !hardware.isAndroid && fitsHardware(hardware, [STT_PARAKEET_V3.sizeMb]) ? STT_PARAKEET_V3 : STT_MOONSHINE_TINY;
   return {
     id: 'local-transcription-only',
     kind: 'preset',
@@ -353,15 +381,15 @@ function buildCloudPresets(status: KeyStatus, hardware: Hardware, localSupported
   // machine can run.
   if (localSupported) {
     const local = bestViableLocalTier(hardware);
-    if (local) {
+    if (local || hardware.isAndroid) {
       presets.push({
         id: 'cloud-private',
         kind: 'preset',
         name: 'Local AI',
         tagline: 'Runs entirely on your device. Private and offline. Nothing leaves your machine.',
-        position: local.position,
+        position: local?.position ?? 0.9,
         offline: true,
-        target: localTierTarget(local),
+        target: local ? localTierTarget(local) : transcriptionOnlyPreset(hardware).target,
       });
     }
   }
@@ -389,7 +417,7 @@ function cloudTarget(opts: {
 }
 
 function buildLocalOnlyPresets(hardware: Hardware): Preset[] {
-  const viable = LOCAL_TIERS.filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
+  const viable = localTiers(hardware).filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
   if (viable.length === 0) {
     return [transcriptionOnlyPreset(hardware)];
   }
@@ -399,7 +427,7 @@ function buildLocalOnlyPresets(hardware: Hardware): Preset[] {
 // Most-accurate tier that still fits, for the cloud "Local AI" card. Falls back
 // through lighter tiers; null only if even the lightest local config won't fit.
 function bestViableLocalTier(hardware: Hardware): LocalTier | null {
-  const viable = LOCAL_TIERS.filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
+  const viable = localTiers(hardware).filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
   if (viable.length === 0) return null;
   // LOCAL_TIERS is ordered efficient → accurate; last viable is the most accurate.
   return viable[viable.length - 1];

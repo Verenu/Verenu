@@ -40,10 +40,8 @@ pub fn frontend_ready(
 /// `system::platform::is_macos_intel` for the reasoning.
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
-    // Android has no ONNX Runtime speech builds nor a llama-server runtime
-    // (see crate::android::local_ai_supported_on_android and docs/ANDROID.md).
     if cfg!(target_os = "android") {
-        return false;
+        return crate::android::local_ai_supported_on_android();
     }
     !crate::system::platform::is_macos_intel()
 }
@@ -76,6 +74,7 @@ pub struct GpuCapability {
 /// capable" rather than "no memory".
 #[derive(serde::Serialize)]
 pub struct HardwareCapabilities {
+    pub is_android: bool,
     pub total_ram_mb: u64,
     pub free_ram_mb: u64,
     pub gpus: Vec<GpuCapability>,
@@ -93,6 +92,7 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
             })
             .collect();
         Ok(HardwareCapabilities {
+            is_android: cfg!(target_os = "android"),
             total_ram_mb: mem.map(|m| m.total_mb).unwrap_or(0),
             free_ram_mb: mem.map(|m| m.available_mb).unwrap_or(0),
             gpus,
@@ -102,6 +102,7 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
     .unwrap_or_else(|e| {
         log::error!("{e}");
         HardwareCapabilities {
+            is_android: cfg!(target_os = "android"),
             total_ram_mb: 0,
             free_ram_mb: 0,
             gpus: Vec::new(),

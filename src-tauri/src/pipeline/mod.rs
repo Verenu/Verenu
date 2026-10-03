@@ -338,7 +338,13 @@ struct ProvidedCapture {
 
 /// Browser audio enters the production pipeline after microphone capture.
 /// Delivery remains event-only, so tests cannot paste into an unrelated app.
-#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+#[cfg(all(
+    debug_assertions,
+    any(
+        all(feature = "dev-session", desktop),
+        all(feature = "android-local-testing", target_os = "android")
+    )
+))]
 pub(crate) async fn run_provided_audio(
     app: AppHandle,
     state: SharedState,
@@ -388,7 +394,6 @@ async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
         }
     }
 }
-
 
 /// Concatenates a previous (interrupted) dictation's audio onto a freshly
 /// captured one — both are already resampled to the fixed 16kHz mono target,

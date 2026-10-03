@@ -173,10 +173,18 @@ fn runtime_binary_name() -> &'static str {
 }
 
 pub fn runtime_root() -> PathBuf {
+    #[cfg(target_os = "android")]
+    return crate::android::local_ai::native_library_dir()
+        .unwrap_or_else(|_| Path::new(""))
+        .to_path_buf();
+    #[cfg(not(target_os = "android"))]
     super::LocalLlmManager::shared_models_root().join("bin")
 }
 
 pub fn is_runtime_installed(root: &Path) -> bool {
+    #[cfg(target_os = "android")]
+    return root.join(crate::android::local_ai::LLAMA_BINARY).is_file();
+    #[cfg(not(target_os = "android"))]
     root.join(runtime_binary_name()).is_file()
 }
 
@@ -194,7 +202,11 @@ pub fn runtime_info(is_downloading: bool) -> LocalLlmRuntimeInfo {
         installed: is_runtime_installed(&runtime_root()),
         is_downloading,
         backend,
-        approx_download_mb: backend.approx_download_mb(),
+        approx_download_mb: if cfg!(target_os = "android") {
+            0
+        } else {
+            backend.approx_download_mb()
+        },
     }
 }
 
@@ -368,15 +380,23 @@ pub async fn ensure_llama_server_binary(
     app: &AppHandle,
     cancel: &AtomicBool,
 ) -> anyhow::Result<PathBuf> {
-    let result = ensure_llama_server_binary_inner(app, cancel).await;
-    if result.is_err() {
-        // The runtime is considered installed solely by the presence of its
-        // server binary. Remove an incomplete multi-asset extraction so a
-        // later attempt cannot mistake one archive for a complete runtime.
-        let root = runtime_root();
-        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(root)).await;
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, cancel);
+        return crate::android::local_ai::llama_binary();
     }
-    result
+    #[cfg(not(target_os = "android"))]
+    {
+        let result = ensure_llama_server_binary_inner(app, cancel).await;
+        if result.is_err() {
+            // The runtime is considered installed solely by the presence of its
+            // server binary. Remove an incomplete multi-asset extraction so a
+            // later attempt cannot mistake one archive for a complete runtime.
+            let root = runtime_root();
+            let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(root)).await;
+        }
+        result
+    }
 }
 
 async fn ensure_llama_server_binary_inner(
@@ -477,6 +497,9 @@ pub fn cleanup_failed_runtime_download(root: &Path) {
 /// it, for users who want to reclaim the disk space. Safe to call even if
 /// nothing is installed.
 pub fn delete_runtime(root: &Path) -> anyhow::Result<()> {
+    if cfg!(target_os = "android") {
+        anyhow::bail!("The Android cleanup runtime is included with the app. Delete model downloads to reclaim storage.")
+    }
     if root.is_dir() {
         std::fs::remove_dir_all(root)?;
     }

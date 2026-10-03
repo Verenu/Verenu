@@ -1008,6 +1008,7 @@
   </Dropdown>
 </div>
 
+{#if !hardware.isAndroid}
 <div class="setting-row" data-setting-target="models-folder">
   <div>
     <div class="label">Models folder</div>
@@ -1015,6 +1016,7 @@
   </div>
   <button class="btn-ghost" type="button" onclick={openLocalModelsFolder}>Open models folder</button>
 </div>
+{/if}
 
 <style>
 
