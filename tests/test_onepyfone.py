@@ -108,6 +108,29 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(test["observed"], "cargo missing")
         self.assertEqual(test["measurements"], {"cargo": False})
 
+    def test_no_server_plan_uses_explicit_renderer_url_for_local_checks(self):
+        selected = [
+            runner.entry("preflight.test", "preflight", "Preflight"),
+            runner.entry("contract.test", "contract", "Contract"),
+        ]
+        args = type("Args", (), {
+            "test_url": "http://127.0.0.1:4173",
+            "no_server": True,
+            "verbose": False,
+            "workers": 1,
+            "tauri": False,
+        })()
+        urls = []
+
+        def capture_url(entries, url, *_args):
+            urls.append(url)
+            return {}
+
+        with patch.object(runner, "run_group", side_effect=capture_url):
+            runner.execute_plan(selected, args)
+
+        self.assertEqual(urls, [args.test_url, args.test_url])
+
     def test_junit_escapes_failure_attributes(self):
         selected = runner.select_tests(["preflight"], "environment")
         result = runner.TestResult("failed", observed='expected "quoted" value', output="bad <value>")
