@@ -159,6 +159,9 @@ impl LocalLlmManager {
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local cleanup model: {model_id}"))?;
         let root = self.prepare_models_dir()?;
+        // Every model download entry point needs the shared engine, including
+        // requests for weights that are already installed.
+        self.download_runtime(app)?;
         if manifest.is_downloaded(&root) {
             let _ = app.emit(
                 "local-llm-model-download-complete",

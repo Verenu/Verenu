@@ -456,6 +456,22 @@ mod setting_key_tests {
     use super::*;
 
     #[test]
+    fn local_model_maps_accept_all_picker_providers_and_reject_invalid_values() {
+        let value = serde_json::json!({
+            "groq": [], "openai": [], "google": [], "assemblyai": [],
+            "openrouter": [], "xai": [], "local": ["qwen2.5-7b-instruct"]
+        });
+        for key in [
+            store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+            store::CLEANUP_MODELS_BY_PROVIDER,
+        ] {
+            assert!(validate_setting(key, &value).is_ok());
+            assert!(validate_setting(key, &serde_json::json!({"local": [""]})).is_err());
+            assert!(validate_setting(key, &serde_json::json!({"unknown": ["model"]})).is_err());
+        }
+    }
+
+    #[test]
     fn readable_settings_exclude_credential_keys() {
         assert!(is_readable_setting_key(store::APPEARANCE_MODE));
         assert!(!is_readable_setting_key(store::KEY_GROQ));

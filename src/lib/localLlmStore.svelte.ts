@@ -95,7 +95,7 @@ export async function downloadLocalLlmModel(modelIdValue: string): Promise<boole
   try {
     ensureNotificationPermission().catch(() => {});
     await invoke('download_local_llm_model', { modelId: modelIdValue });
-    await Promise.all([refreshLocalLlmModels(), refreshLocalLlmState()]);
+    await Promise.all([refreshLocalLlmModels(), refreshLocalLlmState(), refreshLocalLlmRuntimeInfo()]);
     return true;
   } catch (err) {
     console.error('download local cleanup model failed', err);

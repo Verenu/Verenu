@@ -178,6 +178,10 @@
     // A model that isn't on disk yet can't be chosen, so the row's job is to
     // fetch it. Selecting it afterwards is a second, deliberate click.
     if (row.remedy === 'download') return local.onDownload(row.id);
+    if (row.provider === 'local' && runtimePending) {
+      if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
+      return;
+    }
     if (mode === 'fallback') {
       if (isActive(row.key) || isFallback(row.key)) return;
       onAddFallback(row.key);
@@ -188,6 +192,10 @@
   }
 
   function addFallback(row: ModelRow) {
+    if (row.provider === 'local' && runtimePending) {
+      if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
+      return;
+    }
     if (isActive(row.key) || isFallback(row.key)) return;
     onAddFallback(row.key);
   }
@@ -382,6 +390,7 @@
                   On-device cleanup needs a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
                   Downloading any model below fetches it too.
                 </span>
+                <button class="btn-ghost btn-compact" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
               {/if}
             </div>
           {:else if group.provider === 'local' && local.runtime?.info?.installed}
@@ -1131,4 +1140,3 @@
     }
   }
 </style>
-
