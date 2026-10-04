@@ -840,10 +840,37 @@ pub(super) fn emit_connectivity_recheck(app: &AppHandle) {
     app.emit("verenu:recheck-connectivity", ()).ok();
 }
 
+/// Keep clipboard fallback for incidental self-targets, but let dictation
+/// captured in the main window use the normal focus-restoring paste path.
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(super) fn self_injection_requires_clipboard(app: &AppHandle, target_hwnd: usize) -> bool {
+    #[cfg(windows)]
+    let main_hwnd = app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as usize);
+    #[cfg(not(windows))]
+    let main_hwnd = None;
+
+    should_copy_self_target(
+        target_hwnd,
+        main_hwnd,
+        foreground_is_own_process(),
+        hwnd_is_own_process(target_hwnd),
+    )
+}
+
+fn should_copy_self_target(
+    target_hwnd: usize,
+    main_hwnd: Option<usize>,
+    foreground_owned: bool,
+    target_owned: bool,
+) -> bool {
+    let captured_main = target_hwnd != 0 && main_hwnd == Some(target_hwnd);
+    !captured_main && (foreground_owned || target_owned)
+}
+
 /// Returns true if our own process currently owns the foreground window.
-/// Catches the case where the user opened the Verenu main window while
-/// transcribing — if we tried to Ctrl+V / Cmd+V in that state the paste would
-/// land in our own WebView and silently disappear.
 pub(super) fn foreground_is_own_process() -> bool {
     #[cfg(windows)]
     unsafe {
@@ -888,6 +915,24 @@ pub(super) fn hwnd_is_own_process(hwnd: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_dictation_uses_normal_injection() {
+        // A processing pill can gain focus without changing the captured target.
+        for foreground_owned in [false, true] {
+            assert!(!should_copy_self_target(42, Some(42), foreground_owned, true));
+        }
+    }
+
+    #[test]
+    fn incidental_self_targets_keep_clipboard_fallback() {
+        assert!(should_copy_self_target(43, Some(42), true, true));
+        assert!(should_copy_self_target(43, Some(42), false, true));
+        assert!(should_copy_self_target(99, Some(42), true, false));
+        assert!(should_copy_self_target(42, None, true, true));
+        assert!(should_copy_self_target(0, Some(0), true, false));
+        assert!(!should_copy_self_target(99, Some(42), false, false));
+    }
 
     fn fresh_state() -> SharedState {
         Arc::new(Mutex::new(AppState {

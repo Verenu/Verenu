@@ -6,7 +6,6 @@
   import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
-  import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
   import { countCodePoints, MISTAKE_LIMIT, requireCreatedRecordMeta, TERM_LIMIT } from './helpers';
 
@@ -201,7 +200,6 @@
         autocomplete="off"
         spellcheck="false"
       />
-      <MicInputButton onResult={(t) => draftTerm = t} />
     </div>
     <p class="field-hint">The exact word or phrase you want the AI to use.</p>
 
@@ -220,7 +218,6 @@
         autocomplete="off"
         spellcheck="false"
       />
-      <MicInputButton onResult={(t) => draftMistake = t} />
     </div>
     <p class="field-hint">What the transcription model typically writes instead. Separate multiple mistranscriptions with commas. Skip if the term just needs to be in the AI's awareness.</p>
   </div>
