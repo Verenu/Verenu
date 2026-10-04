@@ -413,6 +413,8 @@ fn allowed(command: &str) -> bool {
             | "get_hardware_capabilities"
             | "local_models_supported_on_this_platform"
             | "list_local_stt_models"
+            | "get_model_performance"
+            | "benchmark_local_models"
             | "list_local_llm_models"
             | "get_local_transcription_state"
             | "get_local_llm_state"

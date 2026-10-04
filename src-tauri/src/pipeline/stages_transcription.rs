@@ -242,6 +242,7 @@ pub(super) async fn transcribe_any(
     model: &str,
     gen: u64,
 ) -> anyhow::Result<String> {
+    let started = std::time::Instant::now();
     if provider_id == store::LOCAL {
         let manager = app
             .state::<crate::local_stt::LocalTranscriptionManager>()
@@ -265,6 +266,16 @@ pub(super) async fn transcribe_any(
             language.to_string(),
         )
         .await;
+        if already_warm {
+            crate::model_performance::record(
+                "transcription",
+                provider_id,
+                model,
+                started.elapsed().as_secs_f64() * 1000.0 * 10_000.0
+                    / audio.duration_ms.max(1) as f64,
+                result.is_ok(),
+            );
+        }
         // Only switch back to "processing" if we actually left it for
         // "loading_local_model" above — re-emitting the same state the pill
         // is already in is a no-op for the frontend, but it's still a wasted
@@ -283,7 +294,26 @@ pub(super) async fn transcribe_any(
         (_, Some(key)) => key,
         _ => anyhow::bail!("No API key saved for {provider_id}"),
     };
-    transcription::transcribe(audio.wav_bytes()?, target, key, language, model, gen).await
+    // Allow longer recordings more processing time, while bounding a stalled
+    // cloud request so an installed local fallback can still be reached.
+    let timeout = std::time::Duration::from_secs((20 + audio.duration_ms / 500).min(120));
+    let result = tokio::time::timeout(
+        timeout,
+        transcription::transcribe(audio.wav_bytes()?, target, key, language, model, gen),
+    )
+    .await
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("cloud transcription timeout")));
+    if result.is_ok() && !crate::api::custom::is_custom_id(provider_id) {
+        crate::system::connectivity::note_online();
+    }
+    crate::model_performance::record(
+        "transcription",
+        provider_id,
+        model,
+        started.elapsed().as_secs_f64() * 1000.0 * 10_000.0 / audio.duration_ms.max(1) as f64,
+        result.is_ok(),
+    );
+    result
 }
 
 /// Active connectivity disambiguation: returns true when the user's own
@@ -291,7 +321,7 @@ pub(super) async fn transcribe_any(
 /// preference so the probe honors "don't contact Verenu" — falling back to
 /// google.com when Verenu checks are disabled, or when Verenu itself is the
 /// thing that's unreachable.
-async fn confirm_offline(app: &AppHandle) -> bool {
+pub(super) async fn confirm_offline(app: &AppHandle) -> bool {
     let checks_enabled = store::settings_snapshot(app)
         .map(|s| {
             s.get(store::VERENU_SERVICE_CHECKS_ENABLED)
@@ -382,6 +412,18 @@ pub(super) async fn run_transcription(
             model,
         })
     });
+    let mut notices = Vec::new();
+    if provider_id == store::LOCAL && cfg.transcription_provider != store::LOCAL {
+        notices.push("Used local speech models because cloud transcription was unavailable.");
+    }
+    if cfg.dual_transcription_enabled && alternate.is_none() {
+        notices.push(
+            "Only one speech model succeeded. The second transcription check was unavailable.",
+        );
+    }
+    if !notices.is_empty() {
+        app.emit("verenu:model-notice", notices.join(" ")).ok();
+    }
     let api_used = match &alternate {
         Some(candidate) => format!(
             "primary={}/{};secondary={}/{}",
@@ -402,27 +444,43 @@ async fn run_dual_transcription_candidates(
     cfg: &store::PipelineConfig,
     gen: u64,
 ) -> anyhow::Result<(String, String, String, Option<(String, String, String)>)> {
-    let chain = transcription_model_chain(cfg);
+    let chain = runtime_model_chain(Some(app), cfg, "transcription");
     let mut next_index = 0usize;
     let mut in_flight = tokio::task::JoinSet::<CandidateOutcome>::new();
     let mut successes = Vec::<(usize, String, String, String)>::new();
     let mut last_err: Option<anyhow::Error> = None;
 
-    while next_index < chain.len() && in_flight.len() < 2 {
-        spawn_transcription_candidate(
-            &mut in_flight,
-            app,
-            audio,
-            cfg,
-            next_index,
-            chain[next_index].clone(),
-            next_index > 0,
-            gen,
-        );
-        next_index += 1;
-    }
-
-    while let Some(joined) = in_flight.join_next().await {
+    let mut offline = crate::system::connectivity::recently_confirmed_offline();
+    loop {
+        while next_index < chain.len() && successes.len() + in_flight.len() < 2 {
+            let (provider, _) = &chain[next_index];
+            if !candidate_available_offline(provider, offline) {
+                next_index += 1;
+                continue;
+            }
+            // Do not start local inference until every prior cloud attempt
+            // settles. Local engines also need sequential model requests.
+            if provider == store::LOCAL && !in_flight.is_empty() {
+                break;
+            }
+            spawn_transcription_candidate(
+                &mut in_flight,
+                app,
+                audio,
+                cfg,
+                next_index,
+                chain[next_index].clone(),
+                next_index > 0 && provider != store::LOCAL,
+                gen,
+            );
+            next_index += 1;
+            if provider == store::LOCAL {
+                break;
+            }
+        }
+        let Some(joined) = in_flight.join_next().await else {
+            break;
+        };
         match joined {
             Ok((index, provider, model, Ok(text))) if !text.trim().is_empty() => {
                 log::debug!(
@@ -454,25 +512,18 @@ async fn run_dual_transcription_candidates(
                     model,
                     trim_err(&error.to_string())
                 );
+                if provider != store::LOCAL
+                    && (crate::api::is_connectivity_error(&error)
+                        || error.to_string().contains("timeout"))
+                    && !offline
+                {
+                    offline = confirm_offline(app).await;
+                }
                 last_err = Some(error);
             }
             Err(error) => {
                 log::warn!("pipeline: dual transcription task failed error={error}");
             }
-        }
-
-        if successes.len() + in_flight.len() < 2 && next_index < chain.len() {
-            spawn_transcription_candidate(
-                &mut in_flight,
-                app,
-                audio,
-                cfg,
-                next_index,
-                chain[next_index].clone(),
-                true,
-                gen,
-            );
-            next_index += 1;
         }
     }
 
@@ -571,9 +622,15 @@ async fn run_primary_transcription_chain(
     gen: u64,
 ) -> anyhow::Result<(String, String, String)> {
     let mut last_err: Option<anyhow::Error> = None;
+    let mut offline = crate::system::connectivity::recently_confirmed_offline();
     for (provider_index, (provider_id, model)) in
-        transcription_model_chain(cfg).into_iter().enumerate()
+        runtime_model_chain(Some(app), cfg, "transcription")
+            .into_iter()
+            .enumerate()
     {
+        if !candidate_available_offline(&provider_id, offline) {
+            continue;
+        }
         if provider_index > 0 {
             if let (Some(state), Some(analytics)) = (
                 app.try_state::<SharedState>(),
@@ -625,6 +682,12 @@ async fn run_primary_transcription_chain(
                 // common config: cloud primary + local fallback) skipped
                 // every configured fallback and failed outright.
                 let retryable = crate::api::is_retryable_provider_error(&e);
+                if provider_id != store::LOCAL
+                    && (crate::api::is_connectivity_error(&e) || e.to_string().contains("timeout"))
+                    && !offline
+                {
+                    offline = confirm_offline(app).await;
+                }
                 log::warn!(
                     "pipeline: transcription provider failed gen={} provider={} model={} retryable={} error={}",
                     gen,
