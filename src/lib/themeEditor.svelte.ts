@@ -4,6 +4,7 @@
 import { appStore } from './stores';
 import {
   applyPalette,
+  broadcastAppearance,
   withAppearanceLock,
   persistSavedThemes,
   snapshotAppearance,
@@ -58,6 +59,7 @@ function previewDraft() {
   appStore.appearanceMode = 'custom';
   appStore.customTheme = themeColors(themeEditor.draft.palette);
   appStore.accentColor = themeEditor.draft.accent;
+  broadcastAppearance('custom', appStore.customTheme, appStore.accentColor);
 }
 
 function restoreBaseline() {
@@ -67,6 +69,7 @@ function restoreBaseline() {
   appStore.customTheme = baseline.customTheme;
   appStore.accentColor = baseline.accent;
   appStore.activeThemeId = baseline.themeId;
+  broadcastAppearance(baseline.mode, baseline.customTheme, baseline.accent);
 }
 
 function close() {
@@ -107,13 +110,14 @@ export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTh
 
 export function updateThemeDraft(patch: Partial<Draft>) {
   if (!themeEditor.open || themeEditor.saving) return;
+  const appearanceChanged = patch.palette !== undefined || patch.accent !== undefined;
   themeEditor.draft = {
     ...themeEditor.draft,
     ...patch,
     palette: patch.palette ? themeColors(patch.palette) : themeEditor.draft.palette,
   };
   themeEditor.error = '';
-  previewDraft();
+  if (appearanceChanged) previewDraft();
 }
 
 /** Closes without saving and puts back what was applied before editing. */
