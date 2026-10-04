@@ -54,6 +54,10 @@
   import Toggle from '../components/Toggle.svelte';
   import { matchesAppSearch, rankAppMatches } from '../components/appMappings/helpers';
   import { isAndroid } from '../platform';
+
+  // The page swap leaves a transform on the page, which re-bases `position: fixed`.
+  // On Android the pickers dock to the screen, so they move to <body> like the dialogs.
+  const portalOnAndroid = (node: HTMLElement) => (isAndroid ? portal(node) : {});
   import { handleListboxOptionKeydown, focusListboxOption } from '../components/appMappings/listbox';
   import DictionaryModal from './dictionary/DictionaryModal.svelte';
   import SnippetModal from './snippets/SnippetModal.svelte';
@@ -149,6 +153,7 @@
   let contextModalMode = $state<'create' | 'edit'>('create');
   let contextName = $state('');
   let contextError = $state('');
+  let deleteArmed = $state(false);
   let savingContext = $state(false);
   let contextInput = $state<HTMLInputElement | null>(null);
   let modalAppQuery = $state('');
@@ -689,8 +694,30 @@
     modalWebsiteInput = '';
     modalWebsiteError = '';
     contextError = '';
+    deleteArmed = false;
     closeFieldMenu();
     modal = 'context';
+  }
+
+  // Two taps, like the desktop row menu: arm, then confirm.
+  async function deleteEditingContext() {
+    const target = contexts.find((context) => context.id === editingContextId);
+    if (!target || target.is_everywhere) return;
+    if (!deleteArmed) {
+      deleteArmed = true;
+      return;
+    }
+    try {
+      await invoke('delete_context', { contextId: target.id });
+      contextsStore.contexts = contextsStore.contexts.filter((context) => context.id !== target.id);
+      contextsStore.targets = contextsStore.targets.filter((item) => item.context_id !== target.id);
+      contextsStore.websites = contextsStore.websites.filter((item) => item.context_id !== target.id);
+      if (contextsStore.selectedId === target.id) contextsStore.selectedId = EVERYWHERE_ID;
+      modal = null;
+    } catch (error) {
+      contextError = classifyIpcError(error).message;
+      deleteArmed = false;
+    }
   }
 
   function closeFieldMenu() {
@@ -1102,6 +1129,10 @@
           <div>
             <h2>{selectedContext.name}</h2>
             <p>{selectedContext.is_everywhere ? 'These items are used when no specific app context group is active.' : 'These items are used when this context group is active.'}</p>
+            <!-- The desktop sidebar's row menu is the editor's entry point; there is no sidebar on a phone. -->
+            {#if isAndroid}
+              <button class="btn-ghost btn-compact context-edit-btn" type="button" onclick={() => openContextModal('edit', selectedContext.id)}>Edit context group</button>
+            {/if}
           </div>
           {#if !selectedContext.is_everywhere}
             <div class="context-actions">
@@ -1110,7 +1141,7 @@
                 <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
               </button>
               {#if appPickerOpen}
-                <div class="app-picker ui-dropdown-menu" role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                <div class="app-picker ui-dropdown-menu" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
                   <input
                     class="ui-input ui-input--dense app-picker-search"
                     type="text"
@@ -1149,7 +1180,7 @@
                 Add website
               </button>
               {#if websitePickerOpen}
-                <div class="app-picker ui-dropdown-menu website-picker" role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                <div class="app-picker ui-dropdown-menu website-picker" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
                   <input
                     class="ui-input ui-input--dense app-picker-search"
                     type="text"
@@ -1497,7 +1528,7 @@
   <div
     class="modal-card ui-modal-card ui-modal-card--portalled context-modal"
     use:portal
-    use:modalFocusTrap={{ active: true, initialFocus: () => contextInput }}
+    use:modalFocusTrap={{ active: true, initialFocus: () => (isAndroid && contextModalMode === 'edit' ? document.querySelector<HTMLElement>('.context-modal .ui-modal-head button') ?? contextInput : contextInput) }}
     role="dialog"
     aria-modal="true"
     aria-labelledby="context-modal-title"
@@ -1704,6 +1735,11 @@
         <p class="field-hint">Dictate in one of these apps or sites to use this context group automatically. You can add more later too.</p>
       {:else}
         <p class="field-hint">Manage this context group's apps and websites from the header above.</p>
+        {#if isAndroid && contexts.find((context) => context.id === editingContextId && !context.is_everywhere)}
+          <button class="btn-danger context-delete-btn" type="button" onclick={() => void deleteEditingContext()}>
+            {deleteArmed ? 'Tap again to delete this group' : 'Delete context group'}
+          </button>
+        {/if}
       {/if}
     </div>
     <div class="ui-modal-foot">

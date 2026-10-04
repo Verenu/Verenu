@@ -97,9 +97,10 @@
   border-radius: 12px;
 }
 
-.app[data-android='true'] .ui-dropdown-option,
-.app[data-android='true'] .ui-dropdown-menu button {
+:root:has(.app[data-android='true']) .ui-dropdown-option,
+:root:has(.app[data-android='true']) .ui-dropdown-menu button {
   min-height: 44px;
+  font-size: 15px;
 }
 
 /* A 30x16 desktop switch is a 4mm target on a phone. */
@@ -521,4 +522,64 @@
   padding: 18px 16px;
   color: var(--ink-mute);
   font-size: 14px;
+}
+
+/* -------------------------------------------------- context group editor */
+
+.app[data-android='true'] .context-edit-btn {
+  margin-top: 12px;
+}
+
+.app[data-android='true'] .context-delete-btn {
+  width: 100%;
+  margin-top: 20px;
+}
+
+/* Pickers (apps, websites) open as a panel docked above the keyboard. The
+   desktop dropdown anchors to the trigger's right edge and, in the narrow
+   layout, becomes a flex item that shoves the other buttons across the row. */
+:root:has(.app[data-android='true']) .app-picker {
+  position: fixed;
+  z-index: 80;
+  top: auto;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  width: auto;
+  max-height: min(65dvh, 520px);
+  margin: 0;
+  padding: 10px;
+  border-radius: 16px;
+}
+
+:root:has(.app[data-android='true']) .app-picker-list {
+  flex: 1 1 auto;
+  max-height: none;
+  overscroll-behavior: contain;
+}
+
+/* The group editor is a full screen, not a pull-up sheet. */
+:root:has(.app[data-android='true']) .modal-card.context-modal {
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  translate: none;
+  border: 0;
+  border-radius: 0;
+}
+
+:root:has(.app[data-android='true']) .modal-card.context-modal::before {
+  display: none;
+}
+
+:root:has(.app[data-android='true']) .context-modal .ui-modal-head {
+  padding-top: 18px;
+  padding-bottom: 6px;
+}
+
+:root:has(.app[data-android='true']) .context-modal .ui-modal-title {
+  font-size: 22px;
+  font-weight: 700;
 }
