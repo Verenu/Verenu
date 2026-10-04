@@ -249,6 +249,7 @@
         SETTINGS_SECTION_ORDER,
       );
       appStore.settingsSection = 'models';
+      appStore.settingsMobileList = false;
       appStore.settingsOpen = true;
       return;
     }
@@ -264,6 +265,7 @@
       SETTINGS_SECTION_ORDER,
     );
     appStore.settingsSection = section;
+    appStore.settingsMobileList = false;
     appStore.settingsOpen = true;
     errorToast = '';
     errorToastKind = null;
