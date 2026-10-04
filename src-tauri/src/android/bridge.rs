@@ -394,6 +394,31 @@ fn ok(body: Value) -> Vec<u8> {
 // Route handlers
 // ---------------------------------------------------------------------------
 
+fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
+    use crate::data::store;
+    if !settings
+        .get(store::ANDROID_PILL_HIDE_OFFLINE)
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    // Use the pipeline's resolver so legacy selections and defaults agree.
+    // Custom providers may be on the LAN; the setting is their explicit override.
+    let cfg = store::load_pipeline_config(settings);
+    let needs_network = |model: &str| {
+        !store::parse_model_id(model).is_some_and(|(provider, _)| provider == store::LOCAL)
+    };
+    needs_network(&cfg.transcription_default_model)
+        || cfg
+            .transcription_fallback_models
+            .iter()
+            .any(|m| needs_network(m))
+        || (cfg.cleanup_enabled
+            && (needs_network(&cfg.cleanup_default_model)
+                || cfg.cleanup_fallback_models.iter().any(|m| needs_network(m))))
+}
+
 fn state_payload(state: &BridgeState) -> Value {
     // The Android client polls this route frequently. Read the settings store
     // once for the entire payload instead of cloning its snapshot per field.
@@ -478,6 +503,7 @@ fn state_payload(state: &BridgeState) -> Value {
         "analyticsEnabled": analytics_enabled,
         "pillPosition": pill_position,
         "coverKeyboardMic": cover_keyboard_mic,
+        "hidePillOffline": settings.as_ref().map(hide_pill_offline).unwrap_or(true),
         "appearanceMode": appearance_mode,
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
@@ -1107,6 +1133,97 @@ mod tests {
     use super::*;
     use crate::data::store::SettingsSnapshot;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn offline_pill_policy_tracks_active_model_chains_and_override() {
+        use crate::data::store;
+        let check = |transcription, cleanup, cleanup_enabled, tf: Value, cf: Value, hide| {
+            hide_pill_offline(&SettingsSnapshot::from_pairs([
+                (
+                    store::TRANSCRIPTION_DEFAULT_MODEL.into(),
+                    json!(transcription),
+                ),
+                (store::CLEANUP_DEFAULT_MODEL.into(), json!(cleanup)),
+                (store::CLEANUP_ENABLED.into(), json!(cleanup_enabled)),
+                (store::TRANSCRIPTION_FALLBACK_MODELS.into(), tf),
+                (store::CLEANUP_FALLBACK_MODELS.into(), cf),
+                (store::ANDROID_PILL_HIDE_OFFLINE.into(), hide),
+            ]))
+        };
+        assert!(hide_pill_offline(&SettingsSnapshot::from_pairs([])));
+        assert!(!check(
+            "local/moonshine-tiny",
+            "local/qwen",
+            true,
+            json!([]),
+            json!([]),
+            Value::Null
+        ));
+        assert!(check(
+            "groq/whisper",
+            "local/qwen",
+            true,
+            json!([]),
+            json!([]),
+            json!(true)
+        ));
+        assert!(check(
+            "local/moonshine-tiny",
+            "groq/llama",
+            true,
+            json!([]),
+            json!([]),
+            json!(true)
+        ));
+        assert!(!check(
+            "local/moonshine-tiny",
+            "groq/llama",
+            false,
+            json!([]),
+            json!(["groq/llama"]),
+            json!(true)
+        ));
+        assert!(check(
+            "local/moonshine-tiny",
+            "local/qwen",
+            false,
+            json!(["groq/whisper"]),
+            json!([]),
+            json!(true)
+        ));
+        assert!(check(
+            "local/moonshine-tiny",
+            "local/qwen",
+            true,
+            json!([]),
+            json!(["groq/llama"]),
+            json!(true)
+        ));
+        assert!(!check(
+            "local/moonshine-tiny",
+            "local/qwen",
+            true,
+            json!(["local/parakeet-v3"]),
+            json!(["local/qwen-other"]),
+            json!(true)
+        ));
+        assert!(!check(
+            "custom-lan/speech",
+            "custom-lan/cleanup",
+            true,
+            json!([]),
+            json!([]),
+            json!(false)
+        ));
+        let legacy = SettingsSnapshot::from_pairs([
+            (
+                store::TRANSCRIPTION_MODEL.into(),
+                json!("local/moonshine-tiny"),
+            ),
+            (store::CLEANUP_MODEL.into(), json!("local/qwen")),
+        ]);
+        assert!(!hide_pill_offline(&legacy));
+    }
 
     #[test]
     fn analytics_settings_are_allowlisted_and_normalized() {

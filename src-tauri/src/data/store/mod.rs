@@ -409,6 +409,8 @@ pub const CUSTOM_THEMES: &str = "custom_themes";
 pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
 /// Whether the Android pill covers the keyboard's own mic button when it can find it.
 pub const ANDROID_PILL_COVER_KEYBOARD_MIC: &str = "android_pill_cover_keyboard_mic";
+/// Hide the Android pill offline when selected models need a network provider.
+pub const ANDROID_PILL_HIDE_OFFLINE: &str = "android_pill_hide_offline";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";
