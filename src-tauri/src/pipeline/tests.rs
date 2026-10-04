@@ -85,6 +85,15 @@ fn dual_cleanup_cache_key_changes_with_cleanup_context() {
     );
 
     assert_ne!(first.key, second.key);
+    config
+        .style_prompt_instructions
+        .insert("formal".into(), "Use legal wording.".into());
+    let tone_changed =
+        dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    assert_ne!(
+        changed_context, tone_changed,
+        "Context tone edits invalidate cached cleanup"
+    );
 }
 use crate::api::prompts::looks_like_refusal;
 use crate::data::store;
@@ -377,6 +386,37 @@ fn captured_audio_materializes_wav_only_when_a_cloud_provider_requests_it() {
 }
 
 #[test]
+fn captured_audio_releases_spare_capacity_without_changing_samples() {
+    let mut samples = Vec::with_capacity(16_000 * 120);
+    samples.extend(std::iter::repeat_n(0.25, 16_000 * 60));
+    let before_bytes = samples.capacity() * std::mem::size_of::<f32>();
+    let audio = super::CapturedAudio::from_samples(samples, 16_000, 60_000);
+    assert_eq!(audio.samples_16k.len(), 16_000 * 60);
+    assert_eq!(audio.samples_16k.capacity(), audio.samples_16k.len());
+    assert!(audio.samples_16k.iter().all(|&sample| sample == 0.25));
+    println!(
+        "60s retained PCM capacity bytes: before={before_bytes} after={}",
+        audio.samples_16k.capacity() * std::mem::size_of::<f32>()
+    );
+}
+
+#[test]
+fn cleared_wav_cache_preserves_uploads_and_can_regenerate_for_retry() {
+    let audio = super::CapturedAudio::from_samples(vec![0.25; 16_000], 16_000, 1_000);
+    let retry = audio.clone();
+    let upload = audio.wav_bytes().unwrap();
+    assert_eq!(retry.wav_bytes().unwrap().as_ptr(), upload.as_ptr());
+    audio.clear_wav_cache();
+    assert_eq!(audio.wav_len(), 0);
+    assert_eq!(retry.wav_len(), 0);
+    assert_eq!(upload.len(), 44 + 16_000 * 2);
+    let regenerated = retry.wav_bytes().unwrap();
+    assert_eq!(upload, regenerated);
+    assert_ne!(upload.as_ptr(), regenerated.as_ptr());
+    assert_eq!(audio.samples_16k.as_ptr(), retry.samples_16k.as_ptr());
+}
+
+#[test]
 fn terminal_punctuation_added_for_casual_bare_word() {
     assert_eq!(
         ensure_terminal_punctuation("smart decision", "casual", "medium"),
@@ -563,6 +603,7 @@ fn base_config() -> store::PipelineConfig {
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
         cleanup_prompt_override: String::new(),
+        style_prompt_instructions: Default::default(),
     }
 }
 
@@ -1250,6 +1291,45 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
         .expect("setting disabled should leave output unchanged");
     assert_eq!(result.injected_text, "Send the report now.");
     assert_eq!(result.history_entry.clean_text, "Send the report now.");
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_preserves_style_edits_through_postprocessing() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("um send the file"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("um send — the file"),
+        None,
+        None,
+    );
+    for key in ["medium", "casual", "formal"] {
+        let mut config = base_config();
+        config.style_prompt_instructions.insert(
+            key.into(),
+            "Keep fillers, use em dashes, and omit terminal punctuation.".into(),
+        );
+        let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+        if key == "formal" {
+            assert!(!result.injected_text.to_lowercase().contains("um"));
+            assert!(!result.injected_text.contains('—'));
+            assert!(result.injected_text.ends_with('.'));
+        } else {
+            assert_eq!(result.injected_text, "um send — the file");
+        }
+    }
     reset();
 }
 

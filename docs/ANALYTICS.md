@@ -28,7 +28,7 @@ delivered again in the selected later period. These metrics describe
 installations, not people.
 
 The contract is schema version 4. Product code does not call PostHog directly;
-all Android events go through `VerenuAnalytics.kt`, and all Windows/macOS
+all Android events go through `VerenuAnalytics.kt`, and all desktop
 events go through `src-tauri/src/analytics.rs`. Those boundaries own the
 allowlists, normalization, opt-out state, identity, and transport.
 

@@ -4,11 +4,13 @@ use super::*;
 
 mod api_keys;
 mod custom_providers;
+mod model_catalog;
 mod import_export;
 mod prompts;
 
 pub use api_keys::*;
 pub use custom_providers::*;
+pub use model_catalog::*;
 pub use import_export::*;
 pub use prompts::*;
 
@@ -27,10 +29,13 @@ enum SettingKind {
     ModelMap,
     StringArray,
     CleanupPromptOverride,
+    StylePromptInstructions,
     ProviderModelCache,
     AppearanceMode,
     AccentColor,
     CustomTheme,
+    CustomThemes,
+    AndroidPillPosition,
     Bool,
     MicGain,
     SoundEffectsVolume,
@@ -192,6 +197,19 @@ const SETTING_SPECS: &[SettingSpec] = &[
     ),
     setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
     setting_spec(store::CUSTOM_THEME, SettingKind::CustomTheme, true, true),
+    setting_spec(store::CUSTOM_THEMES, SettingKind::CustomThemes, true, true),
+    setting_spec(
+        store::ANDROID_PILL_POSITION,
+        SettingKind::AndroidPillPosition,
+        true,
+        true,
+    ),
+    setting_spec(
+        store::ANDROID_PILL_COVER_KEYBOARD_MIC,
+        SettingKind::Bool,
+        true,
+        true,
+    ),
     setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
     setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
     setting_spec(store::DEV_MODE_ON_STARTUP, SettingKind::Bool, true, true),
@@ -199,6 +217,12 @@ const SETTING_SPECS: &[SettingSpec] = &[
     setting_spec(
         store::CLEANUP_PROMPT_OVERRIDE,
         SettingKind::CleanupPromptOverride,
+        true,
+        true,
+    ),
+    setting_spec(
+        store::STYLE_PROMPT_INSTRUCTIONS,
+        SettingKind::StylePromptInstructions,
         true,
         true,
     ),
@@ -285,6 +309,30 @@ fn exportable_setting_keys() -> impl Iterator<Item = &'static str> {
         .map(|spec| spec.key)
 }
 
+/// Bounded device-local theme library, using the active palette's validation.
+fn is_saved_themes(value: &serde_json::Value) -> bool {
+    use crate::system::omarchy_theme::{is_custom_theme, is_hex_color};
+    let Some(themes) = value.as_array().filter(|themes| themes.len() <= 24) else {
+        return false;
+    };
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    themes.iter().all(|theme| {
+        let Some(object) = theme.as_object() else { return false; };
+        if object.len() != 4 || !object.keys().all(|key| matches!(key.as_str(), "id" | "name" | "palette" | "accent")) {
+            return false;
+        }
+        let Some(id) = object.get("id").and_then(|v| v.as_str()) else { return false; };
+        let Some(name) = object.get("name").and_then(|v| v.as_str()) else { return false; };
+        !id.is_empty() && id.len() <= 64
+            && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            && !name.trim().is_empty() && name.chars().count() <= 40 && name == name.trim()
+            && ids.insert(id) && names.insert(name.to_lowercase())
+            && object.get("palette").is_some_and(is_custom_theme)
+            && object.get("accent").is_some_and(|v| v.is_null() || v.as_str().is_some_and(is_hex_color))
+    })
+}
+
 pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), String> {
     let is_model_map = |v: &serde_json::Value| {
         let Some(obj) = v.as_object() else {
@@ -356,6 +404,15 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
                     .is_some_and(|v| v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0))
             };
             string_array("ids")
+                && entry.get("metadata").is_none_or(|metadata| {
+                    metadata.as_object().is_some_and(|models| models.len() <= 10000 && models.values().all(|model| {
+                        model.as_object().is_some_and(|model| {
+                            model.get("label").and_then(serde_json::Value::as_str).is_some_and(|label| label.len() <= 800)
+                                && model.get("tasks").and_then(serde_json::Value::as_array).is_some_and(|tasks| tasks.len() <= 2 && tasks.iter().all(|task| matches!(task.as_str(), Some("transcription" | "cleanup"))))
+                        })
+                    }))
+                })
+                && entry.get("warning").is_none_or(|warning| warning.is_null() || warning.is_string())
                 && string_array("everSeen")
                 && finite_timestamp("lastSuccessAt")
                 && finite_timestamp("lastAttemptAt")
@@ -408,10 +465,21 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
             .is_some_and(|v| store::is_valid_clipboard_phrase(&v)),
         SettingKind::StringArray => is_non_empty_string_array(value),
         SettingKind::CleanupPromptOverride => is_cleanup_prompt_override(value),
+        SettingKind::StylePromptInstructions => value.as_object().is_some_and(|map| {
+            map.iter().all(|(key, value)| {
+                matches!(
+                    key.as_str(),
+                    "light" | "medium" | "high" | "casual" | "formal" | "very_casual"
+                ) && is_cleanup_prompt_override(value)
+            })
+        }),
         SettingKind::ProviderModelCache => is_provider_model_cache(value),
         SettingKind::AppearanceMode => value
             .as_str()
             .is_some_and(|v| matches!(v, "system" | "light" | "dark" | "omarchy" | "custom")),
+        SettingKind::AndroidPillPosition => value
+            .as_str()
+            .is_some_and(|v| crate::android::ANDROID_PILL_POSITIONS.contains(&v)),
         SettingKind::AccentColor => {
             value.is_null()
                 || value
@@ -421,6 +489,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::CustomTheme => {
             value.is_null() || crate::system::omarchy_theme::is_custom_theme(value)
         }
+        SettingKind::CustomThemes => {
+            value.is_null() || is_saved_themes(value)
+        }
         SettingKind::Bool => value.is_boolean(),
         SettingKind::MicGain => value.as_f64().is_some_and(|v| (1.0..=8.0).contains(&v)),
         SettingKind::SoundEffectsVolume => {
@@ -428,14 +499,11 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         }
         SettingKind::AppMappings => is_valid_app_mappings(value),
         SettingKind::Hotkey => value.as_array().is_some_and(|keys| {
-            keys.len() == 2
-                && keys.iter().all(serde_json::Value::is_string)
-                && keys[0]
-                    .as_str()
-                    .is_some_and(crate::core::hotkey::is_known_key_code)
-                && keys[1].as_str().is_none_or(|second| {
-                    second.is_empty() || crate::core::hotkey::is_known_key_code(second)
-                })
+            let codes: Option<Vec<String>> = keys
+                .iter()
+                .map(|key| key.as_str().map(String::from))
+                .collect();
+            codes.is_some_and(|codes| crate::core::hotkey::normalize_codes(&codes).is_ok())
         }),
     };
 
@@ -449,6 +517,60 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
 #[cfg(test)]
 mod setting_key_tests {
     use super::*;
+
+    #[test]
+    fn style_prompt_instructions_only_accept_editable_styles_and_bounded_text() {
+        assert!(validate_setting(
+            store::STYLE_PROMPT_INSTRUCTIONS,
+            &serde_json::json!({"light": "Custom", "high": "", "formal": "Professional wording"})
+        )
+        .is_ok());
+        for invalid in [
+            serde_json::json!({"none": "Custom"}),
+            serde_json::json!({"medium": false}),
+            serde_json::json!({"medium": "x".repeat(20_001)}),
+        ] {
+            assert!(validate_setting(store::STYLE_PROMPT_INSTRUCTIONS, &invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn hotkeys_accept_variable_length_and_legacy_single_key_settings() {
+        for codes in [
+            serde_json::json!(["F5"]),
+            serde_json::json!(["F5", ""]),
+            serde_json::json!(["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft", "KeyK"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_ok());
+        }
+        for codes in [
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!(["ControlLeft", "ControlRight"]),
+            serde_json::json!(["KeyK", "KeyK"]),
+            serde_json::json!(["ControlLeft", "", "KeyK"]),
+            serde_json::json!(["ControlLeft", 3]),
+            serde_json::json!(["NoSuchKey"]),
+        ] {
+            assert!(validate_setting(store::HOTKEY, &codes).is_err());
+        }
+    }
+
+    #[test]
+    fn local_model_maps_accept_all_picker_providers_and_reject_invalid_values() {
+        let value = serde_json::json!({
+            "groq": [], "openai": [], "google": [], "assemblyai": [],
+            "openrouter": [], "xai": [], "local": ["qwen2.5-7b-instruct"]
+        });
+        for key in [
+            store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+            store::CLEANUP_MODELS_BY_PROVIDER,
+        ] {
+            assert!(validate_setting(key, &value).is_ok());
+            assert!(validate_setting(key, &serde_json::json!({"local": [""]})).is_err());
+            assert!(validate_setting(key, &serde_json::json!({"unknown": ["model"]})).is_err());
+        }
+    }
 
     #[test]
     fn readable_settings_exclude_credential_keys() {
@@ -493,6 +615,19 @@ mod setting_key_tests {
     }
 
     #[test]
+    fn android_pill_position_accepts_only_known_placements() {
+        for position in crate::android::ANDROID_PILL_POSITIONS {
+            assert!(
+                validate_setting(store::ANDROID_PILL_POSITION, &serde_json::json!(position)).is_ok()
+            );
+        }
+        assert!(
+            validate_setting(store::ANDROID_PILL_POSITION, &serde_json::json!("floating")).is_err()
+        );
+        assert!(validate_setting(store::ANDROID_PILL_POSITION, &serde_json::Value::Null).is_err());
+    }
+
+    #[test]
     fn accent_color_accepts_hex_or_default() {
         assert!(validate_setting(store::ACCENT_COLOR, &serde_json::json!("#4F7FD8")).is_ok());
         assert!(validate_setting(store::ACCENT_COLOR, &serde_json::Value::Null).is_ok());
@@ -505,8 +640,41 @@ mod setting_key_tests {
         let theme = serde_json::json!({"background": "#101315", "foreground": "#cacccc"});
         assert!(validate_setting(store::CUSTOM_THEME, &theme).is_ok());
         assert!(validate_setting(store::CUSTOM_THEME, &serde_json::Value::Null).is_ok());
-        assert!(validate_setting(store::CUSTOM_THEME, &serde_json::json!({"background": "#101315"})).is_err());
+        assert!(validate_setting(
+            store::CUSTOM_THEME,
+            &serde_json::json!({"background": "#101315"})
+        )
+        .is_err());
         assert!(validate_setting(store::APPEARANCE_MODE, &serde_json::json!("custom")).is_ok());
+    }
+
+    #[test]
+    fn saved_themes_are_readable_exportable_and_validated() {
+        let theme = serde_json::json!({
+            "id": "t-night", "name": "Night",
+            "palette": {"background": "#101315", "foreground": "#cacccc"},
+            "accent": "#4f7fd8"
+        });
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([theme.clone()])).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::Value::Null).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([])).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([theme.clone(), theme.clone()])).is_err());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!(vec![theme.clone(); 25])).is_err());
+        for (key, invalid) in [
+            ("name", serde_json::json!(" ")),
+            ("name", serde_json::json!("n".repeat(41))),
+            ("id", serde_json::json!("invalid id")),
+            ("accent", serde_json::json!("blue")),
+            ("palette", serde_json::json!({"background": "#101315"})),
+            ("extra", serde_json::json!(true)),
+        ] {
+            let mut next = theme.clone();
+            next[key] = invalid;
+            assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([next])).is_err(), "{key}");
+        }
+        let spec = SETTING_SPECS.iter().find(|spec| spec.key == store::CUSTOM_THEMES).unwrap();
+        assert!(spec.readable && spec.exportable);
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::CUSTOM_THEMES));
     }
 }
 // ---------- generic settings ----------
@@ -704,7 +872,11 @@ pub struct AllSettings {
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
+    pub custom_themes: Option<serde_json::Value>,
+    pub android_pill_position: Option<String>,
+    pub android_pill_cover_keyboard_mic: Option<bool>,
     pub cleanup_prompt_override: Option<String>,
+    pub style_prompt_instructions: Option<serde_json::Value>,
     pub provider_model_cache: Option<serde_json::Value>,
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
 }
@@ -786,7 +958,11 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         accent_color: str_val(store::ACCENT_COLOR),
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
+        custom_themes: json_val(store::CUSTOM_THEMES),
+        android_pill_position: str_val(store::ANDROID_PILL_POSITION),
+        android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
+        style_prompt_instructions: json_val(store::STYLE_PROMPT_INSTRUCTIONS),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
         custom_providers: crate::api::custom::parse_stored(s.get(store::CUSTOM_PROVIDERS)),
     })
@@ -822,6 +998,17 @@ mod provider_model_cache_tests {
     #[test]
     fn accepts_a_well_formed_cache() {
         check(&well_formed()).expect("well-formed cache should validate");
+    }
+
+    #[test]
+    fn validates_persisted_capabilities_for_new_providers() {
+        let mut value = well_formed();
+        value["openrouter"] = value["groq"].clone();
+        value["openrouter"]["metadata"] = json!({"org/new:free":{"label":"New model","tasks":["cleanup"]}});
+        value["openrouter"]["warning"] = json!(null);
+        assert!(check(&value).is_ok());
+        value["openrouter"]["metadata"]["org/new:free"]["tasks"] = json!(["unknown"]);
+        assert!(check(&value).is_err());
     }
 
     #[test]

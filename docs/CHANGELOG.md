@@ -5,12 +5,58 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Added custom providers in Settings > Providers. Connect an OpenAI, Anthropic, or xAI compatible base URL, name the transcription and cleanup models it offers, and optionally configure an API key header, non-secret headers, and cleanup request options. Models appear under the provider's name in Settings > Models. Keys stay in the native credential store; local endpoints can work without a key. Removing a provider removes its selected models and repairs the fallback chain. Adding a provider starts from a searchable preset picker with about 30 unofficial presets for cloud APIs, Anthropic-style endpoints, and local servers such as Ollama and LM Studio. Presets only prefill the form; Verenu does not test or support those vendors, and every field stays editable.
+- Reworked Appearance with visual color-scheme cards, a theme gallery, and saved custom themes. The corner theme editor previews changes across the app, stays open during navigation, and restores the previous appearance when cancelled.
+- Added instruction editors to the cleanup and Personal Tone tiles. Edits change only the instructions injected by each preset, with reset to built-in defaults and an audit against the composed system prompt before saving.
+- Fixed Save and Clear labels overlapping on the API Keys page when the inactive action was disabled.
+- Added automatic cloud model discovery with capability metadata, daily and manual refresh, an updateable AssemblyAI catalog, and cached model lists for offline use.
+- Added Android local speech recognition and cleanup with APK-bundled ONNX
+  Runtime and llama.cpp. Android 9+ can download models and dictate offline;
+  phone presets favor Moonshine Tiny and small Qwen cleanup models, with
+  transcription-only presets on low-memory devices.
+
+- Split frontend IPC routing from browser mocks and their model/Insights fixtures,
+  preserving existing imports and loading mocks only in preview mode. Corrected
+  contributor setup and verification instructions, consolidated stale agent
+  planning notes, and ignored local environment and test-report artifacts.
+
+- Added source-bound agent verification, owned real-backend browser sessions,
+  synthetic speech checks, native WebView tests, and independent agent test
+  evaluations. Test reporting now distinguishes unavailable live checks from
+  passes, fails executed optional checks, and retains retry failures. Test
+  servers use owned ports instead of reusing or stopping another session.
+
+- Fixed history rows and app filters displaying Linux window IDs instead of installed app names, including existing history entries and Wayland IDs that correspond to a short desktop window class.
+
+- Hotkey capture now records the full held combination and saves on release, with no fixed two-key limit. Windows tracks arbitrary key chords; macOS and Linux support multiple modifiers with one trigger key. Detected conflicts and unsupported combinations report an error and keep the previous binding. Home and setup display the entire saved combination.
+- Added native macOS correction reads for Auto-learn and tied learning and rejection to the original editable control on Windows, macOS, and Linux. Monitoring now anchors the text actually inserted, retries slow accessibility reads, accepts single-word dictation, and requires a stable edit before recording evidence. Learned brand capitalization and split names apply to later dictations, short technical corrections can accumulate real evidence, and pending observations last 30 days. The regression matrix now checks real detector confidence and promotion instead of supplying invented scores.
+- Fixed local cleanup model downloads omitting the shared engine. Local AI presets wait for the engine as well as model weights, and the picker offers engine installation for existing downloads. The dictation pill now replays its context label after startup.
 
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
+- Added custom icons for Context groups: emoji, and one- or two-character badges with a softened background and chosen text color. Icon colors use a permanent row of preset swatches plus a native custom-color button. Emoji render without a background, including saved ones. The right-click color popup in the Context editor is gone.
 
 - Reworked parts of onboarding. The analytics arrow is now a centred icon. The models step is titled "Speed or accuracy?" and no longer offers Local AI to people who picked a cloud provider. English leads the language list. The Try It result eases in with a short glow instead of snapping. The API key walkthrough ends on a fifth "paste your key" slide, replacing "I've got my key", and the existing Skip for now still applies. The final summary is compact, shows each choice (models, writing, language, audio), and its step numbers are centred.
 
 - Added OpenRouter and xAI as bring-your-own providers in Settings > Providers and the model picker. OpenRouter transcribes through its JSON `audio/transcriptions` endpoint and cleans up through chat completions; xAI transcribes with Grok Voice Transcribe (`/v1/stt`) and cleans up through chat completions. Providers now declare a separate cleanup and transcription adapter, so one provider can mix wire formats. Cleanup skips always-reasoning models on both. Neither provider appears in the one-click presets or the setup wizard, and their model lists are not live-synced, so any model id can be entered in Advanced Models.
+- Detect Android text-field length limits before insertion, preserving the existing field and copying the full dictation instead of partially inserting it. The pill now explains when the dictation is too long for the field (including Samsung's 100-character app search).
+
+- Fixed Android app-search dictations falling back to manual paste after privacy-indicator or notification events changed the remembered app to System UI. The focused editable field now determines insertion eligibility, and system/keyboard windows no longer replace the app target.
+
+- Stopped Android paste attempts from stacking accessibility timeouts when an editor stops responding. Insertion now reuses one focused field, bounds focus discovery and readback retries, and preserves the text on the clipboard when it cannot confirm the edit. It does not issue a second paste after an uncertain result.
+
+- Reworked the Android dictation pill after on-device testing:
+  - New **Pill position** setting (Settings → General): above the keyboard at center, left or right, top of the screen, middle of the screen, or under the camera hole. It changes live.
+  - The pill no longer spawns mid-keyboard and jumps: it waits for the keyboard's bounds, fades in at its final spot, and eases between positions. It no longer blinks off and on when focus or system windows change (hiding is debounced).
+  - While a dictation is running with the keyboard closed, the pill stays on screen as a small docked recorder (waveform, timer, stop) and returns to the keyboard when it reopens, instead of vanishing while still recording.
+  - The recording row uses the desktop pill's visualizer: 12 mirrored bars driven by the recorder's 10 ms peak envelope and redrawn every display frame, replacing the ~4 Hz level bars. Added a recording dot and timer, a clear Stop button, spinner stages, and animated width/color transitions between states.
+  - The pill is near-black in both themes (it vanished against a light keyboard) and follows Verenu's own appearance setting.
+  - Fixed pasting that could loop on "Pasting…": the target is now the field focused at that moment rather than a remembered foreground package, retries every 350 ms, and after a few seconds with no field the text is copied and the outbox cleared with a clear message. Empty fields no longer get their hint text ("Search") inserted in front of the dictation.
+  - Foldable inner display: the Home page no longer overflows next to the sidebar.
+- Made the Android build work end to end, verified on an API 34 emulator with synthetic speech through the real Groq pipeline:
+  - Restored the Android manifest snippet, strings resource, and the `VerenuOverlayView`, `VerenuKeystore`, and `VerenuDictationService` sources that the Android port merge dropped, so `scripts/android-sync.mjs` and the Gradle build succeed again. The shared `analytics` module now compiles on Android (still only registered on desktop), and a missing PostHog token no longer crashes debug builds on launch.
+  - The accessibility service now starts the Rust backend itself (a background-mode `MainActivity` launch) when Android restarts the app process, re-pushes saved API keys once it is up, and waits for it before the first recording, instead of failing with "Could not start recording" until the app had been opened by hand.
+  - Fixed a native abort when the audio stack outlived the Activity (opening Settings after backing out of the app): the audio context is now the Application context rather than a destroyed Activity reference.
+  - The pill now appears reliably when the keyboard reopens on an already-focused field and over WebView text fields, sits just above the keyboard instead of covering the app's header, and uses larger text, bigger touch targets, and a high-contrast color pair.
+  - Fixed layout bugs: the Home screen no longer overflows the phone width, setup permissions cards have side padding, Save/Clear no longer overlap in API Keys, and the bottom navigation clears the system gesture bar.
 
 - Fixed Linux context groups falling back to Everywhere when an app's window class differs from its saved executable target. Matching now tries the captured process's executable after website and window-class matches.
 
@@ -27,6 +73,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Fixed LAN sync skipping edits made during snapshots, partially applying failed batches, losing Context snippet assignments across batches, retaining removed app targets, and lowering lifetime totals from stale relayed counters. Manual sync now waits for the result, receiving peers update their status, and incomplete transfers or settings-save failures report errors. Pairing uses its full approval deadline and confirms only after trust is saved. Added a focused `npm run test:sync` gate with encrypted two-device fixtures and three-device relay coverage on one machine.
 
 - Reduced Linux memory retention by disabling WebKit's browser resource and back/forward page caches in the main window and dictation pill. On glibc builds, freed native allocations are returned to the OS during the existing idle maintenance cycle, including after local models unload.
+- Fixed a WebKitGTK crash on Hyprland/Wayland by forcing the shared-memory renderer transport. Disabling DMA-BUF left accelerated compositing without a backing store.
 - Fixed the September 21 nightly build failure: bumped `@tauri-apps/plugin-notification` to 2.4.0 to match the Rust crate (Cargo had resolved `tauri-plugin-notification` to 2.4.0 while the npm lockfile still pinned 2.3.3, and the Tauri CLI aborts on any major/minor mismatch). Also added a PR check that fails fast when any Tauri plugin's Rust and npm versions disagree, so this class of drift breaks a PR instead of a release.
 - Fixed Linux automatic spacing and capitalization focus lookup: AT-SPI Collection queries now use valid match modes and find editable fields directly instead of focused browser document containers. Accessibility is requested at startup, metadata queries activate Chromium/Electron renderer trees, and rich-text cursor reads follow embedded paragraphs to their actual text and caret. Insertion logs report context availability without user text.
 - Fixed Linux dictation reliability for hold-to-talk and hands-free: the portal hotkey thread now reconnects with backoff instead of dying silently (a dead thread stranded recordings with no way to stop them), and releasing then quickly double-tapping the chord carries the just-recorded audio into the new hands-free session instead of stranding it behind a Continue offer.
@@ -81,6 +128,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Added a subtle pop-in animation when adding an app or website to a context group, without replaying it for the rest of the list when switching between context groups.
 - Added `docs/CONTEXTS.md` and marked App Mappings, Dictionary, and Snippets as legacy pages across the docs.
 - Fixed the Insights page stacking its summary tiles too early on narrow windows, stranding the gauge in a half-empty row — the hero band, heatmap rail, and vocabulary sections now adapt to the available column width and stay side by side down to the minimum window size.
+
+- Reduced dictation memory allocations by encoding Gemini and OpenRouter audio directly into a preallocated JSON request, releasing cached WAV uploads before cleanup, and trimming completed PCM buffers before retry storage. Native windows now load browser test mocks only in browser preview mode. Added repeatable audio-request allocation measurements.
+
+- Deferred secondary pages, settings sections, onboarding, and optional dialogs until opened. The development worker skips loading the application UI. Settings search and keyboard focus wait for deferred sections, and failed loads offer an app reload.
 
 ## 0.18.1
 

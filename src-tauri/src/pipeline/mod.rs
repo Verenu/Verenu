@@ -35,6 +35,8 @@ mod pill {
         "idle".to_string()
     }
 
+    pub(crate) fn replay_pill_state(_app: &AppHandle) {}
+
     pub(crate) fn show_pill(_app: &AppHandle, _state: &str) {}
 
     pub(crate) fn update_pill_state(_app: &AppHandle, _state: &str) {}
@@ -97,8 +99,8 @@ use gates::{
 #[cfg(target_os = "linux")]
 pub(crate) use pill::initialize_pill;
 pub(crate) use pill::{
-    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, set_pill_hit_rect,
-    set_pill_interactive,
+    current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, replay_pill_state,
+    set_pill_hit_rect, set_pill_interactive,
     show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
 };
 use pill::{
@@ -141,7 +143,10 @@ pub struct CapturedAudio {
 }
 
 impl CapturedAudio {
-    pub fn from_samples(samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
+    pub fn from_samples(mut samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
+        // Capture grows geometrically. Retries can retain this allocation for
+        // ten minutes, so release unused capacity before sharing the take.
+        samples.shrink_to_fit();
         Self {
             wav_cache: Arc::new(Mutex::new(None)),
             samples_16k: Arc::new(samples),
@@ -172,7 +177,7 @@ impl CapturedAudio {
             .unwrap_or(0)
     }
 
-    pub fn clear_wav_cache(&mut self) {
+    pub fn clear_wav_cache(&self) {
         if let Ok(mut cache) = self.wav_cache.lock() {
             *cache = None;
         }
@@ -334,7 +339,13 @@ struct ProvidedCapture {
 
 /// Browser audio enters the production pipeline after microphone capture.
 /// Delivery remains event-only, so tests cannot paste into an unrelated app.
-#[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+#[cfg(all(
+    debug_assertions,
+    any(
+        all(feature = "dev-session", desktop),
+        all(feature = "android-local-testing", target_os = "android")
+    )
+))]
 pub(crate) async fn run_provided_audio(
     app: AppHandle,
     state: SharedState,
@@ -810,6 +821,9 @@ async fn run_pipeline_with_delivery(
             None
         }
     };
+    // Cleanup and retry storage only need PCM. A later cloud retry can encode
+    // it again; existing upload owners keep their Bytes handles valid.
+    captured_audio.clear_wav_cache();
     let Some(transcribe_outcome) = transcribe_race else {
         state::leave_processing_if_owned(&state, generation);
         return;

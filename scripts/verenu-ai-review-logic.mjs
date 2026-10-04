@@ -1,9 +1,10 @@
 export const DEFAULT_MODEL = "gemini-3.7-flash-high";
-export const DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6(low)";
 
 const LEGACY_MODEL_ALIASES = new Map([
   ["gemini-3.6-flash-high", DEFAULT_MODEL],
   ["claude-sonnet-4.6", DEFAULT_FALLBACK_MODEL],
+  ["claude-sonnet-4-6", DEFAULT_FALLBACK_MODEL],
 ]);
 
 const FALLBACK_ERROR_PATTERNS = [
@@ -46,6 +47,7 @@ export function selectReviewModels({
 
 export function fallbackReason(result) {
   if (!result || result.previewFailed || result.code === 0) return null;
+  if (["quota", "rate_limit", "model_unavailable"].includes(result.providerFailureReason)) return result.providerFailureReason;
 
   const output = `${result.stderr || ""}\n${result.stdout || ""}`;
   // CLIProxy and the upstream Gemini API use underscore-delimited error
@@ -55,6 +57,9 @@ export function fallbackReason(result) {
   const normalizedOutput = output.replace(/[_-]+/g, " ");
   if (/\b(?:quota|resource exhausted|insufficient quota|daily limit|usage limit|out of extra usage|model cooldown|cooling down|capacity on this model)\b/i.test(normalizedOutput)) return "quota";
   if (/\b(?:rate\s*limit|too many requests|429)\b/i.test(normalizedOutput)) return "rate_limit";
+  // CLIProxy can mark exhausted credentials unavailable without returning 429.
+  // These are provider-pool errors, distinct from an invalid gateway API key.
+  if (/\b(?:auth unavailable|auth not found|no auth available|no auth candidates)\b/i.test(normalizedOutput)) return "model_unavailable";
   if (FALLBACK_ERROR_PATTERNS.some((pattern) => pattern.test(normalizedOutput))) return "model_unavailable";
   return null;
 }

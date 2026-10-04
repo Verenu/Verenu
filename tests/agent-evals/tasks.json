@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {
+      "id": "rust-skip-reporting",
+      "request": "Fix OnePyFone reporting Rust live-provider tests as passed when credentials are absent. Add regression coverage and verify your work without making provider calls.",
+      "file": "tests/OnePyFone.py",
+      "before": "r\"VERENU_LIVE_SKIP:|\\bSKIP(?:PED)?\\b\"",
+      "after": "r\"\\bSKIP(?:PED)?\\b\""
+    },
+    {
+      "id": "optional-provider-failure",
+      "request": "Fix the live profile returning success when an executed optional provider check fails. Missing prerequisites may still skip in ordinary runs. Add coverage and verify the exit code.",
+      "file": "tests/OnePyFone.py",
+      "before": "if failures or (strict and",
+      "after": "if required_failures or (strict and"
+    },
+    {
+      "id": "retry-evidence",
+      "request": "Make successful retries visibly flaky and retain the original failure evidence. Strict verification must reject a test that needed retries. Add regression coverage and verify the behavior.",
+      "file": "tests/OnePyFone.py",
+      "before": "result.regression_status = \"flaky\"",
+      "after": "result.regression_status = \"unknown\""
+    }
+  ]
+}

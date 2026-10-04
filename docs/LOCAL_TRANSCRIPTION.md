@@ -54,7 +54,11 @@ All local cleanup models share one downloaded runtime. Verenu downloads that run
 
 ## Platform limits
 
-Local model downloads and inference are currently available on Windows and Apple Silicon Macs. Local models are gated off on Intel Macs until that path has been validated on real hardware. Linux is not a supported desktop target.
+Local model downloads and inference are available on Windows, Linux, and Apple
+Silicon Macs. Local models are gated off on Intel Macs until that path has been
+validated on real hardware, and are unavailable on Android. The frontend reads
+this gate from `local_models_supported_on_this_platform`; platform availability
+does not guarantee that every model fits the device's memory.
 
 Speed, memory use, and output quality depend on the selected model and the computer running it. Larger local cleanup models need more memory and may take longer to answer.
 
