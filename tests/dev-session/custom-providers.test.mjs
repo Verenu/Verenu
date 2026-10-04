@@ -26,7 +26,7 @@ test('custom provider editor persists, offers task models, renames, and removes 
     await page.goto(access.localAccessUrl);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('button', { name: 'API Keys', exact: true }).click();
-    await page.getByRole('button', { name: 'Add custom provider', exact: true }).click();
+    await page.getByRole('button', { name: 'Create custom provider', exact: true }).click();
     const picker = page.getByRole('group', { name: 'Choose a provider preset' });
     await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('ollama');
     assert.equal(await picker.getByRole('button', { name: /^Mistral/ }).count(), 0);
