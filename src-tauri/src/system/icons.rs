@@ -49,6 +49,7 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     let icon = linux::desktop_icon_name(&exe)?;
     let theme_icon = icon.clone();
     let theme_png = run_icon_work(
+        gtk::is_initialized(),
         move || linux::theme_icon_png(&theme_icon),
         |callback| app.run_on_main_thread(callback).map_err(|_| ()),
     )
@@ -71,9 +72,16 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn run_icon_work<T: Send + 'static>(
+    gtk_initialized: bool,
     work: impl FnOnce() -> T + Send + 'static,
     dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), ()>,
 ) -> Option<T> {
+    // GTK's theme and pixbuf APIs are unsafe to call before GTK initialization.
+    // Let the caller use its filesystem fallback without dispatching or waiting.
+    if !gtk_initialized {
+        return None;
+    }
+
     // Tao dispatches UI callbacks on GTK's initialized thread even when that
     // thread does not own the default GLib context. Use GTK's thread marker to
     // avoid queueing work to, then synchronously blocking, the same UI thread.
@@ -143,6 +151,7 @@ mod linux {
             assert!(gtk::is_initialized_main_thread());
             let dispatched = Cell::new(false);
             let result = super::super::run_icon_work(
+                true,
                 || 64,
                 |_| {
                     dispatched.set(true);
@@ -962,6 +971,23 @@ fn favicon_cache_path(app: &tauri::AppHandle, host: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::normalize_favicon_host;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn skips_theme_dispatch_when_gtk_is_uninitialized() {
+        let dispatched = std::cell::Cell::new(false);
+        let result = super::run_icon_work(
+            false,
+            || 64,
+            |_| {
+                dispatched.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, None);
+        assert!(!dispatched.get(), "theme work was dispatched without GTK");
+    }
 
     #[test]
     #[cfg(target_os = "linux")]
