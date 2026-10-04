@@ -8,10 +8,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     name: Frontend checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -33,7 +38,8 @@ jobs:
 
   dependency-audits:
     name: Dependency audits
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -57,7 +63,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-audit
+          fallback: none
 
       - name: Audit Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
@@ -130,6 +139,11 @@ jobs:
       - name: Check Rust toolchain
         run: rustc --version
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
@@ -177,8 +191,9 @@ jobs:
 
   all-in-one-fast:
     name: All-in-one fast profile
-    needs: [frontend, dependency-audits, rust]
-    runs-on: ubuntu-latest
+    # This job uses its own checkout and consumes no output from other checks.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -191,6 +206,11 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
 
       - name: Install Linux system dependencies
         run: |
