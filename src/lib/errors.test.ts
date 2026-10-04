@@ -34,7 +34,7 @@ describe('actionable errors', () => {
     ['No speech detected', 'no-speech', 'unmuted'],
     ['Audio too quiet - check your mic', 'too-quiet', 'unmuted'],
     ['Nothing transcribed - please try speaking more clearly', 'nothing-transcribed', 'selected language'],
-    ['No API key saved for groq', 'missing-key', 'Settings > API Keys'],
+    ['No API key saved for groq', 'missing-key', 'Settings > Providers'],
     ['No configured transcription backend is available', 'no-backend', 'Settings > Models'],
     ['Download the selected local cleanup model.', 'local-model-missing', 'Download'],
     ['download checksum mismatch', 'model-download', 'integrity check'],
@@ -77,7 +77,7 @@ describe('actionable errors', () => {
   it('does not display malformed authentication metadata', () => {
     const result = classifyIpcError('AUTH_401|provider=Groq|category=invalid_or_revoked_key|request_id=private-id');
     expect(result.kind).toBe('auth-401');
-    expect(result.message).toContain('Settings > API Keys');
+    expect(result.message).toContain('Settings > Providers');
     expect(result.message).not.toMatch(/AUTH_401|request_id|private-id/);
   });
 
