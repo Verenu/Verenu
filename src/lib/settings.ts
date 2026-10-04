@@ -69,6 +69,7 @@ type SettingsValueMap = {
   analytics_enabled: boolean;
   cleanup_fallback_models: string[];
   cleanup_enabled: boolean;
+  cleanup_cache_enabled: boolean;
   default_tone: ToneId;
   cleanup_intensity: CleanupIntensity;
   app_mappings: AppMapping[];

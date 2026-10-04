@@ -1456,7 +1456,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'get_dev_logging_enabled':
       return Boolean(getDevSetting('dev_logging_enabled') ?? false) as T;
     case 'get_cleanup_cache_status':
-      return { entry_count: 0, is_space_constrained: false, free_bytes: null } as T;
+      return { entry_count: 0, payload_bytes: 0, session: { hits: 0, misses: 0, provider_calls: 0, provider_ms: 0 } } as T;
     case 'get_auto_learn_status_summary':
       return {
         monitors_started: 0,
