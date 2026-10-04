@@ -682,7 +682,9 @@ class VerenuOverlayView @JvmOverloads constructor(
         private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             // 70%, not the desktop's 45%: on a phone, at arm's length, over a keyboard,
             // 45% left everything outside the band unreadable.
-            this.color = (color and 0x00FFFFFF) or 0xB3000000.toInt()
+            // `this@ShineTextView.color`: inside Paint.apply a bare `color` is the
+            // paint's own (black) colour, which is what this used to draw in.
+            this.color = (this@ShineTextView.color and 0x00FFFFFF) or 0xB3000000.toInt()
             textSize = sizeSp * context.resources.displayMetrics.scaledDensity
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
