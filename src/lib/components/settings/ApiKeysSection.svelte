@@ -6,6 +6,7 @@
   import { invoke } from '../../tauri';
   import { isAndroid } from '../../platform';
   import { getProviderLogo } from '../../setup/ProviderLogos';
+  import { refreshCatalog } from '../../modelCatalogStore.svelte';
 
   type ProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai';
   type KeyStatus = Record<ProviderId, boolean>;
@@ -13,12 +14,12 @@
   type KeyValidation = { status: 'idle' | 'checking' | 'valid' | 'invalid' | 'unknown'; message: string };
 
   const keyProviders: { id: ProviderId; label: string; ph: string; models: string }[] = [
-    { id: 'groq',       label: 'Groq',       ph: 'gsk_…',        models: 'whisper-large-v3-turbo · llama-3.3-70b' },
-    { id: 'openai',     label: 'OpenAI',     ph: 'sk-…',         models: 'gpt-4o-transcribe · gpt-4o-mini' },
-    { id: 'google',     label: 'Gemini',     ph: 'AIza…',        models: 'gemini-3.5-transcribe · gemini-3.5-flash-lite' },
-    { id: 'assemblyai', label: 'AssemblyAI', ph: '32-char key',  models: 'universal-3-5-pro · universal-2' },
+    { id: 'groq',       label: 'Groq',       ph: 'gsk_…',        models: 'Transcription and cleanup' },
+    { id: 'openai',     label: 'OpenAI',     ph: 'sk-…',         models: 'Transcription and cleanup' },
+    { id: 'google',     label: 'Gemini',     ph: 'AIza…',        models: 'Transcription and cleanup' },
+    { id: 'assemblyai', label: 'AssemblyAI', ph: '32-char key',  models: 'Transcription' },
     { id: 'openrouter', label: 'OpenRouter', ph: 'sk-or-…',      models: 'Hundreds of models through one key' },
-    { id: 'xai',        label: 'xAI',        ph: 'xai-…',        models: 'grok-voice-transcribe-2.0 · grok-4-fast' },
+    { id: 'xai',        label: 'xAI',        ph: 'xai-…',        models: 'Transcription and cleanup' },
   ];
 
   const perProvider = <T,>(value: () => T) =>
@@ -103,6 +104,7 @@
       // provider's models once the key is actually saved, so tell it now
       // rather than making the user reopen Settings.
       window.dispatchEvent(new CustomEvent('verenu:api-key-saved', { detail: { provider } }));
+      void refreshCatalog(provider, []);
       // 'unknown' = couldn't reach the provider; we saved it anyway (might be fine)
       // but say so plainly instead of claiming it's verified.
       keyValidation[provider] =
@@ -140,6 +142,7 @@
       await loadKeyStatus();
       draftKeys[provider] = '';
       keyValidation[provider] = { status: 'idle', message: '' };
+      window.dispatchEvent(new CustomEvent('verenu:api-key-deleted', { detail: { provider } }));
     } catch (e) {
       console.error('delete_api_key failed', e);
       keyErrors[provider] = formatIpcError(e, 'Could not remove this API key from this device');
@@ -342,8 +345,8 @@
     border-color: var(--danger-line);
   }
 
-  /* Save ⇄ Clear split-flap flip. Both faces share one grid cell so the
-     container auto-sizes to the wider face; the whole thing rotates on X. */
+  /* Both actions share one grid cell to keep the button width stable.
+     Visibility prevents disabled-button opacity rules revealing the inactive face. */
   .flip-btn {
     display: inline-grid;
     min-width: 72px;
@@ -357,10 +360,14 @@
     text-align: center;
     transition: opacity 160ms var(--ui-ease-out);
   }
-  .flip-face.front { pointer-events: auto; }
-  .flip-face.back { opacity: 0; pointer-events: none; }
-  .flip-btn.flipped .flip-face.front { opacity: 0; pointer-events: none; }
-  .flip-btn.flipped .flip-face.back { opacity: 1; pointer-events: auto; }
+  .flip-face.front { visibility: visible; pointer-events: auto; }
+  /* `:disabled` is listed too: `.settings-body .btn-ghost:disabled` sets its
+     own opacity and would otherwise leave both labels visible on top of each
+     other. */
+  .flip-btn .flip-face.back,
+  .flip-btn .flip-face.back:disabled { visibility: hidden; opacity: 0; pointer-events: none; }
+  .flip-btn.flipped .flip-face.front { visibility: hidden; opacity: 0; pointer-events: none; }
+  .flip-btn.flipped .flip-face.back { visibility: visible; opacity: 1; pointer-events: auto; }
 
   /* Failure feedback: red border + one-shot shake when a key is rejected. */
   .key-input[aria-invalid='true'] { border-color: var(--danger); }

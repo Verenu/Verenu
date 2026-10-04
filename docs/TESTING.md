@@ -36,6 +36,33 @@ VERENU_FORMAT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml at
 
 This verifies real AT-SPI Collection discovery and cursor formatting for empty fields, continuation text, sentence endings, and existing whitespace. It changes only the disposable entry; it does not paste or call providers. Close the window afterward; it also closes after five minutes.
 
+## Auto-learn verification
+
+The shared regression matrix uses the detector's real confidence scores and
+checks how many independent dictations each correction needs before promotion:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml api::auto_learn --lib
+```
+
+On a live Hyprland desktop with Python GTK3 installed, also run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml auto_learn_native_disposable_fields --lib -- --ignored
+```
+
+This test launches and closes its own disposable GTK window, removes
+`NO_AT_BRIDGE` only from that process, and exercises native focused-text reads,
+same-control identity, stable edits, real promotion, vocabulary prompt reuse,
+and exclusion of password fields. It uses synthetic text and an in-memory
+database. It does not capture audio, paste into other applications, or call
+providers. The browser dev-session bridge deliberately disables automatic
+learning, so browser tests do not replace this native check.
+
+Windows UI Automation and macOS Accessibility still need native editor checks
+on those systems before claiming platform verification. The PR Rust matrix
+builds and tests the platform code on Windows and macOS.
+
 ## Linux hotkey gesture verification
 
 For Linux hotkey gesture changes, run the Rust classifier tests and the generated
@@ -48,6 +75,9 @@ cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- -
 ```
 
 ## Default Gate
+
+For task acceptance, source-bound evidence, real sessions, native scope, and
+agent evaluations, read [AGENT_VERIFICATION.md](AGENT_VERIFICATION.md).
 
 ```bash
 npm test
@@ -82,7 +112,8 @@ npm run test:prompt
 | --- | --- |
 | `fast` | Default deterministic suite for unit, compile, backend, UI, accessibility, state, and performance regressions |
 | `live` | Configured-provider transcription and semantic prompt checks; skips when credentials or the optional WAV fixture are absent |
-| `native` | Platform and manual-adjacent checks |
+| `native` | Actual isolated native WebView and IPC checks |
+| `native-prerequisites` | Configuration presence only; no behavior verification |
 | `full` | Fast, live, and native profiles |
 
 You can target suites directly:
@@ -109,13 +140,20 @@ On Windows, use `python` instead of `python3` if `python3` is not available in y
 Use Playwright for UI-facing changes when the app can be exercised through the browser dev server.
 
 ```bash
-npm run dev
-node tests/smoke/playwright-test-ui.cjs
-node tests/smoke/playwright-test-fixes.cjs
-node tests/smoke/playwright-test-state.cjs
+# Owns isolated renderer servers and adapts the frozen smoke URLs.
+python3 tests/OnePyFone.py --suite ui,state
+
+# Owns a real Rust backend, browser checks, and a persistence restart.
+npm run test:session:owned
 ```
 
-[`../tests/smoke/`](../tests/smoke/) is a frozen contract. Do not edit those files unless the user explicitly asks. Fix app code to satisfy them. Add new browser coverage in [`../tests/integration/`](../tests/integration/).
+For interactive inspection, start your own
+`npm run dev:session -- --synthetic-seed` and use its private access link.
+See [Browser dev sessions](DEV_SESSIONS.md). A mock preview cannot establish
+backend or native behavior.
+
+[`../tests/smoke/`](../tests/smoke/) is a frozen contract. Do not edit those files unless the user explicitly asks. Fix app code to satisfy them. Add real-session browser coverage in [`../tests/browser/`](../tests/browser/).
+Existing mock integration checks live in [`../tests/integration/`](../tests/integration/).
 
 ## Rust Tests
 

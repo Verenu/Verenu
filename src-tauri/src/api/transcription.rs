@@ -263,12 +263,11 @@ async fn transcribe_gemini_dedicated(
     model: &str,
     gen: u64,
 ) -> Result<String> {
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav);
     let body = super::gemini_types::GeminiInteractionTranscribeReq {
         model: model.to_owned(),
         input: vec![
             super::gemini_types::GeminiInteractionInput::Audio {
-                data: encoded,
+                data: super::base64_audio::Base64Audio(wav.clone()),
                 mime_type: "audio/wav".to_owned(),
             },
             super::gemini_types::GeminiInteractionInput::Text {
@@ -285,12 +284,13 @@ async fn transcribe_gemini_dedicated(
     );
 
     let request_started = std::time::Instant::now();
-    let resp = super::client::get()
+    let request = super::client::get()
         .post("https://generativelanguage.googleapis.com/v1beta/interactions")
-        .header("x-goog-api-key", api_key)
-        .json(&body)
-        .send()
-        .await?;
+        .header("x-goog-api-key", api_key);
+    let request =
+        super::base64_audio::json_request(request, &body, wav.len(), prompt.len() + model.len())?;
+    drop(body);
+    let resp = request.send().await?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
     log::debug!(
@@ -361,9 +361,8 @@ async fn transcribe_gemini_with_prompt(
         wav.len(),
         prompt.chars().count()
     );
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav);
-
-    let body = build_gemini_transcription_request(encoded, prompt, model);
+    let wav_len = wav.len();
+    let body = build_gemini_transcription_request(wav, prompt, model);
 
     super::validate_model_for_url(model)?;
     // Key goes in the `x-goog-api-key` header, never the URL query string — see the
@@ -372,12 +371,12 @@ async fn transcribe_gemini_with_prompt(
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
     let request_started = std::time::Instant::now();
-    let resp = super::client::get()
+    let request = super::client::get()
         .post(&url)
-        .header("x-goog-api-key", api_key)
-        .json(&body)
-        .send()
-        .await?;
+        .header("x-goog-api-key", api_key);
+    let request = super::base64_audio::json_request(request, &body, wav_len, prompt.len())?;
+    drop(body);
+    let resp = request.send().await?;
 
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
@@ -745,20 +744,32 @@ struct TextResponse {
     text: String,
 }
 
-fn build_openrouter_transcription_request(
-    wav: &[u8],
-    model: &str,
-    language: &str,
-) -> serde_json::Value {
-    use base64::Engine;
-    serde_json::json!({
-        "model": model,
-        "language": language,
-        "input_audio": {
-            "data": base64::engine::general_purpose::STANDARD.encode(wav),
-            "format": "wav",
+#[derive(serde::Serialize)]
+struct OpenRouterTranscriptionRequest<'a> {
+    model: &'a str,
+    language: &'a str,
+    input_audio: OpenRouterInputAudio,
+}
+
+#[derive(serde::Serialize)]
+struct OpenRouterInputAudio {
+    data: super::base64_audio::Base64Audio,
+    format: &'static str,
+}
+
+fn build_openrouter_transcription_request<'a>(
+    wav: Bytes,
+    model: &'a str,
+    language: &'a str,
+) -> OpenRouterTranscriptionRequest<'a> {
+    OpenRouterTranscriptionRequest {
+        model,
+        language,
+        input_audio: OpenRouterInputAudio {
+            data: super::base64_audio::Base64Audio(wav),
+            format: "wav",
         },
-    })
+    }
 }
 
 async fn transcribe_openrouter(
@@ -770,7 +781,6 @@ async fn transcribe_openrouter(
     language: &str,
     gen: u64,
 ) -> Result<String> {
-    let body = build_openrouter_transcription_request(&wav, model, language);
     log::debug!(
         "transcription: openrouter request gen={} model={} language={} wav_bytes={}",
         gen,
@@ -778,12 +788,13 @@ async fn transcribe_openrouter(
         language,
         wav.len()
     );
-    let resp = super::client::get()
-        .post(url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await?;
+    let wav_len = wav.len();
+    let body = build_openrouter_transcription_request(wav, model, language);
+    let request = super::client::get().post(url).bearer_auth(api_key);
+    let request =
+        super::base64_audio::json_request(request, &body, wav_len, model.len() + language.len())?;
+    drop(body);
+    let resp = request.send().await?;
     let resp = checked_transcription_response(resp, provider_label, model, gen).await?;
     let body: TextResponse = resp.json().await?;
     Ok(body.text.trim().to_owned())
@@ -855,7 +866,7 @@ fn build_whisper_form(wav: Bytes, fields: &WhisperFormFields) -> Result<multipar
 }
 
 fn build_gemini_transcription_request(
-    encoded_audio: String,
+    wav: Bytes,
     prompt: &str,
     model: &str,
 ) -> super::gemini_types::GeminiTranscribeReq {
@@ -865,7 +876,7 @@ fn build_gemini_transcription_request(
                 super::gemini_types::GeminiReqPart {
                     inline_data: Some(super::gemini_types::GeminiInlineData {
                         mime_type: "audio/wav".to_string(),
-                        data: encoded_audio,
+                        data: super::base64_audio::Base64Audio(wav),
                     }),
                     text: None,
                 },
@@ -903,8 +914,12 @@ mod tests {
 
     #[test]
     fn openrouter_transcription_request_embeds_base64_wav() {
-        let body =
-            super::build_openrouter_transcription_request(b"RIFF", "openai/whisper-large-v3", "en");
+        let body = super::build_openrouter_transcription_request(
+            bytes::Bytes::from_static(b"RIFF"),
+            "openai/whisper-large-v3",
+            "en",
+        );
+        let body = serde_json::to_value(body).unwrap();
         assert_eq!(body["model"], "openai/whisper-large-v3");
         assert_eq!(body["language"], "en");
         assert_eq!(body["input_audio"]["format"], "wav");
@@ -931,7 +946,7 @@ mod tests {
     #[test]
     fn gemini_transcription_request_includes_generation_config() {
         let body = build_gemini_transcription_request(
-            "ZmFrZQ==".to_string(),
+            bytes::Bytes::from_static(b"fake"),
             "prompt text",
             "gemini-2.5-flash-lite",
         );
@@ -947,7 +962,7 @@ mod tests {
     #[test]
     fn gemini_3_transcription_request_uses_minimal_thinking_level() {
         let body = build_gemini_transcription_request(
-            "ZmFrZQ==".to_string(),
+            bytes::Bytes::from_static(b"fake"),
             "prompt text",
             "gemini-3.5-flash-lite",
         );
@@ -968,7 +983,9 @@ mod tests {
             model: "gemini-3.5-transcribe".to_string(),
             input: vec![
                 super::super::gemini_types::GeminiInteractionInput::Audio {
-                    data: "ZmFrZQ==".to_string(),
+                    data: super::super::base64_audio::Base64Audio(bytes::Bytes::from_static(
+                        b"fake",
+                    )),
                     mime_type: "audio/wav".to_string(),
                 },
                 super::super::gemini_types::GeminiInteractionInput::Text {

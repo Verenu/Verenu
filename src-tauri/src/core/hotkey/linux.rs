@@ -5,25 +5,32 @@
 
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use futures_util::StreamExt;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-#[path = "linux_shortcuts.rs"]
-mod shortcuts;
 #[path = "linux_conflicts.rs"]
 mod conflicts;
+#[path = "linux_shortcuts.rs"]
+mod shortcuts;
 
 const CTRL: u32 = 1;
 const ALT: u32 = 2;
 const SHIFT: u32 = 3;
 const SUPER: u32 = 4;
-static KEY1: AtomicU32 = AtomicU32::new(CTRL);
-// Ctrl+Super is the Linux default. It is installed through Hyprland's
-// modifier-only binding path rather than as a portal preferred accelerator.
-static KEY2: AtomicU32 = AtomicU32::new(SUPER);
-static EFFECTIVE_KEY1: AtomicU32 = AtomicU32::new(CTRL);
-static EFFECTIVE_KEY2: AtomicU32 = AtomicU32::new(SUPER);
+static KEYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static EFFECTIVE_KEYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+fn configured_keys(slot: &Mutex<Vec<u32>>) -> Vec<u32> {
+    slot.lock()
+        .map(|keys| {
+            if keys.is_empty() {
+                vec![CTRL, SUPER]
+            } else {
+                keys.clone()
+            }
+        })
+        .unwrap_or_else(|_| vec![CTRL, SUPER])
+}
 static CANCEL_KEY: Mutex<String> = Mutex::new(String::new());
 static HANDSFREE_KEY: Mutex<String> = Mutex::new(String::new());
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -194,6 +201,71 @@ impl PortalGesture {
     }
 }
 
+// W3C code, XKB keysym and keycode. Function/Space ids remain compatible.
+const REGULAR_KEYS: &[(&str, &str, u32)] = &[
+    ("KeyA", "A", 38),
+    ("KeyB", "B", 56),
+    ("KeyC", "C", 54),
+    ("KeyD", "D", 40),
+    ("KeyE", "E", 26),
+    ("KeyF", "F", 41),
+    ("KeyG", "G", 42),
+    ("KeyH", "H", 43),
+    ("KeyI", "I", 31),
+    ("KeyJ", "J", 44),
+    ("KeyK", "K", 45),
+    ("KeyL", "L", 46),
+    ("KeyM", "M", 58),
+    ("KeyN", "N", 57),
+    ("KeyO", "O", 32),
+    ("KeyP", "P", 33),
+    ("KeyQ", "Q", 24),
+    ("KeyR", "R", 27),
+    ("KeyS", "S", 39),
+    ("KeyT", "T", 28),
+    ("KeyU", "U", 30),
+    ("KeyV", "V", 55),
+    ("KeyW", "W", 25),
+    ("KeyX", "X", 53),
+    ("KeyY", "Y", 29),
+    ("KeyZ", "Z", 52),
+    ("Escape", "Escape", 9),
+    ("Enter", "Return", 36),
+    ("Backspace", "BackSpace", 22),
+    ("Tab", "Tab", 23),
+    ("CapsLock", "Caps_Lock", 66),
+    ("Minus", "minus", 20),
+    ("Equal", "equal", 21),
+    ("BracketLeft", "bracketleft", 34),
+    ("BracketRight", "bracketright", 35),
+    ("Backslash", "backslash", 51),
+    ("Semicolon", "semicolon", 47),
+    ("Quote", "apostrophe", 48),
+    ("Comma", "comma", 59),
+    ("Period", "period", 60),
+    ("Slash", "slash", 61),
+    ("Backquote", "grave", 49),
+    ("ArrowUp", "Up", 111),
+    ("ArrowDown", "Down", 116),
+    ("ArrowLeft", "Left", 113),
+    ("ArrowRight", "Right", 114),
+    ("Insert", "Insert", 118),
+    ("Delete", "Delete", 119),
+    ("Home", "Home", 110),
+    ("End", "End", 115),
+    ("PageUp", "Prior", 112),
+    ("PageDown", "Next", 117),
+    ("Digit0", "0", 19),
+    ("Digit1", "1", 10),
+    ("Digit2", "2", 11),
+    ("Digit3", "3", 12),
+    ("Digit4", "4", 13),
+    ("Digit5", "5", 14),
+    ("Digit6", "6", 15),
+    ("Digit7", "7", 16),
+    ("Digit8", "8", 17),
+    ("Digit9", "9", 18),
+];
 pub fn map_code_to_vk(code: &str) -> u32 {
     match code {
         "ControlLeft" | "ControlRight" => CTRL,
@@ -213,20 +285,12 @@ pub fn map_code_to_vk(code: &str) -> u32 {
         "F11" => 111,
         "F12" => 112,
         "Space" => 200,
-        _ => 0,
+        _ => REGULAR_KEYS
+            .iter()
+            .find(|(name, _, _)| *name == code)
+            .map(|(_, _, keycode)| 1000 + keycode)
+            .unwrap_or(0),
     }
-}
-
-fn portal_trigger(modifier: u32, key: u32) -> Option<String> {
-    let modifier = portal_modifier_name(modifier)?;
-    let key = match key {
-        101..=112 => format!("F{}", key - 100),
-        200 => "SPACE".to_string(),
-        _ => return None,
-    };
-    // Never request bare Space/Escape. The portal can present an alternative
-    // if this preferred chord collides with a compositor or application rule.
-    Some(format!("{modifier}+{key}"))
 }
 
 fn portal_modifier_name(modifier: u32) -> Option<&'static str> {
@@ -247,13 +311,16 @@ fn shortcut_code(key: u32) -> String {
         SUPER => "MetaLeft".into(),
         200 => "Space".into(),
         101..=112 => format!("F{}", key - 100),
-        _ => String::new(),
+        _ => REGULAR_KEYS
+            .iter()
+            .find(|(_, _, code)| 1000 + code == key)
+            .map(|(name, _, _)| (*name).to_string())
+            .unwrap_or_default(),
     }
 }
 
-fn shortcut_display(first: u32, second: u32) -> String {
-    [first, second]
-        .iter()
+fn shortcut_display(keys: &[u32]) -> String {
+    keys.iter()
         .map(|key| match *key {
             CTRL => "Ctrl".into(),
             ALT => "Alt".into(),
@@ -280,7 +347,10 @@ fn hyprland_keycode(key: u32) -> Option<u32> {
         101..=110 => Some(key - 34), // F1–F10: XKB 67–76
         111..=112 => Some(key - 16), // F11–F12: XKB 95–96
         200 => Some(65),             // Space
-        _ => None,
+        _ => REGULAR_KEYS
+            .iter()
+            .find(|(_, _, code)| 1000 + code == key)
+            .map(|(_, _, code)| *code),
     }
 }
 
@@ -294,62 +364,120 @@ fn hyprland_modifier_keycodes(modifier: u32) -> &'static [u32] {
     }
 }
 
-fn release_keycodes(modifier: u32, key: u32) -> Vec<u32> {
-    hyprland_modifier_keycodes(modifier)
-        .iter()
-        .chain(hyprland_modifier_keycodes(key))
-        .copied()
-        .chain(hyprland_keycode(key))
+fn release_keycodes_for(keys: &[u32]) -> Vec<u32> {
+    keys.iter()
+        .flat_map(|key| {
+            hyprland_modifier_keycodes(*key)
+                .iter()
+                .copied()
+                .chain(hyprland_keycode(*key))
+        })
         .collect()
 }
+#[cfg(test)]
+fn release_keycodes(first: u32, second: u32) -> Vec<u32> {
+    release_keycodes_for(&[first, second])
+}
+#[cfg(test)]
+fn shortcut_configuration(first: u32, second: u32) -> Option<(Option<String>, Vec<String>)> {
+    shortcut_configuration_for(&[first, second])
+}
 
-/// Returns the portal preference and the Hyprland bindings for one setting.
-/// XDG GlobalShortcuts expects a key accelerator, so modifier-only chords use
-/// an unpreferred portal action and Hyprland's documented modifier-key form.
-/// Both press orders are installed because Hyprland treats the activating
-/// keysym as ordered when the modifier is also part of the chord.
-fn shortcut_configuration(modifier: u32, key: u32) -> Option<(Option<String>, Vec<String>)> {
-    if let (Some(first_mask), Some(first_key), Some(second_mask), Some(second_key)) = (
-        portal_modifier_name(modifier),
-        hyprland_modifier_name(modifier),
-        portal_modifier_name(key),
-        hyprland_modifier_name(key),
-    ) {
-        if first_mask == second_mask {
+fn shortcut_configuration_for(keys: &[u32]) -> Option<(Option<String>, Vec<String>)> {
+    let mut modifiers = Vec::new();
+    let mut regular = Vec::new();
+    for key in keys {
+        if portal_modifier_name(*key).is_some() {
+            if modifiers.contains(key) {
+                return None;
+            }
+            modifiers.push(*key);
+        } else {
+            regular.push(*key);
+        }
+    }
+    modifiers.sort_unstable();
+    if regular.is_empty() {
+        if modifiers.len() < 2 {
             return None;
         }
-        let mut bindings = vec![
-            format!("{first_mask} + {second_key}"),
-            format!("{second_mask} + {first_key}"),
-        ];
-        // Do not register Right Super as an activating key. Keep both sides
-        // of the other modifiers available in the reverse press order.
-        if key != SUPER {
-            bindings.push(format!("{first_mask} + {}", second_key.replace("_L", "_R")));
-        }
-        if modifier != SUPER {
-            bindings.push(format!("{second_mask} + {}", first_key.replace("_L", "_R")));
+        let mut bindings = Vec::new();
+        for activating in modifiers.iter().rev() {
+            let mask = modifiers
+                .iter()
+                .filter(|id| *id != activating)
+                .filter_map(|id| portal_modifier_name(*id))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let key = hyprland_modifier_name(*activating)?;
+            bindings.push(format!("{mask} + {key}"));
+            if *activating != SUPER {
+                bindings.push(format!("{mask} + {}", key.replace("_L", "_R")));
+            }
         }
         return Some((None, bindings));
     }
-
-    let trigger = portal_trigger(modifier, key)?;
+    if regular.len() != 1 {
+        return None;
+    }
+    let key = regular[0];
+    if modifiers.is_empty() && !(101..=112).contains(&key) {
+        return None;
+    }
+    let key_name = match key {
+        101..=112 => format!("F{}", key - 100),
+        200 => "SPACE".to_string(),
+        _ => REGULAR_KEYS
+            .iter()
+            .find(|(_, _, code)| 1000 + code == key)?
+            .1
+            .to_string(),
+    };
+    let mut parts = modifiers
+        .iter()
+        .filter_map(|id| portal_modifier_name(*id))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    parts.push(key_name);
+    let trigger = parts.join("+");
     Some((Some(trigger.clone()), vec![trigger.replace('+', " + ")]))
 }
 
-pub fn is_hotkey_available(key1: &str, key2: &str) -> bool {
-    shortcut_configuration(map_code_to_vk(key1), map_code_to_vk(key2)).is_some()
+pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+    let ids = super::mapped_codes(keys)?;
+    let (_, triggers) = shortcut_configuration_for(&ids)
+        .ok_or("Use modifiers plus one regular key, a function key, or a modifier-only combination on Linux")?;
+    Ok(conflicts::free(
+        &conflicts::bindings("dictation")?,
+        &triggers,
+        false,
+    ))
 }
-pub fn update_keys(k1: u32, k2: u32) {
-    KEY1.store(k1, Ordering::SeqCst);
-    KEY2.store(k2, Ordering::SeqCst);
+pub fn update_keys(keys: &[u32]) -> Result<(), String> {
+    shortcut_configuration_for(keys).ok_or("Unsupported Linux shortcut")?;
+    *KEYS.lock().map_err(|_| "Shortcut state unavailable")? = keys.to_vec();
     CONFIG_GENERATION.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
+    eval_hyprland(&suspend_shortcuts_snippet(active))
+}
+
+fn suspend_shortcuts_snippet(active: bool) -> String {
+    let enabled = if active { "false" } else { "true" };
+    format!(
+        "if _verenu_dictation_bindings then for _, handle in ipairs(_verenu_dictation_bindings) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end end; for _, handle in pairs({{_verenu_copy_binding, _verenu_capture_binding}}) do if tostring(handle) ~= 'HL.Keybind(expired)' then handle:set_enabled({enabled}) end end"
+    )
 }
 
 /// Called by the Linux single-instance handoff from Hyprland's keyboard-event
 /// release watcher. This avoids the broken global-shortcuts release event for
 /// modifier-only chords while preserving the same gesture classification.
 pub fn notify_release() {
+    if super::capture_active() {
+        return;
+    }
     let Some(gesture) = GESTURE.get() else {
         return;
     };
@@ -576,10 +704,13 @@ fn refresh_escape_listening() {
 }
 
 fn refresh_space_listening() {
-    let key = HANDSFREE_KEY.lock().map(|key| key.clone()).unwrap_or_default();
+    let key = HANDSFREE_KEY
+        .lock()
+        .map(|key| key.clone())
+        .unwrap_or_default();
     let wanted = CHORD_ACTIVE.load(Ordering::SeqCst)
         && !HANDLESS.load(Ordering::SeqCst)
-        && !(EFFECTIVE_KEY2.load(Ordering::SeqCst) == 200 && key.eq_ignore_ascii_case("Space"));
+        && !(configured_keys(&EFFECTIVE_KEYS).contains(&200) && key.eq_ignore_ascii_case("Space"));
     if wanted == SPACE_ARMED.load(Ordering::SeqCst) {
         return;
     }
@@ -658,12 +789,10 @@ where
     let _ = ESCAPE.set(Box::new(on_escape));
     let _ = COPY.set(Box::new(on_copy_last));
     let _ = SUB_APP.set(Box::new(on_capture_sub_app));
-    shortcut_configuration(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst)).ok_or_else(
-        || {
-            "Linux shortcut must use one modifier plus F1–F12/Space, or two different modifiers"
-                .to_string()
-        },
-    )?;
+    shortcut_configuration_for(&configured_keys(&KEYS)).ok_or_else(|| {
+        "Linux shortcut must use one modifier plus F1–F12/Space, or two different modifiers"
+            .to_string()
+    })?;
     Ok(std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -681,25 +810,36 @@ where
             // ending the thread with no error surface, which stranded any
             // active recording (release could never arrive) until restart.
             loop {
-                let requested = (KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst));
+                let requested = configured_keys(&KEYS);
                 let available = conflicts::bindings("dictation").ok().and_then(|bindings| {
-                    std::iter::once(requested)
-                        .chain([(CTRL, SUPER), (CTRL, 105), (ALT, 106), (CTRL, 107), (SUPER, 108), (ALT, 109)])
-                        .find(|(first, second)| shortcut_configuration(*first, *second)
-                            .is_some_and(|(_, triggers)| conflicts::free(&bindings, &triggers, false)))
+                    std::iter::once(requested.clone())
+                        .chain([
+                            vec![CTRL, SUPER],
+                            vec![CTRL, 105],
+                            vec![ALT, 106],
+                            vec![CTRL, 107],
+                            vec![SUPER, 108],
+                            vec![ALT, 109],
+                        ])
+                        .find(|keys| {
+                            shortcut_configuration_for(keys).is_some_and(|(_, triggers)| {
+                                conflicts::free(&bindings, &triggers, false)
+                            })
+                        })
                 });
-                let Some((first, second)) = available else {
-                    conflicts::status("dictation", shortcut_display(requested.0, requested.1), None, vec![]);
-                    let _ = shortcuts::remove_block("-- >>> Verenu managed global shortcut (do not edit) <<<", "-- <<< End Verenu managed global shortcut >>>");
+                let Some(keys) = available else {
+                    conflicts::status("dictation", shortcut_display(&requested), None, vec![]);
+                    let _ = shortcuts::remove_block(
+                        "-- >>> Verenu managed global shortcut (do not edit) <<<",
+                        "-- <<< End Verenu managed global shortcut >>>",
+                    );
                     tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
                     continue;
                 };
-                EFFECTIVE_KEY1.store(first, Ordering::SeqCst);
-                EFFECTIVE_KEY2.store(second, Ordering::SeqCst);
-                let Some((preferred_trigger, bindings)) = shortcut_configuration(
-                    first,
-                    second,
-                ) else {
+                if let Ok(mut effective) = EFFECTIVE_KEYS.lock() {
+                    *effective = keys.clone();
+                }
+                let Some((preferred_trigger, bindings)) = shortcut_configuration_for(&keys) else {
                     log::error!("linux hotkey: stored shortcut is no longer supported");
                     tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
                     continue;
@@ -814,16 +954,19 @@ async fn run_portal_session(
         &dictate_id,
         &release_command,
         &handsfree_command,
-        &release_keycodes(EFFECTIVE_KEY1.load(Ordering::SeqCst), EFFECTIVE_KEY2.load(Ordering::SeqCst)),
+        &release_keycodes_for(&configured_keys(&EFFECTIVE_KEYS)),
     ) {
         log::error!("linux hotkey: Hyprland binding setup failed: {error}");
         return true;
     }
     log::info!("linux hotkey: Hyprland binding installed");
-    let first = EFFECTIVE_KEY1.load(Ordering::SeqCst);
-    let second = EFFECTIVE_KEY2.load(Ordering::SeqCst);
-    conflicts::status("dictation", shortcut_display(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst)),
-        Some(shortcut_display(first, second)), vec![shortcut_code(first), shortcut_code(second)]);
+    let keys = configured_keys(&EFFECTIVE_KEYS);
+    conflicts::status(
+        "dictation",
+        shortcut_display(&configured_keys(&KEYS)),
+        Some(shortcut_display(&keys)),
+        keys.iter().map(|id| shortcut_code(*id)).collect(),
+    );
     install_sub_app_capture_binding();
     match discover_portal_id(&before, PORTAL_CANCEL_DESCRIPTION) {
         Some(id) => {
@@ -929,6 +1072,7 @@ async fn run_portal_session(
                 }
             },
             Some(event) = activated.next() => {
+                if super::capture_active() { continue; }
                 let id = event.shortcut_id();
                 if id == PORTAL_SHORTCUT_ID {
                     flush_pending_release(Instant::now());
@@ -993,17 +1137,14 @@ fn shortcuts_need_rebind() -> bool {
             };
             let ignore_mods = matches!(status.id.as_str(), "cancel" | "handsfree");
             let active_triggers = if status.id == "dictation" {
-                shortcut_configuration(
-                    EFFECTIVE_KEY1.load(Ordering::SeqCst),
-                    EFFECTIVE_KEY2.load(Ordering::SeqCst),
-                )
-                .map(|(_, triggers)| triggers)
-                .unwrap_or_default()
+                shortcut_configuration_for(&configured_keys(&EFFECTIVE_KEYS))
+                    .map(|(_, triggers)| triggers)
+                    .unwrap_or_default()
             } else {
                 status.active.iter().cloned().collect()
             };
             let requested_triggers = if status.id == "dictation" {
-                shortcut_configuration(KEY1.load(Ordering::SeqCst), KEY2.load(Ordering::SeqCst))
+                shortcut_configuration_for(&configured_keys(&KEYS))
                     .map(|(_, triggers)| triggers)
                     .unwrap_or_default()
             } else {
@@ -1024,9 +1165,9 @@ fn shortcuts_need_rebind() -> bool {
                     ]
                     .iter()
                     .any(|(first, second)| {
-                        shortcut_configuration(*first, *second).is_some_and(|(_, triggers)| {
-                            conflicts::free(&bindings, &triggers, false)
-                        })
+                        shortcut_configuration_for(&[*first, *second]).is_some_and(
+                            |(_, triggers)| conflicts::free(&bindings, &triggers, false),
+                        )
                     }),
                     "copy" => conflicts::choose(
                         &bindings,
@@ -1112,6 +1253,42 @@ fn pick_portal_id(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcut_suspension_tolerates_bindings_not_initialized_yet() {
+        let snippet = super::suspend_shortcuts_snippet(true);
+        assert!(snippet.contains("if _verenu_dictation_bindings then"));
+        assert!(snippet.contains("handle:set_enabled(false)"));
+        assert!(!snippet.contains("error("));
+    }
+
+    #[test]
+    fn multi_modifier_shortcuts_keep_every_key_and_release_code() {
+        let keys = [
+            super::CTRL,
+            super::ALT,
+            super::SHIFT,
+            super::SUPER,
+            super::map_code_to_vk("KeyK"),
+        ];
+        let (preferred, bindings) = super::shortcut_configuration_for(&keys).unwrap();
+        assert_eq!(preferred.as_deref(), Some("CTRL+ALT+SHIFT+SUPER+K"));
+        assert_eq!(bindings, ["CTRL + ALT + SHIFT + SUPER + K"]);
+        assert_eq!(
+            super::release_keycodes_for(&keys),
+            [37, 105, 64, 108, 50, 62, 133, 134, 45]
+        );
+        assert_eq!(super::shortcut_code(keys[4]), "KeyK");
+        let (_, modifiers) = super::shortcut_configuration_for(&keys[..4]).unwrap();
+        assert_eq!(modifiers.len(), 7);
+        assert!(modifiers.contains(&"CTRL + ALT + SUPER + Shift_R".to_string()));
+        assert!(super::shortcut_configuration_for(&[
+            super::map_code_to_vk("KeyA"),
+            super::map_code_to_vk("KeyB")
+        ])
+        .is_none());
+        assert!(super::shortcut_configuration_for(&[105]).is_some());
+        assert!(super::shortcut_configuration_for(&[200]).is_none());
+    }
     use super::{
         escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
         shortcut_configuration, should_cancel_hold, PortalGesture, PortalGestureAction,

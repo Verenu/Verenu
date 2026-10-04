@@ -26,6 +26,7 @@
 //! | POST | `/v1/recording/stop` | → `{ ok }` (pipeline continues through state/outbox) |
 //! | POST | `/v1/recording/cancel` | → `{ ok }` |
 //! | POST | `/v1/recording/retry` | → `{ ok }` |
+//! | POST | `/v1/insertion/format` | `{ seq, left, right, leftReliable, rightReliable }` → `{ ok, text }` (smart caps/spacing for the caret) |
 //! | POST | `/v1/insertion/ack` | `{ seq, success, strategy, error?, package?, discard? }` → `{ ok }` |
 //! | POST | `/v1/credential` | `{ provider, key }` → `{ ok }` (Keystore unlock push) |
 //! | POST | `/v1/credentials/clear` | → `{ ok }` (drop Rust's in-memory cache) |
@@ -44,21 +45,33 @@
 //! History is already written by the pipeline before the handoff, so an ack
 //! only drives pill/events/diagnostics — a lost ack can never lose text.
 
+use serde_json::{json, Value};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 // ---------------------------------------------------------------------------
 // Insertion outbox (app-handle-free so the injection path can publish)
 // ---------------------------------------------------------------------------
 
+/// How the pipeline wants the text fitted to the caret. Kotlin reads the text
+/// around the caret at insertion time and asks for it via `/v1/insertion/format`.
+#[derive(Clone)]
+pub struct InsertionFormat {
+    pub contextual_caps: bool,
+    pub auto_spacing: bool,
+    pub profile: String,
+    pub language: String,
+    pub protected_initial_case: bool,
+}
+
 struct OutboxEntry {
     seq: u64,
     text: String,
     published_at: Instant,
+    format: Option<InsertionFormat>,
 }
 
 struct Outbox {
@@ -81,6 +94,10 @@ fn outbox() -> &'static Mutex<Outbox> {
 /// unacknowledged entry — a new dictation supersedes the previous one, and
 /// history already holds the old text so nothing is lost.
 pub fn publish_android_insertion(text: &str) -> u64 {
+    publish_android_insertion_with(text, None)
+}
+
+pub fn publish_android_insertion_with(text: &str, format: Option<InsertionFormat>) -> u64 {
     let mut guard = outbox().lock().unwrap_or_else(|e| e.into_inner());
     let seq = guard.next_seq;
     guard.next_seq = guard.next_seq.wrapping_add(1).max(1);
@@ -88,12 +105,45 @@ pub fn publish_android_insertion(text: &str) -> u64 {
         seq,
         text: text.to_string(),
         published_at: Instant::now(),
+        format,
     });
     log::info!(
         "android bridge: published insertion seq={seq} chars={}",
         text.chars().count()
     );
     seq
+}
+
+/// Fit the pending insertion `seq` to the caret using the text Kotlin read on
+/// either side of it. Returns the original text when formatting is off, the
+/// entry is gone, or the edges were not readable.
+pub(crate) fn format_pending_insertion(
+    seq: u64,
+    left: &str,
+    right: &str,
+    left_reliable: bool,
+    right_reliable: bool,
+) -> Option<String> {
+    let guard = outbox().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard.current.as_ref().filter(|entry| entry.seq == seq)?;
+    let Some(format) = entry.format.as_ref() else {
+        return Some(entry.text.clone());
+    };
+    if !format.contextual_caps && !format.auto_spacing {
+        return Some(entry.text.clone());
+    }
+    Some(crate::core::injection::format_for_caret_text(
+        &entry.text,
+        left,
+        right,
+        left_reliable,
+        right_reliable,
+        format.contextual_caps,
+        format.auto_spacing,
+        &format.profile,
+        &format.language,
+        format.protected_initial_case,
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -345,6 +395,12 @@ fn ok(body: Value) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 fn state_payload(state: &BridgeState) -> Value {
+    // The Android client polls this route frequently. Read the settings store
+    // once for the entire payload instead of cloning its snapshot per field.
+    let settings = state
+        .app
+        .as_ref()
+        .and_then(|app| crate::data::store::settings_snapshot(app).ok());
     let (lifecycle, dictation_active) = match &state.app {
         Some(app) => app
             .try_state::<crate::pipeline::SharedState>()
@@ -380,13 +436,49 @@ fn state_payload(state: &BridgeState) -> Value {
         .map(|snap| json!({ "seq": snap.seq, "text": snap.text, "ageMs": snap.age_ms }));
     let last_error =
         last_bridge_error().map(|(message, age_ms)| json!({ "message": message, "ageMs": age_ms }));
+    let analytics_enabled = settings
+        .as_ref()
+        .map(analytics_enabled_value)
+        .unwrap_or(true);
+    let pill_position = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_POSITION)
+                .and_then(Value::as_str)
+        })
+        .filter(|value| super::ANDROID_PILL_POSITIONS.contains(value))
+        .unwrap_or(super::DEFAULT_ANDROID_PILL_POSITION)
+        .to_string();
+    let cover_keyboard_mic = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
+    let appearance_mode = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::APPEARANCE_MODE)
+                .and_then(Value::as_str)
+        })
+        .filter(|value| matches!(*value, "system" | "light" | "dark"))
+        .unwrap_or("system")
+        .to_string();
     json!({
         "lifecycle": lifecycle,
         "dictationActive": dictation_active,
         "pillStage": last_pill_stage(),
         "audioLevel": last_audio_level(),
+        "audioEnvelope": take_audio_envelope(),
         "keystorePending": has_keystore_rotation(),
-        "analyticsEnabled": analytics_enabled(state),
+        "analyticsEnabled": analytics_enabled,
+        "pillPosition": pill_position,
+        "coverKeyboardMic": cover_keyboard_mic,
+        "appearanceMode": appearance_mode,
         "lastError": last_error,
         "serverTimeUnixMs": now_unix_ms(),
         "overlay": {
@@ -478,15 +570,6 @@ fn analytics_settings_payload(app: &AppHandle) -> Value {
     analytics_settings_from_snapshot(&settings, context_group_count)
 }
 
-fn analytics_enabled(state: &BridgeState) -> bool {
-    state
-        .app
-        .as_ref()
-        .and_then(|app| crate::data::store::settings_snapshot(app).ok())
-        .map(|settings| analytics_enabled_value(&settings))
-        .unwrap_or(true)
-}
-
 fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> bool {
     settings
         .get(crate::data::store::ANALYTICS_ENABLED)
@@ -575,6 +658,35 @@ fn audio_level_cell() -> &'static std::sync::atomic::AtomicU32 {
 /// this since it cannot see the `audio-level` WebView events.
 pub(crate) fn note_audio_level(level: f32) {
     audio_level_cell().store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn audio_envelope_buffer() -> &'static Mutex<Vec<f32>> {
+    static ENVELOPE: OnceLock<Mutex<Vec<f32>>> = OnceLock::new();
+    ENVELOPE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Queue the recorder's short-window peak envelope (10 ms per sample, see
+/// `EnvelopeTap`) for the Android pill. Capped so a stalled poller can never
+/// grow it without bound; the oldest samples are the ones dropped.
+pub(crate) fn note_audio_envelope(samples: &[f32]) {
+    const MAX_BUFFERED: usize = 400;
+    let mut buffer = audio_envelope_buffer()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    buffer.extend_from_slice(samples);
+    if buffer.len() > MAX_BUFFERED {
+        let excess = buffer.len() - MAX_BUFFERED;
+        buffer.drain(..excess);
+    }
+}
+
+/// Everything queued since the previous call (single consumer: the pill).
+pub(crate) fn take_audio_envelope() -> Vec<f32> {
+    std::mem::take(
+        &mut *audio_envelope_buffer()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
 }
 
 pub(crate) fn last_audio_level() -> f32 {
@@ -705,6 +817,19 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
             match crate::commands::retry_transcription(app.clone(), action).await {
                 Ok(_) => ok(json!({})),
                 Err(e) => err(500, "Internal Server Error", &e),
+            }
+        }
+        ("POST", "/v1/insertion/format") => {
+            let seq = body_json.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            match format_pending_insertion(
+                seq,
+                &str_field("left"),
+                &str_field("right"),
+                bool_field("leftReliable"),
+                bool_field("rightReliable"),
+            ) {
+                Some(text) => ok(json!({ "text": text })),
+                None => err(409, "Conflict", "no pending insertion for that seq"),
             }
         }
         ("POST", "/v1/insertion/ack") => {

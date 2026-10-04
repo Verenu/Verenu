@@ -403,6 +403,12 @@ pub const ACCENT_COLOR: &str = "accent_color";
 /// User-entered hex palette for the Custom appearance mode (background, text,
 /// and optional sidebar/surface colors).
 pub const CUSTOM_THEME: &str = "custom_theme";
+/// Named palettes saved on this device, including each palette's accent.
+pub const CUSTOM_THEMES: &str = "custom_themes";
+/// Where the Android dictation pill sits; see `ANDROID_PILL_POSITIONS`.
+pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
+/// Whether the Android pill covers the keyboard's own mic button when it can find it.
+pub const ANDROID_PILL_COVER_KEYBOARD_MIC: &str = "android_pill_cover_keyboard_mic";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";
@@ -412,6 +418,7 @@ pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
 /// edit silently vanished. `CLEANUP_PROMPT_OVERRIDES` is the retired per-model
 /// map, still read once so an existing edit survives the change.
 pub const CLEANUP_PROMPT_OVERRIDE: &str = "cleanup_prompt_override";
+pub const STYLE_PROMPT_INSTRUCTIONS: &str = "style_prompt_instructions";
 pub const CLEANUP_PROMPT_OVERRIDES: &str = "cleanup_prompt_overrides";
 /// Per-provider snapshot of the live model lists, written only by the model
 /// catalog store. Derived cache state, so it is readable but never exported —

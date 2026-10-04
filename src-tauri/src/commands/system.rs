@@ -27,8 +27,7 @@ pub fn frontend_ready(
     // pill was still installing its listeners. Replay the backend's current
     // state after readiness so a mapped overlay can never remain blank.
     if window.label() == "pill" {
-        app.emit_to("pill", "pill-state", crate::pipeline::current_pill_state())
-            .ok();
+        crate::pipeline::replay_pill_state(&app);
     }
     Ok(())
 }
@@ -41,10 +40,8 @@ pub fn frontend_ready(
 /// `system::platform::is_macos_intel` for the reasoning.
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
-    // Android has no ONNX Runtime speech builds nor a llama-server runtime
-    // (see crate::android::local_ai_supported_on_android and docs/ANDROID.md).
     if cfg!(target_os = "android") {
-        return false;
+        return crate::android::local_ai_supported_on_android();
     }
     !crate::system::platform::is_macos_intel()
 }
@@ -77,6 +74,7 @@ pub struct GpuCapability {
 /// capable" rather than "no memory".
 #[derive(serde::Serialize)]
 pub struct HardwareCapabilities {
+    pub is_android: bool,
     pub total_ram_mb: u64,
     pub free_ram_mb: u64,
     pub gpus: Vec<GpuCapability>,
@@ -94,6 +92,7 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
             })
             .collect();
         Ok(HardwareCapabilities {
+            is_android: cfg!(target_os = "android"),
             total_ram_mb: mem.map(|m| m.total_mb).unwrap_or(0),
             free_ram_mb: mem.map(|m| m.available_mb).unwrap_or(0),
             gpus,
@@ -103,6 +102,7 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
     .unwrap_or_else(|e| {
         log::error!("{e}");
         HardwareCapabilities {
+            is_android: cfg!(target_os = "android"),
             total_ram_mb: 0,
             free_ram_mb: 0,
             gpus: Vec::new(),
@@ -565,26 +565,75 @@ fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSn
 // ---------- hotkey ----------
 
 #[tauri::command]
-pub async fn check_hotkey(key1: String, key2: String) -> Result<bool, String> {
-    Ok(crate::core::hotkey::is_hotkey_available(&key1, &key2))
+pub async fn set_hotkey_capture(active: bool) -> Result<(), String> {
+    if crate::is_dev_session() {
+        return Ok(());
+    }
+    run_blocking("set_hotkey_capture", move || {
+        crate::core::hotkey::set_capture_active(active)
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn save_hotkey(app: AppHandle, key1: String, key2: String) -> Result<(), String> {
-    let vk1 = crate::core::hotkey::map_code_to_vk(&key1);
-    let vk2 = crate::core::hotkey::map_code_to_vk(&key2);
-    if vk1 == 0 {
-        return Err(format!("Unrecognized key code: {key1}"));
+pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, String> {
+    let keys = crate::core::hotkey::normalize_codes(&keys)?;
+    let capture = store::settings_handle(&app)?
+        .get(store::SUB_APP_CAPTURE_HOTKEY)
+        .and_then(|value| {
+            value
+                .as_str()
+                .and_then(crate::core::hotkey::chord::Chord::parse)
+        })
+        .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
+    let copy = crate::core::hotkey::chord::Chord::parse(if cfg!(target_os = "macos") {
+        "Alt+Super+C"
+    } else {
+        "Ctrl+Alt+C"
+    })
+    .expect("copy shortcut");
+    if crate::core::hotkey::conflicts_with_chord(&keys, capture)
+        || crate::core::hotkey::conflicts_with_chord(&keys, copy)
+    {
+        return Ok(false);
     }
-    // An empty second slot is allowed (a single-key hotkey, e.g. macOS F5);
-    // only reject a non-empty key code that we can't recognise.
-    if !key2.is_empty() && vk2 == 0 {
-        return Err(format!("Unrecognized key code: {key2}"));
+    crate::core::hotkey::is_hotkey_available(&keys)
+}
+
+#[tauri::command]
+pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
+    let keys = crate::core::hotkey::normalize_codes(&keys)?;
+    let ids = crate::core::hotkey::mapped_codes(&keys)?;
+    if !check_hotkey(app.clone(), keys.clone()).await? {
+        return Err("That shortcut is already assigned. Choose another combination.".into());
     }
-    crate::core::hotkey::update_keys(vk1, vk2);
     let settings = store::settings_handle(&app)?;
+    let previous = settings
+        .get(store::HOTKEY)
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                vec!["AltLeft".into(), "Space".into()]
+            } else {
+                vec!["ControlLeft".into(), "MetaLeft".into()]
+            }
+        });
+    // Dev sessions persist only in their isolated store, without registering
+    // lasting host shortcuts.
+    if !crate::is_dev_session() {
+        crate::core::hotkey::update_keys(&ids)?;
+    }
+    let stored_keys = keys.clone();
     run_blocking("save_hotkey", move || {
-        settings.save_value(store::HOTKEY, serde_json::json!([key1, key2]))
+        if let Err(error) = settings.save_value(store::HOTKEY, serde_json::json!(stored_keys)) {
+            if !crate::is_dev_session() {
+                if let Ok(ids) = crate::core::hotkey::mapped_codes(&previous) {
+                    let _ = crate::core::hotkey::update_keys(&ids);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     })
     .await
 }
