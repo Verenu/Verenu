@@ -123,6 +123,20 @@
 
   function close() { appStore.settingsOpen = false; }
 
+  // Moving between the phone's list and a section moves focus with it, so a
+  // keyboard or TalkBack user lands on the screen that is now showing.
+  let lastMobileList = appStore.settingsMobileList;
+  $effect(() => {
+    const list = appStore.settingsMobileList;
+    if (list === lastMobileList) return;
+    lastMobileList = list;
+    if (!isAndroid || !appStore.mobileCompact || !appStore.settingsOpen) return;
+    requestAnimationFrame(() => {
+      if (list) settingsPageEl?.focus({ preventScroll: true });
+      else settingsPageEl?.querySelector<HTMLElement>('.m-bar-back')?.focus({ preventScroll: true });
+    });
+  });
+
   $effect(() => {
     if (!appStore.settingsOpen) appStore.settingsMobileList = false;
   });
@@ -216,6 +230,8 @@
   $effect(() => {
     const currentSection = section;
     if (!appStore.settingsOpen || !settingsPanelEl || !currentSection || !sectionReady) return;
+    // The section is parked behind the list on a phone: do not pull focus into it.
+    if (appStore.mobileCompact && appStore.settingsMobileList) return;
     const panel = settingsPanelEl;
     requestAnimationFrame(() => {
       if (!panel.isConnected) return;
@@ -429,7 +445,10 @@
         {/each}
       </div>
 
-      <div class="settings-body">
+      <!-- Parked off-screen (not display:none, so controls can still measure) while
+           the phone shows the section list; inert keeps keyboard focus and screen
+           readers off it. -->
+      <div class="settings-body" inert={appStore.mobileCompact && appStore.settingsMobileList}>
         <div class="fade-edge fade-edge-top" class:visible={fadeTop} aria-hidden="true"></div>
         <div class="fade-edge fade-edge-bottom" class:visible={fadeBottom} aria-hidden="true"></div>
         {#key section}

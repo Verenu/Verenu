@@ -14,6 +14,7 @@ import androidx.core.view.WindowInsetsCompat
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
   @Volatile private var navOverlapPx = 0
+  @Volatile private var imeVisible = false
   private var navBarPx = 0
 
   override fun onWebViewCreate(webView: WebView) {
@@ -23,6 +24,10 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(object {
       @JavascriptInterface
       fun bottomInsetCssPx(): Float = navOverlapPx / resources.displayMetrics.density
+
+      /** Whether the soft keyboard is actually showing (not inferred from the window size). */
+      @JavascriptInterface
+      fun imeVisible(): Boolean = this@MainActivity.imeVisible
     }, "VerenuInsets")
     webView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateNavOverlap() }
   }
@@ -83,6 +88,13 @@ class MainActivity : TauriActivity() {
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
       navBarPx = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+      val nowVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+      if (nowVisible != imeVisible) {
+        imeVisible = nowVisible
+        // The page asks `imeVisible()` when this fires; resize events alone cannot
+        // tell a keyboard from a window that was simply made shorter.
+        webView?.post { webView?.evaluateJavascript("window.dispatchEvent(new Event('verenu-ime'))", null) }
+      }
       updateNavOverlap()
       view.setPadding(
         baseLeft + bars.left,

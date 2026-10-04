@@ -9,29 +9,36 @@ const apps = [
   { name: 'Gmail', exe: 'com.google.android.gm' },
 ];
 
-describe('rankAppMatches', () => {
+describe('rankAppMatches on Android', () => {
   it('keeps the list for an empty query', () => {
-    expect(rankAppMatches(apps, '  ')).toEqual(apps);
+    expect(rankAppMatches(apps, '  ', true)).toEqual(apps);
   });
 
   it('puts names that start with the query before later matches', () => {
-    expect(rankAppMatches(apps, 'maps').map((app) => app.name)).toEqual(['Maps.me', 'Google Maps']);
+    expect(rankAppMatches(apps, 'maps', true).map((app) => app.name)).toEqual(['Maps.me', 'Google Maps']);
   });
 
-  it('ranks a word prefix above a package-only match', () => {
-    const names = rankAppMatches(apps, 'google').map((app) => app.name);
-    expect(names[0]).toBe('Google Maps');
-    expect(names).toContain('Gmail');
+  it('ranks a name-prefix match above a word-prefix match', () => {
+    expect(rankAppMatches(apps, 'g', true).map((app) => app.name)).toEqual(['Google Maps', 'Gmail']);
+  });
+
+  it('searches only the visible name, never the package', () => {
+    expect(rankAppMatches(apps, 'com', true)).toEqual([]);
+    expect(rankAppMatches(apps, 'chro', true).map((app) => app.name)).toEqual(['Chrome']);
   });
 
   it('drops apps that do not match', () => {
-    expect(rankAppMatches(apps, 'zzz')).toEqual([]);
-    expect(rankAppMatches(apps, 'slack').every((app) => matchesAppSearch(app, 'slack'))).toBe(true);
+    expect(rankAppMatches(apps, 'zzz', true)).toEqual([]);
+  });
+});
+
+describe('rankAppMatches on desktop', () => {
+  it('only filters, in the order the platform listed the apps', () => {
+    expect(rankAppMatches(apps, 'maps', false).map((app) => app.name)).toEqual(['Google Maps', 'Maps.me']);
   });
 
-  it('searches only the visible name when asked to (Android package names)', () => {
-    expect(rankAppMatches(apps, 'com', false).length).toBe(apps.length);
-    expect(rankAppMatches(apps, 'com', true)).toEqual([]);
-    expect(rankAppMatches(apps, 'chro', true).map((app) => app.name)).toEqual(['Chrome']);
+  it('still matches the executable, as before', () => {
+    expect(rankAppMatches(apps, 'com.slack', false).map((app) => app.name)).toEqual(['Slack']);
+    expect(rankAppMatches(apps, 'slack', false).every((app) => matchesAppSearch(app, 'slack', false))).toBe(true);
   });
 });
