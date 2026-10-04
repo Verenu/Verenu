@@ -442,12 +442,16 @@ fn build_anthropic_request(
     // Two boundaries preserve the shared contract across preset changes,
     // then reuse the complete configured prefix on repeated dictations.
     let mut system = Vec::new();
-    match standing.split_once("\n\n<cleanup_settings>") {
-        Some((shared, settings)) => {
+    match standing.find("<cleanup_settings>") {
+        Some(settings_start) => {
+            // Split on the structural tag instead of the exact newline
+            // spelling so templates saved with CRLF retain the shared cache
+            // boundary across cleanup preset changes.
+            let shared = standing[..settings_start].trim_end();
             if !shared.trim().is_empty() {
                 system.push(serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}));
             }
-            let settings = format!("\n\n<cleanup_settings>{settings}");
+            let settings = format!("\n\n{}", &standing[settings_start..]);
             if !settings.trim().is_empty() {
                 system.push(serde_json::json!({"type": "text", "text": settings, "cache_control": {"type": "ephemeral"}}));
             }
@@ -1076,9 +1080,11 @@ mod tests {
             "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n\n<evidence>Term</evidence>",
             "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n<evidence>Term</evidence>",
             "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>  <evidence>Term</evidence>",
+            "Shared rules\r\n\r\n<cleanup_settings>Medium</cleanup_settings>\r\n\r\n<evidence>Term</evidence>",
         ];
         for prompt in prompts {
             let body = super::build_anthropic_request("hello", "claude-x", prompt, 256, None);
+            assert_eq!(body["system"][0]["text"], "Shared rules");
             assert!(body["system"][1]["text"]
                 .as_str()
                 .unwrap()
