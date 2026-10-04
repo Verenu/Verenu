@@ -418,9 +418,9 @@ fn build_anthropic_request(
     max_tokens: u32,
     alternate_transcript: Option<&str>,
 ) -> serde_json::Value {
-    // Cache standing instructions, never the changing vocabulary tail or
-    // transcript. Short prefixes remain valid even below a model's cache
-    // threshold; do not pad requests or cache private dictation to reach it.
+    // Mark standing instructions, never the changing vocabulary tail or
+    // transcript. Providers silently skip prefixes below a model's minimum
+    // cache size; keep prompts compact instead of padding solely for caching.
     let (standing, evidence, cacheable) = split_cached_evidence(prompt);
     if !cacheable {
         // If a custom prompt contains a malformed evidence boundary, fail

@@ -373,8 +373,7 @@ fn selected_vocabulary_stays_bounded_after_prompt_composition() {
         .map(|e| e.term.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let evidence =
-        dictionary::build_relevant_dictionary_prompt_from_sources(&entries, &raw, None, None);
+    let evidence = dictionary::build_relevant_dictionary_prompt_from_sources(&entries, &raw, None);
     let rendered = get_cleanup_prompt_with_alternate_and_evidence(
         "google", "test", "formal", "medium", "", &evidence, None, &raw, None, None,
     );
