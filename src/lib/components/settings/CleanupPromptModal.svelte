@@ -22,7 +22,6 @@
   } from '../../motion';
 
   const CLEANUP_PROMPT_TAGS = [
-    '{{ active_app }}',
     '{{ cleanup_preset }}',
     '{{ formatting_rules }}',
     '{{ snippet_overrides }}',

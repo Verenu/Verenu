@@ -164,6 +164,8 @@
   let errorToast = $state('');
   let errorToastKind = $state<ErrorKind | null>(null);
   let toastTimer: ReturnType<typeof setTimeout>;
+  let modelNotice = $state('');
+  let modelNoticeTimer: ReturnType<typeof setTimeout>;
   let pageDir = $state<1 | -1>(1);
   let prevPage = $state<string>('home');
   let contentEl = $state<HTMLDivElement | null>(null);
@@ -274,6 +276,12 @@
     let stopProviderStatusChecks: (() => void) | undefined;
     let stopSyncListeners: (() => void) | undefined;
     let stopTitleBarMetricsListener: (() => void) | undefined;
+    let stopModelNoticeListener: (() => void) | undefined;
+    void listen<string>('verenu:model-notice', (event) => {
+      modelNotice = [modelNotice, event.payload].filter(Boolean).join(' ');
+      clearTimeout(modelNoticeTimer);
+      modelNoticeTimer = setTimeout(() => { modelNotice = ''; }, 12000);
+    }).then(unlisten => { if (!mounted) unlisten(); else stopModelNoticeListener = unlisten; });
     const onSettingsSaveError = (event: Event) => {
       const message = (event as CustomEvent<unknown>).detail;
       showErrorToast(typeof message === 'string' ? message : '');
@@ -536,6 +544,8 @@
       if (stopProviderStatusChecks) stopProviderStatusChecks();
       if (stopSyncListeners) stopSyncListeners();
       if (stopTitleBarMetricsListener) stopTitleBarMetricsListener();
+      stopModelNoticeListener?.();
+      clearTimeout(modelNoticeTimer);
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
@@ -633,12 +643,34 @@
       No internet connection
     </div>
   {/if}
+  {#if modelNotice}
+    <div class="model-notice" role="status" style:bottom={!appStore.isOnline ? '66px' : '18px'}>
+      <span>{modelNotice}</span>
+      <button class="btn-ghost btn-compact" aria-label="Dismiss model notice" onclick={() => { modelNotice = ''; clearTimeout(modelNoticeTimer); }}>Dismiss</button>
+    </div>
+  {/if}
   {#if compactNav && !keyboardOpen}
     <MobileNav />
   {/if}
 </div>
 
 <style>
+  .model-notice {
+    position: fixed;
+    right: 18px;
+    z-index: 150;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: min(520px, calc(100vw - 36px));
+    padding: 12px 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    background: var(--bg-elev);
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.5;
+  }
   :global(*) {
     box-sizing: border-box;
   }

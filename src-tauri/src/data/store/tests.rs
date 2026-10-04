@@ -235,7 +235,6 @@ fn setting_audit_empty_store_resolves_to_documented_defaults() {
     assert!(cfg.cleanup_enabled, "cleanup should default to on");
     assert_eq!(cfg.default_tone, "casual");
     assert_eq!(cfg.cleanup_intensity, "medium");
-    assert!(!cfg.app_context_hint);
     assert!(!cfg.auto_learn_enabled);
     assert!(
         cfg.contextual_formatting_enabled,
