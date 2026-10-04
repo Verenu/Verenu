@@ -76,7 +76,6 @@ pub const SYNCABLE_SETTINGS: &[&str] = &[
     store::CLEANUP_ENABLED,
     store::DEFAULT_TONE,
     store::CLEANUP_INTENSITY,
-    store::APP_CONTEXT_HINT,
     store::AUTO_LEARN_ENABLED,
     store::AUTO_LEARN_EVENT_MODE,
     // CONTEXTUAL_CAPS and AUTO_SPACING are legacy mirrors of this canonical

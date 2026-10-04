@@ -245,6 +245,8 @@ struct ChatReq {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -416,15 +418,86 @@ fn build_anthropic_request(
     max_tokens: u32,
     alternate_transcript: Option<&str>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    // Mark standing instructions, never the changing vocabulary tail or
+    // transcript. Providers silently skip prefixes below a model's minimum
+    // cache size; keep prompts compact instead of padding solely for caching.
+    let (standing, evidence, cacheable) = split_cached_evidence(prompt);
+    if !cacheable {
+        // If a custom prompt contains a malformed evidence boundary, fail
+        // closed: keep the request intact but do not cache possibly dynamic
+        // content as standing instructions.
+        let mut body = serde_json::json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{
+                "role": "user",
+                "content": format_transcript_input(text, alternate_transcript),
+            }],
+        });
+        if !prompt.trim().is_empty() {
+            body["system"] = serde_json::json!([{"type": "text", "text": prompt}]);
+        }
+        return body;
+    }
+    // Two boundaries preserve the shared contract across preset changes,
+    // then reuse the complete configured prefix on repeated dictations.
+    let mut system = Vec::new();
+    match standing.find("<cleanup_settings>") {
+        Some(settings_start) => {
+            // Split on the structural tag instead of the exact newline
+            // spelling so templates saved with CRLF retain the shared cache
+            // boundary across cleanup preset changes.
+            let shared = standing[..settings_start].trim_end();
+            if !shared.trim().is_empty() {
+                system.push(serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}));
+            }
+            let settings = format!("\n\n{}", &standing[settings_start..]);
+            if !settings.trim().is_empty() {
+                system.push(serde_json::json!({"type": "text", "text": settings, "cache_control": {"type": "ephemeral"}}));
+            }
+        }
+        None if !standing.trim().is_empty() => {
+            system.push(serde_json::json!({"type": "text", "text": standing, "cache_control": {"type": "ephemeral"}}));
+        }
+        None => {}
+    }
+    if let Some(evidence) = evidence {
+        if !evidence.trim().is_empty() {
+            system.push(serde_json::json!({"type": "text", "text": evidence}));
+        }
+    }
+    let mut body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
-        "system": prompt,
         "messages": [{
             "role": "user",
             "content": format_transcript_input(text, alternate_transcript),
         }],
-    })
+    });
+    if !system.is_empty() {
+        body["system"] = serde_json::Value::Array(system);
+    }
+    body
+}
+
+fn split_cached_evidence(prompt: &str) -> (&str, Option<String>, bool) {
+    const OPEN: &str = "<evidence>";
+    const CLOSE: &str = "</evidence>";
+    let Some(start) = prompt.rfind(OPEN) else {
+        return (prompt, None, !prompt.contains(CLOSE));
+    };
+    let content_start = start + OPEN.len();
+    let Some(close_relative) = prompt[content_start..].find(CLOSE) else {
+        return (prompt, None, false);
+    };
+    let close_end = content_start + close_relative + CLOSE.len();
+    if !prompt[close_end..].trim().is_empty() {
+        return (prompt, None, false);
+    }
+
+    let standing = prompt[..start].trim_end();
+    let evidence = format!("\n\n{}", &prompt[start..close_end]);
+    (standing, Some(evidence), true)
 }
 
 /// Joins the text blocks of an Anthropic messages response.
@@ -455,6 +528,19 @@ async fn anthropic_cleanup(
     gen: u64,
 ) -> Result<String> {
     let mut body = build_anthropic_request(text, model, prompt, max_tokens, alternate_transcript);
+    // Other vendors can expose the messages protocol without implementing
+    // Anthropic's cache extensions. Preserve their plain system-string shape.
+    if !reqwest::Url::parse(url)
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
+    {
+        if prompt.trim().is_empty() {
+            if let Some(object) = body.as_object_mut() {
+                object.remove("system");
+            }
+        } else {
+            body["system"] = serde_json::Value::String(prompt.to_owned());
+        }
+    }
     merge_overrides(&mut body, overrides);
     log::debug!(
         "cleanup: anthropic request gen={} provider={} model={} input_chars={}",
@@ -786,6 +872,11 @@ fn build_openai_compat_request_with_alternate(
         max_tokens,
         temperature: 0.0,
         reasoning_effort: is_no_thinking.then_some("none"),
+        // Only the native OpenAI adapter receives this routing field.
+        // Compatible third-party endpoints may reject unknown parameters.
+        prompt_cache_key: provider_label
+            .eq_ignore_ascii_case("OpenAI")
+            .then_some("verenu-cleanup-v2"),
     }
 }
 
@@ -946,13 +1037,143 @@ mod tests {
     fn anthropic_request_puts_the_prompt_in_system() {
         let body = super::build_anthropic_request("hello", "claude-x", "be brief", 256, None);
         assert_eq!(body["model"], "claude-x");
-        assert_eq!(body["system"], "be brief");
+        assert_eq!(body["system"][0]["text"], "be brief");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["max_tokens"], 256);
         assert_eq!(body["messages"][0]["role"], "user");
         assert!(body["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("hello"));
+    }
+
+    #[test]
+    fn anthropic_cache_boundary_excludes_changing_evidence_and_transcripts() {
+        let first = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "Stable instructions\n\n<evidence>Verenu</evidence>",
+            256,
+            None,
+        );
+        let second = super::build_anthropic_request(
+            "different speech",
+            "claude-x",
+            "Stable instructions\n\n<evidence>Claude</evidence>",
+            256,
+            Some("alternate speech"),
+        );
+        assert_eq!(first["system"][0], second["system"][0]);
+        assert!(first["system"][0]["cache_control"].is_object());
+        assert!(first["system"][1]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("\n\n<evidence>"));
+        assert!(first["system"][1].get("cache_control").is_none());
+        assert_ne!(first["system"][1], second["system"][1]);
+        assert_ne!(first["messages"], second["messages"]);
+    }
+
+    #[test]
+    fn anthropic_evidence_boundary_accepts_whitespace_variants() {
+        let prompts = [
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n\n<evidence>Term</evidence>",
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n<evidence>Term</evidence>",
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>  <evidence>Term</evidence>",
+            "Shared rules\r\n\r\n<cleanup_settings>Medium</cleanup_settings>\r\n\r\n<evidence>Term</evidence>",
+        ];
+        for prompt in prompts {
+            let body = super::build_anthropic_request("hello", "claude-x", prompt, 256, None);
+            assert_eq!(body["system"][0]["text"], "Shared rules");
+            assert!(body["system"][1]["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("</cleanup_settings>"));
+            assert!(body["system"][2]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("\n\n<evidence>"));
+            assert!(body["system"][2].get("cache_control").is_none());
+        }
+    }
+
+    #[test]
+    fn malformed_anthropic_evidence_is_never_marked_cacheable() {
+        let body = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "Stable rules\n<evidence>changing",
+            256,
+            None,
+        );
+        assert_eq!(
+            body["system"][0]["text"],
+            "Stable rules\n<evidence>changing"
+        );
+        assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn anthropic_request_omits_empty_system_blocks() {
+        let empty = super::build_anthropic_request("hello", "claude-x", "", 256, None);
+        assert!(empty.get("system").is_none());
+
+        let settings = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "\n\n<cleanup_settings>Light</cleanup_settings>",
+            256,
+            None,
+        );
+        assert_eq!(settings["system"].as_array().unwrap().len(), 1);
+        assert!(!settings["system"][0]["text"].as_str().unwrap().is_empty());
+
+        let evidence = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "<evidence>Term</evidence>",
+            256,
+            None,
+        );
+        assert_eq!(evidence["system"].as_array().unwrap().len(), 1);
+        assert!(!evidence["system"][0]["text"].as_str().unwrap().is_empty());
+        assert!(evidence["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn cache_routing_key_is_stable_and_only_sent_to_openai() {
+        for provider in ["OpenAI", "Groq", "OpenRouter", "xAI", "custom"] {
+            let first = super::build_openai_compat_request_with_alternate(
+                "hello", "model", "stable", 128, None, provider,
+            );
+            let second = super::build_openai_compat_request_with_alternate(
+                "different",
+                "model",
+                "stable",
+                256,
+                Some("alternate"),
+                provider,
+            );
+            let first = serde_json::to_value(first).unwrap();
+            let second = serde_json::to_value(second).unwrap();
+            assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
+            if provider == "OpenAI" {
+                assert_eq!(first["prompt_cache_key"], "verenu-cleanup-v2");
+            } else {
+                assert!(first.get("prompt_cache_key").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn anthropic_shared_cache_boundary_survives_preset_changes() {
+        let first = super::build_anthropic_request("hello", "claude-x", "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n\n<evidence>Verenu</evidence>", 256, None);
+        let second = super::build_anthropic_request("other words", "claude-x", "Shared rules\n\n<cleanup_settings>Strong</cleanup_settings>\n\n<evidence>Claude</evidence>", 256, None);
+        assert_eq!(first["system"][0], second["system"][0]);
+        assert!(first["system"][0]["cache_control"].is_object());
+        assert!(first["system"][1]["cache_control"].is_object());
+        assert!(first["system"][2].get("cache_control").is_none());
+        assert_ne!(first["system"][1], second["system"][1]);
     }
 
     #[test]

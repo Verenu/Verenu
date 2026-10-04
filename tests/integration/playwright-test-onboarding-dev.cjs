@@ -160,7 +160,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       'noise_reduction',
       'contextual_formatting_enabled',
       'caps_lock_uppercase_enabled',
-      'app_context_hint',
       'auto_learn_enabled',
     ]) {
       if (persisted[key] !== true) errors.push(`Smart-processing default ${key} did not persist as true`);
