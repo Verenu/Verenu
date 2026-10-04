@@ -109,6 +109,13 @@
     try { const { open } = await import('@tauri-apps/plugin-shell'); await open(url); }
     catch { window.open(url, '_blank', 'noopener'); }
   }
+  // At least one task must stay on, so switching off the last one turns the other on.
+  function setCapability(task: 'transcription' | 'cleanup', on: boolean) {
+    if (!editing) return;
+    const other = task === 'transcription' ? 'cleanup' : 'transcription';
+    editing[`supports_${task}`] = on;
+    if (!on && !editing[`supports_${other}`] && !(other === 'transcription' && editing.protocol === 'anthropic')) editing[`supports_${other}`] = true;
+  }
   function setProtocol(value: string) {
     if (!editing) return;
     const next = value as CustomProvider['protocol'];
@@ -120,7 +127,7 @@
       editing.base_url = format.base_url;
       cleanupModels = format.cleanup_models.slice(0, 1);
     }
-    if (next === 'anthropic') editing.supports_transcription = false;
+    if (next === 'anthropic') { editing.supports_transcription = false; editing.supports_cleanup = true; }
     else if (preset?.supports_transcription && !savedOriginal) editing.supports_transcription = true;
   }
   const models = (list: string[]) => [...new Set(list.flatMap(x => x.split(/[\n,]/)).map(x => x.trim()).filter(Boolean))];
@@ -302,11 +309,11 @@
       <div class="cap-grid" role="group" aria-label="What this provider handles">
         <div class="cap" class:on={editing.supports_transcription} class:off={editing.protocol === 'anthropic'}>
           <div><div class="cap-title">Transcription</div><div class="hint">{editing.protocol === 'anthropic' ? 'Not available for Anthropic-style endpoints' : 'Turn speech into text'}</div></div>
-          <Toggle checked={editing.supports_transcription} disabled={editing.protocol === 'anthropic' || busy} label="Enable custom transcription" onchange={v => { if (editing) editing.supports_transcription = v; }} />
+          <Toggle checked={editing.supports_transcription} disabled={editing.protocol === 'anthropic' || busy} label="Enable custom transcription" onchange={v => setCapability('transcription', v)} />
         </div>
         <div class="cap" class:on={editing.supports_cleanup}>
           <div><div class="cap-title">Cleanup</div><div class="hint">Polish text with a language model</div></div>
-          <Toggle checked={editing.supports_cleanup} disabled={busy} label="Enable custom cleanup" onchange={v => { if (editing) editing.supports_cleanup = v; }} />
+          <Toggle checked={editing.supports_cleanup} disabled={editing.protocol === 'anthropic' || busy} label="Enable custom cleanup" onchange={v => setCapability('cleanup', v)} />
         </div>
       </div>
 
