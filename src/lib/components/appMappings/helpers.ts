@@ -28,14 +28,16 @@ export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = i
 }
 
 /**
- * Apps matching `search`, best first: names that start with the query, then
+ * Apps matching `search`. Android only: best first — names that start with the query, then
  * names with a word that starts with it, then any other match. Ties keep the
  * input order (the platform lists apps alphabetically). An empty query keeps
  * the list as is.
  */
-export function rankAppMatches(apps: InstalledApp[], search: string, nameOnly = isAndroid): InstalledApp[] {
+export function rankAppMatches(apps: InstalledApp[], search: string, android = isAndroid): InstalledApp[] {
   const query = search.trim().toLowerCase();
   if (!query) return apps;
+  // Desktop keeps its established behaviour: filter only, in the platform's order.
+  if (!android) return apps.filter((app) => matchesAppSearch(app, search, false));
   const score = (app: InstalledApp) => {
     const name = cleanAppName(app.name || app.exe).toLowerCase();
     if (name.startsWith(query)) return 0;
@@ -43,7 +45,7 @@ export function rankAppMatches(apps: InstalledApp[], search: string, nameOnly = 
     return 2;
   };
   return apps
-    .filter((app) => matchesAppSearch(app, search, nameOnly))
+    .filter((app) => matchesAppSearch(app, search, true))
     .map((app, index) => ({ app, index, rank: score(app) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.app);
