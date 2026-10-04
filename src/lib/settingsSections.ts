@@ -29,6 +29,8 @@ interface SettingsSection {
   legacyOnly?: boolean;
   /** Only render when the LAN Sync beta is enabled. */
   syncOnly?: boolean;
+  /** Needs desktop windows and global shortcuts; hidden on Android. */
+  desktopOnly?: boolean;
 }
 
 /**
@@ -41,7 +43,7 @@ interface SettingsSection {
  */
 const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'general',     label: 'General',      icon: 'sliders', group: 'Settings' },
-  { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings' },
+  { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings', desktopOnly: true },
   { id: 'apps',        label: 'App Mappings', icon: 'apps',    group: 'Settings', legacyOnly: true },
   { id: 'keys',        label: 'Providers',    icon: 'key',     group: 'Settings' },
   { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },
@@ -82,6 +84,7 @@ export function visibleSettingsSections(opts: {
     if (section.devOnly && !opts.devMode) continue;
     if (section.legacyOnly && !opts.legacyMode) continue;
     if (section.syncOnly && !opts.syncEnabled) continue;
+    if (section.desktopOnly && isAndroid) continue;
     const last = groups[groups.length - 1];
     if (last && last.group === section.group) last.items.push(section);
     else groups.push({ group: section.group, items: [section] });

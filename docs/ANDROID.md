@@ -55,6 +55,8 @@ untouched.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
   inserting, plus error (retry) and cancelled. The recording waveform uses the
   recorder's peak envelope and redraws each display frame.
+- By default the pill covers the keyboard's own mic key (Settings -> General turns
+  this off) so it never sits over the text being typed.
 - The cancelled notice shows an X (dismiss, back to the idle pill) and a back
   arrow (restart). It does not keep the pill alive after the keyboard closes.
   Error notices carry a title, the reason, and a Retry button when retrying can
@@ -206,10 +208,11 @@ turns on the accessibility service's event log (event types only, never text).
 
 ## Known limitations (v1)
 
-- Context resolution falls back to Everywhere on Android (the pipeline
-  resolves before Kotlin reports the package). The ack already carries the
-  package; feeding it into resolution is the designed follow-up
-  (`android_context_for_package` exists for it).
+- Context resolution uses the package Kotlin reports when recording starts, and in
+  a browser the page's host read from its address bar (with the last site seen as a
+  fallback while the omnibox is being edited). Apps without a readable address bar,
+  or pages with the toolbar scrolled away for longer than ten minutes, resolve to
+  Everywhere.
 - Contextual caps/spacing probes use desktop focus reads; on Android the
   cleanup model + dictionary carry formatting. Kotlin can supply surrounding
   text later for full parity.

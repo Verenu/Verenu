@@ -72,6 +72,7 @@ class MainActivity : TauriActivity() {
     val baseLeft = content.paddingLeft
     val baseTop = content.paddingTop
     val baseRight = content.paddingRight
+    val baseBottom = content.paddingBottom
 
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
       val bars = insets.getInsets(
@@ -85,7 +86,14 @@ class MainActivity : TauriActivity() {
         baseRight + bars.right,
         // Samsung's WebView viewport already accounts for the navigation bar.
         // Applying it again lifts Verenu's bottom navigation unnecessarily.
-        content.paddingBottom,
+        // The keyboard is the exception: edge-to-edge disables the platform's
+        // adjustResize, so shrink the page by the keyboard's height ourselves.
+        // Sheets, forms and search fields then stay above it instead of under.
+        if (insets.isVisible(WindowInsetsCompat.Type.ime())) {
+          insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        } else {
+          baseBottom
+        },
       )
       insets
     }

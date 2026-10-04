@@ -7,7 +7,7 @@
   import { isSettingsSectionId, visibleSettingsSections } from '../settingsSections';
   import { icons } from '../icons';
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
-  import { clearSettingsSearchNavigation, settingsSearchNavigation } from '../settingsSearch.svelte';
+  import { clearSettingsSearchNavigation, requestSettingsSearchNavigation, searchSettings, settingsSearchNavigation, type SettingsSearchEntry } from '../settingsSearch.svelte';
 
   import DeferredView from '../components/DeferredView.svelte';
   import { lazyComponent } from '../lazyComponent.svelte';
@@ -66,6 +66,17 @@
   const activeSectionLabel = $derived(
     mobileSections.find((entry) => entry.id === section)?.label ?? 'Settings'
   );
+
+  let mobileQuery = $state('');
+  const mobileResults = $derived(
+    searchSettings(mobileQuery, mobileSections.map((entry) => entry.id), 12)
+  );
+
+  function openSearchResult(entry: SettingsSearchEntry) {
+    mobileQuery = '';
+    openSection(entry.section);
+    requestSettingsSearchNavigation(entry);
+  }
 
   function openSection(next: (typeof mobileSections)[number]['id']) {
     appStore.settingsMobileList = false;
@@ -354,6 +365,25 @@
       {#if isAndroid}
         <nav class="m-list" aria-label="Settings sections">
           <h1 class="m-list-title">Settings</h1>
+          <label class="m-search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" bind:value={mobileQuery} placeholder="Search settings" aria-label="Search settings" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" />
+          </label>
+          {#if mobileQuery.trim()}
+            <div class="m-list-group" role="group" aria-label="Search results">
+              {#each mobileResults as entry (entry.id)}
+                <button type="button" class="m-list-row m-result" onclick={() => openSearchResult(entry)}>
+                  <span class="m-list-label">
+                    {entry.label}
+                    <span class="m-result-desc">{entry.description}</span>
+                  </span>
+                  <svg class="m-list-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+                </button>
+              {:else}
+                <p class="m-empty">No settings match “{mobileQuery.trim()}”.</p>
+              {/each}
+            </div>
+          {:else}
           {#each mobileGroups as group (group.group)}
             <div class="m-list-group" role="group" aria-label={group.group}>
               {#each group.items as entry (entry.id)}
@@ -373,6 +403,7 @@
               {/each}
             </div>
           {/each}
+          {/if}
         </nav>
         <div class="m-bar">
           <button type="button" class="m-bar-back" aria-label="Back to settings" onclick={() => { appStore.settingsMobileList = true; }}>

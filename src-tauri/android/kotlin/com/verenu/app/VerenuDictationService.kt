@@ -40,7 +40,11 @@ class VerenuDictationService : Service() {
         const val ACTION_ACTIVE = "com.verenu.app.action.DICTATION_ACTIVE"
         const val ACTION_STOP = "com.verenu.app.action.DICTATION_STOP"
         const val ACTION_CANCEL = "com.verenu.app.action.DICTATION_CANCEL"
-        const val CHANNEL_ID = "verenu_dictation"
+        // Android insists on a notification while the microphone service runs. It
+        // lives on a minimum-importance channel: no sound, no status-bar icon,
+        // collapsed in the shade. The old LOW channel is deleted on first run.
+        const val CHANNEL_ID = "verenu_dictation_quiet"
+        const val LEGACY_CHANNEL_ID = "verenu_dictation"
         const val NOTIFICATION_ID = 4201
     }
 
@@ -107,13 +111,24 @@ class VerenuDictationService : Service() {
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
+        try {
+            manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+        } catch (e: SecurityException) {
+            // A running service may still own the old channel; retry next start.
+        }
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.verenu_dictation_channel),
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = getString(R.string.verenu_dictation_channel_desc) },
+                NotificationManager.IMPORTANCE_MIN,
+            ).apply {
+                description = getString(R.string.verenu_dictation_channel_desc)
+                setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
+            },
         )
     }
 
@@ -130,7 +145,12 @@ class VerenuDictationService : Service() {
             .setContentText(getString(R.string.verenu_recording_text))
             .setSmallIcon(android.R.drawable.presence_audio_online)
             .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 getString(R.string.verenu_action_stop),

@@ -331,6 +331,29 @@ impl AndroidPermissionSnapshot {
 /// last package segment title-cased. Never includes field contents, URLs, or
 /// notification text — package name only, matching the desktop
 /// executable-name granularity.
+/// Browser packages whose address bar Kotlin can read. Context websites only
+/// apply inside these.
+pub fn is_browser_package(package: &str) -> bool {
+    matches!(
+        package.trim().to_ascii_lowercase().as_str(),
+        "com.android.chrome"
+            | "com.chrome.beta"
+            | "com.chrome.dev"
+            | "com.chrome.canary"
+            | "org.mozilla.firefox"
+            | "org.mozilla.firefox_beta"
+            | "org.mozilla.fenix"
+            | "com.brave.browser"
+            | "com.microsoft.emmx"
+            | "com.sec.android.app.sbrowser"
+            | "com.opera.browser"
+            | "com.opera.mini.native"
+            | "com.duckduckgo.mobile.android"
+            | "com.vivaldi.browser"
+            | "com.kiwibrowser.browser"
+    )
+}
+
 pub fn context_label_for_package(package: &str) -> (String, bool) {
     let package = package.trim();
     if package.is_empty() {
@@ -536,6 +559,15 @@ pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_packages_are_recognized_case_insensitively() {
+        assert!(is_browser_package("com.android.chrome"));
+        assert!(is_browser_package(" COM.BRAVE.BROWSER "));
+        assert!(is_browser_package("org.mozilla.firefox"));
+        assert!(!is_browser_package("com.slack"));
+        assert!(!is_browser_package(""));
+    }
 
     #[test]
     fn overlay_only_shows_over_editable_keyboard() {

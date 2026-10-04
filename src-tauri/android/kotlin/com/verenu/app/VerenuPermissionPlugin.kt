@@ -20,6 +20,8 @@ import app.tauri.annotation.Permission
 import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSArray
+import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 
 @InvokeArg
@@ -40,6 +42,30 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
 
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
+  }
+
+  /** Launcher apps (label + package), for the Contexts app picker. */
+  @Command
+  fun installedApps(invoke: Invoke) {
+    Thread {
+      try {
+        val pm = activity.packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val seen = HashSet<String>()
+        val apps = JSArray()
+        pm.queryIntentActivities(launcher, 0)
+          .asSequence()
+          .map { it.activityInfo.packageName to it.loadLabel(pm).toString().trim() }
+          .filter { (pkg, label) -> label.isNotEmpty() && pkg != activity.packageName && seen.add(pkg) }
+          .sortedBy { it.second.lowercase() }
+          .forEach { (pkg, label) ->
+            apps.put(JSObject().put("name", label).put("exe", pkg))
+          }
+        invoke.resolve(JSObject().put("apps", apps))
+      } catch (e: Exception) {
+        invoke.reject("Could not list installed apps")
+      }
+    }.start()
   }
 
   @Command

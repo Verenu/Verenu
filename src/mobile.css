@@ -144,36 +144,72 @@
 
 /* ---------------------------------------------------------------- sheets */
 
-/* The shared bottom sheet gets a grab handle and a rounder top edge. */
-.app[data-android='true'] .ui-modal-card,
-.app[data-android='true'] .modal-card {
+/*
+ * Dialogs are bottom sheets (ui.css) and some are portalled out of `.app`, so
+ * these rules key off :root instead. A sheet is a column: header, a body that
+ * scrolls, and actions that always stay in view. The page itself shrinks when
+ * the keyboard opens (MainActivity), so the sheet rides on top of the keyboard.
+ */
+:root:has(.app[data-android='true']) :is(.ui-modal-card, .modal-card, .snippet-modal-card) {
+  display: flex;
+  flex-direction: column;
   border-radius: 24px 24px 0 0;
+  max-height: min(92dvh, calc(100% - 12px));
 }
 
-.app[data-android='true'] .ui-modal-card::before,
-.app[data-android='true'] .modal-card::before {
+:root:has(.app[data-android='true']) :is(.ui-modal-card, .modal-card, .snippet-modal-card)::before {
   content: '';
-  display: block;
+  flex: 0 0 auto;
+  align-self: center;
   width: 36px;
   height: 4px;
-  margin: 10px auto 0;
+  margin: 10px 0 0;
   border-radius: 999px;
   background: var(--line-strong);
 }
 
-.app[data-android='true'] .ui-modal-actions {
+:root:has(.app[data-android='true']) :is(.ui-modal-head, .modal-header) {
+  flex: 0 0 auto;
+}
+
+:root:has(.app[data-android='true']) :is(.ui-modal-body, .modal-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+:root:has(.app[data-android='true']) :is(.ui-modal-foot, .modal-footer) {
+  flex: 0 0 auto;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+}
+
+:root:has(.app[data-android='true'][data-keyboard='open']) :is(.ui-modal-foot, .modal-footer) {
+  padding-bottom: 12px;
+}
+
+:root:has(.app[data-android='true']) .ui-modal-actions {
   flex-wrap: wrap;
 }
 
-.app[data-android='true'] .ui-modal-actions > button {
+:root:has(.app[data-android='true']) .ui-modal-actions > button {
   flex: 1 1 auto;
 }
 
+/* The snippet dialog is a centred flex card; seat it on the bottom edge. */
+:root:has(.app[data-android='true']) .modal-overlay {
+  align-items: flex-end;
+  padding: 12px 0 0;
+}
+
+:root:has(.app[data-android='true']) .snippet-modal-card {
+  width: 100%;
+  margin: 0;
+  border-bottom: 0;
+}
+
 /* Wide windows: a sheet that spans 800dp is not a sheet, keep a measure. */
-.app[data-android='true'][data-width-class='medium'] .ui-modal-card,
-.app[data-android='true'][data-width-class='medium'] .modal-card,
-.app[data-android='true'][data-width-class='expanded'] .ui-modal-card,
-.app[data-android='true'][data-width-class='expanded'] .modal-card {
+:root:has(.app[data-android='true']:not([data-width-class='compact'])) :is(.ui-modal-card, .modal-card) {
   left: 50%;
   right: auto;
   width: min(560px, 100%);
@@ -330,10 +366,18 @@
 }
 
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .m-bar,
-.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-body,
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-footbar,
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='detail'] .m-list {
   display: none;
+}
+
+/* The section behind the list keeps its layout (controls such as the language
+   picker measure their text on mount, and measure 0 inside display:none). */
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-body {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* Unfolded / tablet: the list stays beside the section. */
@@ -414,4 +458,67 @@
 .app[data-android='true'] input[type='range']::-webkit-slider-thumb {
   width: 24px;
   height: 24px;
+}
+
+/* ------------------------------------------------------------- keyboard */
+
+/* With the keyboard up the bottom bar is hidden (App.svelte), so pages and the
+   settings screen reclaim its height. */
+.app[data-android='true'][data-compact-nav='true'][data-keyboard='open'] {
+  --mobile-nav-h: 0px;
+}
+
+/* ------------------------------------------------------ settings search */
+
+.m-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-elev);
+  color: var(--ink-mute);
+}
+
+.m-search:focus-within {
+  border-color: var(--line-strong);
+}
+
+.m-search input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.m-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.m-result {
+  align-items: flex-start;
+  padding-block: 12px;
+}
+
+.m-result-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ink-mute);
+}
+
+.m-empty {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--ink-mute);
+  font-size: 14px;
 }

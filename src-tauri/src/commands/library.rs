@@ -5,7 +5,31 @@ use super::*;
 // ---------- app mappings ----------
 
 #[tauri::command]
-pub async fn get_installed_apps() -> Vec<InstalledApp> {
+pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
+    // Android has no executables to scan; the Kotlin plugin lists the apps
+    // that appear in the launcher, keyed by package name.
+    #[cfg(target_os = "android")]
+    {
+        #[derive(serde::Deserialize)]
+        struct Listing {
+            apps: Vec<InstalledApp>,
+        }
+        return match crate::android::permissions_plugin::run::<_, Listing>(
+            &app,
+            "installedApps",
+            serde_json::json!({}),
+        )
+        .await
+        {
+            Ok(listing) => listing.apps,
+            Err(e) => {
+                log::error!("installed apps: {e}");
+                Vec::new()
+            }
+        };
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = &app;
     match run_blocking("get_installed_apps", || {
         Ok(crate::system::apps::list_installed_apps())
     })
