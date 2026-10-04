@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { startOwnedSession } from './verification/session.mjs';
 import { createNativeSession } from './verification/native-session.mjs';
+import { verifyNativePill } from './verification/native-pill.mjs';
 
 class NativeDriver {
   constructor(port, id) { this.base = `http://127.0.0.1:${port}/session/${id}`; }
@@ -103,6 +104,9 @@ try {
     }
     assert.equal(await browser.execute('return document.documentElement.dataset.theme;'), 'dark');
     report.checks.push({ name: '32 real theme selections including System to Custom on native Linux WebKitGTK', status: 'passed' });
+    const pillScreenshots = await verifyNativePill({ browser, invoke, directory, screenshot: file => browser.saveScreenshot(file) });
+    report.artifacts.push(...pillScreenshots.map(artifact));
+    report.checks.push({ name: 'Native Linux pill content fit, error growth, control input and stale state rejection', status: 'passed' });
   }
   const created = await invoke('create_context', { name: 'Synthetic native', contextualFormattingDisabled: false });
   try {
