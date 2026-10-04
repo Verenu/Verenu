@@ -42,13 +42,19 @@ try {
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
   const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;
   await invokeSession(session, 'save_setting', { key: 'legacy_features_enabled', value: !initialLegacy });
+  const previousThemes = await invokeSession(session, 'get_setting', { key: 'custom_themes' });
+  const restartThemes = [{ id: 'synthetic-restart', name: 'Synthetic restart', palette: { background: '#182633', foreground: '#eeeeee' }, accent: '#5ca6e8' }];
+  await invokeSession(session, 'save_setting', { key: 'custom_themes', value: restartThemes });
   await session.stop(); session = undefined;
   session = await startOwnedSession({ id, fixtures, directory, synthetic });
   assert.ok((await invokeSession(session, 'get_contexts')).some((row) => row.id === context.id && row.name === 'Synthetic restart'));
   assert.equal((await invokeSession(session, 'get_all_settings')).legacy_features_enabled, !initialLegacy);
+  assert.deepEqual((await invokeSession(session, 'get_all_settings')).custom_themes, restartThemes);
+  await invokeSession(session, 'save_setting', { key: 'custom_themes', value: previousThemes });
   await invokeSession(session, 'save_setting', { key: 'legacy_features_enabled', value: initialLegacy });
   await invokeSession(session, 'delete_context', { contextId: context.id });
   report.checks.push({ name: 'Context and settings survive real backend restart', status: 'passed' });
+  report.checks.push({ name: 'Named custom themes survive real backend restart', status: 'passed' });
   report.status = report.checks.some((row) => row.status === 'failed') ? 'failed' : 'verified';
   if (args.includes('--live') && report.checks.some((row) => row.status === 'skipped')) report.status = incompleteUnlessFailed(report.status);
   if (sourceIdentity().fingerprint !== identity.fingerprint) { report.status = incompleteUnlessFailed(report.status); report.reason = 'Source changed during verification'; }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -25,9 +25,9 @@
   import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
   import { modelDisplayLabel, splitModelId } from './models';
   import AccentColorPicker from './AccentColorPicker.svelte';
-  import CustomThemeEditor from './CustomThemeEditor.svelte';
-  import { CUSTOM_THEME_CHANGE_EVENT, defaultCustomTheme, type CustomTheme } from '../../customTheme';
-  import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent } from '../../accentTheme';
+  import AppearanceSettings from './AppearanceSettings.svelte';
+  import { persistAccentColor, withAppearanceLock } from '../../appearanceActions';
+  import { guardThemeEditor, themeEditor } from '../../themeEditor.svelte';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
   import DesktopShortcutStatus from './DesktopShortcutStatus.svelte';
   import { HotkeyCapture } from '../../hotkeyCapture';
@@ -99,28 +99,6 @@
   const PILL_MENU_ID = 'pill-position-menu';
   let keybindEl: HTMLElement | null = $state(null);
   let capturedWidth = 0;
-  let segmentEl: HTMLElement | null = $state(null);
-  let indicatorStyle = $state('');
-
-  $effect(() => {
-    const idx = appearanceOptions.findIndex(o => o.id === appStore.appearanceMode);
-    if (!segmentEl) return;
-
-    const measure = () => {
-      const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
-      if (!btn) return;
-      // Horizontal only — vertical inset is pure CSS so the pill stays
-      // centered in the track regardless of option padding/font metrics.
-      indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
-    };
-
-    measure();
-    // The settings column is fluid now, so a one-shot measurement goes stale as
-    // soon as the window is resized.
-    const observer = new ResizeObserver(measure);
-    observer.observe(segmentEl);
-    return () => observer.disconnect();
-  });
 
   const readableMac: Record<string, string> = {
     MetaLeft: 'Cmd',
@@ -172,19 +150,6 @@
     el.style.width = `${newW}px`;
   });
 
-  // On Omarchy, System already follows the active Omarchy theme. The separate
-  // Omarchy choice is kept only for installs that saved it earlier.
-  // Custom lets the user type hex colors and is available on every desktop.
-  const appearanceOptions: { id: AppearanceMode; label: string }[] = $derived([
-    { id: 'system', label: 'System' },
-    { id: 'light', label: 'Light' },
-    { id: 'dark', label: 'Dark' },
-    ...(isLinux && !isAndroid && appStore.appearanceMode === 'omarchy'
-      ? [{ id: 'omarchy' as const, label: 'Omarchy' }]
-      : []),
-    ...(!isAndroid ? [{ id: 'custom' as const, label: 'Custom' }] : []),
-  ]);
-
   async function loadSettings() {
     const results = await Promise.allSettled([
       invoke<boolean | null>('get_setting', { key: 'autostart_enabled' }),
@@ -213,7 +178,9 @@
     if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
 
     const appearance = val<AppearanceMode | null>(2, null);
-    if (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom') {
+    // A theme being edited is previewing through these store fields; the saved
+    // values must not overwrite the preview.
+    if (!themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
       appStore.appearanceMode = appearance;
     }
 
@@ -432,92 +399,8 @@
     }
   }
 
-  async function saveCustomTheme(next: CustomTheme | null) {
-    appStore.customTheme = next;
-    void emit(CUSTOM_THEME_CHANGE_EVENT, next).catch((err) => {
-      console.warn('broadcast custom theme failed:', err);
-    });
-    await saveSetting('custom_theme', next);
-  }
-
-  async function handleCustomTheme(next: CustomTheme | null) {
-    const previous = appStore.customTheme;
-    try {
-      await saveCustomTheme(next);
-    } catch (err) {
-      appStore.customTheme = previous;
-      void emit(CUSTOM_THEME_CHANGE_EVENT, previous).catch(() => {});
-      console.error('save custom_theme failed:', err);
-    }
-  }
-
-  async function handleAppearance(mode: AppearanceMode) {
-    const previousAppearance = appStore.appearanceMode;
-    const previousAccent = appStore.accentColor;
-    const resetAccentToThemeDefault = isAdaptiveDefaultAccent(previousAccent);
-    let accentResetSaved = false;
-
-    try {
-      // First visit to Custom starts from the light or dark preset that
-      // matches the current look instead of an empty palette.
-      if (mode === 'custom' && !appStore.customTheme) {
-        await saveCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'));
-      }
-      // Exact black and white represent the default accent in their respective
-      // themes. Save null so the CSS default adapts when Appearance changes.
-      if (resetAccentToThemeDefault) {
-        await saveSetting('accent_color', null);
-        accentResetSaved = true;
-      }
-      await saveSetting('appearance_mode', mode);
-
-      await animateAccentChange(async () => {
-        appStore.appearanceMode = mode;
-        if (resetAccentToThemeDefault) appStore.accentColor = null;
-        await tick();
-      });
-      if (resetAccentToThemeDefault) {
-        void emit(ACCENT_CHANGE_EVENT, null).catch((err) => {
-          console.warn('broadcast adaptive accent reset failed:', err);
-        });
-      }
-    } catch (err) {
-      if (accentResetSaved) {
-        try {
-          await saveSetting('accent_color', previousAccent);
-        } catch (rollbackErr) {
-          console.error('restore accent_color after appearance save failed:', rollbackErr);
-        }
-      }
-      appStore.appearanceMode = previousAppearance;
-      appStore.accentColor = previousAccent;
-      console.error('save appearance_mode failed:', err);
-    }
-  }
-
   async function handleAccentColor(color: string | null) {
-    // Exact black/white are the theme defaults, not fixed custom accents.
-    const next = isAdaptiveDefaultAccent(color) ? null : color;
-    const previous = appStore.accentColor;
-    await animateAccentChange(async () => {
-      appStore.accentColor = next;
-      await tick();
-    });
-    void emit(ACCENT_CHANGE_EVENT, next).catch((err) => {
-      console.warn('broadcast accent color failed:', err);
-    });
-    try {
-      await saveSetting('accent_color', next);
-    } catch (err) {
-      await animateAccentChange(async () => {
-        appStore.accentColor = previous;
-        await tick();
-      });
-      void emit(ACCENT_CHANGE_EVENT, previous).catch((emitErr) => {
-        console.warn('broadcast accent rollback failed:', emitErr);
-      });
-      console.error('save accent_color failed:', err);
-    }
+    guardThemeEditor(() => void withAppearanceLock(() => persistAccentColor(color)));
   }
 
   async function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
@@ -820,33 +703,7 @@
   </div>
 </div>
 <h3 class="settings-subhead">Appearance & System</h3>
-<div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : isLinux ? 'Follow your desktop or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
-  <div class="appearance-segment" role="radiogroup" aria-label="Appearance" bind:this={segmentEl}>
-    {#if indicatorStyle}
-      <div class="appearance-indicator" style={indicatorStyle} aria-hidden="true"></div>
-    {/if}
-    {#each appearanceOptions as option}
-      <button
-        class="appearance-option"
-        class:active={appStore.appearanceMode === option.id}
-        role="radio"
-        aria-checked={appStore.appearanceMode === option.id}
-        onclick={() => handleAppearance(option.id)}
-      >{option.label}</button>
-    {/each}
-  </div>
-</div>
-{#if appStore.appearanceMode === 'custom' && appStore.customTheme}
-  <div class="setting-row" data-setting-target="general-custom-theme">
-    <div><div class="label">Custom colors</div><div class="desc">Type hex codes or pick colors. Everything else is derived from them; Sidebar and Surface are optional.</div></div>
-  </div>
-  <CustomThemeEditor
-    value={appStore.customTheme}
-    onchange={handleCustomTheme}
-    onreset={() => handleCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'))}
-  />
-{/if}
+<AppearanceSettings />
 <div class="setting-row" data-setting-target="general-accent">
   <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
@@ -1035,52 +892,6 @@
     font-size: 10.5px;
     text-transform: uppercase;
   }
-  .appearance-segment {
-    /* Same geometry as DictionaryToolbar .sort-pills: equal pad + matching
-       indicator inset/radius so the fill stays clear of the track corners. */
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    box-sizing: border-box;
-    padding: 3px;
-    background: var(--paper);
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    gap: 2px;
-    overflow: hidden;
-  }
-  .appearance-indicator {
-    position: absolute;
-    top: 3px;
-    bottom: 3px;
-    background: var(--bg-elev);
-    border-radius: 4px;
-    pointer-events: none;
-    transition: left 180ms cubic-bezier(0.22, 1, 0.36, 1), width 180ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-  .appearance-option {
-    position: relative;
-    z-index: 1;
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 22px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--ink-mute);
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 1;
-    padding: 0 9px;
-    cursor: pointer;
-    transition: color 0.12s;
-  }
-  .appearance-option:hover { color: var(--ink-strong); }
-  .appearance-option.active { color: var(--ink); }
-
   /* ── cleanup-off confirm modal ── */
   .modal-backdrop {
     position: fixed;

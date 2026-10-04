@@ -31,6 +31,7 @@ enum SettingKind {
     AppearanceMode,
     AccentColor,
     CustomTheme,
+    CustomThemes,
     AndroidPillPosition,
     Bool,
     MicGain,
@@ -187,6 +188,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
     ),
     setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
     setting_spec(store::CUSTOM_THEME, SettingKind::CustomTheme, true, true),
+    setting_spec(store::CUSTOM_THEMES, SettingKind::CustomThemes, true, true),
     setting_spec(
         store::ANDROID_PILL_POSITION,
         SettingKind::AndroidPillPosition,
@@ -296,6 +298,30 @@ fn exportable_setting_keys() -> impl Iterator<Item = &'static str> {
         .iter()
         .filter(|spec| spec.exportable)
         .map(|spec| spec.key)
+}
+
+/// Bounded device-local theme library, using the active palette's validation.
+fn is_saved_themes(value: &serde_json::Value) -> bool {
+    use crate::system::omarchy_theme::{is_custom_theme, is_hex_color};
+    let Some(themes) = value.as_array().filter(|themes| themes.len() <= 24) else {
+        return false;
+    };
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    themes.iter().all(|theme| {
+        let Some(object) = theme.as_object() else { return false; };
+        if object.len() != 4 || !object.keys().all(|key| matches!(key.as_str(), "id" | "name" | "palette" | "accent")) {
+            return false;
+        }
+        let Some(id) = object.get("id").and_then(|v| v.as_str()) else { return false; };
+        let Some(name) = object.get("name").and_then(|v| v.as_str()) else { return false; };
+        !id.is_empty() && id.len() <= 64
+            && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            && !name.trim().is_empty() && name.chars().count() <= 40 && name == name.trim()
+            && ids.insert(id) && names.insert(name.to_lowercase())
+            && object.get("palette").is_some_and(is_custom_theme)
+            && object.get("accent").is_some_and(|v| v.is_null() || v.as_str().is_some_and(is_hex_color))
+    })
 }
 
 pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), String> {
@@ -452,6 +478,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::CustomTheme => {
             value.is_null() || crate::system::omarchy_theme::is_custom_theme(value)
         }
+        SettingKind::CustomThemes => {
+            value.is_null() || is_saved_themes(value)
+        }
         SettingKind::Bool => value.is_boolean(),
         SettingKind::MicGain => value.as_f64().is_some_and(|v| (1.0..=8.0).contains(&v)),
         SettingKind::SoundEffectsVolume => {
@@ -606,6 +635,35 @@ mod setting_key_tests {
         )
         .is_err());
         assert!(validate_setting(store::APPEARANCE_MODE, &serde_json::json!("custom")).is_ok());
+    }
+
+    #[test]
+    fn saved_themes_are_readable_exportable_and_validated() {
+        let theme = serde_json::json!({
+            "id": "t-night", "name": "Night",
+            "palette": {"background": "#101315", "foreground": "#cacccc"},
+            "accent": "#4f7fd8"
+        });
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([theme.clone()])).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::Value::Null).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([])).is_ok());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([theme.clone(), theme.clone()])).is_err());
+        assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!(vec![theme.clone(); 25])).is_err());
+        for (key, invalid) in [
+            ("name", serde_json::json!(" ")),
+            ("name", serde_json::json!("n".repeat(41))),
+            ("id", serde_json::json!("invalid id")),
+            ("accent", serde_json::json!("blue")),
+            ("palette", serde_json::json!({"background": "#101315"})),
+            ("extra", serde_json::json!(true)),
+        ] {
+            let mut next = theme.clone();
+            next[key] = invalid;
+            assert!(validate_setting(store::CUSTOM_THEMES, &serde_json::json!([next])).is_err(), "{key}");
+        }
+        let spec = SETTING_SPECS.iter().find(|spec| spec.key == store::CUSTOM_THEMES).unwrap();
+        assert!(spec.readable && spec.exportable);
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::CUSTOM_THEMES));
     }
 }
 // ---------- generic settings ----------
@@ -793,6 +851,7 @@ pub struct AllSettings {
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
+    pub custom_themes: Option<serde_json::Value>,
     pub android_pill_position: Option<String>,
     pub android_pill_cover_keyboard_mic: Option<bool>,
     pub cleanup_prompt_override: Option<String>,
@@ -877,6 +936,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         accent_color: str_val(store::ACCENT_COLOR),
         sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
         custom_theme: json_val(store::CUSTOM_THEME),
+        custom_themes: json_val(store::CUSTOM_THEMES),
         android_pill_position: str_val(store::ANDROID_PILL_POSITION),
         android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),

@@ -1,7 +1,7 @@
 import { invoke } from './tauri';
 import { classifyIpcError } from './errors';
 import type { TranscriptionLanguageCode } from './transcriptionLanguages';
-import type { CustomTheme } from './customTheme';
+import type { CustomTheme, SavedTheme } from './customTheme';
 
 export const SETTINGS_SAVE_ERROR_EVENT = 'verenu:setting-save-error';
 
@@ -105,6 +105,8 @@ type SettingsValueMap = {
   accent_color: string | null;
   /** Hex palette for the Custom appearance mode. */
   custom_theme: CustomTheme | null;
+  /** Named palettes the user created in the theme editor. */
+  custom_themes: SavedTheme[] | null;
   android_pill_position: AndroidPillPosition;
   /** Android: sit the pill over the keyboard's own mic button when it can be found. */
   android_pill_cover_keyboard_mic: boolean;
