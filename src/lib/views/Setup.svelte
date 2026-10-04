@@ -407,7 +407,6 @@
         () => saveSetting('noise_reduction', true),
         () => saveSetting('contextual_formatting_enabled', true),
         () => saveSetting('caps_lock_uppercase_enabled', true),
-        () => saveSetting('app_context_hint', true),
         () => saveSetting('auto_learn_enabled', true),
       ];
       for (const save of settingsToSave) await save();

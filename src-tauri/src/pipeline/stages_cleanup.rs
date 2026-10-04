@@ -13,7 +13,7 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 // Bump this whenever cleanup instructions change so previously generated
 // output cannot mask the new prompt through the cleanup-result cache.
-pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v9";
+pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v10";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -513,7 +513,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         &dict_entries,
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
-        app_context,
     );
     let context_custom_instructions = db::query_context(db_handle, context_id)
         .ok()

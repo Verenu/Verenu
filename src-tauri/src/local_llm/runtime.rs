@@ -270,6 +270,7 @@ struct ChatReq {
     model: String,
     messages: Vec<Msg>,
     max_tokens: u32,
+    cache_prompt: bool,
     temperature: f32,
     // Greedy decoding (temperature 0) has no randomness to escape a
     // repetition loop once it enters one — observed in practice on a small
@@ -461,6 +462,7 @@ pub async fn request_cleanup_with_alternate(
             ),
         }],
         max_tokens,
+        cache_prompt: true,
         // Small non-zero temperature: greedy decoding (0.0) has no
         // randomness to escape a repetition loop once it enters one, which
         // is exactly the failure mode observed (the same word repeated
