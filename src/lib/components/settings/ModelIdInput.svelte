@@ -85,7 +85,7 @@
   .box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 38px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; cursor: text; transition: border-color 120ms ease; }
   .box:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
   .box.disabled { opacity: 0.6; cursor: default; }
-  .tag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 3px 4px 3px 9px; border-radius: 7px; background: var(--paper-2); color: var(--ink); font-family: var(--mono); font-size: 11.5px; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 3px 4px 3px 9px; border-radius: 6px; background: var(--paper-2); color: var(--ink); font-family: var(--mono); font-size: 11.5px; }
   .tag-text { overflow-wrap: anywhere; }
   .tag-x { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--ink-mute); cursor: pointer; }
   .tag-x:hover:not(:disabled) { background: var(--control-active); color: var(--ink); }
@@ -94,7 +94,7 @@
   small { font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
   .suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .suggest-label { font-size: 11px; color: var(--ink-mute); }
-  .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink-soft); font-family: var(--mono); font-size: 11px; cursor: pointer; overflow-wrap: anywhere; text-align: left; transition: background 120ms ease, color 120ms ease; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink-soft); font-family: var(--mono); font-size: 11px; cursor: pointer; overflow-wrap: anywhere; text-align: left; transition: background 120ms ease, color 120ms ease; }
   .chip:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
   .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
