@@ -85,7 +85,7 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 - API keys in Windows Credential Manager, macOS Keychain, or Freedesktop Secret Service on Linux
 - Settings in local app storage
 - Transcription history in local SQLite
-- Context groups, vocabulary, snippets, and auto-learn data in local SQLite
+- Context groups, app and website targets, vocabulary, snippets, and auto-learn data in local SQLite
 - Update-dismiss state, model preferences, and context group targets
 - Local session logs retained for up to 30 days within a 256 MiB budget, with
   low-disk pauses. [Locations and agent diagnosis](docs/TROUBLESHOOTING.md#session-logs-for-agents)
@@ -96,7 +96,6 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 - Local transcription plus cloud cleanup keeps audio on device but sends transcript text to the cleanup provider
 - Cloud transcription sends recorded audio to your chosen transcription provider
 - Context instructions, cleanup settings, and selected model metadata go with cleanup requests
-- Active app context may be sent if you enable app-context hints
 - Update checks hit GitHub release metadata
 - Provider status and health checks hit `api.verenu.com` (public status only, no dictated content, keys, or history). You can disable these background checks in Settings → Privacy.
 

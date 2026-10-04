@@ -513,7 +513,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         &dict_entries,
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
-        None,
     );
     let context_custom_instructions = db::query_context(db_handle, context_id)
         .ok()
