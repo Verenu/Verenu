@@ -27,6 +27,11 @@ test('custom provider editor persists, offers task models, renames, and removes 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('button', { name: 'API Keys', exact: true }).click();
     await page.getByRole('button', { name: 'Add custom provider', exact: true }).click();
+    const picker = page.getByRole('group', { name: 'Choose a provider preset' });
+    await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('ollama');
+    assert.equal(await picker.getByRole('button', { name: /^Mistral/ }).count(), 0);
+    await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('');
+    await picker.getByRole('button', { name: /^Start from scratch/ }).click();
     const editor = page.getByRole('form', { name: 'Custom provider editor' });
     await editor.getByLabel('Name', { exact: true }).fill('Fixture endpoint');
     await editor.getByLabel(/^Base URL/).fill('http://localhost:8000/v1');
@@ -66,7 +71,7 @@ test('custom provider editor persists, offers task models, renames, and removes 
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'API Keys', exact: true }).click();
     const section = page.getByRole('region', { name: 'Custom providers' });
-    await section.getByRole('button', { name: 'Edit', exact: true }).click();
+    await section.getByRole('button', { name: /^Edit/ }).click();
     await page.getByLabel('Name', { exact: true }).fill('Renamed endpoint');
     await page.getByRole('button', { name: 'Save provider', exact: true }).click();
     await page.getByRole('status').filter({ hasText: 'Provider saved' }).waitFor();
