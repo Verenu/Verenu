@@ -47,16 +47,16 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
 pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     let exe = exe.trim().to_lowercase();
     let icon = linux::desktop_icon_name(&exe)?;
-    // GTK objects belong to the UI thread; this function runs on a blocking
-    // command worker. Only the encoded bytes cross the thread boundary.
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let context = gtk::glib::MainContext::default();
     let theme_icon = icon.clone();
-    if app.run_on_main_thread(move || {
-        let _ = sender.send(linux::theme_icon_png(&theme_icon));
-    }).is_ok() {
-        if let Ok(Some(png)) = receiver.recv_timeout(std::time::Duration::from_secs(3)) {
-            return png_bytes_to_data_uri(&png);
-        }
+    let theme_png = run_icon_work(
+        &context,
+        move || linux::theme_icon_png(&theme_icon),
+        |callback| app.run_on_main_thread(callback).map_err(|_| ()),
+    )
+    .flatten();
+    if let Some(uri) = theme_png.as_deref().and_then(png_bytes_to_data_uri) {
+        return Some(uri);
     }
     // Keep the file fallback when a desktop theme is unavailable.
     let path = linux::resolve_icon_path(&icon)?;
@@ -69,6 +69,26 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
         ));
     }
     png_bytes_to_data_uri(&bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn run_icon_work<T: Send + 'static>(
+    context: &gtk::glib::MainContext,
+    work: impl FnOnce() -> T + Send + 'static,
+    dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), ()>,
+) -> Option<T> {
+    // Running and waiting on a closure queued to the context we already own
+    // would block the UI thread. Resolve directly when called from that thread.
+    if context.is_owner() {
+        return Some(work());
+    }
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    dispatch(Box::new(move || {
+        let _ = sender.send(work());
+    }))
+    .ok()?;
+    receiver.recv_timeout(std::time::Duration::from_secs(3)).ok()
 }
 
 /// Desktop-entry display name for a Linux app identity (see sub-app capture).
@@ -115,6 +135,25 @@ mod linux {
     #[cfg(all(test, feature = "native-testing"))]
     mod theme_tests {
         use super::*;
+        use std::cell::Cell;
+
+        #[test]
+        fn icon_work_runs_inline_when_the_main_context_is_owned() {
+            let context = gtk::glib::MainContext::new();
+            let _owner = context.acquire().expect("own the GTK main context");
+            let dispatched = Cell::new(false);
+            let result = super::super::run_icon_work(
+                &context,
+                || 64,
+                |_| {
+                    dispatched.set(true);
+                    Err(())
+                },
+            );
+
+            assert_eq!(result, Some(64));
+            assert!(!dispatched.get(), "work was queued to the context we own");
+        }
 
         #[test]
         fn linux_theme_icons_resolve_inherited_categories_sizes_and_formats() {
@@ -245,7 +284,8 @@ mod linux {
             let Some((key, value)) = line.split_once('=').filter(|_| in_entry) else { continue };
             match key.trim() {
                 "Icon" => icon = Some(value.trim().to_string()),
-                "StartupWMClass" | "X-GNOME-WMClass" | "X-KDE-WMClass" if wm_class.is_none() => {
+                "StartupWMClass" => wm_class = Some(value.trim().to_lowercase()),
+                "X-GNOME-WMClass" | "X-KDE-WMClass" if wm_class.is_none() => {
                     wm_class = Some(value.trim().to_lowercase());
                 }
                 "Exec" => exec = exec_basename(value),
@@ -936,6 +976,18 @@ mod tests {
         assert_eq!(super::linux::icon_if_matches(entry, "t3code", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "firefox"), None);
+        let vendor_before_standard = "[Desktop Entry]\nIcon=priority-icon\nX-GNOME-WMClass=legacy-class\nStartupWMClass=standard-class\nExec=vendor-executable\n";
+        let standard_before_vendor = "[Desktop Entry]\nIcon=priority-icon\nStartupWMClass=standard-class\nX-KDE-WMClass=legacy-class\nExec=vendor-executable\n";
+        for desktop_entry in [vendor_before_standard, standard_before_vendor] {
+            assert_eq!(
+                super::linux::icon_if_matches(desktop_entry, "desktop-id", "standard-class").as_deref(),
+                Some("priority-icon")
+            );
+            assert_eq!(
+                super::linux::icon_if_matches(desktop_entry, "desktop-id", "legacy-class"),
+                None
+            );
+        }
         // A dotted theme name is not a file name.
         assert!(super::linux::resolve_icon_path("org.vinegarhq.NoSuchIcon").is_none());
         assert_eq!(
