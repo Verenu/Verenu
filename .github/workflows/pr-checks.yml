@@ -140,7 +140,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: src-tauri -> target
+          workspaces: src-tauri
 
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
@@ -207,7 +207,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: src-tauri -> target
+          workspaces: src-tauri
 
       - name: Install Linux system dependencies
         run: |
