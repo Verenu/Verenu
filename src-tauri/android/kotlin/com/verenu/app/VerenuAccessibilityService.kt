@@ -134,6 +134,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var overlayMoveAnimator: ValueAnimator? = null
     @Volatile private var pillPosition = "keyboard-center"
     @Volatile private var coverKeyboardMic = false
+    @Volatile private var hidePillOffline = true
     private var coverBounds: android.graphics.Rect? = null
     private var lastCoverState = ""
     private var coverSizePx = 0
@@ -468,11 +469,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             transientNoticeVisible()
 
     /**
-     * Hidden on purpose: snoozed by the user, or (when covering the keyboard's
-     * own mic) offline, so the keyboard's offline-capable button stays usable.
+     * Hidden on purpose: snoozed by the user, or offline with a selected
+     * network model and automatic offline hiding enabled.
      */
     private fun suppressedForNow(): Boolean =
-        SystemClock.elapsedRealtime() < snoozedUntilMs || (coverKeyboardMic && !online)
+        SystemClock.elapsedRealtime() < snoozedUntilMs || (hidePillOffline && !online)
 
     private fun startConnectivityWatch() {
         val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
@@ -1549,12 +1550,17 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         VerenuAnalytics.setEnabled(snapshot.analyticsEnabled)
         if (snapshot.pillPosition != pillPosition ||
             snapshot.appearanceMode != appearanceMode ||
-            snapshot.coverKeyboardMic != coverKeyboardMic
+            snapshot.coverKeyboardMic != coverKeyboardMic ||
+            snapshot.hidePillOffline != hidePillOffline
         ) {
             coverKeyboardMic = snapshot.coverKeyboardMic
+            hidePillOffline = snapshot.hidePillOffline
             pillPosition = snapshot.pillPosition
             appearanceMode = snapshot.appearanceMode
-            mainHandler.post { applyOverlayPresentation() }
+            mainHandler.post {
+                refreshOverlayVisibility()
+                applyOverlayPresentation()
+            }
         }
         // Staged Keystore rotation → persist, then confirm by re-pushing.
         if (snapshot.keystorePending) {

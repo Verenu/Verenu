@@ -112,6 +112,8 @@ type SettingsValueMap = {
   android_pill_position: AndroidPillPosition;
   /** Android: sit the pill over the keyboard's own mic button when it can be found. */
   android_pill_cover_keyboard_mic: boolean;
+  /** Android: hide offline if any active selected model needs a network provider. */
+  android_pill_hide_offline: boolean;
   advanced_model_ui: boolean;
   /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;

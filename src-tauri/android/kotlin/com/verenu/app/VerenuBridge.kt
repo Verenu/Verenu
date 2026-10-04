@@ -51,6 +51,7 @@ data class BridgeStateSnapshot(
     val analyticsEnabled: Boolean,
     val pillPosition: String = "keyboard-center",
     val coverKeyboardMic: Boolean = false,
+    val hidePillOffline: Boolean = true,
     val appearanceMode: String = "system",
 )
 
@@ -162,6 +163,7 @@ class VerenuBridge(appContext: Context) {
             analyticsEnabled = json.optBoolean("analyticsEnabled", true),
             pillPosition = json.optString("pillPosition", "keyboard-center"),
             coverKeyboardMic = json.optBoolean("coverKeyboardMic", false),
+            hidePillOffline = json.optBoolean("hidePillOffline", true),
             appearanceMode = json.optString("appearanceMode", "system"),
             overlay = BridgeOverlay(
                 state = overlay?.optString("state", "hidden") ?: "hidden",
