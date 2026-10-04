@@ -619,8 +619,16 @@ mod tests {
                     Err(e) => panic!("Test endpoint did not receive a request: {e}"),
                 }
             };
+            // macOS can leave an accepted stream nonblocking when its listener
+            // is nonblocking. The size-cap test writes a body larger than the
+            // kernel send buffer, so make the accepted socket blocking before
+            // writing and bound the wait explicitly.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let mut request = Vec::new();
             let mut buffer = [0; 8192];
