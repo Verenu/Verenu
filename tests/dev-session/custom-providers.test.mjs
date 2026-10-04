@@ -67,7 +67,13 @@ test('custom provider editor persists, offers task models, renames, and removes 
     await page.getByText('vendor/speech', { exact: true }).first().waitFor();
     await page.getByRole('dialog').screenshot({ path: path.join(evidence, 'desktop-picker.png') });
     assert.equal(await page.getByText('vendor/chat', { exact: true }).count(), 0);
-    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').getByRole('button').filter({ has: page.getByText('vendor/speech', { exact: true }) }).click();
+    assert.ok(await transcriptionTile.getByText('vendor/speech', { exact: true }).count());
+    assert.equal(await transcriptionTile.locator('.warn-banner').count(), 0, 'Keyless selections must not request an API key');
+    await page.reload();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Models', exact: true }).click();
+    assert.equal(await transcriptionTile.locator('.warn-banner').count(), 0, 'Keyless selection stays ready after reload');
     await page.getByRole('button', { name: 'Providers', exact: true }).click();
     const section = page.getByRole('region', { name: 'Custom providers' });
     await section.getByRole('button', { name: /^Edit/ }).click();
