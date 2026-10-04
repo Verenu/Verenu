@@ -117,13 +117,37 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		position: relative;
 		width: 56px;
 		height: 30px;
 		border-radius: 999px;
-		transition: background 180ms ease, color 180ms ease;
+		transition: color 180ms ease;
 	}
 
-	.mobile-nav-item:active .mobile-nav-icon {
+	/* The tonal pill grows out of the icon instead of switching on. */
+	.mobile-nav-icon::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: 999px;
+		background: var(--control-active);
+		opacity: 0;
+		transform: scaleX(0.45);
+		transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
+	}
+
+	.mobile-nav-icon svg {
+		position: relative;
+		transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.mobile-nav-item.active .mobile-nav-icon svg {
+		transform: translateY(-1px) scale(1.06);
+	}
+
+	.mobile-nav-item:active .mobile-nav-icon::before {
+		opacity: 1;
+		transform: scaleX(0.8);
 		background: var(--control-hover);
 	}
 
@@ -140,11 +164,13 @@
 		font-weight: 600;
 	}
 
-	.mobile-nav-item.active .mobile-nav-icon {
+	.mobile-nav-item.active .mobile-nav-icon::before {
+		opacity: 1;
+		transform: scaleX(1);
 		background: var(--control-active);
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.mobile-nav-icon { transition: none; }
+		.mobile-nav-icon, .mobile-nav-icon::before, .mobile-nav-icon svg { transition: none; }
 	}
 </style>
