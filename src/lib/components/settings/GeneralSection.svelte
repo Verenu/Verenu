@@ -53,7 +53,7 @@
   let selectedMic = $state('');
   let micDropdownOpen = $state(false);
   let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
-  let coverKeyboardMic = $state(false);
+  let coverKeyboardMic = $state(true);
   let coverKeyboardMicError = $state(false);
   let hidePillOffline = $state(true);
   let hidePillOfflineError = $state(false);
@@ -212,7 +212,7 @@
       pillPosition = savedPillPosition;
     }
 
-    coverKeyboardMic = val<boolean | null>(11, null) ?? false;
+    coverKeyboardMic = val<boolean | null>(11, null) ?? true;
     hidePillOffline = val<boolean | null>(12, null) ?? true;
 
     results.forEach((r, i) => {
