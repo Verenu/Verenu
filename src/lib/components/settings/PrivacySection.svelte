@@ -381,7 +381,7 @@
   <div class="history-dropdown">
     <button
       bind:this={historyRetentionButton}
-      class="btn-ghost mic-btn"
+      class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
       use:animateWidth={{ text: historyRetention }}
       onclick={() => (historyDropdownOpen = !historyDropdownOpen)}
       onkeydown={handleHistoryButtonKeydown}
@@ -399,7 +399,7 @@
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div
         id={HISTORY_MENU_ID}
-        class="mic-menu scroll-styled scroll-thumb-elev"
+        class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
         role="listbox"
         tabindex="-1"
         aria-label="History retention options"
@@ -409,7 +409,7 @@
       >
         {#each historyOptions as opt}
           <button
-            class="mic-item"
+            class="ui-dropdown-option mic-item"
             class:active={historyRetention === opt}
             onclick={() => requestHistoryRetention(opt)}
             onkeydown={handleHistoryButtonKeydown}
@@ -542,43 +542,12 @@
   }
 
   .history-dropdown { position: relative; flex-shrink: 0; }
-  .mic-btn { display: flex; align-items: center; gap: 6px; max-width: 180px; }
-  .mic-btn svg { transition: transform 150ms; }
-  .mic-btn svg.open { transform: rotate(180deg); }
+  .mic-btn { max-width: 180px; }
   .mic-btn span { overflow: hidden; white-space: nowrap; }
-  .mic-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
-    background: var(--bg-elev);
-    border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-    box-shadow: var(--shadow-popover);
-    min-width: 200px;
-    max-width: 280px;
-    max-height: 200px;
-    overflow-y: auto;
-    z-index: 10;
+  .mic-menu { min-width: 200px; max-width: 280px; max-height: 200px; z-index: 10; }
+  @media (max-width: 600px) {
+    .history-dropdown .mic-menu { left: 0; right: auto; }
   }
-  .mic-item {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 8px 12px;
-    font-size: 12px;
-    font-family: var(--sans);
-    color: var(--ink-strong);
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--line);
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .mic-item:last-child { border-bottom: none; }
-  .mic-item:hover { background: var(--paper); }
-  .mic-item.active { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
   .privacy-eye-wrap { position: relative; display: inline-flex; align-items: center; }
   .privacy-eye { color: var(--ink-mute); cursor: default; flex-shrink: 0; transition: color 0.15s ease, transform 0.15s ease; }
   .privacy-eye-wrap:hover .privacy-eye { color: var(--ink-soft); transform: scale(1.18); }
