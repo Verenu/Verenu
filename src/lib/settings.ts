@@ -84,7 +84,6 @@ type SettingsValueMap = {
   force_setup_on_launch: boolean;
   ruin_accessibility: boolean;
   dev_mode_on_startup: boolean;
-  app_context_hint: boolean;
   auto_learn_enabled: boolean;
   contextual_formatting_enabled: boolean;
   /** @deprecated Compatibility mirror for one downgrade cycle. */

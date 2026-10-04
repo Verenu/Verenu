@@ -70,7 +70,6 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'models-memory', section: 'models', label: 'Memory policy', description: 'Control when idle local models unload', target: 'models-memory', keywords: ['ram', 'unload', 'local'] },
   { id: 'models-folder', section: 'models', label: 'Models folder', description: 'Open the folder containing local models', target: 'models-folder', keywords: ['files', 'downloads', 'storage'] },
 
-  { id: 'privacy-context', section: 'privacy', label: 'App context hint', description: 'Share the target app, website, and window title with cleanup', target: 'privacy-context', keywords: ['window', 'website', 'target app'] },
   { id: 'privacy-service-checks', section: 'privacy', label: 'Verenu service checks', description: 'Control background provider and service health requests', target: 'privacy-service-checks', keywords: ['network', 'status', 'api.verenu.com'] },
   { id: 'privacy-learning', section: 'privacy', label: 'On-device learning', description: 'Add confirmed corrections to the dictionary automatically', target: 'privacy-learning', keywords: ['dictionary', 'corrections', 'auto learn'] },
   { id: 'privacy-learning-activity', section: 'privacy', label: 'Auto-learn activity', description: 'Review automatic dictionary learning activity', target: 'privacy-learning-activity', keywords: ['dictionary', 'corrections'] },

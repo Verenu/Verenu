@@ -567,7 +567,6 @@ fn analytics_settings_from_snapshot(
         "exclusive_mic": bool_value(crate::data::store::EXCLUSIVE_MIC),
         "pause_media": bool_value(crate::data::store::PAUSE_MEDIA_DURING_DICTATION),
         "sound_effects": bool_value(crate::data::store::PLAY_START_STOP_SOUNDS),
-        "app_context_hint": bool_value(crate::data::store::APP_CONTEXT_HINT),
         "auto_learn_enabled": bool_value(crate::data::store::AUTO_LEARN_ENABLED),
         "contextual_formatting": bool_value(crate::data::store::CONTEXTUAL_FORMATTING),
         "contextual_caps": bool_value(crate::data::store::CONTEXTUAL_CAPS),

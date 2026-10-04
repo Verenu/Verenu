@@ -596,7 +596,6 @@ fn base_config() -> store::PipelineConfig {
         cleanup_intensity: "medium".into(),
         clipboard_phrase_enabled: false,
         clipboard_phrase: "paste clipboard here".into(),
-        app_context_hint: false,
         auto_learn_enabled: false,
         contextual_formatting_enabled: true,
         caps_lock_uppercase_enabled: false,

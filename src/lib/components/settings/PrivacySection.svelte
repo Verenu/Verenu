@@ -20,7 +20,6 @@
 
   let historyRetention = $state('30 days');
   let historyDropdownOpen = $state(false);
-  let appContextHint = $state(false);
   let autoLearn = $state(false);
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
@@ -40,9 +39,8 @@
 
   async function loadSettings() {
     try {
-      const [retention, hint, learn, serviceChecks, analytics, cacheStatus, summary, recent] = await Promise.all([
+      const [retention, learn, serviceChecks, analytics, cacheStatus, summary, recent] = await Promise.all([
         invoke<string | null>('get_setting', { key: 'history_retention' }),
-        invoke<boolean | null>('get_setting', { key: 'app_context_hint' }),
         invoke<boolean | null>('get_setting', { key: 'auto_learn_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'verenu_service_checks_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
@@ -51,7 +49,6 @@
         invoke<typeof recentAutoLearn>('get_recent_auto_learn_activity', { limit: 5 }),
       ]);
       if (retention) historyRetention = retention;
-      appContextHint = hint ?? false;
       autoLearn = learn ?? false;
       serviceChecksEnabled = serviceChecks ?? true;
       analyticsEnabled = analytics ?? true;
@@ -100,19 +97,6 @@
 
   function handleRetentionModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmRetention) confirmRetention = null;
-  }
-
-  let appContextHintError = $state(false);
-
-  async function handleAppContextHint(value: boolean) {
-    appContextHint = value;
-    try {
-      await saveSetting('app_context_hint', value);
-    } catch (err) {
-      appContextHint = !value;
-      appContextHintError = true;
-      console.error('save app_context_hint failed:', err);
-    }
   }
 
   let autoLearnError = $state(false);
@@ -308,13 +292,7 @@
 
 <h2 class="settings-h">Privacy</h2>
 
-<h3 class="settings-subhead first">Context</h3>
-<div class="setting-row" data-setting-target="privacy-context">
-  <div><div class="label">App context hint</div><div class="desc">Shares the target app, website, and window title so cleanup can resolve terminology and formatting</div></div>
-  <Toggle checked={appContextHint} onchange={handleAppContextHint} label="App context hint" bind:error={appContextHintError} />
-</div>
-
-<h3 class="settings-subhead">Verenu services</h3>
+<h3 class="settings-subhead first">Verenu services</h3>
 <div class="setting-row" data-setting-target="privacy-service-checks">
   <div>
     <div class="label">Allow Verenu service checks</div>
