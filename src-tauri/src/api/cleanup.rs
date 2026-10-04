@@ -426,39 +426,54 @@ fn build_anthropic_request(
         // If a custom prompt contains a malformed evidence boundary, fail
         // closed: keep the request intact but do not cache possibly dynamic
         // content as standing instructions.
-        return serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "max_tokens": max_tokens,
-            "system": [{"type": "text", "text": prompt}],
             "messages": [{
                 "role": "user",
                 "content": format_transcript_input(text, alternate_transcript),
             }],
         });
+        if !prompt.trim().is_empty() {
+            body["system"] = serde_json::json!([{"type": "text", "text": prompt}]);
+        }
+        return body;
     }
     // Two boundaries preserve the shared contract across preset changes,
     // then reuse the complete configured prefix on repeated dictations.
-    let mut system = match standing.split_once("\n\n<cleanup_settings>") {
-        Some((shared, settings)) => vec![
-            serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}),
-            serde_json::json!({"type": "text", "text": format!("\n\n<cleanup_settings>{settings}"), "cache_control": {"type": "ephemeral"}}),
-        ],
-        None => vec![
-            serde_json::json!({"type": "text", "text": standing, "cache_control": {"type": "ephemeral"}}),
-        ],
-    };
-    if let Some(evidence) = evidence {
-        system.push(serde_json::json!({"type": "text", "text": evidence}));
+    let mut system = Vec::new();
+    match standing.split_once("\n\n<cleanup_settings>") {
+        Some((shared, settings)) => {
+            if !shared.trim().is_empty() {
+                system.push(serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}));
+            }
+            let settings = format!("\n\n<cleanup_settings>{settings}");
+            if !settings.trim().is_empty() {
+                system.push(serde_json::json!({"type": "text", "text": settings, "cache_control": {"type": "ephemeral"}}));
+            }
+        }
+        None if !standing.trim().is_empty() => {
+            system.push(serde_json::json!({"type": "text", "text": standing, "cache_control": {"type": "ephemeral"}}));
+        }
+        None => {}
     }
-    serde_json::json!({
+    if let Some(evidence) = evidence {
+        if !evidence.trim().is_empty() {
+            system.push(serde_json::json!({"type": "text", "text": evidence}));
+        }
+    }
+    let mut body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
         "messages": [{
             "role": "user",
             "content": format_transcript_input(text, alternate_transcript),
         }],
-    })
+    });
+    if !system.is_empty() {
+        body["system"] = serde_json::Value::Array(system);
+    }
+    body
 }
 
 fn split_cached_evidence(prompt: &str) -> (&str, Option<String>, bool) {
@@ -514,7 +529,13 @@ async fn anthropic_cleanup(
     if !reqwest::Url::parse(url)
         .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
     {
-        body["system"] = serde_json::Value::String(prompt.to_owned());
+        if prompt.trim().is_empty() {
+            if let Some(object) = body.as_object_mut() {
+                object.remove("system");
+            }
+        } else {
+            body["system"] = serde_json::Value::String(prompt.to_owned());
+        }
     }
     merge_overrides(&mut body, overrides);
     log::debug!(
@@ -1084,6 +1105,33 @@ mod tests {
             "Stable rules\n<evidence>changing"
         );
         assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn anthropic_request_omits_empty_system_blocks() {
+        let empty = super::build_anthropic_request("hello", "claude-x", "", 256, None);
+        assert!(empty.get("system").is_none());
+
+        let settings = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "\n\n<cleanup_settings>Light</cleanup_settings>",
+            256,
+            None,
+        );
+        assert_eq!(settings["system"].as_array().unwrap().len(), 1);
+        assert!(!settings["system"][0]["text"].as_str().unwrap().is_empty());
+
+        let evidence = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "<evidence>Term</evidence>",
+            256,
+            None,
+        );
+        assert_eq!(evidence["system"].as_array().unwrap().len(), 1);
+        assert!(!evidence["system"][0]["text"].as_str().unwrap().is_empty());
+        assert!(evidence["system"][0].get("cache_control").is_none());
     }
 
     #[test]
