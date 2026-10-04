@@ -14,11 +14,12 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
   const layout = () => browser.execute(`
     const pill = document.querySelector('.pill');
     const cluster = document.querySelector('.pill-cluster');
-    return { viewport: [innerWidth, innerHeight], capsule: pill?.getBoundingClientRect().toJSON(),
-      cluster: [cluster.offsetWidth, cluster.offsetHeight], controls: [...document.querySelectorAll('.pill button')].map(b => b.getAttribute('aria-label')) };
+    return { viewport: [innerWidth, innerHeight], capsule: pill ? pill.getBoundingClientRect().toJSON() : null,
+      cluster: cluster ? [cluster.offsetWidth, cluster.offsetHeight] : null, controls: [...document.querySelectorAll('.pill button')].map(b => b.getAttribute('aria-label')) };
   `);
   const assertFit = box => {
     assert.ok(box.capsule, 'Visible native pill is missing');
+    assert.ok(box.cluster, 'Native pill cluster is missing');
     const { left, top, right, bottom } = box.capsule;
     assert.ok(left >= 0 && top >= 0 && right <= box.viewport[0] && bottom <= box.viewport[1], 'Native capsule is clipped');
     assert.ok(box.viewport[0] >= box.cluster[0] && box.viewport[0] <= box.cluster[0] + 28, 'Native window keeps excessive horizontal margin');
@@ -30,6 +31,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     assert.equal(policy.interactive, enabled, `Incorrect native input policy for ${state}`);
     if (enabled) {
       const box = (await layout()).capsule;
+      assert.ok(box, 'Interactive native pill is missing');
       assert.ok(policy.rect, 'Interactive capsule has no input rectangle');
       for (const [actual, expected] of policy.rect.map((value, i) => [value, [box.x, box.y, box.width, box.height][i]])) {
         assert.ok(Math.abs(actual - expected) <= 1.5, 'Native input rectangle does not follow the capsule');
