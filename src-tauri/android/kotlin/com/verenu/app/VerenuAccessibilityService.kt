@@ -21,6 +21,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 
 /**
@@ -256,7 +257,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         if (BROWSER_URL_BAR_IDS.containsKey(pkg) &&
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
-                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)
         ) {
             rememberBrowserDomain(pkg)
         }
@@ -733,7 +735,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     /** Decide whether, and where, the pill covers the keyboard's mic button. */
     private fun refreshCover(view: VerenuOverlayView, preferPrediction: Boolean = false) {
         val rect = if (coverKeyboardMic && followsKeyboard() && !isDocked() && keyboardVisible) {
-            if (preferPrediction) predictedMicBounds() ?: keyboardMicBounds() else keyboardMicBounds() ?: predictedMicBounds()
+            if (preferPrediction) predictedMicBounds() ?: keyboardMicBounds() else keyboardMicBounds()
         } else {
             null
         }
@@ -1382,23 +1384,51 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun scanAddressBar(pkg: String): String {
         val ids = BROWSER_URL_BAR_IDS[pkg] ?: return ""
-        val root = rootInActiveWindow ?: return ""
         try {
-            for (id in ids) {
-                val nodes = root.findAccessibilityNodeInfosByViewId("$pkg:id/$id") ?: continue
-                for (node in nodes) {
-                    val raw = node.text?.toString()?.trim().orEmpty()
-                    node.recycle()
-                    val host = hostFromAddressText(raw)
-                    if (host.isNotEmpty()) return host
+            val root = browserApplicationRoot(pkg) ?: return ""
+            try {
+                for (id in ids) {
+                    val nodes = root.findAccessibilityNodeInfosByViewId("$pkg:id/$id") ?: continue
+                    var found = ""
+                    for (node in nodes) {
+                        try {
+                            if (found.isEmpty()) {
+                                val raw = node.text?.toString()?.trim().orEmpty()
+                                found = hostFromAddressText(raw)
+                            }
+                        } finally {
+                            node.recycle()
+                        }
+                    }
+                    if (found.isNotEmpty()) return found
                 }
+            } finally {
+                root.recycle()
             }
         } catch (e: Exception) {
             Log.w(TAG, "address bar unreadable", e)
-        } finally {
-            root.recycle()
         }
         return ""
+    }
+
+    /** Prefer the active browser root, then find that package's application window. */
+    private fun browserApplicationRoot(pkg: String): AccessibilityNodeInfo? {
+        val active = rootInActiveWindow
+        if (active?.packageName?.toString() == pkg) return active
+        active?.recycle()
+
+        val interactiveWindows = windows
+        try {
+            for (window in interactiveWindows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                val root = window.root ?: continue
+                if (root.packageName?.toString() == pkg) return root
+                root.recycle()
+            }
+        } finally {
+            interactiveWindows.forEach { it.recycle() }
+        }
+        return null
     }
 
     private fun startDictation() {
