@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { slide } from 'svelte/transition';
-  import { MOTION_MS, motionMs } from '../../motion';
+  import { fade, fly, slide } from 'svelte/transition';
+  import { drawerSlide, modalBackdrop, MOTION_MS, motionMs, motionPx } from '../../motion';
+  import { modalFocusTrap } from '../../modalFocus';
+  import { portal } from '../../portal';
   import { presetLogoHtml } from '../../customProviderLogos';
   import { CUSTOM_PROVIDER_PRESETS, POPULAR_PRESET_IDS, PRESET_GROUPS, displayHost, monogram, presetById, presetForUrl, type CustomProviderPreset } from '../../customProviderPresets';
   import { invoke } from '../../tauri';
@@ -11,6 +13,7 @@
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
 
+  let drawerEl = $state<HTMLElement | null>(null);
   let picking = $state(false);
   let search = $state('');
   let preset = $state<CustomProviderPreset | null>(null);
@@ -43,6 +46,10 @@
   }
   onMount(() => { load().catch(e => error = formatIpcError(e, 'Could not load custom providers')); });
 
+  const drawerOpen = $derived(picking || !!editing);
+  function closeDrawer() { picking = false; editing = null; preset = null; key = ''; error = ''; }
+  // A stray click on the backdrop must not discard a half-filled form.
+  function backdropClose() { if (picking && !busy) closeDrawer(); }
   function startPicking() {
     picking = true; search = ''; showMore = false; showAdvanced = false; editing = null; error = ''; notice = '';
   }
@@ -143,7 +150,7 @@
       }
       key = '';
       await load();
-      editing = null; preset = null;
+      closeDrawer();
       notice = 'Provider saved. Choose its models in Settings → Models.';
     } catch (e) {
       error = formatIpcError(e, 'Could not save this provider');
@@ -167,6 +174,8 @@
   }
 </script>
 
+<svelte:window onkeydown={e => { if (e.key === 'Escape' && drawerOpen && !busy) { e.preventDefault(); e.stopPropagation(); closeDrawer(); } }} />
+
 {#snippet card(p: CustomProviderPreset)}
   <button type="button" class="card" onclick={() => edit(undefined, p)}>
     {@render tile(p.id, p.name, p.color, p.mark)}
@@ -183,16 +192,8 @@
   <div class="section-heading">
     <div><h3>Custom providers</h3>
       <p class="panel-note">Connect any OpenAI, Anthropic, or xAI compatible service, including local models. Keys stay in this device's credential store.</p></div>
-    {#if !picking && !editing}<button class="btn-ghost" onclick={startPicking} disabled={busy || customProviderStore.providers.length >= 12}>Add custom provider</button>{/if}
+    <button class="add-btn" onclick={startPicking} disabled={busy || customProviderStore.providers.length >= 12} aria-label="Add custom provider" title="Add custom provider"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
   </div>
-
-  {#if !picking && !editing && !customProviderStore.providers.length}
-    <div class="empty">
-      <div class="empty-tiles" aria-hidden="true">{#each ['ollama', 'mistral', 'anthropic'] as id}{@const p = presetById(id)}{#if p}{@render tile(p.id, p.name, p.color)}{/if}{/each}</div>
-      <p><strong>Bring your own endpoint</strong></p>
-      <p class="hint">Pick from {CUSTOM_PROVIDER_PRESETS.filter(p => p.base_url).length} ready-made setups like Ollama, LM Studio, Mistral, and DeepSeek, or enter your own.</p>
-    </div>
-  {/if}
 
   {#each customProviderStore.providers as provider (provider.id)}
     {@const match = presetForUrl(provider.base_url, provider.protocol)}
@@ -216,12 +217,23 @@
     </div>
   {/each}
 
+  {#if drawerOpen}
+    <div class="drawer-wrap" use:portal>
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <div class="drawer-backdrop" role="presentation" onclick={backdropClose} in:modalBackdrop={{ duration: MOTION_MS.base }} out:modalBackdrop={{ duration: MOTION_MS.fast }}></div>
+      <div class="drawer" role="dialog" aria-modal="true" aria-label={editing ? (savedOriginal ? 'Edit custom provider' : 'Set up custom provider') : 'Add custom provider'} tabindex="-1"
+        bind:this={drawerEl}
+        use:modalFocusTrap={{ active: true, initialFocus: () => drawerEl?.querySelector<HTMLElement>('.search, input') ?? drawerEl }}
+        in:drawerSlide={{ duration: MOTION_MS.panel }} out:drawerSlide={{ duration: MOTION_MS.base }}>
+        <header class="drawer-head">
+          <span>{editing ? (savedOriginal ? 'Edit provider' : 'New provider') : 'Add custom provider'}</span>
+          <button type="button" class="drawer-close" aria-label="Close" onclick={closeDrawer} disabled={busy}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
+        </header>
+        <div class="drawer-body"><div class="views">
   {#if picking}
-    <div class="picker" role="group" aria-label="Choose a provider preset" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-      <div class="picker-head">
-        <h3>Choose a starting point</h3>
-        <button type="button" class="btn-ghost btn-compact" onclick={() => picking = false}>Cancel</button>
-      </div>
+    <div class="view" in:fly={{ x: motionPx(28), duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
+    <div class="picker" role="group" aria-label="Choose a provider preset">
+      <div class="picker-head"><h3>Choose a starting point</h3></div>
       <input class="search" type="search" bind:value={search} placeholder="Search providers, e.g. Ollama" aria-label="Search provider presets" />
       <p class="hint">Presets only fill in the form. These services are not tested or supported by Verenu, and you can change every field.</p>
       {#if search.trim()}
@@ -252,10 +264,11 @@
         {/if}
       {/if}
     </div>
+    </div>
   {/if}
 
   {#if editing}
-    <form class="provider-editor" onsubmit={e => { e.preventDefault(); void save(); }} aria-label="Custom provider editor" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
+    <form class="provider-editor" onsubmit={e => { e.preventDefault(); void save(); }} aria-label="Custom provider editor" in:fly={{ x: motionPx(28), duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
       <div class="editor-head">
         {@render tile(preset?.id, editing.name || preset?.name || '', preset?.color ?? '#6B7280', preset?.mark && !editing.name ? preset.mark : undefined, true)}
         <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.id !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
@@ -312,17 +325,35 @@
         {#if editing.supports_cleanup}<label>Cleanup request options, JSON<textarea bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea><small>Extra fields such as temperature. Model, messages, system, token limit, and streaming are controlled by Verenu.</small></label>{/if}
       </details>
       {#if error}<p class="provider-error" role="alert">{error}</p>{/if}
-      <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={() => { editing = null; preset = null; key = ''; error = ''; }} disabled={busy}>Cancel</button></div>
+      <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={closeDrawer} disabled={busy}>Cancel</button></div>
     </form>
+  {/if}
+        </div></div>
+      </div>
+    </div>
   {/if}
   {#if error && !editing}<p class="provider-error" role="alert">{error}</p>{/if}
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
 </section>
 
 <style>
+  .drawer-wrap { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: flex-end; }
+  .drawer-backdrop { position: absolute; inset: 0; background: var(--overlay); }
+  .drawer { position: relative; display: flex; flex-direction: column; width: min(520px, 100vw); height: 100%; box-sizing: border-box; background: var(--bg-elev); border-left: 1px solid var(--line); box-shadow: var(--shadow-elev); outline: none; }
+  .drawer-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+  .drawer-close { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .drawer-close:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
+  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; overscroll-behavior: contain; }
+  .views { display: grid; }
+  .views > :global(*) { grid-area: 1 / 1; min-width: 0; }
   .custom-providers { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 22px; }
   .section-heading, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .section-heading { justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+  .add-btn { flex: none; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--ink); cursor: pointer; transition: background 120ms ease, transform 120ms ease; }
+  .add-btn:hover:not(:disabled) { background: var(--control-hover); }
+  .add-btn:active:not(:disabled) { transform: scale(0.94); }
+  .add-btn:disabled { opacity: 0.4; cursor: default; }
+  .add-btn:focus-visible, .drawer-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .section-heading .panel-note { margin: 4px 0 0; max-width: 52ch; }
   h3 { font-size: 15px; margin: 0; font-weight: 600; }
   .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
@@ -333,12 +364,6 @@
   .tile :global(svg) { width: 62%; height: 62%; }
   .tile.big { width: 40px; height: 40px; border-radius: 11px; font-size: 13px; }
 
-  .empty { display: grid; justify-items: center; gap: 4px; padding: 26px 16px; border: 1px dashed var(--line-strong); border-radius: 12px; text-align: center; }
-  .empty p { margin: 0; font-size: 13px; color: var(--ink); }
-  .empty .hint { max-width: 44ch; }
-  .empty-tiles { display: flex; margin-bottom: 8px; }
-  .empty-tiles .tile { border: 2px solid var(--paper); margin-left: -8px; }
-  .empty-tiles .tile:first-child { margin-left: 0; }
 
   .provider-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-elev); }
   .provider-info { flex: 1; min-width: 160px; }
@@ -351,7 +376,7 @@
   .remove-confirm { width: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line-soft); }
   .remove-confirm p { flex-basis: 100%; margin: 0; font-size: 12px; }
 
-  .picker { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-elev); }
+  .picker { display: grid; gap: 10px; }
   .picker-head, .editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .search { font-family: inherit; }
   .group-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
@@ -373,7 +398,7 @@
   .no-match { display: grid; justify-items: start; gap: 8px; font-size: 12px; color: var(--ink-soft); }
   .no-match p { margin: 0; }
 
-  .provider-editor { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-elev); }
+  .provider-editor { display: grid; gap: 16px; }
   .editor-head { justify-content: flex-start; }
   .editor-head > div { flex: 1; min-width: 0; }
   .editor-head .change { margin-left: auto; }
@@ -407,9 +432,10 @@
   details { border-top: 1px solid var(--line); padding-top: 12px; }
   summary { cursor: pointer; font-size: 12px; color: var(--ink-soft); }
   details label { margin-top: 14px; }
-  .actions.sticky { position: sticky; bottom: 0; padding: 12px 0 2px; background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
+  .actions.sticky { position: sticky; bottom: -18px; margin: 0 -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
   .provider-error { color: var(--danger); font-size: 12px; margin: 0; }
   .notice { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
+  @media (max-width: 560px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
   @container settings-panel (max-width: 520px) {
     .form-grid, .cap-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
