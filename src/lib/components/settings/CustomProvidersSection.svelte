@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade, fly, slide } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
+  import { cubicOut } from 'svelte/easing';
   import { drawerSlide, modalBackdrop, MOTION_MS, motionMs, motionPx } from '../../motion';
   import { modalFocusTrap } from '../../modalFocus';
   import { portal } from '../../portal';
@@ -52,6 +54,8 @@
   }
   onMount(() => { load().catch(e => error = formatIpcError(e, 'Could not load custom providers')); });
 
+  // preventScroll: the drawer is still sliding in, and focus must not jump the layout.
+  function focusOnMount(node: HTMLElement) { requestAnimationFrame(() => node.focus({ preventScroll: true })); }
   const drawerOpen = $derived(picking || !!editing);
   function closeDrawer() { picking = false; editing = null; preset = null; key = ''; error = ''; }
   // A stray click on the backdrop must not discard a half-filled form.
@@ -88,6 +92,7 @@
   const chosen = (text: string) => new Set(models(text));
   const popular = POPULAR_PRESET_IDS.map(id => presetById(id)).filter((p): p is CustomProviderPreset => !!p);
   const rest = (group: string) => CUSTOM_PROVIDER_PRESETS.filter(p => p.group === group && !POPULAR_PRESET_IDS.includes(p.id));
+  const searching = $derived(search.trim().length > 0);
   const searchResults = $derived.by(() => {
     const q = search.trim().toLowerCase();
     return q ? CUSTOM_PROVIDER_PRESETS.filter(p => `${p.name} ${p.id} ${p.base_url} ${p.alt?.base_url ?? ''}`.toLowerCase().includes(q)) : [];
@@ -238,15 +243,19 @@
     <div class="view" in:fly={{ x: motionPx(28), duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
     <div class="picker" role="group" aria-label="Choose a provider preset">
       <div class="picker-head"><h3>Choose a starting point</h3></div>
-      <input class="search" type="search" bind:value={search} placeholder="Search providers, e.g. Ollama" aria-label="Search provider presets" />
+      <input class="search" use:focusOnMount type="search" bind:value={search} placeholder="Search providers, e.g. Ollama" aria-label="Search provider presets" />
       <p class="hint">Presets only fill in the form. These services are not tested or supported by Verenu, and you can change every field.</p>
-      {#if search.trim()}
-        <div class="group-title">{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</div>
-        <div class="grid">{#each searchResults as p (p.id)}{@render card(p)}{/each}</div>
+      <div class="stack">
+      {#if searching}
+        <div class="pane" in:fly={{ y: motionPx(8), duration: motionMs(MOTION_MS.base), easing: cubicOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
+        <div class="group-title">{#key searchResults.length}<span class="count" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</span>{/key}</div>
+        <div class="grid">{#each searchResults as p, i (p.id)}<div class="cell" animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }} in:fly|global={{ y: motionPx(10), duration: motionMs(MOTION_MS.base), delay: motionMs(Math.min(i, 8) * 22), easing: cubicOut }} out:fade|global={{ duration: motionMs(80) }}>{@render card(p)}</div>{/each}</div>
         {#if !searchResults.length}
-          <div class="no-match"><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Start from scratch</button></div>
+          <div class="no-match" in:fade={{ duration: motionMs(MOTION_MS.base), delay: motionMs(60) }}><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Start from scratch</button></div>
         {/if}
+        </div>
       {:else}
+        <div class="pane" in:fly={{ y: motionPx(-6), duration: motionMs(MOTION_MS.base), easing: cubicOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
         <div class="group-title">Popular</div>
         <div class="grid">{#each popular as p (p.id)}{@render card(p)}{/each}</div>
         <div class="group-title">Local &amp; self-hosted<span>Nothing leaves your network</span></div>
@@ -266,7 +275,9 @@
             <div class="grid">{#each rest('advanced') as p (p.id)}{@render card(p)}{/each}</div>
           </div>
         {/if}
+        </div>
       {/if}
+      </div>
     </div>
     </div>
   {/if}
@@ -378,6 +389,11 @@
   .picker { display: grid; gap: 10px; }
   .picker-head, .editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .search { font-family: inherit; }
+  .stack { display: grid; }
+  .stack > .pane { grid-area: 1 / 1; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .cell { min-width: 0; }
+  .cell :global(.card) { width: 100%; box-sizing: border-box; }
+  .count { display: inline-block; }
   .group-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
   .group-title span { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-mute); font-size: 11px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
