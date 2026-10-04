@@ -191,10 +191,8 @@ pub(super) fn speech_gate_accepts(
 pub(super) async fn open_config_and_context(
     app: &AppHandle,
     process_name: &str,
-    target_id: usize,
-    browser_domain: Option<&str>,
     context: Option<&db::Context>,
-) -> Option<(store::PipelineConfig, String, Option<String>)> {
+) -> Option<(store::PipelineConfig, String)> {
     let settings_store = match store::settings_snapshot(app) {
         Ok(s) => s,
         Err(e) => {
@@ -216,19 +214,7 @@ pub(super) async fn open_config_and_context(
         cfg.cleanup_intensity,
         cfg.default_tone,
     );
-    let app_context = if cfg.app_context_hint {
-        // Pass the captured context-group name when available; the helper's
-        // fourth argument is part of the current upstream context API.
-        window_context::get_app_context_hint(
-            process_name,
-            target_id,
-            browser_domain,
-            context.map(|value| value.name.as_str()),
-        )
-    } else {
-        None
-    };
-    Some((cfg, profile, app_context))
+    Some((cfg, profile))
 }
 
 #[allow(clippy::too_many_arguments)]

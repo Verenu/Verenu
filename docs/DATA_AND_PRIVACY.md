@@ -110,7 +110,6 @@ Depending on your settings and the feature being used, Verenu may also send:
 - context tone and cleanup settings
 - context instructions, vocabulary, and snippet instructions
 - selected model metadata
-- active app context, if app-context hints are enabled
 
 ### Update checks and downloads
 

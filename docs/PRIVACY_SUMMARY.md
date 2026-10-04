@@ -21,7 +21,6 @@ rules.
 - **Recorded audio** goes to the transcription provider you chose when you finish a dictation unless transcription is local
 - **Raw transcription text** goes to your chosen cleanup provider if cleanup is enabled
 - **Cleanup context** goes along with cleanup requests, including context instructions, cleanup settings, and model metadata
-- **Active app context** leaves your device only if you've enabled app-context hints
 - **Context website checks** send the domain you typed (nothing else) to DNS when you attach a website to a context group, to confirm it actually exists before saving it
 - **Update checks** request GitHub release metadata without sending dictated text, history, or keys
 - **Verenu service checks** optionally request public provider status and health data from `api.verenu.com`; disable them in Settings → Privacy
