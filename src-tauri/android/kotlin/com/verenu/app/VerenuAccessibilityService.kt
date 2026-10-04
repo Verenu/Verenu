@@ -252,10 +252,16 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         // IME events describe the keyboard, not the app being edited. Never
         // let Gboard/Samsung Keyboard become the Context or insertion target.
-        if (VerenuFocusPackages.isAppWindow(pkg, packageName, imePackage)) {
-            foregroundPackage = pkg
+        // Content changes also arrive from unfocused split-screen apps. Only
+        // focus events and the focused application window can change targets.
+        foregroundPackage = VerenuFocusPackages.eventTarget(
+            foregroundPackage, pkg, event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            packageName, imePackage,
+        )
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            refreshForegroundPackage(imePackage)
         }
-        if (BROWSER_URL_BAR_IDS.containsKey(pkg) &&
+        if (pkg == foregroundPackage && BROWSER_URL_BAR_IDS.containsKey(pkg) &&
             (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
                 event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)
@@ -331,6 +337,26 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         contentResolver,
         Settings.Secure.DEFAULT_INPUT_METHOD,
     )?.substringBefore('/')
+
+    private fun refreshForegroundPackage(imePackage: String?) {
+        val interactiveWindows = windows
+        try {
+            for (window in interactiveWindows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION || !window.isFocused) continue
+                val root = window.root ?: continue
+                try {
+                    val owner = root.packageName?.toString().orEmpty()
+                    if (VerenuFocusPackages.isAppWindow(owner, packageName, imePackage)) {
+                        foregroundPackage = owner
+                    }
+                } finally {
+                    root.recycle()
+                }
+            }
+        } finally {
+            interactiveWindows.forEach { it.recycle() }
+        }
+    }
 
     private fun isDeviceLocked(): Boolean =
         (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked == true
