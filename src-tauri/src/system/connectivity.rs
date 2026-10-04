@@ -1,5 +1,6 @@
 //! Native OS connectivity checks — read the OS's own network state instead of
 //! sending a probe request, so a routine "are we online" check costs zero bytes.
+
 //!
 //! Windows reads cached state from the Network List Manager, which Windows
 //! itself populates by periodically probing Microsoft's NCSI endpoints (the
@@ -16,6 +17,26 @@
 //! or NCSI getting stuck) — so callers should only trust a confirmed
 //! `Some(true)` and treat `Some(false)`/`None` alike as "unknown, fall back
 //! to an active probe" rather than concluding "offline".
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static OFFLINE_CONFIRMED_AT: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub fn recently_confirmed_offline() -> bool {
+    let at = OFFLINE_CONFIRMED_AT.load(Ordering::Relaxed);
+    at != 0 && now_ms().saturating_sub(at) < 15_000
+}
+
+pub fn note_online() {
+    OFFLINE_CONFIRMED_AT.store(0, Ordering::Relaxed);
+}
 
 #[cfg(windows)]
 pub fn check_native() -> Option<bool> {
@@ -125,10 +146,16 @@ pub fn check_native() -> Option<bool> {
 pub async fn confirm_offline(verenu_checks_enabled: bool) -> bool {
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
+    if recently_confirmed_offline() {
+        return true;
+    }
     if verenu_checks_enabled && probe("https://api.verenu.com/v1/health", PROBE_TIMEOUT).await {
+        note_online();
         return false;
     }
-    !probe("https://www.google.com", PROBE_TIMEOUT).await
+    let offline = !probe("https://www.google.com", PROBE_TIMEOUT).await;
+    OFFLINE_CONFIRMED_AT.store(if offline { now_ms() } else { 0 }, Ordering::Relaxed);
+    offline
 }
 
 /// A probe counts as "online" when any HTTP response arrives at all — even a

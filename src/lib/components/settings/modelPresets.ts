@@ -2,18 +2,24 @@
 //
 // The simple (non-Advanced) Models view shows a short list of ready-to-use
 // "presets" instead of the full per-provider model accordion. Which presets we
-// offer is derived purely from (a) which API keys the user has and (b) the
-// machine's RAM. This module is deliberately pure/side-effect-free apart from
-// `getHardware()` — everything else is a plain function so it's easy to reason
-// about and test.
+// offer considers credentials, language, capacity, catalog retirement, and
+// recent process-local performance. Recommendations never change settings.
 
 import { invoke } from '../../tauri';
 import type { ProviderId } from '../../settings';
 import { isAndroid } from '../../platform';
+import { getTranscriptionLanguageLabel } from '../../transcriptionLanguages';
+import { getLanguageSupport } from '../../transcriptionLanguageSupport';
+import { isTrustworthy, type ModelCatalogCache } from '../../modelCatalogStore.svelte';
+import type { LocalSttModelInfo } from '../../tauri';
+import type { CustomProvider } from '../../customProviders.svelte';
 import {
   GROQ_QWEN_3_8_27B_MODEL,
   modelId,
   recommendedModels,
+  CATALOG,
+  providerSections,
+  splitModelId,
   type TaskType,
   type UiProviderId,
 } from './models';
@@ -66,6 +72,71 @@ export type ActiveConfig = {
   transcriptionFallbacks: string[];
   cleanupFallbacks: string[];
 };
+
+export type ModelPerformance = {
+  task: TaskType;
+  id: string;
+  samples: number;
+  failures: number;
+  latency_ms: number;
+  updated_at_ms: number;
+};
+
+export type PresetOptions = {
+  language?: string;
+  localModels?: LocalSttModelInfo[];
+  installedLocal?: { transcription: string[]; cleanup: string[] };
+  localCleanupReady?: boolean;
+  cache?: ModelCatalogCache;
+  performance?: ModelPerformance[];
+  customProviders?: CustomProvider[];
+};
+
+export function modelLabel(id: string): string {
+  const parsed = splitModelId(id);
+  const label = CATALOG.find(entry => entry.provider === parsed?.provider && entry.id === parsed.model)?.label ?? parsed?.model ?? id;
+  const provider = parsed?.provider === 'local' ? 'Local' : providerSections.find(provider => provider.id === parsed?.provider)?.label ?? parsed?.provider;
+  return provider ? `${provider}: ${label}` : label;
+}
+
+export function supportsLocalLanguage(id: string, options: PresetOptions): boolean {
+  if (!options.language || options.language === 'auto') return true;
+  const languages = options.localModels?.find(model => model.id === id)?.supported_languages;
+  if (!languages) {
+    const support = getLanguageSupport('local', id);
+    return support === 'all' || support.some(code => code === options.language);
+  }
+  return languages.some(language => language.toLowerCase() === getTranscriptionLanguageLabel(options.language!).toLowerCase());
+}
+
+/** Absence during a provider outage must never retire a recommendation. */
+function usableRecommendation(id: string, task: TaskType, options: PresetOptions): boolean {
+  const parsed = splitModelId(id);
+  if (!parsed) return false;
+  if (task === 'transcription' && options.language && options.language !== 'auto') {
+    const support = getLanguageSupport(parsed.provider, parsed.model);
+    if (support !== 'all' && !support.some(code => code === options.language)) return false;
+  }
+  const cache = options.cache?.[parsed.provider];
+  const metadata = cache?.metadata?.[parsed.model];
+  if (metadata && !metadata.tasks.includes(task)) return false;
+  return !(isTrustworthy(cache) && !cache!.ids.includes(parsed.model) && (cache!.missing[id]?.count ?? 0) >= 2);
+}
+
+function measuredOrder(ids: string[], task: TaskType, options: PresetOptions): string[] {
+  const measurement = (id: string) => options.performance?.find(sample => sample.id === id && sample.task === task && sample.samples >= 3 && Date.now() - sample.updated_at_ms < 7 * 86400000);
+  const unhealthy = (id: string) => { const sample = measurement(id); return !!sample && sample.failures * 2 >= sample.samples; };
+  const ordered = [...new Set(ids)].sort((a, b) => Number(unhealthy(a)) - Number(unhealthy(b)));
+  // Reorder only measured positions in each reliability group. Unknown
+  // candidates keep their curated positions, so the ordering is transitive.
+  for (const failed of [false, true]) {
+    const measured = ordered.map((id, index) => ({ id, index, sample: measurement(id) }))
+      .filter(row => row.sample && unhealthy(row.id) === failed);
+    const sorted = [...measured].sort((a, b) => a.sample!.latency_ms - b.sample!.latency_ms);
+    measured.forEach((row, index) => { ordered[row.index] = sorted[index].id; });
+  }
+  return ordered;
+}
 
 // ── Hardware ──────────────────────────────────────────────────────────────
 
@@ -165,8 +236,8 @@ const LOCAL_TIERS: LocalTier[] = [
   },
   {
     key: 'accurate',
-    name: 'Most accurate',
-    tagline: 'Highest accuracy, heavier to run. Runs entirely on your device, private and offline.',
+    name: 'Quality',
+    tagline: 'Stronger speech and cleanup models. Private and offline.',
     position: 0.2,
     stt: STT_COHERE,
     llm: LLM_QWEN_7B,
@@ -250,11 +321,7 @@ function transcriptionOnlyPreset(hardware: Hardware): Preset {
 
 type KeyStatus = Record<ProviderId, boolean>;
 
-function firstAvailable(status: KeyStatus, order: UiProviderId[]): UiProviderId | undefined {
-  return order.find((provider) => status[provider]);
-}
-
-const CLOUD_PROVIDERS: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai'];
+const CLOUD_PROVIDERS: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];
 
 function hasCloudKey(status: KeyStatus): boolean {
   return CLOUD_PROVIDERS.some((provider) => status[provider]);
@@ -279,122 +346,90 @@ function cleanupModelFor(provider: UiProviderId | undefined, tier: 'standard' | 
 
 // ── Public: build the preset list ─────────────────────────────────────────
 
-export function buildPresets(status: KeyStatus, hardware: Hardware, localSupported: boolean): Preset[] {
-  if (hasCloudKey(status)) {
-    return buildCloudPresets(status, hardware, localSupported);
+export function buildPresets(status: KeyStatus, hardware: Hardware, localSupported: boolean, options: PresetOptions = {}): Preset[] {
+  if (hasCloudKey(status) || options.customProviders?.some(provider => provider.supports_transcription && (!provider.requires_key || status[provider.id]))) {
+    return [
+      ...buildCloudPresets(status, localSupported ? options : { ...options, installedLocal: undefined }),
+      ...(localSupported ? buildLocalOnlyPresets(hardware, options) : []),
+    ];
   }
   if (localSupported) {
-    return buildLocalOnlyPresets(hardware);
+    return buildLocalOnlyPresets(hardware, options);
   }
   // No keys and local inference unavailable (e.g. Intel Mac) — the only path
   // forward is adding an API key.
   return [addKeyPreset()];
 }
 
-const TRANSCRIPTION_ORDER: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai'];
-const CLEANUP_FAST_ORDER: UiProviderId[] = ['groq', 'openai', 'google'];
-const CLEANUP_ACCURATE_ORDER: UiProviderId[] = ['openai', 'google', 'groq'];
+const TRANSCRIPTION_ORDER: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];
+const CLEANUP_FAST_ORDER: UiProviderId[] = ['groq', 'openai', 'google', 'openrouter', 'xai'];
+const CLEANUP_ACCURATE_ORDER: UiProviderId[] = ['openai', 'google', 'groq', 'openrouter', 'xai'];
 
 // Every other keyed transcription provider's model at the same tier, in
 // preference order — so a preset degrades across providers, not just across the
 // primary provider's own models. Excludes the primary (already the default).
-function transcriptionFallbacksFor(status: KeyStatus, primary: UiProviderId, tier: 'standard' | 'premium'): string[] {
-  return TRANSCRIPTION_ORDER
-    .filter((provider) => status[provider] && provider !== primary)
-    .map((provider) => transcriptionModelFor(provider, tier));
+function cloudCandidates(status: KeyStatus, task: TaskType, tier: 'standard' | 'premium', options: PresetOptions): string[] {
+  const order = task === 'transcription' ? TRANSCRIPTION_ORDER : tier === 'premium' ? CLEANUP_ACCURATE_ORDER : CLEANUP_FAST_ORDER;
+  const ids = order.filter(provider => status[provider]).flatMap(provider => {
+    const preferred = recommendedModels[task][provider]
+      ? task === 'transcription' ? transcriptionModelFor(provider, tier) : cleanupModelFor(provider, tier)
+      : null;
+    // A retired tier can use a compatible curated sibling. Discovery alone
+    // never promotes a new, unevaluated model into an automatic default.
+    const siblings = CATALOG.filter(entry => entry.provider === provider && entry.tasks.includes(task))
+      .filter(entry => entry.id !== recommendedModels.cleanup.groq?.standard || task !== 'cleanup')
+      .map(entry => modelId(provider, entry.id));
+    return [...new Set([...(preferred ? [preferred] : []), ...siblings])]
+      .filter(id => usableRecommendation(id, task, options)).slice(0, 1);
+  });
+  // Custom models are explicitly configured by the user. Preserve their order;
+  // they are not promoted based on an unverified discovery response.
+  const custom = (options.customProviders ?? []).filter(provider => !provider.requires_key || status[provider.id])
+    .filter(provider => task === 'transcription' ? provider.supports_transcription : provider.supports_cleanup)
+    .flatMap(provider => (task === 'transcription' ? provider.transcription_models : provider.cleanup_models).map(id => modelId(provider.id, id)));
+  return [...measuredOrder(ids, task, options), ...custom];
 }
 
-function cleanupFallbacksFor(
-  status: KeyStatus,
-  primary: UiProviderId | undefined,
-  order: UiProviderId[],
-  tier: 'standard' | 'premium',
-): string[] {
-  return order
-    .filter((provider) => status[provider] && provider !== primary && !!recommendedModels.cleanup[provider])
-    .map((provider) => cleanupModelFor(provider, tier))
-    .filter((model): model is string => model !== null);
+export function installedLocalFallbacks(task: TaskType, options: PresetOptions): string[] {
+  if (task === 'cleanup' && options.localCleanupReady === false) return [];
+  const ids = (options.installedLocal?.[task] ?? []).filter(id => {
+    if (task === 'transcription') return supportsLocalLanguage(id, options);
+    return CATALOG.some(entry => entry.provider === 'local' && entry.id === id && entry.tasks.includes(task));
+  });
+  // Start with a modest model; installed alternatives remain available for
+  // dual comparison or recovery. Measurements can reorder these later.
+  return measuredOrder(ids.map(id => modelId('local', id)), task, options);
 }
 
-function buildCloudPresets(status: KeyStatus, hardware: Hardware, localSupported: boolean): Preset[] {
-  const tp = firstAvailable(status, ['groq', 'openai', 'google', 'assemblyai'])!;
-  // Prefer Groq for speed on fast cleanup; prefer OpenAI/Gemini quality on the
-  // accurate tier. May be undefined when the only key is AssemblyAI (no cleanup
-  // provider), in which case those presets fall back to transcription-only.
-  const fastCleanup = firstAvailable(status, ['groq', 'openai', 'google']);
-  const accurateCleanup = firstAvailable(status, ['openai', 'google', 'groq']);
-
-  const presets: Preset[] = [
-    {
-      id: 'cloud-fastest',
-      kind: 'preset',
-      name: 'Fastest',
-      tagline: 'Quick and light. A slight accuracy tradeoff for speed.',
-      position: 0.88,
+function buildCloudPresets(status: KeyStatus, options: PresetOptions): Preset[] {
+  const localSpeech = installedLocalFallbacks('transcription', options);
+  const localCleanup = installedLocalFallbacks('cleanup', options);
+  return (['fastest', 'balanced', 'accurate'] as const).flatMap((key): Preset[] => {
+    const tier = key === 'fastest' ? 'standard' : 'premium';
+    const speech = cloudCandidates(status, 'transcription', tier, options);
+    const cleanup = cloudCandidates(status, 'cleanup', key === 'accurate' ? 'premium' : 'standard', options);
+    if (!speech.length) return [];
+    // Quality always obtains a second transcript. Prefer a different model
+    // from the primary provider, then continue through the cloud chain.
+    const secondary = key === 'accurate'
+      ? cloudCandidates(status, 'transcription', 'standard', options).filter(id => id !== speech[0])
+      : [];
+    const transcriptionFallbacks = [...new Set([...secondary.slice(0, 1), ...speech.slice(1), ...secondary.slice(1), ...localSpeech])];
+    return [{
+      id: `cloud-${key}`, kind: 'preset',
+      name: key === 'fastest' ? 'Fastest' : key === 'balanced' ? 'Balanced' : 'Quality',
+      tagline: key === 'accurate' ? 'Always compares two speech models to reduce hallucinated additions.' : key === 'fastest' ? 'Lighter models for short response times.' : 'Stronger speech recognition with lightweight cleanup.',
+      position: key === 'fastest' ? 0.88 : key === 'balanced' ? 0.5 : 0.12,
       offline: false,
       target: cloudTarget({
-        transcriptionDefaultModel: transcriptionModelFor(tp, 'standard'),
-        transcriptionFallbacks: transcriptionFallbacksFor(status, tp, 'standard'),
-        cleanupDefaultModel: cleanupModelFor(fastCleanup, 'standard'),
-        cleanupFallbacks: cleanupFallbacksFor(status, fastCleanup, CLEANUP_FAST_ORDER, 'standard'),
-        dualTranscription: false,
+        transcriptionDefaultModel: speech[0],
+        transcriptionFallbacks,
+        cleanupDefaultModel: cleanup[0] ?? localCleanup[0] ?? null,
+        cleanupFallbacks: [...cleanup.slice(1), ...localCleanup].filter(id => id !== (cleanup[0] ?? localCleanup[0])),
+        dualTranscription: key === 'accurate',
       }),
-    },
-    {
-      id: 'cloud-balanced',
-      kind: 'preset',
-      name: 'Balanced',
-      tagline: 'A solid mix of speed and accuracy for everyday use.',
-      position: 0.5,
-      offline: false,
-      target: cloudTarget({
-        transcriptionDefaultModel: transcriptionModelFor(tp, 'premium'),
-        transcriptionFallbacks: transcriptionFallbacksFor(status, tp, 'premium'),
-        cleanupDefaultModel: cleanupModelFor(fastCleanup, 'premium'),
-        cleanupFallbacks: cleanupFallbacksFor(status, fastCleanup, CLEANUP_FAST_ORDER, 'premium'),
-        dualTranscription: false,
-      }),
-    },
-    {
-      id: 'cloud-accurate',
-      kind: 'preset',
-      name: 'Most accurate',
-      tagline: 'Highest accuracy. Compares two transcription models before cleanup.',
-      position: 0.12,
-      offline: false,
-      target: cloudTarget({
-        transcriptionDefaultModel: transcriptionModelFor(tp, 'premium'),
-        // The primary's standard model comes first (it feeds the dual-model
-        // compare), then every other keyed provider's premium model.
-        transcriptionFallbacks: [
-          transcriptionModelFor(tp, 'standard'),
-          ...transcriptionFallbacksFor(status, tp, 'premium'),
-        ],
-        cleanupDefaultModel: cleanupModelFor(accurateCleanup, 'premium'),
-        cleanupFallbacks: cleanupFallbacksFor(status, accurateCleanup, CLEANUP_ACCURATE_ORDER, 'premium'),
-        dualTranscription: true,
-      }),
-    },
-  ];
-
-  // A single "go fully private" option, using the strongest local setup this
-  // machine can run.
-  if (localSupported) {
-    const local = bestViableLocalTier(hardware);
-    if (local || hardware.isAndroid) {
-      presets.push({
-        id: 'cloud-private',
-        kind: 'preset',
-        name: 'Local AI',
-        tagline: 'Runs entirely on your device. Private and offline. Nothing leaves your machine.',
-        position: local?.position ?? 0.9,
-        offline: true,
-        target: local ? localTierTarget(local) : transcriptionOnlyPreset(hardware).target,
-      });
-    }
-  }
-
-  return presets;
+    }];
+  });
 }
 
 function cloudTarget(opts: {
@@ -416,21 +451,36 @@ function cloudTarget(opts: {
   };
 }
 
-function buildLocalOnlyPresets(hardware: Hardware): Preset[] {
-  const viable = localTiers(hardware).filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
+function buildLocalOnlyPresets(hardware: Hardware, options: PresetOptions): Preset[] {
+  const viable = localTiers(hardware).filter((tier) => fitsHardware(hardware, localTierSizes(tier)) && supportsLocalLanguage(tier.stt.id, options));
   if (viable.length === 0) {
-    return [transcriptionOnlyPreset(hardware)];
+    const installed = installedLocalFallbacks('transcription', options)[0];
+    if (installed) return [{ ...transcriptionOnlyPreset(hardware), target: { ...transcriptionOnlyPreset(hardware).target!, transcriptionDefaultModel: installed, requiredLocalModels: [] } }];
+    const floor = transcriptionOnlyPreset(hardware);
+    return supportsLocalLanguage(floor.target!.requiredLocalModels[0].id, options) ? [floor] : [];
   }
-  return viable.map((tier) => localTierPreset(tier, 'local'));
-}
-
-// Most-accurate tier that still fits, for the cloud "Local AI" card. Falls back
-// through lighter tiers; null only if even the lightest local config won't fit.
-function bestViableLocalTier(hardware: Hardware): LocalTier | null {
-  const viable = localTiers(hardware).filter((tier) => fitsHardware(hardware, localTierSizes(tier)));
-  if (viable.length === 0) return null;
-  // LOCAL_TIERS is ordered efficient → accurate; last viable is the most accurate.
-  return viable[viable.length - 1];
+  return viable.map(original => {
+    let tier = original;
+    if (tier.key === 'fastest') {
+      const measured = (options.localModels ?? []).filter(model => model.is_downloaded && supportsLocalLanguage(model.id, options) && fitsHardware(hardware, [model.size_mb, ...(tier.llm ? [tier.llm.sizeMb] : [])]))
+        .map(model => ({ model, sample: options.performance?.find(sample => sample.task === 'transcription' && sample.id === modelId('local', model.id) && sample.samples >= 3 && sample.failures === 0 && Date.now() - sample.updated_at_ms < 7 * 86400000) }))
+        .filter(row => row.sample && row.sample.latency_ms <= 10_000)
+        .sort((a, b) => a.sample!.latency_ms - b.sample!.latency_ms)[0];
+      if (measured) tier = { ...tier, stt: { id: measured.model.id, sizeMb: measured.model.size_mb } };
+    }
+    const preset = localTierPreset(tier, 'local');
+    if (tier.key === 'accurate') {
+      preset.target!.dualTranscription = true;
+      if (supportsLocalLanguage(STT_PARAKEET_V3.id, options) && fitsHardware(hardware, [...localTierSizes(tier), STT_PARAKEET_V3.sizeMb])) {
+        preset.target!.transcriptionFallbacks = [modelId('local', STT_PARAKEET_V3.id)];
+        preset.target!.requiredLocalModels.push({ task: 'transcription', ...STT_PARAKEET_V3 });
+      }
+    }
+    const otherSpeech = installedLocalFallbacks('transcription', options).filter(id => id !== preset.target!.transcriptionDefaultModel);
+    preset.target!.transcriptionFallbacks = [...new Set([...preset.target!.transcriptionFallbacks, ...otherSpeech])];
+    preset.target!.cleanupFallbacks = installedLocalFallbacks('cleanup', options).filter(id => id !== preset.target!.cleanupDefaultModel);
+    return preset;
+  });
 }
 
 function addKeyPreset(): Preset {
@@ -460,8 +510,9 @@ export function matchActivePreset(presets: Preset[], current: ActiveConfig): str
     if (target.dualTranscription !== current.dualTranscription) continue;
     if (target.cleanupEnabled !== current.cleanupEnabled) continue;
     if (target.cleanupEnabled && target.cleanupDefaultModel !== current.cleanupDefaultModel) continue;
-    if (!sameFallbacks(target.transcriptionFallbacks, current.transcriptionFallbacks)) continue;
-    if (target.cleanupEnabled && !sameFallbacks(target.cleanupFallbacks, current.cleanupFallbacks)) continue;
+    const relevant = (ids: string[]) => preset.offline ? ids : ids.filter(id => !id.startsWith('local/'));
+    if (!sameFallbacks(relevant(target.transcriptionFallbacks), relevant(current.transcriptionFallbacks))) continue;
+    if (target.cleanupEnabled && !sameFallbacks(relevant(target.cleanupFallbacks), relevant(current.cleanupFallbacks))) continue;
     return preset.id;
   }
   return null;

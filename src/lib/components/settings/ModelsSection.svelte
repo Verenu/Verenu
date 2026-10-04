@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
-  import { fade, fly, slide } from 'svelte/transition';
+  import { fly, slide } from 'svelte/transition';
   import { cubicOut, expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
   import {
@@ -45,6 +45,8 @@
     type Preset,
     type PresetTarget,
     type RequiredLocalModel,
+    type ModelPerformance,
+    supportsLocalLanguage,
   } from './modelPresets';
   import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
   import {
@@ -88,6 +90,41 @@
   let dualTranscriptionEnabled = $state(false);
   let cleanupFallbackModels = $state<string[]>([]);
   let cleanupEnabled = $state(true);
+  let modelSelectionMode = $state<'manual' | 'fastest' | 'balanced' | 'quality'>('manual');
+  let transcriptionLanguage = $state('en');
+  let performance = $state<ModelPerformance[]>([]);
+  let testingLocal = $state(false);
+  let localTestResult = $state('');
+
+  function useOfflineFallback(preset: Preset) {
+    const target = preset.target;
+    if (!target) return;
+    applyPreset({ ...preset, id: `fallback-${preset.id}`, offline: false, target: {
+      ...target,
+      transcriptionDefaultModel,
+      cleanupEnabled,
+      cleanupDefaultModel,
+      dualTranscription: dualTranscriptionEnabled,
+      transcriptionFallbacks: [...transcriptionFallbackModels.filter(id => !id.startsWith('local/')), target.transcriptionDefaultModel, ...target.transcriptionFallbacks],
+      cleanupFallbacks: [...cleanupFallbackModels.filter(id => !id.startsWith('local/')), ...(target.cleanupDefaultModel && cleanupDefaultModel !== target.cleanupDefaultModel ? [target.cleanupDefaultModel] : [])],
+    } });
+  }
+
+  async function testLocalSpeed(preset: Preset) {
+    if (!preset.target || testingLocal) return;
+    testingLocal = true;
+    localTestResult = '';
+    try {
+      const result = await invoke<{ initial_ms: number; warm_ms: number; cleanup_ms: number | null; initially_loaded: boolean }>('benchmark_local_models', {
+        speechModel: preset.target.transcriptionDefaultModel.slice('local/'.length),
+        cleanupModel: preset.target.cleanupDefaultModel?.slice('local/'.length) ?? null,
+      });
+      localTestResult = `${result.initially_loaded ? 'First run' : 'Load and first run'}: ${(result.initial_ms / 1000).toFixed(1)}s. Warm speech: ${(result.warm_ms / 1000).toFixed(1)}s.${result.cleanup_ms === null ? '' : ` Warm cleanup: ${(result.cleanup_ms / 1000).toFixed(1)}s.`} Uses bundled English sample audio; this measures speed, not accuracy.`;
+      performance = await invoke<ModelPerformance[]>('get_model_performance');
+    } catch {
+      localTestResult = 'The local test could not finish. Check that the models and cleanup engine are installed and no dictation is running.';
+    } finally { testingLocal = false; }
+  }
 
   // Hardware drives which local presets are offered. Starts as the "assume
   // capable" default so the picker never flashes a degraded set before the
@@ -113,6 +150,15 @@
   const installedLocal = $derived({
     transcription: localSttStore.models.filter((model) => model.is_downloaded).map((model) => model.id),
     cleanup: localLlmStore.models.filter((model) => model.is_downloaded).map((model) => model.id),
+  });
+  const presetOptions = $derived({
+    language: transcriptionLanguage,
+    localModels: localSttStore.models,
+    installedLocal,
+    localCleanupReady: localLlmStore.runtime?.installed ?? false,
+    cache: modelCatalogStore.cache,
+    performance,
+    customProviders: customProviderStore.providers,
   });
 
   /**
@@ -181,7 +227,7 @@
   function requiredModelsInstalled(target: PresetTarget): boolean {
     return target.requiredLocalModels.every((model) =>
       (installedLocal[model.task]?.includes(model.id) ?? false)
-      && (model.task !== 'cleanup' || localLlmStore.runtime.installed),
+      && (model.task !== 'cleanup' || localLlmStore.runtime?.installed === true),
     );
   }
 
@@ -206,7 +252,10 @@
     }
   }
 
-  function activatePreset(target: PresetTarget) {
+  function activatePreset(target: PresetTarget, presetId: string) {
+    if (!presetId.startsWith('fallback-')) {
+      modelSelectionMode = presetId.endsWith('-accurate') ? 'quality' : presetId.endsWith('-balanced') ? 'balanced' : 'fastest';
+    }
     transcriptionDefaultModel = target.transcriptionDefaultModel;
     transcriptionFallbackModels = [...target.transcriptionFallbacks];
     dualTranscriptionEnabled = target.dualTranscription;
@@ -221,6 +270,7 @@
   function applyPreset(preset: Preset) {
     const target = preset.target;
     if (!target) return;
+    clearPendingPreset();
 
     const missing = target.requiredLocalModels.filter(
       (model) => !installedLocal[model.task]?.includes(model.id)
@@ -232,45 +282,32 @@
       pendingPreset = preset;
       pendingPresetDownloads = missing;
       pendingPresetRequestsSettled = 0;
-      for (const model of missing) {
-        if (model.task === 'transcription') {
-          downloadLocalModel(model.id)
-            .then((started) => {
+      // Each manager has one download slot. Speech models needed for Quality
+      // must be queued, while speech and cleanup can download concurrently.
+      for (const task of ['transcription', 'cleanup'] as const) {
+        void (async () => {
+          for (const model of missing.filter(model => model.task === task)) {
+            if (pendingPreset?.id !== preset.id) return;
+            const started = isExpectedModelDownloading(model) || await (task === 'transcription' ? downloadLocalModel(model.id) : downloadLocalLlmModel(model.id));
+            if (!started) { clearPendingPreset(); return; }
+            while (!installedLocal[task].includes(model.id) || (task === 'cleanup' && !localLlmStore.runtime.installed)) {
               if (pendingPreset?.id !== preset.id) return;
-              if (!started) {
-                pendingPresetRequestsSettled += 1;
-              } else {
-                pendingPresetRequestsSettled += 1;
+              if (!isExpectedModelDownloading(model)) {
+                if (task === 'transcription') await refreshLocalModels();
+                else await Promise.all([refreshLocalLlmModels(), refreshLocalLlmRuntimeInfo()]);
+                if (!installedLocal[task].includes(model.id) || (task === 'cleanup' && !localLlmStore.runtime.installed)) { clearPendingPreset(); return; }
+                break;
               }
-            })
-            .catch((err) => {
-              if (pendingPreset?.id === preset.id) {
-                pendingPresetRequestsSettled += 1;
-              }
-              console.error('preset stt download failed', err);
-            });
-        } else {
-          downloadLocalLlmModel(model.id)
-            .then((started) => {
-              if (pendingPreset?.id !== preset.id) return;
-              if (!started) {
-                pendingPresetRequestsSettled += 1;
-              } else {
-                pendingPresetRequestsSettled += 1;
-              }
-            })
-            .catch((err) => {
-              if (pendingPreset?.id === preset.id) {
-                pendingPresetRequestsSettled += 1;
-              }
-              console.error('preset llm download failed', err);
-            });
-        }
+              await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            if (pendingPreset?.id === preset.id) pendingPresetRequestsSettled += 1;
+          }
+        })().catch(() => { if (pendingPreset?.id === preset.id) clearPendingPreset(); });
       }
       return;
     }
 
-    activatePreset(target);
+    activatePreset(target, preset.id);
   }
 
   function isExpectedModelDownloading(model: RequiredLocalModel): boolean {
@@ -289,7 +326,7 @@
   function cancelPresetDownload(preset: Preset) {
     const target = preset.target;
     if (!target) return;
-    if (pendingPreset?.id === preset.id) clearPendingPreset();
+    if (pendingPreset?.id === preset.id || pendingPreset?.id === `fallback-${preset.id}`) clearPendingPreset();
     for (const model of target.requiredLocalModels) {
       if (!isExpectedModelDownloading(model)) continue;
       if (model.task === 'transcription') {
@@ -318,7 +355,7 @@
     const preset = pendingPreset;
     if (!preset?.target) return;
     if (requiredModelsInstalled(preset.target)) {
-      activatePreset(preset.target);
+      activatePreset(preset.target, preset.id);
       clearPendingPreset();
       return;
     }
@@ -346,6 +383,9 @@
   // Defaults to true (never assume unsupported) until the one-time check
   // resolves, since almost every user is on a supported platform.
   let localModelsSupported = $state(true);
+  // Opening one settings dropdown closes the other.
+  $effect(() => { if (transcriptionModeDropdownOpen) localModelMemoryDropdownOpen = false; });
+  $effect(() => { if (localModelMemoryDropdownOpen) transcriptionModeDropdownOpen = false; });
   const LOCAL_MEMORY_POLICY_MENU_ID = 'models-local-memory-policy-menu';
   const localMemoryPolicyOptions: { value: LocalModelMemoryPolicy; label: string }[] = [
     { value: 'unload_after_5m', label: 'Unload after 5 minutes' },
@@ -413,16 +453,15 @@
   // A deleted local model drops out of the picker's Ready list entirely (only
   // downloaded models appear there), so if it was selected there is no row left
   // to click to deselect it. Reassign to another installed local model for this
-  // task, or fall back to Groq's recommended model, so the selection never points
-  // at something that no longer exists.
+  // task. Keep a missing local selection when no replacement exists so deletion
+  // cannot silently turn an on-device choice into a cloud request.
   function pickLocalReplacementDefault(type: TaskType, excludeLocalId: string): string {
     const localModels = type === 'transcription' ? localSttStore.models : localLlmStore.models;
-    const otherLocal = localModels.find((model) => model.is_downloaded && model.id !== excludeLocalId);
+    const otherLocal = localModels.find((model) => model.is_downloaded && model.id !== excludeLocalId && (type === 'cleanup' || supportsLocalLanguage(model.id, presetOptions)));
     if (otherLocal) {
       return modelId('local', otherLocal.id);
     }
-    // Safe: Groq always has a recommendedModels entry for both tasks.
-    return modelId('groq', recommendedModels[type].groq!.standard);
+    return modelId('local', excludeLocalId);
   }
 
   function reassignAfterLocalModelDeleted(type: TaskType, deletedLocalId: string) {
@@ -514,6 +553,7 @@
       transcriptionProvider,
       cleanupProvider,
       localModelMemoryPolicy,
+      modelSelectionMode,
     };
     transcriptionModelStore.defaultModel = transcriptionDefaultModel;
 
@@ -525,6 +565,7 @@
         saveSetting('cleanup_default_model', snapshot.cleanupDefaultModel),
         saveSetting('transcription_fallback_models', snapshot.transcriptionFallbackModels),
         saveSetting('dual_transcription_enabled', snapshot.dualTranscriptionEnabled),
+        saveSetting('model_selection_mode', snapshot.modelSelectionMode),
         saveSetting('cleanup_fallback_models', snapshot.cleanupFallbackModels),
         saveSetting('transcription_model', snapshot.transcriptionDefaultModel),
         saveSetting('cleanup_model', snapshot.cleanupDefaultModel),
@@ -538,14 +579,19 @@
   }
 
   async function migrateAndLoad() {
-    const [all, keyStatus, advancedRaw, cleanupRaw] = await Promise.all([
+    const [all, keyStatus, advancedRaw, cleanupRaw, language, selectionMode] = await Promise.all([
       invoke<AllSettingsPayload>('get_all_settings'),
       invoke<Record<ProviderId, boolean>>('get_api_key_status'),
       invoke<boolean | null>('get_setting', { key: 'advanced_model_ui' }),
       invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
+      invoke<string | null>('get_setting', { key: 'transcription_language' }),
+      invoke<string | null>('get_setting', { key: 'model_selection_mode' }),
     ]);
 
     apiKeyStatus = { ...apiKeyStatus, ...keyStatus, local: true };
+    transcriptionLanguage = language ?? 'en';
+    modelSelectionMode = selectionMode === 'fastest' || selectionMode === 'balanced' || selectionMode === 'quality' ? selectionMode : 'manual';
+    invoke<ModelPerformance[]>('get_model_performance').then(value => { performance = value; }).catch(() => {});
     customProviderStore.providers = all.custom_providers ?? [];
     hydrateCatalogCache(all.provider_model_cache);
     if (typeof cleanupRaw === 'boolean') {
@@ -685,6 +731,7 @@
 
   /** Makes a model the active one, pushing the previous default aside. */
   function selectModel(type: TaskType, id: string) {
+    modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
     if (!parsed) return;
     ensureModelsContainSelection(type, parsed.provider, parsed.model);
@@ -696,6 +743,7 @@
   }
 
   function addFallbackModel(type: TaskType, id: string) {
+    modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
     if (!parsed) return;
     if (taskDefault(type) === id || taskFallbacks(type).includes(id)) return;
@@ -705,11 +753,13 @@
   }
 
   function removeFallbackModel(type: TaskType, id: string) {
+    modelSelectionMode = 'manual';
     setTaskFallbacks(type, taskFallbacks(type).filter((entry) => entry !== id));
     persistAll().catch((err) => console.error('persist fallback removal failed', err));
   }
 
   function moveFallbackModel(type: TaskType, id: string, delta: -1 | 1) {
+    modelSelectionMode = 'manual';
     const chain = [...taskFallbacks(type)];
     const index = chain.indexOf(id);
     const next = index + delta;
@@ -761,10 +811,12 @@
   let transcriptionModeDropdownOpen = $state(false);
 
   async function handleDualTranscription(value: boolean) {
+    modelSelectionMode = 'manual';
     dualTranscriptionEnabled = value;
     transcriptionModeDropdownOpen = false;
     try {
       await saveSetting('dual_transcription_enabled', value);
+      await saveSetting('model_selection_mode', 'manual');
     } catch (err) {
       dualTranscriptionEnabled = !value;
       console.error('save dual transcription setting failed:', err);
@@ -848,7 +900,14 @@
     onOpenApiKeys={openApiKeysSection}
     onCancelPreset={cancelPresetDownload}
     onDeletePreset={deletePresetModels}
+    options={presetOptions}
+    onUseFallback={useOfflineFallback}
+    onTestLocal={testLocalSpeed}
+    {testingLocal}
+    selectionMode={modelSelectionMode}
+    pendingPresetId={pendingPreset?.id ?? null}
   />
+  {#if localTestResult}<p class="adv-desc" role="status">{localTestResult}</p>{/if}
 </div>
 
 <div class="advanced-toggle-row" data-setting-target="advanced-models">
@@ -907,7 +966,7 @@
   <Dropdown bind:open={transcriptionModeDropdownOpen} closeSelector=".models-dropdown">
     <div class="ui-dropdown models-dropdown">
       <button
-        class="btn-ghost ui-dropdown-trigger models-dropdown-btn"
+        class="ui-dropdown-trigger ui-dropdown-trigger--compact models-dropdown-btn"
         type="button"
         onclick={() => (transcriptionModeDropdownOpen = !transcriptionModeDropdownOpen)}
         aria-haspopup="listbox"
@@ -916,19 +975,19 @@
         aria-label="Transcription strategy"
       >
         <span>{dualTranscriptionEnabled ? 'Dual model' : 'Single model'}</span>
-        <svg class:open={transcriptionModeDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <svg class:open={transcriptionModeDropdownOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m6 9 6 6 6-6"/>
         </svg>
       </button>
       {#if transcriptionModeDropdownOpen}
         <div
           id="transcription-mode-menu"
-          class="ui-dropdown-menu models-dropdown-menu scroll-styled scroll-thumb-elev"
+          class="ui-dropdown-menu ui-dropdown-menu--padded models-dropdown-menu scroll-styled scroll-thumb-elev"
           role="listbox"
           tabindex="-1"
           aria-label="Transcription strategy"
-          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
-          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast), easing: expoOut }}
+          out:fly={{ y: -3, duration: motionMs(110), easing: expoOut }}
         >
           <button
             class="ui-dropdown-option models-dropdown-item"
@@ -968,7 +1027,7 @@
   <Dropdown bind:open={localModelMemoryDropdownOpen} closeSelector=".models-dropdown">
     <div class="ui-dropdown models-dropdown">
       <button
-        class="btn-ghost ui-dropdown-trigger models-dropdown-btn"
+        class="ui-dropdown-trigger ui-dropdown-trigger--compact models-dropdown-btn"
         type="button"
         use:animateWidth={{ text: localMemoryPolicyLabel(localModelMemoryPolicy), max: 220 }}
         onclick={() => (localModelMemoryDropdownOpen = !localModelMemoryDropdownOpen)}
@@ -978,19 +1037,19 @@
         aria-label="Local model memory policy"
       >
         <span>{localMemoryPolicyLabel(localModelMemoryPolicy)}</span>
-        <svg class:open={localModelMemoryDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <svg class:open={localModelMemoryDropdownOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m6 9 6 6 6-6"/>
         </svg>
       </button>
       {#if localModelMemoryDropdownOpen}
         <div
           id={LOCAL_MEMORY_POLICY_MENU_ID}
-          class="ui-dropdown-menu models-dropdown-menu scroll-styled scroll-thumb-elev"
+          class="ui-dropdown-menu ui-dropdown-menu--padded models-dropdown-menu scroll-styled scroll-thumb-elev"
           role="listbox"
           tabindex="-1"
           aria-label="Local model memory policy options"
-          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
-          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast), easing: expoOut }}
+          out:fly={{ y: -3, duration: motionMs(110), easing: expoOut }}
         >
           {#each localMemoryPolicyOptions as option}
             <button
@@ -1084,9 +1143,14 @@
   }
 
   .models-dropdown-menu {
-    min-width: 220px;
-    max-height: 220px;
+    min-width: 240px;
+    max-height: 260px;
+    right: 0;
+    left: auto;
   }
+
+  .models-dropdown-item span { font-weight: 550; }
+  .models-dropdown-item.is-active small { color: var(--ink-soft); }
 
   /* Keyed to the settings content column, not the window — this stacks when the
      panel itself is narrow, which is what the rule was always standing in for. */
@@ -1096,13 +1160,19 @@
     }
 
     .models-dropdown-btn {
-      width: 100%;
+      width: 100% !important;
       max-width: none;
       justify-content: space-between;
     }
 
     .models-dropdown-menu {
       min-width: 100%;
+      left: 0;
+      right: 0;
     }
+
+    /* Thumb-sized rows on phones. */
+    .models-dropdown-btn { min-height: 44px; }
+    .models-dropdown-item { min-height: 44px; padding-block: 10px; }
   }
 </style>

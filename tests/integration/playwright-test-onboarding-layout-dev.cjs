@@ -135,13 +135,19 @@ async function layoutState(page) {
     await local.getByText('Ready', { exact: true }).waitFor({ state: 'visible', timeout: 10000 });
     await local.getByRole('button', { name: 'Continue' }).click();
     await local.locator('.preset-grid').waitFor({ state: 'visible', timeout: TIMEOUT });
-    if (!(await local.locator('.preset-action-btn').count())) errors.push('Local model presets lost their inline actions');
+    if (!(await local.locator('.preset-action').count())) errors.push('Local model presets lost their inline actions');
     const chooseSetup = local.getByRole('button', { name: 'Choose a setup' });
     if (!(await chooseSetup.isDisabled())) errors.push('Local setup should require an explicit preset choice');
-    await local.locator('.preset-select').first().click();
-    await local.getByRole('button', { name: 'Next' }).waitFor({ state: 'visible', timeout: TIMEOUT });
-    if (await local.getByRole('button', { name: 'Next' }).isDisabled()) errors.push('Choosing a local preset did not unlock the flow');
-    if (!(await local.locator('.preset-action-btn:has-text("Downloading")').count())) errors.push('Choosing a local preset did not start its missing download');
+    const firstPreset = local.locator('.preset-row').filter({ has: local.locator('.preset-select') }).first();
+    if (!(await firstPreset.locator('.preset-select').isDisabled())) errors.push('A local preset requiring downloads should remain inert');
+    const downloadPreset = firstPreset.locator('.preset-action');
+    if (!(await downloadPreset.textContent()).trim().startsWith('Download ')) errors.push('The local preset should expose its explicit download action');
+    await downloadPreset.click();
+    await local.waitForFunction(() => {
+      const next = [...document.querySelectorAll('.setup-actionbar button')].find((button) => button.textContent.trim() === 'Next');
+      return next && !next.disabled;
+    }, null, { timeout: TIMEOUT });
+    if (await local.getByRole('button', { name: 'Next' }).isDisabled()) errors.push('Downloading the chosen local preset did not unlock the flow');
     await local.close();
 
     const reduced = await browser.newPage({ reducedMotion: 'reduce', viewport: VIEWPORTS[0] });

@@ -1,5 +1,53 @@
 use super::*;
 
+/// Custom endpoints can be LAN-hosted; loss of internet is not evidence that
+/// they are unreachable. Built-in cloud providers can be skipped when offline.
+pub(super) fn candidate_available_offline(provider: &str, offline: bool) -> bool {
+    !offline || provider == store::LOCAL || crate::api::custom::is_custom_id(provider)
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+    #[test]
+    fn offline_policy_preserves_local_and_custom_endpoints() {
+        assert!(!candidate_available_offline("groq", true));
+        assert!(candidate_available_offline("local", true));
+        assert!(candidate_available_offline(
+            "custom:12345678-1234-1234-1234-123456789012",
+            true
+        ));
+        assert!(candidate_available_offline("groq", false));
+    }
+    #[test]
+    fn manual_order_and_quality_pair_are_preserved() {
+        let chain = vec![
+            ("groq".into(), "primary".into()),
+            ("openai".into(), "second".into()),
+            ("local".into(), "offline".into()),
+        ];
+        let samples = vec![crate::model_performance::ModelPerformance {
+            task: "transcription".into(),
+            id: "groq/primary".into(),
+            samples: 3,
+            failures: 3,
+            latency_ms: 1.0,
+            updated_at_ms: u64::MAX,
+        }];
+        assert_eq!(
+            prioritize_model_chain(chain.clone(), "transcription", "manual", &samples),
+            chain
+        );
+        assert_eq!(
+            prioritize_model_chain(chain.clone(), "transcription", "quality", &samples),
+            chain
+        );
+        let balanced = prioritize_model_chain(chain, "transcription", "balanced", &samples);
+        assert_eq!(balanced[0].0, "openai");
+        assert_eq!(balanced.last().unwrap().0, "local");
+    }
+}
+
 pub(super) fn transcription_model_chain(cfg: &store::PipelineConfig) -> Vec<(String, String)> {
     model_chain(
         &cfg.transcription_default_model,
@@ -24,6 +72,52 @@ fn model_chain(default_model: &str, fallback_models: &[String]) -> Vec<(String, 
         }
     }
     chain
+}
+
+pub(super) fn runtime_model_chain(
+    app: Option<&AppHandle>,
+    cfg: &store::PipelineConfig,
+    task: &str,
+) -> Vec<(String, String)> {
+    let chain = if task == "transcription" {
+        transcription_model_chain(cfg)
+    } else {
+        cleanup_model_chain(cfg)
+    };
+    let mode = app
+        .and_then(|app| store::settings_snapshot(app).ok())
+        .and_then(|snapshot| {
+            snapshot
+                .get(store::MODEL_SELECTION_MODE)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "manual".into());
+    prioritize_model_chain(chain, task, &mode, &crate::model_performance::snapshot())
+}
+
+fn prioritize_model_chain(
+    chain: Vec<(String, String)>,
+    task: &str,
+    mode: &str,
+    samples: &[crate::model_performance::ModelPerformance],
+) -> Vec<(String, String)> {
+    if mode == "manual" {
+        return chain;
+    }
+    let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain
+        .into_iter()
+        .partition(|(provider, _)| provider != store::LOCAL);
+    // The Quality pair stays intact. Only recovery candidates are reordered.
+    let fixed = if mode == "quality" && task == "transcription" {
+        cloud.len().min(2)
+    } else {
+        0
+    };
+    crate::model_performance::prioritize(&mut cloud[fixed..], task, samples);
+    crate::model_performance::prioritize(&mut local, task, samples);
+    cloud.extend(local);
+    cloud
 }
 
 fn transcription_chain_root(

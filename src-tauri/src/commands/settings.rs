@@ -26,6 +26,7 @@ enum SettingKind {
     CleanupIntensity,
     HistoryRetention,
     LocalModelMemoryPolicy,
+    ModelSelectionMode,
     ModelMap,
     StringArray,
     CleanupPromptOverride,
@@ -87,6 +88,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
     ),
     setting_spec(store::CLEANUP_PROVIDER, SettingKind::Provider, true, true),
+    setting_spec(store::MODEL_SELECTION_MODE, SettingKind::ModelSelectionMode, true, true),
     setting_spec(
         store::TRANSCRIPTION_MODEL,
         SettingKind::StringOrNull,
@@ -457,6 +459,7 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
             .as_str()
             .is_some_and(store::is_supported_local_model_memory_policy),
         SettingKind::ModelMap => is_model_map(value),
+        SettingKind::ModelSelectionMode => value.as_str().is_some_and(|mode| matches!(mode, "manual" | "fastest" | "balanced" | "quality")),
         SettingKind::SubAppChord => value
             .as_str()
             .is_some_and(|v| crate::core::hotkey::chord::Chord::parse(v).is_some()),
@@ -851,6 +854,7 @@ pub struct AllSettings {
     pub cleanup_default_model: Option<String>,
     pub transcription_fallback_models: Option<Vec<String>>,
     pub dual_transcription_enabled: Option<bool>,
+    pub model_selection_mode: Option<String>,
     pub cleanup_fallback_models: Option<Vec<String>>,
     pub advanced_model_ui: Option<bool>,
     pub cleanup_enabled: Option<bool>,
@@ -932,6 +936,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         cleanup_default_model: str_val(store::CLEANUP_DEFAULT_MODEL),
         transcription_fallback_models: str_array_val(store::TRANSCRIPTION_FALLBACK_MODELS),
         dual_transcription_enabled: bool_val(store::DUAL_TRANSCRIPTION_ENABLED),
+        model_selection_mode: str_val(store::MODEL_SELECTION_MODE),
         cleanup_fallback_models: str_array_val(store::CLEANUP_FALLBACK_MODELS),
         advanced_model_ui: bool_val(store::ADVANCED_MODEL_UI),
         cleanup_enabled: bool_val(store::CLEANUP_ENABLED),

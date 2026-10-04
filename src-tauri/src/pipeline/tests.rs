@@ -1632,6 +1632,55 @@ async fn pipeline_fixture_falls_back_from_retryable_local_cleanup_failure_to_clo
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_preserves_speech_when_every_cleanup_provider_fails() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    let _local_models = install_local_cleanup_models(&["qwen2.5-1.5b-instruct"]);
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "groq/qwen/qwen3.8-27b".into();
+    config.cleanup_fallback_models = vec![
+        "openai/gpt-4o-mini".into(),
+        "local/qwen2.5-1.5b-instruct".into(),
+    ];
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("please send the meeting notes tomorrow"),
+        None,
+        None,
+    );
+    for (provider, model) in [
+        ("groq", "qwen/qwen3.8-27b"),
+        ("openai", "gpt-4o-mini"),
+        ("local", "qwen2.5-1.5b-instruct"),
+    ] {
+        fixture(
+            "cleanup",
+            provider,
+            model,
+            None,
+            Some("timeout"),
+            Some("provider unavailable"),
+        );
+    }
+    let result = run_pipeline_fixture(base_request(config))
+        .await
+        .expect("speech survives cleanup failure");
+    assert_eq!(
+        result.final_text_before_dictionary,
+        "please send the meeting notes tomorrow"
+    );
+    assert_eq!(result.history_entry.clean_text, result.injected_text);
+    assert_eq!(
+        fixture_hit_count("cleanup", "local", "qwen2.5-1.5b-instruct"),
+        1
+    );
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
