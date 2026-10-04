@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fade, fly, slide } from 'svelte/transition';
+  import { fade, fly, scale, slide } from 'svelte/transition';
   import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
   import { drawerSlide, modalBackdrop, MOTION_MS, motionMs, motionPx } from '../../motion';
@@ -67,8 +67,10 @@
   function focusOnMount(node: HTMLElement) { requestAnimationFrame(() => node.focus({ preventScroll: true })); }
   const drawerOpen = $derived(picking || !!editing);
   function closeDrawer() { picking = false; editing = null; preset = null; key = ''; error = ''; }
-  // A stray click on the backdrop must not discard a half-filled form.
-  function backdropClose() { if (picking && !busy) closeDrawer(); }
+  function backdropClose() { if (!busy) closeDrawer(); }
+  // A new provider's form sits one level below the preset picker; an existing one has nowhere to go back to.
+  const canGoBack = $derived(!!editing && !savedOriginal);
+  function goBack() { if (!busy) startPicking(); }
   function startPicking() {
     picking = true; search = ''; showMore = false; editing = null; error = ''; notice = '';
   }
@@ -77,7 +79,7 @@
     preset = provider ? presetForUrl(provider.base_url, provider.protocol) ?? null : from ?? null;
     editing = provider ? structuredClone($state.snapshot(provider)) : {
       id: `custom:${crypto.randomUUID()}`, name: from && from.id !== 'blank' && !from.id.includes('compatible') ? from.name : '',
-      protocol: from?.protocol ?? 'openai', base_url: from?.base_url ?? '',
+      protocol: from?.protocol ?? 'openai', base_url: from?.group === 'local' ? '' : from?.base_url ?? '',
       requires_key: from?.requires_key ?? true,
       supports_transcription: from?.supports_transcription ?? true, supports_cleanup: from?.supports_cleanup ?? true,
       auth_header: null, extra_headers: {}, body_overrides: null,
@@ -102,6 +104,7 @@
     return q ? CUSTOM_PROVIDER_PRESETS.filter(p => `${p.name} ${p.id} ${p.base_url} ${p.alt?.base_url ?? ''}`.toLowerCase().includes(q)) : [];
   });
   let showMore = $state(false);
+  const urlExample = $derived(preset?.group === 'local' && !savedOriginal && preset.base_url ? preset.base_url.replace('localhost', '192.168.1.50') : 'https://api.example.com/v1');
   const capabilityLabel = (p: { supports_transcription: boolean; supports_cleanup: boolean }) =>
     p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup';
   const isLocalUrl = (url: string) => { try { const h = new URL(url).hostname; return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h); } catch { return false; } };
@@ -245,8 +248,15 @@
         use:modalFocusTrap={{ active: true, initialFocus: () => drawerEl?.querySelector<HTMLElement>('.search, input') ?? drawerEl }}
         in:drawerSlide={{ duration: MOTION_MS.panel }} out:drawerSlide={{ duration: MOTION_MS.base }}>
         <header class="drawer-head">
-          <span>{editing ? (savedOriginal ? 'Edit provider' : 'New provider') : 'Add custom provider'}</span>
-          <button type="button" class="drawer-close" aria-label="Close" onclick={closeDrawer} disabled={busy}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
+          <div class="head-left">
+            {#if canGoBack}
+              <button type="button" class="drawer-close" aria-label="Back to providers" onclick={goBack} disabled={busy} transition:scale={{ start: 0.7, duration: motionMs(MOTION_MS.fast) }}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
+            {/if}
+            <span>{editing ? (savedOriginal ? 'Edit provider' : 'New provider') : 'Add custom provider'}</span>
+          </div>
+          {#if !canGoBack}
+            <button type="button" class="drawer-close" aria-label="Close" onclick={closeDrawer} disabled={busy} transition:scale={{ start: 0.7, duration: motionMs(MOTION_MS.fast) }}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
+          {/if}
         </header>
         <div class="drawer-body scroll-styled scroll-thumb-elev"><div class="views">
   {#if picking}
@@ -292,19 +302,19 @@
         {@render tile(preset?.id, editing.name || preset?.name || '', preset?.color ?? '#6B7280', preset?.mark && !editing.name ? preset.mark : undefined, true)}
         <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.id !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
           {#if preset && !savedOriginal && preset.note && preset.id !== 'blank'}<p class="hint">{preset.note}</p>{/if}</div>
-        {#if !savedOriginal}<button type="button" class="btn-ghost btn-compact change" onclick={startPicking} disabled={busy}>Change preset</button>{/if}
       </div>
 
       <div class="form-grid">
         <label>Name<input bind:value={editing.name} maxlength="40" placeholder="My provider" required disabled={busy} /></label>
         <div class="field"><span>{preset?.alt && !savedOriginal ? 'API format' : 'Protocol'}</span><CompactSelect value={editing.protocol} options={formatOptions} label="Provider protocol" onchange={setProtocol} /></div>
-        <label class="full">Base URL<input type="url" bind:value={editing.base_url} placeholder="https://api.example.com/v1" required disabled={busy} /><small>Include the API version prefix, such as /v1. Verenu adds the task's endpoint path.</small></label>
+        <label class="full">Base URL<input type="url" bind:value={editing.base_url} placeholder={urlExample} required disabled={busy} /><small>{preset?.group === 'local' && !savedOriginal ? 'Use localhost for this computer, or its IP address for another machine. ' : ''}Include the API version prefix, such as /v1. Verenu adds the task's endpoint path.</small></label>
       </div>
       {#if editing.base_url.includes('YOUR_')}<p class="callout warn" role="note">Replace the placeholder in the base URL before saving.</p>{/if}
-      <p class="callout" class:local={isLocalUrl(editing.base_url)}>
-        {#if isLocalUrl(editing.base_url)}<svg class="local-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.5l5 2v4c0 3-2.1 5.4-5 6.5-2.9-1.1-5-3.5-5-6.5v-4l5-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M5.8 8l1.6 1.6L10.4 6.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>{/if}
-        <span>Dictated {editing.supports_transcription && editing.supports_cleanup ? 'audio and text' : editing.supports_transcription ? 'audio' : 'text'} will be sent to <strong>{displayHost(editing.base_url) || 'the endpoint you enter'}</strong>{isLocalUrl(editing.base_url) ? ', which stays on your network' : ''}.</span>
-      </p>
+      {#if editing.base_url.trim() && !isLocalUrl(editing.base_url)}
+        <p class="callout">
+          <span>Dictated {editing.supports_transcription && editing.supports_cleanup ? 'audio and text' : editing.supports_transcription ? 'audio' : 'text'} will be sent to <strong>{displayHost(editing.base_url) || 'the endpoint you enter'}</strong>.</span>
+        </p>
+      {/if}
 
       <div class="cap-grid" role="group" aria-label="What this provider handles">
         <div class="cap" class:on={editing.supports_transcription} class:off={editing.protocol === 'anthropic'}>
@@ -342,7 +352,7 @@
         {#if editing.supports_cleanup}<label>Cleanup request options, JSON<textarea use:autosize={overrides} bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea><small>Extra fields such as temperature. Model, messages, system, token limit, and streaming are controlled by Verenu.</small></label>{/if}
       </details>
       {#if error}<p class="provider-error" role="alert">{error}</p>{/if}
-      <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={closeDrawer} disabled={busy}>Cancel</button></div>
+      <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={savedOriginal ? closeDrawer : goBack} disabled={busy}>Cancel</button></div>
     </form>
   {/if}
         </div></div>
@@ -357,7 +367,8 @@
   .drawer-wrap { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: flex-end; }
   .drawer-backdrop { position: absolute; inset: 0; background: var(--overlay); }
   .drawer { position: relative; display: flex; flex-direction: column; width: min(520px, 100vw); height: 100%; box-sizing: border-box; background: var(--bg-elev); border-left: 1px solid var(--line); box-shadow: var(--shadow-elev); outline: none; }
-  .drawer-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+  .head-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .drawer-head { flex: none; display: flex; align-items: center; justify-content: space-between; min-height: 56px; box-sizing: border-box; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); font-size: 12px; font-weight: 600; color: var(--ink-soft); }
   .drawer-close { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; }
   .drawer-close:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
   .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; overscroll-behavior: contain; }
@@ -370,7 +381,7 @@
   h3 { font-size: 15px; margin: 0; font-weight: 600; }
   .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
 
-  .tile { --tile: #6b7280; flex: none; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--tile); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
+  .tile { --tile: #6b7280; flex: none; width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; line-height: 1; text-align: center; background: var(--tile); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
   .tile.logo { background: #fff; color: #111; border: 1px solid var(--line); box-shadow: none; }
   :global([data-theme='dark']) .tile.logo { background: #fff; }
   .tile :global(svg) { width: 62%; height: 62%; }
@@ -419,12 +430,13 @@
   .provider-editor { display: grid; gap: 16px; }
   .editor-head { justify-content: flex-start; }
   .editor-head > div { flex: 1; min-width: 0; }
-  .editor-head .change { margin-left: auto; }
   .models-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 14px; transition: grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 320ms cubic-bezier(0.22, 1, 0.36, 1); }
   .models-row.no-tx { grid-template-columns: minmax(0, 0fr) minmax(0, 1fr); column-gap: 0; }
   .models-row.no-cl { grid-template-columns: minmax(0, 1fr) minmax(0, 0fr); column-gap: 0; }
-  .mfield { min-width: 0; overflow: hidden; padding: 3px; margin: -3px; transition: opacity 220ms ease; }
-  .mfield.off { opacity: 0; pointer-events: none; }
+  .mfield { min-width: 0; max-height: 900px; overflow: hidden; padding: 3px; margin: -3px; transition: opacity 220ms ease, max-height 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+  /* Keep the content from rewrapping into a tall sliver while its column shrinks. */
+  .mfield > :global(.mid) { min-width: 260px; }
+  .mfield.off { opacity: 0; pointer-events: none; max-height: 0; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .full { grid-column: 1 / -1; }
   label, .field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
@@ -434,8 +446,6 @@
   small { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
 
   .callout { margin: 0; padding: 9px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.5; background: var(--paper-2); color: var(--ink-soft); overflow-wrap: anywhere; }
-  .callout.local { display: flex; align-items: flex-start; gap: 8px; }
-  .local-icon { flex: none; margin-top: 2px; color: var(--success); }
   .callout.warn { background: var(--warning-bg); color: var(--ink); }
   .callout strong { color: var(--ink); }
 
@@ -455,14 +465,13 @@
   .notice { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
   @media (max-width: 560px) {
     .models-row, .models-row.no-tx, .models-row.no-cl { grid-template-columns: minmax(0, 1fr); column-gap: 0; row-gap: 14px; transition: none; }
-    .mfield { max-height: 600px; transition: max-height 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease, margin 280ms ease; }
-    .mfield.off { max-height: 0; margin-top: -14px; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
+    .mfield > :global(.mid) { min-width: 0; }
+    .mfield.off { margin-top: -14px; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
   @container settings-panel (max-width: 520px) {
     .form-grid, .cap-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .card { padding: 8px; gap: 8px; }
     .card-name { white-space: normal; line-height: 1.25; }
     .editor-head { flex-wrap: wrap; }
-    .editor-head .change { margin-left: 0; }
   }
 </style>

@@ -114,5 +114,11 @@ export function monogram(name: string): string {
 export function presetForUrl(url: string, protocol: string): CustomProviderPreset | undefined {
   const host = displayHost(url);
   if (!host) return undefined;
+  // Local servers are saved with whatever address reached them, so match those by port.
+  const port = (() => { try { return new URL(url).port; } catch { return ''; } })();
+  const hostname = host.split(':')[0];
+  if (port && (hostname === 'localhost' || /^[\d.]+$/.test(hostname) || hostname.endsWith('.local'))) {
+    return CUSTOM_PROVIDER_PRESETS.find(p => p.group === 'local' && p.protocol === protocol && new URL(p.base_url).port === port);
+  }
   return CUSTOM_PROVIDER_PRESETS.find(p => p.id !== 'cloudflare' && [{ protocol: p.protocol, base_url: p.base_url }, ...(p.alt ? [p.alt] : [])].some(f => f.base_url && f.protocol === protocol && displayHost(f.base_url) === host));
 }
