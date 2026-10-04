@@ -184,19 +184,19 @@ check('sub-app pattern Enter saves on desktop and Sub-apps stay hidden on Androi
           const reopenState = await page.evaluate(async () => {
             const { appStore } = await import('/src/lib/stores.svelte.ts');
             const { emit } = await import('/src/lib/tauri.ts');
-            const { tick } = await import('svelte');
+            const flush = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             appStore.settingsMobileList = false;
             appStore.settingsOpen = false;
-            await tick();
+            await flush();
             const listAfterClose = appStore.settingsMobileList;
             appStore.settingsOpen = true;
-            await tick();
+            await flush();
             const reopenedView = document.querySelector('.settings-page')?.getAttribute('data-mobile-view');
             await emit('open-flow:open-settings-section', 'general');
-            await tick();
+            await flush();
             const targetedView = document.querySelector('.settings-page')?.getAttribute('data-mobile-view');
             await emit('open-flow:open-settings-section', '');
-            await tick();
+            await flush();
             return {
               listAfterClose,
               reopenedView,
