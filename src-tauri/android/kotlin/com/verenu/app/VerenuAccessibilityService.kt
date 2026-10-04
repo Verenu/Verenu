@@ -53,7 +53,7 @@ import android.widget.Toast
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
-        private const val IME_SETTLE_MS = 70L
+        private const val IME_SETTLE_MS = 40L
         private const val CONTEXT_CHARS = 200
         private const val SNOOZE_MS = 15L * 60_000L
         /** Address-bar view ids per browser package (resource names, no package prefix). */
@@ -95,6 +95,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         const val BACKEND_LAUNCH_COOLDOWN_MS = 20_000L
         const val BACKEND_START_WAIT_MS = 12_000L
         const val HIDE_DEBOUNCE_MS = 450L
+        const val MIC_MISS_RETRY_MS = 120L
         const val BROWSER_SITE_TTL_MS = 10L * 60_000L
         const val BROWSER_SCAN_INTERVAL_MS = 1_500L
         const val POLL_RECORDING_MS = 60L
@@ -318,7 +319,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun scheduleKeyboardVisibilityCheck() {
         mainHandler.removeCallbacks(imeVisibilityCheck)
-        mainHandler.postDelayed(imeVisibilityCheck, 100L)
+        // While the pill is waiting for the keyboard to appear, look again at
+        // once rather than a tenth of a second later (every event re-arms this,
+        // so the longer delay always landed 100 ms after the keyboard's own event).
+        mainHandler.postDelayed(imeVisibilityCheck, if (keyboardVisible && !overlayAttached) 16L else 100L)
     }
 
     private fun defaultImePackage(): String? = Settings.Secure.getString(
@@ -717,6 +721,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     /** Push theme/compact state into the view and glide it to its placement. */
     private fun applyOverlayPresentation() {
         val view = overlay ?: return
+        if (keyboardVisible && imeBoundsSettled()) imeBoundsPx()?.let { rememberImeHeight(it) }
         view.setDark(resolveDark())
         view.setCompact(isDocked())
         refreshCover(view)
@@ -724,9 +729,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     /** Decide whether, and where, the pill covers the keyboard's mic button. */
-    private fun refreshCover(view: VerenuOverlayView) {
+    private fun refreshCover(view: VerenuOverlayView, preferPrediction: Boolean = false) {
         val rect = if (coverKeyboardMic && followsKeyboard() && !isDocked() && keyboardVisible) {
-            keyboardMicBounds()
+            if (preferPrediction) predictedMicBounds() ?: keyboardMicBounds() else keyboardMicBounds() ?: predictedMicBounds()
         } else {
             null
         }
@@ -756,10 +761,17 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
      */
     private fun keyboardMicBounds(): android.graphics.Rect? {
         val ime = imeBoundsPx() ?: return null
+        // Keys report mid-flight positions while the keyboard slides in (and not
+        // in step with its window), so only read them once it has docked. Until
+        // then the remembered position stands in (see predictedMicBounds).
+        if (imeIsSliding()) return null
         val now = SystemClock.elapsedRealtime()
         // Re-check often: the keyboard can swap rows (e.g. to symbols) and move or
         // drop the mic key without its window bounds changing.
-        val fresh = micCacheKey == ime && now - micCacheAtMs < 600L
+        // A miss is retried quickly: the key tree is often not populated yet while
+        // the keyboard is still appearing.
+        val ttl = if (micCache == null) MIC_MISS_RETRY_MS else 600L
+        val fresh = micCacheKey == ime && now - micCacheAtMs < ttl
         if (fresh) return micCache
         micCacheKey = android.graphics.Rect(ime)
         micCacheAtMs = now
@@ -783,7 +795,54 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             null
         }
         if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "keyboard mic lookup ime=$ime found=$micCache")
+        micCache?.let { rememberMicPlacement(ime, it) }
         return micCache
+    }
+
+    private val placementPrefs by lazy { getSharedPreferences("verenu_overlay_placement", MODE_PRIVATE) }
+
+    private fun placementKey(ime: android.graphics.Rect) =
+        "mic:${defaultImePackage().orEmpty()}:${ime.width()}"
+
+    /** Remember where this keyboard keeps its mic key, relative to its own bounds. */
+    private fun rememberMicPlacement(ime: android.graphics.Rect, mic: android.graphics.Rect) {
+        if (!android.graphics.Rect(ime).contains(mic)) return
+        val value = "${mic.left - ime.left},${ime.bottom - mic.top},${mic.width()},${mic.height()}"
+        if (placementPrefs.getString(placementKey(ime), null) != value) {
+            placementPrefs.edit().putString(placementKey(ime), value).apply()
+        }
+    }
+
+    private var lastRememberedImeHeight = -1
+
+    private fun imeHeightKey(ime: android.graphics.Rect) =
+        "h:${defaultImePackage().orEmpty()}:${ime.width()}"
+
+    /** Remember the keyboard's settled height so the next opening can skip the settle wait. */
+    private fun rememberImeHeight(ime: android.graphics.Rect) {
+        if (ime.height() == lastRememberedImeHeight) return
+        lastRememberedImeHeight = ime.height()
+        placementPrefs.edit().putInt(imeHeightKey(ime), ime.height()).apply()
+    }
+
+    /** True when this keyboard has the same height as the last time we placed the pill over it. */
+    private fun imeLayoutKnown(): Boolean {
+        val ime = imeBoundsPx() ?: return false
+        return placementPrefs.getInt(imeHeightKey(ime), -1) == ime.height()
+    }
+
+    /**
+     * Where the mic key was the last time this keyboard was seen. Used for the
+     * first frames after the keyboard opens, before its key tree can be read;
+     * the real position replaces it as soon as the lookup succeeds.
+     */
+    private fun predictedMicBounds(): android.graphics.Rect? {
+        val ime = imeBoundsPx() ?: return null
+        val parts = placementPrefs.getString(placementKey(ime), null)?.split(',')?.mapNotNull { it.toIntOrNull() }
+        if (parts == null || parts.size != 4) return null
+        val (dx, fromBottom, w, h) = parts
+        val rect = android.graphics.Rect(ime.left + dx, ime.bottom - fromBottom, ime.left + dx + w, ime.bottom - fromBottom + h)
+        return if (ime.contains(rect)) rect else null
     }
 
     private fun findMicNode(node: AccessibilityNodeInfo, imeWidth: Int, depth: Int): android.graphics.Rect? {
@@ -857,16 +916,39 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    /**
+     * The keyboard window's bounds, as they will be once it has finished sliding
+     * in. While it slides its window is reported hanging off the bottom of the
+     * screen at full height; shifting it up by the overhang gives the final
+     * position straight away, so the pill does not have to wait out the animation.
+     */
     private fun imeBoundsPx(): android.graphics.Rect? = try {
         val rect = android.graphics.Rect()
         windows
             .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let {
                 it.getBoundsInScreen(rect)
+                val overhang = slideOverhang(rect)
+                if (overhang > 0) rect.offset(0, -overhang)
                 if (rect.height() > 0) rect else null
             }
     } catch (e: Exception) {
         null
+    }
+
+    /** How far below the screen a still-sliding keyboard window currently hangs (0 once docked). */
+    private fun slideOverhang(raw: android.graphics.Rect): Int {
+        val overhang = raw.bottom - realScreenHeightPx()
+        return if (overhang > 2 && overhang < raw.height()) overhang else 0
+    }
+
+    private fun imeIsSliding(): Boolean = try {
+        val rect = android.graphics.Rect()
+        windows
+            .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            ?.let { it.getBoundsInScreen(rect); slideOverhang(rect) > 0 } ?: false
+    } catch (e: Exception) {
+        false
     }
 
     private fun imeTopPx(): Int? = imeBoundsPx()?.top
@@ -936,13 +1018,16 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         // window reports bounds while it is still sliding up, so wait until
         // they stop changing; otherwise the pill spawns mid-keyboard and then
         // jumps. The 60 ms IME check retries.
-        if (followsKeyboard() && !isDictationActive() && !imeBoundsSettled()) return
+        if (followsKeyboard() && !isDictationActive() && !imeLayoutKnown() && !imeBoundsSettled()) {
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "overlay waiting for keyboard bounds ime=${imeBoundsPx()}")
+            return
+        }
         try {
             val view = VerenuOverlayView(this).apply {
                 listener = this@VerenuAccessibilityService
                 setDark(resolveDark())
                 setCompact(isDocked())
-                refreshCover(this)
+                refreshCover(this, preferPrediction = true)
             }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -961,6 +1046,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             overlayAttached = true
             setOverlayState(overlayState)
             view.animateIn()
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "overlay attached cover=$coverSizePx")
             if (Log.isLoggable(TAG, Log.DEBUG)) {
                 view.postDelayed({ Log.d(TAG, "overlay ${view.debugDescribe()}") }, 700L)
             }
