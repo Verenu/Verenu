@@ -254,10 +254,9 @@ pub(super) async fn finalize_pipeline_completion(
     let protected_initial_case =
         dictionary_protects_initial_case(&delivered_text, ctx.dict_entries);
 
-    // If Verenu itself has foreground focus, a Ctrl+V / Cmd+V paste would
-    // land in our own WebView with no active text field and silently disappear.
-    // Detect this by PID and fall back to clipboard-only so the user can paste manually.
-    let self_inject = foreground_is_own_process() || hwnd_is_own_process(ctx.target_hwnd);
+    // Main-window fields accept normal dictation. Other self-targets, including
+    // the pill, keep clipboard fallback rather than swallowing the paste.
+    let self_inject = self_injection_requires_clipboard(app, ctx.target_hwnd);
     log::debug!(
         "pipeline: injection decision target_hwnd={} event_only={} self_inject={}",
         ctx.target_hwnd,
