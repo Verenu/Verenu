@@ -852,6 +852,7 @@ pub async fn check_connectivity() -> bool {
     // unavailable native result still falls through to the HTTP probe rather
     // than risking a wrong "no internet" banner.
     if let Some(true) = native_connectivity_check().await {
+        crate::system::connectivity::note_online();
         return true;
     }
 
@@ -861,13 +862,17 @@ pub async fn check_connectivity() -> bool {
     // at a 60s poll that would consume the entire 60/hr unauthenticated GitHub
     // API budget and starve the updater's release checks with 403s. Reuses the
     // shared client for connection pooling; GitHub requires a User-Agent.
-    crate::api::client::get()
+    let online = crate::api::client::get()
         .head("https://github.com")
         .header("User-Agent", "verenu")
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
-        .is_ok()
+        .is_ok();
+    if online {
+        crate::system::connectivity::note_online();
+    }
+    online
 }
 
 #[cfg(windows)]

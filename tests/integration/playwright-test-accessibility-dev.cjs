@@ -96,11 +96,11 @@ function auditSurface() {
     const privacyNav = page.locator('.settings-nav-item', { hasText: 'Privacy' }).first();
     await privacyNav.click({ timeout: TIMEOUT });
     await page.locator('.settings-nav-item.active', { hasText: 'Privacy' }).waitFor({ state: 'visible', timeout: TIMEOUT });
-    const switchControl = page.getByRole('switch', { name: 'App context hint', exact: true }).first();
+    const switchControl = page.getByRole('switch', { name: 'Allow Verenu service checks', exact: true }).first();
     try {
       await switchControl.waitFor({ state: 'visible', timeout: TIMEOUT });
     } catch {
-      findings.push('settings: keyboard: App context hint switch was not found');
+      findings.push('settings: keyboard: Allow Verenu service checks switch was not found');
     }
     if (await switchControl.count()) {
       const switchName = await switchControl.evaluate((element) => {
@@ -164,4 +164,3 @@ function auditSurface() {
     await browser.close();
   }
 })();
-

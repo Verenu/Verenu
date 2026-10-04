@@ -28,8 +28,8 @@
 
   // The wizard no longer asks about these individually — it turns them all on.
   // Naming them here is the disclosure: auto-learn watches the focused field for
-  // corrections and app context hint reads text around the caret.
-  const smartProcessing = 'Noise reduction, spacing, capitalization, app context, and correction learning are on.';
+  // corrections.
+  const smartProcessing = 'Noise reduction, spacing, capitalization, and correction learning are on.';
 
   let checkAnimating = $state(false);
   onMount(() => {

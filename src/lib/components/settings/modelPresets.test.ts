@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '../../tauri';
-import { buildPresets, getHardware, type Hardware } from './modelPresets';
+import { buildPresets, getHardware, matchActivePreset, type Hardware, type ModelPerformance } from './modelPresets';
+import type { ModelCatalogCache } from '../../modelCatalogStore.svelte';
 
 vi.mock('../../platform', () => ({ isAndroid: true }));
 vi.mock('../../tauri', () => ({ invoke: vi.fn() }));
@@ -71,5 +72,63 @@ describe('Android offline presets', () => {
   it('preserves desktop tier selection', () => {
     const presets = buildPresets(noKeys, { ...phone, isAndroid: false, totalRamMb: 16384 }, true);
     expect(presets.map(p => p.target?.transcriptionDefaultModel)).toEqual(['local/parakeet-v3', 'local/parakeet-v3', 'local/cohere']);
+  });
+});
+
+const desktop: Hardware = { ...phone, isAndroid: false, totalRamMb: 16384 };
+const installedLocal = { transcription: ['parakeet-v3', 'moonshine-tiny'], cleanup: ['qwen2.5-1.5b-instruct'] };
+
+describe('automatic selection and prepared recovery', () => {
+  it('offers separate local priorities even with cloud credentials', () => {
+    const presets = buildPresets({ ...noKeys, groq: true }, desktop, true);
+    expect(presets.filter(p => !p.offline).map(p => p.name)).toEqual(['Fastest', 'Balanced', 'Quality']);
+    expect(presets.filter(p => p.offline).map(p => p.name)).toEqual(['Fastest', 'Balanced', 'Quality']);
+  });
+  it('keeps all cloud alternatives before installed local models for both tasks', () => {
+    const presets = buildPresets({ ...noKeys, groq: true, openai: true }, desktop, true, { installedLocal });
+    const target = presets.find(p => p.id === 'cloud-balanced')!.target!;
+    expect(target.transcriptionFallbacks).toEqual(['openai/gpt-4o-transcribe', 'local/parakeet-v3', 'local/moonshine-tiny']);
+    expect(target.cleanupFallbacks).toEqual(['openai/gpt-4o-mini', 'local/qwen2.5-1.5b-instruct']);
+    expect(target.requiredLocalModels).toEqual([]);
+  });
+  it('retains dual comparison and does not duplicate its primary', () => {
+    const quality = buildPresets({ ...noKeys, groq: true }, desktop, true, { installedLocal }).find(p => p.id === 'cloud-accurate')!.target!;
+    expect(quality.dualTranscription).toBe(true);
+    expect(quality.transcriptionFallbacks[0]).toBe('groq/whisper-large-v3-turbo');
+    expect(quality.transcriptionFallbacks).not.toContain(quality.transcriptionDefaultModel);
+    const localQuality = buildPresets(noKeys, desktop, true).find(p => p.name === 'Quality')!.target!;
+    expect(localQuality.dualTranscription).toBe(true);
+    expect(localQuality.transcriptionFallbacks).toEqual(['local/parakeet-v3']);
+  });
+  it('keeps local-only speech, cleanup, and comparison entirely on-device', () => {
+    for (const preset of buildPresets({ ...noKeys, groq: true }, desktop, true).filter(p => p.offline)) {
+      const target = preset.target!;
+      expect([target.transcriptionDefaultModel, target.cleanupDefaultModel!, ...target.transcriptionFallbacks, ...target.cleanupFallbacks].every(id => id.startsWith('local/'))).toBe(true);
+    }
+  });
+  it('does not prepare unsupported speech or cleanup without its runtime', () => {
+    const presets = buildPresets({ ...noKeys, assemblyai: true }, phone, true, { language: 'ja', installedLocal, localCleanupReady: false });
+    const target = presets.find(p => p.id === 'cloud-balanced')!.target!;
+    expect(target.transcriptionDefaultModel).toBe('assemblyai/universal-2');
+    expect(target.transcriptionFallbacks).toEqual([]);
+    expect(target.cleanupEnabled).toBe(false);
+    expect(presets.some(p => p.offline)).toBe(false);
+  });
+  it('filters confirmed retirement but retains recommendations during an outage', () => {
+    const cache: ModelCatalogCache = { groq: { ids: ['whisper-large-v3-turbo', 'unreviewed-new-model'], everSeen: ['whisper-large-v3'], lastSuccessAt: 1, lastAttemptAt: 1, lastError: null, missing: { 'groq/whisper-large-v3': { count: 2, lastCountedAt: 1 } } } };
+    const selected = () => buildPresets({ ...noKeys, groq: true }, desktop, false, { cache }).find(p => p.id === 'cloud-balanced')!.target!.transcriptionDefaultModel;
+    expect(selected()).toBe('groq/whisper-large-v3-turbo');
+    cache.groq!.lastError = 'Temporary outage';
+    expect(selected()).toBe('groq/whisper-large-v3');
+  });
+  it('ranks adequately sampled compatible alternatives without changing the current config', () => {
+    const sample = (id: string, latency_ms: number): ModelPerformance => ({ id, task: 'transcription', latency_ms, samples: 3, failures: 0, updated_at_ms: Date.now() });
+    const presets = buildPresets({ ...noKeys, groq: true, openai: true }, desktop, false, { performance: [sample('groq/whisper-large-v3', 300), sample('openai/gpt-4o-transcribe', 100)] });
+    expect(presets.find(p => p.id === 'cloud-balanced')!.target!.transcriptionDefaultModel).toBe('openai/gpt-4o-transcribe');
+  });
+  it('recognizes cloud priorities independently of the chosen offline fallback', () => {
+    const presets = buildPresets({ ...noKeys, groq: true }, desktop, true);
+    const target = presets.find(p => p.id === 'cloud-balanced')!.target!;
+    expect(matchActivePreset(presets, { ...target, cleanupDefaultModel: target.cleanupDefaultModel!, transcriptionFallbacks: ['local/moonshine-tiny'] })).toBe('cloud-balanced');
   });
 });

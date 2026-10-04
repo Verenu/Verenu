@@ -176,7 +176,7 @@ not text, and is never computed remotely or sent with the source string.
 
 Settings properties are only the approved booleans `cleanup_enabled`,
 `dual_transcription_enabled`, `noise_reduction`, `mute_audio`, `exclusive_mic`,
-`pause_media`, `sound_effects`, `app_context_hint`, `auto_learn_enabled`,
+`pause_media`, `sound_effects`, `auto_learn_enabled`,
 `contextual_formatting`, `contextual_caps`, `auto_spacing`, and
 `autostart_enabled`, `mic_mute_button_dictation`, and `sync_enabled`; and the bounded categories `transcription_provider`,
 `cleanup_provider`, `cleanup_intensity`, `history_retention`, and

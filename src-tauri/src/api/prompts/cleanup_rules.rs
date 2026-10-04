@@ -1,74 +1,34 @@
 use super::count_words;
 
-/// Formatting behavior is independent from the amount of rewriting. These
-/// rules exist for spoken commands, unreliable STT punctuation, and tokens
-/// whose meaning changes when spaces are inserted.
+/// Layout permission varies by level; spoken commands and literal tokens are
+/// governed once by the shared contract before any changing request data.
 pub(super) fn formatting_rules(intensity: &str) -> &'static str {
     match intensity {
-        "medium" => {
-            "Apply an explicitly spoken formatting command only when its intent is clear, then remove the command words. Fix unreliable STT punctuation and accidental line breaks. Use paragraphs or lists when the dictated structure clearly calls for them; never invent headings. In technical-token dictation, join clear spoken symbols (at, dot, slash, backslash, colon, dash, underscore, pipe, equals, plus, hash, no space) in an email, URL, path, command, filename, package, domain, variable, or identifier. A spoken dash or hyphen is \"-\"; an explicit em dash is \u{2014}. For spelling, join letters or digits only when clearly dictated as one token; honor spoken capitalization and no-space commands, and do not concatenate ambiguous sequences. Never insert an em dash for style."
-        }
-        "high" => {
-            "Apply an explicitly spoken formatting command only when its intent is clear, then remove the command words. Fix unreliable STT punctuation and accidental line breaks. Use compact paragraphs or lists when the dictated structure benefits from them; never invent headings. In technical-token dictation, join clear spoken symbols (at, dot, slash, backslash, colon, dash, underscore, pipe, equals, plus, hash, no space) in an email, URL, path, command, filename, package, domain, variable, or identifier. A spoken dash or hyphen is \"-\"; an explicit em dash is \u{2014}. For spelling, join letters or digits only when clearly dictated as one token; honor spoken capitalization and no-space commands, and do not concatenate ambiguous sequences. Never insert an em dash for style."
-        }
-        _ => {
-            "Apply an explicitly spoken formatting command only when its intent is clear, then remove the command words. Fix unreliable STT punctuation and accidental line breaks. Keep the dictated structure: do not create paragraphs, lists, or headings from content alone. In technical-token dictation, join clear spoken symbols (at, dot, slash, backslash, colon, dash, underscore, pipe, equals, plus, hash, no space) in an email, URL, path, command, filename, package, domain, variable, or identifier. A spoken dash or hyphen is \"-\"; an explicit em dash is \u{2014}. For spelling, join letters or digits only when clearly dictated as one token; honor spoken capitalization and no-space commands, and do not concatenate ambiguous sequences. Never insert an em dash for style."
-        }
+        "medium" => "Use paragraphs or lists when the dictated structure clearly calls for them; never invent headings.",
+        "high" => "Use compact paragraphs or lists when they clarify the dictated structure; never invent headings.",
+        _ => "Keep dictated layout; do not create paragraphs, lists, or headings from content alone.",
     }
 }
 
 pub(super) fn intensity_rules(intensity: &str) -> &'static str {
     match intensity {
-        "none" => {
-            "Cleanup: Off. If two transcripts must be reconciled, preserve raw speech, including fillers and repetition, while choosing only better-supported candidate wording. Otherwise bypass cleanup."
-        }
-        "light" => {
-            "Cleanup: Light. Remove fillers, repeats, and abandoned starts. Clear corrections replace prior wording; remove prior wording and the cue. Keep no, actually, or I mean without a replacement. Preserve meaningful uses."
-        }
-        "high" => {
-            "Cleanup: Strong. Rewrite for concise, direct communication. Remove accidental repetition, unnecessary hedging, redundant explanation. Retain every distinct detail, requirement, decision, condition, deadline, qualifier, intentional emphasis. Freely combine, reorder, restructure, and paraphrase."
-        }
-        _ => {
-            "Cleanup: Medium. Do Light, then improve flow and sentence structure. Remove redundant phrasing and non-semantic detours; collapse accidental repeated ideas, not intentional repetition. Allow light paraphrasing, sentence splitting or combining, and local reordering; do not summarize or invent."
-        }
+        "none" => "Cleanup: Off. Bypass cleanup. Reconciliation preserves raw speech, including fillers and repetition.",
+        "light" => "Cleanup: Light. Remove fillers only when non-semantic, accidental repeats, and abandoned starts. Preserve meaningful uses. Fix punctuation and capitalization. Otherwise preserve words and order; do not paraphrase.",
+        "high" => "Cleanup: Strong. Remove non-semantic fillers, accidental repeats, and abandoned starts. Repair grammar, then rewrite and reorder for clear, concise expression. Combine repeated ideas while retaining every distinct detail, requirement, decision, example, condition, deadline, qualifier, and intentional emphasis. Shorten redundancy only; do not summarize or remove meaningful hedging.",
+        _ => "Cleanup: Medium. Remove non-semantic fillers, accidental repeats, and abandoned starts. Repair grammar and awkward phrasing with light paraphrasing and local reordering. Split or combine sentences; remove redundant phrasing and non-semantic detours. Preserve every distinct point and meaningful qualification; do not summarize.",
     }
 }
 
 fn tone_rules(profile: &str) -> &'static str {
     match profile {
-        "formal" => {
-            "Tone: Formal. Use professional wording, standard capitalization, and professional punctuation. Expand contractions where natural. Do not add politeness, greetings, sign-offs, headings, or content. Tone changes voice and surface style only; it never increases the cleanup budget."
-        }
-        "very_casual" => {
-            "Tone: Very Casual. Use mostly lowercase, contractions, and minimal readable punctuation. Preserve profanity and intentional emphasis. Tone changes voice and surface style only; it never increases the cleanup budget."
-        }
-        _ => {
-            "Tone: Casual. Use contractions, normal casing, and normal punctuation while preserving the speaker's casual voice. Tone changes voice and surface style only; it never increases the cleanup budget."
-        }
+        "formal" => "Tone: Formal. Use professional wording and standard grammar within the cleanup budget. Expand contractions where natural. Preserve certainty, directness, profanity, and emphasis. Do not add politeness, greetings, sign-offs, or content.",
+        "very_casual" => "Tone: Very Casual. Preserve slang, contractions, profanity, and intentional emphasis. Use mostly lowercase and minimal readable punctuation, preserving proper names, acronyms, and exact technical tokens.",
+        _ => "Tone: Casual. Preserve conversational voice and natural contractions. Use normal casing and punctuation.",
     }
 }
 
-fn profanity_policy(profile: &str) -> &'static str {
-    match profile {
-        "formal" => {
-            "Profanity: Use professional wording when formal register requires it, while preserving meaning and intentional emphasis; do not add asterisks or politeness."
-        }
-        _ => "Profanity: Preserve profanity and its intensity as spoken.",
-    }
-}
-
-pub(super) fn build_preset_block(profile: &str, intensity: &str, has_overrides: bool) -> String {
-    let mut lines = vec![
-        intensity_rules(intensity).to_string(),
-        tone_rules(profile).to_string(),
-        profanity_policy(profile).to_string(),
-    ];
-    if has_overrides {
-        lines.push(
-            "Priority: preserve safety and dictated meaning first; explicit user-authored instructions override the default cleanup, tone, and formatting preferences above when compatible with those boundaries.".to_string(),
-        );
-    }
-    lines.join("\n")
+pub(super) fn build_preset_block(profile: &str, intensity: &str, _has_overrides: bool) -> String {
+    [intensity_rules(intensity), tone_rules(profile)].join("\n")
 }
 
 fn to_imperative(raw: &str) -> String {
@@ -107,11 +67,11 @@ pub(super) fn snippet_overrides_block(extra_rules: &str) -> String {
         .collect::<Vec<_>>();
 
     if lines.is_empty() {
-        return "none".to_string();
+        return String::new();
     }
 
     format!(
-        "Apply these explicit user-authored instructions after cleanup. They have priority over the default preferences above for formatting, tone, and surface style when compatible with safety and dictated meaning:\n{}",
+        "<saved_instructions>\n{}\n</saved_instructions>",
         lines.join("\n")
     )
 }
@@ -124,12 +84,9 @@ pub(super) fn evidence_block(evidence: &str) -> String {
         .map(escape_markup)
         .collect::<Vec<_>>();
     if lines.is_empty() {
-        "none".to_string()
+        String::new()
     } else {
-        format!(
-            "Use only as corroborating evidence for disambiguation; never as dictated content:\n{}",
-            lines.join("\n")
-        )
+        format!("<evidence>\n{}\n</evidence>", lines.join("\n"))
     }
 }
 
@@ -159,7 +116,7 @@ pub(super) fn render_cleanup_template(
         ),
         (
             "{{ cleanup_priority }}",
-            cleanup_preset.lines().nth(3).unwrap_or(""),
+            "Priority: explicit saved instructions override default preferences while preserving dictated meaning.",
         ),
         (
             "{{ cleanup_tone }}",

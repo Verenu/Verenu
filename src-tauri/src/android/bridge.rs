@@ -406,17 +406,20 @@ fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
     // Use the pipeline's resolver so legacy selections and defaults agree.
     // Custom providers may be on the LAN; the setting is their explicit override.
     let cfg = store::load_pipeline_config(settings);
-    let needs_network = |model: &str| {
-        !store::parse_model_id(model).is_some_and(|(provider, _)| provider == store::LOCAL)
-    };
-    needs_network(&cfg.transcription_default_model)
-        || cfg
-            .transcription_fallback_models
-            .iter()
-            .any(|m| needs_network(m))
-        || (cfg.cleanup_enabled
-            && (needs_network(&cfg.cleanup_default_model)
-                || cfg.cleanup_fallback_models.iter().any(|m| needs_network(m))))
+    let local_primary = store::parse_model_id(&cfg.transcription_default_model)
+        .is_some_and(|(provider, _)| provider == store::LOCAL);
+    let ready_local_fallback = cfg.transcription_fallback_models.iter().any(|id| {
+        store::parse_model_id(id).is_some_and(|(provider, model)| {
+            provider == store::LOCAL
+                && crate::local_stt::model::manifest_by_id(&model).is_some_and(|manifest| {
+                    manifest
+                        .is_downloaded(&crate::local_stt::LocalTranscriptionManager::models_root())
+                })
+        })
+    });
+    // Cleanup is optional. A local speech path keeps recording available even
+    // when cloud cleanup must be skipped and the raw transcript delivered.
+    !local_primary && !ready_local_fallback
 }
 
 fn state_payload(state: &BridgeState) -> Value {
@@ -533,29 +536,29 @@ fn analytics_settings_from_snapshot(
     let bool_value = |key: &str| settings.get(key).and_then(Value::as_bool);
     let category_value = |key: &str| {
         let value = settings.get(key).and_then(Value::as_str).unwrap_or("");
-        let normalized = match key {
-            crate::data::store::TRANSCRIPTION_PROVIDER | crate::data::store::CLEANUP_PROVIDER => {
-                match value {
-                    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" | "local" => {
-                        value
-                    }
+        let normalized =
+            match key {
+                crate::data::store::TRANSCRIPTION_PROVIDER
+                | crate::data::store::CLEANUP_PROVIDER => match value {
+                    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai"
+                    | "local" => value,
                     _ => "unknown",
-                }
-            }
-            crate::data::store::CLEANUP_INTENSITY => match value {
-                "none" | "light" | "medium" | "high" => value,
+                },
+                crate::data::store::CLEANUP_INTENSITY => match value {
+                    "none" | "light" | "medium" | "high" => value,
+                    _ => "unknown",
+                },
+                crate::data::store::HISTORY_RETENTION => match value {
+                    "7 days" | "30 days" | "90 days" | "Forever" => value,
+                    _ => "unknown",
+                },
+                crate::data::store::LOCAL_MODEL_MEMORY_POLICY => match value {
+                    "keep_loaded" | "unload_after_5m" | "unload_after_15m"
+                    | "unload_immediately" => value,
+                    _ => "unknown",
+                },
                 _ => "unknown",
-            },
-            crate::data::store::HISTORY_RETENTION => match value {
-                "7 days" | "30 days" | "90 days" | "Forever" => value,
-                _ => "unknown",
-            },
-            crate::data::store::LOCAL_MODEL_MEMORY_POLICY => match value {
-                "keep_loaded" | "unload_after_5m" | "unload_after_15m" | "unload_immediately" => value,
-                _ => "unknown",
-            },
-            _ => "unknown",
-        };
+            };
         Some(normalized)
     };
     let context_group_count = context_group_count.clamp(0, 200);
@@ -569,7 +572,6 @@ fn analytics_settings_from_snapshot(
         "exclusive_mic": bool_value(crate::data::store::EXCLUSIVE_MIC),
         "pause_media": bool_value(crate::data::store::PAUSE_MEDIA_DURING_DICTATION),
         "sound_effects": bool_value(crate::data::store::PLAY_START_STOP_SOUNDS),
-        "app_context_hint": bool_value(crate::data::store::APP_CONTEXT_HINT),
         "auto_learn_enabled": bool_value(crate::data::store::AUTO_LEARN_ENABLED),
         "contextual_formatting": bool_value(crate::data::store::CONTEXTUAL_FORMATTING),
         "contextual_caps": bool_value(crate::data::store::CONTEXTUAL_CAPS),
@@ -1215,7 +1217,7 @@ mod tests {
             json!([]),
             json!(true)
         ));
-        assert!(check(
+        assert!(!check(
             "local/moonshine-tiny",
             "groq/llama",
             true,
@@ -1231,7 +1233,7 @@ mod tests {
             json!(["groq/llama"]),
             json!(true)
         ));
-        assert!(check(
+        assert!(!check(
             "local/moonshine-tiny",
             "local/qwen",
             false,
@@ -1239,7 +1241,7 @@ mod tests {
             json!([]),
             json!(true)
         ));
-        assert!(check(
+        assert!(!check(
             "local/moonshine-tiny",
             "local/qwen",
             true,

@@ -39,6 +39,7 @@ export type AllSettingsPayload = {
   cleanup_default_model?: string | null;
   transcription_fallback_models?: string[] | null;
   dual_transcription_enabled?: boolean | null;
+  model_selection_mode?: 'manual' | 'fastest' | 'balanced' | 'quality' | null;
   cleanup_fallback_models?: string[] | null;
   cleanup_prompt_override?: string | null;
   local_model_memory_policy?: string | null;
