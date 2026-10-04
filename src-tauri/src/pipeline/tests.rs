@@ -1,5 +1,5 @@
+use super::cache::{cleanup_cache_plan, cleanup_context_fingerprint};
 use super::gates::strip_provider_artifacts;
-use super::stages_cleanup::{cleanup_cache_plan, dual_cleanup_context_fingerprint};
 use super::stages_transcription::speech_gate_accepts;
 use super::{
     append_cleanup_api_used, apply_app_style_overrides, effective_recording_rms,
@@ -7,8 +7,8 @@ use super::{
     normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
     recording_gate_rms_for_sensitivity, resolve_app_mapping, run_pipeline_fixture,
     should_hide_orphaned_pill, should_run_cleanup_llm, should_use_cleanup_cache,
-    strip_hallucinated_suffix, style_scoped_cleanup_cache_key, PipelineTestDictionaryEntry,
-    PipelineTestRequest, PipelineTestSnippet,
+    strip_hallucinated_suffix, PipelineTestDictionaryEntry, PipelineTestRequest,
+    PipelineTestSnippet,
 };
 use crate::core::window_geometry::WindowTarget;
 use crate::db;
@@ -62,7 +62,7 @@ fn provider_artifact_filter_is_conservative() {
 #[test]
 fn dual_cleanup_cache_key_changes_with_cleanup_context() {
     let mut config = base_config();
-    let context = dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    let context = cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
     let first = cleanup_cache_plan(
         "hello world",
         "casual",
@@ -73,23 +73,21 @@ fn dual_cleanup_cache_key_changes_with_cleanup_context() {
     );
 
     config.cleanup_default_model = "google/gemini-2.5-flash".into();
-    let changed_context =
-        dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    let changed_context = cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
     let second = cleanup_cache_plan(
         "hello world",
         "casual",
         "medium",
         "",
         Some("alternate world"),
-        Some(changed_context),
+        Some(changed_context.clone()),
     );
 
     assert_ne!(first.key, second.key);
     config
         .style_prompt_instructions
         .insert("formal".into(), "Use legal wording.".into());
-    let tone_changed =
-        dual_cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
+    let tone_changed = cleanup_context_fingerprint(&config, "dictionary rules", Some("editor"));
     assert_ne!(
         changed_context, tone_changed,
         "Context tone edits invalidate cached cleanup"
@@ -308,16 +306,40 @@ fn cleanup_llm_runs_off_only_for_required_dual_fusion() {
 
 #[test]
 fn style_scoped_cache_key_changes_with_profile_and_intensity() {
-    let casual_medium = style_scoped_cleanup_cache_key("abc123", "casual", "medium");
-    let formal_medium = style_scoped_cleanup_cache_key("abc123", "formal", "medium");
-    let casual_high = style_scoped_cleanup_cache_key("abc123", "casual", "high");
-    assert_ne!(casual_medium, formal_medium);
-    assert_ne!(casual_medium, casual_high);
+    let key =
+        |profile, intensity| cleanup_cache_plan("hello", profile, intensity, "", None, None).key;
+    assert_ne!(key("casual", "medium"), key("formal", "medium"));
+    assert_ne!(key("casual", "medium"), key("casual", "high"));
 }
 
 #[test]
-fn style_scoped_cache_key_preserves_empty_base_key() {
-    assert_eq!(style_scoped_cleanup_cache_key("", "casual", "medium"), "");
+fn cleanup_cache_keys_preserve_exact_input_and_field_boundaries() {
+    let key = |input, instructions| {
+        cleanup_cache_plan(input, "casual", "medium", instructions, None, None).key
+    };
+    for (a, b) in [
+        ("a nice", "an ice"),
+        ("Hello", "hello"),
+        ("Let's eat, Grandma", "Let's eat Grandma"),
+        ("12", "twelve"),
+        ("10:30", "1030"),
+    ] {
+        assert_ne!(key(a, ""), key(b, ""));
+    }
+    assert_ne!(key("hello", "first\nsecond"), key("hello", "firstsecond"));
+    let opaque = key("private synthetic phrase", "");
+    assert!(opaque.starts_with("cleanup-v2:"));
+    assert_eq!(opaque.len(), "cleanup-v2:".len() + 64);
+    assert!(!opaque.contains("private"));
+}
+
+#[test]
+fn cleanup_cache_lifetime_never_extends_past_maximum_age() {
+    let now = super::cache::parse_sqlite_utc("2026-10-07 00:00:00").unwrap();
+    assert_eq!(
+        super::cache::next_cache_expiry("2026-10-01 00:00:00", now),
+        "2026-10-08 00:00:00"
+    );
 }
 
 #[test]
@@ -584,6 +606,7 @@ fn base_config() -> store::PipelineConfig {
         dual_transcription_enabled: false,
         cleanup_fallback_models: Vec::new(),
         cleanup_enabled: true,
+        cleanup_cache_enabled: true,
         key_groq: "fixture-groq-key".into(),
         key_openai: "fixture-openai-key".into(),
         key_google: "fixture-google-key".into(),
@@ -624,7 +647,10 @@ fn base_request(config: store::PipelineConfig) -> PipelineTestRequest {
         config,
         profile: "casual".into(),
         target_hwnd: 77,
-        target: WindowTarget { id: 77, ..Default::default() },
+        target: WindowTarget {
+            id: 77,
+            ..Default::default()
+        },
         app_context: None,
         snippets: Vec::new(),
         dictionary: Vec::new(),
@@ -1633,7 +1659,7 @@ async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
     let first = run_pipeline_fixture(request.clone())
         .await
         .expect("first run should succeed");
-    let second = run_pipeline_fixture(request)
+    let second = run_pipeline_fixture(request.clone())
         .await
         .expect("second run should succeed");
     assert!(!first.cleanup_cache_key.is_empty());
@@ -1642,7 +1668,78 @@ async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
         fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
         1
     );
+    // A disabled cache bypasses existing rows and never populates new ones.
+    request.config.cleanup_cache_enabled = false;
+    for _ in 0..2 {
+        let result = run_pipeline_fixture(request.clone()).await.unwrap();
+        assert!(result.cleanup_cache_key.is_empty());
+    }
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        3
+    );
+    assert_eq!(
+        crate::data::db::cleanup_cache_count(request.db.as_ref().unwrap()).unwrap(),
+        1
+    );
     reset();
+}
+
+#[test]
+fn cleanup_cache_rejects_fabrication_and_preserves_cached_style() {
+    let db = crate::data::db::open(":memory:").unwrap();
+    let raw = "Please send the budget report to our finance team before Friday afternoon";
+    crate::data::db::cleanup_cache_insert_new(
+        &db,
+        "key",
+        "The purple elephant danced beside a spaceship on Jupiter yesterday evening",
+        "2999-01-01 00:00:00",
+        false,
+    )
+    .unwrap();
+    assert!(super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).is_none());
+    assert_eq!(crate::data::db::cleanup_cache_count(&db).unwrap(), 0);
+    // Cached output has already passed style processing. A hit must not add
+    // punctuation removed by an edited preset.
+    crate::data::db::cleanup_cache_insert_new(&db, "key", raw, "2999-01-01 00:00:00", false)
+        .unwrap();
+    assert_eq!(
+        super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_deref(),
+        Some(raw)
+    );
+    // Dual fusion may legitimately use the alternate candidate's wording.
+    assert!(super::cache::cleanup_cache_hit_text(
+        &db,
+        "key",
+        "light",
+        "",
+        "Unrelated synthetic candidate",
+        Some(raw)
+    )
+    .is_some());
+}
+
+#[test]
+fn cleanup_cache_fingerprint_covers_provider_prompt_rules_and_context() {
+    let base = base_config();
+    let fingerprint = |cfg: &store::PipelineConfig, rules, target| {
+        cleanup_context_fingerprint(cfg, rules, target)
+    };
+    let first = fingerprint(&base, "rules", Some("editor"));
+    let mut changed = base.clone();
+    changed.cleanup_provider = "openai".into();
+    assert_ne!(first, fingerprint(&changed, "rules", Some("editor")));
+    changed = base.clone();
+    changed
+        .cleanup_fallback_models
+        .push("openai/gpt-4o-mini".into());
+    assert_ne!(first, fingerprint(&changed, "rules", Some("editor")));
+    changed = base.clone();
+    changed.cleanup_prompt_override = "Keep every word".into();
+    changed.advanced_model_ui = true;
+    assert_ne!(first, fingerprint(&changed, "rules", Some("editor")));
+    assert_ne!(first, fingerprint(&base, "new rules", Some("editor")));
+    assert_ne!(first, fingerprint(&base, "rules", Some("browser")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1714,7 +1811,15 @@ fn orphaned_session_pill_hides_only_when_idle_with_session_state() {
     assert!(!should_hide_orphaned_pill(false, "handsfree"));
     // Idle toasts (error/cancelled/interrupted) must never be cut short by a
     // stray release with no session behind it.
-    for state in ["idle", "error", "cancelled", "interrupted", "processing", "paste_failed", "copied"] {
+    for state in [
+        "idle",
+        "error",
+        "cancelled",
+        "interrupted",
+        "processing",
+        "paste_failed",
+        "copied",
+    ] {
         assert!(!should_hide_orphaned_pill(true, state), "state={state}");
     }
 }
