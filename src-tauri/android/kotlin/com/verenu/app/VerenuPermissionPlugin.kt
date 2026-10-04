@@ -7,7 +7,12 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
+import android.util.Base64
+import java.io.ByteArrayOutputStream
+import org.json.JSONObject
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.result.ActivityResult
@@ -23,6 +28,11 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+
+@InvokeArg
+internal class AppIconArgs {
+  lateinit var packageName: String
+}
 
 @InvokeArg
 internal class PermissionRequestArgs {
@@ -42,6 +52,35 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
 
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
+  }
+
+  /** An app's launcher icon as a PNG data URI (null when it cannot be read). */
+  @Command
+  fun appIcon(invoke: Invoke) {
+    val args = invoke.parseArgs(AppIconArgs::class.java)
+    Thread {
+      val uri = try {
+        iconCache.getOrPut(args.packageName) { launcherIconDataUri(args.packageName) ?: "" }
+      } catch (e: Exception) {
+        ""
+      }
+      invoke.resolve(JSObject().put("icon", if (uri.isEmpty()) JSONObject.NULL else uri))
+    }.start()
+  }
+
+  private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+  private fun launcherIconDataUri(pkg: String): String? {
+    val drawable = activity.packageManager.getApplicationIcon(pkg)
+    val size = (48 * activity.resources.displayMetrics.density).toInt().coerceIn(48, 192)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, size, size)
+    drawable.draw(canvas)
+    val out = ByteArrayOutputStream()
+    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+    bitmap.recycle()
+    return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
   }
 
   /** Launcher apps (label + package), for the Contexts app picker. */
