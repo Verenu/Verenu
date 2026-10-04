@@ -1,10 +1,15 @@
 import { cleanAppName, normalizeExe, type InstalledApp } from '../../appMappings';
+import { isAndroid } from '../../platform';
 
 export function customExeFromSearch(search: string): string {
   return normalizeExe(search).replace(/\.exe$/, '') + '.exe';
 }
 
-export function matchesAppSearch(app: InstalledApp, search: string) {
+/**
+ * Whether an app matches a search. Android packages all start "com." and share
+ * segments like "google.android", so only the visible name is searched there.
+ */
+export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = isAndroid) {
   const query = search.trim().toLowerCase();
   if (!query) return true;
 
@@ -14,6 +19,9 @@ export function matchesAppSearch(app: InstalledApp, search: string) {
   const compactName = appName.replace(/[^a-z0-9]/g, '');
   const compactExe = appExe.replace(/[^a-z0-9]/g, '');
 
+  if (nameOnly) {
+    return appName.includes(query) || (compactQuery.length > 0 && compactName.includes(compactQuery));
+  }
   return appName.includes(query)
     || appExe.includes(query)
     || (compactQuery.length > 0 && (compactName.includes(compactQuery) || compactExe.includes(compactQuery)));
@@ -25,7 +33,7 @@ export function matchesAppSearch(app: InstalledApp, search: string) {
  * input order (the platform lists apps alphabetically). An empty query keeps
  * the list as is.
  */
-export function rankAppMatches(apps: InstalledApp[], search: string): InstalledApp[] {
+export function rankAppMatches(apps: InstalledApp[], search: string, nameOnly = isAndroid): InstalledApp[] {
   const query = search.trim().toLowerCase();
   if (!query) return apps;
   const score = (app: InstalledApp) => {
@@ -35,7 +43,7 @@ export function rankAppMatches(apps: InstalledApp[], search: string): InstalledA
     return 2;
   };
   return apps
-    .filter((app) => matchesAppSearch(app, search))
+    .filter((app) => matchesAppSearch(app, search, nameOnly))
     .map((app, index) => ({ app, index, rank: score(app) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.app);

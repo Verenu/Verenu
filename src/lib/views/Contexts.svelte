@@ -1138,7 +1138,7 @@
                         >
                           <AppIcon exe={app.exe} label={app.name} size={16} />
                           <span>{cleanAppName(app.name || app.exe)}</span>
-                          <span class="app-exe">{app.exe}</span>
+                          {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
                         </button>
                       {/each}
                     {/if}
@@ -1741,7 +1741,7 @@
           >
             <AppIcon exe={app.exe} label={app.name} size={16} />
             <span>{cleanAppName(app.name || app.exe)}</span>
-            <span class="app-exe">{app.exe}</span>
+            {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
           </button>
         {/each}
       {/if}
