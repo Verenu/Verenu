@@ -5,9 +5,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Reduced the Linux dictation pill window to fit its capsule and context chip, with room for animation. It grows for longer errors and shrinks afterward. Passive recording and processing states stay click-through, while visible controls accept clicks inside the capsule. Delayed state updates can no longer make hold-to-dictate interactive.
-
 - Removed app context hints from settings, onboarding, sync, and cleanup requests. App and website matching still selects Contexts locally.
 - Tightened shared cleanup prompts and transcription instructions. Cleanup preserves uncertainty and meaningful qualifiers, and Strong restructures without summarizing. Stable rules precede request-specific vocabulary to improve prompt-cache reuse.
+- Hardened cleanup caching with exact, versioned request hashes and validation against current transcripts. Results now expire after two idle days or seven days total. Privacy settings show cached text size and local session reuse counts, and can disable persistence while clearing stored results. Old normalized cache keys are discarded on upgrade.
 
 - Android keeps the dictation pill available offline when all selected active models run on-device. Settings > General adds "Hide pill when offline", enabled by default for network models and their fallbacks; turn it off for LAN-hosted models.
 

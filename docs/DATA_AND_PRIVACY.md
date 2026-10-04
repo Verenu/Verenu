@@ -36,6 +36,23 @@ Stored locally in app storage and SQLite:
 - Update-dismiss state
 - A short-lived dictation failover spool (`dictation-failover/` under the app data directory): in-progress audio so a crash or reboot can offer Continue. Deleted after history is saved, on dismiss, or after 24 hours. Not included in backups.
 
+### Cleanup cache
+
+Privacy settings can disable persistent cleanup caching and clear its stored
+results. Caching is enabled by default and stores cleaned text locally in SQLite.
+Keys are versioned SHA-256 hashes of exact input and cleanup configuration;
+readable raw transcripts are not stored as keys. Hashes do not encrypt the
+cleaned text or make predictable inputs anonymous.
+
+Results expire after two days without reuse or seven days from creation,
+whichever comes first, including snippet results. The cache is limited to 2,000
+entries and 16 MiB of key/output text. The displayed size measures that text,
+not the SQLite file. Clearing removes cache rows; it does not promise secure
+erasure of database pages or delete transcription history.
+
+Reuse and provider-duration counters stay in process memory and reset on app
+restart. They contain no dictated text and are not sent as analytics.
+
 ### Logs
 
 - Recent logs stay local unless you explicitly export them.

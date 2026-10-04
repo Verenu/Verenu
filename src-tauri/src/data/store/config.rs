@@ -16,6 +16,7 @@ pub struct PipelineConfig {
     pub dual_transcription_enabled: bool,
     pub cleanup_fallback_models: Vec<String>,
     pub cleanup_enabled: bool,
+    pub cleanup_cache_enabled: bool,
     pub key_groq: String,
     pub key_openai: String,
     pub key_google: String,
@@ -384,6 +385,10 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         cleanup_fallback_models,
         cleanup_enabled: store
             .get(CLEANUP_ENABLED)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        cleanup_cache_enabled: store
+            .get(CLEANUP_CACHE_ENABLED)
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
         key_groq: crate::data::credentials::get(GROQ),

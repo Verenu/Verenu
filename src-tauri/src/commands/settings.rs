@@ -137,6 +137,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
     ),
     setting_spec(store::CLEANUP_ENABLED, SettingKind::Bool, true, true),
+    setting_spec(store::CLEANUP_CACHE_ENABLED, SettingKind::Bool, true, true),
     setting_spec(store::HOTKEY, SettingKind::Hotkey, true, true),
     // Not exported: modifier names differ between Windows/Linux and macOS.
     setting_spec(
@@ -700,6 +701,7 @@ pub async fn save_setting(
     mut value: serde_json::Value,
 ) -> Result<(), String> {
     validate_setting(&key, &value)?;
+    let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
     if key == store::CUSTOM_PROVIDERS {
         let providers = crate::api::custom::normalize_list(&value)?;
         value = serde_json::to_value(&providers)
@@ -746,6 +748,13 @@ pub async fn save_setting(
     })
     .await;
     save_result?;
+    if disable_cleanup_cache {
+        let db = db_state(&app);
+        run_blocking("disable_cleanup_cache", move || {
+            db::cleanup_cache_clear_all(&db).map_err(|e| e.to_string())
+        })
+        .await?;
+    }
 
     // LAN sync: stamp the change so peers LWW-compare it, and nudge the sync
     // manager to schedule a session. Both are best-effort — a sync failure
@@ -845,6 +854,7 @@ pub struct AllSettings {
     pub cleanup_fallback_models: Option<Vec<String>>,
     pub advanced_model_ui: Option<bool>,
     pub cleanup_enabled: Option<bool>,
+    pub cleanup_cache_enabled: Option<bool>,
     pub noise_reduction: Option<bool>,
     pub mute_audio: Option<bool>,
     pub mic_mute_button_dictation: Option<bool>,
@@ -884,8 +894,8 @@ pub struct AllSettings {
 #[derive(serde::Serialize)]
 pub struct CleanupCacheStatus {
     pub entry_count: i64,
-    pub is_space_constrained: bool,
-    pub free_bytes: u64,
+    pub payload_bytes: i64,
+    pub session: crate::pipeline::cache::CleanupCacheMetrics,
 }
 
 #[tauri::command]
@@ -925,6 +935,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         cleanup_fallback_models: str_array_val(store::CLEANUP_FALLBACK_MODELS),
         advanced_model_ui: bool_val(store::ADVANCED_MODEL_UI),
         cleanup_enabled: bool_val(store::CLEANUP_ENABLED),
+        cleanup_cache_enabled: bool_val(store::CLEANUP_CACHE_ENABLED),
         noise_reduction: bool_val(store::NOISE_REDUCTION),
         mute_audio: bool_val(store::MUTE_AUDIO),
         mic_mute_button_dictation: bool_val(store::MIC_MUTE_BUTTON_DICTATION),

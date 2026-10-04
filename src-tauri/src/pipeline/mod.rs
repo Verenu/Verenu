@@ -8,12 +8,11 @@ use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
 use crate::system::apps::AppMapping;
 use crate::system::diagnostics::{self, OperationOutcome, SpanFinish, TraceHandle};
-use crate::system::number_parser;
 use crate::system::text::is_number_word_token;
 use crate::DbHandle;
 use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
 
-mod cache;
+pub(crate) mod cache;
 mod chains;
 mod clipboard_phrase;
 pub(crate) mod failover;

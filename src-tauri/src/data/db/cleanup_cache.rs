@@ -10,6 +10,8 @@ use super::*;
 /// footprint bounded even when a user dictates for years without restarting.
 pub const CLEANUP_CACHE_MAX_ROWS: i64 = 2_000;
 pub const CLEANUP_CACHE_MAX_BYTES: i64 = 16 * 1024 * 1024;
+pub const CLEANUP_CACHE_IDLE_DAYS: i64 = 2;
+pub const CLEANUP_CACHE_MAX_AGE_DAYS: i64 = 7;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CleanupCacheEntry {
@@ -23,67 +25,45 @@ pub struct CleanupCacheEntry {
 }
 
 pub fn cleanup_cache_get_active(db: &Db, key: &str) -> Result<Option<CleanupCacheEntry>> {
+    use rusqlite::OptionalExtension;
     let conn = lock_conn(db)?;
-    let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let mut epoch_stmt = conn.prepare(
-        "SELECT key,
-                clean_text,
-                hit_count,
+    // Enforce expiry during reads as well as maintenance, including databases
+    // whose epoch columns have not been populated.
+    conn.query_row(
+        "SELECT key, clean_text, hit_count,
                 COALESCE(datetime(created_at_epoch, 'unixepoch'), created_at),
                 COALESCE(datetime(last_hit_at_epoch, 'unixepoch'), last_hit_at),
                 COALESCE(datetime(expires_at_epoch, 'unixepoch'), expires_at),
                 is_snippet
-         FROM cleanup_cache
-         WHERE key = ?1
-           AND expires_at_epoch > ?2
-         LIMIT 1",
-    )?;
-    let mut epoch_rows = epoch_stmt.query(params![key, now_epoch])?;
-    if let Some(row) = epoch_rows.next()? {
-        return Ok(Some(CleanupCacheEntry {
-            key: row.get(0)?,
-            clean_text: row.get(1)?,
-            hit_count: row.get(2)?,
-            created_at: row.get(3)?,
-            last_hit_at: row.get(4)?,
-            expires_at: row.get(5)?,
-            is_snippet: row.get::<_, i64>(6)? != 0,
-        }));
-    }
-
-    let mut fallback_stmt = conn.prepare(
-        "SELECT key,
-                clean_text,
-                hit_count,
-                created_at,
-                last_hit_at,
-                expires_at,
-                is_snippet
-         FROM cleanup_cache
-         WHERE key = ?1
-           AND expires_at_epoch IS NULL
-           AND expires_at > datetime('now')
-         LIMIT 1",
-    )?;
-    let mut fallback_rows = fallback_stmt.query(params![key])?;
-    let Some(row) = fallback_rows.next()? else {
-        return Ok(None);
-    };
-    Ok(Some(CleanupCacheEntry {
-        key: row.get(0)?,
-        clean_text: row.get(1)?,
-        hit_count: row.get(2)?,
-        created_at: row.get(3)?,
-        last_hit_at: row.get(4)?,
-        expires_at: row.get(5)?,
-        is_snippet: row.get::<_, i64>(6)? != 0,
-    }))
+         FROM cleanup_cache WHERE key = ?1
+          AND COALESCE(expires_at_epoch, CAST(strftime('%s', expires_at || 'Z') AS INTEGER))
+                > CAST(strftime('%s', 'now') AS INTEGER)
+          AND COALESCE(last_hit_at_epoch, CAST(strftime('%s', last_hit_at || 'Z') AS INTEGER))
+                > CAST(strftime('%s', 'now', ?2) AS INTEGER)
+          AND COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER))
+                > CAST(strftime('%s', 'now', ?3) AS INTEGER)",
+        params![
+            key,
+            format!("-{CLEANUP_CACHE_IDLE_DAYS} days"),
+            format!("-{CLEANUP_CACHE_MAX_AGE_DAYS} days")
+        ],
+        |row| {
+            Ok(CleanupCacheEntry {
+                key: row.get(0)?,
+                clean_text: row.get(1)?,
+                hit_count: row.get(2)?,
+                created_at: row.get(3)?,
+                last_hit_at: row.get(4)?,
+                expires_at: row.get(5)?,
+                is_snippet: row.get::<_, i64>(6)? != 0,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
+#[cfg(test)]
 pub fn cleanup_cache_insert_new(
     db: &Db,
     key: &str,
@@ -91,7 +71,23 @@ pub fn cleanup_cache_insert_new(
     expires_at: &str,
     is_snippet: bool,
 ) -> Result<()> {
+    cleanup_cache_insert_if(db, key, clean_text, expires_at, is_snippet, || true)
+}
+
+/// Recheck the live preference under the same lock as cache clearing. This
+/// prevents an in-flight provider request from repopulating a disabled cache.
+pub fn cleanup_cache_insert_if(
+    db: &Db,
+    key: &str,
+    clean_text: &str,
+    expires_at: &str,
+    is_snippet: bool,
+    enabled: impl FnOnce() -> bool,
+) -> Result<()> {
     let conn = lock_conn(db)?;
+    if !enabled() {
+        return Ok(());
+    }
     conn.execute(
         "INSERT OR REPLACE INTO cleanup_cache
          (key, clean_text, hit_count, created_at, last_hit_at, expires_at,
@@ -160,26 +156,28 @@ pub fn cleanup_cache_prune_expired(db: &Db) -> Result<usize> {
          WHERE (expires_at_epoch IS NOT NULL
                 AND expires_at_epoch <= CAST(strftime('%s', 'now') AS INTEGER))
             OR (last_hit_at_epoch IS NOT NULL
-                AND last_hit_at_epoch <= CAST(strftime('%s', 'now', '-2 days') AS INTEGER)
-                AND is_snippet = 0)",
-        [],
+                AND last_hit_at_epoch <= CAST(strftime('%s', 'now', ?1) AS INTEGER))
+            OR COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER))
+                <= CAST(strftime('%s', 'now', ?2) AS INTEGER)",
+        params![
+            format!("-{CLEANUP_CACHE_IDLE_DAYS} days"),
+            format!("-{CLEANUP_CACHE_MAX_AGE_DAYS} days")
+        ],
     )?;
     let changed_fallback = conn.execute(
         "DELETE FROM cleanup_cache
          WHERE (expires_at_epoch IS NULL
                 AND expires_at <= datetime('now'))
             OR (last_hit_at_epoch IS NULL
-                AND last_hit_at <= datetime('now', '-2 days')
-                AND is_snippet = 0)",
-        [],
+                AND last_hit_at <= datetime('now', ?1))",
+        params![format!("-{CLEANUP_CACHE_IDLE_DAYS} days")],
     )?;
     Ok(changed_epoch + changed_fallback + cleanup_cache_enforce_budget_conn(&conn)?)
 }
 
 /// Evict least-recently-used cache responses until both row and byte budgets
-/// are satisfied.  Snippet entries are protected from the normal idle expiry,
-/// but are still evictable under hard storage pressure because they can be
-/// regenerated from the source text.
+/// are satisfied. Snippet entries have eviction priority but share the same
+/// lifetime limits as other results.
 fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usize> {
     let (count, bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) +
@@ -240,6 +238,13 @@ pub fn cleanup_cache_count(db: &Db) -> Result<i64> {
     let conn = lock_conn(db)?;
     conn.query_row("SELECT COUNT(*) FROM cleanup_cache", [], |r| r.get(0))
         .map_err(Into::into)
+}
+
+/// Logical text payload, not SQLite file allocation or whole-disk free space.
+pub fn cleanup_cache_payload_bytes(db: &Db) -> Result<i64> {
+    let conn = lock_conn(db)?;
+    conn.query_row("SELECT COALESCE(SUM(length(CAST(key AS BLOB)) + length(CAST(clean_text AS BLOB))), 0) FROM cleanup_cache",
+        [], |row| row.get(0)).map_err(Into::into)
 }
 
 pub fn cleanup_cache_delete_by_key(db: &Db, key: &str) -> Result<()> {
