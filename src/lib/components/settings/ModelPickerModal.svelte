@@ -183,12 +183,16 @@
     'not-found': 4,
   };
 
+  /** Phones list the recommended 0.5B cleanup model first; the rest stay alphabetical. */
+  const phonePreferred = (row: ModelRow) =>
+    isAndroid && row.provider === 'local' && row.id === 'qwen2.5-0.5b-instruct' ? 0 : 1;
+
   const grouped = $derived(
     RAIL_ORDER.map((provider) => ({
       provider,
       rows: shown
         .filter((row) => row.provider === provider)
-        .sort((a, b) => RANK[a.state] - RANK[b.state] || a.label.localeCompare(b.label)),
+        .sort((a, b) => RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
     })).filter((group) => group.rows.length > 0),
   );
 
