@@ -317,15 +317,47 @@ fn apply_linux_pill_input(pill: &WebviewWindow) {
             .ok()
             .and_then(|input| input.rect.filter(|_| input.interactive));
         crate::system::linux_webview::set_input_region(&target, rect);
+        schedule_linux_pointer_sync();
+    })
+    .ok();
+}
+
+#[cfg(target_os = "linux")]
+static LINUX_POINTER_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+static LINUX_POINTER_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// GTK owns the surface shape; a single blocking worker owns compositor IPC.
+/// Coalesce resize reports and re-read policy after looking up the window so
+/// a delayed hands-free update cannot remain applied after recording starts.
+#[cfg(target_os = "linux")]
+fn schedule_linux_pointer_sync() {
+    LINUX_POINTER_SYNC_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if LINUX_POINTER_SYNC_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn_blocking(|| loop {
+        let generation = LINUX_POINTER_SYNC_GENERATION.load(Ordering::SeqCst);
         if let Some(window) = crate::core::hyprland::pill_window() {
+            let interactive = LINUX_PILL_INPUT
+                .lock()
+                .map(|input| input.interactive && input.rect.is_some())
+                .unwrap_or(false);
             if let Err(error) =
-                crate::core::hyprland::set_pointer_input(&window.address, rect.is_some())
+                crate::core::hyprland::set_pointer_input(&window.address, interactive)
             {
                 log::warn!("{error}");
             }
         }
-    })
-    .ok();
+        // Release ownership before checking for another update. If a new
+        // worker has already claimed it, that worker handles the latest state.
+        LINUX_POINTER_SYNC_RUNNING.store(false, Ordering::SeqCst);
+        if LINUX_POINTER_SYNC_GENERATION.load(Ordering::SeqCst) == generation
+            || LINUX_POINTER_SYNC_RUNNING.swap(true, Ordering::SeqCst)
+        {
+            break;
+        }
+    });
 }
 
 /// Frontend report of the capsule's visible rectangle (CSS px, relative to
