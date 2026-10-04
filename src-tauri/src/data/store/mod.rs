@@ -367,6 +367,7 @@ pub const TRANSCRIPTION_DEFAULT_MODEL: &str = "transcription_default_model";
 pub const CLEANUP_DEFAULT_MODEL: &str = "cleanup_default_model";
 pub const TRANSCRIPTION_FALLBACK_MODELS: &str = "transcription_fallback_models";
 pub const DUAL_TRANSCRIPTION_ENABLED: &str = "dual_transcription_enabled";
+pub const MODEL_SELECTION_MODE: &str = "model_selection_mode";
 pub const CLEANUP_FALLBACK_MODELS: &str = "cleanup_fallback_models";
 pub const CLEANUP_ENABLED: &str = "cleanup_enabled";
 pub const CLEANUP_CACHE_ENABLED: &str = "cleanup_cache_enabled";
