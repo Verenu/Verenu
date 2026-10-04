@@ -3,7 +3,7 @@ import { formatIpcError as formatError } from './errors';
 import type { ProviderId } from './settings';
 import type { SettingsSectionId } from './settingsSections';
 import type { OmarchyTheme } from './omarchyTheme';
-import type { CustomTheme } from './customTheme';
+import type { CustomTheme, SavedTheme } from './customTheme';
 
 type PageId = 'home' | 'insights' | 'contexts' | 'dictionary' | 'snippets' | 'style';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
@@ -147,6 +147,12 @@ export const appStore = $state({
   omarchyTheme: null as OmarchyTheme | null,
   // Hex palette for the Custom appearance mode (all desktop platforms).
   customTheme: null as CustomTheme | null,
+  // Named palettes from the theme editor, and the one applied this session
+  // (breaks ties between saved themes that share colors).
+  savedThemes: [] as SavedTheme[],
+  activeThemeId: null as string | null,
+  // True while an appearance change is being saved; selections made meanwhile are ignored.
+  appearanceSaving: false,
   // Mirrors the `cleanup_enabled` setting. Shared here (rather than owned
   // privately by GeneralSection) so Style.svelte and the App Mappings
   // settings page can react live to the toggle without their own
@@ -220,12 +226,16 @@ export const cleanupPromptStore = $state<{ override: string }>({ override: '' })
 
 export const cleanupPromptEditor = $state<{
   open: boolean;
+  intensity: 'light' | 'medium' | 'high' | null;
+  tone: 'casual' | 'formal' | 'very_casual' | null;
   /** The model the editor tests the prompt against — not what it saves under. */
   provider: ProviderId | null;
   model: string | null;
   origin: { x: number; y: number } | null;
 }>({
   open: false,
+  intensity: null,
+  tone: null,
   provider: null,
   model: null,
   origin: null,
@@ -234,8 +244,12 @@ export const cleanupPromptEditor = $state<{
 export function openCleanupPromptEditor(
   provider: ProviderId,
   model: string,
-  triggerRect: DOMRect
+  triggerRect: DOMRect,
+  intensity: 'light' | 'medium' | 'high' | null = null,
+  tone: 'casual' | 'formal' | 'very_casual' | null = null
 ) {
+  cleanupPromptEditor.intensity = intensity;
+  cleanupPromptEditor.tone = tone;
   cleanupPromptEditor.provider = provider;
   cleanupPromptEditor.model = model;
   cleanupPromptEditor.origin = {

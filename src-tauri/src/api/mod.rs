@@ -1,4 +1,5 @@
 pub mod auto_learn;
+pub mod base64_audio;
 pub mod cleanup;
 pub mod client;
 pub mod custom;

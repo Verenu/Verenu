@@ -179,7 +179,10 @@
   });
 
   function requiredModelsInstalled(target: PresetTarget): boolean {
-    return target.requiredLocalModels.every((model) => installedLocal[model.task]?.includes(model.id) ?? false);
+    return target.requiredLocalModels.every((model) =>
+      (installedLocal[model.task]?.includes(model.id) ?? false)
+      && (model.task !== 'cleanup' || localLlmStore.runtime.installed),
+    );
   }
 
   function clearPendingPreset() {
@@ -220,7 +223,8 @@
     if (!target) return;
 
     const missing = target.requiredLocalModels.filter(
-      (model) => !installedLocal[model.task]?.includes(model.id),
+      (model) => !installedLocal[model.task]?.includes(model.id)
+        || (model.task === 'cleanup' && !localLlmStore.runtime.installed),
     );
     if (missing.length > 0) {
       // Kick off the downloads and defer activation until they land (see the
@@ -270,6 +274,7 @@
   }
 
   function isExpectedModelDownloading(model: RequiredLocalModel): boolean {
+    if (model.task === 'cleanup' && localLlmStore.runtime.is_downloading) return true;
     if (downloadingLocal[model.task] === model.id) return true;
     if (model.task === 'transcription') {
       return localSttStore.models.some((entry) => entry.id === model.id && entry.is_downloading);
@@ -806,8 +811,16 @@
       // held in JS, and list_provider_models only ever reads the stored one.
       await refreshCatalog(provider, trackedModelIds());
     };
+    const onKeyDeleted = (event: Event) => {
+      const provider = (event as CustomEvent<{ provider: ProviderId }>).detail?.provider;
+      if (provider) apiKeyStatus = { ...apiKeyStatus, [provider]: false };
+    };
     window.addEventListener('verenu:api-key-saved', onKeySaved);
-    return () => window.removeEventListener('verenu:api-key-saved', onKeySaved);
+    window.addEventListener('verenu:api-key-deleted', onKeyDeleted);
+    return () => {
+      window.removeEventListener('verenu:api-key-saved', onKeySaved);
+      window.removeEventListener('verenu:api-key-deleted', onKeyDeleted);
+    };
   });
 
   // Settings just opened: top up any provider whose list has gone stale, or
@@ -997,6 +1010,7 @@
   </Dropdown>
 </div>
 
+{#if !hardware.isAndroid}
 <div class="setting-row" data-setting-target="models-folder">
   <div>
     <div class="label">Models folder</div>
@@ -1004,6 +1018,7 @@
   </div>
   <button class="btn-ghost" type="button" onclick={openLocalModelsFolder}>Open models folder</button>
 </div>
+{/if}
 
 <style>
 

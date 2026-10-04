@@ -7,7 +7,7 @@ Verenu is a Tauri desktop app. The Svelte frontend owns the interface and local 
 | Area | Implementation | Responsibility |
 | --- | --- | --- |
 | Desktop shell | Tauri 2 | Windows, macOS, and Linux windows, commands, events, and packaging |
-| Frontend | Svelte 5, TypeScript, Tailwind CSS | Setup, settings, contexts, history, insights, and the dictation pill |
+| Frontend | Svelte 5, TypeScript, shared CSS | Setup, settings, contexts, history, insights, and the dictation pill |
 | Backend | Rust, Tokio | Pipeline orchestration, platform integration, provider requests, and background work |
 | Audio | `cpal`, `hound`, `nnnoiseless` | Microphone capture, WAV encoding, gain, and noise reduction |
 | Cloud AI | `reqwest` provider clients | Cloud transcription and cleanup through the configured providers |
@@ -60,6 +60,14 @@ Verenu resolves a foreground executable and, when available, a browser domain to
 
 ## Code map
 
+The frontend IPC entry point is `src/lib/tauri.ts`. It routes commands and events
+to native Tauri, the authenticated Rust dev-session bridge, or browser mocks.
+Mock commands and state live in `tauri.dev.ts`, sample model catalogs in
+`tauri.dev.models.ts`, and synthetic Insights data in `tauri.dev.insights.ts`.
+Only mock mode loads those modules. Shared IPC types live in `tauri.types.ts`
+and remain re-exported by `tauri.ts` for existing callers. A real dev session
+never falls back to mocks when authentication or backend calls fail.
+
 - `src/` contains the Svelte application, settings registry, stores, setup wizard, views, and shared components.
 - `src-tauri/src/pipeline/` contains pipeline orchestration and its transcription, cleanup, style, injection, persistence, and repair stages.
 - `src-tauri/src/api/` contains cloud provider clients, prompt assembly, status checks, and update logic.
@@ -67,3 +75,19 @@ Verenu resolves a foreground executable and, when available, a browser domain to
 - `src-tauri/src/core/` contains hotkeys, injection, Context resolution, browser probing, and contextual formatting.
 - `src-tauri/src/data/` contains SQLite access, the settings store, credentials, vocabulary, and snippets.
 - `tests/` contains the unified test runner, smoke tests, integration tests, and manual platform checks.
+
+## Resource and reliability constraints
+
+Keep history paginated, caches bounded, and background requests coalesced.
+Suspend view-specific polling while the view is hidden; retain background
+checks that deliver status or update notifications. Audio retained for retry
+must expire without disrupting a pipeline that still owns it. Model unloading
+must respect active inference and the configured memory policy.
+
+Measure process-tree memory with the same build profile, model state, and
+window sizes before claiming a RAM improvement. See [Testing](TESTING.md) for
+the Linux memory-policy check and [Agent verification](AGENT_VERIFICATION.md)
+for pipeline and native evidence requirements. Keep quality gates before
+provider calls, hotkey callbacks short, and private text out of diagnostics.
+New runtime dependencies should justify their bundle size, idle work, and
+access to private data.

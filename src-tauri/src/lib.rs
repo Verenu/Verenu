@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#[cfg(desktop)]
+// Compiled everywhere so shared pipeline code can look up the managed state;
+// only registered on desktop (Android reports through VerenuAnalytics.kt).
 #[allow(dead_code)]
 mod analytics;
 mod android;
@@ -94,7 +95,10 @@ fn start_storage_maintenance(
                 if let Err(err) = db::prune_auto_learn_retention(&db_for_work) {
                     log::warn!("maintenance: auto-learn retention failed: {err}");
                 }
-                if let Err(err) = db::prune_pending_corrections(&db_for_work, 2) {
+                if let Err(err) = db::prune_pending_corrections(
+                    &db_for_work,
+                    crate::api::auto_learn::PENDING_RETENTION_DAYS,
+                ) {
                     log::warn!("maintenance: pending-correction retention failed: {err}");
                 }
                 if let Some(days) = retention_days {
@@ -118,6 +122,35 @@ fn start_storage_maintenance(
             .await;
         }
     });
+}
+
+/// Registers the Application context with ndk-context (needed by CPAL/Oboe).
+/// The Application outlives every Activity, so unlike the Activity pointer tao
+/// hands out it never goes stale.
+#[cfg(target_os = "android")]
+fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
+    use jni::objects::JObject;
+    use jni::JavaVM;
+
+    let context = tauri::tao::platform::android::prelude::main_android_context()
+        .ok_or_else(|| std::io::Error::other("Android activity context unavailable"))?;
+    let vm = unsafe { JavaVM::from_raw(context.java_vm.cast())? };
+    let mut env = vm.attach_current_thread()?;
+    let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
+    let application = env
+        .call_method(
+            &activity,
+            "getApplicationContext",
+            "()Landroid/content/Context;",
+            &[],
+        )?
+        .l()?;
+    let global = env.new_global_ref(application)?;
+    let raw = global.as_obj().as_raw();
+    // Intentionally leaked: ndk-context keeps the pointer for the whole process.
+    std::mem::forget(global);
+    unsafe { ndk_context::initialize_android_context(context.java_vm, raw.cast()) };
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -182,6 +215,12 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init());
+    #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
+    }
     #[cfg(target_os = "android")]
     {
         builder = builder.plugin(crate::android::permissions_plugin::init());
@@ -247,19 +286,15 @@ pub fn run() {
             #[cfg(target_os = "android")]
             {
                 // CPAL's Android/Oboe backend uses ndk-context from its audio
-                // worker. Tauri/tao has already registered the activity in
-                // its own Android glue by the time setup runs; copy the same
-                // VM/context pointers into ndk-context exactly once so a
-                // native recording request cannot abort the process with
-                // "android context was not initialized".
-                let context = tauri::tao::platform::android::prelude::main_android_context()
-                    .ok_or_else(|| std::io::Error::other("Android activity context unavailable"))?;
-                unsafe {
-                    ndk_context::initialize_android_context(
-                        context.java_vm,
-                        context.context_jobject,
-                    );
-                }
+                // worker (recording and device enumeration). tao's activity
+                // reference is freed when the Activity is destroyed, but this
+                // setup closure runs once per process, so handing ndk-context
+                // that reference leaves a stale pointer after the user backs
+                // out and reopens the app (JNI aborts the process). Give it a
+                // process-lifetime global reference to the Application
+                // context instead.
+                init_android_audio_context()?;
+                crate::android::local_ai::initialize()?;
             }
             // Android does not provide a useful HOME environment variable.
             // Resolve the canonical shared data directory through Tauri while
@@ -317,54 +352,40 @@ pub fn run() {
                 log::warn!("Failed to migrate contextual formatting setting: {error}");
             }
             let first_launch = {
-                if let Some(val) = settings.get(crate::data::store::HOTKEY) {
-                    if let Some(arr) = val.as_array() {
-                        if arr.len() == 2 {
-                            if let (Some(k1), Some(k2)) = (arr[0].as_str(), arr[1].as_str()) {
-                                let (k1, k2) = (k1, k2);
-                                // On macOS the hotkey is now a modifier+key combo
-                                // (RegisterEventHotKey, no Input Monitoring). A stored
-                                // modifier-only chord from an earlier build (e.g. Fn+Control)
-                                // is not registrable — migrate it to the ⌥+Space default so
-                                // the backend and the settings label stay in sync.
-                                #[cfg(target_os = "macos")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2)
-                                {
-                                    let _ = settings.set(
-                                        crate::data::store::HOTKEY,
-                                        serde_json::json!(["AltLeft", "Space"]),
-                                    );
-                                    if let Err(e) = settings.save() {
-                                        log::warn!(
-                                            "Failed to save migrated hotkey to settings.json: {e:?}"
-                                        );
+                if let Some(value) = settings.get(crate::data::store::HOTKEY) {
+                    if let Ok(codes) = serde_json::from_value::<Vec<String>>(value) {
+                        let normalized = crate::core::hotkey::normalize_codes(&codes);
+                        let ids = normalized.as_ref().ok().and_then(|codes| {
+                            crate::core::hotkey::mapped_codes(codes).ok()
+                        });
+                        if ids.as_ref().is_none_or(|ids| crate::core::hotkey::update_keys(ids).is_err()) {
+                            // Keep defaults when migrating a binding unsupported by
+                            // this platform. Never truncate a saved combination.
+                            #[cfg(target_os = "macos")]
+                            let defaults = ["AltLeft", "Space"];
+                            #[cfg(not(target_os = "macos"))]
+                            let defaults = ["ControlLeft", "MetaLeft"];
+                            if let Err(error) = settings.save_value(
+                                crate::data::store::HOTKEY,
+                                serde_json::json!(defaults),
+                            ) {
+                                log::warn!("Failed to migrate unsupported hotkey: {error}");
+                            }
+                            let default_codes = defaults
+                                .iter()
+                                .map(|code| (*code).to_string())
+                                .collect::<Vec<_>>();
+                            match crate::core::hotkey::mapped_codes(&default_codes) {
+                                Ok(default_ids) => {
+                                    if let Err(error) =
+                                        crate::core::hotkey::update_keys(&default_ids)
+                                    {
+                                        log::warn!("Failed to apply default hotkey after migration: {error}");
                                     }
-                                    ("AltLeft", "Space")
-                                } else {
-                                    (k1, k2)
-                                };
-                                // Linux uses the portal for regular chords and
-                                // Hyprland bindings for modifier-only chords such
-                                // as Ctrl+Super. Preserve valid user choices and
-                                // migrate only unsupported stored chords.
-                                #[cfg(target_os = "linux")]
-                                let (k1, k2) = if !crate::core::hotkey::is_hotkey_available(k1, k2) {
-                                    let _ = settings.set(
-                                        crate::data::store::HOTKEY,
-                                        serde_json::json!(["ControlLeft", "MetaLeft"]),
-                                    );
-                                    if let Err(e) = settings.save() {
-                                        log::warn!(
-                                            "Failed to save migrated Linux hotkey to settings.json: {e:?}"
-                                        );
-                                    }
-                                    ("ControlLeft", "MetaLeft")
-                                } else {
-                                    (k1, k2)
-                                };
-                                let vk1 = crate::core::hotkey::map_code_to_vk(k1);
-                                let vk2 = crate::core::hotkey::map_code_to_vk(k2);
-                                crate::core::hotkey::update_keys(vk1, vk2);
+                                }
+                                Err(error) => {
+                                    log::warn!("Failed to map default hotkey after migration: {error}");
+                                }
                             }
                         }
                     }
@@ -700,12 +721,14 @@ pub fn run() {
             commands::save_hotkey,
             core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
+            commands::set_hotkey_capture,
             commands::save_api_key,
             commands::delete_api_key,
             commands::delete_custom_provider,
             commands::get_api_key_status,
             commands::validate_api_key,
             commands::list_provider_models,
+            commands::get_provider_model_catalog,
             commands::open_notifications_settings,
             commands::request_notification_permission,
             commands::check_keychain_access,
@@ -849,6 +872,8 @@ pub fn run() {
             commands::sync_now,
             commands::sync_get_diagnostics,
             commands::android_get_platform_info,
+            #[cfg(all(debug_assertions, feature = "android-local-testing", target_os = "android"))]
+            commands::android_test_local_audio,
             commands::android_on_keyboard_visibility,
             commands::android_decide_insertion,
             commands::android_context_for_package,
@@ -892,15 +917,44 @@ pub fn run() {
         });
 }
 
-/// See the matching desktop-binary helper in `main.rs`.
 #[cfg(target_os = "linux")]
 fn configure_hyprland_webkit_renderer() {
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-        && std::env::var_os("WAYLAND_DISPLAY").is_some()
-        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-    {
-        // This runs before Tauri initializes GTK/WebKit.
-        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    if should_force_hyprland_webkit_shm(
+        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some(),
+        std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_some(),
+    ) {
+        // WebKit 2.52 returns an empty buffer-transport set when
+        // WEBKIT_DISABLE_DMABUF_RENDERER is enabled, so accelerated
+        // compositing can create a null backing store. Force the supported
+        // shared-memory transport instead. This runs before GTK/WebKit init.
+        unsafe { std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1") };
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn should_force_hyprland_webkit_shm(
+    on_hyprland: bool,
+    on_wayland: bool,
+    disable_dmabuf_set: bool,
+    force_shm_set: bool,
+) -> bool {
+    on_hyprland && on_wayland && !disable_dmabuf_set && !force_shm_set
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_webkit_renderer_tests {
+    use super::should_force_hyprland_webkit_shm;
+
+    #[test]
+    fn defaults_hyprland_to_shared_memory_without_overriding_user_renderer_flags() {
+        assert!(should_force_hyprland_webkit_shm(true, true, false, false));
+        assert!(!should_force_hyprland_webkit_shm(false, true, false, false));
+        assert!(!should_force_hyprland_webkit_shm(true, false, false, false));
+        assert!(!should_force_hyprland_webkit_shm(true, true, true, false));
+        assert!(!should_force_hyprland_webkit_shm(true, true, false, true));
+        assert!(!should_force_hyprland_webkit_shm(true, true, true, true));
     }
 }
 #[cfg(target_os = "windows")]

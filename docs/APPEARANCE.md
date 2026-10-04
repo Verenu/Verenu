@@ -4,24 +4,30 @@ Open **Settings -> General** to change how Verenu looks. Appearance preferences 
 
 ## Theme
 
-Choose **System**, **Light**, **Dark**, or **Custom** under Appearance.
+Choose **System**, **Light**, or **Dark** under Appearance, or pick a theme from the gallery.
 
 - **System** follows the current Windows or macOS appearance. On Linux with an Omarchy theme, it follows that theme.
 - **Light** uses neutral near-white backgrounds.
 - **Dark** uses neutral charcoal backgrounds.
 
-- **Custom** paints the whole app with colors you enter as hex codes. See below.
+- A **theme** paints the whole app with colors you choose. See below.
 
 The current palette avoids the older cream light theme and orange-brown dark theme. Backgrounds, dividers, and text stay neutral so the accent color remains distinct.
 
-### Custom colors
+### Themes
 
-Custom is available on Windows, macOS, and Linux. Pick a preset (Catppuccin, Tokyo Night, Nord, Gruvbox, Solarized) or type your own six-digit hex codes:
+Under Appearance, **System**, **Light**, and **Dark** are preview cards. Below them the **Themes** gallery lists built-in palettes (Catppuccin, Tokyo Night, Nord, Gruvbox, Solarized) and your saved themes. Click a card to apply it. Themes are available on Windows, macOS, and Linux.
 
-- **Background** and **Text** are required. Light or dark is chosen from the background's brightness, which also sets the native title bar, tray icon, and window controls.
-- **Sidebar** and **Surface** (cards, menus, dialogs) are optional. When blank they are derived from the background and text.
+**Create theme** (or the pencil on any card) opens the theme editor in the bottom-right corner. It is not a dialog: it stays open while you move around the app, and every color you change previews live across the whole window.
 
-Borders, muted text, hover states, overlays, shadows, and the dictation pill are all derived from these colors, and changes apply live. **Reset colors** returns to the starting palette. Success, warning, and error colors stay Verenu's own. The palette is saved with your settings and included in backups. Like the other appearance settings, it stays on the device and is not synced.
+- Start with **Background** and **Accent**. Text and surface colors are derived automatically. Light or dark is chosen from the background's brightness, which also sets the native title bar, tray icon, and window controls.
+- **Advanced** exposes **Text**, **Sidebar**, and **Surface** (cards, menus, dialogs). Sidebar, Surface, and Accent are optional; blank values use derived colors. Palettes with explicit overrides open Advanced automatically.
+- **Save theme** stores it under its name and applies it. **Cancel**, Escape, or the close button restore exactly what was applied before; with unsaved changes the editor asks before discarding. Editing a built-in palette saves a copy.
+- Saved themes can be reopened, edited, and deleted. Deleting the applied theme leaves its colors in place until you pick another.
+
+If a save fails, the editor stays open with your draft and shows the error; nothing is half-applied.
+
+Borders, muted text, hover states, overlays, shadows, and the dictation pill are all derived from these colors. Success, warning, and error colors stay Verenu's own. The palette and the saved theme list stay on the device and are included in backups, but are not synced.
 
 ### Omarchy theme
 

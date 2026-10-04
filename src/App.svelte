@@ -5,23 +5,16 @@
   import { isWindows, isLinux } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
-  import DevSessionPanel from './lib/components/DevSessionPanel.svelte';
+  import DeferredView from './lib/components/DeferredView.svelte';
+  import { lazyComponent } from './lib/lazyComponent.svelte';
   import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
-  import Insights from './lib/views/Insights.svelte';
-  import Contexts from './lib/views/Contexts.svelte';
-  import Dictionary from './lib/views/Dictionary.svelte';
-  import Snippets from './lib/views/Snippets.svelte';
-  import Style from './lib/views/Style.svelte';
   import Settings from './lib/views/Settings.svelte';
-  import CleanupPromptModal from './lib/components/settings/CleanupPromptModal.svelte';
-  import SyncPairModal from './lib/components/settings/SyncPairModal.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
   import DictationPill from './lib/components/layout/DictationPill.svelte';
-  import Setup from './lib/views/Setup.svelte';
   import { getVersion, invoke, isTauriRuntime, listen } from './lib/tauri';
   import { startAutomaticUpdateChecks } from './lib/updates';
   import { startPolling } from './lib/polling';
@@ -39,7 +32,9 @@
   import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
   import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
-  import { normalizeCustomTheme } from './lib/customTheme';
+  import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
+  import { themeEditor } from './lib/themeEditor.svelte';
+  import ThemeEditorDock from './lib/components/settings/ThemeEditorDock.svelte';
   import { isAndroid } from './lib/platform';
   import MobileNav from './lib/components/layout/MobileNav.svelte';
   import {
@@ -49,6 +44,17 @@
   } from './lib/android/viewport';
 
   type EffectiveTheme = 'light' | 'dark';
+  const pages = {
+    insights: lazyComponent(() => import('./lib/views/Insights.svelte')),
+    contexts: lazyComponent(() => import('./lib/views/Contexts.svelte')),
+    dictionary: lazyComponent(() => import('./lib/views/Dictionary.svelte')),
+    snippets: lazyComponent(() => import('./lib/views/Snippets.svelte')),
+    style: lazyComponent(() => import('./lib/views/Style.svelte')),
+  };
+  const setup = lazyComponent(() => import('./lib/views/Setup.svelte'));
+  const devPanel = lazyComponent(() => import('./lib/components/DevSessionPanel.svelte'));
+  const cleanupModal = lazyComponent(() => import('./lib/components/settings/CleanupPromptModal.svelte'));
+  const syncModal = lazyComponent(() => import('./lib/components/settings/SyncPairModal.svelte'));
   import type { AppearanceMode } from './lib/settings';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
 
@@ -136,7 +142,7 @@
   );
   // Compact Android windows collapse the desktop rail to the bottom bar.
   // Desktop keeps its rail at every width.
-  const compactNav = $derived(isAndroid && viewport.widthClass === 'compact');
+  const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
 
   // Error toast
   let errorToast = $state('');
@@ -284,6 +290,8 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
+        // Saved themes are device-local and optional; a failed read must not block startup.
+        const savedThemesRead = invoke<unknown>('get_setting', { key: 'custom_themes' }).catch(() => null);
         const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
@@ -299,11 +307,15 @@
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
         ]);
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
-        if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
-          appStore.appearanceMode = appearance;
+        appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
+        // An open theme editor is previewing through these fields; keep its draft.
+        if (!themeEditor.open) {
+          if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
+            appStore.appearanceMode = appearance;
+          }
+          appStore.accentColor = normalizeAccentColor(accentColor);
+          appStore.customTheme = normalizeCustomTheme(customTheme);
         }
-        appStore.accentColor = normalizeAccentColor(accentColor);
-        appStore.customTheme = normalizeCustomTheme(customTheme);
         appStore.cleanupEnabled = cleanupEnabled ?? true;
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
@@ -458,8 +470,31 @@
       (snapshot) => { viewport = snapshot; },
     );
 
+    // The WebView draws under the system navigation/gesture bar on most
+    // devices but CSS env() reports no inset for it. MainActivity exposes how
+    // far the WebView actually overlaps the bar (0 where the viewport already
+    // excludes it), and the shell pads by that amount.
+    let stopInsets = () => {};
+    if (isAndroid) {
+      const applyInsets = () => {
+        const px = Number((window as any).VerenuInsets?.bottomInsetCssPx?.());
+        document.documentElement.style.setProperty(
+          '--android-safe-bottom',
+          `${Number.isFinite(px) ? Math.max(0, px) : 0}px`,
+        );
+      };
+      applyInsets();
+      const timers = [150, 600, 1500].map((ms) => window.setTimeout(applyInsets, ms));
+      window.addEventListener('resize', applyInsets);
+      stopInsets = () => {
+        timers.forEach((t) => window.clearTimeout(t));
+        window.removeEventListener('resize', applyInsets);
+      };
+    }
+
     return () => {
       mounted = false;
+      stopInsets();
       if (cleanupFn) cleanupFn();
       if (stopNotificationClickListener) stopNotificationClickListener();
       if (stopConnectivityRecheckListener) stopConnectivityRecheckListener();
@@ -484,7 +519,7 @@
   });
 </script>
 
-{#if isBrowserDevSession()}<DevSessionPanel />{/if}
+{#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
 
 <div
   class="app"
@@ -498,7 +533,7 @@
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
   {#if appStore.setupComplete === false}
-    <Setup />
+    <DeferredView view={setup} />
   {/if}
   <div class="body" inert={appStore.setupComplete === false}>
     <div class="rail">
@@ -521,27 +556,20 @@
         >
           {#if appStore.currentPage === 'home'}
             <Home />
-          {:else if appStore.currentPage === 'insights'}
-            <Insights />
-          {:else if appStore.currentPage === 'contexts'}
-            <Contexts />
-          {:else if appStore.currentPage === 'dictionary'}
-            <Dictionary />
-          {:else if appStore.currentPage === 'snippets'}
-            <Snippets />
-          {:else if appStore.currentPage === 'style'}
-            <Style />
+          {:else}
+            <DeferredView view={pages[appStore.currentPage]} />
           {/if}
         </div>
       {/key}
     </div>
   </div>
   <Settings />
+  <ThemeEditorDock />
   {#if cleanupPromptEditor.open}
-    <CleanupPromptModal />
+    <DeferredView view={cleanupModal} />
   {/if}
   {#if syncStore.status?.pairing?.kind === 'incoming' && syncStore.status.pairing.phase !== 'failed'}
-    <SyncPairModal />
+    <DeferredView view={syncModal} />
   {/if}
   {#if contextsStore.subAppSheet}
     {#key contextsStore.subAppSheet}
@@ -688,12 +716,14 @@
     --mobile-nav-h: calc(60px + var(--safe-bottom));
   }
 
-  /* MainActivity applies the real Android WindowInsets to the WebView content
-     root. Do not add the WebView's CSS env() values again on Android, since
-     some devices expose them inconsistently and would otherwise double-pad. */
+  /* MainActivity applies the top/side WindowInsets to the WebView content root,
+     and reports only the part of the navigation bar the WebView really draws
+     under (--android-safe-bottom). Do not add the WebView's CSS env() values
+     again on Android, since some devices expose them inconsistently and would
+     otherwise double-pad. */
   .app[data-android='true'] {
     --safe-top: 0px;
-    --safe-bottom: 0px;
+    --safe-bottom: var(--android-safe-bottom, 0px);
     --safe-left: 0px;
     --safe-right: 0px;
   }
@@ -716,16 +746,16 @@
 
   /* Compact windows (phones, narrow foldables, snapped split-screen):
      tighten page rhythm and keep the gesture bar clear of content. */
-  .app[data-width-class='compact'] {
+  .app[data-compact-nav='true'] {
     --page-pad-x: 16px;
     --page-pad-y: 16px;
   }
 
-  .app[data-width-class='compact'] .content {
+  .app[data-compact-nav='true'] .content {
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
-  .app[data-width-class='compact'] .page-wrapper {
+  .app[data-compact-nav='true'] .page-wrapper {
     padding-right: 0;
   }
 

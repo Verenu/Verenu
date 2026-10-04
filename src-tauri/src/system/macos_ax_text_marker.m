@@ -655,6 +655,131 @@ int verenu_macos_read_context_probe(
     return 1;
 }
 
+// AutoLearn needs the selection INCLUDED, and substantially more text than
+// the 64-character insertion-edge probe. Never concatenate the edge strings:
+// that would omit selected text and manufacture a correction.
+int verenu_macos_read_focused_text(
+    int radius, char *out, size_t capacity, int32_t *pid_out, AXUIElementRef *identity_out
+) {
+    if (out == NULL || capacity == 0 || pid_out == NULL || identity_out == NULL) return 0;
+    out[0] = '\0';
+    *pid_out = 0;
+    *identity_out = NULL;
+    if (!AXIsProcessTrusted() || radius < 1 || radius > 16384) return 0;
+
+    AXUIElementRef system = AXUIElementCreateSystemWide();
+    AXUIElementRef focused = NULL;
+    AXUIElementRef ancestor = NULL;
+    CFTypeRef value = NULL;
+    CFTypeRef substring = NULL;
+    CFTypeRef selected = NULL;
+    AXTextMarkerRef first = NULL;
+    AXTextMarkerRef last = NULL;
+    int ok = 0;
+    if (system == NULL) return 0;
+    of_set_timeout(system);
+    if (!of_copy_ax_element_attribute(system, kAXFocusedUIElementAttribute, &focused)) goto done;
+    of_set_timeout(focused);
+    char subrole[64];
+    of_copy_string_attribute(focused, kAXSubroleAttribute, subrole, sizeof(subrole));
+    if (strcmp(subrole, "AXSecureTextField") == 0) goto done;
+    AXUIElementRef target = focused;
+    if (of_copy_ax_element_attribute(focused, kOFAXHighestEditableAncestorAttribute, &ancestor)) {
+        target = ancestor;
+        of_set_timeout(target);
+    }
+    of_copy_string_attribute(target, kAXSubroleAttribute, subrole, sizeof(subrole));
+    if (strcmp(subrole, "AXSecureTextField") == 0) goto done;
+
+    CFRange selection;
+    int64_t start_index = 0, end_index = 0;
+    bool public_range = of_copy_range_attribute(target, kAXSelectedTextRangeAttribute, &selection);
+    if (public_range) {
+        if (selection.location < 0 || selection.length < 0 || selection.length > 32768) goto done;
+        start_index = selection.location;
+        end_index = start_index + selection.length;
+    } else {
+        selected = of_copy_attribute(target, kOFAXSelectedTextMarkerRangeAttribute);
+        if (selected == NULL || CFGetTypeID(selected) != AXTextMarkerRangeGetTypeID()) goto done;
+        first = AXTextMarkerRangeCopyStartMarker((AXTextMarkerRangeRef)selected);
+        last = AXTextMarkerRangeCopyEndMarker((AXTextMarkerRangeRef)selected);
+        if (!of_copy_marker_index(target, first, &start_index) ||
+            !of_copy_marker_index(target, last, &end_index)) goto done;
+    }
+    if (start_index < 0 || end_index < start_index || end_index - start_index > 32768) goto done;
+
+    int64_t length = 0;
+    CFTypeRef count = of_copy_attribute(target, kAXNumberOfCharactersAttribute);
+    bool length_known = count != NULL && CFGetTypeID(count) == CFNumberGetTypeID() &&
+        CFNumberGetValue((CFNumberRef)count, kCFNumberSInt64Type, &length);
+    if (count != NULL) CFRelease(count);
+    if (!length_known) {
+        value = of_copy_attribute(target, kAXValueAttribute);
+        if (value != NULL && CFGetTypeID(value) == CFStringGetTypeID()) {
+            length = CFStringGetLength((CFStringRef)value);
+            length_known = true;
+        }
+    }
+    if (!length_known && !public_range) {
+        CFTypeRef end = of_copy_attribute(target, CFSTR("AXEndTextMarker"));
+        if (end != NULL && CFGetTypeID(end) == AXTextMarkerGetTypeID())
+            length_known = of_copy_marker_index(target, (AXTextMarkerRef)end, &length);
+        if (end != NULL) CFRelease(end);
+    }
+    if (!length_known || length < end_index) goto done;
+    int64_t left = start_index > radius ? start_index - radius : 0;
+    int64_t right = length - end_index > radius ? end_index + radius : length;
+    if (right - left > 32768) goto done;
+    if (public_range) {
+        CFRange window = CFRangeMake((CFIndex)left, (CFIndex)(right - left));
+        AXValueRef range = AXValueCreate(kAXValueTypeCFRange, &window);
+        if (range != NULL) {
+            substring = of_copy_parameterized_attribute(target, kAXStringForRangeParameterizedAttribute, range);
+            CFRelease(range);
+        }
+        if (substring == NULL) {
+            if (value == NULL) value = of_copy_attribute(target, kAXValueAttribute);
+            if (value != NULL && CFGetTypeID(value) == CFStringGetTypeID() &&
+                right <= CFStringGetLength((CFStringRef)value))
+                substring = CFStringCreateWithSubstring(kCFAllocatorDefault, (CFStringRef)value, window);
+        }
+        if (substring == NULL || CFGetTypeID(substring) != CFStringGetTypeID()) goto done;
+        ok = CFStringGetCString((CFStringRef)substring, out, (CFIndex)capacity, kCFStringEncodingUTF8);
+    } else {
+        AXTextMarkerRef left_marker = of_copy_marker_for_index(target, left);
+        AXTextMarkerRef right_marker = of_copy_marker_for_index(target, right);
+        if (left_marker != NULL && right_marker != NULL)
+            ok = of_copy_marker_string(target, left_marker, right_marker, out, capacity);
+        if (left_marker != NULL) CFRelease(left_marker);
+        if (right_marker != NULL) CFRelease(right_marker);
+    }
+    if (ok) {
+        AXUIElementRef after = NULL;
+        ok = of_copy_ax_element_attribute(system, kAXFocusedUIElementAttribute, &after)
+            && CFEqual(focused, after);
+        if (after != NULL) CFRelease(after);
+    }
+    if (ok) {
+        pid_t pid = 0;
+        AXUIElementGetPid(target, &pid);
+        ok = pid > 0;
+        if (ok) {
+            *pid_out = pid;
+            *identity_out = (AXUIElementRef)CFRetain(target);
+        }
+    }
+done:
+    if (first != NULL) CFRelease(first);
+    if (last != NULL) CFRelease(last);
+    if (selected != NULL) CFRelease(selected);
+    if (substring != NULL) CFRelease(substring);
+    if (value != NULL) CFRelease(value);
+    if (ancestor != NULL) CFRelease(ancestor);
+    if (focused != NULL) CFRelease(focused);
+    CFRelease(system);
+    return ok;
+}
+
 // Title of the focused window of the app with `pid`, for sub-app matching.
 // Returns 1 and writes UTF-8 into `out` on success. Requires Accessibility
 // permission; without it the attribute read fails and 0 is returned.

@@ -1,4 +1,15 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT");
+    println!(
+        "cargo:rustc-env=VERENU_BUILD_FINGERPRINT={}",
+        std::env::var("VERENU_BUILD_FINGERPRINT").unwrap_or_default()
+    );
+    if (std::env::var_os("CARGO_FEATURE_NATIVE_TESTING").is_some()
+        || std::env::var_os("CARGO_FEATURE_ANDROID_LOCAL_TESTING").is_some())
+        && std::env::var("PROFILE").as_deref() == Ok("release")
+    {
+        panic!("native testing features are forbidden in release builds");
+    }
     // The public PostHog ingestion token is compiled into desktop builds only
     // when the local/release environment provides it. No administrative key
     // is accepted or logged here.
@@ -33,13 +44,11 @@ fn main() {
             .compile("verenu_macos_ax_text_marker");
     }
 
-    // cpal/oboe exposes C++ symbols on Android. Declare the shared NDK
-    // runtime as a real Cargo link dependency so the final cdylib retains a
-    // DT_NEEDED entry for libc++_shared.so. Rustflags alone can be reordered
-    // behind the linker’s --as-needed default and silently drop it.
+    // Oboe's default C++ mode links libc++_static, but Rust's linker does not
+    // use the C++ driver to add libc++abi automatically. Ask the NDK linker to
+    // add its static ABI archive so exception and guard symbols resolve.
     if target_os == "android" {
-        println!("cargo:rustc-link-lib=dylib=c++_shared");
-        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
+        println!("cargo:rustc-link-arg=-lc++abi");
     }
 
     println!("cargo:rerun-if-changed=Info.plist");

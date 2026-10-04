@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContextIcon from '../components/ContextIcon.svelte';
   import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -14,7 +15,6 @@
   import HourStrip from './insights/HourStrip.svelte';
   import WordStats from './insights/WordStats.svelte';
   import type { PricingSnapshot } from './insights/pricing';
-  import { icons } from '../icons';
   import { isAndroid } from '../platform';
   import { contextsStore, loadContexts, orderedContexts } from '../contextsStore.svelte';
   import { EMPTY_INSIGHTS, RANGE_OPTIONS, type InsightsPayload, type InsightsRange } from './insights/types';
@@ -175,8 +175,8 @@
             <span class="ctx-swatch" style={activeContext.color ? `color: ${activeContext.color}` : ''} aria-hidden="true">
               {#if activeContext.is_everywhere}
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2 2.3 3 5 3 8s-1 5.7-3 8c-2-2.3-3-5-3-8s1-5.7 3-8Z"/></svg>
-              {:else if activeContext.icon && icons[activeContext.icon as keyof typeof icons]}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{@html icons[activeContext.icon as keyof typeof icons]}</svg>
+              {:else}
+                <ContextIcon icon={activeContext.icon} size={12} />
               {/if}
             </span>
           {/if}
@@ -466,14 +466,9 @@
   /* Container query, not viewport: the rail + sidebar decide how wide this
      column actually is. Below ~560px the title and both dropdowns stack and
      left-align instead of squeezing into one row. */
-  @container insights (max-width: 560px) {
-    /*
-     * Filters lead on a phone header instead of trailing the title: with the
-     * subtitle gone there's nothing to its right for them to visually pair
-     * with, and "here's the scope, here's the page" reads better than the
-     * reverse order in a single narrow column.
-     */
-    .head { flex-direction: column-reverse; align-items: stretch; }
+  @container insights (max-width: 420px) {
+    /* Title first, then the scope filters beneath it. */
+    .head { flex-direction: column; align-items: stretch; margin-bottom: 18px; }
     /*
      * flex-basis follows the main axis, so the 240px basis that reserves a
      * sensible title column in row layout becomes a 240px minimum *height*

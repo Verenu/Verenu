@@ -43,21 +43,22 @@ untouched.
 | Audio capture | Rust `cpal` (AAudio); Kotlin foreground service (microphone type) holds priority/liveness |
 | Permissions onboarding | `AndroidPermissionsStep` + `android_*` commands; rationale matches Rust strings |
 | Adaptive shell | Width classes (600/840dp) in `src/lib/android/viewport.ts` + `App.svelte`; bottom nav on compact; safe-area edge-to-edge |
-| Local AI | Explicitly unsupported (see below); UI hides via `local_models_supported_on_this_platform == false` |
+| Local AI | On-device speech and cleanup on Android 9+, with bundled inference runtimes and downloaded model weights |
 
 ## The overlay
 
-- Appears **only** while an IME keyboard is visible over an editable field;
-  disappears when the keyboard closes. No permanent bubble.
+- Appears while an IME keyboard is visible over an editable field. During an
+  active dictation it stays available as a docked recorder when the keyboard
+  closes, then returns to the keyboard when it reopens.
 - Never steals focus (`FLAG_NOT_FOCUSABLE` + `FLAG_NOT_TOUCH_MODAL`) and never
   replaces the keyboard — it is not an IME.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
-  inserting, plus error (retry) and cancelled. Live waveform comes from the
-  bridge `audioLevel` polls.
-- Position is top-anchored below the status bar on purpose: keyboard height is
-  not queryable from a service on every supported API, so a bottom-anchored
-  pill would occlude the field or the IME somewhere. Top placement is
-  deterministic on API 26–34 and never fights either.
+  inserting, plus error (retry) and cancelled. The recording waveform uses the
+  recorder's peak envelope and redraws each display frame.
+- Settings -> General -> Pill position selects above-keyboard center, left or
+  right, top, middle, or under the camera hole. Keyboard placement follows the
+  IME bounds. The pill waits for those bounds before appearing and animates
+  between positions.
 
 ## Permissions
 
@@ -88,26 +89,30 @@ request per connection. Endpoints are listed in the module docs; behavior is
 pinned by `bridge.rs` unit tests (real TCP, run on desktop CI). Kotlin never
 imports Tauri — the bridge works with the main activity dead.
 
-## Local AI status
+## Local AI
 
-Neither `transcribe-rs`/ONNX Runtime nor `llama-server` ships Android ARM64
-builds, and their payloads (tens of MB to GBs) are unrealistic on phones:
+Android uses the shared speech engines, Silero voice detection, and cleanup
+pipeline. `scripts/android-sync.mjs` bundles checksum-pinned ONNX Runtime
+1.24.3 and an NDK-built llama.cpp server for ARM64 and x86_64. Runtime code
+ships inside the APK; only model weights are downloaded into private app storage.
+Cleanup executes the packaged runtime from Android's native library directory.
+The bundled cleanup runtime cannot be removed separately from the app.
 
-- `transcribe-rs` is a desktop-only dependency (`cfg(not(target_os =
-  "android"))`); `local_stt/engine.rs` and `media/vad.rs` expose the same
-  surface as explicit errors, and callers already fall back (cloud
-  transcription, RMS speech gate).
-- `local_models_supported_on_this_platform` returns `false` on Android, so
-  Settings and Setup hide local options; `android_get_platform_info` carries
-  the user-facing reason.
-- Structure is ready for a future mobile runtime: re-add the dependency,
-  implement the two stubs, flip the gate.
+Local AI requires Android 9 (API 28) or newer. Android 8 can still use cloud
+providers. The capability check also verifies that both runtimes are present;
+Settings and Setup hide local options when the installed build lacks them.
 
-Also on Android: `reqwest` must move from `native-tls` to `rustls-tls`
-(OpenSSL does not cross-compile under the NDK). The exact per-target edit is
-marked `ANDROID BUILD NOTE` in `src-tauri/Cargo.toml` — apply it as part of
-the first SDK build (it needs one networked `cargo build` to resolve the
-`rustls-tls` feature set).
+Phone presets start with Moonshine Tiny (English speech, about 31 MB) and
+Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer speech
+without AI cleanup. Larger cleanup models remain available in Advanced Models.
+Downloads require a connection; inference works offline afterward. The existing
+memory policy controls unloading both engines.
+
+For emulator pipeline checks, a debug APK can opt into `android-local-testing`.
+Its `android_test_local_audio` command accepts bounded 16 kHz mono PCM WAV
+fixtures and runs the production pipeline without inserting text. It requires
+local speech and cleanup selections and empty cloud fallback lists. This feature
+is rejected by release builds and is absent from ordinary debug APKs.
 
 ## Adaptive UI
 
@@ -134,12 +139,46 @@ npx tauri android dev           # device or emulator
 npx tauri android build         # signed/unsigned APK + AAB in gen/android
 ```
 
+Native runtime preparation also requires CMake, Ninja, `curl`, and the JDK's
+`jar` command. Pinned sources and build outputs are cached under this worktree's
+`src-tauri/target/android-local-runtimes`; no host CPU tuning is used.
+
+The repository-root `.cargo/config.toml` sets 16 KB ELF and RELRO linker
+alignment for both Android Rust targets. Keep these target flags at the
+repository root: Tauri launches Cargo from there while building the manifest in
+`src-tauri/`. Oboe and llama.cpp use the NDK's static C++ runtime, so the APK
+does not include `libc++_shared.so`. For release checks, inspect every packaged
+`.so` LOAD alignment and GNU_RELRO end, then run `zipalign -c -P 16 -v 4 <apk>`;
+the Android developer guide documents the 16 KB checks and linker requirements.
+
 `scripts/android-sync.mjs` is idempotent — re-run it after CLI upgrades or a
 fresh `tauri android init`. `src-tauri/gen/` stays gitignored; these sources
 are the truth.
 
 Minimum SDK is 26 (Android 8.0); target is 36. ARM64 (`arm64-v8a`) first;
 x86_64 for emulators.
+
+## Testing on an emulator
+
+An x86_64 API 34+ AVD is enough for the full dictation path:
+
+```bash
+node scripts/android-sync.mjs            # after `npm run build`
+npx tauri android build --debug --target x86_64 --apk
+adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+adb shell pm grant com.verenu.app android.permission.RECORD_AUDIO
+adb shell settings put secure enabled_accessibility_services \
+  com.verenu.app/com.verenu.app.VerenuAccessibilityService
+```
+
+Enter a provider key under Settings → API Keys (it goes straight into the
+Android Keystore). To feed speech to the emulated microphone, start the
+emulator with `-grpc 8554` and stream PCM to the emulator controller's
+`injectAudio` RPC (16 kHz mono S16 works); host-audio passthrough is
+unreliable. Open any text field (for example
+`adb shell am start -a android.intent.action.INSERT -t vnd.android.cursor.dir/contact`),
+tap the pill, inject audio, then tap Stop. `adb shell setprop log.tag.VerenuA11y DEBUG`
+turns on the accessibility service's event log (event types only, never text).
 
 ## Testing
 

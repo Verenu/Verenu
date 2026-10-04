@@ -1,13 +1,19 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
-  import { saveSetting, type AppearanceMode } from '../../settings';
+  import {
+    saveSetting,
+    ANDROID_PILL_POSITION_OPTIONS,
+    DEFAULT_ANDROID_PILL_POSITION,
+    type AndroidPillPosition,
+    type AppearanceMode,
+  } from '../../settings';
   import { modalFocusTrap } from '../../modalFocus';
   import { MOTION_MS, MOTION_PX, modalBackdrop, modalCard, motionMs, motionPx, animateWidth } from '../../motion';
   import {
@@ -19,11 +25,13 @@
   import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
   import { modelDisplayLabel, splitModelId } from './models';
   import AccentColorPicker from './AccentColorPicker.svelte';
-  import CustomThemeEditor from './CustomThemeEditor.svelte';
-  import { CUSTOM_THEME_CHANGE_EVENT, defaultCustomTheme, type CustomTheme } from '../../customTheme';
-  import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent } from '../../accentTheme';
+  import AppearanceSettings from './AppearanceSettings.svelte';
+  import { persistAccentColor, withAppearanceLock } from '../../appearanceActions';
+  import { guardThemeEditor, themeEditor } from '../../themeEditor.svelte';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
   import DesktopShortcutStatus from './DesktopShortcutStatus.svelte';
+  import { HotkeyCapture } from '../../hotkeyCapture';
+  import { loadHotkey } from '../../hotkey.svelte';
 
   let selectedLanguage = $state<TranscriptionLanguageCode>('en');
   let languageDropdownOpen = $state(false);
@@ -44,6 +52,28 @@
   let microphones = $state<string[]>([]);
   let selectedMic = $state('');
   let micDropdownOpen = $state(false);
+  let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
+  let coverKeyboardMic = $state(false);
+  let coverKeyboardMicError = $state(false);
+
+  async function handleCoverKeyboardMic(value: boolean) {
+    coverKeyboardMic = value;
+    try {
+      await saveSetting('android_pill_cover_keyboard_mic', value);
+    } catch (err) {
+      coverKeyboardMic = !value;
+      coverKeyboardMicError = true;
+      console.error('save android_pill_cover_keyboard_mic failed:', err);
+    }
+  }
+  let pillDropdownOpen = $state(false);
+  const defaultPillPositionLabel =
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === DEFAULT_ANDROID_PILL_POSITION)?.label ??
+    ANDROID_PILL_POSITION_OPTIONS[0]?.label ??
+    '';
+  const pillPositionLabel = $derived(
+    ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? defaultPillPositionLabel,
+  );
   const microphoneCopy = {
     inputDeviceLabel: 'Input device',
     inputDeviceDescription: 'Choose which microphone Verenu should record from',
@@ -57,35 +87,18 @@
   let hotkey = $state(defaultHotkey);
   let recordingHotkey = $state(false);
   let capturedKeys = $state<string[]>([]);
+  let hotkeyError = $state('');
+  const capture = new HotkeyCapture();
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let destroyed = false;
   let hotkeyState = $state<'idle' | 'armed' | 'first' | 'saving' | 'success' | 'error'>('idle');
   const HOTKEY_SUCCESS_MS = 700;
   const HOTKEY_ERROR_MS   = 900;
   const LANGUAGE_MENU_ID = 'spoken-language-menu';
   const MIC_MENU_ID = 'microphone-menu';
+  const PILL_MENU_ID = 'pill-position-menu';
   let keybindEl: HTMLElement | null = $state(null);
   let capturedWidth = 0;
-  let segmentEl: HTMLElement | null = $state(null);
-  let indicatorStyle = $state('');
-
-  $effect(() => {
-    const idx = appearanceOptions.findIndex(o => o.id === appStore.appearanceMode);
-    if (!segmentEl) return;
-
-    const measure = () => {
-      const btn = segmentEl?.querySelectorAll<HTMLElement>('.appearance-option')[idx];
-      if (!btn) return;
-      // Horizontal only — vertical inset is pure CSS so the pill stays
-      // centered in the track regardless of option padding/font metrics.
-      indicatorStyle = `left:${btn.offsetLeft}px;width:${btn.offsetWidth}px`;
-    };
-
-    measure();
-    // The settings column is fluid now, so a one-shot measurement goes stale as
-    // soon as the window is resized.
-    const observer = new ResizeObserver(measure);
-    observer.observe(segmentEl);
-    return () => observer.disconnect();
-  });
 
   const readableMac: Record<string, string> = {
     MetaLeft: 'Cmd',
@@ -113,11 +126,8 @@
 
   let buttonText = $derived(
     recordingHotkey
-      ? capturedKeys[0] === '__bad__'
-        ? isMac ? 'Pick a key like F5' : 'Must be Alt/Ctrl/Shift/Win'
-        : capturedKeys.length === 0
-          ? isMac ? 'Press a key (e.g. F5)…' : 'Press Alt/Ctrl/Shift/Win...'
-          : isLinux ? 'Press 2nd key or modifier...' : 'Press 2nd key...'
+      ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Hold your shortcut...'
+      : hotkeyState === 'saving' ? 'Saving...'
       : isLinux && !isAndroid && desktopShortcut('dictation') ? desktopShortcut('dictation')?.active?.split('+').join(' + ') ?? 'Unavailable' : formatHotkeyDisplay(hotkey)
   );
 
@@ -140,24 +150,6 @@
     el.style.width = `${newW}px`;
   });
 
-  // On Omarchy, System already follows the active Omarchy theme. The separate
-  // Omarchy choice is kept only for installs that saved it earlier.
-  // Custom lets the user type hex colors and is available on every desktop.
-  const appearanceOptions: { id: AppearanceMode; label: string }[] = $derived([
-    { id: 'system', label: 'System' },
-    { id: 'light', label: 'Light' },
-    { id: 'dark', label: 'Dark' },
-    ...(isLinux && !isAndroid && appStore.appearanceMode === 'omarchy'
-      ? [{ id: 'omarchy' as const, label: 'Omarchy' }]
-      : []),
-    ...(!isAndroid ? [{ id: 'custom' as const, label: 'Custom' }] : []),
-  ]);
-
-  const MODIFIER_CODES = new Set([
-    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
-    'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
-  ]);
-
   async function loadSettings() {
     const results = await Promise.allSettled([
       invoke<boolean | null>('get_setting', { key: 'autostart_enabled' }),
@@ -170,6 +162,8 @@
       invoke<string[]>('get_microphones'),
       invoke<string | null>('get_setting', { key: 'microphone_device' }),
       invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
+      invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
+      invoke<boolean | null>('get_setting', { key: 'android_pill_cover_keyboard_mic' }),
     ]);
 
     const val = <T>(i: number, fallback: T): T =>
@@ -181,10 +175,12 @@
     capsLockUppercase = val<boolean | null>(6, null) ?? false;
 
     const hk = val<string[] | null>(1, null);
-    if (hk && hk.length === 2) hotkey = hk;
+    if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
 
     const appearance = val<AppearanceMode | null>(2, null);
-    if (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom') {
+    // A theme being edited is previewing through these store fields; the saved
+    // values must not overwrite the preview.
+    if (!themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
       appStore.appearanceMode = appearance;
     }
 
@@ -197,6 +193,12 @@
     microphones = val<string[]>(7, []);
     selectedMic = val<string | null>(8, null) ?? '';
     appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
+    const savedPillPosition = val<AndroidPillPosition | null>(10, null);
+    if (savedPillPosition && ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === savedPillPosition)) {
+      pillPosition = savedPillPosition;
+    }
+
+    coverKeyboardMic = val<boolean | null>(11, null) ?? false;
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
@@ -206,7 +208,18 @@
   function handleWindowClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
     if (micDropdownOpen && !target.closest('.mic-dropdown')) micDropdownOpen = false;
+    if (pillDropdownOpen && !target.closest('.pill-dropdown')) pillDropdownOpen = false;
     if (languageDropdownOpen && !target.closest('.language-dropdown')) languageDropdownOpen = false;
+  }
+
+  async function savePillPosition(position: AndroidPillPosition) {
+    pillPosition = position;
+    pillDropdownOpen = false;
+    try {
+      await saveSetting('android_pill_position', position);
+    } catch (err) {
+      console.error('savePillPosition failed:', err);
+    }
   }
 
   async function saveMic(name: string) {
@@ -386,185 +399,114 @@
     }
   }
 
-  async function saveCustomTheme(next: CustomTheme | null) {
-    appStore.customTheme = next;
-    void emit(CUSTOM_THEME_CHANGE_EVENT, next).catch((err) => {
-      console.warn('broadcast custom theme failed:', err);
-    });
-    await saveSetting('custom_theme', next);
-  }
-
-  async function handleCustomTheme(next: CustomTheme | null) {
-    const previous = appStore.customTheme;
-    try {
-      await saveCustomTheme(next);
-    } catch (err) {
-      appStore.customTheme = previous;
-      void emit(CUSTOM_THEME_CHANGE_EVENT, previous).catch(() => {});
-      console.error('save custom_theme failed:', err);
-    }
-  }
-
-  async function handleAppearance(mode: AppearanceMode) {
-    const previousAppearance = appStore.appearanceMode;
-    const previousAccent = appStore.accentColor;
-    const resetAccentToThemeDefault = isAdaptiveDefaultAccent(previousAccent);
-    let accentResetSaved = false;
-
-    try {
-      // First visit to Custom starts from the light or dark preset that
-      // matches the current look instead of an empty palette.
-      if (mode === 'custom' && !appStore.customTheme) {
-        await saveCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'));
-      }
-      // Exact black and white represent the default accent in their respective
-      // themes. Save null so the CSS default adapts when Appearance changes.
-      if (resetAccentToThemeDefault) {
-        await saveSetting('accent_color', null);
-        accentResetSaved = true;
-      }
-      await saveSetting('appearance_mode', mode);
-
-      await animateAccentChange(async () => {
-        appStore.appearanceMode = mode;
-        if (resetAccentToThemeDefault) appStore.accentColor = null;
-        await tick();
-      });
-      if (resetAccentToThemeDefault) {
-        void emit(ACCENT_CHANGE_EVENT, null).catch((err) => {
-          console.warn('broadcast adaptive accent reset failed:', err);
-        });
-      }
-    } catch (err) {
-      if (accentResetSaved) {
-        try {
-          await saveSetting('accent_color', previousAccent);
-        } catch (rollbackErr) {
-          console.error('restore accent_color after appearance save failed:', rollbackErr);
-        }
-      }
-      appStore.appearanceMode = previousAppearance;
-      appStore.accentColor = previousAccent;
-      console.error('save appearance_mode failed:', err);
-    }
-  }
-
   async function handleAccentColor(color: string | null) {
-    // Exact black/white are the theme defaults, not fixed custom accents.
-    const next = isAdaptiveDefaultAccent(color) ? null : color;
-    const previous = appStore.accentColor;
-    await animateAccentChange(async () => {
-      appStore.accentColor = next;
-      await tick();
-    });
-    void emit(ACCENT_CHANGE_EVENT, next).catch((err) => {
-      console.warn('broadcast accent color failed:', err);
-    });
-    try {
-      await saveSetting('accent_color', next);
-    } catch (err) {
-      await animateAccentChange(async () => {
-        appStore.accentColor = previous;
-        await tick();
-      });
-      void emit(ACCENT_CHANGE_EVENT, previous).catch((emitErr) => {
-        console.warn('broadcast accent rollback failed:', emitErr);
-      });
-      console.error('save accent_color failed:', err);
-    }
+    guardThemeEditor(() => void withAppearanceLock(() => persistAccentColor(color)));
   }
 
-  function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
+  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
     e.stopPropagation();
-    if (recordingHotkey) return;
+    if (recordingHotkey || hotkeyState === 'saving') return;
+    clearTimeout(feedbackTimer);
+    hotkeyError = '';
+    capture.reset();
+    hotkeyState = 'saving';
+    try {
+      await invoke('set_hotkey_capture', { active: true });
+      if (destroyed) {
+        await invoke('set_hotkey_capture', { active: false });
+        return;
+      }
+    } catch (error) {
+      hotkeyState = 'error';
+      hotkeyError = formatIpcError(error, 'Could not start shortcut capture');
+      return;
+    }
     recordingHotkey = true;
     hotkeyState = 'armed';
     capturedKeys = [];
     window.addEventListener('keydown', handleHotkeyKeydown, { capture: true });
     window.addEventListener('keyup', handleHotkeyKeyup, { capture: true });
     window.addEventListener('mousedown', cancelRecordingHotkey, { capture: true });
+    window.addEventListener('blur', handleCaptureBlur);
   }
 
   function removeHotkeyCaptureListeners() {
     window.removeEventListener('keydown', handleHotkeyKeydown, { capture: true });
     window.removeEventListener('keyup', handleHotkeyKeyup, { capture: true });
     window.removeEventListener('mousedown', cancelRecordingHotkey, { capture: true });
+    window.removeEventListener('blur', handleCaptureBlur);
   }
 
-  function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
+  async function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
     if (e && (e.target as HTMLElement).closest('.keybind-btn')) return;
     if (recordingHotkey) {
       removeHotkeyCaptureListeners();
       recordingHotkey = false;
-      hotkeyState = 'idle';
+      hotkeyState = 'saving';
       capturedKeys = [];
+      capture.reset();
+      try {
+        await invoke('set_hotkey_capture', { active: false });
+        hotkeyState = 'idle';
+      } catch (error) {
+        hotkeyState = 'error';
+        hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
+      }
     }
   }
+
+  function handleCaptureBlur() { cancelRecordingHotkey(); }
 
   function handleHotkeyKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.repeat) return;
-    if (capturedKeys.length === 0) {
-      if (e.code === 'Escape') { cancelRecordingHotkey(); return; }
-      if (MODIFIER_CODES.has(e.code)) {
-        // A modifier first — wait for the key it pairs with (modifier+key chord).
-        capturedKeys = [e.code];
-        hotkeyState = 'first';
-      } else if (isMac && /^F([1-9]|1[0-2])$/.test(e.code)) {
-        // macOS allows a single-key hotkey, but only function keys (F1–F12):
-        // a bare letter/Space would be consumed system-wide and hijack typing.
-        capturedKeys = [e.code, ''];
-        hotkeyState = 'saving';
-        finishRecordingHotkey();
-      } else {
-        capturedKeys = ['__bad__'];
-        setTimeout(() => { capturedKeys = []; }, 800);
-      }
-    } else if (capturedKeys.length === 1 && e.code !== capturedKeys[0]) {
-      capturedKeys = [...capturedKeys, e.code];
-      hotkeyState = 'saving';
-      finishRecordingHotkey();
+    if (e.code === 'Escape' && capturedKeys.length === 0) {
+      cancelRecordingHotkey();
+      return;
     }
+    capturedKeys = capture.press(e.code, e.repeat, { Control: e.ctrlKey, Alt: e.altKey, Shift: e.shiftKey, Meta: e.metaKey });
+    hotkeyState = capturedKeys.length ? 'first' : 'armed';
   }
 
   function handleHotkeyKeyup(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
+    const keys = capture.release(e.code);
+    if (keys) void finishRecordingHotkey(keys);
   }
 
-  async function finishRecordingHotkey() {
+  async function finishRecordingHotkey(keys: string[]) {
     removeHotkeyCaptureListeners();
     recordingHotkey = false;
-    if (capturedKeys.length === 2) {
+    hotkeyState = 'saving';
+    let outcome: 'success' | 'error' = 'success';
+    try {
+      const available = await invoke<boolean>('check_hotkey', { keys });
+      if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
+      await invoke('save_hotkey', { keys });
+      hotkey = keys;
+      await loadHotkey();
+    } catch (error) {
+      outcome = 'error';
+      hotkeyError = formatIpcError(error, 'Could not save this shortcut');
+    } finally {
       try {
-        let available = true;
-        try {
-          available = await invoke<boolean>('check_hotkey', { key1: capturedKeys[0], key2: capturedKeys[1] });
-        } catch (e) {
-          console.warn('check_hotkey failed (likely running in browser dev mode)', e);
-        }
-        if (!available) {
-          hotkeyState = 'error';
-          await emit('verenu:error', 'That shortcut is unavailable and may be used by another app. Choose a different key combination in Settings > General.');
-          setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
-          return;
-        }
-        await invoke('save_hotkey', { key1: capturedKeys[0], key2: capturedKeys[1] });
-        hotkey = capturedKeys;
-        hotkeyState = 'success';
-        setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_SUCCESS_MS);
-      } catch (e) {
-        console.error('Failed to save hotkey', e);
-        hotkeyState = 'error';
-        await emit('verenu:error', formatIpcError(e, 'Could not save this shortcut'));
-        setTimeout(() => { hotkeyState = 'idle'; }, HOTKEY_ERROR_MS);
+        await invoke('set_hotkey_capture', { active: false });
+      } catch (error) {
+        outcome = 'error';
+        hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
       }
+      hotkeyState = outcome;
+      feedbackTimer = setTimeout(() => { hotkeyState = 'idle'; }, outcome === 'success' ? HOTKEY_SUCCESS_MS : HOTKEY_ERROR_MS);
     }
   }
 
   onDestroy(() => {
+    destroyed = true;
+    if (recordingHotkey) void invoke('set_hotkey_capture', { active: false }).catch(() => {});
+    clearTimeout(feedbackTimer);
     removeHotkeyCaptureListeners();
+    capture.reset();
     recordingHotkey = false;
   });
 
@@ -579,13 +521,60 @@
     <div><div class="label">Dictation control</div><div class="desc">Open a text field and use the Verenu pill above your keyboard.</div></div>
     <span class="badge key-badge">Keyboard pill</span>
   </div>
+  <div class="setting-row" data-setting-target="general-pill-position">
+    <div>
+      <div class="label">Pill position</div>
+      <div class="desc">Where the dictation pill appears. It follows the keyboard, and docks to the screen edge while a dictation continues without it.</div>
+    </div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="ui-dropdown pill-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
+      <button
+        class="btn-ghost ui-dropdown-trigger mic-btn"
+        onclick={() => (pillDropdownOpen = !pillDropdownOpen)}
+        aria-haspopup="true"
+        aria-expanded={pillDropdownOpen}
+        aria-controls={PILL_MENU_ID}
+        aria-label="Pill position"
+      >
+        <span class="mic-btn-label">{pillPositionLabel}</span>
+        <svg class:open={pillDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      {#if pillDropdownOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
+          id={PILL_MENU_ID}
+          class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          aria-label="Pill position options"
+          onclick={(e) => e.stopPropagation()}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
+          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+        >
+          {#each ANDROID_PILL_POSITION_OPTIONS as option}
+            <button class="ui-dropdown-option mic-item" class:active={pillPosition === option.id} onclick={() => savePillPosition(option.id)}>{option.label}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
+  <div class="setting-row" data-setting-target="general-cover-keyboard-mic">
+    <div>
+      <div class="label">Cover the keyboard's mic button</div>
+      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button, and hides while you're offline so the keyboard's own voice typing stays usable. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
+    </div>
+    <Toggle checked={coverKeyboardMic} onchange={handleCoverKeyboardMic} label="Cover the keyboard's mic button" bind:error={coverKeyboardMicError} />
+  </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">
-    <div><div class="label">Hotkey</div><div class="desc">{isLinux ? 'Hold to record, release to transcribe. Desktop conflicts automatically use an available alternative.' : 'Hold to record, release to transcribe'}</div></div>
+    <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div></div>
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
       onclick={startRecordingHotkey}
+      disabled={hotkeyState === 'saving'}
+      aria-label={recordingHotkey ? 'Recording shortcut' : 'Change dictation hotkey'}
+      aria-describedby="hotkey-help"
       class:recording={recordingHotkey}
       class:armed={hotkeyState === 'armed'}
       class:first={hotkeyState === 'first'}
@@ -594,10 +583,13 @@
       class:error={hotkeyState === 'error'}
     >
       {#key buttonText}
-        <span in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
+        <span aria-live="polite" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
       {/key}
     </button>
   </div>
+  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={Boolean(hotkeyError)} role={hotkeyError ? 'alert' : undefined}>
+    {hotkeyError || (recordingHotkey ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+  </p>
 {/if}
 {#if isMac && hotkey[0] === 'F5'}
   <p class="hotkey-tip">
@@ -711,33 +703,7 @@
   </div>
 </div>
 <h3 class="settings-subhead">Appearance & System</h3>
-<div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{isMac ? 'Follow macOS or force a specific theme' : isAndroid ? 'Follow Android or force a specific theme' : isLinux ? 'Follow your desktop or force a specific theme' : 'Follow Windows or force a specific theme'}</div></div>
-  <div class="appearance-segment" role="radiogroup" aria-label="Appearance" bind:this={segmentEl}>
-    {#if indicatorStyle}
-      <div class="appearance-indicator" style={indicatorStyle} aria-hidden="true"></div>
-    {/if}
-    {#each appearanceOptions as option}
-      <button
-        class="appearance-option"
-        class:active={appStore.appearanceMode === option.id}
-        role="radio"
-        aria-checked={appStore.appearanceMode === option.id}
-        onclick={() => handleAppearance(option.id)}
-      >{option.label}</button>
-    {/each}
-  </div>
-</div>
-{#if appStore.appearanceMode === 'custom' && appStore.customTheme}
-  <div class="setting-row" data-setting-target="general-custom-theme">
-    <div><div class="label">Custom colors</div><div class="desc">Type hex codes or pick colors. Everything else is derived from them; Sidebar and Surface are optional.</div></div>
-  </div>
-  <CustomThemeEditor
-    value={appStore.customTheme}
-    onchange={handleCustomTheme}
-    onreset={() => handleCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'))}
-  />
-{/if}
+<AppearanceSettings />
 <div class="setting-row" data-setting-target="general-accent">
   <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
@@ -864,9 +830,11 @@
       opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1);
     user-select: none;
     transform-origin: center;
-    white-space: nowrap;
-    overflow: hidden;
+    white-space: normal;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
+  .hotkey-error { color: var(--danger); }
   .keybind-btn:hover { background: var(--control-hover); }
   .keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }
@@ -924,52 +892,6 @@
     font-size: 10.5px;
     text-transform: uppercase;
   }
-  .appearance-segment {
-    /* Same geometry as DictionaryToolbar .sort-pills: equal pad + matching
-       indicator inset/radius so the fill stays clear of the track corners. */
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    box-sizing: border-box;
-    padding: 3px;
-    background: var(--paper);
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    gap: 2px;
-    overflow: hidden;
-  }
-  .appearance-indicator {
-    position: absolute;
-    top: 3px;
-    bottom: 3px;
-    background: var(--bg-elev);
-    border-radius: 4px;
-    pointer-events: none;
-    transition: left 180ms cubic-bezier(0.22, 1, 0.36, 1), width 180ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-  .appearance-option {
-    position: relative;
-    z-index: 1;
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 22px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--ink-mute);
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 1;
-    padding: 0 9px;
-    cursor: pointer;
-    transition: color 0.12s;
-  }
-  .appearance-option:hover { color: var(--ink-strong); }
-  .appearance-option.active { color: var(--ink); }
-
   /* ── cleanup-off confirm modal ── */
   .modal-backdrop {
     position: fixed;

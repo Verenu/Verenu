@@ -2,6 +2,8 @@ import type { ProviderId } from '../../settings';
 import { customProviderStore, customProvider, isCustomProviderId } from '../../customProviders.svelte';
 import {
   isTrustworthy,
+  hasSnapshot,
+  CLOUD_PROVIDERS,
   MISS_INTERVAL_MS,
   type ModelCatalogCache,
 } from '../../modelCatalogStore.svelte';
@@ -91,7 +93,7 @@ export type PickerContext = {
 };
 
 /** Providers whose absence from a list means something. Local has no list. */
-const LISTED_PROVIDERS: ProviderId[] = ['groq', 'openai', 'google', 'assemblyai'];
+const LISTED_PROVIDERS = CLOUD_PROVIDERS;
 const GOOGLE_DEDICATED_TRANSCRIBER = 'gemini-3.5-transcribe';
 
 function row(entry: CatalogEntry, state: ModelState, note = '', remedy: Remedy = 'none'): ModelRow {
@@ -140,6 +142,7 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return row(entry, 'ready', `Not verified against ${providerDisplayLabel(entry.provider)} yet`);
   }
   if (cache!.ids.includes(entry.id)) return row(entry, 'ready');
+  if ((cache!.missing[modelId(entry.provider, entry.id)]?.count ?? 0) < 2) return row(entry, 'ready', 'Not in the latest list; keeping this model until confirmed');
 
   return row(entry, 'unavailable', `No longer offered by ${providerDisplayLabel(entry.provider)}`);
 }
@@ -164,13 +167,30 @@ export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[]
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }
 
+/** New models with compatible capability metadata appear without an app update. */
+export function discoveredRows(ctx: PickerContext): ModelRow[] {
+  const rows: ModelRow[] = [];
+  for (const provider of LISTED_PROVIDERS) {
+    const cache = ctx.cache[provider];
+    if (!hasSnapshot(cache)) continue;
+    for (const id of cache!.ids) {
+      if (catalogEntry(provider, id)) continue;
+      const info = cache!.metadata?.[id];
+      if (!info?.tasks.includes(ctx.task)) continue;
+      const keyed = ctx.apiKeyStatus[provider];
+      rows.push({ provider, id, key: modelId(provider, id), label: info.label || id,
+        tags: [], state: keyed ? 'ready' : 'needs-setup', remedy: keyed ? 'none' : 'add-key',
+        note: keyed ? (cache!.lastError ? 'Cached model · refresh unavailable' : 'Listed model · capability metadata') : 'No API key' });
+    }
+  }
+  return rows;
+}
+
 /**
  * Ids a provider returned that aren't in the catalog.
  *
- * ponytail: Groq's and OpenAI's `/v1/models` return every model flat with no
- * modality field, so the task split here is a name heuristic. Curated rows
- * carry real `tasks` metadata; this tail is best-effort, which is why it ships
- * behind Advanced and is labelled Unverified.
+ * Groq's and OpenAI's lists have no modality fields. IDs without capability
+ * metadata use a name heuristic and remain under Show more models.
  */
 export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   const transcriptionish = /whisper|transcribe|speech|[-/]stt\b/i;
@@ -181,9 +201,10 @@ export function unverifiedRows(ctx: PickerContext): ModelRow[] {
 
   for (const provider of LISTED_PROVIDERS) {
     const cache = ctx.cache[provider];
-    if (!isTrustworthy(cache)) continue;
+    if (!hasSnapshot(cache)) continue;
     for (const id of cache!.ids) {
       if (catalogEntry(provider, id)) continue;
+      if (cache!.metadata?.[id]) continue;
       if (otherModality.test(id)) continue;
       const looksTranscription = transcriptionish.test(id);
       if (ctx.task === 'transcription' ? !looksTranscription : looksTranscription) continue;
@@ -193,9 +214,9 @@ export function unverifiedRows(ctx: PickerContext): ModelRow[] {
         key: modelId(provider, id),
         label: id,
         tags: [],
-        state: 'unverified',
-        note: 'Not verified for this task',
-        remedy: 'none',
+        state: ctx.apiKeyStatus[provider] ? 'unverified' : 'needs-setup',
+        note: ctx.apiKeyStatus[provider] ? 'Not verified for this task' : 'No API key',
+        remedy: ctx.apiKeyStatus[provider] ? 'none' : 'add-key',
       });
     }
   }
@@ -218,6 +239,8 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
   }
 
   const cache = ctx.cache[parsed.provider];
+  const discovered = discoveredRows(ctx).find((row) => row.key === selectedId);
+  if (discovered) return discovered;
   const base: ModelRow = {
     provider: parsed.provider,
     id: parsed.model,
@@ -228,6 +251,9 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     note: 'Custom model',
     remedy: 'none',
   };
+  if (parsed.provider !== 'local' && !ctx.apiKeyStatus[parsed.provider]) {
+    return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
+  }
 
   if (isCustomProviderId(parsed.provider)) {
     const p = customProvider(parsed.provider);

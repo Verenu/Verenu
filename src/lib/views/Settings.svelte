@@ -9,18 +9,23 @@
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
   import { clearSettingsSearchNavigation, settingsSearchNavigation } from '../settingsSearch.svelte';
 
-  import GeneralSection from '../components/settings/GeneralSection.svelte';
-  import AppMappingsSection from '../components/settings/AppMappingsSection.svelte';
-  import ApiKeysSection from '../components/settings/ApiKeysSection.svelte';
-  import ModelsSection from '../components/settings/ModelsSection.svelte';
-  import PrivacySection from '../components/settings/PrivacySection.svelte';
-  import SyncSection from '../components/settings/SyncSection.svelte';
-  import AudioSection from '../components/settings/AudioSection.svelte';
-  import PermissionsSection from '../components/settings/PermissionsSection.svelte';
+  import DeferredView from '../components/DeferredView.svelte';
+  import { lazyComponent } from '../lazyComponent.svelte';
   import AboutSection from '../components/settings/AboutSection.svelte';
-  import DeveloperSection from '../components/settings/DeveloperSection.svelte';
-  import SubAppsSection from '../components/settings/SubAppsSection.svelte';
-  import { isMac } from '../platform';
+  import { isAndroid, isMac } from '../platform';
+
+  const sections = {
+    general: lazyComponent(() => import('../components/settings/GeneralSection.svelte')),
+    apps: lazyComponent(() => import('../components/settings/AppMappingsSection.svelte')),
+    keys: lazyComponent(() => import('../components/settings/ApiKeysSection.svelte')),
+    models: lazyComponent(() => import('../components/settings/ModelsSection.svelte')),
+    privacy: lazyComponent(() => import('../components/settings/PrivacySection.svelte')),
+    sync: lazyComponent(() => import('../components/settings/SyncSection.svelte')),
+    advanced: lazyComponent(() => import('../components/settings/AudioSection.svelte')),
+    permissions: lazyComponent(() => import('../components/settings/PermissionsSection.svelte')),
+    developer: lazyComponent(() => import('../components/settings/DeveloperSection.svelte')),
+    subapps: lazyComponent(() => import('../components/settings/SubAppsSection.svelte')),
+  };
 
   let settingsPageEl = $state<HTMLDivElement | null>(null);
   let settingsPanelEl = $state<HTMLDivElement | null>(null);
@@ -28,6 +33,7 @@
   let searchHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
   const section = $derived(appStore.settingsSection);
+  const sectionReady = $derived(section === 'about' || !!sections[section].component);
   const animDir = $derived(appStore.settingsAnimDir);
   const appVersion = $derived(appStore.appVersion);
 
@@ -139,14 +145,26 @@
       previousFocusEl = document.activeElement;
     }
 
-    requestAnimationFrame(() => {
-      if (document.querySelector('[role="dialog"]')) return;
+    let cancelled = false;
+    let attempts = 0;
+    const focusSettingsPage = () => {
+      if (cancelled || !appStore.settingsOpen) return;
+      const active = document.activeElement;
+      const dialog = document.querySelector('[role="dialog"]');
+      if (active instanceof HTMLElement && dialog?.contains(active)) {
+        // A dialog from the outgoing page may still be running its close
+        // transition. Let it finish if it still owns focus before moving focus
+        // into Settings.
+        if (attempts++ < 60) requestAnimationFrame(focusSettingsPage);
+        return;
+      }
       // Don't steal focus if the user already moved inside the shell while it
       // was opening (keyboard flows race the entrance transition).
-      const active = document.activeElement;
       if (active instanceof HTMLElement && settingsPageEl?.contains(active)) return;
       (firstFocusableInShell() ?? settingsPageEl)?.focus();
-    });
+    };
+    requestAnimationFrame(focusSettingsPage);
+    return () => { cancelled = true; };
   });
 
   // Announce the section that just loaded: move focus to the panel heading
@@ -156,7 +174,7 @@
   // still reaches the rail — this is context, not a trap.
   $effect(() => {
     const currentSection = section;
-    if (!appStore.settingsOpen || !settingsPanelEl || !currentSection) return;
+    if (!appStore.settingsOpen || !settingsPanelEl || !currentSection || !sectionReady) return;
     const panel = settingsPanelEl;
     requestAnimationFrame(() => {
       if (!panel.isConnected) return;
@@ -185,7 +203,7 @@
     const request = settingsSearchNavigation.request;
     const currentSection = section;
     const panel = settingsPanelEl;
-    if (!request || !appStore.settingsOpen || request.section !== currentSection || !panel) return;
+    if (!request || !appStore.settingsOpen || request.section !== currentSection || !panel || !sectionReady) return;
 
     let cancelled = false;
     let attempts = 0;
@@ -331,28 +349,10 @@
             out:pageSwap={{ axis: 'y', distance: -animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}
           >
             <div class="panel-inner">
-              {#if section === 'general'}
-                <GeneralSection />
-              {:else if section === 'subapps'}
-                <SubAppsSection />
-              {:else if section === 'apps'}
-                <AppMappingsSection />
-              {:else if section === 'keys'}
-                <ApiKeysSection />
-              {:else if section === 'models'}
-                <ModelsSection />
-              {:else if section === 'privacy'}
-                <PrivacySection />
-              {:else if section === 'sync'}
-                <SyncSection />
-              {:else if section === 'advanced'}
-                <AudioSection />
-              {:else if section === 'permissions' && isMac}
-                <PermissionsSection />
-              {:else if section === 'about'}
+              {#if section === 'about'}
                 <AboutSection {appVersion} />
-              {:else if section === 'developer' && appStore.devModeEnabled}
-                <DeveloperSection />
+              {:else if (section !== 'permissions' || isMac || isAndroid) && (section !== 'developer' || appStore.devModeEnabled)}
+                <DeferredView view={sections[section]} />
               {/if}
             </div>
           </div>
@@ -549,6 +549,10 @@
    * shell fills the window. container-type lets the sections swap their old
    * viewport media queries for container queries against this column.
    */
+  /* Android uses the whole content column: the 680px measure left the right
+     half of an unfolded screen empty and pushed the controls off the edge. */
+  :global(.app[data-android='true']) .panel-inner { width: 100%; }
+
   .panel-inner {
     width: min(100%, 680px);
     margin-inline: auto;
@@ -657,7 +661,7 @@
    * ribbon beside a lonely control. Stacking gives the text the full measure and
    * puts the control on its own line at a comfortable thumb size.
    */
-  @container settings-panel (max-width: 520px) {
+  @container settings-panel (max-width: 440px) {
     .settings-body :global(.setting-row) {
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;
@@ -668,6 +672,19 @@
     .settings-body :global(.setting-row) > :global(*:last-child) {
       justify-self: start;
       margin-left: 0;
+    }
+
+    /* A switch is a one-line control: keep it beside its label, on the right,
+       instead of dropping it under the description like a wide control. */
+    .settings-body :global(.setting-row:has(> .toggle:last-child)) {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 0;
+    }
+
+    .settings-body :global(.setting-row:has(> .toggle:last-child)) > :global(.toggle) {
+      justify-self: end;
     }
 
     .settings-body :global(.desc) { max-width: none; }

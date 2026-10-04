@@ -729,6 +729,9 @@ pub fn spawn_level_emitter(
             if batch.is_empty() {
                 return;
             }
+            // The native Android pill reads the same envelope over its bridge.
+            #[cfg(target_os = "android")]
+            crate::android::bridge::note_audio_envelope(&batch);
             if let Some(pill) = app.get_webview_window("pill") {
                 pill.emit("audio-envelope", batch).ok();
             }

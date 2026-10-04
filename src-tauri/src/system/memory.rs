@@ -61,7 +61,7 @@ pub fn system_memory_status() -> Option<SystemMemoryStatus> {
         })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mem = crate::system::linux_proc::system_meminfo()?;
         let total_mb = mem.total_kb / 1024;
@@ -69,8 +69,8 @@ pub fn system_memory_status() -> Option<SystemMemoryStatus> {
         if total_mb == 0 {
             return None;
         }
-        let load_percent = (((total_mb.saturating_sub(available_mb)) as f64 / total_mb as f64)
-            * 100.0) as u32;
+        let load_percent =
+            (((total_mb.saturating_sub(available_mb)) as f64 / total_mb as f64) * 100.0) as u32;
         Some(SystemMemoryStatus {
             available_mb,
             total_mb,
@@ -78,7 +78,12 @@ pub fn system_memory_status() -> Option<SystemMemoryStatus> {
         })
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android"
+    )))]
     None
 }
 
