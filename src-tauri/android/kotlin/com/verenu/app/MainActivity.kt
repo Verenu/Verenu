@@ -1,5 +1,6 @@
 package com.verenu.app
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.content.res.Configuration
 import android.graphics.Color
@@ -42,6 +43,9 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Portrait only: Verenu has no landscape layout. (Android 16 ignores this on
+    // large screens such as an unfolded foldable.)
+    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     installSystemBarInsets()
     // The accessibility service starts this activity only to load the Rust
     // backend (Tauri hosts it in this process). Don't leave the UI over the

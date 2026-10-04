@@ -200,7 +200,9 @@
       // Don't steal focus if the user already moved inside the shell while it
       // was opening (keyboard flows race the entrance transition).
       if (active instanceof HTMLElement && settingsPageEl?.contains(active)) return;
-      (firstFocusableInShell() ?? settingsPageEl)?.focus();
+      // On Android the first control is the search field; focusing it opens the
+      // keyboard the moment Settings appears.
+      (isAndroid ? settingsPageEl : (firstFocusableInShell() ?? settingsPageEl))?.focus();
     };
     requestAnimationFrame(focusSettingsPage);
     return () => { cancelled = true; };
