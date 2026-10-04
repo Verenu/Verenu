@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
   import { MOTION_MS, motionMs } from '../../motion';
+  import { presetLogoHtml } from '../../customProviderLogos';
   import { CUSTOM_PROVIDER_PRESETS, PRESET_GROUPS, displayHost, monogram, presetById, presetForUrl, type CustomProviderPreset } from '../../customProviderPresets';
   import { invoke } from '../../tauri';
   import { saveSetting } from '../../settings';
@@ -146,6 +147,11 @@
   }
 </script>
 
+{#snippet tile(id: string | undefined, name: string, color: string, mark?: string, big = false)}
+  {@const logo = presetLogoHtml(id)}
+  <span class="tile" class:big class:logo={!!logo} style:--tile={color} aria-hidden="true">{#if logo}{@html logo}{:else}{mark ?? monogram(name)}{/if}</span>
+{/snippet}
+
 <section class="custom-providers" aria-label="Custom providers" data-setting-target="custom-providers">
   <div class="section-heading">
     <div><h3>Custom providers</h3>
@@ -155,7 +161,7 @@
 
   {#if !picking && !editing && !customProviderStore.providers.length}
     <div class="empty">
-      <div class="empty-tiles" aria-hidden="true">{#each ['ollama', 'mistral', 'anthropic'] as id}{@const p = presetById(id)}{#if p}<span class="tile" style:--tile={p.color}>{monogram(p.name)}</span>{/if}{/each}</div>
+      <div class="empty-tiles" aria-hidden="true">{#each ['ollama', 'mistral', 'anthropic'] as id}{@const p = presetById(id)}{#if p}{@render tile(p.id, p.name, p.color)}{/if}{/each}</div>
       <p><strong>Bring your own endpoint</strong></p>
       <p class="hint">Pick from {CUSTOM_PROVIDER_PRESETS.filter(p => p.base_url).length} ready-made setups like Ollama, LM Studio, Mistral, and DeepSeek, or enter your own.</p>
     </div>
@@ -164,7 +170,7 @@
   {#each customProviderStore.providers as provider (provider.id)}
     {@const match = presetForUrl(provider.base_url, provider.protocol)}
     <div class="provider-row">
-      <span class="tile" style:--tile={match?.color ?? '#6B7280'} aria-hidden="true">{monogram(provider.name)}</span>
+      {@render tile(match?.id, provider.name, match?.color ?? '#6B7280')}
       <div class="provider-info">
         <div class="label">{provider.name}
           <span class="pill" class:ok={keys[provider.id] || !provider.requires_key} class:warn={provider.requires_key && !keys[provider.id]}>{keys[provider.id] ? 'Key saved' : provider.requires_key ? 'Needs API key' : 'No key needed'}</span></div>
@@ -198,7 +204,7 @@
           <div class="grid">
             {#each items as p (p.id)}
               <button type="button" class="card" onclick={() => edit(undefined, p)}>
-                <span class="tile" style:--tile={p.color} aria-hidden="true">{p.mark ?? monogram(p.name)}</span>
+                {@render tile(p.id, p.name, p.color, p.mark)}
                 <span class="card-body"><span class="card-name">{p.name}</span><span class="card-note">{p.group === 'blank' || !p.base_url ? p.note : p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup'}</span></span>
               </button>
             {/each}
@@ -214,7 +220,7 @@
   {#if editing}
     <form class="provider-editor" onsubmit={e => { e.preventDefault(); void save(); }} aria-label="Custom provider editor" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
       <div class="editor-head">
-        <span class="tile big" style:--tile={preset?.color ?? '#6B7280'} aria-hidden="true">{preset?.mark && !editing.name ? preset.mark : monogram(editing.name || preset?.name || '')}</span>
+        {@render tile(preset?.id, editing.name || preset?.name || '', preset?.color ?? '#6B7280', preset?.mark && !editing.name ? preset.mark : undefined, true)}
         <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.group !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
           {#if preset && !savedOriginal && preset.note}<p class="hint">{preset.note}</p>{/if}</div>
         {#if !savedOriginal}<button type="button" class="btn-ghost btn-compact change" onclick={startPicking} disabled={busy}>Change preset</button>{/if}
@@ -285,6 +291,9 @@
   .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
 
   .tile { --tile: #6b7280; flex: none; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--tile); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14); }
+  .tile.logo { background: #fff; color: #111; border: 1px solid var(--line); box-shadow: none; }
+  :global([data-theme='dark']) .tile.logo { background: #fff; }
+  .tile :global(svg) { width: 62%; height: 62%; }
   .tile.big { width: 40px; height: 40px; border-radius: 11px; font-size: 13px; }
 
   .empty { display: grid; justify-items: center; gap: 4px; padding: 26px 16px; border: 1px dashed var(--line-strong); border-radius: 12px; text-align: center; }
