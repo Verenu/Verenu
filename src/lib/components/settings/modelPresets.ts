@@ -173,23 +173,20 @@ const LOCAL_TIERS: LocalTier[] = [
   },
 ];
 
-// Keep phone defaults small. Larger models remain available in Advanced.
+// Phones get one local pair: the 0.5B cleanup model. The 1.5B model made cleanup
+// take far too long on real phones, so it is no longer offered as a preset (it
+// stays available under Advanced Models).
 const ANDROID_LOCAL_TIERS: LocalTier[] = [
   {
     key: 'fastest', name: 'Fastest',
     tagline: 'Small English speech and cleanup models. Private and offline.',
     position: 0.85, stt: STT_MOONSHINE_TINY, llm: LLM_QWEN_0_5B,
   },
-  {
-    key: 'balanced', name: 'Balanced',
-    tagline: 'English speech with stronger cleanup. Private and offline.',
-    position: 0.6, stt: STT_MOONSHINE_TINY, llm: LLM_QWEN_1_5B,
-  },
 ];
 
 function localTiers(hardware: Hardware): LocalTier[] {
   // Unknown phone RAM gets the smallest pair rather than desktop-sized defaults.
-  if (hardware.isAndroid) return hardware.unknown ? ANDROID_LOCAL_TIERS.slice(0, 1) : ANDROID_LOCAL_TIERS;
+  if (hardware.isAndroid) return ANDROID_LOCAL_TIERS;
   return LOCAL_TIERS;
 }
 
