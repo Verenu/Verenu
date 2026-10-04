@@ -55,10 +55,7 @@ export const PRESET_LOGOS: Record<string, PresetLogo> = {
 };
 
 /** Preset id (or a variant of it) to logo key. */
-const ALIASES: Record<string, string> = {
-  'github-models': 'github', 'vercel': 'vercel', 'moonshot-anthropic': 'moonshot',
-  'deepseek-anthropic': 'deepseek', 'qwen': 'qwen',
-};
+const ALIASES: Record<string, string> = { 'github-models': 'github' };
 
 export function presetLogoHtml(presetId: string | undefined): string | null {
   if (!presetId) return null;
