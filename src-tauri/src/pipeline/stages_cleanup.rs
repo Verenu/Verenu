@@ -13,7 +13,7 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 // Bump this whenever cleanup instructions change so previously generated
 // output cannot mask the new prompt through the cleanup-result cache.
-const CLEANUP_PROMPT_VERSION: &str = "dictation-v9";
+pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v9";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -116,7 +116,7 @@ fn cleanup_output_is_unusable(intensity: &str, reference: &str, text: &str) -> b
         || prompts::looks_like_perspective_flip(reference, text)
 }
 
-fn cleanup_output_is_unusable_against_candidates(
+pub(super) fn cleanup_output_is_unusable_against_candidates(
     intensity: &str,
     primary: &str,
     alternate: Option<&str>,
@@ -239,193 +239,11 @@ pub(super) async fn guard_cleanup_refusal(
     }
 }
 
-pub(super) struct CleanupCachePlan {
-    pub(super) key: String,
-    allow_cache: bool,
-    has_snippets: bool,
-}
-
 struct CleanupSuccess {
     cleaned: String,
     provider_id: String,
     model: String,
     key: String,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn cleanup_cache_plan(
-    expanded: &str,
-    profile: &str,
-    intensity: &str,
-    snippet_instructions: &str,
-    alternate_transcript: Option<&str>,
-    dual_context_fingerprint: Option<u64>,
-) -> CleanupCachePlan {
-    cleanup_cache_plan_for_context(
-        expanded,
-        profile,
-        intensity,
-        snippet_instructions,
-        alternate_transcript,
-        dual_context_fingerprint,
-        None,
-    )
-}
-
-pub(super) fn cleanup_cache_plan_for_context(
-    expanded: &str,
-    profile: &str,
-    intensity: &str,
-    snippet_instructions: &str,
-    alternate_transcript: Option<&str>,
-    dual_context_fingerprint: Option<u64>,
-    context_id: Option<i64>,
-) -> CleanupCachePlan {
-    let has_snippets = !snippet_instructions.is_empty();
-    let (cache_tokens, cache_separators) = number_parser::tokenize_cache_key_parts(expanded);
-    let allow_cache = should_use_cleanup_cache_tokens(&cache_tokens)
-        && (expanded.chars().count() <= 200 || has_snippets);
-    let key = if allow_cache {
-        let base_cache_key =
-            number_parser::normalize_cleanup_cache_key_parts(&cache_tokens, &cache_separators);
-        let mut key = style_scoped_cleanup_cache_key(&base_cache_key, profile, intensity);
-        if !key.is_empty() && has_snippets {
-            let fp = snippet_instructions_fingerprint(snippet_instructions);
-            key = format!("{key}|snip:{fp:x}");
-        }
-        if !key.is_empty() {
-            if let Some(alternate) = alternate_transcript {
-                key = format!(
-                    "{key}|dual:{:x}",
-                    snippet_instructions_fingerprint(alternate)
-                );
-            }
-        }
-        if !key.is_empty() {
-            if let Some(fingerprint) = dual_context_fingerprint {
-                key = format!("{key}|dualctx:{fingerprint:x}");
-            }
-        }
-        if let Some(context_id) = context_id.filter(|id| *id != db::EVERYWHERE_CONTEXT_ID) {
-            if !key.is_empty() {
-                key = format!("{key}|ctx:{context_id}");
-            }
-        }
-        key
-    } else {
-        String::new()
-    };
-
-    CleanupCachePlan {
-        key,
-        allow_cache,
-        has_snippets,
-    }
-}
-
-pub(super) fn dual_cleanup_context_fingerprint(
-    cfg: &store::PipelineConfig,
-    extra_rules: &str,
-    app_context: Option<&str>,
-) -> u64 {
-    let mut context = String::new();
-    context.push_str(CLEANUP_PROMPT_VERSION);
-    context.push('\n');
-    context.push_str(&cfg.cleanup_default_model);
-    context.push('\n');
-    for fallback in &cfg.cleanup_fallback_models {
-        context.push_str(fallback);
-        context.push('\n');
-    }
-    context.push_str(extra_rules);
-    context.push('\n');
-    context.push_str(app_context.unwrap_or(""));
-    context.push('\n');
-    // Tone may come from a Context rather than the global default. Include
-    // every preset edit so cached cleanup never survives an instruction edit.
-    let mut edits: Vec<_> = cfg.style_prompt_instructions.iter().collect();
-    edits.sort_by_key(|(key, _)| *key);
-    for (key, instructions) in edits {
-        context.push_str(key);
-        context.push('\n');
-        context.push_str(instructions);
-        context.push('\n');
-    }
-    if let Some(template) = cfg.cleanup_override(&cfg.default_tone) {
-        context.push_str(&template);
-        context.push('\n');
-    }
-    snippet_instructions_fingerprint(&context)
-}
-
-fn touch_cleanup_cache_hit(db_handle: &DbHandle, cache_key: &str, entry: &db::CleanupCacheEntry) {
-    let now = Utc::now();
-    let new_hit_count = entry.hit_count + 1;
-    let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
-    let new_expires_at =
-        next_cache_expiry(new_hit_count, &entry.created_at, &entry.expires_at, now);
-    match db::cleanup_cache_touch_hit(
-        db_handle,
-        cache_key,
-        &entry.created_at,
-        entry.hit_count,
-        new_hit_count,
-        &now_str,
-        &new_expires_at,
-    ) {
-        Ok(_) => log::debug!(
-            "pipeline: cleanup cache touch hit_count={} expires_at={}",
-            new_hit_count,
-            new_expires_at
-        ),
-        Err(err) => log::warn!("pipeline: cleanup cache touch failed: {err}"),
-    }
-}
-
-fn cleanup_cache_hit_text(
-    db_handle: &DbHandle,
-    cache_key: &str,
-    profile: &str,
-    intensity: &str,
-    snippet_instructions: &str,
-) -> Option<String> {
-    let entry = db::cleanup_cache_get_active(db_handle, cache_key)
-        .ok()
-        .flatten()?;
-    // A cache hit skips generation entirely, so it also skips
-    // guard_cleanup_refusal — an entry written before that guard existed (or
-    // from any future bug) would otherwise be served forever until its
-    // expiry, regardless of how good the guard gets. Validate on every read,
-    // not just on write, and drop poisoned entries so the next miss
-    // regenerates and overwrites them with a clean result. The cache only
-    // stores the cleaned output, not the original dictation (by design —
-    // raw dictation must not be persisted), so the fabrication and
-    // content-loss checks have no baseline to compare against here and are
-    // effectively a no-op; refusal, artifact-leak, and repetition checks
-    // still apply.
-    if cleanup_output_is_unusable(intensity, &entry.clean_text, &entry.clean_text) {
-        log::warn!(
-            "pipeline: cleanup cache entry looks unusable (model artifact leak/refusal), evicting and treating as miss key_len={}",
-            cache_key.len()
-        );
-        let _ = db::cleanup_cache_delete_by_key(db_handle, cache_key);
-        return None;
-    }
-    log::debug!(
-        "pipeline: cleanup cache hit key_len={} hit_count={}",
-        cache_key.len(),
-        entry.hit_count
-    );
-    touch_cleanup_cache_hit(db_handle, cache_key, &entry);
-    let punctuated = if intensity == "none" {
-        entry.clean_text.clone()
-    } else {
-        ensure_terminal_punctuation(&entry.clean_text, profile, intensity)
-    };
-    Some(snippets::apply_cleanup_instruction_overrides(
-        &punctuated,
-        snippet_instructions,
-    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -737,8 +555,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             }
             prompt_context.push_str(&dictionary_evidence);
         }
-        let context_fingerprint =
-            dual_cleanup_context_fingerprint(cfg, &prompt_context, app_context);
+        let context_fingerprint = cleanup_context_fingerprint(cfg, &prompt_context, app_context);
         let cache_plan = cleanup_cache_plan_for_context(
             &expanded,
             profile,
@@ -751,7 +568,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         // Protected clipboard payloads are unique per invocation and must not
         // reuse or populate the cleanup cache, even though the marker itself
         // is intentionally stable enough to be safe in the prompt.
-        let cache_key = if protected_instruction.is_some() {
+        let cache_key = if protected_instruction.is_some() || !cfg.cleanup_cache_enabled {
             String::new()
         } else {
             cache_plan.key.clone()
@@ -761,10 +578,12 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             if let Some(overridden) = cleanup_cache_hit_text(
                 db_handle,
                 &cache_key,
-                profile,
                 &cfg.cleanup_intensity,
                 &snippet_instructions,
+                &expanded,
+                alternate.map(|candidate| candidate.text.as_str()),
             ) {
+                record_lookup(true);
                 return Ok((
                     overridden,
                     dict_entries,
@@ -772,6 +591,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                     configured_cleanup_api_used(cfg),
                 ));
             }
+            record_lookup(false);
         }
         log::debug!(
             "pipeline: cleanup cache {} key_len={}",
@@ -782,6 +602,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             },
             cache_key.len()
         );
+        let provider_started = std::time::Instant::now();
         let (cleanup_res, last_cleanup_err, saw_soft_timeout) = run_cleanup_provider_chain(
             &expanded,
             alternate.map(|candidate| candidate.text.as_str()),
@@ -822,6 +643,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             None => None,
         };
 
+        record_provider_duration(provider_started.elapsed());
         match guarded {
             Some(cleaned) => {
                 // These backstops enforce built-in style preferences. An edited
@@ -862,13 +684,23 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 let overridden =
                     snippets::apply_cleanup_instruction_overrides(&cleaned, &snippet_instructions);
                 if !cache_key.is_empty() {
-                    let expires = sqlite_utc_plus(7);
-                    match db::cleanup_cache_insert_new(
+                    let expires = sqlite_utc_plus(db::CLEANUP_CACHE_IDLE_DAYS);
+                    match db::cleanup_cache_insert_if(
                         db_handle,
                         &cache_key,
                         &cleaned,
                         &expires,
                         cache_plan.has_snippets,
+                        || {
+                            app.map_or(cfg.cleanup_cache_enabled, |app| {
+                                store::settings_handle(app).is_ok_and(|settings| {
+                                    settings
+                                        .get(store::CLEANUP_CACHE_ENABLED)
+                                        .and_then(|value| value.as_bool())
+                                        .unwrap_or(true)
+                                })
+                            })
+                        },
                     ) {
                         Ok(_) => {
                             log::debug!("pipeline: cleanup cache insert ok expires_at={expires}")
