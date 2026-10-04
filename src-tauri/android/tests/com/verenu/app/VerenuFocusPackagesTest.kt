@@ -9,6 +9,21 @@ class VerenuFocusPackagesTest {
     private val ime = "com.google.android.inputmethod.latin"
     private val launcher = "com.sec.android.app.launcher"
 
+    @Test fun unfocusedSplitScreenContentCannotReplaceTarget() {
+        val editor = "com.example.editor"
+        assertTrue(VerenuFocusPackages.eventTarget(editor, "com.android.chrome", false, app, ime) == editor)
+    }
+
+    @Test fun focusingOtherSplitScreenAppChangesTarget() {
+        assertTrue(VerenuFocusPackages.eventTarget(launcher, "com.android.chrome", true, app, ime) == "com.android.chrome")
+    }
+
+    @Test fun keyboardAndOverlayFocusPreserveAppTarget() {
+        for (owner in listOf(ime, app, "android", "com.android.systemui")) {
+            assertTrue(VerenuFocusPackages.eventTarget(launcher, owner, true, app, ime) == launcher)
+        }
+    }
+
     @Test fun privacyIndicatorCannotReplaceLauncherTarget() {
         var foreground = launcher
         for (eventOwner in listOf("com.android.systemui", ime, app, "android", "")) {

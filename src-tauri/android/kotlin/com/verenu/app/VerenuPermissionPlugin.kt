@@ -18,10 +18,7 @@ import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import androidx.appcompat.app.AppCompatActivity
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -53,15 +50,13 @@ internal class PermissionRequestArgs {
 class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) {
   private var pendingRuntimePermission: String? = null
   private var pendingSettingsPermission: String? = null
-  private val appInfoExecutor = ThreadPoolExecutor(
-    2,
-    2,
-    0L,
-    TimeUnit.MILLISECONDS,
-    ArrayBlockingQueue(128),
-    { task -> Thread(task, "verenu-app-info").apply { isDaemon = true } },
-    ThreadPoolExecutor.AbortPolicy(),
-  )
+  private val appInfoWorker = VerenuAppInfoWorker()
+
+  override fun onDestroy(activity: AppCompatActivity) {
+    appInfoWorker.close()
+    iconCache.clear()
+    super.onDestroy(activity)
+  }
 
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
@@ -76,20 +71,19 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
       invoke.resolve(iconResponse(cached))
       return
     }
-    try {
-      appInfoExecutor.execute {
-        val uri = try {
+    appInfoWorker.submit(
+      work = {
+        try {
           iconCache.computeIfAbsent(args.packageName) { loadIconSafely(it) }
         } catch (_: Exception) {
           ""
         } catch (_: OutOfMemoryError) {
           ""
         }
-        invoke.resolve(iconResponse(uri))
-      }
-    } catch (e: RejectedExecutionException) {
-      invoke.resolve(iconResponse(""))
-    }
+      },
+      complete = { invoke.resolve(iconResponse(it)) },
+      cancelled = { invoke.resolve(iconResponse("")) },
+    )
   }
 
   private fun iconResponse(uri: String) =
@@ -124,9 +118,8 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
   /** Launcher apps (label + package), for the Contexts app picker. */
   @Command
   fun installedApps(invoke: Invoke) {
-    try {
-      appInfoExecutor.execute {
-        try {
+    appInfoWorker.submit(
+      work = {
           val pm = activity.packageManager
           val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
           val seen = HashSet<String>()
@@ -139,14 +132,11 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
             .forEach { (pkg, label) ->
               apps.put(JSObject().put("name", label).put("exe", pkg))
             }
-          invoke.resolve(JSObject().put("apps", apps))
-        } catch (e: Exception) {
-          invoke.reject("Could not list installed apps")
-        }
-      }
-    } catch (e: RejectedExecutionException) {
-      invoke.reject("Could not list installed apps")
-    }
+          JSObject().put("apps", apps)
+      },
+      complete = { invoke.resolve(it) },
+      cancelled = { invoke.reject("Could not list installed apps") },
+    )
   }
 
   @Command
