@@ -260,7 +260,14 @@ async fn run_cleanup_provider_chain(
 ) -> (Option<CleanupSuccess>, Option<anyhow::Error>, bool) {
     let mut last_cleanup_err: Option<anyhow::Error> = None;
     let mut saw_soft_timeout = false;
-    for (provider_index, (provider_id, model)) in cleanup_model_chain(cfg).into_iter().enumerate() {
+    let mut offline = crate::system::connectivity::recently_confirmed_offline();
+    for (provider_index, (provider_id, model)) in runtime_model_chain(app, cfg, "cleanup")
+        .into_iter()
+        .enumerate()
+    {
+        if !candidate_available_offline(&provider_id, offline) {
+            continue;
+        }
         if provider_index > 0 {
             if let (Some(app), Some(state)) = (app, app.and_then(|a| a.try_state::<SharedState>()))
             {
@@ -302,6 +309,7 @@ async fn run_cleanup_provider_chain(
                 }
             }
             let custom_template = cfg.cleanup_override(profile);
+            let started = std::time::Instant::now();
             let outcome = if is_local {
                 run_local_cleanup_request(
                     app,
@@ -344,6 +352,17 @@ async fn run_cleanup_provider_chain(
                     Err(_) => Err(cleanup_soft_timeout_error(&provider_id, &model)),
                 }
             };
+            crate::model_performance::record(
+                "cleanup",
+                &provider_id,
+                &model,
+                started.elapsed().as_secs_f64() * 1000.0 * 100.0
+                    / expanded.chars().count().max(1) as f64,
+                outcome.as_ref().is_ok_and(|text| !text.trim().is_empty()),
+            );
+            if outcome.is_ok() && !is_local && !crate::api::custom::is_custom_id(&provider_id) {
+                crate::system::connectivity::note_online();
+            }
             match outcome {
                 Ok(cleaned) if !cleaned.is_empty() => {
                     log::debug!(
@@ -386,7 +405,16 @@ async fn run_cleanup_provider_chain(
                     // fallback immediately. Only a silent stall gets the
                     // same-provider retry, because the second connection is
                     // often healthy even though the first one wedged.
-                    let should_retry = is_cleanup_soft_timeout(&e) && attempt < attempts;
+                    if !is_local
+                        && !offline
+                        && (crate::api::is_connectivity_error(&e) || is_cleanup_soft_timeout(&e))
+                    {
+                        if let Some(app) = app {
+                            offline = super::stages_transcription::confirm_offline(app).await;
+                        }
+                    }
+                    let should_retry =
+                        !offline && is_cleanup_soft_timeout(&e) && attempt < attempts;
                     saw_soft_timeout |= is_cleanup_soft_timeout(&e);
                     last_cleanup_err = Some(e);
                     if should_retry {
@@ -646,6 +674,17 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         record_provider_duration(provider_started.elapsed());
         match guarded {
             Some(cleaned) => {
+                if cleanup_api_used.starts_with("local/")
+                    && !cfg.cleanup_default_model.starts_with("local/")
+                {
+                    if let Some(app) = app {
+                        app.emit(
+                            "verenu:model-notice",
+                            "Used local cleanup because cloud cleanup was unavailable.",
+                        )
+                        .ok();
+                    }
+                }
                 // These backstops enforce built-in style preferences. An edited
                 // preset may explicitly retain fillers, dashes, or omit periods.
                 // Meaning and safety guards above still apply to every result.
@@ -712,6 +751,13 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             }
             None if !provider_succeeded && saw_soft_timeout => {
                 log::warn!("pipeline: cleanup stalled twice, delivering pre-cleanup transcription");
+                if let Some(app) = app {
+                    app.emit(
+                        "verenu:model-notice",
+                        "Cleanup was unavailable. Your transcript was preserved.",
+                    )
+                    .ok();
+                }
                 cleanup_api_used.clear();
                 let text =
                     snippets::apply_cleanup_instruction_overrides(&expanded, &snippet_instructions);
@@ -722,7 +768,17 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 }
             }
             None if !provider_succeeded && last_cleanup_err.is_some() => {
-                return Err(last_cleanup_err.expect("checked"))
+                // Completed speech must survive provider errors, even when
+                // neither cloud nor local cleanup can finish.
+                if let Some(app) = app {
+                    app.emit(
+                        "verenu:model-notice",
+                        "Cleanup was unavailable. Your transcript was preserved.",
+                    )
+                    .ok();
+                }
+                cleanup_api_used.clear();
+                snippets::apply_cleanup_instruction_overrides(&expanded, &snippet_instructions)
             }
             None => {
                 cleanup_api_used.clear();

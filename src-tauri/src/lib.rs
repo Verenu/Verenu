@@ -32,6 +32,7 @@ mod dev_session;
 mod local_llm;
 mod local_stt;
 mod media;
+mod model_performance;
 mod pipeline;
 #[cfg(target_os = "windows")]
 mod single_instance;
@@ -749,6 +750,8 @@ pub fn run() {
             commands::delete_local_llm_model,
             commands::open_local_stt_models_folder,
             commands::get_local_transcription_state,
+            commands::get_model_performance,
+            commands::benchmark_local_models,
             commands::get_local_llm_state,
             commands::get_local_llm_runtime_info,
             commands::download_local_llm_runtime,
