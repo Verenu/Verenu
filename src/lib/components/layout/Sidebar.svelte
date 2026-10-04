@@ -1007,6 +1007,8 @@
     grid-area: 1 / 1;
     display: flex;
     flex-direction: column;
+    /* Keeps the selected pill and a hovered neighbour from fusing into one block. */
+    gap: 2px;
     min-width: 0;
   }
 
