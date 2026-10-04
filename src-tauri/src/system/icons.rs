@@ -41,11 +41,23 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
 
 /// Linux: the target is a desktop id or window class, so the icon comes from
 /// the matching `.desktop` entry's `Icon=` resolved through the icon theme.
-/// Theme lookups are plain file reads, so results are not cached.
+/// Use GTK's desktop theme resolver, including inherited themes and Flatpak
+/// exports. Results are not disk-cached so theme/install changes remain visible.
 #[cfg(target_os = "linux")]
-pub fn get_icon_data_uri(_app: &tauri::AppHandle, exe: &str) -> Option<String> {
+pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     let exe = exe.trim().to_lowercase();
     let icon = linux::desktop_icon_name(&exe)?;
+    let theme_icon = icon.clone();
+    let theme_png = run_icon_work(
+        gtk::is_initialized(),
+        move || linux::theme_icon_png(&theme_icon),
+        |callback| app.run_on_main_thread(callback).map_err(|_| ()),
+    )
+    .flatten();
+    if let Some(uri) = theme_png.as_deref().and_then(png_bytes_to_data_uri) {
+        return Some(uri);
+    }
+    // Keep the file fallback when a desktop theme is unavailable.
     let path = linux::resolve_icon_path(&icon)?;
     let bytes = std::fs::read(&path).ok()?;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
@@ -58,6 +70,35 @@ pub fn get_icon_data_uri(_app: &tauri::AppHandle, exe: &str) -> Option<String> {
     png_bytes_to_data_uri(&bytes)
 }
 
+#[cfg(target_os = "linux")]
+fn run_icon_work<T: Send + 'static>(
+    gtk_initialized: bool,
+    work: impl FnOnce() -> T + Send + 'static,
+    dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), ()>,
+) -> Option<T> {
+    // GTK's theme and pixbuf APIs are unsafe to call before GTK initialization.
+    // Let the caller use its filesystem fallback without dispatching or waiting.
+    if !gtk_initialized {
+        return None;
+    }
+
+    // Tao dispatches UI callbacks on GTK's initialized thread even when that
+    // thread does not own the default GLib context. Use GTK's thread marker to
+    // avoid queueing work to, then synchronously blocking, the same UI thread.
+    if gtk::is_initialized_main_thread() {
+        return Some(work());
+    }
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    dispatch(Box::new(move || {
+        let _ = sender.send(work());
+    }))
+    .ok()?;
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .ok()
+}
+
 /// Desktop-entry display name for a Linux app identity (see sub-app capture).
 #[cfg(target_os = "linux")]
 pub fn linux_app_display_name(exe: &str) -> Option<String> {
@@ -66,7 +107,92 @@ pub fn linux_app_display_name(exe: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use gtk::prelude::IconThemeExt;
     use std::path::{Path, PathBuf};
+
+    pub(super) fn theme_icon_png(icon: &str) -> Option<Vec<u8>> {
+        let direct = Path::new(icon);
+        let pixbuf = if direct.is_absolute() {
+            gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(direct, 64, 64, true).ok()?
+        } else {
+            let theme = gtk::IconTheme::default()?;
+            static SEARCH_PATHS: std::sync::Once = std::sync::Once::new();
+            SEARCH_PATHS.call_once(|| {
+                for dir in data_dirs() {
+                    theme.append_search_path(dir.join("icons"));
+                }
+            });
+            return named_theme_icon_png(&theme, icon);
+        };
+        pixbuf.save_to_bufferv("png", &[]).ok()
+    }
+
+    fn named_theme_icon_png(theme: &gtk::IconTheme, icon: &str) -> Option<Vec<u8>> {
+        // GTK expects theme names without image suffixes, but reverse-DNS
+        // names must retain their final component and original case.
+        let name = match Path::new(icon).extension().and_then(|ext| ext.to_str()) {
+            Some(ext) if ["png", "svg", "xpm"].iter().any(|known| ext.eq_ignore_ascii_case(known)) => {
+                icon.rsplit_once('.')?.0
+            }
+            _ => icon,
+        };
+        theme.load_icon(name, 64, gtk::IconLookupFlags::FORCE_SIZE).ok()??
+            .save_to_bufferv("png", &[]).ok()
+    }
+
+    #[cfg(all(test, feature = "native-testing"))]
+    mod theme_tests {
+        use super::*;
+        use std::cell::Cell;
+
+        #[test]
+        fn linux_theme_icons_resolve_inherited_categories_sizes_and_formats() {
+            gtk::init().expect("This native test requires a desktop display");
+            assert!(gtk::is_initialized_main_thread());
+            let dispatched = Cell::new(false);
+            let result = super::super::run_icon_work(
+                true,
+                || 64,
+                |_| {
+                    dispatched.set(true);
+                    Err(())
+                },
+            );
+            assert_eq!(result, Some(64));
+            assert!(!dispatched.get(), "work was queued to the GTK main thread");
+
+            let root = std::env::temp_dir().join(format!("verenu-icon-test-{}", uuid::Uuid::new_v4()));
+            struct Cleanup(PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+            }
+            let _cleanup = Cleanup(root.clone());
+            for (name, inherits, directory, size) in [
+                ("Fixture", "Parent", "scalable/apps", 64),
+                ("Parent", "", "192x192/categories", 192),
+            ] {
+                std::fs::create_dir_all(root.join(name).join(directory)).unwrap();
+                std::fs::write(root.join(name).join("index.theme"), format!(
+                    "[Icon Theme]\nName={name}\nInherits={inherits}\nDirectories={directory}\n\n[{directory}]\nSize={size}\nType=Fixed\nContext=Applications\n"
+                )).unwrap();
+            }
+            let svg = root.join("Fixture/scalable/apps/org.vinegarhq.Sober.svg");
+            std::fs::write(&svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" fill=\"green\"/></svg>").unwrap();
+            let xpm = root.join("Parent/192x192/categories/fixture-system.xpm");
+            std::fs::write(&xpm, "/* XPM */\nstatic char *icon[] = {\n\"2 2 1 1\",\n\". c #00ff00\",\n\"..\",\n\"..\"};\n").unwrap();
+            let theme = gtk::IconTheme::new();
+            theme.prepend_search_path(&root);
+            theme.set_custom_theme(Some("Fixture"));
+            for name in ["org.vinegarhq.Sober", "org.vinegarhq.Sober.svg", "fixture-system", "fixture-system.xpm"] {
+                let png = named_theme_icon_png(&theme, name).expect(name);
+                assert!(super::super::png_bytes_to_data_uri(&png).is_some(), "{name}");
+            }
+            assert!(theme_icon_png(svg.to_str().unwrap()).is_some());
+            assert!(theme_icon_png(xpm.to_str().unwrap()).is_some());
+            assert!(named_theme_icon_png(&theme, "org.vinegarhq.sober").is_none());
+            assert!(named_theme_icon_png(&theme, "verenu-no-such-icon").is_none());
+        }
+    }
 
     fn data_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
@@ -74,8 +200,8 @@ mod linux {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         {
+            dirs.push(home.clone());
             dirs.push(home.join("flatpak/exports/share"));
-            dirs.push(home);
         }
         let system = std::env::var("XDG_DATA_DIRS")
             .ok()
@@ -162,6 +288,9 @@ mod linux {
             match key.trim() {
                 "Icon" => icon = Some(value.trim().to_string()),
                 "StartupWMClass" => wm_class = Some(value.trim().to_lowercase()),
+                "X-GNOME-WMClass" | "X-KDE-WMClass" if wm_class.is_none() => {
+                    wm_class = Some(value.trim().to_lowercase());
+                }
                 "Exec" => exec = exec_basename(value),
                 _ => {}
             }
@@ -845,11 +974,40 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn skips_theme_dispatch_when_gtk_is_uninitialized() {
+        let dispatched = std::cell::Cell::new(false);
+        let result = super::run_icon_work(
+            false,
+            || 64,
+            |_| {
+                dispatched.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, None);
+        assert!(!dispatched.get(), "theme work was dispatched without GTK");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn linux_desktop_entry_matches_wm_class_and_resolves_theme_icon() {
         let entry = "[Desktop Entry]\nName=T3 Code\nExec=/usr/bin/t3code %U\nIcon=t3code-nightly\nStartupWMClass=t3code\n";
         assert_eq!(super::linux::icon_if_matches(entry, "t3code", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "t3code").as_deref(), Some("t3code-nightly"));
         assert_eq!(super::linux::icon_if_matches(entry, "other", "firefox"), None);
+        let vendor_before_standard = "[Desktop Entry]\nIcon=priority-icon\nX-GNOME-WMClass=legacy-class\nStartupWMClass=standard-class\nExec=vendor-executable\n";
+        let standard_before_vendor = "[Desktop Entry]\nIcon=priority-icon\nStartupWMClass=standard-class\nX-KDE-WMClass=legacy-class\nExec=vendor-executable\n";
+        for desktop_entry in [vendor_before_standard, standard_before_vendor] {
+            assert_eq!(
+                super::linux::icon_if_matches(desktop_entry, "desktop-id", "standard-class").as_deref(),
+                Some("priority-icon")
+            );
+            assert_eq!(
+                super::linux::icon_if_matches(desktop_entry, "desktop-id", "legacy-class"),
+                None
+            );
+        }
         // A dotted theme name is not a file name.
         assert!(super::linux::resolve_icon_path("org.vinegarhq.NoSuchIcon").is_none());
         assert_eq!(
