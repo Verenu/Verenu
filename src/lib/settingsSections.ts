@@ -41,7 +41,7 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'general',     label: 'General',      icon: 'sliders', group: 'Settings' },
   { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings' },
   { id: 'apps',        label: 'App Mappings', icon: 'apps',    group: 'Settings', legacyOnly: true },
-  { id: 'keys',        label: 'API Keys',     icon: 'key',     group: 'Settings' },
+  { id: 'keys',        label: 'Providers',    icon: 'key',     group: 'Settings' },
   { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },
   { id: 'privacy',     label: 'Privacy',      icon: 'lock',    group: 'Settings' },
   { id: 'sync',        label: 'Sync',         icon: 'devices', group: 'Settings', syncOnly: true },

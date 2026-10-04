@@ -25,7 +25,7 @@ test('custom provider editor persists, offers task models, renames, and removes 
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(access.localAccessUrl);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    await page.getByRole('button', { name: 'API Keys', exact: true }).click();
+    await page.getByRole('button', { name: 'Providers', exact: true }).click();
     await page.getByRole('button', { name: 'Create custom provider', exact: true }).click();
     const picker = page.getByRole('group', { name: 'Choose a provider preset' });
     await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('ollama');
@@ -69,7 +69,7 @@ test('custom provider editor persists, offers task models, renames, and removes 
     await page.getByRole('dialog').screenshot({ path: path.join(evidence, 'desktop-picker.png') });
     assert.equal(await page.getByText('vendor/chat', { exact: true }).count(), 0);
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'API Keys', exact: true }).click();
+    await page.getByRole('button', { name: 'Providers', exact: true }).click();
     const section = page.getByRole('region', { name: 'Custom providers' });
     await section.getByRole('button', { name: /^Edit/ }).click();
     await page.getByLabel('Name', { exact: true }).fill('Renamed endpoint');
