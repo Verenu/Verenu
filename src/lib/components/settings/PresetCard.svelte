@@ -1,8 +1,9 @@
 <script lang="ts">
-  import EfficiencyBar from './EfficiencyBar.svelte';
-  import type { Preset } from './modelPresets';
+  import { modelLabel, type Preset, type ModelPerformance } from './modelPresets';
   import { modalFocusTrap } from '../../modalFocus';
-  import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { modalBackdrop, modalCard, MOTION_MS, MOTION_PX, motionMs, motionPx } from '../../motion';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
 
   let {
     preset,
@@ -14,6 +15,14 @@
     onAddKey,
     onCancelDownload,
     onDeleteModels,
+    onUseFallback,
+    onTestLocal,
+    testingLocal = false,
+    fallbackActive = false,
+    performance = [],
+    detailsOpen = false,
+    busy = false,
+    onToggleDetails,
   }: {
     preset: Preset;
     active?: boolean;
@@ -26,37 +35,44 @@
     onAddKey?: () => void;
     onCancelDownload?: () => void;
     onDeleteModels?: () => void;
+    onUseFallback?: () => void;
+    onTestLocal?: () => void;
+    testingLocal?: boolean;
+    fallbackActive?: boolean;
+    performance?: ModelPerformance[];
+    detailsOpen?: boolean;
+    /** Another preset is downloading; start nothing new until it finishes. */
+    busy?: boolean;
+    onToggleDetails?: () => void;
   } = $props();
 
   const isAddKey = $derived(preset.kind === 'add-key');
   const needsDownload = $derived(downloadMb > 0);
+  const speechChain = $derived(preset.target ? [preset.target.transcriptionDefaultModel, ...preset.target.transcriptionFallbacks] : []);
+  const cleanupChain = $derived(preset.target?.cleanupEnabled && preset.target.cleanupDefaultModel ? [preset.target.cleanupDefaultModel, ...preset.target.cleanupFallbacks] : []);
+  const measured = $derived(performance.find(sample => sample.id === preset.target?.transcriptionDefaultModel && sample.task === 'transcription' && sample.samples >= 3));
 
   function formatSize(mb: number): string {
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
   }
 
-  // The action pill can roll to a destructive action on hover: cancel an
-  // in-flight download, or delete a selected offline preset's downloaded models.
-  // You can't deselect a preset, so the "selected" pill has no idle purpose.
   const cancelable = $derived(downloading && onCancelDownload != null);
-  const manageable = $derived(preset.offline && active && installedCount > 0 && onDeleteModels != null);
-  const hoverMode = $derived(cancelable || manageable);
-
-  const defaultLabel = $derived(
-    downloading ? 'Downloading…' : needsDownload ? `Download ${formatSize(downloadMb)}` : active ? 'Selected' : 'Use',
+  const manageable = $derived(preset.offline && installedCount > 0 && onDeleteModels != null);
+  const actionLabel = $derived(
+    downloading ? 'Cancel download' : needsDownload ? `Download ${formatSize(downloadMb)}` : '',
   );
-  const hoverLabel = $derived(cancelable ? 'Cancel download' : manageable ? 'Delete models' : '');
 
   // Deleting downloaded models is destructive and irreversible, so it gets the
   // same in-app confirm dialog as the other destructive settings actions
   // instead of a blocking native browser confirm.
   let confirmDelete = $state(false);
+  const showDetails = $derived(detailsOpen);
+  const detailsId = `preset-details-${Math.random().toString(36).slice(2, 9)}`;
   let confirmCancelButton = $state<HTMLButtonElement | null>(null);
 
   function handleAction(event: MouseEvent) {
     event.stopPropagation();
     if (cancelable) onCancelDownload?.();
-    else if (manageable) confirmDelete = true;
     else onSelect();
   }
 
@@ -76,62 +92,72 @@
 <svelte:window onkeydown={handleDeleteModalKeydown} />
 
 {#if isAddKey}
-  <div class="preset-card preset-info">
+  <div class="preset-row preset-info">
     <div class="preset-main">
-      <div class="preset-head">
-        <span class="preset-name">{preset.name}</span>
-      </div>
-      <p class="preset-tagline">{preset.tagline}</p>
+      <span class="preset-name">{preset.name}</span>
+      <span class="preset-tagline">{preset.tagline}</span>
     </div>
-    <div class="preset-side">
-      <button class="preset-action-btn" type="button" onclick={() => onAddKey?.()}>Open API keys</button>
-    </div>
+    <button class="btn-ghost btn-compact" type="button" onclick={() => onAddKey?.()}>Open API keys</button>
   </div>
 {:else}
-  <div class="preset-card" class:preset-active={active}>
-    <!-- Full-card select target sitting behind the content; the content is
-         click-through except the action pill, so a click anywhere selects. -->
+  <div class="preset-row" class:preset-active={active} class:open={showDetails} class:inert-row={needsDownload}>
     <button
       class="preset-select"
       type="button"
-      aria-label={`Use ${preset.name}`}
+      aria-label={`Use ${preset.offline ? 'local ' : ''}${preset.name}`}
       aria-pressed={active}
-      disabled={downloading}
+      disabled={needsDownload || downloading}
+      tabindex={needsDownload ? -1 : undefined}
       onclick={() => onSelect()}
     ></button>
-    <div class="preset-content">
+    <div class="preset-line">
+      <span class="preset-radio" class:on={active} aria-hidden="true">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>
+      </span>
       <div class="preset-main">
-        <div class="preset-head">
-          <span class="preset-name">{preset.name}</span>
-          {#if preset.offline}
-            <span class="preset-offline">Local AI</span>
-          {/if}
-        </div>
-        <p class="preset-tagline">{preset.tagline}</p>
+        <span class="preset-name">{preset.name}</span>
+        <span class="preset-tagline">{preset.tagline}</span>
       </div>
-      <div class="preset-side">
-        <EfficiencyBar position={preset.position} />
+      <div class="preset-trail">
+        {#if actionLabel}
+          <button class="preset-action" class:danger={cancelable} type="button" disabled={busy && !downloading} onclick={handleAction}>{actionLabel}</button>
+        {:else if measured}
+          <span class="preset-speed">{(measured.latency_ms / 1000).toFixed(1)}s</span>
+        {/if}
         <button
-          class="preset-action-btn"
-          class:is-active={active}
-          class:is-download={needsDownload}
-          class:hover-mode={hoverMode}
+          class="preset-more"
           type="button"
-          tabindex={hoverMode ? 0 : -1}
-          aria-label={hoverMode ? `${defaultLabel} - ${hoverLabel}` : defaultLabel}
-          onclick={handleAction}
+          aria-label="Details"
+          aria-expanded={showDetails}
+          aria-controls={detailsId}
+          onclick={(event) => { event.stopPropagation(); onToggleDetails?.(); }}
         >
-          {#if hoverMode}
-            <span class="pa-roll">
-              <span class="pa-face pa-default" aria-hidden="true">{defaultLabel}</span>
-              <span class="pa-face pa-hover" aria-hidden="true">{hoverLabel}</span>
-            </span>
-          {:else}
-            {defaultLabel}
-          {/if}
+          <svg class="ui-chevron" class:open={showDetails} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
       </div>
     </div>
+    {#if showDetails}
+      <div id={detailsId} class="preset-details" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+        <dl>
+          <dt>Speech</dt><dd>{speechChain.map(modelLabel).join(' → ')}</dd>
+          <dt>Cleanup</dt><dd>{cleanupChain.length ? cleanupChain.map(modelLabel).join(' → ') : 'Off'}</dd>
+          <dt>Mode</dt><dd>{preset.offline ? 'On-device only' : 'Cloud first, local fallback'} · {preset.target?.dualTranscription ? 'two speech models cross-check' : 'one speech model'}</dd>
+        </dl>
+        {#if onUseFallback || onTestLocal || manageable}
+          <div class="preset-actions">
+            {#if onUseFallback}
+              <button class="btn-ghost btn-compact" disabled={downloading || fallbackActive} onclick={onUseFallback}>{fallbackActive ? 'Offline fallback selected' : needsDownload ? 'Prepare offline fallback' : 'Use as offline fallback'}</button>
+            {/if}
+            {#if onTestLocal}
+              <button class="btn-ghost btn-compact" disabled={testingLocal || downloading} onclick={onTestLocal}>{testingLocal ? 'Testing…' : 'Test local speed'}</button>
+            {/if}
+            {#if manageable}
+              <button class="btn-ghost btn-compact" onclick={() => (confirmDelete = true)}>Delete models</button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -172,254 +198,128 @@
 {/if}
 
 <style>
-  .preset-card {
+  .preset-row {
     position: relative;
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    width: 100%;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: var(--bg-elev);
-    color: var(--ink);
-    transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+    border-bottom: 1px solid var(--line);
+    transition: background var(--ui-duration-fast) var(--ui-ease-out);
   }
+  .preset-row:last-child { border-bottom: 0; }
+  .preset-row:hover:not(.inert-row) { background: var(--control-hover); }
+  .preset-row.preset-active { background: var(--control-active); }
+  .preset-row:has(.preset-select:active:not(:disabled)) { background: var(--control-active); }
+  .preset-select:disabled { pointer-events: none; }
 
-  .preset-info {
-    gap: 20px;
-    padding: 14px 16px;
-  }
-
-  .preset-card:hover:not(.preset-active) {
-    border-color: var(--line-strong);
-  }
-
-  .preset-card.preset-active {
-    border-color: var(--line-strong);
-    background: var(--control-active);
-  }
-
-  /* Select target: covers the whole card, sits behind the content. */
   .preset-select {
     position: absolute;
     inset: 0;
     z-index: 1;
-    border: none;
+    border: 0;
     background: transparent;
-    border-radius: 12px;
     cursor: pointer;
   }
   .preset-select:disabled { cursor: default; }
-  .preset-select:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
+  .preset-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-  /* Content layer: click-through so the select target underneath gets the
-     click; only the action pill re-enables pointer events. */
-  .preset-content {
+  .preset-line, .preset-info {
     position: relative;
-    z-index: 2;
-    pointer-events: none;
     display: flex;
-    flex-direction: row;
     align-items: center;
-    gap: 20px;
-    width: 100%;
-    padding: 14px 16px;
+    gap: 12px;
+    padding: 11px 14px;
+    pointer-events: none;
   }
+  .preset-info { justify-content: space-between; pointer-events: auto; }
+
+  .preset-radio {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line-strong);
+    color: transparent;
+    transition: background var(--ui-duration-fast) var(--ui-ease-out), border-color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-base) var(--ui-ease-out);
+  }
+  .preset-radio.on { background: var(--ink); border-color: var(--ink); color: var(--bg-elev); transform: scale(1.05); }
 
   .preset-main {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
     flex: 1;
     min-width: 0;
-  }
-
-  .preset-head {
     display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .preset-name {
-    font-family: var(--sans);
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--ink);
-    line-height: 1;
-  }
-
-  /* Plain text, not a pill. */
-  .preset-offline {
-    font-family: var(--sans);
-    font-size: 11.5px;
-    font-weight: 450;
-    color: var(--ink-mute);
-  }
-
-  .preset-offline::before {
-    content: '·';
-    margin-right: 8px;
-    color: var(--ink-faint);
-  }
-
-  .preset-tagline {
-    margin: 0;
-    font-family: var(--sans);
-    font-size: 12.5px;
-    line-height: 1.45;
-    color: var(--ink-mute);
-  }
-
-  .preset-side {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
+    align-items: baseline;
     gap: 10px;
-    width: 200px;
-    flex-shrink: 0;
+    flex-wrap: wrap;
   }
+  .preset-name { font-family: var(--sans); font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .preset-tagline { font-family: var(--sans); font-size: 12px; color: var(--ink-mute); line-height: 1.4; }
 
-  /* ── Action pill ─────────────────────────── */
-  .preset-action-btn {
-    pointer-events: auto;
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    min-height: 30px;
+  .preset-trail { display: flex; align-items: center; gap: 4px; flex: none; }
+  .preset-speed { font-family: var(--sans); font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; padding-right: 2px; }
+
+  .preset-action, .preset-more { pointer-events: auto; position: relative; z-index: 2; }
+  .preset-action {
+    border: 0;
+    background: transparent;
     font-family: var(--sans);
     font-size: 12px;
     font-weight: 600;
-    padding: 6px 12px;
-    border-radius: 7px;
-    border: 1px solid var(--line-strong);
-    background: transparent;
-    color: var(--ink-soft);
+    color: var(--ink);
+    padding: 6px 8px;
+    border-radius: 6px;
     cursor: pointer;
-    transition:
-      border-color 280ms cubic-bezier(0.16, 1, 0.3, 1),
-      color 280ms cubic-bezier(0.16, 1, 0.3, 1),
-      background 280ms cubic-bezier(0.16, 1, 0.3, 1),
-      box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
   }
+  .preset-action:disabled { opacity: 0.45; cursor: default; }
+  .preset-action:hover:not(:disabled) { background: var(--paper-2); }
+  .preset-action.danger:hover { color: var(--danger); }
+  .preset-more {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 40px;
+    margin: -8px -8px -8px 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-mute);
+    cursor: pointer;
+    transition: background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
+  }
+  .preset-more:hover { background: var(--paper-2); color: var(--ink); }
+  .preset-action:focus-visible, .preset-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-  .preset-action-btn:hover:not(.hover-mode) {
-    background: var(--jap-100);
-    color: var(--jap-700);
-    border-color: var(--jap-400);
-  }
-
-  .preset-action-btn.is-active {
-    border-color: var(--jap-400);
-    color: var(--jap-700);
-    background: var(--jap-100);
-  }
-
-  .preset-action-btn.is-download {
-    border-color: var(--jap-400);
-    color: var(--jap-700);
-  }
-
-  /* Hover/focus on a manageable pill: turn red for the destructive action. */
-  .preset-action-btn.hover-mode:hover,
-  .preset-action-btn.hover-mode:focus-visible {
-    border-color: var(--danger);
-    color: var(--danger);
-    background: var(--danger-bg, color-mix(in srgb, var(--danger) 12%, transparent));
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--danger) 14%, transparent);
-  }
-
-  .preset-action-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .preset-action-btn.hover-mode:focus-visible {
-    outline-color: var(--danger);
-  }
-
-  /* Full width + centered text keeps the longer destructive label from being
-     clipped while the two faces trade places. */
-  .pa-roll {
+  .preset-details {
     position: relative;
-    display: block;
-    width: 100%;
-    overflow: hidden;
-    height: 1.35em;
-    line-height: 1.35em;
-    perspective: 240px;
+    z-index: 2;
+    padding: 0 14px 12px 42px;
+    font-family: var(--sans);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink-mute);
   }
+  .preset-details dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+  .preset-details dt { color: var(--ink-soft); font-weight: 600; }
+  .preset-details dd { margin: 0; overflow-wrap: anywhere; }
+  .preset-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 
-  .pa-face {
-    display: block;
-    width: 100%;
-    text-align: center;
-    height: 1.35em;
-    line-height: 1.35em;
-    white-space: nowrap;
-    backface-visibility: hidden;
-    transition: opacity 160ms var(--ui-ease-out);
-  }
-
-  .pa-hover {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-  }
-
-  .hover-mode:hover .pa-default,
-  .hover-mode:focus-visible .pa-default {
-    opacity: 0;
-  }
-  .hover-mode:hover .pa-hover,
-  .hover-mode:focus-visible .pa-hover {
-    opacity: 1;
-  }
+  .preset-confirm-wrap { position: fixed; inset: 0; z-index: 120; }
 
   @media (prefers-reduced-motion: reduce) {
-    .pa-face {
-      transition: opacity 100ms ease;
-      transform: none;
-    }
-
-    .pa-hover { opacity: 0; }
-
-    .hover-mode:hover .pa-default,
-    .hover-mode:focus-visible .pa-default {
-      transform: none;
-    }
-
-    .hover-mode:hover .pa-hover,
-    .hover-mode:focus-visible .pa-hover {
-      transform: none;
-    }
+    .preset-radio { transition: none; transform: none; }
   }
 
-  .preset-confirm-wrap {
-    position: fixed;
-    inset: 0;
-    z-index: 120;
-  }
-
-  /* Narrow settings column: fold the right rail under the text. */
+  /* Narrow settings column: tagline drops under the name. */
   @container settings-panel (max-width: 560px) {
-    .preset-content {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 12px;
-    }
-
-    .preset-info {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 12px;
-    }
-
-    .preset-side {
-      width: 100%;
-    }
+    .preset-main { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .preset-line, .preset-info { padding: 12px; }
+    .preset-line { flex-wrap: wrap; row-gap: 4px; }
+    .preset-trail { display: contents; }
+    .preset-more { width: 44px; height: 44px; margin: -6px -8px -6px 0; order: 2; }
+    .preset-action { order: 3; flex-basis: calc(100% - 28px); margin-left: 28px; text-align: left; padding-left: 0; }
+    .preset-speed { display: none; }
+    .preset-action { min-height: 36px; }
+    .preset-details { padding-left: 12px; }
+    .preset-actions :global(.btn-ghost) { min-height: 40px; flex: 1 1 auto; }
   }
 </style>

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api::{auto_learn, cleanup, prompts, transcription};
-use crate::core::{browser_probe, injection, window_context};
+use crate::core::{injection, window_context};
 use crate::data::{db, dictionary, snippets, store};
 use crate::media::audio;
 use crate::system::apps::AppMapping;
@@ -339,7 +339,6 @@ struct ProvidedCapture {
     generation: u64,
     context: crate::core::context::ResolvedContextIdentity,
     process_name: String,
-    domain: Option<String>,
 }
 
 /// Browser audio enters the production pipeline after microphone capture.
@@ -357,7 +356,7 @@ pub(crate) async fn run_provided_audio(
     audio: CapturedAudio,
     context: crate::core::context::ResolvedContextIdentity,
     process_name: String,
-    domain: Option<String>,
+    _domain: Option<String>,
 ) -> Result<(), String> {
     let generation = state::reserve_provided_capture(&state)?;
     run_pipeline_with_delivery(
@@ -369,7 +368,6 @@ pub(crate) async fn run_provided_audio(
             generation,
             context,
             process_name,
-            domain,
         }),
     )
     .await;
@@ -502,17 +500,6 @@ async fn run_pipeline_with_delivery(
         .unwrap_or_else(|| "unknown".into())
         .to_lowercase();
     let db_handle = app.state::<DbHandle>().inner().clone();
-    // Only probe the address bar when the foreground app is actually a
-    // browser — the UIA tree walk is comparatively costly and meaningless
-    // for any other window. This metadata is only used for the cleanup prompt;
-    // the Context identity itself was captured before recording began.
-    let browser_domain = if let Some(input) = &provided {
-        input.domain.clone()
-    } else if window_context::is_browser_exe(&process_name) {
-        browser_probe::read_browser_domain_for_window(target.id)
-    } else {
-        None
-    };
     // Rehydrate only the settings needed by the cleanup/profile stage. A
     // deleted Context must not cause a second foreground resolution or leak
     // the dictation into whichever Context now matches the active window.
@@ -693,11 +680,9 @@ async fn run_pipeline_with_delivery(
         Some("context"),
         None,
     );
-    let Some((cfg, profile, app_context)) = open_config_and_context(
+    let Some((cfg, profile)) = open_config_and_context(
         &app,
         &process_name,
-        target.id,
-        browser_domain.as_deref(),
         resolved_context.as_ref(),
     )
     .await
@@ -712,22 +697,20 @@ async fn run_pipeline_with_delivery(
     // is going (same value emitted at record start, now domain-refined).
     emit_pill_context(&app, &resolved_context_identity.label);
     log::debug!(
-        "pipeline: config t_provider={} c_provider={} t_model={} c_model={} cleanup_enabled={} intensity={} app_context_hint={} profile={}",
+        "pipeline: config t_provider={} c_provider={} t_model={} c_model={} cleanup_enabled={} intensity={} profile={}",
         cfg.transcription_provider,
         cfg.cleanup_provider,
         cfg.transcription_default_model,
         cfg.cleanup_default_model,
         cfg.cleanup_enabled,
         cfg.cleanup_intensity,
-        cfg.app_context_hint,
         profile
     );
     if let Some(span) = config_span {
         let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
     }
     log::debug!(
-        "pipeline: context resolved app_context_present={} stage_ms={}",
-        app_context.is_some(),
+        "pipeline: context resolved stage_ms={}",
         stage_config.elapsed().as_millis()
     );
 
@@ -745,7 +728,6 @@ async fn run_pipeline_with_delivery(
             process_name: process_name.clone(),
             context: resolved_context_identity.clone(),
             profile: profile.clone(),
-            app_context: app_context.clone(),
             caps_lock_on,
         });
     }
@@ -958,7 +940,7 @@ async fn run_pipeline_with_delivery(
         emit_pill_stage(&app, "cleaning");
     }
     let cleanup_race = tokio::select! {
-        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, app_context.as_deref(), context_id, clipboard_instruction.as_deref(), generation) => Some(r),
+        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, None, context_id, clipboard_instruction.as_deref(), generation) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (during cleanup)");
             None
@@ -1253,7 +1235,7 @@ pub async fn retry_transcription_impl(
             alternate.as_ref(),
             &cfg,
             &capture.profile,
-            capture.app_context.as_deref(),
+            None,
             capture.context.id,
             clipboard_instruction.as_deref(),
             0,
