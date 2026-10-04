@@ -3,7 +3,7 @@
   import { slide } from 'svelte/transition';
   import { MOTION_MS, motionMs } from '../../motion';
   import { presetLogoHtml } from '../../customProviderLogos';
-  import { CUSTOM_PROVIDER_PRESETS, PRESET_GROUPS, displayHost, monogram, presetById, presetForUrl, type CustomProviderPreset } from '../../customProviderPresets';
+  import { CUSTOM_PROVIDER_PRESETS, POPULAR_PRESET_IDS, PRESET_GROUPS, displayHost, monogram, presetById, presetForUrl, type CustomProviderPreset } from '../../customProviderPresets';
   import { invoke } from '../../tauri';
   import { saveSetting } from '../../settings';
   import { formatIpcError } from '../../errors';
@@ -26,11 +26,16 @@
   let notice = $state('');
   let busy = $state(false);
   let deleting = $state<string | null>(null);
+  const protocolLabels = { openai: 'OpenAI compatible', anthropic: 'Anthropic compatible', xai: 'xAI compatible' } as const;
   const protocols = [
-    { value: 'openai', label: 'OpenAI compatible' },
-    { value: 'anthropic', label: 'Anthropic compatible' },
-    { value: 'xai', label: 'xAI compatible' },
+    { value: 'openai', label: protocolLabels.openai },
+    { value: 'anthropic', label: protocolLabels.anthropic },
+    { value: 'xai', label: protocolLabels.xai },
   ];
+  // A preset with two wire formats offers just those two, recommended first.
+  const formatOptions = $derived(preset?.alt && !savedOriginal
+    ? [{ value: preset.protocol, label: `${protocolLabels[preset.protocol]} (recommended)` }, { value: preset.alt.protocol, label: protocolLabels[preset.alt.protocol] }]
+    : protocols);
 
   async function load() {
     await refreshCustomProviders();
@@ -39,13 +44,13 @@
   onMount(() => { load().catch(e => error = formatIpcError(e, 'Could not load custom providers')); });
 
   function startPicking() {
-    picking = true; search = ''; editing = null; error = ''; notice = '';
+    picking = true; search = ''; showMore = false; showAdvanced = false; editing = null; error = ''; notice = '';
   }
   function edit(provider?: CustomProvider, from?: CustomProviderPreset) {
     savedOriginal = provider ? structuredClone($state.snapshot(provider)) : null;
     preset = provider ? presetForUrl(provider.base_url, provider.protocol) ?? null : from ?? null;
     editing = provider ? structuredClone($state.snapshot(provider)) : {
-      id: `custom:${crypto.randomUUID()}`, name: from && from.group !== 'blank' && !from.id.includes('compatible') ? from.name : '',
+      id: `custom:${crypto.randomUUID()}`, name: from && from.id !== 'blank' && !from.id.includes('compatible') ? from.name : '',
       protocol: from?.protocol ?? 'openai', base_url: from?.base_url ?? '',
       requires_key: from?.requires_key ?? true,
       supports_transcription: from?.supports_transcription ?? true, supports_cleanup: from?.supports_cleanup ?? true,
@@ -65,11 +70,17 @@
     const next = (current.includes(model) ? current.filter(m => m !== model) : [...current, model]).join('\n');
     if (kind === 'transcription') transcriptionModels = next; else cleanupModels = next;
   }
+  const suggestedCleanup = $derived(
+    preset?.alt && editing?.protocol === preset.alt.protocol ? preset.alt.cleanup_models : preset?.cleanup_models ?? []);
   const chosen = (text: string) => new Set(models(text));
-  const filteredPresets = $derived.by(() => {
+  const popular = POPULAR_PRESET_IDS.map(id => presetById(id)).filter((p): p is CustomProviderPreset => !!p);
+  const rest = (group: string) => CUSTOM_PROVIDER_PRESETS.filter(p => p.group === group && !POPULAR_PRESET_IDS.includes(p.id));
+  const searchResults = $derived.by(() => {
     const q = search.trim().toLowerCase();
-    return CUSTOM_PROVIDER_PRESETS.filter(p => !q || `${p.name} ${p.base_url} ${p.protocol}`.toLowerCase().includes(q));
+    return q ? CUSTOM_PROVIDER_PRESETS.filter(p => `${p.name} ${p.id} ${p.base_url} ${p.alt?.base_url ?? ''}`.toLowerCase().includes(q)) : [];
   });
+  let showMore = $state(false);
+  let showAdvanced = $state(false);
   const capabilityLabel = (p: { supports_transcription: boolean; supports_cleanup: boolean }) =>
     p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup';
   const isLocalUrl = (url: string) => { try { const h = new URL(url).hostname; return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h); } catch { return false; } };
@@ -79,8 +90,17 @@
   }
   function setProtocol(value: string) {
     if (!editing) return;
-    editing.protocol = value as CustomProvider['protocol'];
-    if (value === 'anthropic') editing.supports_transcription = false;
+    const next = value as CustomProvider['protocol'];
+    const format = preset?.alt && !savedOriginal
+      ? next === preset.protocol ? { base_url: preset.base_url, cleanup_models: preset.cleanup_models } : next === preset.alt.protocol ? preset.alt : null
+      : null;
+    editing.protocol = next;
+    if (format) {
+      editing.base_url = format.base_url;
+      cleanupModels = format.cleanup_models.slice(0, 1).join('\n');
+    }
+    if (next === 'anthropic') editing.supports_transcription = false;
+    else if (preset?.supports_transcription && !savedOriginal) editing.supports_transcription = true;
   }
   const models = (text: string) => [...new Set(text.split('\n').map(x => x.trim()).filter(Boolean))];
   function object(text: string, label: string): Record<string, unknown> {
@@ -147,6 +167,13 @@
   }
 </script>
 
+{#snippet card(p: CustomProviderPreset)}
+  <button type="button" class="card" onclick={() => edit(undefined, p)}>
+    {@render tile(p.id, p.name, p.color, p.mark)}
+    <span class="card-body"><span class="card-name">{p.name}</span><span class="card-note">{p.group === 'advanced' ? p.note : p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup'}</span></span>
+  </button>
+{/snippet}
+
 {#snippet tile(id: string | undefined, name: string, color: string, mark?: string, big = false)}
   {@const logo = presetLogoHtml(id)}
   <span class="tile" class:big class:logo={!!logo} style:--tile={color} aria-hidden="true">{#if logo}{@html logo}{:else}{mark ?? monogram(name)}{/if}</span>
@@ -197,22 +224,32 @@
       </div>
       <input class="search" type="search" bind:value={search} placeholder="Search providers, e.g. Ollama" aria-label="Search provider presets" />
       <p class="hint">Presets only fill in the form. These services are not tested or supported by Verenu, and you can change every field.</p>
-      {#each PRESET_GROUPS as group (group.id)}
-        {@const items = filteredPresets.filter(p => p.group === group.id)}
-        {#if items.length}
-          <div class="group-title">{group.label}<span>{group.hint}</span></div>
-          <div class="grid">
-            {#each items as p (p.id)}
-              <button type="button" class="card" onclick={() => edit(undefined, p)}>
-                {@render tile(p.id, p.name, p.color, p.mark)}
-                <span class="card-body"><span class="card-name">{p.name}</span><span class="card-note">{p.group === 'blank' || !p.base_url ? p.note : p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup'}</span></span>
-              </button>
-            {/each}
+      {#if search.trim()}
+        <div class="group-title">{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</div>
+        <div class="grid">{#each searchResults as p (p.id)}{@render card(p)}{/each}</div>
+        {#if !searchResults.length}
+          <div class="no-match"><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Start from scratch</button></div>
+        {/if}
+      {:else}
+        <div class="group-title">Popular</div>
+        <div class="grid">{#each popular as p (p.id)}{@render card(p)}{/each}</div>
+        <div class="group-title">Local &amp; self-hosted<span>Nothing leaves your network</span></div>
+        <div class="grid">{#each rest('local') as p (p.id)}{@render card(p)}{/each}</div>
+        <button type="button" class="disclosure" aria-expanded={showMore} onclick={() => showMore = !showMore}><span class="chev" class:open={showMore}>›</span> More providers<span>{rest('cloud').length + rest('gateway').length} more</span></button>
+        {#if showMore}
+          <div class="disclosed" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
+            <div class="group-title">Providers</div>
+            <div class="grid">{#each rest('cloud') as p (p.id)}{@render card(p)}{/each}</div>
+            <div class="group-title">Gateways &amp; developer platforms<span>One key, many models</span></div>
+            <div class="grid">{#each rest('gateway') as p (p.id)}{@render card(p)}{/each}</div>
           </div>
         {/if}
-      {/each}
-      {#if !filteredPresets.length}
-        <div class="no-match"><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Start from scratch</button></div>
+        <button type="button" class="disclosure" aria-expanded={showAdvanced} onclick={() => showAdvanced = !showAdvanced}><span class="chev" class:open={showAdvanced}>›</span> Advanced<span>Any compatible endpoint</span></button>
+        {#if showAdvanced}
+          <div class="disclosed" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
+            <div class="grid">{#each rest('advanced') as p (p.id)}{@render card(p)}{/each}</div>
+          </div>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -221,14 +258,14 @@
     <form class="provider-editor" onsubmit={e => { e.preventDefault(); void save(); }} aria-label="Custom provider editor" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
       <div class="editor-head">
         {@render tile(preset?.id, editing.name || preset?.name || '', preset?.color ?? '#6B7280', preset?.mark && !editing.name ? preset.mark : undefined, true)}
-        <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.group !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
+        <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.id !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
           {#if preset && !savedOriginal && preset.note}<p class="hint">{preset.note}</p>{/if}</div>
         {#if !savedOriginal}<button type="button" class="btn-ghost btn-compact change" onclick={startPicking} disabled={busy}>Change preset</button>{/if}
       </div>
 
       <div class="form-grid">
         <label>Name<input bind:value={editing.name} maxlength="40" placeholder="My provider" required disabled={busy} /></label>
-        <div class="field"><span>Protocol</span><CompactSelect value={editing.protocol} options={protocols} label="Provider protocol" onchange={setProtocol} /></div>
+        <div class="field"><span>{preset?.alt && !savedOriginal ? 'API format' : 'Protocol'}</span><CompactSelect value={editing.protocol} options={formatOptions} label="Provider protocol" onchange={setProtocol} /></div>
         <label class="full">Base URL<input type="url" bind:value={editing.base_url} placeholder="https://api.example.com/v1" required disabled={busy} /><small>Include the API version prefix, such as /v1. Verenu adds the task's endpoint path.</small></label>
       </div>
       {#if editing.base_url.includes('YOUR_')}<p class="callout warn" role="note">Replace the placeholder in the base URL before saving.</p>{/if}
@@ -255,10 +292,10 @@
         {/if}
         {#if editing.supports_cleanup}
           <label>Cleanup model IDs<textarea bind:value={cleanupModels} placeholder={editing.protocol === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'} rows="3" disabled={busy}></textarea><small>One model ID per line.</small>
-            {#if preset?.cleanup_models.length}<span class="chips">{#each preset.cleanup_models as m}<button type="button" class="chip" class:on={chosen(cleanupModels).has(m)} aria-pressed={chosen(cleanupModels).has(m)} onclick={() => addModel('cleanup', m)} disabled={busy}>{m}</button>{/each}</span>{/if}</label>
+            {#if suggestedCleanup.length}<span class="chips">{#each suggestedCleanup as m}<button type="button" class="chip" class:on={chosen(cleanupModels).has(m)} aria-pressed={chosen(cleanupModels).has(m)} onclick={() => addModel('cleanup', m)} disabled={busy}>{m}</button>{/each}</span>{/if}</label>
         {/if}
       </div>
-      {#if preset && !savedOriginal && preset.group !== 'blank'}<p class="hint">Suggested model IDs come from the vendor's docs and may be out of date. Check their current model list.</p>{/if}
+      {#if preset && !savedOriginal && preset.id !== 'blank'}<p class="hint">Suggested model IDs come from the vendor's docs and may be out of date. Check their current model list.</p>{/if}
 
       <div class="cap" class:on={editing.requires_key}>
         <div><div class="cap-title">Requires API key</div><div class="hint">{editing.requires_key ? 'Sent with each request' : 'No authentication header will be sent'}</div></div>
@@ -327,6 +364,12 @@
   .card-body { display: grid; min-width: 0; gap: 1px; }
   .card-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-note { font-size: 10.5px; color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disclosure { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 6px; padding: 10px 2px; border: 0; border-top: 1px solid var(--line-soft); background: none; color: var(--ink); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
+  .disclosure span:last-child { margin-left: auto; font-weight: 400; color: var(--ink-mute); font-size: 11px; }
+  .disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  .chev { display: inline-block; width: 10px; transition: transform 150ms ease; color: var(--ink-mute); }
+  .chev.open { transform: rotate(90deg); }
+  .disclosed { display: grid; gap: 10px; }
   .no-match { display: grid; justify-items: start; gap: 8px; font-size: 12px; color: var(--ink-soft); }
   .no-match p { margin: 0; }
 
@@ -369,7 +412,9 @@
   .notice { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
   @container settings-panel (max-width: 520px) {
     .form-grid, .cap-grid { grid-template-columns: 1fr; }
-    .grid { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { padding: 8px; gap: 8px; }
+    .card-name { white-space: normal; line-height: 1.25; }
     .editor-head { flex-wrap: wrap; }
     .editor-head .change { margin-left: 0; }
   }
