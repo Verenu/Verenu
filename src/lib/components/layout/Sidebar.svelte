@@ -686,7 +686,7 @@
         <span class="ctx-head-label">Contexts</span>
         <span class="ctx-head-rule" aria-hidden="true"></span>
         <button type="button" class="ctx-add" aria-label="New context group" title="New context group" onclick={createContext}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
 

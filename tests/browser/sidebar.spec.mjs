@@ -1,6 +1,8 @@
 import { test, expect } from './fixtures.mjs';
 
-test('context group add icon stays centered and opens creation', async ({ page }) => {
+test.use({ deviceScaleFactor: 1.25, colorScheme: 'dark' });
+
+test('context group add icon stays centered and opens creation', async ({ page }, testInfo) => {
   const button = page.locator('.ctx-add');
   await expect(button).toBeVisible();
   const expectCentered = async () => {
@@ -12,6 +14,12 @@ test('context group add icon stays centered and opens creation', async ({ page }
   await expectCentered();
   await button.hover();
   await expectCentered();
+  await button.evaluate(async (element) => {
+    await new Promise(requestAnimationFrame);
+    await Promise.all(element.getAnimations().map((animation) => animation.finished));
+  });
+  await page.screenshot({ path: testInfo.outputPath('context-plus-hover.png') });
+  await button.screenshot({ path: testInfo.outputPath('context-plus-detail.png'), scale: 'css' });
   await button.focus();
   await expect(button).toBeFocused();
   await expectCentered();
