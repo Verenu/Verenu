@@ -136,6 +136,7 @@ const defaultSettings: Record<string, unknown> = {
   appearance_mode: 'system',
   android_pill_position: 'keyboard-center',
   android_pill_cover_keyboard_mic: false,
+  android_pill_hide_offline: true,
   transcription_provider: 'groq',
   transcription_language: 'en',
   cleanup_provider: 'groq',
