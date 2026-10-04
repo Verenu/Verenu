@@ -14,8 +14,8 @@
   let confirmRetention = $state<{ value: string; count: number } | null>(null);
   type CleanupCacheStatus = {
     entry_count: number;
-    is_space_constrained: boolean;
-    free_bytes: number;
+    payload_bytes: number;
+    session: { hits: number; misses: number; provider_calls: number; provider_ms: number };
   } | null;
 
   let historyRetention = $state('30 days');
@@ -24,8 +24,11 @@
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
   let cleanupCacheEntries = $state(0);
-  let cleanupCacheSpaceConstrained = $state(false);
-  let cleanupCacheFreeBytes = $state<number | null>(null);
+  let cleanupCacheStatus = $state<CleanupCacheStatus>(null);
+  let cleanupCacheEnabled = $state(true);
+  let savingCleanupCache = $state(false);
+  let cleanupCacheError = $state('');
+  let cleanupCacheMessage = $state('');
   let clearingCleanupCache = $state(false);
   let autoLearnSummary = $state({
     monitors_started: 0,
@@ -39,12 +42,12 @@
 
   async function loadSettings() {
     try {
-      const [retention, learn, serviceChecks, analytics, cacheStatus, summary, recent] = await Promise.all([
+      const [retention, learn, serviceChecks, analytics, cacheEnabled, summary, recent] = await Promise.all([
         invoke<string | null>('get_setting', { key: 'history_retention' }),
         invoke<boolean | null>('get_setting', { key: 'auto_learn_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'verenu_service_checks_enabled' }),
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
-        invoke<CleanupCacheStatus>('get_cleanup_cache_status'),
+        invoke<boolean | null>('get_setting', { key: 'cleanup_cache_enabled' }),
         invoke<typeof autoLearnSummary>('get_auto_learn_status_summary'),
         invoke<typeof recentAutoLearn>('get_recent_auto_learn_activity', { limit: 5 }),
       ]);
@@ -53,9 +56,7 @@
       serviceChecksEnabled = serviceChecks ?? true;
       analyticsEnabled = analytics ?? true;
       setServiceChecksEnabled(serviceChecksEnabled);
-      cleanupCacheEntries = cacheStatus?.entry_count ?? 0;
-      cleanupCacheSpaceConstrained = cacheStatus?.is_space_constrained ?? false;
-      cleanupCacheFreeBytes = cacheStatus?.free_bytes ?? null;
+      cleanupCacheEnabled = cacheEnabled ?? true;
       autoLearnSummary = summary ?? autoLearnSummary;
       recentAutoLearn = recent ?? [];
     } catch (err) {
@@ -144,19 +145,50 @@
   }
 
   async function clearCleanupCache() {
-    if (clearingCleanupCache) return;
+    if (clearingCleanupCache || savingCleanupCache) return;
     clearingCleanupCache = true;
+    cleanupCacheError = '';
+    cleanupCacheMessage = '';
     try {
       await invoke<number>('clear_cleanup_cache');
-      const status = await invoke<CleanupCacheStatus>('get_cleanup_cache_status');
-      cleanupCacheEntries = status?.entry_count ?? 0;
-      cleanupCacheSpaceConstrained = status?.is_space_constrained ?? false;
-      cleanupCacheFreeBytes = status?.free_bytes ?? null;
+      await refreshCleanupCache();
+      cleanupCacheMessage = 'Cache cleared.';
     } catch (err) {
-      console.error('clearCleanupCache failed:', err);
+      cleanupCacheError = `Could not clear the cache. ${formatIpcError(err)}`;
     } finally {
       clearingCleanupCache = false;
     }
+  }
+
+  async function refreshCleanupCache() {
+    cleanupCacheStatus = await invoke<CleanupCacheStatus>('get_cleanup_cache_status');
+    cleanupCacheEntries = cleanupCacheStatus?.entry_count ?? 0;
+  }
+
+  async function handleCleanupCache(value: boolean) {
+    if (savingCleanupCache || clearingCleanupCache) return;
+    savingCleanupCache = true;
+    cleanupCacheError = '';
+    cleanupCacheMessage = '';
+    try {
+      await saveSetting('cleanup_cache_enabled', value);
+      cleanupCacheEnabled = value;
+      await refreshCleanupCache();
+      cleanupCacheMessage = value ? 'Caching enabled.' : 'Caching disabled and stored results cleared.';
+    } catch (err) {
+      // Saving may have succeeded even if clearing or refreshing failed.
+      cleanupCacheEnabled = await invoke<boolean | null>('get_setting', { key: 'cleanup_cache_enabled' })
+        .then((enabled) => enabled ?? true).catch(() => cleanupCacheEnabled);
+      cleanupCacheError = `Could not update the cache. ${formatIpcError(err)}`;
+    } finally {
+      savingCleanupCache = false;
+    }
+  }
+
+  function cacheSize(bytes: number) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   }
 
   function closeHistoryDropdown(e: MouseEvent | PointerEvent) {
@@ -187,6 +219,9 @@
   });
 
   loadSettings();
+  refreshCleanupCache().catch((err) => {
+    cleanupCacheError = `Cache status unavailable. ${formatIpcError(err)}`;
+  });
 
   // ---------- import / export ----------
 
@@ -392,21 +427,31 @@
   <div>
     <div class="label">Cleanup cache</div>
     <div class="desc">
-      {cleanupCacheEntries} cached phrase{cleanupCacheEntries === 1 ? '' : 's'}.
-      {#if cleanupCacheSpaceConstrained}
-        Low disk space (&lt;1 GB free). Clearing cache may help free space.
-      {:else if cleanupCacheFreeBytes === null}
-        Status unavailable.
+      Save cleaned text on this device to speed up repeated dictation.
+      Results expire after 2 idle days or 7 days total. Turning this off clears stored results.
+    </div>
+  </div>
+  <Toggle checked={cleanupCacheEnabled} onchange={handleCleanupCache} label="Cleanup cache" disabled={savingCleanupCache || clearingCleanupCache} />
+</div>
+<div class="setting-row" data-setting-target="privacy-cache-storage">
+  <div>
+    <div class="desc">
+      {#if cleanupCacheStatus}
+        {cleanupCacheEntries} cached result{cleanupCacheEntries === 1 ? '' : 's'} · {cacheSize(cleanupCacheStatus.payload_bytes)} of text.
+        {#if cleanupCacheStatus.session.hits + cleanupCacheStatus.session.misses > 0}
+          Reused {cleanupCacheStatus.session.hits} of {cleanupCacheStatus.session.hits + cleanupCacheStatus.session.misses} eligible requests this session.
+        {/if}
       {:else}
-        {(cleanupCacheFreeBytes / 1024 / 1024 / 1024).toFixed(1)} GB free.
+        Cache status unavailable.
       {/if}
     </div>
+    {#if cleanupCacheError}<div class="desc" role="alert">{cleanupCacheError}</div>{/if}
+    {#if cleanupCacheMessage}<div class="desc" role="status">{cleanupCacheMessage}</div>{/if}
   </div>
   <button
     class="btn-ghost"
     onclick={clearCleanupCache}
-    disabled={clearingCleanupCache}
-    title={cleanupCacheSpaceConstrained ? 'Low disk space detected (<1 GB free).' : ''}
+    disabled={clearingCleanupCache || savingCleanupCache}
   >
     {clearingCleanupCache ? 'Clearing…' : 'Clear Cache'}
   </button>
