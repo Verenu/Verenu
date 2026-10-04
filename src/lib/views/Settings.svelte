@@ -37,22 +37,8 @@
   const animDir = $derived(appStore.settingsAnimDir);
   const appVersion = $derived(appStore.appVersion);
 
-  /*
-   * Compact (phone) settings navigation. On desktop the section rail lives in
-   * Sidebar.svelte, which morphs into it when settings opens — but that sidebar
-   * is hidden at compact widths, which left every section except General
-   * unreachable on a phone. This flattens the same source list into a
-   * horizontally scrollable tab strip, shown only when the bottom nav is.
-   */
-  const mobileSections = $derived(
-    visibleSettingsSections({
-      isMac,
-      devMode: appStore.devModeEnabled,
-      legacyMode: appStore.legacyFeaturesEnabled,
-      syncEnabled: appStore.syncEnabled,
-    }).flatMap((group) => group.items)
-  );
-
+  // The Android list, section labels, and search share one filtered grouping.
+  // Keep the flat projection derived from those groups so visibility rules run once.
   // Android shows the section list as its own screen on phones and beside the
   // section on wide windows (both are laid out in CSS from the width class).
   const mobileGroups = $derived(
@@ -63,6 +49,7 @@
       syncEnabled: appStore.syncEnabled,
     })
   );
+  const mobileSections = $derived(mobileGroups.flatMap((group) => group.items));
   const activeSectionLabel = $derived(
     mobileSections.find((entry) => entry.id === section)?.label ?? 'Settings'
   );
@@ -105,7 +92,8 @@
   onMount(() => {
     const unlistenPromise = listen<string>('open-flow:open-settings-section', (event) => {
       const target = event.payload;
-      const nextSection = target && isSettingsSectionId(target) ? target : 'general';
+      const hasTarget = !!target && isSettingsSectionId(target);
+      const nextSection = hasTarget ? target : 'general';
       if (nextSection !== appStore.settingsSection) {
         appStore.settingsAnimDir = directionFromOrder(
           appStore.settingsSection,
@@ -114,6 +102,7 @@
         );
       }
       appStore.settingsSection = nextSection;
+      if (isAndroid) appStore.settingsMobileList = !hasTarget;
       appStore.settingsOpen = true;
     });
     return () => {
@@ -138,7 +127,8 @@
   });
 
   $effect(() => {
-    if (!appStore.settingsOpen) appStore.settingsMobileList = false;
+    // An unqualified re-entry should start from the section list.
+    if (!appStore.settingsOpen && isAndroid) appStore.settingsMobileList = true;
   });
 
   // A settings search hit or deep link names a section: show it, not the list.
