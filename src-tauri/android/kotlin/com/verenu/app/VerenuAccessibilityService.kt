@@ -677,10 +677,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val imeRight = (imeBounds?.right ?: screenWidth).coerceAtMost(screenWidth)
                 val imeTopEdge = imeBounds?.top ?: 0
                 val right = minOf(cover.centerX() + size / 2, imeRight - (2 * density).toInt())
-                val top = maxOf(cover.centerY() - size / 2, imeTopEdge)
+                // Centre whatever state is showing on the key's row: the idle disc
+                // is the key's size, the other states are shorter or taller.
+                val viewHeight = overlay?.height?.takeIf { it > 0 } ?: (size + 2 * pad)
                 params.gravity = Gravity.TOP or Gravity.END
                 params.x = (screenWidth - right - pad).coerceAtLeast(0)
-                params.y = (top - pad).coerceAtLeast(0)
+                params.y = (cover.centerY() - viewHeight / 2).coerceAtLeast(imeTopEdge - pad).coerceAtLeast(0)
             }
             // Docked while the keyboard is away: out of the way, at the top.
             docked && followsKeyboard() -> underPunchHole()
@@ -1097,25 +1099,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         refreshOverlayVisibility()
         val view = overlay ?: return
         if (next == VerenuOverlayView.State.ERROR && overlayErrorMessage.isNotEmpty()) {
-            view.setError(overlayErrorMessage, errorTitleFor(errorAction), errorActionLabelFor(errorAction))
+            view.setError(overlayErrorMessage, retry = errorAction != ErrorAction.DISMISS)
         } else {
             view.updateState(next)
         }
-    }
-
-    private fun errorTitleFor(action: ErrorAction) = when (action) {
-        ErrorAction.RETRY_START -> "Couldn't start"
-        ErrorAction.RETRY_STOP -> "Couldn't stop"
-        ErrorAction.RETRY_CANCEL -> "Couldn't cancel"
-        ErrorAction.RETRY_INSERTION -> "Couldn't insert"
-        ErrorAction.DISMISS -> "Not inserted"
-        ErrorAction.RETRY_TRANSCRIPTION -> "Dictation failed"
-    }
-
-    private fun errorActionLabelFor(action: ErrorAction): String? = when (action) {
-        ErrorAction.DISMISS -> null
-        ErrorAction.RETRY_START -> "Try again"
-        else -> "Retry"
     }
 
     /** Retain the short, already-sanitized bridge message across overlay churn. */
@@ -1334,6 +1321,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 }
             }
         }
+    }
+
+    override fun onPillResized() {
+        if (overlayAttached) repositionOverlay()
     }
 
     override fun onPillRestart() {

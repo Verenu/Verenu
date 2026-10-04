@@ -71,6 +71,8 @@ class VerenuOverlayView @JvmOverloads constructor(
         /** Start a fresh dictation from the cancelled notice. */
         fun onPillRestart()
         fun onPillDismiss()
+        /** The pill's height changed (e.g. a one-line state became a two-line one). */
+        fun onPillResized() {}
         /** Long-press on the idle pill: it can now be dragged (raw screen px). */
         fun onPillDragStart()
         fun onPillDragMove(rawX: Int, rawY: Int)
@@ -87,11 +89,16 @@ class VerenuOverlayView @JvmOverloads constructor(
         val fg: Int,
         val muted: Int,
         val errorBg: Int,
+        val errorBorder: Int,
         val errorFg: Int,
-        val errorFgMuted: Int,
     )
 
     var listener: Listener? = null
+
+    private companion object {
+        /** The desktop pill's height (34px), used by every state except the idle disc. */
+        const val PILL_HEIGHT_DP = 34f
+    }
 
     private val density = context.resources.displayMetrics.density
     private fun dp(value: Float) = value * density
@@ -119,8 +126,7 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     private var state: State = State.IDLE
     private var errorMessage = "Something went wrong"
-    private var errorTitle = "Dictation failed"
-    private var errorActionLabel: String? = "Retry"
+    private var errorRetry = true
 
     private val pill = FrameLayout(context)
     private val row = LinearLayout(context).apply {
@@ -194,14 +200,10 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    /**
-     * [title] names what failed; [actionLabel] is the retry button's text, or
-     * null when the only sensible response is to dismiss the notice.
-     */
-    fun setError(message: String, title: String = "Dictation failed", actionLabel: String? = "Retry") {
+    /** [retry] shows the retry glyph; false when the only response is to dismiss. */
+    fun setError(message: String, retry: Boolean = true) {
         errorMessage = message.ifEmpty { "Something went wrong" }
-        errorTitle = title
-        errorActionLabel = actionLabel
+        errorRetry = retry
         if (state == State.ERROR) {
             render(animated = false)
         } else {
@@ -255,9 +257,20 @@ class VerenuOverlayView @JvmOverloads constructor(
         super.onMeasure(bounded, heightMeasureSpec)
     }
 
+    /**
+     * The idle disc is exactly the keyboard's mic key. Every other state is the
+     * desktop capsule (34dp) however big the key is, centred on the same row.
+     */
     private fun applyMinimumSize() {
-        pill.minimumHeight = if (coverSize > 0) coverSize else dpi(36f)
-        pill.minimumWidth = if (coverSize > 0) coverSize else 0
+        val disc = coverSize > 0 && state == State.IDLE
+        pill.minimumHeight = if (disc) coverSize else dpi(PILL_HEIGHT_DP)
+        pill.minimumWidth = if (disc) coverSize else 0
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // A taller or shorter state must stay centred on the keyboard's mic row.
+        if (h != oldh && oldh != 0) listener?.onPillResized()
     }
 
     /** 10 ms peak-envelope samples (linear 0..1) from the recorder. */
@@ -331,9 +344,10 @@ class VerenuOverlayView @JvmOverloads constructor(
         border = if (dark) 0x12FFFFFF else 0x1F111110,
         fg = if (dark) 0xFFFFFFFF.toInt() else 0xFF111110.toInt(),
         muted = if (dark) 0x73FFFFFF else 0x73111110,
-        errorBg = 0xEB351613.toInt(),
-        errorFg = 0xFFFFA194.toInt(),
-        errorFgMuted = 0xCCFFD0C8.toInt(),
+        // Desktop --pill-error-*: a flat red-tinted capsule with a 1px ring.
+        errorBg = 0xFF351613.toInt(),
+        errorBorder = 0xFF7A3027.toInt(),
+        errorFg = 0xFFFF8F80.toInt(),
     )
 
     private fun applyChrome(animated: Boolean) {
@@ -341,7 +355,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         // Covering the keyboard's own button needs an opaque fill.
         val target = if (coverSize > 0) base or 0xFF000000.toInt() else base
         background.cornerRadius = dp(40f)
-        background.setStroke(dpi(1f), if (state == State.ERROR) 0x33FF8F80 else palette.border)
+        background.setStroke(dpi(1f), if (state == State.ERROR) palette.errorBorder else palette.border)
         val from = lastBg
         lastBg = target
         bgAnimator?.cancel()
@@ -362,9 +376,16 @@ class VerenuOverlayView @JvmOverloads constructor(
 
         val fromWidth = pill.width
         row.removeAllViews()
+        applyMinimumSize()
         val covering = coverSize > 0 && state == State.IDLE
-        val padH = if (covering) 0 else dpi(if (compact) 10f else 14f)
-        row.setPadding(padH, 0, padH, 0)
+        // Rows with a glyph button at either end hug it (desktop uses 5-8px).
+        val padH = when {
+            covering -> 0
+            state == State.RECORDING || state == State.CANCELLED -> dpi(if (compact) 8f else 5f)
+            state == State.ERROR -> dpi(5f)
+            else -> dpi(if (compact) 12f else 16f)
+        }
+        row.setPadding(padH, 0, if (state == State.ERROR && !errorRetry) dpi(16f) else padH, 0)
 
         when (state) {
             State.IDLE -> {
@@ -373,61 +394,56 @@ class VerenuOverlayView @JvmOverloads constructor(
             }
             State.RECORDING -> {
                 if (!compact) {
-                    row.addView(circleButton(IconView.Kind.CLOSE, palette.fg, "Cancel") { listener?.onPillCancel() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
+                    row.addView(glyphButton(IconView.Kind.CLOSE, palette.muted, "Cancel") { listener?.onPillCancel() }, glyphParams())
                 }
                 val w = WaveView(context, palette.fg, compact).also { wave = it }
                 row.addView(w, LinearLayout.LayoutParams(w.preferredWidth(), w.preferredHeight()).apply {
-                    marginStart = dpi(if (compact) 4f else 8f)
-                    marginEnd = dpi(8f)
+                    marginStart = dpi(if (compact) 4f else 6f)
+                    marginEnd = dpi(if (compact) 8f else 8f)
                 })
-                val stopSize = dpi(if (compact) 26f else 28f)
-                row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginStart = dpi(6f) })
+                val stopSize = dpi(if (compact) 26f else 26f)
+                row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginEnd = dpi(3f) })
                 w.start()
             }
             State.TRANSCRIBING -> busyRow("Transcribing…")
             State.CLEANING -> busyRow("Cleaning up…")
             State.INSERTING -> busyRow("Pasting…")
             State.ERROR -> {
-                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
-                row.addView(icon(IconView.Kind.ALERT, 18f, palette.errorFg), iconParams(20f, 8f))
-                val text = LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    addView(label(errorTitle, palette.errorFg).apply {
-                        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-                    })
-                    addView(
-                        label(errorMessage, palette.errorFgMuted).apply {
-                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                            maxLines = 2
-                            maxWidth = dpi(190f)
-                        },
-                        LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ).apply { topMargin = dpi(1f) },
-                    )
-                }
-                row.addView(text, gapStart(8f))
-                errorActionLabel?.let { actionLabel ->
-                    row.addView(
-                        actionButton(actionLabel, palette.errorFg) { listener?.onPillRetry() },
-                        LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            dpi(32f),
-                        ).apply { marginStart = dpi(8f) },
-                    )
+                // Same as desktop: no status icon, the red surface says "error".
+                // Dismiss sits left (quiet), Retry right (the action).
+                row.addView(glyphButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss", alpha = 0.75f) { listener?.onPillDismiss() }, glyphParams())
+                row.addView(
+                    label(errorMessage, palette.errorFg, 12.5f).apply {
+                        maxLines = 2
+                        maxWidth = dpi(236f)
+                    },
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        marginStart = dpi(6f)
+                        marginEnd = dpi(if (errorRetry) 6f else 0f)
+                    },
+                )
+                if (errorRetry) {
+                    row.addView(glyphButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, glyphParams())
                 }
             }
             State.CANCELLED -> {
-                // The X dismisses the notice; the back arrow starts over. The
-                // pill body itself does nothing, so a stray tap can never
-                // restart a dictation the user just cancelled.
-                row.addView(circleButton(IconView.Kind.CLOSE, palette.fg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
-                row.addView(label("Cancelled", palette.fg), gapStart(10f))
+                // Desktop layout: muted dismiss, centred label, undo on the right.
+                // The pill body does nothing, so a stray tap never restarts.
+                row.addView(glyphButton(IconView.Kind.CLOSE, palette.muted, "Dismiss") { listener?.onPillDismiss() }, glyphParams())
                 row.addView(
-                    circleButton(IconView.Kind.UNDO, palette.fg, "Restart dictation") { listener?.onPillRestart() },
-                    LinearLayout.LayoutParams(dpi(28f), dpi(28f)).apply { marginStart = dpi(10f) },
+                    label("Cancelled", palette.fg, 12.5f).apply {
+                        gravity = Gravity.CENTER
+                        minWidth = dpi(84f)
+                    },
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply { marginStart = dpi(6f); marginEnd = dpi(6f) },
                 )
+                row.addView(glyphButton(IconView.Kind.UNDO, palette.fg, "Restart dictation") { listener?.onPillRestart() }, glyphParams())
             }
         }
 
@@ -473,9 +489,9 @@ class VerenuOverlayView @JvmOverloads constructor(
         row.addView(label(text, palette.fg), gapStart(10f))
     }
 
-    private fun label(text: String, color: Int) = TextView(context).apply {
+    private fun label(text: String, color: Int, sizeSp: Float = if (compact) 12f else 13.5f) = TextView(context).apply {
         this.text = text
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, if (compact) 12f else 14f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         setTextColor(color)
         includeFontPadding = false
@@ -496,52 +512,40 @@ class VerenuOverlayView @JvmOverloads constructor(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { marginStart = dpi(valueDp) }
 
-    /** A faint disc with a small glyph: the quiet counterpart to the solid stop button. */
-    private fun circleButton(
+    private fun glyphParams() = LinearLayout.LayoutParams(dpi(32f), dpi(32f))
+
+    /**
+     * A borderless glyph, as on the desktop pill: no disc, just the mark, with a
+     * soft circle that appears while it is pressed. 32dp keeps it a fair touch
+     * target inside the 34dp capsule.
+     */
+    private fun glyphButton(
         kind: IconView.Kind,
         color: Int,
         description: String,
+        alpha: Float = 1f,
         onClick: () -> Unit,
     ) = FrameLayout(context).apply {
         contentDescription = description
         isClickable = true
         isFocusable = false
-        layoutParams = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
-        background = GradientDrawable().apply {
+        this.alpha = alpha
+        val pressed = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor((color and 0x00FFFFFF) or 0x1F000000)
+            setColor((color and 0x00FFFFFF) or 0x26000000)
         }
-        addView(
-            IconView(context, kind, color),
-            LayoutParams(dpi(if (kind == IconView.Kind.CLOSE) 10f else 15f), dpi(if (kind == IconView.Kind.CLOSE) 10f else 15f), Gravity.CENTER),
-        )
-        setOnClickListener { onClick() }
-    }
-
-    /** A labelled capsule: the clear, tappable response to an error. */
-    private fun actionButton(text: String, color: Int, onClick: () -> Unit) = TextView(context).apply {
-        this.text = text
-        contentDescription = text
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-        setTextColor(color)
-        includeFontPadding = false
-        gravity = Gravity.CENTER
-        maxLines = 1
-        minWidth = dpi(64f)
-        setPadding(dpi(14f), 0, dpi(14f), 0)
-        isClickable = true
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(18f)
-            setColor((color and 0x00FFFFFF) or 0x2E000000)
+        background = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
         }
+        val glyph = if (kind == IconView.Kind.CLOSE) 16f else 18f
+        addView(IconView(context, kind, color), LayoutParams(dpi(glyph), dpi(glyph), Gravity.CENTER))
         setOnClickListener { onClick() }
     }
 
     /** Solid light disc with a dark rounded square: the unmistakable stop. */
     private fun stopButton(): View {
-        val size = if (compact) 26f else 28f
+        val size = 26f
         return FrameLayout(context).apply {
             contentDescription = "Stop and transcribe"
             isClickable = true
@@ -597,41 +601,55 @@ class VerenuOverlayView @JvmOverloads constructor(
                     canvas.drawLine(cx, top + s * 0.8f, cx, top + s * 0.94f, paint)
                 }
                 Kind.CLOSE -> {
-                    // One path, one stroke: two separate translucent lines would
-                    // blend twice where they cross and leave a bright centre.
-                    val inset = s * 0.1f
+                    // Desktop glyph: "M6 6l12 12M6 18 18 6" on a 24 grid.
+                    val u = s / 24f
+                    paint.strokeWidth = 2.2f * u
                     canvas.drawPath(
                         Path().apply {
-                            moveTo(left + inset, top + inset)
-                            lineTo(left + s - inset, top + s - inset)
-                            moveTo(left + s - inset, top + inset)
-                            lineTo(left + inset, top + s - inset)
+                            moveTo(left + 6f * u, top + 6f * u)
+                            lineTo(left + 18f * u, top + 18f * u)
+                            moveTo(left + 6f * u, top + 18f * u)
+                            lineTo(left + 18f * u, top + 6f * u)
                         },
                         paint,
                     )
                 }
-                Kind.RETRY, Kind.UNDO -> {
-                    // Rotate arrow on a 24-unit grid: a 270 degree arc, a short
-                    // tail curving into the head, and the head's two strokes.
-                    val flip = kind == Kind.UNDO
-                    val save = canvas.save()
-                    if (flip) canvas.scale(-1f, 1f, cx, cy)
+                Kind.RETRY -> {
+                    // Desktop glyph: arc "M21 12a9 9 0 1 1-2.64-6.36" and arrow "M21 4v5h-5".
                     val u = s / 24f
-                    fun px(x: Float) = left + x * u
-                    fun py(y: Float) = top + y * u
-                    canvas.drawArc(RectF(px(3f), py(3f), px(21f), py(21f)), 0f, 270f, false, paint)
+                    paint.strokeWidth = 2.2f * u
+                    canvas.drawArc(RectF(left + 3f * u, top + 3f * u, left + 21f * u, top + 21f * u), 0f, 315f, false, paint)
                     canvas.drawPath(
                         Path().apply {
-                            moveTo(px(12f), py(3f))
-                            cubicTo(px(14.52f), py(3f), px(16.93f), py(4f), px(18.74f), py(5.74f))
-                            lineTo(px(21f), py(8f))
-                            moveTo(px(21f), py(3f))
-                            lineTo(px(21f), py(8f))
-                            lineTo(px(16f), py(8f))
+                            moveTo(left + 21f * u, top + 4f * u)
+                            lineTo(left + 21f * u, top + 9f * u)
+                            lineTo(left + 16f * u, top + 9f * u)
                         },
                         paint,
                     )
-                    canvas.restoreToCount(save)
+                }
+                Kind.UNDO -> {
+                    // Desktop glyph: "M9 14 4 9l5-5" and "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11".
+                    val u = s / 24f
+                    paint.strokeWidth = 2.2f * u
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 9f * u, top + 14f * u)
+                            lineTo(left + 4f * u, top + 9f * u)
+                            lineTo(left + 9f * u, top + 4f * u)
+                        },
+                        paint,
+                    )
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 4f * u, top + 9f * u)
+                            lineTo(left + 14.5f * u, top + 9f * u)
+                            arcTo(RectF(left + 9f * u, top + 9f * u, left + 20f * u, top + 20f * u), -90f, 90f)
+                            arcTo(RectF(left + 9f * u, top + 9f * u, left + 20f * u, top + 20f * u), 0f, 90f)
+                            lineTo(left + 11f * u, top + 20f * u)
+                        },
+                        paint,
+                    )
                 }
                 Kind.ALERT -> {
                     canvas.drawCircle(cx, cy, s * 0.42f, paint)
