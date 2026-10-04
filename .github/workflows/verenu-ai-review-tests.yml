@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'scripts/verenu-ai-review*'
+      - '.github/workflows/verenu-ai-review.yml'
       - '.github/workflows/verenu-ai-review-tests.yml'
 
 permissions:
