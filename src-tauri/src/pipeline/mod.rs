@@ -43,7 +43,12 @@ mod pill {
 
     pub(crate) fn hide_pill(_app: &AppHandle) {}
 
-    pub(crate) fn set_pill_interactive(_app: &AppHandle, _interactive: bool) {}
+    pub(crate) fn set_pill_interactive(
+        _app: &AppHandle,
+        _interactive: bool,
+        _expected_state: Option<&str>,
+    ) {
+    }
 
     pub(crate) fn set_pill_hit_rect(_app: &AppHandle, _x: f64, _y: f64, _w: f64, _h: f64) {}
 
@@ -98,16 +103,17 @@ use gates::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use pill::initialize_pill;
+#[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+pub(crate) use pill::native_test_pill;
 pub(crate) use pill::{
     current_pill_state, emit_pill_context, emit_pill_stage, hide_pill, replay_pill_state,
-    set_pill_hit_rect, set_pill_interactive,
-    show_clipboard_warning_pill, show_copied_pill, show_pill, update_pill_state,
+    set_pill_hit_rect, set_pill_interactive, show_clipboard_warning_pill, show_copied_pill,
+    show_pill, update_pill_state,
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
     show_paste_failed_pill,
 };
-#[cfg(not(target_os = "linux"))]
 pub(crate) use pill_position::{
     apply_pill_placement, placement_for_current_monitor, PillPlacement,
 };

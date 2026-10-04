@@ -797,6 +797,8 @@ pub fn run() {
             commands::set_pill_size,
             commands::set_pill_hit_rect,
             commands::set_pill_interactive,
+            #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+            commands::native_test_pill,
             commands::hide_dictation_pill,
             commands::get_installed_apps,
             commands::get_app_icon,

@@ -42,12 +42,22 @@
   // `setDecorations`, and calling `setDecorations(false)` after harden was
   // observed to flash a pale caption-sized bar along the top of the pill.
   async function setPillInteractive(interactive: boolean) {
-    const { invoke } = await import('@tauri-apps/api/core');
-    // Linux only accepts clicks inside the reported capsule rect, so make
-    // sure the backend has the current one before it opens the input region.
-    if (interactive) await reportHitRect(true);
-    await invoke('set_pill_interactive', { interactive }).catch(() => {});
+    const update = ++inputUpdate;
+    const expectedState = state;
+    inputChain = inputChain.then(async () => {
+      await tick();
+      if (update !== inputUpdate || state !== expectedState) return;
+      const hasControls = !!clusterEl?.querySelector('.pill button');
+      const enabled = interactive && hasControls && !dying;
+      if (enabled) await reportHitRect(true);
+      if (update !== inputUpdate || state !== expectedState) return;
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_pill_interactive', { interactive: enabled, expectedState });
+    }).catch(() => {});
+    await inputChain;
   }
+  let inputUpdate = 0;
+  let inputChain: Promise<void> = Promise.resolve();
 
   // Resolved context for the current dictation (e.g. "Slack", "Everywhere") —
   // where the text is headed, emitted by the backend's own resolution.
@@ -452,7 +462,7 @@
   // mid-morph — the "half the pill is missing" artifact. Rounding up to a step
   // turns a ~15-resize transition into 2-3, while keeping the click-capture
   // zone within one step of the real pill instead of the old fixed 380px band.
-  const PILL_STEP_W = 24;
+  const PILL_STEP_W = isLinux ? 8 : 24;
   const windowWidthFor = (contentW: number) =>
     Math.max(Math.ceil((contentW + PILL_PAD_W) / PILL_STEP_W) * PILL_STEP_W, MIN_PILL_WINDOW_W);
   const windowHeightFor = (contentH: number) =>
@@ -472,31 +482,33 @@
   // stutter the window. A newer size while one is in flight just overwrites
   // the pending slot, so only the latest value gets sent once the current
   // call resolves.
-    let pillSizeInFlight = false;
-    let pillSizeInFlightTarget: { w: number; h: number } | null = null;
-    let pillSizePending: { w: number; h: number } | null = null;
+  let pillSizeInFlight = false;
+  let pillSizeInFlightTarget: { w: number; h: number } | null = null;
+  let pillSizePending: { w: number; h: number } | null = null;
 
-    function sendPillSize(w: number, h: number) {
-      // Linux keeps one fixed-size window (see `reportHitRect`); the backend
-      // ignores content-fit sizes there, so don't spend an IPC on them.
-      if (LINUX_FIXED_WINDOW) {
-        lastSentWidth = w;
-        lastSentHeight = h;
-        return;
-      }
-      pillSizeInFlight = true;
-      pillSizeInFlightTarget = { w, h };
-      import('@tauri-apps/api/core')
+  function sendPillSize(w: number, h: number) {
+    pillSizeInFlight = true;
+    pillSizeInFlightTarget = { w, h };
+    import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke('set_pill_size', { width: w, height: h }))
-      .then(() => {
+      .then(async () => {
+        if (LINUX_INPUT_REGION) {
+          // Hyprland acknowledges the request before WebKit receives its
+          // configure event. Keep the single-flight lock until both agree.
+          const deadline = performance.now() + 750;
+          while ((window.innerWidth !== w || window.innerHeight !== h) && performance.now() < deadline) {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          }
+          await reportHitRect(true);
+        }
         lastSentWidth = w;
         lastSentHeight = h;
       })
       .catch(() => {})
-        .finally(() => {
-          pillSizeInFlight = false;
-          pillSizeInFlightTarget = null;
-          if (pillSizePending) {
+      .finally(() => {
+        pillSizeInFlight = false;
+        pillSizeInFlightTarget = null;
+        if (pillSizePending) {
           const next = pillSizePending;
           pillSizePending = null;
           sendPillSize(next.w, next.h);
@@ -506,11 +518,11 @@
 
   function reportPillSize(width: number, height: number) {
     const w = windowWidthFor(width);
-      const h = windowHeightFor(height);
-      if (pillSizeInFlight) {
-        pillSizePending =
-          pillSizeInFlightTarget?.w === w && pillSizeInFlightTarget.h === h ? null : { w, h };
-        return;
+    const h = windowHeightFor(height);
+    if (pillSizeInFlight) {
+      pillSizePending =
+        pillSizeInFlightTarget?.w === w && pillSizeInFlightTarget.h === h ? null : { w, h };
+      return;
     }
     if (w === lastSentWidth && h === lastSentHeight) return;
     sendPillSize(w, h);
@@ -519,10 +531,12 @@
   function measureAndResize() {
     if (!clusterEl) return;
     void reportHitRect();
-    const w = windowWidthFor(clusterEl.offsetWidth);
-    const h = windowHeightFor(clusterEl.offsetHeight);
+    const contentW = Math.max(clusterEl.offsetWidth, state === 'error' && errOpen ? errWidth : 0);
+    const contentH = Math.max(clusterEl.offsetHeight, state === 'error' && errOpen ? errHeight : 0);
+    const w = windowWidthFor(contentW);
+    const h = windowHeightFor(contentH);
     if (w > lastSentWidth || h > lastSentHeight) {
-      reportPillSize(clusterEl.offsetWidth, clusterEl.offsetHeight);
+      reportPillSize(contentW, contentH);
     }
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
@@ -531,14 +545,7 @@
     }, 100);
   }
 
-  // The Linux (Hyprland) pill window never resizes: native resizes raced the
-  // compositor and left the window box and the rendered capsule out of step,
-  // which made the pill drift off-centre and its buttons unclickable. The
-  // layout centres the capsule inside the fixed window instead, and the
-  // backend only lets clicks through inside the rect reported here.
-  const LINUX_FIXED_WINDOW = isLinux && !isAndroid;
-  // Bleed around the cluster for the shadow and the bouncy entrance scale.
-  const HIT_RECT_BLEED = 10;
+  const LINUX_INPUT_REGION = isLinux && !isAndroid;
   let lastHitRect = '';
   // Reports run strictly in order on this chain, and each measures the cluster
   // when its turn comes, so a caller that awaits one (setPillInteractive) knows
@@ -547,11 +554,17 @@
 
   async function sendHitRect(force: boolean) {
     if (!clusterEl) return;
+    // The context chip and shadow have no controls. Only the actual capsule
+    // belongs in the input region, including while its width animates.
+    const pill = clusterEl.querySelector<HTMLElement>('.pill');
     const box = clusterEl.getBoundingClientRect();
-    const x = Math.max(0, box.left - HIT_RECT_BLEED);
-    const y = Math.max(0, box.top - HIT_RECT_BLEED);
-    const width = Math.min(window.innerWidth - x, box.width + HIT_RECT_BLEED * 2);
-    const height = Math.min(window.innerHeight - y, box.height + HIT_RECT_BLEED * 2);
+    // Entrance/exit transforms affect painting, not the control layout.
+    // Measuring that scale would leave a stale, shrunken input region once
+    // an otherwise fixed-size capsule finishes its entrance animation.
+    const x = Math.max(0, box.left + (pill?.offsetLeft ?? 0));
+    const y = Math.max(0, box.top + (pill?.offsetTop ?? 0));
+    const width = Math.max(0, Math.min(window.innerWidth - x, pill?.offsetWidth ?? 0));
+    const height = Math.max(0, Math.min(window.innerHeight - y, pill?.offsetHeight ?? 0));
     const key = [x, y, width, height].map(Math.round).join(',');
     if (!force && key === lastHitRect) return;
     lastHitRect = key;
@@ -564,13 +577,19 @@
   }
 
   function reportHitRect(force = false): Promise<void> {
-    if (!LINUX_FIXED_WINDOW) return Promise.resolve();
+    if (!LINUX_INPUT_REGION) return Promise.resolve();
     // A failed report must not poison the chain for every later one.
     hitRectChain = hitRectChain.then(() => sendHitRect(force)).catch(() => {});
     return hitRectChain;
   }
 
   let pillResizeObserver: ResizeObserver | null = null;
+
+  function observeCapsule(node: HTMLElement) {
+    const observer = new ResizeObserver(() => { void reportHitRect(); });
+    observer.observe(node);
+    return { destroy: () => observer.disconnect() };
+  }
 
   // Snap CSS-px lengths to a whole number of device pixels. On fractional DPI
   // scaling (e.g. 1.25×/1.5×) a hardcoded 3px bar maps to a fractional device
@@ -689,6 +708,7 @@
   function goIdle() {
     if (dying) return;
     dying = true;
+    void setPillInteractive(false);
     dyingTimer = setTimeout(() => {
       dying = false;
       dyingTimer = null;
@@ -841,6 +861,8 @@
   onMount(() => {
     const unlisteners: Array<() => void> = [];
     let mounted = true;
+    const onWindowResize = () => { void reportHitRect(true); };
+    window.addEventListener('resize', onWindowResize);
 
     // Arm the cross-monitor DPI watcher (defined at component scope above so
     // refreshDpr can re-arm it as the pill moves between displays).
@@ -885,7 +907,8 @@
           incoming === 'cancelled' ||
           incoming === 'interrupted' ||
           incoming === 'paste_failed' ||
-          incoming === 'copied'
+          incoming === 'copied' ||
+          incoming === 'clipboard_warning'
         ) {
           clearStage();
           contextLabel = null;
@@ -919,7 +942,8 @@
           incoming === 'cancelled' ||
           incoming === 'interrupted' ||
           incoming === 'paste_failed' ||
-          incoming === 'copied'
+          incoming === 'copied' ||
+          incoming === 'clipboard_warning'
         );
         if (state === 'recording' || state === 'handsfree') {
           refreshDpr(); // align snapping to the current monitor before first paint
@@ -1119,6 +1143,7 @@
       }
       pillResizeObserver?.disconnect();
       pillResizeObserver = null;
+      window.removeEventListener('resize', onWindowResize);
       mq?.removeEventListener('change', onDprChange);
       cancelAnimationFrame(rafId);
       if (errorTimer) clearTimeout(errorTimer);
@@ -1464,7 +1489,7 @@
     </div>
 
   {:else if state === 'handsfree'}
-    <div class="pill handsfree" class:dying={dying} class:hf-expanded={showHfButtons && !dying} class:no-anim={prevState === 'recording'}>
+    <div class="pill handsfree" use:observeCapsule class:dying={dying} class:hf-expanded={showHfButtons && !dying} class:no-anim={prevState === 'recording'}>
       {#if showHfButtons}
         <button class="hf-btn cancel" onclick={cancelHandless} aria-label="Cancel">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
