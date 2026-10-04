@@ -1,6 +1,6 @@
 # Custom providers
 
-Open **Settings > API Keys > Add custom provider** in the desktop app. Pick a preset or **Start from scratch**. Presets cover popular cloud APIs, Anthropic-style endpoints, and local servers such as Ollama, LM Studio, llama.cpp, and vLLM. They only prefill the base URL, protocol, capabilities, and a suggested model ID; click a suggestion chip to add more. Verenu does not test or support these vendors, and model IDs change, so check the vendor's docs. Give the provider a name, choose a protocol, and enter its base URL. Include the API version prefix, such as `https://api.example.com/v1`. Verenu appends the task path.
+Open **Settings > Providers > Add custom provider** in the desktop app. Pick a preset or **Start from scratch**. Presets cover popular cloud APIs, Anthropic-style endpoints, and local servers such as Ollama, LM Studio, llama.cpp, and vLLM. They only prefill the base URL, protocol, capabilities, and a suggested model ID; click a suggestion chip to add more. Verenu does not test or support these vendors, and model IDs change, so check the vendor's docs. Give the provider a name, choose a protocol, and enter its base URL. Include the API version prefix, such as `https://api.example.com/v1`. Verenu appends the task path.
 
 | Protocol | Transcription path | Cleanup path |
 | --- | --- | --- |

@@ -154,7 +154,7 @@
 </script>
 
 <div class="page-head">
-  <h2 class="settings-h page-title">API Keys</h2>
+  <h2 class="settings-h page-title">Providers</h2>
   {#if !isAndroid}
     <button class="add-provider" type="button" data-setting-target="custom-providers" aria-label="Create custom provider" aria-describedby="add-provider-tip"
       disabled={customProviderStore.providers.length >= 12} onclick={() => addRequest += 1}>
