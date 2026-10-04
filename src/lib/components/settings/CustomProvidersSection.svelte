@@ -13,6 +13,12 @@
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
 
+  let { addRequest = 0 }: { addRequest?: number } = $props();
+  let seenRequest: number | null = null;
+  $effect(() => {
+    if (seenRequest === null) { seenRequest = addRequest; return; }
+    if (addRequest !== seenRequest) { seenRequest = addRequest; startPicking(); }
+  });
   let drawerEl = $state<HTMLElement | null>(null);
   let picking = $state(false);
   let search = $state('');
@@ -188,12 +194,10 @@
   <span class="tile" class:big class:logo={!!logo} style:--tile={color} aria-hidden="true">{#if logo}{@html logo}{:else}{mark ?? monogram(name)}{/if}</span>
 {/snippet}
 
-<section class="custom-providers" aria-label="Custom providers" data-setting-target="custom-providers">
-  <div class="section-heading">
-    <div><h3>Custom providers</h3>
-      <p class="panel-note">Connect any OpenAI, Anthropic, or xAI compatible service, including local models. Keys stay in this device's credential store.</p></div>
-    <button class="add-btn" onclick={startPicking} disabled={busy || customProviderStore.providers.length >= 12} aria-label="Add custom provider" title="Add custom provider"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
-  </div>
+<section class="custom-providers" class:empty={!customProviderStore.providers.length} aria-label="Custom providers">
+  {#if customProviderStore.providers.length}
+    <div class="section-heading"><h3>Custom providers</h3></div>
+  {/if}
 
   {#each customProviderStore.providers as provider (provider.id)}
     {@const match = presetForUrl(provider.base_url, provider.protocol)}
@@ -347,14 +351,9 @@
   .views { display: grid; }
   .views > :global(*) { grid-area: 1 / 1; min-width: 0; }
   .custom-providers { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 22px; }
+  .custom-providers.empty { margin: 0; border: 0; padding: 0; }
   .section-heading, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .section-heading { justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
-  .add-btn { flex: none; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--ink); cursor: pointer; transition: background 120ms ease, transform 120ms ease; }
-  .add-btn:hover:not(:disabled) { background: var(--control-hover); }
-  .add-btn:active:not(:disabled) { transform: scale(0.94); }
-  .add-btn:disabled { opacity: 0.4; cursor: default; }
-  .add-btn:focus-visible, .drawer-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .section-heading .panel-note { margin: 4px 0 0; max-width: 52ch; }
   h3 { font-size: 15px; margin: 0; font-weight: 600; }
   .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
 

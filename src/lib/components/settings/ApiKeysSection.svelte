@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
   import CustomProvidersSection from './CustomProvidersSection.svelte';
+  import { customProviderStore } from '../../customProviders.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import { isAndroid } from '../../platform';
@@ -23,6 +24,7 @@
   const perProvider = <T,>(value: () => T) =>
     Object.fromEntries(keyProviders.map((p) => [p.id, value()])) as Record<ProviderId, T>;
 
+  let addRequest = $state(0);
   let keyStatus = $state<KeyStatus>(perProvider(() => false));
   let draftKeys = $state<KeyDrafts>(perProvider(() => ''));
   let keySaving = $state<Record<ProviderId, boolean>>(perProvider(() => false));
@@ -151,7 +153,16 @@
   });
 </script>
 
-<h2 class="settings-h">API Keys</h2>
+<div class="page-head">
+  <h2 class="settings-h page-title">API Keys</h2>
+  {#if !isAndroid}
+    <button class="add-provider" type="button" data-setting-target="custom-providers" aria-label="Create custom provider" aria-describedby="add-provider-tip"
+      disabled={customProviderStore.providers.length >= 12} onclick={() => addRequest += 1}>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+      <span class="add-tip" id="add-provider-tip" role="tooltip">Create custom provider</span>
+    </button>
+  {/if}
+</div>
 <p class="panel-note">{isAndroid ? 'Keys are stored encrypted in the Android Keystore and never readable from the UI after saving.' : 'Keys are stored locally and never readable from the UI after saving.'}</p>
 
 {#each keyProviders as item}
@@ -215,9 +226,19 @@
   The logos above belong to their respective companies. Verenu is not affiliated with, endorsed by, or sponsored by Groq, OpenAI, Google, AssemblyAI, OpenRouter, or xAI — they are shown solely to indicate provider compatibility.
 </p>
 
-{#if !isAndroid}<CustomProvidersSection />{/if}
+{#if !isAndroid}<CustomProvidersSection {addRequest} />{/if}
 
 <style>
+  .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: var(--settings-h-mb, 20px); }
+  .page-head h2.page-title { margin: 0; }
+  .add-provider { position: relative; flex: none; width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ink-mute); cursor: pointer; transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease; }
+  .add-provider:hover:not(:disabled), .add-provider:focus-visible { background: var(--control-hover); color: var(--ink); border-color: var(--line); }
+  .add-provider:active:not(:disabled) { transform: scale(0.92); }
+  .add-provider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .add-provider:disabled { opacity: 0.35; cursor: default; }
+  .add-tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 5; padding: 5px 9px; border-radius: 7px; background: var(--ink); color: var(--paper); font-size: 11px; font-weight: 500; white-space: nowrap; pointer-events: none; opacity: 0; transform: translateY(-3px); transition: opacity 140ms ease, transform 140ms ease; }
+  .add-provider:hover:not(:disabled) .add-tip, .add-provider:focus-visible .add-tip { opacity: 1; transform: none; transition-delay: 220ms; }
+  @media (prefers-reduced-motion: reduce) { .add-tip, .add-provider { transition: none; } }
   .trademark-note {
     font-size: 11px;
     color: var(--ink-faint);
