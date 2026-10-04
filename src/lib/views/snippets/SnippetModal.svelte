@@ -2,7 +2,6 @@
   import { invoke } from '../../tauri';
   import { formatIpcError, type Context, type Snippet } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
-  import MicInputButton from '../../components/MicInputButton.svelte';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
   import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { autoGrow, countCodePoints, normalizeText, requireCreatedRecordMeta, TRIGGER_LIMIT } from './helpers';
@@ -217,7 +216,6 @@
         autocomplete="off"
         spellcheck="false"
       />
-      <MicInputButton onResult={(t) => draftTrigger = t} />
     </div>
     <p class="field-hint">Speak any of these phrases to trigger the expansion. Separate multiple triggers with commas.</p>
 
@@ -232,7 +230,6 @@
         rows="3"
         spellcheck="false"
       ></textarea>
-      <MicInputButton onResult={(t) => draftExpansion = t} />
     </div>
 
     <label class="field-label instructions-label" for="instructions-input">
