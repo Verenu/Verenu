@@ -4,7 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
-- Added custom providers in Settings > API Keys. Connect an OpenAI, Anthropic, or xAI compatible base URL, name the transcription and cleanup models it offers, and optionally configure an API key header, non-secret headers, and cleanup request options. Models appear under the provider's name in Settings > Models. Keys stay in the native credential store; local endpoints can work without a key. Removing a provider removes its selected models and repairs the fallback chain.
+- Added custom providers in Settings > API Keys. Connect an OpenAI, Anthropic, or xAI compatible base URL, name the transcription and cleanup models it offers, and optionally configure an API key header, non-secret headers, and cleanup request options. Models appear under the provider's name in Settings > Models. Keys stay in the native credential store; local endpoints can work without a key. Removing a provider removes its selected models and repairs the fallback chain. Adding a provider starts from a searchable preset picker with about 30 unofficial presets for cloud APIs, Anthropic-style endpoints, and local servers such as Ollama and LM Studio. Presets only prefill the form; Verenu does not test or support those vendors, and every field stays editable.
 
 - Added automatic redacted log files per app session, with 30-day retention, a 256 MiB folder budget, background batched writes, and automatic pause/resume when disk space is low. Documented log locations for agent diagnosis.
 
