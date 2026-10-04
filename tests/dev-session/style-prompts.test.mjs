@@ -29,6 +29,7 @@ test('cleanup style prompts edit independently, audit, persist, and reset', { ti
       await page.getByRole('button', { name: 'Style', exact: true }).click();
       await page.setViewportSize(viewport);
       const edits = page.getByRole('button', { name: /^Edit .* cleanup prompt$/ });
+      await edits.first().waitFor({ state: 'attached' });
       await assert.equal(await edits.count(), 3);
       assert.equal(await page.getByRole('button', { name: 'Edit Off cleanup prompt' }).count(), 0);
       const selectedBefore = await invoke('get_setting', { key: 'cleanup_intensity' });

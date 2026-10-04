@@ -12,6 +12,7 @@ export type ProviderId =
   | 'assemblyai'
   | 'openrouter'
   | 'xai'
+  | `custom:${string}`
   | 'local';
 export type ProviderModelMap = Record<ProviderId, string[]>;
 export type ToneId = 'casual' | 'formal' | 'very_casual';
@@ -53,6 +54,7 @@ export interface AppMapping {
 }
 
 type SettingsValueMap = {
+  custom_providers: import('./customProviders.svelte').CustomProvider[];
   transcription_provider: ProviderId;
   transcription_language: TranscriptionLanguageCode;
   cleanup_provider: ProviderId;

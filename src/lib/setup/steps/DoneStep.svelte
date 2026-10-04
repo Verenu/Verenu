@@ -77,7 +77,7 @@
   <p class="done-sub">{isAndroid ? 'Verenu is ready. Open any text field and use the pill above your keyboard.' : 'Verenu is ready in your system tray. Use the same three-step rhythm anywhere you can type.'}</p>
 
   {#if !hasKey}
-    <div class="done-warning">No API key set — add one in Settings → API Keys before dictating.</div>
+    <div class="done-warning">No API key set — add one in Settings → Providers before dictating.</div>
   {/if}
 
   <div class="done-quickstart" aria-label="How to dictate">

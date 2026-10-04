@@ -53,8 +53,11 @@ transcript history, transcript-derived state, and sync identity from the copy.
 `--private-history` explicitly retains history. Treat copied customization and
 all screenshots as private even without history.
 
-The worker reads existing provider credentials through the native credential
-store. Keys stay on the host and are removed from copied settings. The bridge
+The worker reads existing built-in provider credentials through the native
+credential store. Custom host keys are unavailable in browser sessions because
+endpoint definitions can be edited there. Custom endpoint verification in the
+browser uses keyless test endpoints. Keys stay on the host and are removed from
+copied settings. The bridge
 does not expose key values or allow credential writes. Sync, analytics,
 automatic vocabulary learning, global hotkeys, clipboard injection, and native
 tray startup are disabled. Desktop microphone access requires `--host-mic` and

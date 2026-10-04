@@ -3,11 +3,13 @@
 use super::*;
 
 mod api_keys;
+mod custom_providers;
 mod model_catalog;
 mod import_export;
 mod prompts;
 
 pub use api_keys::*;
+pub use custom_providers::*;
 pub use model_catalog::*;
 pub use import_export::*;
 pub use prompts::*;
@@ -17,6 +19,7 @@ const CLEANUP_PROMPT_OVERRIDE_CHAR_LIMIT: usize = 20_000;
 #[derive(Clone, Copy)]
 enum SettingKind {
     Provider,
+    CustomProviders,
     TranscriptionLanguage,
     StringOrNull,
     DefaultTone,
@@ -65,6 +68,12 @@ const fn setting_spec(
 }
 
 const SETTING_SPECS: &[SettingSpec] = &[
+    setting_spec(
+        store::CUSTOM_PROVIDERS,
+        SettingKind::CustomProviders,
+        true,
+        true,
+    ),
     setting_spec(
         store::TRANSCRIPTION_PROVIDER,
         SettingKind::Provider,
@@ -329,7 +338,8 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         let Some(obj) = v.as_object() else {
             return false;
         };
-        obj.keys().all(|k| store::PROVIDERS.contains(&k.as_str()))
+        obj.keys()
+            .all(|k| store::PROVIDERS.contains(&k.as_str()) || crate::api::custom::is_custom_id(k))
             && obj.values().all(|val| {
                 val.as_array().is_some_and(|arr| {
                     arr.iter()
@@ -429,7 +439,8 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
     let valid = match spec.kind {
         SettingKind::Provider => value
             .as_str()
-            .is_some_and(|v| store::PROVIDERS.contains(&v)),
+            .is_some_and(|v| store::PROVIDERS.contains(&v) || crate::api::custom::is_custom_id(v)),
+        SettingKind::CustomProviders => crate::api::custom::normalize_list(value).is_ok(),
         SettingKind::TranscriptionLanguage => value
             .as_str()
             .is_some_and(store::is_supported_transcription_language),
@@ -686,9 +697,19 @@ pub fn get_storage_full_simulation() -> bool {
 pub async fn save_setting(
     app: AppHandle,
     key: String,
-    value: serde_json::Value,
+    mut value: serde_json::Value,
 ) -> Result<(), String> {
     validate_setting(&key, &value)?;
+    if key == store::CUSTOM_PROVIDERS {
+        let providers = crate::api::custom::normalize_list(&value)?;
+        value = serde_json::to_value(&providers)
+            .map_err(|_| "Could not encode custom providers.".to_string())?;
+        let credential_app = app.clone();
+        run_blocking("clear_changed_provider_keys", move || {
+            clear_changed_custom_provider_keys(&credential_app, &providers)
+        })
+        .await?;
+    }
     let history_prune_days = if key == store::HISTORY_RETENTION {
         value.as_str().and_then(store::history_retention_days)
     } else {
@@ -857,6 +878,7 @@ pub struct AllSettings {
     pub cleanup_prompt_override: Option<String>,
     pub style_prompt_instructions: Option<serde_json::Value>,
     pub provider_model_cache: Option<serde_json::Value>,
+    pub custom_providers: Vec<crate::api::custom::CustomProvider>,
 }
 
 #[derive(serde::Serialize)]
@@ -942,6 +964,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
         style_prompt_instructions: json_val(store::STYLE_PROMPT_INSTRUCTIONS),
         provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
+        custom_providers: crate::api::custom::parse_stored(s.get(store::CUSTOM_PROVIDERS)),
     })
 }
 
