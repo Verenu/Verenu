@@ -58,6 +58,21 @@ export function modalBackdrop(_node: Element, params: MotionTransitionParams = {
   };
 }
 
+/** A side sheet entering from (and leaving toward) the right edge of the window. */
+export function drawerSlide(node: Element, params: MotionTransitionParams = {}) {
+  const duration = motionMs(params.duration ?? MOTION_MS.panel);
+  const width = node.getBoundingClientRect().width || 480;
+  const distance = params.distance ?? (reducedMotionEnabled() ? motionPx(MOTION_PX.panel) : width);
+  return {
+    duration,
+    easing: cubicOut,
+    css: (t: number) => {
+      const x = (1 - t) * distance;
+      return `opacity:${reducedMotionEnabled() ? t : 0.4 + t * 0.6}; -webkit-transform: translate3d(${x}px, 0, 0); transform: translate3d(${x}px, 0, 0);`;
+    },
+  };
+}
+
 export function modalCard(_node: Element, params: MotionTransitionParams = {}) {
   const duration = motionMs(params.duration ?? 220);
   const distance = params.distance ?? motionPx(MOTION_PX.panel);

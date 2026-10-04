@@ -293,7 +293,7 @@
 
       {#if !keySaved}
         <div class="key-warning">
-          Dictation won't work until a key is added — you can also do this later in Settings → API Keys.
+          Dictation won't work until a key is added — you can also do this later in Settings → Providers.
         </div>
       {/if}
 
