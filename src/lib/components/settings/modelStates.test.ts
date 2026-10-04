@@ -46,6 +46,14 @@ describe('custom providers', () => {
     customProviderStore.providers = [{ ...provider, requires_key: false }];
     try {
       expect(curatedRows(ctx({ task: 'cleanup' })).find(r => r.provider === provider.id)?.state).toBe('ready');
+      const id = `${provider.id}/vendor/model`;
+      const context = ctx({ task: 'cleanup' });
+      expect(rowForSelection(id, context)?.state).toBe('ready');
+      expect(rowForSelection(id, context)?.remedy).toBe('none');
+      expect(firstRunnable([id], context)).toBe(id);
+      expect(rowForSelection(id, { ...context, task: 'transcription' })?.state).toBe('unavailable');
+      customProviderStore.providers = [];
+      expect(rowForSelection(id, context)?.note).toBe('Provider removed');
     } finally { customProviderStore.providers = []; }
   });
 });

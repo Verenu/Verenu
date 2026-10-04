@@ -370,7 +370,7 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
     let custom_providers = crate::api::custom::parse_stored(store.get(CUSTOM_PROVIDERS));
     let custom_keys = custom_providers
         .iter()
-        .filter(|_| crate::api::custom::native_credentials_available())
+        .filter(|p| p.requires_key && crate::api::custom::native_credentials_available())
         .map(|p| (p.id.clone(), crate::data::credentials::get(&p.id)))
         .collect();
 
