@@ -255,6 +255,7 @@ impl CustomProvider {
     /// Authentication and hardening for requests to this endpoint.
     pub fn wire(&self) -> super::Wire {
         super::Wire {
+            omit_auth: !self.requires_key,
             auth_header: self.auth_header.clone(),
             anthropic: self.protocol == CustomProtocol::Anthropic,
             headers: self
@@ -740,7 +741,7 @@ mod tests {
                 super::super::transcription::transcribe(
                     bytes::Bytes::from_static(b"synthetic audio"),
                     super::super::Target::Custom(Box::new(p)),
-                    "",
+                    "synthetic-saved-key",
                     "en",
                     "speech/model",
                     0
@@ -756,6 +757,7 @@ mod tests {
                 "POST /v1/audio/transcriptions"
             }));
             assert!(!request.to_lowercase().contains("authorization:"));
+            assert!(!request.contains("synthetic-saved-key"));
             assert!(request.contains("synthetic audio"));
             assert!(request.contains("speech/model"));
         }
@@ -784,6 +786,83 @@ mod tests {
         assert!(error.to_string().contains("status=400"));
         assert!(!format!("{error:?}").contains("echoed-private-content"));
         request.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn keyless_cleanup_omits_saved_keys_for_every_protocol() {
+        for protocol in [
+            CustomProtocol::Openai,
+            CustomProtocol::Xai,
+            CustomProtocol::Anthropic,
+        ] {
+            let response = if protocol == CustomProtocol::Anthropic {
+                r#"{"content":[{"type":"text","text":"Hello."}]}"#
+            } else {
+                r#"{"choices":[{"message":{"content":"Hello."}}]}"#
+            };
+            let (url, request) = server("200 OK", response);
+            let mut p = sample();
+            p.base_url = url;
+            p.protocol = protocol;
+            p.requires_key = false;
+            p.auth_header = Some("x-vendor-key".into());
+            p.normalize().unwrap();
+            let output = super::super::cleanup::cleanup(
+                "hello",
+                super::super::Target::Custom(Box::new(p)),
+                "synthetic-saved-key",
+                "vendor/chat",
+                "casual",
+                "medium",
+                "",
+                None,
+                None,
+                0,
+            )
+            .await
+            .unwrap();
+            assert_eq!(output, "Hello.");
+            let request = request.join().unwrap().to_lowercase();
+            assert!(!request.contains("synthetic-saved-key"));
+            assert!(!request.contains("authorization:"));
+            assert!(!request.contains("x-api-key:"));
+            assert!(!request.contains("x-vendor-key:"));
+            if protocol == CustomProtocol::Anthropic {
+                assert!(request.contains("anthropic-version: 2023-06-01"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_gpt_oss_cleanup_reaches_the_endpoint() {
+        let (url, request) = server(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"Hello."}}]}"#,
+        );
+        let mut p = sample();
+        p.base_url = url;
+        p.requires_key = false;
+        p.normalize().unwrap();
+        assert_eq!(
+            super::super::cleanup::cleanup(
+                "hello",
+                super::super::Target::Custom(Box::new(p)),
+                "",
+                "gpt-oss:20b",
+                "casual",
+                "medium",
+                "",
+                None,
+                None,
+                0,
+            )
+            .await
+            .unwrap(),
+            "Hello."
+        );
+        let request = request.join().unwrap();
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["model"], "gpt-oss:20b");
     }
 
     #[tokio::test]

@@ -33,6 +33,8 @@ const MAX_CUSTOM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// providers use the default; custom endpoints override it.
 #[derive(Clone, Debug, Default)]
 pub struct Wire {
+    /// Explicitly disable authentication, even if a saved key was supplied.
+    pub omit_auth: bool,
     /// Send the key raw in this header instead of as a bearer token.
     pub auth_header: Option<String>,
     /// Anthropic-style `x-api-key` plus `anthropic-version`.
@@ -75,7 +77,7 @@ impl Wire {
     }
 
     pub fn apply(&self, request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
-        let mut request = if self.hardened && key.is_empty() {
+        let mut request = if self.omit_auth || (self.hardened && key.is_empty()) {
             if self.anthropic {
                 request.header("anthropic-version", "2023-06-01")
             } else {

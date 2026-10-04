@@ -283,7 +283,9 @@ async fn openai_compat(
     overrides: Option<&serde_json::Map<String, serde_json::Value>>,
     gen: u64,
 ) -> Result<String> {
-    ensure_openai_compat_reasoning_policy(policy_key, model)?;
+    if policy_key != "custom" {
+        ensure_openai_compat_reasoning_policy(policy_key, model)?;
+    }
     let request_body = build_openai_compat_request_with_alternate(
         text,
         model,
