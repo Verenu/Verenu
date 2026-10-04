@@ -16,7 +16,6 @@ pub mod media_control;
 pub mod memory;
 pub mod notify;
 pub mod omarchy_theme;
-pub mod number_parser;
 pub mod platform;
 pub mod session;
 pub mod text;
