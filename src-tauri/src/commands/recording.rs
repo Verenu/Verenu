@@ -411,9 +411,29 @@ pub async fn copy_paste_failure_to_clipboard(
 /// window's ACL does not grant `setIgnoreCursorEvents` / `setDecorations`,
 /// and decorations must stay backend-hardened to avoid the pale caption flash.
 #[tauri::command]
-pub fn set_pill_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
-    crate::pipeline::set_pill_interactive(&app, interactive);
+pub fn set_pill_interactive(
+    app: AppHandle,
+    interactive: bool,
+    expected_state: Option<String>,
+) -> Result<(), String> {
+    crate::pipeline::set_pill_interactive(&app, interactive, expected_state.as_deref());
     Ok(())
+}
+
+#[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+#[tauri::command]
+pub fn native_test_pill(
+    app: AppHandle,
+    state: Option<String>,
+    message: Option<String>,
+    context: Option<String>,
+) -> Result<serde_json::Value, String> {
+    crate::pipeline::native_test_pill(
+        &app,
+        state.as_deref(),
+        message.as_deref(),
+        context.as_deref(),
+    )
 }
 
 /// Frontend auto-dismiss (error / cancelled / copied toasts) owns the hide
@@ -433,8 +453,7 @@ pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
 /// swallows or forwards stray clicks — the floating pill grows for wide
 /// content (long error messages, handsfree buttons) and shrinks back when
 /// it's just the bare recording capsule. Height changes grow the window
-/// upward so the pill itself stays visually pinned in place. Linux keeps a
-/// fixed-size window instead (see `set_pill_hit_rect`), so this is a no-op there.
+/// upward so the pill itself stays visually pinned in place.
 #[tauri::command]
 pub fn set_pill_size(
     app: AppHandle,
@@ -442,17 +461,6 @@ pub fn set_pill_size(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    // The Linux pill window is a fixed size (see `LINUX_PILL_WIDTH_POINTS`):
-    // resizing a Hyprland floating window per content change raced the
-    // compositor and desynchronised the window box from the rendered pill.
-    // The frontend reports its visible rect through `set_pill_hit_rect`
-    // instead.
-    #[cfg(target_os = "linux")]
-    {
-        let _ = (&app, &state, width, height);
-        Ok(())
-    }
-    #[cfg(not(target_os = "linux"))]
     {
         let Some(pill) = app.get_webview_window("pill") else {
             return Ok(());
@@ -501,19 +509,19 @@ pub fn set_pill_size(
                         height: h,
                     }
                 });
-        crate::pipeline::apply_pill_placement(&pill, placement);
-
         let mut st = lock_state(&state)?;
         st.pill_width_points = width_points;
         st.pill_height_points = height_points;
         st.pill_placement = Some(placement);
+        drop(st);
+        crate::pipeline::apply_pill_placement(&pill, placement);
         Ok(())
     }
 }
 
 /// Reports the pill's visible content rectangle (CSS px, viewport-relative) so
 /// the Linux window can accept clicks only over the capsule instead of its
-/// whole fixed-size transparent area. A no-op elsewhere, where the native
+/// transparent margin. A no-op elsewhere, where the native
 /// window itself is content-sized.
 #[tauri::command]
 pub fn set_pill_hit_rect(
