@@ -135,9 +135,10 @@
   }
   const models = (list: string[]) => [...new Set(list.flatMap(x => x.split(/[\n,]/)).map(x => x.trim()).filter(Boolean))];
   function object(text: string, label: string): Record<string, unknown> {
-    const value = JSON.parse(text || '{}');
+    let value: unknown;
+    try { value = JSON.parse(text || '{}'); } catch { throw new Error(`${label} isn't valid JSON.`); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
-    return value;
+    return value as Record<string, unknown>;
   }
   async function save() {
     if (!editing || busy) return;
@@ -157,6 +158,10 @@
       if (!provider.supports_transcription && !provider.supports_cleanup) throw new Error('Turn on transcription, cleanup, or both.');
       if (provider.supports_transcription && !provider.transcription_models.length) throw new Error('Add at least one transcription model ID.');
       if (provider.supports_cleanup && !provider.cleanup_models.length) throw new Error('Add at least one cleanup model ID.');
+      for (const [label, list] of [['transcription', provider.transcription_models], ['cleanup', provider.cleanup_models]] as const) {
+        if (list.length > 100) throw new Error(`Use at most 100 ${label} model IDs.`);
+        if (list.some(m => m.length > 200)) throw new Error(`A ${label} model ID is longer than 200 characters.`);
+      }
       const destinationChanged = savedOriginal && (savedOriginal.base_url !== provider.base_url || savedOriginal.protocol !== provider.protocol || savedOriginal.auth_header !== provider.auth_header);
       if (destinationChanged && keys[provider.id]) {
         if (provider.requires_key && !key.trim()) throw new Error('Enter the API key again for this endpoint. The previous key will be cleared.');
@@ -168,18 +173,28 @@
       savedOriginal = provider;
       await refreshCustomProviders();
       if (key.trim()) {
-        const validation = await invoke<{ status: string; message: string }>('validate_api_key', { provider: provider.id, key: key.trim() });
-        if (validation.status === 'invalid') throw new Error(validation.message);
-        await invoke('save_api_key', { provider: provider.id, key: key.trim() });
+        try {
+          const validation = await invoke<{ status: string; message: string }>('validate_api_key', { provider: provider.id, key: key.trim() });
+          if (validation.status === 'invalid') throw new Error(validation.message);
+          await invoke('save_api_key', { provider: provider.id, key: key.trim() });
+        } catch (keyError) {
+          // The provider is already stored, so say so rather than implying nothing happened.
+          error = `The provider was saved, but its API key was not. ${formatIpcError(keyError, 'The key could not be saved.')}`;
+          await load();
+          return;
+        }
       }
       key = '';
       await load();
       closeDrawer();
       notice = 'Provider saved. Choose its models in Settings → Models.';
+      flashNotice();
     } catch (e) {
       error = formatIpcError(e, 'Could not save this provider');
     } finally { busy = false; }
   }
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  function flashNotice() { clearTimeout(noticeTimer); noticeTimer = setTimeout(() => (notice = ''), 6000); }
   async function remove(provider: CustomProvider) {
     busy = true; error = '';
     try {
@@ -187,6 +202,7 @@
       await load(); deleting = null;
       if (editing?.id === provider.id) editing = null;
       notice = 'Provider removed. Its selected models were removed from your fallback chains.';
+      flashNotice();
     } catch (e) { error = formatIpcError(e, 'Could not remove this provider'); }
     finally { busy = false; }
   }
@@ -198,7 +214,7 @@
   }
 </script>
 
-<svelte:window onkeydown={e => { if (e.key === 'Escape' && drawerOpen && !busy) { e.preventDefault(); e.stopPropagation(); closeDrawer(); } }} />
+<svelte:window onkeydown={e => { if (e.key === 'Escape' && drawerOpen && !busy && !document.querySelector('.ui-dropdown-trigger[aria-expanded="true"]')) { e.preventDefault(); e.stopPropagation(); closeDrawer(); } }} />
 
 {#snippet card(p: CustomProviderPreset)}
   <button type="button" class="card" onclick={() => edit(undefined, p)}>
@@ -351,8 +367,8 @@
         <label>Extra headers, JSON<textarea use:autosize={headers} bind:value={headers} rows="3" spellcheck="false" disabled={busy}></textarea><small>Non-secret string values only. Put credentials in the API key field.</small></label>
         {#if editing.supports_cleanup}<label>Cleanup request options, JSON<textarea use:autosize={overrides} bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea><small>Extra fields such as temperature. Model, messages, system, token limit, and streaming are controlled by Verenu.</small></label>{/if}
       </details>
-      {#if error}<p class="provider-error" role="alert">{error}</p>{/if}
-      <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={savedOriginal ? closeDrawer : goBack} disabled={busy}>Cancel</button></div>
+      <div class="actions sticky">
+        {#if error}<p class="provider-error" role="alert" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{error}</p>{/if}<button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={savedOriginal ? closeDrawer : goBack} disabled={busy}>Cancel</button></div>
     </form>
   {/if}
         </div></div>
@@ -360,7 +376,7 @@
     </div>
   {/if}
   {#if error && !editing}<p class="provider-error" role="alert">{error}</p>{/if}
-  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
+  {#if notice}<p class="notice" role="status" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{notice}</p>{/if}
 </section>
 
 <style>
@@ -372,7 +388,7 @@
   .drawer-close { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; }
   .drawer-close:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
   .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; overscroll-behavior: contain; }
-  .views { display: grid; }
+  .views { display: grid; min-height: 100%; }
   .views > :global(*) { grid-area: 1 / 1; min-width: 0; }
   .custom-providers { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 22px; }
   .custom-providers.empty { margin: 0; border: 0; padding: 0; }
@@ -391,7 +407,7 @@
   .provider-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-elev); }
   .provider-info { flex: 1; min-width: 160px; }
   .provider-info .label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; font-weight: 600; }
-  .endpoint { overflow-wrap: anywhere; font-size: 11px; color: var(--ink-mute); margin-top: 2px; }
+  .endpoint { overflow-wrap: break-word; font-size: 11px; color: var(--ink-mute); margin-top: 2px; }
   .dot { margin: 0 6px; }
   .pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--paper-2); color: var(--ink-mute); }
   .pill.ok { background: var(--success-bg); color: var(--success); }
@@ -403,6 +419,7 @@
   .own { display: inline-flex; align-items: center; gap: 6px; }
   .picker-head, .editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .search { font-family: inherit; }
+  .search::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
   .stack { display: grid; }
   .stack > .pane { grid-area: 1 / 1; display: grid; gap: 10px; align-content: start; min-width: 0; }
   .cell { min-width: 0; }
@@ -425,9 +442,9 @@
   .chev.open { transform: rotate(90deg); }
   .disclosed { display: grid; gap: 10px; }
   .no-match { display: grid; justify-items: start; gap: 8px; font-size: 12px; color: var(--ink-soft); }
-  .no-match p { margin: 0; }
+  .no-match p { margin: 0; overflow-wrap: anywhere; }
 
-  .provider-editor { display: grid; gap: 16px; }
+  .provider-editor { display: flex; flex-direction: column; gap: 16px; min-height: 100%; }
   .editor-head { justify-content: flex-start; }
   .editor-head > div { flex: 1; min-width: 0; }
   .models-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 14px; transition: grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 320ms cubic-bezier(0.22, 1, 0.36, 1); }
@@ -435,7 +452,7 @@
   .models-row.no-cl { grid-template-columns: minmax(0, 1fr) minmax(0, 0fr); column-gap: 0; }
   .mfield { min-width: 0; max-height: 900px; overflow: hidden; padding: 3px; margin: -3px; transition: opacity 220ms ease, max-height 320ms cubic-bezier(0.22, 1, 0.36, 1); }
   /* Keep the content from rewrapping into a tall sliver while its column shrinks. */
-  .mfield > :global(.mid) { min-width: 260px; }
+  .mfield > :global(.mid) { min-width: 160px; }
   .mfield.off { opacity: 0; pointer-events: none; max-height: 0; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .full { grid-column: 1 / -1; }
@@ -460,13 +477,13 @@
   details { border-top: 1px solid var(--line); padding-top: 12px; }
   summary { cursor: pointer; font-size: 12px; color: var(--ink-soft); }
   details label { margin-top: 14px; }
-  .actions.sticky { position: sticky; bottom: -18px; margin: 0 -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
-  .provider-error { color: var(--danger); font-size: 12px; margin: 0; }
+  .actions.sticky { position: sticky; bottom: -18px; margin: auto -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
+  .provider-error { flex-basis: 100%; color: var(--danger); font-size: 12px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
   .notice { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
   @media (max-width: 560px) {
     .models-row, .models-row.no-tx, .models-row.no-cl { grid-template-columns: minmax(0, 1fr); column-gap: 0; row-gap: 14px; transition: none; }
     .mfield > :global(.mid) { min-width: 0; }
-    .mfield.off { margin-top: -14px; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
+    .mfield.off { margin-top: -14px; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: auto -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
   @container settings-panel (max-width: 520px) {
     .form-grid, .cap-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
