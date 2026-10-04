@@ -143,6 +143,10 @@
   // Compact Android windows collapse the desktop rail to the bottom bar.
   // Desktop keeps its rail at every width.
   const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
+  // Settings needs to know whether it is the one-screen-at-a-time phone layout.
+  $effect(() => {
+    appStore.mobileCompact = isAndroid && viewport.widthClass === 'compact';
+  });
 
   // The Android shell shrinks the page by the keyboard's height (MainActivity),
   // so a viewport much shorter than the tallest one seen at this width means the
@@ -150,8 +154,20 @@
   // top of the keyboard and squeezing the form being typed into.
   let keyboardOpen = $state(false);
   let stableViewport = { width: 0, height: 0 };
+  // The native shell reports whether the keyboard is really up. Window size alone
+  // cannot say: a split-screen or freeform window made shorter looks the same.
+  function nativeKeyboardOpen(): boolean | null {
+    const value = (window as any).VerenuInsets?.imeVisible?.();
+    return typeof value === 'boolean' ? value : null;
+  }
   function trackKeyboard(snapshot: ViewportSnapshot) {
     if (!isAndroid) return;
+    const native = nativeKeyboardOpen();
+    if (native !== null) {
+      keyboardOpen = native;
+      return;
+    }
+    // No native bridge (a browser session): fall back to the window-size heuristic.
     if (Math.abs(snapshot.widthDp - stableViewport.width) > 1) {
       stableViewport = { width: snapshot.widthDp, height: snapshot.heightDp };
     } else if (snapshot.heightDp > stableViewport.height) {
@@ -521,7 +537,14 @@
         }, 320);
       };
       document.addEventListener('focusin', revealFocused);
+      const onNativeIme = () => {
+        const native = nativeKeyboardOpen();
+        if (native !== null) keyboardOpen = native;
+      };
+      window.addEventListener('verenu-ime', onNativeIme);
+      onNativeIme();
       stopInsets = () => {
+        window.removeEventListener('verenu-ime', onNativeIme);
         timers.forEach((t) => window.clearTimeout(t));
         window.removeEventListener('resize', applyInsets);
         document.removeEventListener('focusin', revealFocused);
