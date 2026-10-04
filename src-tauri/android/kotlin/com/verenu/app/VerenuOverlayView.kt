@@ -248,6 +248,10 @@ class VerenuOverlayView @JvmOverloads constructor(
      * Measure against the real screen width instead.
      */
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
         val screen = resources.displayMetrics.widthPixels
         val bounded = MeasureSpec.makeMeasureSpec(
             if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) screen
@@ -400,9 +404,9 @@ class VerenuOverlayView @JvmOverloads constructor(
                 val w = WaveView(context, palette.fg, compact).also { wave = it }
                 row.addView(w, LinearLayout.LayoutParams(w.preferredWidth(), w.preferredHeight()).apply {
                     marginStart = dpi(if (compact) 4f else 6f)
-                    marginEnd = dpi(if (compact) 8f else 8f)
+                    marginEnd = dpi(8f)
                 })
-                val stopSize = dpi(if (compact) 26f else 26f)
+                val stopSize = dpi(26f)
                 row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginEnd = dpi(3f) })
                 w.start()
             }
@@ -688,12 +692,31 @@ class VerenuOverlayView @JvmOverloads constructor(
             textSize = sizeSp * context.resources.displayMetrics.scaledDensity
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
+        private val bandWidth = 32f * density
+        private val textWidth = base.measureText(text)
+        private val baseline = -base.fontMetrics.ascent
+        private val travel = kotlin.math.max(0f, textWidth - bandWidth)
+        private val rgb = color and 0x00FFFFFF
+        private val gradientColors = intArrayOf(
+            rgb,
+            rgb or 0x80000000.toInt(),
+            rgb or 0xFF000000.toInt(),
+            rgb or 0x80000000.toInt(),
+            rgb,
+        )
+        private val gradientStops = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
+        private val gradient = android.graphics.LinearGradient(
+            0f, 0f, bandWidth, 0f,
+            gradientColors,
+            gradientStops,
+            android.graphics.Shader.TileMode.CLAMP,
+        )
+        private val gradientMatrix = android.graphics.Matrix()
         private val shine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = base.textSize
             typeface = base.typeface
+            shader = gradient
         }
-        private val bandWidth = 32f * density
-        private val textWidth = base.measureText(text)
         private var progress = 0f
         private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 1050
@@ -705,17 +728,17 @@ class VerenuOverlayView @JvmOverloads constructor(
                 invalidate()
             }
         }
-        private val rgb = color and 0x00FFFFFF
-
         init {
             contentDescription = text
         }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val fm = base.fontMetrics
+            val desiredWidth = kotlin.math.ceil(textWidth).toInt() + 2
+            val desiredHeight = kotlin.math.ceil(fm.descent - fm.ascent).toInt()
             setMeasuredDimension(
-                kotlin.math.ceil(textWidth).toInt() + 2,
-                kotlin.math.ceil(fm.descent - fm.ascent).toInt(),
+                resolveSizeAndState(desiredWidth, widthMeasureSpec, 0),
+                resolveSizeAndState(desiredHeight, heightMeasureSpec, 0),
             )
         }
 
@@ -730,16 +753,10 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
 
         override fun onDraw(canvas: Canvas) {
-            val baseline = -base.fontMetrics.ascent
             canvas.drawText(text, 0f, baseline, base)
-            val travel = max(0f, textWidth - bandWidth)
             val left = progress * travel
-            shine.shader = android.graphics.LinearGradient(
-                left, 0f, left + bandWidth, 0f,
-                intArrayOf(rgb, rgb or 0x80000000.toInt(), rgb or 0xFF000000.toInt(), rgb or 0x80000000.toInt(), rgb),
-                floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f),
-                android.graphics.Shader.TileMode.CLAMP,
-            )
+            gradientMatrix.setTranslate(left, 0f)
+            gradient.setLocalMatrix(gradientMatrix)
             // Clamp keeps the shader transparent beyond the band, so the whole
             // word is drawn once and only the band shows.
             canvas.drawText(text, 0f, baseline, shine)

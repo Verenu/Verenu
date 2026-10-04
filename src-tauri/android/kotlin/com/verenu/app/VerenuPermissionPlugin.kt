@@ -18,6 +18,10 @@ import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -49,6 +53,15 @@ internal class PermissionRequestArgs {
 class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) {
   private var pendingRuntimePermission: String? = null
   private var pendingSettingsPermission: String? = null
+  private val appInfoExecutor = ThreadPoolExecutor(
+    2,
+    2,
+    0L,
+    TimeUnit.MILLISECONDS,
+    ArrayBlockingQueue(128),
+    { task -> Thread(task, "verenu-app-info").apply { isDaemon = true } },
+    ThreadPoolExecutor.AbortPolicy(),
+  )
 
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
@@ -58,53 +71,82 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
   @Command
   fun appIcon(invoke: Invoke) {
     val args = invoke.parseArgs(AppIconArgs::class.java)
-    Thread {
-      val uri = try {
-        iconCache.getOrPut(args.packageName) { launcherIconDataUri(args.packageName) ?: "" }
-      } catch (e: Exception) {
-        ""
+    val cached = iconCache[args.packageName]
+    if (cached != null) {
+      invoke.resolve(iconResponse(cached))
+      return
+    }
+    try {
+      appInfoExecutor.execute {
+        val uri = try {
+          iconCache.computeIfAbsent(args.packageName) { loadIconSafely(it) }
+        } catch (_: Exception) {
+          ""
+        } catch (_: OutOfMemoryError) {
+          ""
+        }
+        invoke.resolve(iconResponse(uri))
       }
-      invoke.resolve(JSObject().put("icon", if (uri.isEmpty()) JSONObject.NULL else uri))
-    }.start()
+    } catch (e: RejectedExecutionException) {
+      invoke.resolve(iconResponse(""))
+    }
   }
 
+  private fun iconResponse(uri: String) =
+    JSObject().put("icon", if (uri.isEmpty()) JSONObject.NULL else uri)
+
   private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+  private fun loadIconSafely(pkg: String): String = try {
+    launcherIconDataUri(pkg) ?: ""
+  } catch (_: Exception) {
+    ""
+  } catch (_: OutOfMemoryError) {
+    ""
+  }
 
   private fun launcherIconDataUri(pkg: String): String? {
     val drawable = activity.packageManager.getApplicationIcon(pkg)
     val size = (48 * activity.resources.displayMetrics.density).toInt().coerceIn(48, 192)
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    drawable.setBounds(0, 0, size, size)
-    drawable.draw(canvas)
-    val out = ByteArrayOutputStream()
-    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-    bitmap.recycle()
-    return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    try {
+      val canvas = Canvas(bitmap)
+      drawable.setBounds(0, 0, size, size)
+      drawable.draw(canvas)
+      val out = ByteArrayOutputStream()
+      if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) return null
+      return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    } finally {
+      bitmap.recycle()
+    }
   }
 
   /** Launcher apps (label + package), for the Contexts app picker. */
   @Command
   fun installedApps(invoke: Invoke) {
-    Thread {
-      try {
-        val pm = activity.packageManager
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val seen = HashSet<String>()
-        val apps = JSArray()
-        pm.queryIntentActivities(launcher, 0)
-          .asSequence()
-          .map { it.activityInfo.packageName to it.loadLabel(pm).toString().trim() }
-          .filter { (pkg, label) -> label.isNotEmpty() && pkg != activity.packageName && seen.add(pkg) }
-          .sortedBy { it.second.lowercase() }
-          .forEach { (pkg, label) ->
-            apps.put(JSObject().put("name", label).put("exe", pkg))
-          }
-        invoke.resolve(JSObject().put("apps", apps))
-      } catch (e: Exception) {
-        invoke.reject("Could not list installed apps")
+    try {
+      appInfoExecutor.execute {
+        try {
+          val pm = activity.packageManager
+          val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+          val seen = HashSet<String>()
+          val apps = JSArray()
+          pm.queryIntentActivities(launcher, 0)
+            .asSequence()
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString().trim() }
+            .filter { (pkg, label) -> label.isNotEmpty() && pkg != activity.packageName && seen.add(pkg) }
+            .sortedBy { it.second.lowercase() }
+            .forEach { (pkg, label) ->
+              apps.put(JSObject().put("name", label).put("exe", pkg))
+            }
+          invoke.resolve(JSObject().put("apps", apps))
+        } catch (e: Exception) {
+          invoke.reject("Could not list installed apps")
+        }
       }
-    }.start()
+    } catch (e: RejectedExecutionException) {
+      invoke.reject("Could not list installed apps")
+    }
   }
 
   @Command
