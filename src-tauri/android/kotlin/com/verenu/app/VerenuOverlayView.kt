@@ -344,7 +344,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         bg = if (dark) 0xE00F0E0E.toInt() else 0xE6FFFFFF.toInt(),
         border = if (dark) 0x12FFFFFF else 0x1F111110,
         fg = if (dark) 0xFFFFFFFF.toInt() else 0xFF111110.toInt(),
-        muted = if (dark) 0x73FFFFFF else 0x73111110,
+        muted = if (dark) 0x99FFFFFF.toInt() else 0x99111110.toInt(),
         // Desktop --pill-error-*: a flat red-tinted capsule with a 1px ring.
         errorBg = 0xFF351613.toInt(),
         errorBorder = 0xFF7A3027.toInt(),
@@ -671,8 +671,8 @@ class VerenuOverlayView @JvmOverloads constructor(
     // ------------------------------------------------------------ shine text
 
     /**
-     * Port of the desktop `.stage-label` + `.stage-shine` pair: the label at 45%
-     * opacity, with a ~3-character band (clear, half, full, half, clear) that
+     * Port of the desktop `.stage-label` + `.stage-shine` pair: the label dimmed
+     * (70% here, 45% on desktop), with a ~3-character band (clear, half, full, half, clear) that
      * travels from the first letter to the last and back, ease-in-out, every
      * 1.05 s. The band stays on the word at both ends, so the text never fades
      * out between sweeps.
@@ -680,7 +680,9 @@ class VerenuOverlayView @JvmOverloads constructor(
     private class ShineTextView(context: Context, private val text: String, private val color: Int, sizeSp: Float) : View(context) {
         private val density = context.resources.displayMetrics.density
         private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = (color and 0x00FFFFFF) or 0x73000000
+            // 70%, not the desktop's 45%: on a phone, at arm's length, over a keyboard,
+            // 45% left everything outside the band unreadable.
+            this.color = (color and 0x00FFFFFF) or 0xB3000000.toInt()
             textSize = sizeSp * context.resources.displayMetrics.scaledDensity
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
