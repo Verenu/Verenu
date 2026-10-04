@@ -55,6 +55,10 @@ untouched.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
   inserting, plus error (retry) and cancelled. The recording waveform uses the
   recorder's peak envelope and redraws each display frame.
+- The cancelled notice shows an X (dismiss, back to the idle pill) and a back
+  arrow (restart). It does not keep the pill alive after the keyboard closes.
+  Error notices carry a title, the reason, and a Retry button when retrying can
+  help.
 - Settings -> General -> Pill position selects above-keyboard center, left or
   right, top, middle, or under the camera hole. Keyboard placement follows the
   IME bounds. The pill waits for those bounds before appearing and animates
@@ -121,6 +125,10 @@ foldables, landscape, outer displays, unfolded Fold/Pixel Fold, tablets,
 split-screen, and freeform windows all reclassify live (no restart, no state
 loss). Compact → bottom nav + single column; expanded → rail + comfortable
 multi-column (`shouldUseMultiPane` is available for list-detail views).
+On compact and medium windows Settings is a section list that drills into each
+section (list and section side by side on medium); expanded windows keep the
+sidebar rail. Mobile-only styling lives in `src/mobile.css`, scoped to
+`.app[data-android='true']` so desktop is untouched.
 Safe-area insets, cutouts, gesture nav, and hinge half-open postures are
 handled; `android:configChanges` (set by the Tauri template) keeps rotation
 and folding from recreating the activity.

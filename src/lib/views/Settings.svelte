@@ -53,6 +53,25 @@
     }).flatMap((group) => group.items)
   );
 
+  // Android shows the section list as its own screen on phones and beside the
+  // section on wide windows (both are laid out in CSS from the width class).
+  const mobileGroups = $derived(
+    visibleSettingsSections({
+      isMac,
+      devMode: appStore.devModeEnabled,
+      legacyMode: appStore.legacyFeaturesEnabled,
+      syncEnabled: appStore.syncEnabled,
+    })
+  );
+  const activeSectionLabel = $derived(
+    mobileSections.find((entry) => entry.id === section)?.label ?? 'Settings'
+  );
+
+  function openSection(next: (typeof mobileSections)[number]['id']) {
+    appStore.settingsMobileList = false;
+    selectSection(next);
+  }
+
   function selectSection(next: (typeof mobileSections)[number]['id']) {
     if (next === appStore.settingsSection) return;
     appStore.settingsAnimDir = directionFromOrder(
@@ -92,6 +111,15 @@
   });
 
   function close() { appStore.settingsOpen = false; }
+
+  $effect(() => {
+    if (!appStore.settingsOpen) appStore.settingsMobileList = false;
+  });
+
+  // A settings search hit or deep link names a section: show it, not the list.
+  $effect(() => {
+    if (settingsSearchNavigation.request) appStore.settingsMobileList = false;
+  });
 
   // Soft fades at the top and bottom of the scroll area, shown only when there
   // is actually more content in that direction — so a scrolled-to-top page keeps
@@ -315,6 +343,7 @@
       role="region"
       aria-label="Settings"
       tabindex="-1"
+      data-mobile-view={appStore.settingsMobileList ? 'list' : 'detail'}
       in:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
       out:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
     >
@@ -322,6 +351,36 @@
            Closing is handled by the sidebar's "Back to app" button and Esc —
            the old corner ✕ sat right under the window controls and was
            redundant once settings became a page rather than a modal. -->
+      {#if isAndroid}
+        <nav class="m-list" aria-label="Settings sections">
+          <h1 class="m-list-title">Settings</h1>
+          {#each mobileGroups as group (group.group)}
+            <div class="m-list-group" role="group" aria-label={group.group}>
+              {#each group.items as entry (entry.id)}
+                <button
+                  type="button"
+                  class="m-list-row"
+                  class:active={section === entry.id}
+                  aria-current={section === entry.id ? 'page' : undefined}
+                  onclick={() => openSection(entry.id)}
+                >
+                  <span class="m-list-icon" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html icons[entry.icon]}</svg>
+                  </span>
+                  <span class="m-list-label">{entry.label}</span>
+                  <svg class="m-list-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+                </button>
+              {/each}
+            </div>
+          {/each}
+        </nav>
+        <div class="m-bar">
+          <button type="button" class="m-bar-back" aria-label="Back to settings" onclick={() => { appStore.settingsMobileList = true; }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+          <h1 class="m-bar-title">{activeSectionLabel}</h1>
+        </div>
+      {/if}
       <div class="settings-tabs" role="tablist" aria-label="Settings sections">
         {#each mobileSections as entry (entry.id)}
           <button
@@ -447,21 +506,7 @@
    */
   .settings-tabs { display: none; }
 
-  :global(.app[data-compact-nav='true']) .settings-tabs {
-    display: flex;
-    flex-shrink: 0;
-    gap: 18px;
-    overflow-x: auto;
-    justify-content: flex-start;
-    align-items: flex-end;
-    scrollbar-width: none;
-    padding: 4px var(--page-pad-x) 0;
-    scroll-padding-inline: var(--page-pad-x);
-    overscroll-behavior-x: contain;
-    border-bottom: 1px solid var(--line);
-  }
-
-  :global(.app[data-compact-nav='true']) .settings-tabs::-webkit-scrollbar { display: none; }
+    /* Android navigates sections with the list in mobile.css instead. */
 
   /* Matches the underline tabs the Contexts page already uses — same measure,
      same active rule, no extra chrome. */
