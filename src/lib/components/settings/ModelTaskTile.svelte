@@ -5,6 +5,7 @@
   import { MOTION_MS, motionMs } from '../../motion';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import type { ProviderId } from '../../settings';
+  import { customProvider } from '../../customProviders.svelte';
   import {
     providerDisplayLabel,
     qualifiedModelLabel,
@@ -73,7 +74,7 @@
       .filter((provider): provider is ProviderId => !!provider)
       .filter((provider) => provider !== 'local')
       .filter((provider, index, all) => all.indexOf(provider) === index)
-      .filter((provider) => !apiKeyStatus[provider]),
+      .filter((provider) => !apiKeyStatus[provider] && customProvider(provider)?.requires_key !== false),
   );
 
   const warnings = $derived([
