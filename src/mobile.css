@@ -671,23 +671,81 @@
 
 /* ------------------------------------------------------------ model picker */
 
-/* A full-screen blur and a free-floating card are both expensive on a phone;
-   the picker is a bottom sheet over a plain scrim instead. */
-:root:has(.app[data-android='true']) .picker-backdrop {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+/*
+ * The model picker is a full-screen page on a phone. It sits above the bottom
+ * bar (z-index 70), reads top to bottom (title, search, provider chips, list),
+ * and keeps every row and control at touch size. The desktop dialog is a
+ * 720x600 card with a side rail and hover-only buttons.
+ */
+:root:has(.app[data-android='true']) .picker-wrap {
+  z-index: 90;
+  display: block;
+  padding: 0 !important;
 }
 
-:root:has(.app[data-android='true']) .picker-wrap {
-  place-items: end center;
-  padding-left: 0 !important;
+:root:has(.app[data-android='true']) .picker-backdrop {
+  display: none;
 }
 
 :root:has(.app[data-android='true']) .picker-card {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: min(92dvh, 760px);
+  max-width: none;
+  height: 100dvh;
   border: 0;
-  border-radius: 24px 24px 0 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--paper);
+}
+
+:root:has(.app[data-android='true']) .picker-head {
+  align-items: center;
+  padding: 16px 16px 8px 20px;
+}
+
+:root:has(.app[data-android='true']) .picker-title h3 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+:root:has(.app[data-android='true']) .picker-title p {
+  font-size: 14px;
+}
+
+:root:has(.app[data-android='true']) .picker-close {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+
+:root:has(.app[data-android='true']) .picker-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+:root:has(.app[data-android='true']) .picker-search-row {
+  margin: 4px 16px 8px;
+}
+
+:root:has(.app[data-android='true']) .picker-search {
+  min-height: 48px;
+  font-size: 16px;
+  border-radius: 14px;
+}
+
+/* One quiet line instead of a bordered bar. */
+:root:has(.app[data-android='true']) .catalog-refresh {
+  padding: 4px 16px 8px;
+  border-bottom: 0;
+  font-size: 12px;
+}
+
+:root:has(.app[data-android='true']) .catalog-refresh .btn-ghost {
+  min-height: 36px;
+  padding-inline: 12px;
+  font-size: 13px;
 }
 
 /* Provider rail: a row of chips above the list, not a tall column. */
@@ -699,8 +757,8 @@
 :root:has(.app[data-android='true']) .picker-rail {
   flex-direction: row;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 6px 16px 10px;
   overflow-x: auto;
   overflow-y: hidden;
   border-right: 0;
@@ -717,7 +775,143 @@
   width: auto;
   min-height: 40px;
   padding: 6px 14px;
+  border: 1px solid var(--line);
   border-radius: 999px;
   font-size: 14px;
   white-space: nowrap;
+}
+
+:root:has(.app[data-android='true']) .rail-item.rail-active {
+  border-color: var(--ink);
+}
+
+/* The list: roomy rows, id hidden (the name and tags are what you choose by). */
+:root:has(.app[data-android='true']) .picker-list {
+  padding: 8px 12px calc(24px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+}
+
+:root:has(.app[data-android='true']) .group-label {
+  margin: 14px 8px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+:root:has(.app[data-android='true']) .model-row {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+:root:has(.app[data-android='true']) .row-main {
+  flex: 1 1 auto;
+  min-height: 64px;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+
+:root:has(.app[data-android='true']) .row-name {
+  font-size: 16px;
+  font-weight: 500;
+  white-space: normal;
+}
+
+:root:has(.app[data-android='true']) .row-sub {
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+:root:has(.app[data-android='true']) .row-sub code {
+  display: none;
+}
+
+:root:has(.app[data-android='true']) .row-sub > :not(:first-child)::before {
+  content: none;
+}
+
+:root:has(.app[data-android='true']) .row-sub > code + * ::before {
+  content: none;
+}
+
+:root:has(.app[data-android='true']) .row-tag,
+:root:has(.app[data-android='true']) .row-note {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--control-hover);
+  font-size: 12px;
+}
+
+:root:has(.app[data-android='true']) .row-state {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--control-hover);
+  font-size: 12.5px;
+}
+
+:root:has(.app[data-android='true']) .row-state-active {
+  background: var(--accent);
+  color: var(--bg-elev);
+}
+
+/* Download, Cancel and Delete sit beside the row at touch size. */
+:root:has(.app[data-android='true']) .row-tools {
+  flex: 0 0 auto;
+  padding-right: 8px;
+}
+
+:root:has(.app[data-android='true']) .row-tools .row-tool {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+:root:has(.app[data-android='true']) .runtime-note .row-tool {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* Add-as-fallback is hover-only on desktop, which does not exist on touch. */
+:root:has(.app[data-android='true']) .row-add {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  margin: 0 8px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 20px;
+  opacity: 1;
+}
+
+:root:has(.app[data-android='true']) .row-progress {
+  padding: 0 14px 10px;
+}
+
+:root:has(.app[data-android='true']) .runtime-note,
+:root:has(.app[data-android='true']) .picker-note {
+  font-size: 13px;
+}
+
+:root:has(.app[data-android='true']) .more-toggle {
+  min-height: 52px;
+}
+
+/* The exact-id field is docked at the bottom, above the keyboard. */
+:root:has(.app[data-android='true']) .picker-foot {
+  padding: 10px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+
+:root:has(.app[data-android='true']) .custom-input,
+:root:has(.app[data-android='true']) .custom-add {
+  min-height: 44px;
+  font-size: 15px;
+  border-radius: 12px;
 }
