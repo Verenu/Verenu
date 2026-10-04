@@ -108,9 +108,10 @@ Local AI requires Android 9 (API 28) or newer. Android 8 can still use cloud
 providers. The capability check also verifies that both runtimes are present;
 Settings and Setup hide local options when the installed build lacks them.
 
-Phone presets start with Moonshine Tiny (English speech, about 31 MB) and
-Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer speech
-without AI cleanup. Larger cleanup models remain available in Advanced Models.
+Every phone gets the same single local preset: Moonshine Tiny (English speech, about
+31 MB) with Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer
+speech without AI cleanup. Larger cleanup models, including 1.5B, remain available
+in Advanced Models.
 Downloads require a connection; inference works offline afterward. The existing
 memory policy controls unloading both engines.
 
