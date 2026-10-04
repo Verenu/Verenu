@@ -181,6 +181,35 @@ check('sub-app pattern Enter saves on desktop and Sub-apps stay hidden on Androi
           await sections.waitFor();
           assert.equal(await sections.getByRole('button', { name: 'Sub-apps', exact: true }).count(), 0,
             'Android Settings must hide the desktop-only Sub-apps section');
+          const reopenState = await page.evaluate(async () => {
+            const { appStore } = await import('/src/lib/stores.svelte.ts');
+            const { emit } = await import('/src/lib/tauri.ts');
+            const { tick } = await import('svelte');
+            appStore.settingsMobileList = false;
+            appStore.settingsOpen = false;
+            await tick();
+            const listAfterClose = appStore.settingsMobileList;
+            appStore.settingsOpen = true;
+            await tick();
+            const reopenedView = document.querySelector('.settings-page')?.getAttribute('data-mobile-view');
+            await emit('open-flow:open-settings-section', 'general');
+            await tick();
+            const targetedView = document.querySelector('.settings-page')?.getAttribute('data-mobile-view');
+            await emit('open-flow:open-settings-section', '');
+            await tick();
+            return {
+              listAfterClose,
+              reopenedView,
+              targetedView,
+              unqualifiedView: document.querySelector('.settings-page')?.getAttribute('data-mobile-view'),
+            };
+          });
+          assert.deepEqual(reopenState, {
+            listAfterClose: true,
+            reopenedView: 'list',
+            targetedView: 'detail',
+            unqualifiedView: 'list',
+          }, 'Unqualified Settings entry shows the list, while a targeted entry shows its section');
           continue;
         }
         const label = `Synthetic sub-app ${viewport.width} ${Date.now()}`;
