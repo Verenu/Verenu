@@ -61,7 +61,7 @@
   // A stray click on the backdrop must not discard a half-filled form.
   function backdropClose() { if (picking && !busy) closeDrawer(); }
   function startPicking() {
-    picking = true; search = ''; showMore = false; showAdvanced = false; editing = null; error = ''; notice = '';
+    picking = true; search = ''; showMore = false; editing = null; error = ''; notice = '';
   }
   function edit(provider?: CustomProvider, from?: CustomProviderPreset) {
     savedOriginal = provider ? structuredClone($state.snapshot(provider)) : null;
@@ -98,7 +98,6 @@
     return q ? CUSTOM_PROVIDER_PRESETS.filter(p => `${p.name} ${p.id} ${p.base_url} ${p.alt?.base_url ?? ''}`.toLowerCase().includes(q)) : [];
   });
   let showMore = $state(false);
-  let showAdvanced = $state(false);
   const capabilityLabel = (p: { supports_transcription: boolean; supports_cleanup: boolean }) =>
     p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup';
   const isLocalUrl = (url: string) => { try { const h = new URL(url).hostname; return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h); } catch { return false; } };
@@ -190,7 +189,7 @@
 {#snippet card(p: CustomProviderPreset)}
   <button type="button" class="card" onclick={() => edit(undefined, p)}>
     {@render tile(p.id, p.name, p.color, p.mark)}
-    <span class="card-body"><span class="card-name">{p.name}</span><span class="card-note">{p.group === 'advanced' ? p.note : p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup'}</span></span>
+    <span class="card-body"><span class="card-name">{p.name}</span><span class="card-note">{p.group === 'blank' ? p.note : p.supports_transcription && p.supports_cleanup ? 'Transcription + cleanup' : p.supports_transcription ? 'Transcription' : 'Cleanup'}</span></span>
   </button>
 {/snippet}
 
@@ -242,7 +241,7 @@
   {#if picking}
     <div class="view" in:fly={{ x: motionPx(28), duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
     <div class="picker" role="group" aria-label="Choose a provider preset">
-      <div class="picker-head"><h3>Choose a starting point</h3></div>
+      <div class="picker-head"><h3>Choose a starting point</h3><button type="button" class="btn-ghost btn-compact own" onclick={() => edit(undefined, presetById('blank'))}><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>Add your own</button></div>
       <input class="search" use:focusOnMount type="search" bind:value={search} placeholder="Search providers, e.g. Ollama" aria-label="Search provider presets" />
       <p class="hint">Presets only fill in the form. These services are not tested or supported by Verenu, and you can change every field.</p>
       <div class="stack">
@@ -251,7 +250,7 @@
         <div class="group-title">{#key searchResults.length}<span class="count" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</span>{/key}</div>
         <div class="grid">{#each searchResults as p, i (p.id)}<div class="cell" animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }} in:fly|global={{ y: motionPx(10), duration: motionMs(MOTION_MS.base), delay: motionMs(Math.min(i, 8) * 22), easing: cubicOut }} out:fade|global={{ duration: motionMs(80) }}>{@render card(p)}</div>{/each}</div>
         {#if !searchResults.length}
-          <div class="no-match" in:fade={{ duration: motionMs(MOTION_MS.base), delay: motionMs(60) }}><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Start from scratch</button></div>
+          <div class="no-match" in:fade={{ duration: motionMs(MOTION_MS.base), delay: motionMs(60) }}><p>No preset matches “{search}”.</p><button type="button" class="btn-ghost btn-compact" onclick={() => edit(undefined, presetById('blank'))}>Add your own</button></div>
         {/if}
         </div>
       {:else}
@@ -269,12 +268,6 @@
             <div class="grid">{#each rest('gateway') as p (p.id)}{@render card(p)}{/each}</div>
           </div>
         {/if}
-        <button type="button" class="disclosure" aria-expanded={showAdvanced} onclick={() => showAdvanced = !showAdvanced}><span class="chev" class:open={showAdvanced}>›</span> Advanced<span>Any compatible endpoint</span></button>
-        {#if showAdvanced}
-          <div class="disclosed" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-            <div class="grid">{#each rest('advanced') as p (p.id)}{@render card(p)}{/each}</div>
-          </div>
-        {/if}
         </div>
       {/if}
       </div>
@@ -287,7 +280,7 @@
       <div class="editor-head">
         {@render tile(preset?.id, editing.name || preset?.name || '', preset?.color ?? '#6B7280', preset?.mark && !editing.name ? preset.mark : undefined, true)}
         <div><h3>{savedOriginal ? `Edit ${savedOriginal.name}` : preset && preset.id !== 'blank' ? `Set up ${preset.name}` : 'Add custom provider'}</h3>
-          {#if preset && !savedOriginal && preset.note}<p class="hint">{preset.note}</p>{/if}</div>
+          {#if preset && !savedOriginal && preset.note && preset.id !== 'blank'}<p class="hint">{preset.note}</p>{/if}</div>
         {#if !savedOriginal}<button type="button" class="btn-ghost btn-compact change" onclick={startPicking} disabled={busy}>Change preset</button>{/if}
       </div>
 
@@ -387,6 +380,7 @@
   .remove-confirm p { flex-basis: 100%; margin: 0; font-size: 12px; }
 
   .picker { display: grid; gap: 10px; }
+  .own { display: inline-flex; align-items: center; gap: 6px; }
   .picker-head, .editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .search { font-family: inherit; }
   .stack { display: grid; }

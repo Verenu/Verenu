@@ -30,8 +30,7 @@ test('custom provider editor persists, offers task models, renames, and removes 
     const picker = page.getByRole('group', { name: 'Choose a provider preset' });
     await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('ollama');
     await picker.getByRole('button', { name: /^Mistral/ }).waitFor({ state: 'detached' });
-    await picker.getByRole('searchbox', { name: 'Search provider presets' }).fill('scratch');
-    await picker.getByRole('button', { name: /^Start from scratch/ }).click();
+    await picker.getByRole('button', { name: 'Add your own' }).click();
     const editor = page.getByRole('form', { name: 'Custom provider editor' });
     await editor.getByLabel('Name', { exact: true }).fill('Fixture endpoint');
     await editor.getByLabel(/^Base URL/).fill('http://localhost:8000/v1');

@@ -5,7 +5,7 @@ import type { CustomProvider } from './customProviders.svelte';
  * endorsements: Verenu does not test or officially support these vendors, and
  * model IDs change often, so every value stays editable before saving.
  */
-export type PresetGroup = 'cloud' | 'gateway' | 'local' | 'advanced';
+export type PresetGroup = 'cloud' | 'gateway' | 'local' | 'blank';
 
 /** A second wire format the same vendor accepts, e.g. an Anthropic-style endpoint. */
 export type PresetAlternate = {
@@ -46,7 +46,6 @@ export const PRESET_GROUPS: { id: PresetGroup; label: string; hint: string }[] =
   { id: 'cloud', label: 'Providers', hint: 'Hosted model APIs' },
   { id: 'gateway', label: 'Gateways & developer platforms', hint: 'One key, many models' },
   { id: 'local', label: 'Local & self-hosted', hint: 'Nothing leaves your network' },
-  { id: 'advanced', label: 'Advanced', hint: 'Bring any compatible endpoint' },
 ];
 
 const cloud = (p: Omit<CustomProviderPreset, 'group' | 'protocol' | 'requires_key' | 'supports_cleanup' | 'supports_transcription' | 'transcription_models'> & Partial<CustomProviderPreset>): CustomProviderPreset => ({
@@ -81,11 +80,9 @@ export const CUSTOM_PROVIDER_PRESETS: CustomProviderPreset[] = [
   cloud({ id: 'github-models', group: 'gateway', name: 'GitHub Models', color: '#24292F', base_url: 'https://models.github.ai/inference', cleanup_models: ['openai/gpt-4.1-mini'], key_hint: 'GitHub token with models access', note: 'Use a GitHub personal access token.', docs: 'https://github.com/marketplace/models' }),
   cloud({ id: 'vercel', group: 'gateway', name: 'Vercel AI Gateway', color: '#111111', base_url: 'https://ai-gateway.vercel.sh/v1', cleanup_models: ['openai/gpt-4o-mini', 'anthropic/claude-haiku-4.5'], note: 'One key for many vendors, prefixed as vendor/model.', docs: 'https://vercel.com/dashboard' }),
   cloud({ id: 'cloudflare', group: 'gateway', name: 'Cloudflare Workers AI', color: '#F6821F', base_url: 'https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1', cleanup_models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast'], transcription_models: ['@cf/openai/whisper-large-v3-turbo'], note: 'Replace YOUR_ACCOUNT_ID in the base URL with your Cloudflare account ID.', docs: 'https://dash.cloudflare.com/profile/api-tokens' }),
-  cloud({ id: 'openai-compatible', group: 'advanced', name: 'Other OpenAI-compatible', mark: '+', color: '#10A37F', base_url: '', cleanup_models: [], supports_cleanup: true, supports_transcription: false, note: 'Any service that implements /chat/completions.' }),
 
   anthropic({ id: 'anthropic', name: 'Anthropic', color: '#D97757', base_url: 'https://api.anthropic.com/v1', cleanup_models: ['claude-haiku-4-5', 'claude-sonnet-4-5'], key_hint: 'sk-ant-…', note: 'Claude models through the Messages API.', docs: 'https://console.anthropic.com/settings/keys' }),
   anthropic({ id: 'minimax', name: 'MiniMax', color: '#F23F5D', base_url: 'https://api.minimax.io/anthropic', cleanup_models: ['MiniMax-M2'], note: 'MiniMax exposes an Anthropic-style endpoint.', docs: 'https://platform.minimax.io/' }),
-  anthropic({ id: 'anthropic-compatible', group: 'advanced', name: 'Other Anthropic-compatible', mark: '+', color: '#D97757', base_url: '', cleanup_models: [], note: 'Any service that implements /messages.' }),
 
   local({ id: 'ollama', name: 'Ollama', color: '#262626', base_url: 'http://localhost:11434/v1', cleanup_models: ['llama3.2', 'qwen3:4b'], note: 'Run `ollama pull llama3.2` first. No key needed.', docs: 'https://ollama.com/library' }),
   local({ id: 'lm-studio', name: 'LM Studio', color: '#5B4BFF', base_url: 'http://localhost:1234/v1', cleanup_models: [], note: 'Start the local server in LM Studio and enter the loaded model ID.', docs: 'https://lmstudio.ai/docs/app/api' }),
@@ -95,7 +92,7 @@ export const CUSTOM_PROVIDER_PRESETS: CustomProviderPreset[] = [
   local({ id: 'localai', name: 'LocalAI', color: '#3B82F6', base_url: 'http://localhost:8080/v1', cleanup_models: [], transcription_models: ['whisper-1'], supports_transcription: true, note: 'Self-hosted chat and Whisper.', docs: 'https://localai.io/' }),
   local({ id: 'jan', name: 'Jan', color: '#F59E0B', base_url: 'http://localhost:1337/v1', cleanup_models: [], note: 'Turn on the local API server in Jan settings.', docs: 'https://jan.ai/docs/desktop/api-server' }),
 
-  { id: 'blank', name: 'Start from scratch', mark: '+', group: 'advanced', protocol: 'openai', base_url: '', requires_key: true, supports_transcription: true, supports_cleanup: true, transcription_models: [], cleanup_models: [], color: '#6B7280', note: 'Enter every field yourself.' },
+  { id: 'blank', name: 'Add your own', mark: '+', group: 'blank', protocol: 'openai', base_url: '', requires_key: true, supports_transcription: true, supports_cleanup: true, transcription_models: [], cleanup_models: [], color: '#6B7280', note: 'Any compatible endpoint.' },
 ];
 
 export const presetById = (id: string) => CUSTOM_PROVIDER_PRESETS.find(p => p.id === id);
