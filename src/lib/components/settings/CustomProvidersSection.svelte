@@ -14,6 +14,7 @@
   import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
+  import ModelIdInput from './ModelIdInput.svelte';
 
   let { addRequest = 0 }: { addRequest?: number } = $props();
   let seenRequest: number | null = null;
@@ -29,8 +30,10 @@
   let savedOriginal = $state<CustomProvider | null>(null);
   let keys = $state<Record<string, boolean>>({});
   let key = $state('');
-  let transcriptionModels = $state('');
-  let cleanupModels = $state('');
+  let transcriptionModels = $state<string[]>([]);
+  let cleanupModels = $state<string[]>([]);
+  let transcriptionDraft = $state('');
+  let cleanupDraft = $state('');
   let headers = $state('{}');
   let overrides = $state('{}');
   let error = $state('');
@@ -55,6 +58,12 @@
   onMount(() => { load().catch(e => error = formatIpcError(e, 'Could not load custom providers')); });
 
   // preventScroll: the drawer is still sliding in, and focus must not jump the layout.
+  // Grow with the content instead of showing a resize handle or scrollbar.
+  function autosize(node: HTMLTextAreaElement, _value: string) {
+    const fit = () => { node.style.height = 'auto'; node.style.height = `${node.scrollHeight + 2}px`; };
+    fit(); node.addEventListener('input', fit);
+    return { update: () => requestAnimationFrame(fit), destroy: () => node.removeEventListener('input', fit) };
+  }
   function focusOnMount(node: HTMLElement) { requestAnimationFrame(() => node.focus({ preventScroll: true })); }
   const drawerOpen = $derived(picking || !!editing);
   function closeDrawer() { picking = false; editing = null; preset = null; key = ''; error = ''; }
@@ -76,20 +85,15 @@
     };
     picking = false;
     key = '';
-    transcriptionModels = editing.transcription_models.join('\n');
-    cleanupModels = editing.cleanup_models.join('\n');
+    transcriptionModels = [...editing.transcription_models];
+    cleanupModels = [...editing.cleanup_models];
+    transcriptionDraft = ''; cleanupDraft = '';
     headers = JSON.stringify(editing.extra_headers, null, 2);
     overrides = JSON.stringify(editing.body_overrides ?? {}, null, 2);
     error = ''; notice = ''; deleting = null;
   }
-  function addModel(kind: 'transcription' | 'cleanup', model: string) {
-    const current = models(kind === 'transcription' ? transcriptionModels : cleanupModels);
-    const next = (current.includes(model) ? current.filter(m => m !== model) : [...current, model]).join('\n');
-    if (kind === 'transcription') transcriptionModels = next; else cleanupModels = next;
-  }
   const suggestedCleanup = $derived(
     preset?.alt && editing?.protocol === preset.alt.protocol ? preset.alt.cleanup_models : preset?.cleanup_models ?? []);
-  const chosen = (text: string) => new Set(models(text));
   const popular = POPULAR_PRESET_IDS.map(id => presetById(id)).filter((p): p is CustomProviderPreset => !!p);
   const rest = (group: string) => CUSTOM_PROVIDER_PRESETS.filter(p => p.group === group && !POPULAR_PRESET_IDS.includes(p.id));
   const searching = $derived(search.trim().length > 0);
@@ -114,12 +118,12 @@
     editing.protocol = next;
     if (format) {
       editing.base_url = format.base_url;
-      cleanupModels = format.cleanup_models.slice(0, 1).join('\n');
+      cleanupModels = format.cleanup_models.slice(0, 1);
     }
     if (next === 'anthropic') editing.supports_transcription = false;
     else if (preset?.supports_transcription && !savedOriginal) editing.supports_transcription = true;
   }
-  const models = (text: string) => [...new Set(text.split('\n').map(x => x.trim()).filter(Boolean))];
+  const models = (list: string[]) => [...new Set(list.flatMap(x => x.split(/[\n,]/)).map(x => x.trim()).filter(Boolean))];
   function object(text: string, label: string): Record<string, unknown> {
     const value = JSON.parse(text || '{}');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
@@ -136,8 +140,8 @@
         ...$state.snapshot(editing), name: editing.name.trim(), base_url: editing.base_url.trim().replace(/\/+$/, ''),
         auth_header: editing.auth_header?.trim() || null,
         extra_headers: extra as Record<string, string>, body_overrides: Object.keys(body).length ? body : null,
-        transcription_models: editing.supports_transcription ? models(transcriptionModels) : [],
-        cleanup_models: editing.supports_cleanup ? models(cleanupModels) : [],
+        transcription_models: editing.supports_transcription ? models([...transcriptionModels, transcriptionDraft]) : [],
+        cleanup_models: editing.supports_cleanup ? models([...cleanupModels, cleanupDraft]) : [],
       };
       if (!provider.name || !provider.base_url) throw new Error('Enter a name and base URL.');
       if (!provider.supports_transcription && !provider.supports_cleanup) throw new Error('Turn on transcription, cleanup, or both.');
@@ -237,7 +241,7 @@
           <span>{editing ? (savedOriginal ? 'Edit provider' : 'New provider') : 'Add custom provider'}</span>
           <button type="button" class="drawer-close" aria-label="Close" onclick={closeDrawer} disabled={busy}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
         </header>
-        <div class="drawer-body"><div class="views">
+        <div class="drawer-body scroll-styled scroll-thumb-elev"><div class="views">
   {#if picking}
     <div class="view" in:fly={{ x: motionPx(28), duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
     <div class="picker" role="group" aria-label="Choose a provider preset">
@@ -306,15 +310,13 @@
         </div>
       </div>
 
-      <div class="form-grid">
-        {#if editing.supports_transcription}
-          <label>Transcription model IDs<textarea bind:value={transcriptionModels} placeholder="whisper-1" rows="3" disabled={busy}></textarea><small>One model ID per line.</small>
-            {#if preset?.transcription_models.length}<span class="chips">{#each preset.transcription_models as m}<button type="button" class="chip" class:on={chosen(transcriptionModels).has(m)} aria-pressed={chosen(transcriptionModels).has(m)} onclick={() => addModel('transcription', m)} disabled={busy}>{m}</button>{/each}</span>{/if}</label>
-        {/if}
-        {#if editing.supports_cleanup}
-          <label>Cleanup model IDs<textarea bind:value={cleanupModels} placeholder={editing.protocol === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'} rows="3" disabled={busy}></textarea><small>One model ID per line.</small>
-            {#if suggestedCleanup.length}<span class="chips">{#each suggestedCleanup as m}<button type="button" class="chip" class:on={chosen(cleanupModels).has(m)} aria-pressed={chosen(cleanupModels).has(m)} onclick={() => addModel('cleanup', m)} disabled={busy}>{m}</button>{/each}</span>{/if}</label>
-        {/if}
+      <div class="models-row" class:no-tx={!editing.supports_transcription} class:no-cl={!editing.supports_cleanup}>
+        <div class="mfield" class:off={!editing.supports_transcription} inert={!editing.supports_transcription} aria-hidden={!editing.supports_transcription}>
+          <ModelIdInput id="tx-models" label="Transcription model IDs" bind:values={transcriptionModels} bind:draft={transcriptionDraft} placeholder="whisper-1" suggestions={preset?.transcription_models ?? []} disabled={busy} />
+        </div>
+        <div class="mfield" class:off={!editing.supports_cleanup} inert={!editing.supports_cleanup} aria-hidden={!editing.supports_cleanup}>
+          <ModelIdInput id="cl-models" label="Cleanup model IDs" bind:values={cleanupModels} bind:draft={cleanupDraft} placeholder={editing.protocol === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'} suggestions={suggestedCleanup} disabled={busy} />
+        </div>
       </div>
       {#if preset && !savedOriginal && preset.id !== 'blank'}<p class="hint">Suggested model IDs come from the vendor's docs and may be out of date. Check their current model list.</p>{/if}
 
@@ -329,8 +331,8 @@
       {/if}
       <details><summary>Advanced request settings</summary>
         <label>API key header<input bind:value={editing.auth_header} placeholder={editing.protocol === 'anthropic' ? 'x-api-key' : 'Authorization: Bearer (default)'} disabled={busy} /><small>Enter a header name to send the key as its raw value. Leave blank for the protocol default.</small></label>
-        <label>Extra headers, JSON<textarea bind:value={headers} rows="3" spellcheck="false" disabled={busy}></textarea><small>Non-secret string values only. Put credentials in the API key field.</small></label>
-        {#if editing.supports_cleanup}<label>Cleanup request options, JSON<textarea bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea><small>Extra fields such as temperature. Model, messages, system, token limit, and streaming are controlled by Verenu.</small></label>{/if}
+        <label>Extra headers, JSON<textarea use:autosize={headers} bind:value={headers} rows="3" spellcheck="false" disabled={busy}></textarea><small>Non-secret string values only. Put credentials in the API key field.</small></label>
+        {#if editing.supports_cleanup}<label>Cleanup request options, JSON<textarea use:autosize={overrides} bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea><small>Extra fields such as temperature. Model, messages, system, token limit, and streaming are controlled by Verenu.</small></label>{/if}
       </details>
       {#if error}<p class="provider-error" role="alert">{error}</p>{/if}
       <div class="actions sticky"><button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</button><button type="button" class="btn-ghost" onclick={closeDrawer} disabled={busy}>Cancel</button></div>
@@ -388,7 +390,7 @@
   .cell { min-width: 0; }
   .cell :global(.card) { width: 100%; box-sizing: border-box; }
   .count { display: inline-block; }
-  .group-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
+  .group-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
   .group-title span { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-mute); font-size: 11px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
   .card { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--ink); cursor: pointer; min-width: 0; font: inherit; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
@@ -411,11 +413,16 @@
   .editor-head { justify-content: flex-start; }
   .editor-head > div { flex: 1; min-width: 0; }
   .editor-head .change { margin-left: auto; }
+  .models-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 14px; transition: grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+  .models-row.no-tx { grid-template-columns: minmax(0, 0fr) minmax(0, 1fr); column-gap: 0; }
+  .models-row.no-cl { grid-template-columns: minmax(0, 1fr) minmax(0, 0fr); column-gap: 0; }
+  .mfield { min-width: 0; overflow: hidden; padding: 3px; margin: -3px; transition: opacity 220ms ease; }
+  .mfield.off { opacity: 0; pointer-events: none; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .full { grid-column: 1 / -1; }
   label, .field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
   input, textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; }
-  textarea { resize: vertical; }
+  textarea { resize: none; overflow: hidden; }
   input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
   small { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
 
@@ -431,11 +438,6 @@
   .cap.off { opacity: 0.6; }
   .cap-title { font-size: 12.5px; font-weight: 600; color: var(--ink); }
 
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip { max-width: 100%; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink-soft); font-family: var(--mono); font-size: 10.5px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background 120ms ease, border-color 120ms ease; }
-  .chip:hover:not(:disabled) { background: var(--control-hover); }
-  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .link { padding: 0; margin-left: 4px; border: 0; background: none; color: var(--ink); text-decoration: underline; cursor: pointer; font: inherit; }
 
   details { border-top: 1px solid var(--line); padding-top: 12px; }
@@ -444,7 +446,10 @@
   .actions.sticky { position: sticky; bottom: -18px; margin: 0 -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
   .provider-error { color: var(--danger); font-size: 12px; margin: 0; }
   .notice { margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
-  @media (max-width: 560px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
+  @media (max-width: 560px) {
+    .models-row, .models-row.no-tx, .models-row.no-cl { grid-template-columns: minmax(0, 1fr); column-gap: 0; row-gap: 14px; transition: none; }
+    .mfield { max-height: 600px; transition: max-height 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease, margin 280ms ease; }
+    .mfield.off { max-height: 0; margin-top: -14px; } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { padding: 8px; gap: 8px; } .card-name { white-space: normal; line-height: 1.25; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: 0 -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
   @container settings-panel (max-width: 520px) {
     .form-grid, .cap-grid { grid-template-columns: 1fr; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
