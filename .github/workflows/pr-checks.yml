@@ -8,10 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     name: Frontend checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -33,7 +37,7 @@ jobs:
 
   dependency-audits:
     name: Dependency audits
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -57,7 +61,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+          fallback: none
 
       - name: Audit Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
@@ -130,6 +137,11 @@ jobs:
       - name: Check Rust toolchain
         run: rustc --version
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
@@ -177,8 +189,8 @@ jobs:
 
   all-in-one-fast:
     name: All-in-one fast profile
-    needs: [frontend, dependency-audits, rust]
-    runs-on: ubuntu-latest
+    # This job uses its own checkout and consumes no output from other checks.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -191,6 +203,11 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
 
       - name: Install Linux system dependencies
         run: |
