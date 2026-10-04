@@ -713,7 +713,7 @@
      behind it. */
   .app[data-compact-nav='true'] {
     --sidebar-w: 0px;
-    --mobile-nav-h: calc(60px + var(--safe-bottom));
+    --mobile-nav-h: calc(68px + var(--safe-bottom));
   }
 
   /* MainActivity applies the top/side WindowInsets to the WebView content root,

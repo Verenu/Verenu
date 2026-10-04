@@ -129,6 +129,8 @@ export interface GlobalMessage {
 export const appStore = $state({
   currentPage: 'home' as PageId,
   settingsOpen: false,
+  // Android: show the section list instead of a section (phone drill-down).
+  settingsMobileList: false,
   // The settings rail lives in the Sidebar but the panel lives in Settings, so
   // the active section and its swap direction have to be shared state.
   settingsSection: 'general' as SettingsSectionId,
