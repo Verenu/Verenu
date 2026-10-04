@@ -38,6 +38,9 @@
       // Enter adds another ID instead of submitting the whole form.
       e.preventDefault();
       commit();
+    } else if (e.key === 'Escape' && draft) {
+      // Clear the draft first; a second Escape closes the drawer.
+      e.preventDefault(); e.stopPropagation(); draft = '';
     } else if (e.key === 'Backspace' && !draft && values.length) {
       values = values.slice(0, -1);
     }
