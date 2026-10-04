@@ -76,11 +76,14 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     await page.locator('#dict-term').fill('Verenu');
     await page.locator('#dict-mistake').fill('verenu');
     await page.locator('.modal-card .btn-primary:has-text("Add term")').click();
-    await page.locator('.dict-row:has-text("Verenu")').waitFor({ state: 'visible', timeout: TIMEOUT });
-    if (!(await page.locator('.insp-often').isVisible().catch(() => false))) {
-      await page.locator('.dict-row:has-text("Verenu")').click();
+    const dictionaryRow = page.locator('.dict-row:has-text("Verenu")');
+    await dictionaryRow.waitFor({ state: 'visible', timeout: TIMEOUT });
+    if (await dictionaryRow.getAttribute('aria-pressed') !== 'true') {
+      await dictionaryRow.click();
     }
-    const dictInspector = (await page.locator('.insp-often').textContent()) || '';
+    const dictionaryInspector = page.locator('.insp-often');
+    await dictionaryInspector.waitFor({ state: 'visible', timeout: TIMEOUT });
+    const dictInspector = (await dictionaryInspector.textContent()) || '';
     if (!dictInspector.includes('verenu')) errors.push('Dictionary inspector did not show mistake text');
 
     await page.locator('.nav-item:has-text("Style")').click();
