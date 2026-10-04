@@ -1,14 +1,23 @@
 import { expect, it, vi } from 'vitest';
 import { createIconCache } from './iconCache';
 
-it('deduplicates pending icons and retains negative results', async () => {
+it('deduplicates pending icons and retries failed requests', async () => {
   const cache = createIconCache();
   const load = vi.fn(async () => { throw new Error('missing'); });
   const first = cache.get('a', load);
   expect(cache.get('a', load)).toBe(first);
   expect(await first).toBeNull();
   expect(await cache.get('a', load)).toBeNull();
-  expect(load).toHaveBeenCalledTimes(1);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('retries missing icons and caches a recovered result', async () => {
+  const cache = createIconCache();
+  const load = vi.fn().mockResolvedValueOnce(null).mockResolvedValue('data:image/png;base64,icon');
+  expect(await cache.get('app', load)).toBeNull();
+  expect(await cache.get('app', load)).toBe('data:image/png;base64,icon');
+  expect(await cache.get('app', load)).toBe('data:image/png;base64,icon');
+  expect(load).toHaveBeenCalledTimes(2);
 });
 
 it('evicts least recently used entries under the count and string budgets', async () => {
