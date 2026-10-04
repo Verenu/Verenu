@@ -142,7 +142,7 @@ const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
   'mic-unavailable': 'No microphone detected. Reconnect your mic or choose another input in Settings > General.',
   'mic-busy': 'The audio device is busy. Stop other apps using it, then try recording again.',
   'audio-device': 'The audio system could not open the microphone. Reconnect it or choose another input in Settings > General.',
-  'missing-key': 'No API key is saved for the selected provider. Add it in Settings > API Keys, or choose a local model.',
+  'missing-key': 'No API key is saved for the selected provider. Add it in Settings > Providers, or choose a local model.',
   'retry-expired': 'This recording is no longer available to retry or resume. Start a new dictation.',
   'recording-interrupted': 'The recording could not be completed. Check your microphone connection, then start a new dictation.',
   'recording-too-large': 'The provider could not accept a recording this large. Try a shorter dictation or choose another transcription provider.',
@@ -212,11 +212,11 @@ function messageForKind(kind: ErrorKind, raw: string): string {
       if (raw.includes('AUTH_401')) {
         const provider = raw.match(/provider=(Groq|OpenAI|Google|Gemini|AssemblyAI|OpenRouter|xAI)\b/i)?.[1] ?? 'The provider';
         if (lower.includes('category=invalid_or_revoked_key')) {
-          return `${provider} API key looks invalid or revoked. Replace it in Settings > API Keys.`;
+          return `${provider} API key looks invalid or revoked. Replace it in Settings > Providers.`;
         }
         return lower.includes('category=scope_or_account_restriction')
           ? `${provider} rejected this key for account or model access. Check the key's permissions and your provider account's access to the selected model.`
-          : `${provider} rejected authentication. Replace the key in Settings > API Keys and check your provider account's access.`;
+          : `${provider} rejected authentication. Replace the key in Settings > Providers and check your provider account's access.`;
       }
       return stripInternalMarkers(raw);
     }
@@ -271,7 +271,7 @@ export function classifyIpcError(err: unknown): ClassifiedError {
   const status = safe.match(/(?:HTTP\s+|status[=:]?\s+|status[=:])(4\d\d|5\d\d)\b/i)?.[1];
   if (status && !lower.includes('auth_401')) {
     const code = Number(status);
-    if (code === 401 || code === 403) return { kind: 'auth-401', message: 'The provider rejected access. Check your API key and account access in Settings > API Keys.' };
+    if (code === 401 || code === 403) return { kind: 'auth-401', message: 'The provider rejected access. Check your API key and account access in Settings > Providers.' };
     if (code === 429) return { kind: 'quota', message: messageForKind('quota', safe) };
     if (code === 408 || code === 504) return { kind: 'timeout', message: KIND_MESSAGES.timeout! };
     if (code >= 500) return { kind: 'provider-unavailable', message: KIND_MESSAGES['provider-unavailable']! };

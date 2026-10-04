@@ -393,6 +393,7 @@ fn allowed(command: &str) -> bool {
             | "save_hotkey"
             | "get_shortcut_status"
             | "save_setting"
+            | "delete_custom_provider"
             | "get_api_key_status"
             | "list_provider_models"
             | "get_provider_model_catalog"

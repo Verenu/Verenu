@@ -55,7 +55,7 @@ The optional Dual model transcription strategy uses the existing transcription f
 ## Where to enter it
 
 - **First run**: setup lets you choose a cloud provider and paste its key, or choose a local model path.
-- **Later**: open **Settings -> API Keys**, paste a key into the provider field, and save. A saved key shows only as saved. Use **Clear** to remove it.
+- **Later**: open **Settings -> Providers**, paste a key into the provider field, and save. A saved key shows only as saved. Use **Clear** to remove it.
 
 ## How keys are stored
 

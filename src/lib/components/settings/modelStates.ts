@@ -1,4 +1,5 @@
 import type { ProviderId } from '../../settings';
+import { customProviderStore, customProvider, isCustomProviderId } from '../../customProviders.svelte';
 import {
   isTrustworthy,
   hasSnapshot,
@@ -123,7 +124,7 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
 }
 
 function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
-  if (!ctx.apiKeyStatus[entry.provider]) {
+  if (!ctx.apiKeyStatus[entry.provider] && customProvider(entry.provider)?.requires_key !== false) {
     return row(entry, 'needs-setup', 'No API key', 'add-key');
   }
 
@@ -157,7 +158,11 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
  */
 export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[] {
   const pinned = new Set(keep);
-  return catalogFor(ctx.task)
+  const customEntries: CatalogEntry[] = customProviderStore.providers
+    .filter(p => ctx.task === 'transcription' ? p.supports_transcription : p.supports_cleanup)
+    .flatMap(p => (ctx.task === 'transcription' ? p.transcription_models : p.cleanup_models)
+      .map(id => ({ provider: p.id, id, label: id, tasks: [ctx.task], tags: [] })));
+  return [...catalogFor(ctx.task), ...customEntries]
     .map((entry) => (entry.provider === 'local' ? localRow(entry, ctx) : cloudRow(entry, ctx)))
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }
@@ -250,6 +255,14 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
   }
 
+  if (isCustomProviderId(parsed.provider)) {
+    const p = customProvider(parsed.provider);
+    if (!p || !(ctx.task === 'transcription' ? p.supports_transcription : p.supports_cleanup))
+      return { ...base, state: 'unavailable', note: p ? 'Task disabled for this provider' : 'Provider removed' };
+    if (p.requires_key && !ctx.apiKeyStatus[p.id])
+      return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
+    return { ...base, state: 'ready', note: 'User-defined endpoint' };
+  }
   if (parsed.provider === 'local' || !isTrustworthy(cache)) return base;
   if (cache!.ids.includes(parsed.model)) return base;
 

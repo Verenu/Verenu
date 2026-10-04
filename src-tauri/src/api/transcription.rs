@@ -4,7 +4,7 @@ use reqwest::multipart;
 
 use super::gemini_types::GeminiResp;
 use super::prompts::{gemini_generation_config, get_transcription_prompt};
-use super::{ProviderId, TranscriptionAdapter};
+use super::{Target, TranscriptionAdapter, Wire};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WhisperFormFields {
@@ -16,26 +16,34 @@ struct WhisperFormFields {
 
 pub async fn transcribe(
     wav: Bytes,
-    provider: ProviderId,
+    provider: impl Into<Target>,
     api_key: &str,
     language: &str,
     model: &str,
     gen: u64,
 ) -> Result<String> {
+    let target: Target = provider.into();
     #[cfg(any(test, debug_assertions))]
     if let Some(result) =
-        crate::testing::resolve_provider_fixture("transcription", provider.as_str(), model)
+        crate::testing::resolve_provider_fixture("transcription", target.id_str(), model)
     {
         return result;
     }
 
     log::debug!(
-        "transcription: start gen={} provider={:?} language={} wav_bytes={}",
+        "transcription: start gen={} provider={} language={} wav_bytes={}",
         gen,
-        provider,
+        target.id_str(),
         language,
         wav.len()
     );
+    let provider = match &target {
+        Target::Builtin(provider) => *provider,
+        Target::Custom(custom) => {
+            return transcribe_custom(wav, custom, api_key, language, model, gen).await;
+        }
+    };
+    let wire = Wire::default();
     match provider.transcription_adapter() {
         TranscriptionAdapter::Gemini => transcribe_gemini(wav, api_key, language, model, gen).await,
         TranscriptionAdapter::AssemblyAi => {
@@ -52,6 +60,7 @@ pub async fn transcribe(
                 wav,
                 api_key,
                 url,
+                &wire,
                 provider.label(),
                 provider.as_str(),
                 model,
@@ -64,8 +73,68 @@ pub async fn transcribe(
             transcribe_openrouter(wav, api_key, url, provider.label(), model, language, gen).await
         }
         TranscriptionAdapter::XaiStt { url } => {
-            transcribe_xai(wav, api_key, url, provider.label(), model, language, gen).await
+            transcribe_xai(
+                wav,
+                api_key,
+                url,
+                &wire,
+                provider.label(),
+                model,
+                language,
+                gen,
+            )
+            .await
         }
+    }
+}
+
+/// A user-defined endpoint. The shapes match the built-in adapters; only the
+/// URL, auth, and extra headers differ.
+async fn transcribe_custom(
+    wav: Bytes,
+    custom: &super::custom::CustomProvider,
+    api_key: &str,
+    language: &str,
+    model: &str,
+    gen: u64,
+) -> Result<String> {
+    use super::custom::CustomProtocol;
+    let Some(url) = custom.transcription_url() else {
+        anyhow::bail!("{} has no transcription endpoint", custom.name);
+    };
+    if !custom.supports_transcription {
+        anyhow::bail!("Transcription is turned off for {}", custom.name);
+    }
+    let wire = custom.wire();
+    match custom.protocol {
+        CustomProtocol::Openai => {
+            transcribe_whisper(
+                wav,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                "custom",
+                model,
+                language,
+                gen,
+            )
+            .await
+        }
+        CustomProtocol::Xai => {
+            transcribe_xai(
+                wav,
+                api_key,
+                &url,
+                &wire,
+                &custom.name,
+                model,
+                language,
+                gen,
+            )
+            .await
+        }
+        CustomProtocol::Anthropic => anyhow::bail!("Anthropic has no transcription endpoint"),
     }
 }
 
@@ -74,6 +143,7 @@ async fn transcribe_whisper(
     wav: Bytes,
     api_key: &str,
     url: &str,
+    wire: &Wire,
     provider_label: &str,
     provider_id: &str,
     model: &str,
@@ -101,12 +171,12 @@ async fn transcribe_whisper(
     let form = build_whisper_form(wav, &fields)?;
 
     let request_started = std::time::Instant::now();
-    let resp = super::client::get()
-        .post(url)
-        .bearer_auth(api_key)
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
         .multipart(form)
         .send()
         .await?;
+    let resp = wire.check_status(resp, provider_label, model)?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
     log::debug!(
@@ -162,7 +232,7 @@ async fn transcribe_whisper(
         }
     };
 
-    let body: WhisperResponse = resp.json().await?;
+    let body: WhisperResponse = wire.json(resp).await?;
     log::debug!(
         "transcription: whisper parsed gen={} chars={}",
         gen,
@@ -743,10 +813,12 @@ fn build_xai_form(wav: Bytes, model: &str, language: &str) -> Result<multipart::
         .part("file", part))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_xai(
     wav: Bytes,
     api_key: &str,
     url: &str,
+    wire: &Wire,
     provider_label: &str,
     model: &str,
     language: &str,
@@ -760,14 +832,14 @@ async fn transcribe_xai(
         wav.len()
     );
     let form = build_xai_form(wav, model, language)?;
-    let resp = super::client::get()
-        .post(url)
-        .bearer_auth(api_key)
+    let resp = wire
+        .apply(wire.client().post(url), api_key)
         .multipart(form)
         .send()
         .await?;
+    let resp = wire.check_status(resp, provider_label, model)?;
     let resp = checked_transcription_response(resp, provider_label, model, gen).await?;
-    let body: TextResponse = resp.json().await?;
+    let body: TextResponse = wire.json(resp).await?;
     Ok(body.text.trim().to_owned())
 }
 

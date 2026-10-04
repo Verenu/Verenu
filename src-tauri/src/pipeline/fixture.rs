@@ -69,9 +69,11 @@ async fn transcribe_fixture_provider(
         anyhow::bail!("Missing mock fixture for local transcription model '{model}'");
     }
 
+    let target = crate::api::Target::resolve(provider_id, &config.custom_providers)
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider '{provider_id}'"))?;
     transcription::transcribe(
         audio.wav_bytes()?,
-        ProviderId::from_str(provider_id),
+        target,
         config.key_for(provider_id),
         &config.transcription_language,
         model,

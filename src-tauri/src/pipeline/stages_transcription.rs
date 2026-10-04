@@ -231,10 +231,12 @@ pub(super) async fn open_config_and_context(
     Some((cfg, profile, app_context))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn transcribe_any(
     app: &AppHandle,
     audio: &CapturedAudio,
     provider_id: &str,
+    customs: &[crate::api::custom::CustomProvider],
     api_key: Option<&str>,
     language: &str,
     model: &str,
@@ -274,16 +276,14 @@ pub(super) async fn transcribe_any(
         return result;
     }
 
-    let key = api_key.ok_or_else(|| anyhow::anyhow!("No API key saved for {provider_id}"))?;
-    transcription::transcribe(
-        audio.wav_bytes()?,
-        ProviderId::from_str(provider_id),
-        key,
-        language,
-        model,
-        gen,
-    )
-    .await
+    let target = crate::api::Target::resolve(provider_id, customs)
+        .ok_or_else(|| anyhow::anyhow!("The custom provider for this model was removed"))?;
+    let key = match (&target, api_key) {
+        (crate::api::Target::Custom(p), _) if !p.requires_key => api_key.unwrap_or_default(),
+        (_, Some(key)) => key,
+        _ => anyhow::bail!("No API key saved for {provider_id}"),
+    };
+    transcription::transcribe(audio.wav_bytes()?, target, key, language, model, gen).await
 }
 
 /// Active connectivity disambiguation: returns true when the user's own
@@ -515,6 +515,7 @@ fn spawn_transcription_candidate(
             &app,
             &audio,
             &provider,
+            &cfg.custom_providers,
             if key.is_empty() {
                 None
             } else {
@@ -589,6 +590,7 @@ async fn run_primary_transcription_chain(
             app,
             audio,
             &provider_id,
+            &cfg.custom_providers,
             if key.is_empty() {
                 None
             } else {
