@@ -53,7 +53,7 @@ import android.widget.Toast
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
-        private const val IME_SETTLE_MS = 140L
+        private const val IME_SETTLE_MS = 70L
         private const val CONTEXT_CHARS = 200
         private const val SNOOZE_MS = 15L * 60_000L
         private val MIC_LABEL = Regex("voice|dictat|microphone|speech|\\bmic\\b", RegexOption.IGNORE_CASE)
@@ -393,7 +393,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         if (keyboardVisible) {
             if (overlayAttached) applyOverlayPresentation() else refreshOverlayVisibility()
-            mainHandler.postDelayed(imeVisibilityCheck, 60L)
+            mainHandler.postDelayed(imeVisibilityCheck, if (overlayAttached) 60L else 30L)
         }
     }
 
@@ -518,9 +518,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
     }
 
+    // A cancelled notice only belongs to the keyboard it was shown over; it
+    // never keeps the pill alive on its own (errors do, so they are not missed).
     private fun transientNoticeVisible(): Boolean =
-        (overlayState == VerenuOverlayView.State.ERROR ||
-            overlayState == VerenuOverlayView.State.CANCELLED) &&
+        overlayState == VerenuOverlayView.State.ERROR &&
             System.currentTimeMillis() - transientShownAtMs < TRANSIENT_AUTO_HIDE_MS
 
     private fun refreshOverlayVisibility() {
@@ -942,6 +943,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         overlayMoveAnimator?.cancel()
         dragging = false
         hideSnoozeTarget()
+        // A cancelled notice must not reappear with the next keyboard.
+        if (overlayState == VerenuOverlayView.State.CANCELLED) overlayState = VerenuOverlayView.State.IDLE
         val view = overlay ?: return
         overlay = null
         overlayParams = null
@@ -972,10 +975,25 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         refreshOverlayVisibility()
         val view = overlay ?: return
         if (next == VerenuOverlayView.State.ERROR && overlayErrorMessage.isNotEmpty()) {
-            view.setError(overlayErrorMessage)
+            view.setError(overlayErrorMessage, errorTitleFor(errorAction), errorActionLabelFor(errorAction))
         } else {
             view.updateState(next)
         }
+    }
+
+    private fun errorTitleFor(action: ErrorAction) = when (action) {
+        ErrorAction.RETRY_START -> "Couldn't start"
+        ErrorAction.RETRY_STOP -> "Couldn't stop"
+        ErrorAction.RETRY_CANCEL -> "Couldn't cancel"
+        ErrorAction.RETRY_INSERTION -> "Couldn't insert"
+        ErrorAction.DISMISS -> "Not inserted"
+        ErrorAction.RETRY_TRANSCRIPTION -> "Dictation failed"
+    }
+
+    private fun errorActionLabelFor(action: ErrorAction): String? = when (action) {
+        ErrorAction.DISMISS -> null
+        ErrorAction.RETRY_START -> "Try again"
+        else -> "Retry"
     }
 
     /** Retain the short, already-sanitized bridge message across overlay churn. */
@@ -993,9 +1011,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     override fun onPillTap() {
         when (overlayState) {
-            VerenuOverlayView.State.IDLE,
-            VerenuOverlayView.State.CANCELLED,
-            -> startDictation()
+            VerenuOverlayView.State.IDLE -> startDictation()
+            // The cancelled notice has its own dismiss and restart buttons.
+            VerenuOverlayView.State.CANCELLED -> Unit
             VerenuOverlayView.State.RECORDING -> stopDictation()
             VerenuOverlayView.State.ERROR -> retryDictation()
             else -> Unit // transcribing/cleaning/inserting: taps are no-ops
@@ -1196,14 +1214,23 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    override fun onPillRestart() {
+        if (overlayState != VerenuOverlayView.State.CANCELLED) return
+        setOverlayState(VerenuOverlayView.State.IDLE)
+        startDictation()
+    }
+
     override fun onPillDismiss() {
         if (!isDictationActive() &&
             errorAction != ErrorAction.RETRY_STOP &&
             errorAction != ErrorAction.RETRY_CANCEL
         ) {
             overlayErrorMessage = ""
+            // Back to the idle pill when the keyboard is still up, so a new
+            // dictation can start without reopening it; otherwise get out of
+            // the way immediately.
             setOverlayState(VerenuOverlayView.State.IDLE)
-            hideOverlay()
+            if (!shouldShowOverlay()) hideOverlay()
         }
     }
 

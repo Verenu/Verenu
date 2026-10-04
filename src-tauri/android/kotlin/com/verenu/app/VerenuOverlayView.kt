@@ -68,6 +68,8 @@ class VerenuOverlayView @JvmOverloads constructor(
         fun onPillTap()
         fun onPillCancel()
         fun onPillRetry()
+        /** Start a fresh dictation from the cancelled notice. */
+        fun onPillRestart()
         fun onPillDismiss()
         /** Long-press on the idle pill: it can now be dragged (raw screen px). */
         fun onPillDragStart()
@@ -86,6 +88,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         val muted: Int,
         val errorBg: Int,
         val errorFg: Int,
+        val errorFgMuted: Int,
     )
 
     var listener: Listener? = null
@@ -116,6 +119,8 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     private var state: State = State.IDLE
     private var errorMessage = "Something went wrong"
+    private var errorTitle = "Dictation failed"
+    private var errorActionLabel: String? = "Retry"
 
     private val pill = FrameLayout(context)
     private val row = LinearLayout(context).apply {
@@ -189,8 +194,14 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    fun setError(message: String) {
+    /**
+     * [title] names what failed; [actionLabel] is the retry button's text, or
+     * null when the only sensible response is to dismiss the notice.
+     */
+    fun setError(message: String, title: String = "Dictation failed", actionLabel: String? = "Retry") {
         errorMessage = message.ifEmpty { "Something went wrong" }
+        errorTitle = title
+        errorActionLabel = actionLabel
         if (state == State.ERROR) {
             render(animated = false)
         } else {
@@ -226,6 +237,22 @@ class VerenuOverlayView @JvmOverloads constructor(
         applyMinimumSize()
         applyChrome(animated = false)
         render(animated = true)
+    }
+
+    /**
+     * A WRAP_CONTENT window is first measured against the system's preferred
+     * dialog width (about 320dp) and an ellipsized or single-line child never
+     * asks for more, so wide content (the error notice) got squeezed to fit.
+     * Measure against the real screen width instead.
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val screen = resources.displayMetrics.widthPixels
+        val bounded = MeasureSpec.makeMeasureSpec(
+            if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) screen
+            else max(MeasureSpec.getSize(widthMeasureSpec), screen),
+            MeasureSpec.AT_MOST,
+        )
+        super.onMeasure(bounded, heightMeasureSpec)
     }
 
     private fun applyMinimumSize() {
@@ -306,6 +333,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         muted = if (dark) 0x73FFFFFF else 0x73111110,
         errorBg = 0xEB351613.toInt(),
         errorFg = 0xFFFFA194.toInt(),
+        errorFgMuted = 0xCCFFD0C8.toInt(),
     )
 
     private fun applyChrome(animated: Boolean) {
@@ -360,20 +388,46 @@ class VerenuOverlayView @JvmOverloads constructor(
             State.CLEANING -> busyRow("Cleaning up…")
             State.INSERTING -> busyRow("Pasting…")
             State.ERROR -> {
-                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)))
-                row.addView(icon(IconView.Kind.ALERT, 18f, palette.errorFg), iconParams(18f, 4f))
-                row.addView(
-                    label(errorMessage, palette.errorFg).apply {
-                        maxLines = 2
-                        maxWidth = dpi(220f)
-                    },
-                    gapStart(8f),
-                )
-                row.addView(circleButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)).apply { marginStart = dpi(4f) })
+                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
+                row.addView(icon(IconView.Kind.ALERT, 18f, palette.errorFg), iconParams(20f, 8f))
+                val text = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(label(errorTitle, palette.errorFg).apply {
+                        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+                    })
+                    addView(
+                        label(errorMessage, palette.errorFgMuted).apply {
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                            maxLines = 2
+                            maxWidth = dpi(190f)
+                        },
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply { topMargin = dpi(1f) },
+                    )
+                }
+                row.addView(text, gapStart(8f))
+                errorActionLabel?.let { actionLabel ->
+                    row.addView(
+                        actionButton(actionLabel, palette.errorFg) { listener?.onPillRetry() },
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            dpi(32f),
+                        ).apply { marginStart = dpi(8f) },
+                    )
+                }
             }
             State.CANCELLED -> {
-                row.addView(icon(IconView.Kind.CLOSE, 16f, palette.muted), iconParams(16f))
-                row.addView(label("Cancelled", palette.muted), gapStart(8f))
+                // The X dismisses the notice; the back arrow starts over. The
+                // pill body itself does nothing, so a stray tap can never
+                // restart a dictation the user just cancelled.
+                row.addView(circleButton(IconView.Kind.CLOSE, palette.fg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
+                row.addView(label("Cancelled", palette.fg), gapStart(10f))
+                row.addView(
+                    circleButton(IconView.Kind.UNDO, palette.fg, "Restart dictation") { listener?.onPillRestart() },
+                    LinearLayout.LayoutParams(dpi(28f), dpi(28f)).apply { marginStart = dpi(10f) },
+                )
             }
         }
 
@@ -459,8 +513,29 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
         addView(
             IconView(context, kind, color),
-            LayoutParams(dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), Gravity.CENTER),
+            LayoutParams(dpi(if (kind == IconView.Kind.CLOSE) 10f else 15f), dpi(if (kind == IconView.Kind.CLOSE) 10f else 15f), Gravity.CENTER),
         )
+        setOnClickListener { onClick() }
+    }
+
+    /** A labelled capsule: the clear, tappable response to an error. */
+    private fun actionButton(text: String, color: Int, onClick: () -> Unit) = TextView(context).apply {
+        this.text = text
+        contentDescription = text
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        setTextColor(color)
+        includeFontPadding = false
+        gravity = Gravity.CENTER
+        maxLines = 1
+        minWidth = dpi(64f)
+        setPadding(dpi(14f), 0, dpi(14f), 0)
+        isClickable = true
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(18f)
+            setColor((color and 0x00FFFFFF) or 0x2E000000)
+        }
         setOnClickListener { onClick() }
     }
 
@@ -493,7 +568,7 @@ class VerenuOverlayView @JvmOverloads constructor(
     // ------------------------------------------------------------------ icons
 
     private class IconView(context: Context, val kind: Kind, color: Int) : View(context) {
-        enum class Kind { MIC, CLOSE, RETRY, ALERT }
+        enum class Kind { MIC, CLOSE, RETRY, UNDO, ALERT }
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.color = color
@@ -522,24 +597,41 @@ class VerenuOverlayView @JvmOverloads constructor(
                     canvas.drawLine(cx, top + s * 0.8f, cx, top + s * 0.94f, paint)
                 }
                 Kind.CLOSE -> {
+                    // One path, one stroke: two separate translucent lines would
+                    // blend twice where they cross and leave a bright centre.
                     val inset = s * 0.1f
-                    canvas.drawLine(left + inset, top + inset, left + s - inset, top + s - inset, paint)
-                    canvas.drawLine(left + s - inset, top + inset, left + inset, top + s - inset, paint)
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + inset, top + inset)
+                            lineTo(left + s - inset, top + s - inset)
+                            moveTo(left + s - inset, top + inset)
+                            lineTo(left + inset, top + s - inset)
+                        },
+                        paint,
+                    )
                 }
-                Kind.RETRY -> {
-                    val oval = RectF(left + s * 0.14f, top + s * 0.14f, left + s * 0.86f, top + s * 0.86f)
-                    canvas.drawArc(oval, -40f, 290f, false, paint)
-                    // Arrowhead at the arc's start (-40°).
-                    val radius = s * 0.36f
-                    val angle = Math.toRadians(-40.0)
-                    val ax = cx + radius * cos(angle).toFloat()
-                    val ay = cy + radius * sin(angle).toFloat()
-                    val head = Path().apply {
-                        moveTo(ax + s * 0.04f, ay - s * 0.22f)
-                        lineTo(ax, ay)
-                        lineTo(ax + s * 0.22f, ay + s * 0.02f)
-                    }
-                    canvas.drawPath(head, paint)
+                Kind.RETRY, Kind.UNDO -> {
+                    // Rotate arrow on a 24-unit grid: a 270 degree arc, a short
+                    // tail curving into the head, and the head's two strokes.
+                    val flip = kind == Kind.UNDO
+                    val save = canvas.save()
+                    if (flip) canvas.scale(-1f, 1f, cx, cy)
+                    val u = s / 24f
+                    fun px(x: Float) = left + x * u
+                    fun py(y: Float) = top + y * u
+                    canvas.drawArc(RectF(px(3f), py(3f), px(21f), py(21f)), 0f, 270f, false, paint)
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(px(12f), py(3f))
+                            cubicTo(px(14.52f), py(3f), px(16.93f), py(4f), px(18.74f), py(5.74f))
+                            lineTo(px(21f), py(8f))
+                            moveTo(px(21f), py(3f))
+                            lineTo(px(21f), py(8f))
+                            lineTo(px(16f), py(8f))
+                        },
+                        paint,
+                    )
+                    canvas.restoreToCount(save)
                 }
                 Kind.ALERT -> {
                     canvas.drawCircle(cx, cy, s * 0.42f, paint)

@@ -1,0 +1,417 @@
+/*
+ * Android shell: phone, foldable and tablet layout.
+ *
+ * Every rule is scoped to `.app[data-android='true']` (or to an element that
+ * only renders there), so nothing in this file can reach the desktop UI. The
+ * views keep their own styles; this sheet owns the mobile rhythm on top of
+ * them: type scale, touch targets, the settings list/detail screens, and the
+ * measure used on wide (unfolded / tablet) windows.
+ *
+ * Width classes come from `data-width-class` (compact < 600dp, medium < 840dp,
+ * expanded), set by App.svelte from the live window size.
+ */
+
+.app[data-android='true'] {
+  --page-pad-x: 20px;
+  --page-pad-y: 20px;
+  --m-radius: 16px;
+  --m-row-h: 56px;
+  --m-control-h: 44px;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+.app[data-android='true'][data-width-class='medium'] {
+  --page-pad-x: 32px;
+  --page-pad-y: 28px;
+}
+
+.app[data-android='true'][data-width-class='expanded'] {
+  --page-pad-x: 40px;
+  --page-pad-y: 32px;
+}
+
+/* ------------------------------------------------------------------ type */
+
+.app[data-android='true'] .page-h {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  margin-bottom: 6px;
+}
+
+.app[data-android='true'] .page-sub {
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--ink-mute);
+  margin-bottom: 20px;
+}
+
+/* Wide windows read as a centred column, not a stretched phone. */
+.app[data-android='true'][data-width-class='medium'] .content-inner {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+.app[data-android='true'][data-width-class='expanded'] .content-inner {
+  width: 100%;
+  max-width: 1040px;
+  margin-inline: auto;
+}
+
+/* -------------------------------------------------------- touch controls */
+
+.app[data-android='true'] .btn-primary,
+.app[data-android='true'] .btn-ghost,
+.app[data-android='true'] .btn-danger {
+  min-height: var(--m-control-h);
+  padding-inline: 18px;
+  font-size: 14.5px;
+  border-radius: 12px;
+}
+
+.app[data-android='true'] .btn-compact {
+  min-height: 40px;
+  padding-inline: 14px;
+  font-size: 13.5px;
+}
+
+.app[data-android='true'] input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+.app[data-android='true'] select,
+.app[data-android='true'] textarea {
+  min-height: var(--m-control-h);
+  font-size: 15px;
+  border-radius: 12px;
+}
+
+.app[data-android='true'] textarea {
+  line-height: 1.45;
+}
+
+.app[data-android='true'] .ui-dropdown-trigger,
+.app[data-android='true'] .ui-dropdown-trigger--compact {
+  min-height: var(--m-control-h);
+  font-size: 14.5px;
+  border-radius: 12px;
+}
+
+.app[data-android='true'] .ui-dropdown-option,
+.app[data-android='true'] .ui-dropdown-menu button {
+  min-height: 44px;
+}
+
+/* A 30x16 desktop switch is a 4mm target on a phone. */
+.app[data-android='true'] .toggle {
+  width: 52px;
+  height: 32px;
+}
+
+.app[data-android='true'] .toggle .toggle-thumb {
+  width: 24px;
+  height: 24px;
+  left: 4px;
+}
+
+.app[data-android='true'] .toggle.on .toggle-thumb {
+  left: 24px;
+}
+
+.app[data-android='true'] .toggle .toggle-x {
+  width: 12px;
+  height: 12px;
+}
+
+/* ------------------------------------------------------------ list rows */
+
+.app[data-android='true'] .setting-row .label {
+  font-size: 15px;
+}
+
+.app[data-android='true'] .setting-row .desc {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app[data-android='true'] .settings-subhead {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+/* ---------------------------------------------------------------- sheets */
+
+/* The shared bottom sheet gets a grab handle and a rounder top edge. */
+.app[data-android='true'] .ui-modal-card,
+.app[data-android='true'] .modal-card {
+  border-radius: 24px 24px 0 0;
+}
+
+.app[data-android='true'] .ui-modal-card::before,
+.app[data-android='true'] .modal-card::before {
+  content: '';
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 10px auto 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.app[data-android='true'] .ui-modal-actions {
+  flex-wrap: wrap;
+}
+
+.app[data-android='true'] .ui-modal-actions > button {
+  flex: 1 1 auto;
+}
+
+/* Wide windows: a sheet that spans 800dp is not a sheet, keep a measure. */
+.app[data-android='true'][data-width-class='medium'] .ui-modal-card,
+.app[data-android='true'][data-width-class='medium'] .modal-card,
+.app[data-android='true'][data-width-class='expanded'] .ui-modal-card,
+.app[data-android='true'][data-width-class='expanded'] .modal-card {
+  left: 50%;
+  right: auto;
+  width: min(560px, 100%);
+  translate: -50% 0;
+}
+
+/* ------------------------------------------------------------- settings */
+/* Phone and unfolded windows (bottom nav). Expanded windows keep the sidebar
+   rail, which already lists the sections. */
+
+.app[data-compact-nav='true'] .settings-page {
+  left: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'bar'
+    'body'
+    'foot';
+}
+
+.app[data-compact-nav='true'] .settings-page .m-bar { grid-area: bar; }
+.app[data-compact-nav='true'] .settings-page .settings-body { grid-area: body; }
+.app[data-compact-nav='true'] .settings-page .settings-footbar { grid-area: foot; }
+.app[data-compact-nav='true'] .settings-page .m-list { grid-area: list; }
+
+/* The section's own heading is the top bar's title now. */
+.app[data-compact-nav='true'] .settings-body .settings-h {
+  display: none;
+}
+
+.app[data-compact-nav='true'] .settings-body .panel {
+  padding-top: 8px;
+}
+
+.m-list,
+.m-bar {
+  display: none;
+}
+
+.app[data-compact-nav='true'] .m-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 60px;
+  padding: 8px var(--page-pad-x) 4px 8px;
+}
+
+.m-bar-back {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink);
+}
+
+.m-bar-back:active {
+  background: var(--control-active);
+}
+
+.m-bar-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.app[data-compact-nav='true'] .m-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--page-pad-y) var(--page-pad-x) 32px;
+  overscroll-behavior: contain;
+}
+
+.m-list-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  color: var(--ink);
+}
+
+.m-list-group {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--m-radius);
+  overflow: hidden;
+}
+
+.m-list-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: var(--m-row-h);
+  padding: 8px 14px 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
+  text-align: left;
+  position: relative;
+}
+
+.m-list-row + .m-list-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 64px;
+  right: 0;
+  height: 1px;
+  background: var(--line);
+}
+
+.m-list-row:active {
+  background: var(--control-active);
+}
+
+.m-list-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--control-hover);
+  color: var(--ink-soft);
+}
+
+.m-list-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.m-list-chevron {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+}
+
+/* Phones: one screen at a time. */
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] {
+  grid-template-areas: 'list';
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .m-bar,
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-body,
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-footbar,
+.app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='detail'] .m-list {
+  display: none;
+}
+
+/* Unfolded / tablet: the list stays beside the section. */
+.app[data-compact-nav='true']:not([data-width-class='compact']) .settings-page {
+  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-areas:
+    'list bar'
+    'list body'
+    'list foot';
+}
+
+.app[data-compact-nav='true']:not([data-width-class='compact']) .m-list {
+  border-right: 1px solid var(--line);
+}
+
+.app[data-compact-nav='true']:not([data-width-class='compact']) .m-bar-back {
+  display: none;
+}
+
+.app[data-compact-nav='true']:not([data-width-class='compact']) .m-bar {
+  padding-left: var(--page-pad-x);
+}
+
+.app[data-compact-nav='true']:not([data-width-class='compact']) .m-list-row.active {
+  background: var(--control-active);
+}
+
+.app[data-compact-nav='true']:not([data-width-class='compact']) .settings-body .panel-inner {
+  max-width: 680px;
+  margin-inline: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .m-list-row,
+  .m-bar-back {
+    transition: none;
+  }
+}
+
+/* Unfolded and tablet windows: keep the tabs a comfortable reach apart
+   instead of spreading five targets across a 700dp bar. */
+.app[data-android='true']:not([data-width-class='compact']) .mobile-nav {
+  justify-content: center;
+  gap: 20px;
+}
+
+.app[data-android='true']:not([data-width-class='compact']) .mobile-nav .mobile-nav-item {
+  flex: 0 1 120px;
+}
+
+/* ------------------------------------------------------------ home hero */
+
+.app[data-android='true'] .hero-photo {
+  border-radius: 20px;
+  height: auto;
+}
+
+.app[data-android='true'] .hero-photo-content {
+  padding: 22px 22px 24px;
+}
+
+.app[data-android='true'] .hero-photo-title {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.app[data-android='true'] .hero-photo-sub {
+  font-size: 14px;
+}
+
+/* -------------------------------------------------------------- sliders */
+
+/* Range thumbs are ~12px on desktop; make them a real touch target. */
+.app[data-android='true'] input[type='range'] {
+  min-height: 32px;
+}
+
+.app[data-android='true'] input[type='range']::-webkit-slider-thumb {
+  width: 24px;
+  height: 24px;
+}
