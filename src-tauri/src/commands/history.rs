@@ -2,7 +2,6 @@
 
 use super::*;
 
-const SPACE_CONSTRAINED_THRESHOLD_BYTES: u64 = 1_073_741_824;
 // ---------- history / stats ----------
 
 #[tauri::command]
@@ -133,7 +132,6 @@ pub async fn retry_transcription(
         // not leak the raw provider context (AUTH_401 wire format, bodies).
         .map_err(|e| crate::api::user_facing_error(&e))
 }
-use crate::system::memory::free_bytes_for_path;
 
 #[tauri::command]
 pub async fn clear_cleanup_cache(app: AppHandle) -> Result<usize, String> {
@@ -147,18 +145,17 @@ pub async fn clear_cleanup_cache(app: AppHandle) -> Result<usize, String> {
 #[tauri::command]
 pub async fn get_cleanup_cache_status(app: AppHandle) -> Result<CleanupCacheStatus, String> {
     let db = db_state(&app);
-    let app_data = crate::app_data_dir();
-    let (free_bytes, entry_count) = run_blocking("get_cleanup_cache_status", move || {
-        let free = free_bytes_for_path(&app_data)
-            .map_err(|e| format!("Failed to read free disk space: {e}"))?;
+    let (payload_bytes, entry_count) = run_blocking("get_cleanup_cache_status", move || {
+        db::cleanup_cache_prune_expired(&db).map_err(|e| e.to_string())?;
+        let payload_bytes = db::cleanup_cache_payload_bytes(&db).map_err(|e| e.to_string())?;
         let count = db::cleanup_cache_count(&db)
             .map_err(|e| format!("Failed to count cleanup cache entries: {e}"))?;
-        Ok::<_, String>((free, count))
+        Ok::<_, String>((payload_bytes, count))
     })
     .await?;
     Ok(CleanupCacheStatus {
         entry_count,
-        is_space_constrained: free_bytes < SPACE_CONSTRAINED_THRESHOLD_BYTES,
-        free_bytes,
+        payload_bytes,
+        session: crate::pipeline::cache::metrics(),
     })
 }

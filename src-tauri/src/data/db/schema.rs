@@ -2180,6 +2180,9 @@ fn ensure_table_column(
 }
 
 fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
+    // Old keys contain readable, lossy normalized input. Results are disposable;
+    // discard them rather than retaining unsafe keys after an upgrade.
+    conn.execute("DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%'", [])?;
     let mut repaired = false;
     repaired |= ensure_table_column(
         conn,

@@ -215,7 +215,7 @@ fn open_repairs_legacy_cleanup_cache_missing_epoch_columns() {
     let db = open(path.to_str().expect("path string")).expect("open repairs legacy db");
     assert!(cleanup_cache_get_active(&db, "legacy")
         .expect("query repaired row")
-        .is_some());
+        .is_none());
 
     let conn = lock_conn(&db).expect("lock");
     assert!(table_has_column(&conn, "cleanup_cache", "expires_at_epoch").expect("column"));
@@ -1086,6 +1086,57 @@ fn cleanup_cache_prunes_expired_only() {
 }
 
 #[test]
+fn cleanup_cache_reads_and_pruning_share_idle_and_maximum_lifetimes() {
+    let db = test_db();
+    for (key, snippet) in [("idle", false), ("snippet-idle", true), ("old", false), ("snippet-old", true)] {
+        cleanup_cache_insert_new(&db, key, "public synthetic result", "2999-01-01 00:00:00", snippet).unwrap();
+    }
+    {
+        let conn = lock_conn(&db).unwrap();
+        conn.execute_batch("UPDATE cleanup_cache SET last_hit_at = datetime('now', '-2 days'),
+            last_hit_at_epoch = CAST(strftime('%s', 'now', '-2 days') AS INTEGER) WHERE key LIKE '%idle';
+            UPDATE cleanup_cache SET created_at = datetime('now', '-7 days'), created_at_epoch = NULL
+            WHERE key LIKE '%old';").unwrap();
+    }
+    for key in ["idle", "snippet-idle", "old", "snippet-old"] {
+        assert!(cleanup_cache_get_active(&db, key).unwrap().is_none());
+    }
+    assert_eq!(cleanup_cache_prune_expired(&db).unwrap(), 4);
+}
+
+#[test]
+fn cleanup_cache_payload_counts_utf8_bytes_and_disabled_insert_is_a_noop() {
+    let db = test_db();
+    cleanup_cache_insert_new(&db, "key", "é", "2999-01-01 00:00:00", false).unwrap();
+    assert_eq!(cleanup_cache_payload_bytes(&db).unwrap(), 5);
+    cleanup_cache_clear_all(&db).unwrap();
+    cleanup_cache_insert_if(&db, "key", "result", "2999-01-01 00:00:00", false, || false).unwrap();
+    assert_eq!(cleanup_cache_count(&db).unwrap(), 0);
+    assert_eq!(cleanup_cache_payload_bytes(&db).unwrap(), 0);
+}
+
+#[test]
+fn cleanup_cache_upgrade_discards_legacy_keys_and_preserves_other_data() {
+    let path = temp_db_path("cache_key_upgrade");
+    let key = format!("cleanup-v2:{}", "a".repeat(64));
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        insert_dictionary_entry(&db, "Synthetic", None).unwrap();
+        cleanup_cache_insert_new(&db, "readable old input", "old result", "2999-01-01 00:00:00", false).unwrap();
+        cleanup_cache_insert_new(&db, &key, "new result", "2999-01-01 00:00:00", false).unwrap();
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert_eq!(cleanup_cache_count(&db).unwrap(), 1);
+        assert!(cleanup_cache_get_active(&db, &key).unwrap().is_some());
+        assert_eq!(query_dictionary(&db).unwrap()[0].term, "Synthetic");
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn cleanup_cache_enforces_a_byte_budget_opportunistically() {
     let db = test_db();
     let oversized = "x".repeat((CLEANUP_CACHE_MAX_BYTES + 1) as usize);
@@ -1234,7 +1285,7 @@ fn cache_rejection_after_hit_removes_entry() {
         &created_at,
         1,
         2,
-        "2026-01-01 00:00:00",
+        &created_at,
         "2999-01-01 00:00:00",
     )
     .expect("touch");
