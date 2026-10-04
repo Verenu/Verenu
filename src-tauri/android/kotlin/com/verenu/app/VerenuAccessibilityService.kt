@@ -56,6 +56,34 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         private const val IME_SETTLE_MS = 70L
         private const val CONTEXT_CHARS = 200
         private const val SNOOZE_MS = 15L * 60_000L
+        /** Address-bar view ids per browser package (resource names, no package prefix). */
+        private val BROWSER_URL_BAR_IDS = mapOf(
+            "com.android.chrome" to listOf("url_bar"),
+            "com.chrome.beta" to listOf("url_bar"),
+            "com.chrome.dev" to listOf("url_bar"),
+            "com.chrome.canary" to listOf("url_bar"),
+            "com.brave.browser" to listOf("url_bar"),
+            "com.microsoft.emmx" to listOf("url_bar"),
+            "com.vivaldi.browser" to listOf("url_bar"),
+            "com.kiwibrowser.browser" to listOf("url_bar"),
+            "com.opera.browser" to listOf("url_bar", "url_field"),
+            "com.sec.android.app.sbrowser" to listOf("location_bar_edit_text"),
+            "org.mozilla.firefox" to listOf("mozac_browser_toolbar_url_view"),
+            "org.mozilla.firefox_beta" to listOf("mozac_browser_toolbar_url_view"),
+            "org.mozilla.fenix" to listOf("mozac_browser_toolbar_url_view"),
+            "com.duckduckgo.mobile.android" to listOf("omnibarTextInput"),
+        )
+
+        /** "https://www.example.com/a?b" or "example.com" → "example.com"; "" if not a host. */
+        internal fun hostFromAddressText(raw: String): String {
+            val text = raw.trim().lowercase()
+            if (text.isEmpty() || text.any { it.isWhitespace() }) return ""
+            val host = text.substringAfter("://").substringBefore('/').substringBefore('?')
+                .substringBefore('#').substringAfterLast('@').substringBefore(':')
+                .removePrefix("www.")
+            return if (host.contains('.')) host else ""
+        }
+
         private val MIC_LABEL = Regex("voice|dictat|microphone|speech|\\bmic\\b", RegexOption.IGNORE_CASE)
         private val MIC_EXCLUDE = Regex("permission|settings|language|\\bsend\\b", RegexOption.IGNORE_CASE)
         const val TAG = "VerenuA11y"
@@ -67,6 +95,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         const val BACKEND_LAUNCH_COOLDOWN_MS = 20_000L
         const val BACKEND_START_WAIT_MS = 12_000L
         const val HIDE_DEBOUNCE_MS = 450L
+        const val BROWSER_SITE_TTL_MS = 10L * 60_000L
+        const val BROWSER_SCAN_INTERVAL_MS = 1_500L
         const val POLL_RECORDING_MS = 60L
         const val INSERT_ATTEMPT_MS = 350L
         const val INSERT_WAIT_FOR_FIELD_MS = 6_000L
@@ -222,6 +252,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         // let Gboard/Samsung Keyboard become the Context or insertion target.
         if (VerenuFocusPackages.isAppWindow(pkg, packageName, imePackage)) {
             foregroundPackage = pkg
+        }
+        if (BROWSER_URL_BAR_IDS.containsKey(pkg) &&
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
+        ) {
+            rememberBrowserDomain(pkg)
         }
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
@@ -1234,6 +1270,60 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    private var lastBrowserSite: Triple<String, String, Long>? = null
+    private var lastBrowserScanMs = 0L
+
+    /**
+     * The host of the page open in a browser (never the full URL), so Contexts
+     * attached to websites can match. Best effort: reads the address bar's text
+     * and returns "" for any app that is not a known browser.
+     */
+    private fun readBrowserDomain(pkg: String): String {
+        if (!BROWSER_URL_BAR_IDS.containsKey(pkg)) return ""
+        val live = scanAddressBar(pkg)
+        if (live.isNotEmpty()) {
+            lastBrowserSite = Triple(pkg, live, SystemClock.elapsedRealtime())
+            return live
+        }
+        // The address bar is empty or hidden exactly when someone is typing in
+        // the omnibox or the page has scrolled the toolbar away, so fall back to
+        // the last site seen in this browser a moment ago.
+        val seen = lastBrowserSite
+        return if (seen != null && seen.first == pkg &&
+            SystemClock.elapsedRealtime() - seen.third < BROWSER_SITE_TTL_MS
+        ) seen.second else ""
+    }
+
+    /** Cheap, throttled refresh while a browser is in front, so the last site is known. */
+    private fun rememberBrowserDomain(pkg: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBrowserScanMs < BROWSER_SCAN_INTERVAL_MS) return
+        lastBrowserScanMs = now
+        val host = scanAddressBar(pkg)
+        if (host.isNotEmpty()) lastBrowserSite = Triple(pkg, host, now)
+    }
+
+    private fun scanAddressBar(pkg: String): String {
+        val ids = BROWSER_URL_BAR_IDS[pkg] ?: return ""
+        val root = rootInActiveWindow ?: return ""
+        try {
+            for (id in ids) {
+                val nodes = root.findAccessibilityNodeInfosByViewId("$pkg:id/$id") ?: continue
+                for (node in nodes) {
+                    val raw = node.text?.toString()?.trim().orEmpty()
+                    node.recycle()
+                    val host = hostFromAddressText(raw)
+                    if (host.isNotEmpty()) return host
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "address bar unreadable", e)
+        } finally {
+            root.recycle()
+        }
+        return ""
+    }
+
     private fun startDictation() {
         val pkg = foregroundPackage
         val editable = hasEditableFocus
@@ -1243,6 +1333,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             showOverlayError("Could not start recording", ErrorAction.RETRY_START)
             return
         }
+        // Read on the calling thread: accessibility node access belongs here.
+        val domain = readBrowserDomain(pkg)
+        if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "dictation target browser=${BROWSER_URL_BAR_IDS.containsKey(pkg)} siteFound=${domain.isNotEmpty()}")
         handler.post {
             // Make sure Rust is up first (cold-started service process).
             val backendUp = ensureBackendRunning(waitMs = BACKEND_START_WAIT_MS)
@@ -1264,7 +1357,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 return@post
             }
             val resp = try {
-                bridge.startRecording(pkg, editable, setText)
+                bridge.startRecording(pkg, editable, setText, domain)
             } catch (e: Exception) {
                 Log.w(TAG, "start recording failed", e)
                 null

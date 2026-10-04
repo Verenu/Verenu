@@ -177,7 +177,13 @@ use win::read_address_bar_text as platform_read_address_bar_text;
 fn platform_read_address_bar_text(window_id: usize) -> Option<String> {
     crate::core::atspi::read_address_bar(u32::try_from(window_id).ok()?)
 }
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+/// On Android Kotlin reads the address bar when the recording starts and sends
+/// the host along, so there is nothing to probe here.
+#[cfg(target_os = "android")]
+fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
+    crate::android::bridge::dictation_domain()
+}
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux", target_os = "android")))]
 fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     None
 }

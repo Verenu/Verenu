@@ -18,3 +18,25 @@ export function matchesAppSearch(app: InstalledApp, search: string) {
     || appExe.includes(query)
     || (compactQuery.length > 0 && (compactName.includes(compactQuery) || compactExe.includes(compactQuery)));
 }
+
+/**
+ * Apps matching `search`, best first: names that start with the query, then
+ * names with a word that starts with it, then any other match. Ties keep the
+ * input order (the platform lists apps alphabetically). An empty query keeps
+ * the list as is.
+ */
+export function rankAppMatches(apps: InstalledApp[], search: string): InstalledApp[] {
+  const query = search.trim().toLowerCase();
+  if (!query) return apps;
+  const score = (app: InstalledApp) => {
+    const name = cleanAppName(app.name || app.exe).toLowerCase();
+    if (name.startsWith(query)) return 0;
+    if (name.split(/[^a-z0-9]+/).some((word) => word.startsWith(query))) return 1;
+    return 2;
+  };
+  return apps
+    .filter((app) => matchesAppSearch(app, search))
+    .map((app, index) => ({ app, index, rank: score(app) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.app);
+}

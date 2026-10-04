@@ -10,6 +10,7 @@ export type SettingsSearchEntry = {
   target: string;
   fallbackTarget?: string;
   keywords?: string[];
+  /** Only searchable on Android, where the matching row exists. */
   androidOnly?: boolean;
 };
 
@@ -126,8 +127,14 @@ const MODEL_ENTRIES: SettingsSearchEntry[] = CATALOG.flatMap((model) =>
   })),
 );
 
+const ANDROID_ENTRIES: SettingsSearchEntry[] = [
+  { id: 'general-pill-position', section: 'general', label: 'Pill position', description: 'Choose where the dictation pill appears around the keyboard', target: 'general-pill-position', keywords: ['pill', 'overlay', 'button', 'keyboard', 'top', 'left', 'right', 'camera', 'punch hole'], androidOnly: true },
+  { id: 'general-cover-keyboard-mic', section: 'general', label: "Cover the keyboard's mic button", description: "Sit the pill over the keyboard's own voice-typing button", target: 'general-cover-keyboard-mic', keywords: ['pill', 'overlay', 'gboard', 'voice typing', 'dictation key', 'microphone'], androidOnly: true },
+];
+
 export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   ...BASE_ENTRIES,
+  ...ANDROID_ENTRIES,
   ...MODEL_ENTRIES,
 ];
 
@@ -158,6 +165,7 @@ export function searchSettings(
   rawQuery: string,
   visibleSections: readonly SettingsSectionId[],
   limit = 24,
+  android = isAndroid,
 ): SettingsSearchEntry[] {
   const query = normalize(rawQuery);
   if (!query) return [];
@@ -165,7 +173,7 @@ export function searchSettings(
   const visible = new Set(visibleSections);
 
   return SETTINGS_SEARCH_ENTRIES
-    .filter((entry) => !entry.androidOnly || isAndroid)
+    .filter((entry) => android || !entry.androidOnly)
     .map((entry) => ({ entry, score: visible.has(entry.section) ? scoreEntry(entry, query, tokens) : -1 }))
     .filter((result) => result.score >= 0)
     .sort((a, b) => b.score - a.score || a.entry.label.localeCompare(b.entry.label))

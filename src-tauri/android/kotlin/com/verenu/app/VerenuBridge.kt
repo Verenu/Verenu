@@ -187,11 +187,17 @@ class VerenuBridge(appContext: Context) {
                 .put("hasEditableFocus", hasEditableFocus),
         )
 
-    fun startRecording(pkg: String, hasEditableFocus: Boolean, supportsSetText: Boolean): JSONObject? =
+    fun startRecording(
+        pkg: String,
+        hasEditableFocus: Boolean,
+        supportsSetText: Boolean,
+        domain: String = "",
+    ): JSONObject? =
         request(
             "POST", "/v1/recording/start",
             JSONObject()
                 .put("package", pkg)
+                .put("domain", domain)
                 .put("hasEditableFocus", hasEditableFocus)
                 .put("supportsSetText", supportsSetText),
         )
