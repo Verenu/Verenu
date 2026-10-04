@@ -7,7 +7,7 @@
   import { isSettingsSectionId, visibleSettingsSections } from '../settingsSections';
   import { icons } from '../icons';
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
-  import { clearSettingsSearchNavigation, settingsSearchNavigation } from '../settingsSearch.svelte';
+  import { clearSettingsSearchNavigation, requestSettingsSearchNavigation, searchSettings, settingsSearchNavigation, type SettingsSearchEntry } from '../settingsSearch.svelte';
 
   import DeferredView from '../components/DeferredView.svelte';
   import { lazyComponent } from '../lazyComponent.svelte';
@@ -37,21 +37,38 @@
   const animDir = $derived(appStore.settingsAnimDir);
   const appVersion = $derived(appStore.appVersion);
 
-  /*
-   * Compact (phone) settings navigation. On desktop the section rail lives in
-   * Sidebar.svelte, which morphs into it when settings opens — but that sidebar
-   * is hidden at compact widths, which left every section except General
-   * unreachable on a phone. This flattens the same source list into a
-   * horizontally scrollable tab strip, shown only when the bottom nav is.
-   */
-  const mobileSections = $derived(
+  // The Android list, section labels, and search share one filtered grouping.
+  // Keep the flat projection derived from those groups so visibility rules run once.
+  // Android shows the section list as its own screen on phones and beside the
+  // section on wide windows (both are laid out in CSS from the width class).
+  const mobileGroups = $derived(
     visibleSettingsSections({
       isMac,
       devMode: appStore.devModeEnabled,
       legacyMode: appStore.legacyFeaturesEnabled,
       syncEnabled: appStore.syncEnabled,
-    }).flatMap((group) => group.items)
+    })
   );
+  const mobileSections = $derived(mobileGroups.flatMap((group) => group.items));
+  const activeSectionLabel = $derived(
+    mobileSections.find((entry) => entry.id === section)?.label ?? 'Settings'
+  );
+
+  let mobileQuery = $state('');
+  const mobileResults = $derived(
+    searchSettings(mobileQuery, mobileSections.map((entry) => entry.id), 12)
+  );
+
+  function openSearchResult(entry: SettingsSearchEntry) {
+    mobileQuery = '';
+    openSection(entry.section);
+    requestSettingsSearchNavigation(entry);
+  }
+
+  function openSection(next: (typeof mobileSections)[number]['id']) {
+    appStore.settingsMobileList = false;
+    selectSection(next);
+  }
 
   function selectSection(next: (typeof mobileSections)[number]['id']) {
     if (next === appStore.settingsSection) return;
@@ -75,7 +92,8 @@
   onMount(() => {
     const unlistenPromise = listen<string>('open-flow:open-settings-section', (event) => {
       const target = event.payload;
-      const nextSection = target && isSettingsSectionId(target) ? target : 'general';
+      const hasTarget = !!target && isSettingsSectionId(target);
+      const nextSection = hasTarget ? target : 'general';
       if (nextSection !== appStore.settingsSection) {
         appStore.settingsAnimDir = directionFromOrder(
           appStore.settingsSection,
@@ -84,6 +102,7 @@
         );
       }
       appStore.settingsSection = nextSection;
+      if (isAndroid) appStore.settingsMobileList = !hasTarget;
       appStore.settingsOpen = true;
     });
     return () => {
@@ -92,6 +111,30 @@
   });
 
   function close() { appStore.settingsOpen = false; }
+
+  // Moving between the phone's list and a section moves focus with it, so a
+  // keyboard or TalkBack user lands on the screen that is now showing.
+  let lastMobileList = appStore.settingsMobileList;
+  $effect(() => {
+    const list = appStore.settingsMobileList;
+    if (list === lastMobileList) return;
+    lastMobileList = list;
+    if (!isAndroid || !appStore.mobileCompact || !appStore.settingsOpen) return;
+    requestAnimationFrame(() => {
+      if (list) settingsPageEl?.focus({ preventScroll: true });
+      else settingsPageEl?.querySelector<HTMLElement>('.m-bar-back')?.focus({ preventScroll: true });
+    });
+  });
+
+  $effect(() => {
+    // An unqualified re-entry should start from the section list.
+    if (!appStore.settingsOpen && isAndroid) appStore.settingsMobileList = true;
+  });
+
+  // A settings search hit or deep link names a section: show it, not the list.
+  $effect(() => {
+    if (settingsSearchNavigation.request) appStore.settingsMobileList = false;
+  });
 
   // Soft fades at the top and bottom of the scroll area, shown only when there
   // is actually more content in that direction — so a scrolled-to-top page keeps
@@ -161,7 +204,9 @@
       // Don't steal focus if the user already moved inside the shell while it
       // was opening (keyboard flows race the entrance transition).
       if (active instanceof HTMLElement && settingsPageEl?.contains(active)) return;
-      (firstFocusableInShell() ?? settingsPageEl)?.focus();
+      // On Android the first control is the search field; focusing it opens the
+      // keyboard the moment Settings appears.
+      (isAndroid ? settingsPageEl : (firstFocusableInShell() ?? settingsPageEl))?.focus();
     };
     requestAnimationFrame(focusSettingsPage);
     return () => { cancelled = true; };
@@ -175,6 +220,8 @@
   $effect(() => {
     const currentSection = section;
     if (!appStore.settingsOpen || !settingsPanelEl || !currentSection || !sectionReady) return;
+    // The section is parked behind the list on a phone: do not pull focus into it.
+    if (appStore.mobileCompact && appStore.settingsMobileList) return;
     const panel = settingsPanelEl;
     requestAnimationFrame(() => {
       if (!panel.isConnected) return;
@@ -315,6 +362,7 @@
       role="region"
       aria-label="Settings"
       tabindex="-1"
+      data-mobile-view={appStore.settingsMobileList ? 'list' : 'detail'}
       in:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
       out:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
     >
@@ -322,6 +370,56 @@
            Closing is handled by the sidebar's "Back to app" button and Esc —
            the old corner ✕ sat right under the window controls and was
            redundant once settings became a page rather than a modal. -->
+      {#if isAndroid}
+        <nav class="m-list" aria-label="Settings sections">
+          <h1 class="m-list-title">Settings</h1>
+          <label class="m-search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" bind:value={mobileQuery} placeholder="Search settings" aria-label="Search settings" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" />
+          </label>
+          {#if mobileQuery.trim()}
+            <div class="m-list-group" role="group" aria-label="Search results">
+              {#each mobileResults as entry (entry.id)}
+                <button type="button" class="m-list-row m-result" onclick={() => openSearchResult(entry)}>
+                  <span class="m-list-label">
+                    {entry.label}
+                    <span class="m-result-desc">{entry.description}</span>
+                  </span>
+                  <svg class="m-list-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+                </button>
+              {:else}
+                <p class="m-empty">No settings match “{mobileQuery.trim()}”.</p>
+              {/each}
+            </div>
+          {:else}
+          {#each mobileGroups as group (group.group)}
+            <div class="m-list-group" role="group" aria-label={group.group}>
+              {#each group.items as entry (entry.id)}
+                <button
+                  type="button"
+                  class="m-list-row"
+                  class:active={section === entry.id}
+                  aria-current={section === entry.id ? 'page' : undefined}
+                  onclick={() => openSection(entry.id)}
+                >
+                  <span class="m-list-icon" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html icons[entry.icon]}</svg>
+                  </span>
+                  <span class="m-list-label">{entry.label}</span>
+                  <svg class="m-list-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+                </button>
+              {/each}
+            </div>
+          {/each}
+          {/if}
+        </nav>
+        <div class="m-bar">
+          <button type="button" class="m-bar-back" aria-label="Back to settings" onclick={() => { appStore.settingsMobileList = true; }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+          <h1 class="m-bar-title">{activeSectionLabel}</h1>
+        </div>
+      {/if}
       <div class="settings-tabs" role="tablist" aria-label="Settings sections">
         {#each mobileSections as entry (entry.id)}
           <button
@@ -337,7 +435,10 @@
         {/each}
       </div>
 
-      <div class="settings-body">
+      <!-- Parked off-screen (not display:none, so controls can still measure) while
+           the phone shows the section list; inert keeps keyboard focus and screen
+           readers off it. -->
+      <div class="settings-body" inert={appStore.mobileCompact && appStore.settingsMobileList}>
         <div class="fade-edge fade-edge-top" class:visible={fadeTop} aria-hidden="true"></div>
         <div class="fade-edge fade-edge-bottom" class:visible={fadeBottom} aria-hidden="true"></div>
         {#key section}
@@ -447,21 +548,7 @@
    */
   .settings-tabs { display: none; }
 
-  :global(.app[data-compact-nav='true']) .settings-tabs {
-    display: flex;
-    flex-shrink: 0;
-    gap: 18px;
-    overflow-x: auto;
-    justify-content: flex-start;
-    align-items: flex-end;
-    scrollbar-width: none;
-    padding: 4px var(--page-pad-x) 0;
-    scroll-padding-inline: var(--page-pad-x);
-    overscroll-behavior-x: contain;
-    border-bottom: 1px solid var(--line);
-  }
-
-  :global(.app[data-compact-nav='true']) .settings-tabs::-webkit-scrollbar { display: none; }
+    /* Android navigates sections with the list in mobile.css instead. */
 
   /* Matches the underline tabs the Contexts page already uses — same measure,
      same active rule, no extra chrome. */

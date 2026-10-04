@@ -52,7 +52,12 @@
   import SubAppIcon from '../components/SubAppIcon.svelte';
   import SiteIcon from '../components/SiteIcon.svelte';
   import Toggle from '../components/Toggle.svelte';
-  import { matchesAppSearch } from '../components/appMappings/helpers';
+  import { matchesAppSearch, rankAppMatches } from '../components/appMappings/helpers';
+  import { isAndroid } from '../platform';
+
+  // The page swap leaves a transform on the page, which re-bases `position: fixed`.
+  // On Android the pickers dock to the screen, so they move to <body> like the dialogs.
+  const portalOnAndroid = (node: HTMLElement) => (isAndroid ? portal(node) : {});
   import { handleListboxOptionKeydown, focusListboxOption } from '../components/appMappings/listbox';
   import DictionaryModal from './dictionary/DictionaryModal.svelte';
   import SnippetModal from './snippets/SnippetModal.svelte';
@@ -148,11 +153,12 @@
   let contextModalMode = $state<'create' | 'edit'>('create');
   let contextName = $state('');
   let contextError = $state('');
+  let deleteArmed = $state(false);
   let savingContext = $state(false);
   let contextInput = $state<HTMLInputElement | null>(null);
   let modalAppQuery = $state('');
   let modalAppInputEl = $state<HTMLInputElement | null>(null);
-  let modalAppMatchPos = $state<{ top: number; left: number; width: number } | null>(null);
+  let modalAppMatchPos = $state<{ top: number; above: boolean; left: number; width: number } | null>(null);
   let modalAppHighlight = $state(0);
   let modalApps = $state<InstalledApp[]>([]);
   let modalWebsiteInput = $state('');
@@ -219,7 +225,8 @@
   );
   const selectedTargets = $derived(targets.filter((target) => target.context_id === selectedContextId));
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
-  const selectedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
+  // Sub-apps capture a desktop window; Android has no such windows.
+  const selectedSubApps = $derived(isAndroid ? [] : contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
   // A sub-app belongs to at most one context group, so only unassigned ones
   // are offered; assigning one removes it from this list everywhere.
   const unassignedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === null));
@@ -281,12 +288,12 @@
     installedApps.filter((app) => !assignedExes.has(normalizeExe(app.exe))),
   );
   const appPickerMatches = $derived(
-    availableApps.filter((app) => matchesAppSearch(app, appPickerQuery)).slice(0, 40),
+    rankAppMatches(availableApps, appPickerQuery).slice(0, 40),
   );
   const modalPickedExes = $derived(new Set(modalApps.map((app) => normalizeExe(app.exe))));
   const modalAppMatches = $derived(
     modalAppQuery.trim()
-      ? availableApps.filter((app) => !modalPickedExes.has(normalizeExe(app.exe)) && matchesAppSearch(app, modalAppQuery)).slice(0, MODAL_APP_MATCH_LIMIT)
+      ? rankAppMatches(availableApps.filter((app) => !modalPickedExes.has(normalizeExe(app.exe))), modalAppQuery).slice(0, MODAL_APP_MATCH_LIMIT)
       : [],
   );
   const modalWebsitePreview = $derived(normalizeDomainInput(modalWebsiteInput));
@@ -687,8 +694,30 @@
     modalWebsiteInput = '';
     modalWebsiteError = '';
     contextError = '';
+    deleteArmed = false;
     closeFieldMenu();
     modal = 'context';
+  }
+
+  // Two taps, like the desktop row menu: arm, then confirm.
+  async function deleteEditingContext() {
+    const target = contexts.find((context) => context.id === editingContextId);
+    if (!target || target.is_everywhere) return;
+    if (!deleteArmed) {
+      deleteArmed = true;
+      return;
+    }
+    try {
+      await invoke('delete_context', { contextId: target.id });
+      contextsStore.contexts = contextsStore.contexts.filter((context) => context.id !== target.id);
+      contextsStore.targets = contextsStore.targets.filter((item) => item.context_id !== target.id);
+      contextsStore.websites = contextsStore.websites.filter((item) => item.context_id !== target.id);
+      if (contextsStore.selectedId === target.id) contextsStore.selectedId = EVERYWHERE_ID;
+      modal = null;
+    } catch (error) {
+      contextError = classifyIpcError(error).message;
+      deleteArmed = false;
+    }
   }
 
   function closeFieldMenu() {
@@ -732,7 +761,11 @@
   function updateModalAppMatchPos() {
     if (!modalAppInputEl) return;
     const rect = modalAppInputEl.getBoundingClientRect();
-    modalAppMatchPos = { top: rect.bottom + 4, left: rect.left, width: rect.width };
+    // Open upward when the keyboard or sheet edge leaves too little room below.
+    const below = window.innerHeight - rect.bottom - 8;
+    modalAppMatchPos = below < 180 && rect.top > below
+      ? { top: rect.top - 4, above: true, left: rect.left, width: rect.width }
+      : { top: rect.bottom + 4, above: false, left: rect.left, width: rect.width };
   }
 
   $effect(() => {
@@ -1096,6 +1129,10 @@
           <div>
             <h2>{selectedContext.name}</h2>
             <p>{selectedContext.is_everywhere ? 'These items are used when no specific app context group is active.' : 'These items are used when this context group is active.'}</p>
+            <!-- The desktop sidebar's row menu is the editor's entry point; there is no sidebar on a phone. -->
+            {#if isAndroid}
+              <button class="btn-ghost btn-compact context-edit-btn" type="button" onclick={() => openContextModal('edit', selectedContext.id)}>Edit context group</button>
+            {/if}
           </div>
           {#if !selectedContext.is_everywhere}
             <div class="context-actions">
@@ -1104,7 +1141,7 @@
                 <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
               </button>
               {#if appPickerOpen}
-                <div class="app-picker ui-dropdown-menu" role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                <div class="app-picker ui-dropdown-menu" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
                   <input
                     class="ui-input ui-input--dense app-picker-search"
                     type="text"
@@ -1132,7 +1169,7 @@
                         >
                           <AppIcon exe={app.exe} label={app.name} size={16} />
                           <span>{cleanAppName(app.name || app.exe)}</span>
-                          <span class="app-exe">{app.exe}</span>
+                          {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
                         </button>
                       {/each}
                     {/if}
@@ -1143,7 +1180,7 @@
                 Add website
               </button>
               {#if websitePickerOpen}
-                <div class="app-picker ui-dropdown-menu website-picker" role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                <div class="app-picker ui-dropdown-menu website-picker" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
                   <input
                     class="ui-input ui-input--dense app-picker-search"
                     type="text"
@@ -1168,10 +1205,12 @@
                   <button class="btn-primary btn-compact" type="button" onclick={() => void assignWebsite()} disabled={!websiteValid}>Add</button>
                 </div>
               {/if}
+              {#if !isAndroid}
               <button class="btn-ghost btn-compact app-picker-trigger" type="button" onclick={toggleSubAppPicker} aria-expanded={subAppPickerOpen} aria-haspopup="listbox">
                 Add sub-app
                 <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
               </button>
+              {/if}
               {#if subAppPickerOpen}
                 <div class="app-picker ui-dropdown-menu sub-app-picker" role="listbox" aria-label="Sub-apps" tabindex="-1" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
                   {#if unassignedSubApps.length === 0}
@@ -1489,7 +1528,7 @@
   <div
     class="modal-card ui-modal-card ui-modal-card--portalled context-modal"
     use:portal
-    use:modalFocusTrap={{ active: true, initialFocus: () => contextInput }}
+    use:modalFocusTrap={{ active: true, initialFocus: () => (isAndroid && contextModalMode === 'edit' ? document.querySelector<HTMLElement>('.context-modal .ui-modal-head button') ?? contextInput : contextInput) }}
     role="dialog"
     aria-modal="true"
     aria-labelledby="context-modal-title"
@@ -1696,6 +1735,11 @@
         <p class="field-hint">Dictate in one of these apps or sites to use this context group automatically. You can add more later too.</p>
       {:else}
         <p class="field-hint">Manage this context group's apps and websites from the header above.</p>
+        {#if isAndroid && contexts.find((context) => context.id === editingContextId && !context.is_everywhere)}
+          <button class="btn-danger context-delete-btn" type="button" onclick={() => void deleteEditingContext()}>
+            {deleteArmed ? 'Tap again to delete this group' : 'Delete context group'}
+          </button>
+        {/if}
       {/if}
     </div>
     <div class="ui-modal-foot">
@@ -1710,10 +1754,11 @@
     <div
       id="context-app-matches"
       class="ui-dropdown-menu modal-app-matches"
+      use:portal
       role="listbox"
       tabindex="-1"
       aria-label="Matching apps"
-      style="top: {modalAppMatchPos.top}px; left: {modalAppMatchPos.left}px; width: {modalAppMatchPos.width}px;"
+      style="top: {modalAppMatchPos.top}px; left: {modalAppMatchPos.left}px; width: {modalAppMatchPos.width}px;{modalAppMatchPos.above ? ' translate: 0 -100%;' : ''}"
       onpointerdown={(event) => event.stopPropagation()}
       in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}
     >
@@ -1732,7 +1777,7 @@
           >
             <AppIcon exe={app.exe} label={app.name} size={16} />
             <span>{cleanAppName(app.name || app.exe)}</span>
-            <span class="app-exe">{app.exe}</span>
+            {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
           </button>
         {/each}
       {/if}
@@ -1741,6 +1786,7 @@
   {#if openFieldMenu && fieldMenuPos}
     <div
       class="ui-dropdown-menu field-menu-fixed"
+      use:portal
       role="listbox"
       tabindex="-1"
       aria-label={openFieldMenu === 'tone' ? 'Tone' : 'Cleanup intensity'}
@@ -1899,7 +1945,7 @@
   .ui-dropdown-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; }
   .app-exe { color: var(--ink-faint); font-family: var(--mono); font-size: 10px; margin-left: auto; }
   .picker-empty { display: block; padding: 8px 4px; color: var(--ink-mute); font-size: 11px; }
-  .modal-app-matches { position: fixed; z-index: 60; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 4px; }
+  .modal-app-matches { position: fixed; z-index: 80; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 4px; }
   .modal-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .website-input-row { display: flex; align-items: center; }
   .website-input-row .ui-input { flex: 1; min-width: 0; }
@@ -1940,7 +1986,7 @@
   .field-row { display: flex; gap: 10px; }
   .field-col { flex: 1; min-width: 0; }
   .field-col .ui-dropdown-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 6px; cursor: pointer; }
-  .field-menu-fixed { position: fixed; right: auto; top: 0; left: 0; z-index: 60; }
+  .field-menu-fixed { position: fixed; right: auto; top: 0; left: 0; z-index: 80; }
   .tabs {
     display: flex;
     flex-wrap: wrap;
