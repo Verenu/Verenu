@@ -83,7 +83,12 @@ pub fn is_browser_exe(process_name: &str) -> bool {
 pub fn is_browser_exe(process_name: &str) -> bool {
     crate::android::is_browser_package(process_name)
 }
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux", target_os = "android")))]
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android"
+)))]
 pub fn is_browser_exe(_process_name: &str) -> bool {
     false
 }
@@ -156,7 +161,12 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
         let _ = hwnd;
         crate::android::bridge::dictation_package()
     }
-    #[cfg(not(any(windows, target_os = "macos", target_os = "linux", target_os = "android")))]
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android"
+    )))]
     None
 }
 
