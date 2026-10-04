@@ -251,10 +251,6 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     note: 'Custom model',
     remedy: 'none',
   };
-  if (parsed.provider !== 'local' && !ctx.apiKeyStatus[parsed.provider]) {
-    return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
-  }
-
   if (isCustomProviderId(parsed.provider)) {
     const p = customProvider(parsed.provider);
     if (!p || !(ctx.task === 'transcription' ? p.supports_transcription : p.supports_cleanup))
@@ -262,6 +258,9 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     if (p.requires_key && !ctx.apiKeyStatus[p.id])
       return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
     return { ...base, state: 'ready', note: 'User-defined endpoint' };
+  }
+  if (parsed.provider !== 'local' && !ctx.apiKeyStatus[parsed.provider]) {
+    return { ...base, state: 'needs-setup', note: 'No API key', remedy: 'add-key' };
   }
   if (parsed.provider === 'local' || !isTrustworthy(cache)) return base;
   if (cache!.ids.includes(parsed.model)) return base;
