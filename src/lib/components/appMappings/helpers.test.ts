@@ -28,4 +28,10 @@ describe('rankAppMatches', () => {
     expect(rankAppMatches(apps, 'zzz')).toEqual([]);
     expect(rankAppMatches(apps, 'slack').every((app) => matchesAppSearch(app, 'slack'))).toBe(true);
   });
+
+  it('searches only the visible name when asked to (Android package names)', () => {
+    expect(rankAppMatches(apps, 'com', false).length).toBe(apps.length);
+    expect(rankAppMatches(apps, 'com', true)).toEqual([]);
+    expect(rankAppMatches(apps, 'chro', true).map((app) => app.name)).toEqual(['Chrome']);
+  });
 });

@@ -14,7 +14,7 @@ pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
         struct Listing {
             apps: Vec<InstalledApp>,
         }
-        return match crate::android::permissions_plugin::run::<_, Listing>(
+        match crate::android::permissions_plugin::run::<_, Listing>(
             &app,
             "installedApps",
             serde_json::json!({}),
@@ -26,19 +26,21 @@ pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
                 log::error!("installed apps: {e}");
                 Vec::new()
             }
-        };
+        }
     }
     #[cfg(not(target_os = "android"))]
-    let _ = &app;
-    match run_blocking("get_installed_apps", || {
-        Ok(crate::system::apps::list_installed_apps())
-    })
-    .await
     {
-        Ok(apps) => apps,
-        Err(e) => {
-            log::error!("{e}");
-            Vec::new()
+        let _ = &app;
+        match run_blocking("get_installed_apps", || {
+            Ok(crate::system::apps::list_installed_apps())
+        })
+        .await
+        {
+            Ok(apps) => apps,
+            Err(e) => {
+                log::error!("{e}");
+                Vec::new()
+            }
         }
     }
 }
@@ -50,12 +52,31 @@ pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
 /// per-row loading keeps that bulk list light.
 #[tauri::command]
 pub async fn get_app_icon(app: AppHandle, exe: String) -> Option<String> {
-    run_blocking("get_app_icon", move || {
-        Ok(crate::system::icons::get_icon_data_uri(&app, &exe))
-    })
-    .await
-    .ok()
-    .flatten()
+    // Android: the Kotlin plugin renders the package's launcher icon.
+    #[cfg(target_os = "android")]
+    {
+        #[derive(serde::Deserialize)]
+        struct Icon {
+            icon: Option<String>,
+        }
+        crate::android::permissions_plugin::run::<_, Icon>(
+            &app,
+            "appIcon",
+            serde_json::json!({ "packageName": exe.trim() }),
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.icon)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        run_blocking("get_app_icon", move || {
+            Ok(crate::system::icons::get_icon_data_uri(&app, &exe))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
 }
 
 /// Returns a `data:image/...;base64,...` URI for a website target's favicon,
