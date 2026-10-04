@@ -1390,6 +1390,7 @@
     place-items: center;
     width: 20px;
     height: 20px;
+    padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
