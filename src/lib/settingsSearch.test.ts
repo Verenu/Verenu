@@ -1,9 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchSettings } from './settingsSearch.svelte';
+
+const platform = vi.hoisted(() => ({ android: false }));
+vi.mock('./platform', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./platform')>(),
+  get isAndroid() { return platform.android; },
+}));
+beforeEach(() => { platform.android = false; });
 
 const visibleSections = ['general', 'keys', 'models', 'privacy', 'advanced', 'about'] as const;
 
 describe('settings search', () => {
+  it('keeps the offline pill setting out of desktop search', () => {
+    expect(searchSettings('hide pill', visibleSections)).toEqual([]);
+  });
+
+  it('finds the offline pill setting on Android', () => {
+    platform.android = true;
+    expect(searchSettings('hide pill', visibleSections)[0]).toMatchObject({
+      target: 'general-hide-pill-offline',
+    });
+  });
   it('finds setting content instead of only section names', () => {
     expect(searchSettings('hotkey', visibleSections)[0]).toMatchObject({
       section: 'general',
