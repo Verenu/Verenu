@@ -155,7 +155,8 @@ pub async fn get_diagnostics_snapshot(
                 .and_then(|summary| serde_json::to_value(summary).ok());
             snapshot.runtime.cleanup_cache = db::cleanup_cache_count(&db)
                 .ok()
-                .map(|entry_count| serde_json::json!({ "entry_count": entry_count }));
+                .map(|entry_count| serde_json::json!({ "entry_count": entry_count,
+                    "session": crate::pipeline::cache::metrics() }));
             snapshot.runtime.sync = db.lock().ok().and_then(|conn| {
                 let log_entries = conn
                     .query_row("SELECT COUNT(*) FROM sync_log", [], |row| {
