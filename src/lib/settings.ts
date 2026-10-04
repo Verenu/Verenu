@@ -66,6 +66,7 @@ type SettingsValueMap = {
   cleanup_default_model: string;
   transcription_fallback_models: string[];
   dual_transcription_enabled: boolean;
+  model_selection_mode: 'manual' | 'fastest' | 'balanced' | 'quality';
   analytics_enabled: boolean;
   cleanup_fallback_models: string[];
   cleanup_enabled: boolean;
