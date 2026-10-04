@@ -32,7 +32,9 @@
   import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
   import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
-  import { normalizeCustomTheme } from './lib/customTheme';
+  import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
+  import { themeEditor } from './lib/themeEditor.svelte';
+  import ThemeEditorDock from './lib/components/settings/ThemeEditorDock.svelte';
   import { isAndroid } from './lib/platform';
   import MobileNav from './lib/components/layout/MobileNav.svelte';
   import {
@@ -288,6 +290,8 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
+        // Saved themes are device-local and optional; a failed read must not block startup.
+        const savedThemesRead = invoke<unknown>('get_setting', { key: 'custom_themes' }).catch(() => null);
         const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
@@ -303,11 +307,15 @@
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
         ]);
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
-        if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
-          appStore.appearanceMode = appearance;
+        appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
+        // An open theme editor is previewing through these fields; keep its draft.
+        if (!themeEditor.open) {
+          if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
+            appStore.appearanceMode = appearance;
+          }
+          appStore.accentColor = normalizeAccentColor(accentColor);
+          appStore.customTheme = normalizeCustomTheme(customTheme);
         }
-        appStore.accentColor = normalizeAccentColor(accentColor);
-        appStore.customTheme = normalizeCustomTheme(customTheme);
         appStore.cleanupEnabled = cleanupEnabled ?? true;
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
@@ -556,6 +564,7 @@
     </div>
   </div>
   <Settings />
+  <ThemeEditorDock />
   {#if cleanupPromptEditor.open}
     <DeferredView view={cleanupModal} />
   {/if}
