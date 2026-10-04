@@ -368,7 +368,7 @@
     }
     monitoring = true;
     void invoke('subscribe_log_stream').catch(() => {});
-    void invoke('set_diagnostics_monitoring', { enabled: true }).then(() => refresh());
+    void invoke('set_diagnostics_monitoring', { enabled: true }).then(() => refresh()).catch(() => {});
     scheduleNext();
     onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); };
     document.addEventListener('visibilitychange', onVisibility);
@@ -411,7 +411,7 @@
   </nav>
 
   {#key view}
-  <div class="diag-view" in:fade={{ duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
+  <div class="diag-view" class:dropdown-open={view === 'faults' && faultProviderOpen} in:fade={{ duration: motionMs(MOTION_MS.base) }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
   {#if view === 'overview'}
     {@const resource = currentResource()}
     <div class="metric-grid">
@@ -436,7 +436,7 @@
       <input aria-label="Search logs" placeholder="Search message, operation, trace…" bind:value={logQuery} />
       <Dropdown bind:open={logLevelOpen} closeSelector=".log-level-dropdown">
         <div class="ui-dropdown log-level-dropdown">
-          <button class="btn-ghost ui-dropdown-trigger" aria-haspopup="true" aria-expanded={logLevelOpen} aria-label="Log level" onclick={() => logLevelOpen = !logLevelOpen}>
+          <button class="ui-dropdown-trigger ui-dropdown-trigger--compact" aria-haspopup="true" aria-expanded={logLevelOpen} aria-label="Log level" onclick={() => logLevelOpen = !logLevelOpen}>
             <span>{LOG_LEVELS.find((l) => l.value === logLevel)?.label}</span>
             <svg class:open={logLevelOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
@@ -449,7 +449,7 @@
       </Dropdown>
       <Dropdown bind:open={logSubsystemOpen} closeSelector=".log-subsystem-dropdown">
         <div class="ui-dropdown log-subsystem-dropdown">
-          <button class="btn-ghost ui-dropdown-trigger" aria-haspopup="true" aria-expanded={logSubsystemOpen} aria-label="Log subsystem" onclick={() => logSubsystemOpen = !logSubsystemOpen}>
+          <button class="ui-dropdown-trigger ui-dropdown-trigger--compact" aria-haspopup="true" aria-expanded={logSubsystemOpen} aria-label="Log subsystem" onclick={() => logSubsystemOpen = !logSubsystemOpen}>
             <span class="subsystem-trigger-label">{subsystemLabel(logSubsystem)}</span>
             <svg class:open={logSubsystemOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
@@ -480,7 +480,7 @@
       <span class="fault-provider-label">Provider</span>
       <Dropdown bind:open={faultProviderOpen} closeSelector=".fault-provider-dropdown">
         <div class="ui-dropdown fault-provider-dropdown">
-          <button class="btn-ghost ui-dropdown-trigger" aria-haspopup="true" aria-expanded={faultProviderOpen} aria-label="Fault injection provider" onclick={() => faultProviderOpen = !faultProviderOpen}>
+          <button class="ui-dropdown-trigger ui-dropdown-trigger--compact" aria-haspopup="true" aria-expanded={faultProviderOpen} aria-label="Fault injection provider" onclick={() => faultProviderOpen = !faultProviderOpen}>
             <span>{PROVIDER_OPTIONS.find((p) => p.value === provider)?.label}</span>
             <svg class:open={faultProviderOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
@@ -532,6 +532,7 @@
 
   .diagnostics-console { position:relative; isolation:isolate; background:var(--paper); }
   .diag-view { min-width:0; position:relative; overflow:hidden; background:var(--paper); }
+  .diag-view.dropdown-open { overflow:visible; }
   .frontend-errors { margin-top:18px; }
   .frontend-error-row { display:grid; grid-template-columns:minmax(150px, .35fr) minmax(0, 1fr); gap:12px; padding:8px 0; border-top:1px solid var(--line-soft); font-size:11.5px; }
   .frontend-error-row code { color:var(--ink-soft); }

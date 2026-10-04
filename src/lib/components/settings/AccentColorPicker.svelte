@@ -78,7 +78,7 @@
 <Dropdown bind:open closeSelector=".accent-picker" optionSelector=".accent-swatch">
   <div class="ui-dropdown accent-picker">
     <button
-      class="btn-ghost ui-dropdown-trigger ui-dropdown-trigger--compact accent-trigger"
+      class="ui-dropdown-trigger ui-dropdown-trigger--compact accent-trigger"
       aria-haspopup="dialog"
       aria-expanded={open}
       onclick={togglePicker}
