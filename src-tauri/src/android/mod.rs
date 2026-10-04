@@ -324,15 +324,9 @@ impl AndroidPermissionSnapshot {
     }
 }
 
-/// Derive a human Context label from an Android foreground package name.
-///
-/// Returns `(label, is_generic)`: well-known packages map to friendly names
-/// ("com.google.android.gm" → "Gmail"); anything else falls back to the
-/// last package segment title-cased. Never includes field contents, URLs, or
-/// notification text — package name only, matching the desktop
-/// executable-name granularity.
 /// Browser packages whose address bar Kotlin can read. Context websites only
 /// apply inside these.
+#[cfg(any(target_os = "android", test))]
 pub fn is_browser_package(package: &str) -> bool {
     matches!(
         package.trim().to_ascii_lowercase().as_str(),
@@ -354,6 +348,13 @@ pub fn is_browser_package(package: &str) -> bool {
     )
 }
 
+/// Derive a human Context label from an Android foreground package name.
+///
+/// Returns `(label, is_generic)`: well-known packages map to friendly names
+/// ("com.google.android.gm" → "Gmail"); anything else falls back to the
+/// last package segment title-cased. Never includes field contents, URLs, or
+/// notification text — package name only, matching the desktop
+/// executable-name granularity.
 pub fn context_label_for_package(package: &str) -> (String, bool) {
     let package = package.trim();
     if package.is_empty() {
