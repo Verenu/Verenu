@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Removed field-specific microphone buttons from term, vocabulary, and snippet dialogs. Normal hotkey dictation can now paste into Verenu's captured main window on Windows instead of falling back to manual paste.
+
 - Reduced the Linux dictation pill window to fit its capsule and context chip, with room for animation. It grows for longer errors and shrinks afterward. Passive recording and processing states stay click-through, while visible controls accept clicks inside the capsule. Delayed state updates can no longer make hold-to-dictate interactive.
 - Hardened cleanup caching with exact, versioned request hashes and validation against current transcripts. Results now expire after two idle days or seven days total. Privacy settings show cached text size and local session reuse counts, and can disable persistence while clearing stored results. Old normalized cache keys are discarded on upgrade.
 
