@@ -421,10 +421,21 @@ fn build_anthropic_request(
     // Cache standing instructions, never the changing vocabulary tail or
     // transcript. Short prefixes remain valid even below a model's cache
     // threshold; do not pad requests or cache private dictation to reach it.
-    let (standing, evidence) = prompt
-        .split_once("\n\n<evidence>")
-        .map(|(standing, evidence)| (standing, Some(format!("<evidence>{evidence}"))))
-        .unwrap_or((prompt, None));
+    let (standing, evidence, cacheable) = split_cached_evidence(prompt);
+    if !cacheable {
+        // If a custom prompt contains a malformed evidence boundary, fail
+        // closed: keep the request intact but do not cache possibly dynamic
+        // content as standing instructions.
+        return serde_json::json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": [{"type": "text", "text": prompt}],
+            "messages": [{
+                "role": "user",
+                "content": format_transcript_input(text, alternate_transcript),
+            }],
+        });
+    }
     // Two boundaries preserve the shared contract across preset changes,
     // then reuse the complete configured prefix on repeated dictations.
     let mut system = match standing.split_once("\n\n<cleanup_settings>") {
@@ -432,7 +443,9 @@ fn build_anthropic_request(
             serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}),
             serde_json::json!({"type": "text", "text": format!("\n\n<cleanup_settings>{settings}"), "cache_control": {"type": "ephemeral"}}),
         ],
-        None => vec![serde_json::json!({"type": "text", "text": standing, "cache_control": {"type": "ephemeral"}})],
+        None => vec![
+            serde_json::json!({"type": "text", "text": standing, "cache_control": {"type": "ephemeral"}}),
+        ],
     };
     if let Some(evidence) = evidence {
         system.push(serde_json::json!({"type": "text", "text": evidence}));
@@ -446,6 +459,26 @@ fn build_anthropic_request(
             "content": format_transcript_input(text, alternate_transcript),
         }],
     })
+}
+
+fn split_cached_evidence(prompt: &str) -> (&str, Option<String>, bool) {
+    const OPEN: &str = "<evidence>";
+    const CLOSE: &str = "</evidence>";
+    let Some(start) = prompt.rfind(OPEN) else {
+        return (prompt, None, !prompt.contains(CLOSE));
+    };
+    let content_start = start + OPEN.len();
+    let Some(close_relative) = prompt[content_start..].find(CLOSE) else {
+        return (prompt, None, false);
+    };
+    let close_end = content_start + close_relative + CLOSE.len();
+    if !prompt[close_end..].trim().is_empty() {
+        return (prompt, None, false);
+    }
+
+    let standing = prompt[..start].trim_end();
+    let evidence = format!("\n\n{}", &prompt[start..close_end]);
+    (standing, Some(evidence), true)
 }
 
 /// Joins the text blocks of an Anthropic messages response.
@@ -991,20 +1024,82 @@ mod tests {
 
     #[test]
     fn anthropic_cache_boundary_excludes_changing_evidence_and_transcripts() {
-        let first = super::build_anthropic_request("hello", "claude-x", "Stable instructions\n\n<evidence>Verenu</evidence>", 256, None);
-        let second = super::build_anthropic_request("different speech", "claude-x", "Stable instructions\n\n<evidence>Claude</evidence>", 256, Some("alternate speech"));
+        let first = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "Stable instructions\n\n<evidence>Verenu</evidence>",
+            256,
+            None,
+        );
+        let second = super::build_anthropic_request(
+            "different speech",
+            "claude-x",
+            "Stable instructions\n\n<evidence>Claude</evidence>",
+            256,
+            Some("alternate speech"),
+        );
         assert_eq!(first["system"][0], second["system"][0]);
         assert!(first["system"][0]["cache_control"].is_object());
+        assert!(first["system"][1]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("\n\n<evidence>"));
         assert!(first["system"][1].get("cache_control").is_none());
         assert_ne!(first["system"][1], second["system"][1]);
         assert_ne!(first["messages"], second["messages"]);
     }
 
     #[test]
+    fn anthropic_evidence_boundary_accepts_whitespace_variants() {
+        let prompts = [
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n\n<evidence>Term</evidence>",
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>\n<evidence>Term</evidence>",
+            "Shared rules\n\n<cleanup_settings>Light</cleanup_settings>  <evidence>Term</evidence>",
+        ];
+        for prompt in prompts {
+            let body = super::build_anthropic_request("hello", "claude-x", prompt, 256, None);
+            assert!(body["system"][1]["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("</cleanup_settings>"));
+            assert!(body["system"][2]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("\n\n<evidence>"));
+            assert!(body["system"][2].get("cache_control").is_none());
+        }
+    }
+
+    #[test]
+    fn malformed_anthropic_evidence_is_never_marked_cacheable() {
+        let body = super::build_anthropic_request(
+            "hello",
+            "claude-x",
+            "Stable rules\n<evidence>changing",
+            256,
+            None,
+        );
+        assert_eq!(
+            body["system"][0]["text"],
+            "Stable rules\n<evidence>changing"
+        );
+        assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
     fn cache_routing_key_is_stable_and_only_sent_to_openai() {
         for provider in ["OpenAI", "Groq", "OpenRouter", "xAI", "custom"] {
-            let first = super::build_openai_compat_request_with_alternate("hello", "model", "stable", 128, None, provider);
-            let second = super::build_openai_compat_request_with_alternate("different", "model", "stable", 256, Some("alternate"), provider);
+            let first = super::build_openai_compat_request_with_alternate(
+                "hello", "model", "stable", 128, None, provider,
+            );
+            let second = super::build_openai_compat_request_with_alternate(
+                "different",
+                "model",
+                "stable",
+                256,
+                Some("alternate"),
+                provider,
+            );
             let first = serde_json::to_value(first).unwrap();
             let second = serde_json::to_value(second).unwrap();
             assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
