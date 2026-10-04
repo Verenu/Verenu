@@ -5,6 +5,8 @@ vi.mock('./tauri', () => ipc);
 
 import { appStore } from './stores';
 import { applyPalette, withAppearanceLock } from './appearanceActions';
+import { ACCENT_CHANGE_EVENT } from './accentTheme';
+import { CUSTOM_THEME_CHANGE_EVENT } from './customTheme';
 import {
   cancelThemeEditor,
   confirmDiscardThemeEditor,
@@ -52,15 +54,26 @@ describe('theme editor', () => {
     appStore.accentColor = '#D2637A';
     openThemeEditor({ seed, name: 'Mine' });
     expect(appStore.appearanceMode).toBe('custom');
+    expect(ipc.emit).toHaveBeenCalledWith(CUSTOM_THEME_CHANGE_EVENT, seed);
+    expect(ipc.emit).toHaveBeenCalledWith(ACCENT_CHANGE_EVENT, null);
+    expect(ipc.emit).toHaveBeenCalledWith('verenu:appearance-mode-changed', 'custom');
+    ipc.emit.mockClear();
     updateThemeDraft({ palette: { ...seed, background: '#000000' }, accent: null });
     expect(appStore.customTheme?.background).toBe('#000000');
     expect(appStore.accentColor).toBeNull();
+    expect(ipc.emit).toHaveBeenCalledWith(CUSTOM_THEME_CHANGE_EVENT, { ...seed, background: '#000000' });
+    expect(ipc.emit).toHaveBeenCalledWith(ACCENT_CHANGE_EVENT, null);
+    expect(ipc.emit).toHaveBeenCalledWith('verenu:appearance-mode-changed', 'custom');
     expect(isThemeEditorDirty()).toBe(true);
+    ipc.emit.mockClear();
     cancelThemeEditor();
     expect(themeEditor.open).toBe(false);
     expect(appStore.appearanceMode).toBe('light');
     expect(appStore.customTheme).toBeNull();
     expect(appStore.accentColor).toBe('#D2637A');
+    expect(ipc.emit).toHaveBeenCalledWith(CUSTOM_THEME_CHANGE_EVENT, null);
+    expect(ipc.emit).toHaveBeenCalledWith(ACCENT_CHANGE_EVENT, '#D2637A');
+    expect(ipc.emit).toHaveBeenCalledWith('verenu:appearance-mode-changed', 'light');
     expect(saves()).toEqual([]);
   });
 

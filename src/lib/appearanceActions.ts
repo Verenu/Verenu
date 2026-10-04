@@ -14,9 +14,22 @@ import {
   type SavedTheme,
 } from './customTheme';
 
+const APPEARANCE_MODE_CHANGE_EVENT = 'verenu:appearance-mode-changed';
+
 function broadcastCustomTheme(theme: CustomTheme | null) {
   void emit(CUSTOM_THEME_CHANGE_EVENT, theme).catch((err) => {
     console.warn('broadcast custom theme failed:', err);
+  });
+}
+
+/** Keeps the separate dictation-pill window in sync with an unsaved preview or rollback. */
+export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | null, accent: string | null) {
+  broadcastCustomTheme(theme);
+  void emit(ACCENT_CHANGE_EVENT, accent).catch((err) => {
+    console.warn('broadcast preview accent failed:', err);
+  });
+  void emit(APPEARANCE_MODE_CHANGE_EVENT, mode).catch((err) => {
+    console.warn('broadcast preview appearance failed:', err);
   });
 }
 
@@ -201,8 +214,7 @@ async function restoreAppearance(
   appStore.customTheme = before.customTheme;
   appStore.accentColor = before.accent;
   appStore.activeThemeId = before.themeId;
-  broadcastCustomTheme(before.customTheme);
-  void emit(ACCENT_CHANGE_EVENT, before.accent).catch(() => {});
+  broadcastAppearance(before.mode, before.customTheme, before.accent);
 }
 
 /**
