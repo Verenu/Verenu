@@ -12,15 +12,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
 /// Initial window size at creation. Kept in step with the state defaults so
 /// the window is never created wider than the content it will hold — the
 /// frontend re-reports the real content size as soon as it mounts.
-#[cfg(not(target_os = "linux"))]
 const PILL_WIDTH_POINTS: f64 = super::DEFAULT_PILL_WIDTH_POINTS;
-#[cfg(not(target_os = "linux"))]
 const PILL_HEIGHT_POINTS: f64 = super::DEFAULT_PILL_HEIGHT_POINTS;
-// Linux never resizes its pill window (see `LINUX_PILL_WIDTH_POINTS`).
-#[cfg(target_os = "linux")]
-const PILL_WIDTH_POINTS: f64 = super::pill_position::LINUX_PILL_WIDTH_POINTS;
-#[cfg(target_os = "linux")]
-const PILL_HEIGHT_POINTS: f64 = super::pill_position::LINUX_PILL_HEIGHT_POINTS;
 
 /// How long the frontend's exit animation needs (its `dying` timer is 200ms)
 /// before the Linux window may be unmapped without cutting it off.
@@ -43,7 +36,7 @@ static REVEAL_GEN: AtomicU64 = AtomicU64::new(0);
 /// suspend, which makes `pill.is_visible()` a bad proxy for "the user can
 /// already see the pill."
 static PILL_VISUALLY_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// Linux input policy for the fixed-size pill window: whether the current
+/// Linux input policy for the content-sized pill window: whether the current
 /// state has live controls, and the capsule rectangle (CSS px) the frontend
 /// last reported. The window only accepts pointer input inside that rectangle
 /// while interactive, and is fully click-through otherwise.
@@ -288,8 +281,8 @@ fn harden_pill_window<R: Runtime>(_pill: &WebviewWindow<R>) {}
 /// `harden_pill_window` instead, and keep the WebView surface transparent.
 fn apply_pill_hit_testing(pill: &WebviewWindow, interactive: bool) {
     // Linux owns an explicit GTK input region instead of tao's all-or-nothing
-    // cursor-ignore flag: the window is a fixed transparent area much larger
-    // than the capsule, and tao unwraps the GTK surface (aborting on
+    // cursor-ignore flag: the transparent margin must pass input through,
+    // and tao unwraps the GTK surface (aborting on
     // Hyprland) when it is toggled before the window is first realized.
     #[cfg(target_os = "linux")]
     {
@@ -315,37 +308,70 @@ fn apply_pill_hit_testing(pill: &WebviewWindow, interactive: bool) {
 /// is not realized yet is skipped: every reveal re-applies it after `show()`.
 #[cfg(target_os = "linux")]
 fn apply_linux_pill_input(pill: &WebviewWindow) {
-    let rect = LINUX_PILL_INPUT.lock().ok().and_then(|input| {
-        input.interactive.then(|| {
-            input.rect.unwrap_or([
-                0,
-                0,
-                super::pill_position::LINUX_PILL_WIDTH_POINTS as i32,
-                super::pill_position::LINUX_PILL_HEIGHT_POINTS as i32,
-            ])
-        })
-    });
     let target = pill.clone();
     pill.run_on_main_thread(move || {
+        // Read at execution time. A queued hands-free update must not reopen
+        // input after recording or idle has replaced it.
+        let rect = LINUX_PILL_INPUT
+            .lock()
+            .ok()
+            .and_then(|input| input.rect.filter(|_| input.interactive));
         crate::system::linux_webview::set_input_region(&target, rect);
+        schedule_linux_pointer_sync();
     })
     .ok();
 }
 
+#[cfg(target_os = "linux")]
+static LINUX_POINTER_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+static LINUX_POINTER_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// GTK owns the surface shape; a single blocking worker owns compositor IPC.
+/// Coalesce resize reports and re-read policy after looking up the window so
+/// a delayed hands-free update cannot remain applied after recording starts.
+#[cfg(target_os = "linux")]
+fn schedule_linux_pointer_sync() {
+    LINUX_POINTER_SYNC_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if LINUX_POINTER_SYNC_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn_blocking(|| loop {
+        let generation = LINUX_POINTER_SYNC_GENERATION.load(Ordering::SeqCst);
+        if let Some(window) = crate::core::hyprland::pill_window() {
+            let interactive = LINUX_PILL_INPUT
+                .lock()
+                .map(|input| input.interactive && input.rect.is_some())
+                .unwrap_or(false);
+            if let Err(error) =
+                crate::core::hyprland::set_pointer_input(&window.address, interactive)
+            {
+                log::warn!("{error}");
+            }
+        }
+        // Release ownership before checking for another update. If a new
+        // worker has already claimed it, that worker handles the latest state.
+        LINUX_POINTER_SYNC_RUNNING.store(false, Ordering::SeqCst);
+        if LINUX_POINTER_SYNC_GENERATION.load(Ordering::SeqCst) == generation
+            || LINUX_POINTER_SYNC_RUNNING.swap(true, Ordering::SeqCst)
+        {
+            break;
+        }
+    });
+}
+
 /// Frontend report of the capsule's visible rectangle (CSS px, relative to
-/// the window). Only the Linux fixed-size window needs it; the other
+/// the window). Linux excludes the transparent margin; the other
 /// platforms size the native window to the content instead.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_pill_hit_rect(app: &AppHandle, x: f64, y: f64, width: f64, height: f64) {
     if ![x, y, width, height].iter().all(|v| v.is_finite()) {
         return;
     }
-    let window_w = super::pill_position::LINUX_PILL_WIDTH_POINTS as i32;
-    let window_h = super::pill_position::LINUX_PILL_HEIGHT_POINTS as i32;
-    let left = (x.floor() as i32).clamp(0, window_w);
-    let top = (y.floor() as i32).clamp(0, window_h);
-    let right = ((x + width).ceil() as i32).clamp(left, window_w);
-    let bottom = ((y + height).ceil() as i32).clamp(top, window_h);
+    let left = (x.floor() as i32).max(0);
+    let top = (y.floor() as i32).max(0);
+    let right = ((x + width).ceil() as i32).max(left);
+    let bottom = ((y + height).ceil() as i32).max(top);
     let rect = [left, top, right - left, bottom - top];
 
     let interactive = {
@@ -371,11 +397,24 @@ pub(crate) fn set_pill_hit_rect(_app: &AppHandle, _x: f64, _y: f64, _width: f64,
 /// Frontend entry point for delayed controls (handsfree / paste-failed buttons
 /// that mount a beat after the state lands). Same path as reveal/hide so the
 /// pill never toggles hit-testing without re-hardening.
-pub(crate) fn set_pill_interactive(app: &AppHandle, interactive: bool) {
+pub(crate) fn set_pill_interactive(
+    app: &AppHandle,
+    interactive: bool,
+    expected_state: Option<&str>,
+) {
     let Some(pill) = app.get_webview_window("pill") else {
         return;
     };
+    let Ok(snapshot) = CURRENT_PILL_SNAPSHOT.lock() else {
+        return;
+    };
+    let Some(interactive) = pill_interactivity_for_state(&snapshot.state, interactive, expected_state)
+    else {
+        return;
+    };
     apply_pill_hit_testing(&pill, interactive);
+    // Keep the state check and policy update ordered with native reveals.
+    drop(snapshot);
 
     // This command is invoked by the pill frontend only after it has received
     // and rendered a new state, making it a later and more reliable Wayland
@@ -456,6 +495,10 @@ fn show_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
         .ok();
         return;
     }
+    show_native_pill_msg(app, state, message);
+}
+
+fn show_native_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
     let created = create_pill_if_needed(app);
     let Some(pill) = app.get_webview_window("pill") else {
         return;
@@ -556,8 +599,12 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     // hardened, tao's decoration path can briefly restore a caption-sized
     // non-client strip (a pale bar along the top of the pill) — most visible
     // when a button click flips the pill into the next state.
-    #[cfg(not(target_os = "linux"))]
-    apply_pill_hit_testing(pill, pill_state_has_clickable_buttons(state));
+    if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
+        current.set_state(state);
+    }
+    // The frontend opens input only after the new controls have mounted.
+    // Close it synchronously before any asynchronous mapping/configure work.
+    apply_pill_hit_testing(pill, false);
 
     // Show the window before emitting state so WebView2 is active when it
     // receives the event. WebView2 suspends event processing while hidden;
@@ -591,7 +638,7 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     // GTK only has a realized input surface after show(). Applying the input
     // region before that point can abort tao on Wayland, so do it afterward.
     #[cfg(target_os = "linux")]
-    apply_pill_hit_testing(pill, pill_state_has_clickable_buttons(state));
+    apply_pill_hit_testing(pill, false);
     #[cfg(target_os = "linux")]
     place_linux_pill(app, true);
 
@@ -616,9 +663,6 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     if let Some(msg) = message {
         pill.emit("pill-error", msg).ok();
     }
-    if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
-        current.set_state(state);
-    }
     pill.emit("pill-state", state).ok();
 
     // Must fire after pill-state (see PENDING_PILL_CONTEXT) — this is the
@@ -637,8 +681,8 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
 }
 
 /// Moves the mapped Linux pill to its bottom-centre placement, then raises
-/// it. The window is a fixed size, so the target only depends on the monitor
-/// and on the size the compositor actually gave the window; that size is read
+/// it. The target depends on the monitor and the content size most recently
+/// reported by the frontend. The compositor's mapped size is read
 /// back instead of assumed, because Hyprland can hand a floating client a
 /// different size than it asked for and a position computed for the wrong size
 /// leaves the capsule off-centre. A Wayland toplevel can only be moved after it
@@ -661,13 +705,6 @@ fn place_linux_pill(app: &AppHandle, wait_for_map: bool) {
         return;
     };
 
-    // Rules apply when the window maps, so one pass per reveal is enough.
-    if wait_for_map {
-        if let Err(error) = hyprland::allow_pointer_input(&window.address) {
-            log::warn!("{error}");
-        }
-    }
-
     if let Some(placement) = placement {
         let mut size = window.size;
         if size != [placement.width, placement.height]
@@ -686,6 +723,9 @@ fn place_linux_pill(app: &AppHandle, wait_for_map: bool) {
     }
     if let Err(error) = hyprland::raise_window(&window.address) {
         log::warn!("Failed to raise Linux dictation pill: {error}");
+    }
+    if let Some(pill) = app.get_webview_window("pill") {
+        apply_linux_pill_input(&pill);
     }
 }
 
@@ -720,8 +760,26 @@ fn schedule_linux_raise(app: &AppHandle) {
 fn pill_state_has_clickable_buttons(state: &str) -> bool {
     matches!(
         state,
-        "handsfree" | "error" | "cancelled" | "interrupted" | "paste_failed" | "copied"
+        "handsfree"
+            | "error"
+            | "cancelled"
+            | "interrupted"
+            | "paste_failed"
+            | "copied"
+            | "clipboard_warning"
     )
+}
+
+fn pill_interactivity_for_state(
+    current: &str,
+    requested: bool,
+    expected: Option<&str>,
+) -> Option<bool> {
+    if expected.is_some_and(|state| state != current) {
+        None
+    } else {
+        Some(requested && pill_state_has_clickable_buttons(current))
+    }
 }
 
 fn next_pill_placement<R: Runtime>(
@@ -737,15 +795,6 @@ fn next_pill_placement<R: Runtime>(
             guard.pill_height_points,
             guard.pill_placement,
             guard.pill_placement_stale,
-        )
-    };
-
-    #[cfg(target_os = "linux")]
-    let (width_points, height_points) = {
-        let _ = (width_points, height_points);
-        (
-            super::pill_position::LINUX_PILL_WIDTH_POINTS,
-            super::pill_position::LINUX_PILL_HEIGHT_POINTS,
         )
     };
 
@@ -779,7 +828,9 @@ pub(crate) fn hide_pill(app: &AppHandle) {
     if crate::is_dev_session() {
         app.emit("verenu:pill-state", serde_json::json!({"state": "idle"}))
             .ok();
-        return;
+        if app.get_webview_window("pill").is_none() {
+            return;
+        }
     }
     if let Some(pill) = app.get_webview_window("pill") {
         // Invalidate any in-flight animated move's deferred reveal - without
@@ -835,6 +886,59 @@ pub(crate) fn hide_pill(app: &AppHandle) {
         #[cfg(not(target_os = "linux"))]
         apply_pill_hit_testing(&pill, false);
     }
+}
+
+/// Drives the production overlay in an isolated native verification worker.
+#[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+pub(crate) fn native_test_pill(
+    app: &AppHandle,
+    state: Option<&str>,
+    message: Option<&str>,
+    context: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if !crate::is_dev_session() {
+        return Err("Native pill tests require an isolated dev session".into());
+    }
+    if let Some(state) = state {
+        if !matches!(
+            state,
+            "idle"
+                | "recording"
+                | "handsfree"
+                | "processing"
+                | "loading_local_model"
+                | "error"
+                | "cancelled"
+                | "interrupted"
+                | "paste_failed"
+                | "copied"
+                | "clipboard_warning"
+        ) {
+            return Err("Unknown pill test state".into());
+        }
+        if state == "idle" {
+            hide_pill(app);
+        } else {
+            show_native_pill_msg(app, state, message);
+            if let Some(context) = context {
+                if let Ok(mut snapshot) = CURRENT_PILL_SNAPSHOT.lock() {
+                    snapshot.context = Some(context.to_string());
+                }
+                app.emit_to("pill", "pill-context", context).ok();
+            }
+        }
+    }
+    let result = serde_json::json!({"state": current_pill_state()});
+    #[cfg(target_os = "linux")]
+    let result = {
+        let mut result = result;
+        if let Ok(input) = LINUX_PILL_INPUT.lock() {
+            result["interactive"] = input.interactive.into();
+            result["rect"] = serde_json::json!(input.rect);
+        }
+        result
+    };
+    Ok(result)
 }
 
 /// Shows the pill's "Cancelled" state — a cancelled recording whose audio was
@@ -910,7 +1014,69 @@ pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
 
 #[cfg(test)]
 mod context_replay_tests {
-    use super::PillSnapshot;
+    use super::{pill_interactivity_for_state, PillSnapshot};
+
+    #[test]
+    fn passive_pills_reject_even_an_explicit_input_enable() {
+        for state in [
+            "idle",
+            "recording",
+            "processing",
+            "loading_local_model",
+            "unknown",
+        ] {
+            assert_eq!(
+                pill_interactivity_for_state(state, true, Some(state)),
+                Some(false),
+                "{state}"
+            );
+            assert_eq!(
+                pill_interactivity_for_state(state, true, None),
+                Some(false),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn actionable_pills_open_input_only_when_the_frontend_requests_it() {
+        for state in [
+            "handsfree",
+            "error",
+            "cancelled",
+            "interrupted",
+            "paste_failed",
+            "copied",
+            "clipboard_warning",
+        ] {
+            assert_eq!(
+                pill_interactivity_for_state(state, true, Some(state)),
+                Some(true),
+                "{state}"
+            );
+            assert_eq!(
+                pill_interactivity_for_state(state, false, Some(state)),
+                Some(false),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_enables_and_disables_do_not_override_a_new_pill_state() {
+        assert_eq!(
+            pill_interactivity_for_state("recording", true, Some("handsfree")),
+            None
+        );
+        assert_eq!(
+            pill_interactivity_for_state("handsfree", false, Some("recording")),
+            None
+        );
+        assert_eq!(
+            pill_interactivity_for_state("idle", true, Some("error")),
+            None
+        );
+    }
 
     #[test]
     fn context_survives_local_model_loading_and_processing() {

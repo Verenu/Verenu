@@ -277,10 +277,11 @@ pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<()
 /// Clicking the pill may focus it; text injection re-focuses the original
 /// target before pasting.
 #[cfg(target_os = "linux")]
-pub(crate) fn allow_pointer_input(address: &str) -> Result<(), String> {
+pub(crate) fn set_pointer_input(address: &str, interactive: bool) -> Result<(), String> {
     let selector = format!("address:{address}");
+    let no_focus = i32::from(!interactive);
     let expression = format!(
-        "hl.dsp.window.set_prop({{ window = '{selector}', prop = 'no_focus', value = '0' }})"
+        "hl.dsp.window.set_prop({{ window = '{selector}', prop = 'no_focus', value = '{no_focus}' }})"
     );
     let status = std::process::Command::new("hyprctl")
         .args(["dispatch", &expression])
@@ -320,6 +321,7 @@ pub(crate) fn pill_window() -> Option<ActiveWindow> {
         .find(|w| {
             w.get("class").and_then(|v| v.as_str()) == Some("verenu")
                 && w.get("title").and_then(|v| v.as_str()) == Some("Verenu Dictation Pill")
+                && w.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(std::process::id()))
         })
         .cloned()
         .and_then(|w| serde_json::from_value(w).ok())

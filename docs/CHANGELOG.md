@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Reduced the Linux dictation pill window to fit its capsule and context chip, with room for animation. It grows for longer errors and shrinks afterward. Passive recording and processing states stay click-through, while visible controls accept clicks inside the capsule. Delayed state updates can no longer make hold-to-dictate interactive.
 - Android keeps the dictation pill available offline when all selected active models run on-device. Settings > General adds "Hide pill when offline", enabled by default for network models and their fallbacks; turn it off for LAN-hosted models.
 
 - Added custom providers in Settings > Providers. Connect an OpenAI, Anthropic, or xAI compatible base URL, name the transcription and cleanup models it offers, and optionally configure an API key header, non-secret headers, and cleanup request options. Models appear under the provider's name in Settings > Models. Keys stay in the native credential store; local endpoints can work without a key. Removing a provider removes its selected models and repairs the fallback chain. Adding a provider starts from a searchable preset picker with about 30 unofficial presets for cloud APIs, Anthropic-style endpoints, and local servers such as Ollama and LM Studio. Presets only prefill the form; Verenu does not test or support those vendors, and every field stays editable.

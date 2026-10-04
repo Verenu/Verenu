@@ -26,8 +26,8 @@ pub fn configure_window(window: &tauri::WebviewWindow) {
 ///
 /// Tao's `set_ignore_cursor_events` can only toggle "all or nothing", and
 /// refuses (by unwrapping) on a window GTK has not realized yet. The Linux
-/// pill is a fixed-size transparent window much larger than its capsule, so it
-/// needs a real input region. Returns `false` when the surface is not realized
+/// pill needs a real input region that excludes the transparent margin.
+/// Returns `false` when the surface is not realized
 /// yet; the caller re-applies after the window is shown.
 ///
 /// Must run on the GTK main thread.
@@ -41,16 +41,16 @@ pub fn set_input_region(window: &tauri::WebviewWindow, rect: Option<[i32; 4]>) -
     let Some(surface) = gtk_window.window() else {
         return false;
     };
-    // An empty region is read as "no shape" by some GDK backends, so
-    // click-through is a single transparent pixel in the corner — the same
-    // encoding tao uses for `set_ignore_cursor_events(true)`.
-    let [x, y, width, height] = rect
-        .filter(|[_, _, w, h]| *w > 0 && *h > 0)
-        .unwrap_or([0, 0, 1, 1]);
-    surface.input_shape_combine_region(
-        &Region::create_rectangle(&RectangleInt::new(x, y, width, height)),
-        0,
-        0,
-    );
+    let region = match rect.filter(|[_, _, w, h]| *w > 0 && *h > 0) {
+        Some([x, y, width, height]) => {
+            Region::create_rectangle(&RectangleInt::new(x, y, width, height))
+        }
+        None => Region::create(),
+    };
+    // Store the shape on GTK too so configure/resize cannot replace it with
+    // the default full-window input region. Empty is distinct from None,
+    // which removes the restriction and accepts input over the whole window.
+    gtk_window.input_shape_combine_region(Some(&region));
+    surface.input_shape_combine_region(&region, 0, 0);
     true
 }
