@@ -1,5 +1,6 @@
 import { CATALOG, providerDisplayLabel, taskLabel } from './components/settings/models';
 import type { SettingsSectionId } from './settingsSections';
+import { isAndroid } from './platform';
 
 export type SettingsSearchEntry = {
   id: string;
@@ -9,6 +10,7 @@ export type SettingsSearchEntry = {
   target: string;
   fallbackTarget?: string;
   keywords?: string[];
+  androidOnly?: boolean;
 };
 
 export type SettingsSearchRequest = Pick<
@@ -39,6 +41,7 @@ export function clearSettingsSearchNavigation(nonce: number): void {
 }
 
 const BASE_ENTRIES: SettingsSearchEntry[] = [
+  { id: 'general-hide-pill-offline', section: 'general', label: 'Hide pill when offline', description: 'Keep the Android pill available for local or LAN models', target: 'general-hide-pill-offline', keywords: ['android', 'internet', 'network', 'offline', 'local'], androidOnly: true },
   { id: 'custom-providers', section: 'keys', label: 'Custom providers', description: 'Connect a compatible endpoint with your own models and API key', target: 'custom-providers', keywords: ['endpoint', 'anthropic', 'openai compatible', 'xai compatible', 'base url'] },
   { id: 'general-hotkey', section: 'general', label: 'Hotkey', description: 'Hold to record and release to transcribe', target: 'general-hotkey', keywords: ['shortcut', 'keyboard', 'keybind', 'record'] },
   { id: 'general-copy-last', section: 'general', label: 'Copy last dictation', description: 'Copy the previous dictation to the clipboard', target: 'general-copy-last', keywords: ['clipboard', 'shortcut'] },
@@ -162,6 +165,7 @@ export function searchSettings(
   const visible = new Set(visibleSections);
 
   return SETTINGS_SEARCH_ENTRIES
+    .filter((entry) => !entry.androidOnly || isAndroid)
     .map((entry) => ({ entry, score: visible.has(entry.section) ? scoreEntry(entry, query, tokens) : -1 }))
     .filter((result) => result.score >= 0)
     .sort((a, b) => b.score - a.score || a.entry.label.localeCompare(b.entry.label))

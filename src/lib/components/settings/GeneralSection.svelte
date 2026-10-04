@@ -55,6 +55,19 @@
   let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
   let coverKeyboardMic = $state(false);
   let coverKeyboardMicError = $state(false);
+  let hidePillOffline = $state(true);
+  let hidePillOfflineError = $state(false);
+
+  async function handleHidePillOffline(value: boolean) {
+    hidePillOffline = value;
+    try {
+      await saveSetting('android_pill_hide_offline', value);
+    } catch (err) {
+      hidePillOffline = !value;
+      hidePillOfflineError = true;
+      console.error('save android_pill_hide_offline failed:', err);
+    }
+  }
 
   async function handleCoverKeyboardMic(value: boolean) {
     coverKeyboardMic = value;
@@ -164,6 +177,7 @@
       invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
       invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
       invoke<boolean | null>('get_setting', { key: 'android_pill_cover_keyboard_mic' }),
+      invoke<boolean | null>('get_setting', { key: 'android_pill_hide_offline' }),
     ]);
 
     const val = <T>(i: number, fallback: T): T =>
@@ -199,6 +213,7 @@
     }
 
     coverKeyboardMic = val<boolean | null>(11, null) ?? false;
+    hidePillOffline = val<boolean | null>(12, null) ?? true;
 
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
@@ -561,9 +576,16 @@
   <div class="setting-row" data-setting-target="general-cover-keyboard-mic">
     <div>
       <div class="label">Cover the keyboard's mic button</div>
-      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button, and hides while you're offline so the keyboard's own voice typing stays usable. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
+      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
     </div>
     <Toggle checked={coverKeyboardMic} onchange={handleCoverKeyboardMic} label="Cover the keyboard's mic button" bind:error={coverKeyboardMicError} />
+  </div>
+  <div class="setting-row" data-setting-target="general-hide-pill-offline">
+    <div>
+      <div class="label">Hide pill when offline</div>
+      <div class="desc">Hide the pill without internet when any selected transcription or enabled cleanup model, including fallbacks, uses a network provider. On-device models keep it available. Turn this off for models hosted on your local network.</div>
+    </div>
+    <Toggle checked={hidePillOffline} onchange={handleHidePillOffline} label="Hide pill when offline" bind:error={hidePillOfflineError} />
   </div>
 {:else}
   <div class="setting-row" data-setting-target="general-hotkey">
