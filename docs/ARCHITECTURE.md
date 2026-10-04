@@ -48,7 +48,7 @@ Verenu resolves a foreground executable and, when available, a browser domain to
 - Downloaded transcription models are stored below the app-data `models/stt` directory.
 - Downloaded cleanup models and the local cleanup runtime are stored below the app-data `models` directory.
 - Cloud transcription sends audio to the selected transcription provider.
-- Cloud cleanup sends raw transcript text and the cleanup context to the selected cleanup provider.
+- Cloud cleanup sends raw transcript text, selected vocabulary, and saved cleanup instructions to the selected cleanup provider. App, website, window-title, and Context-name hints are not included.
 - Local transcription and local cleanup keep the processing data on the device after the required model files have been downloaded.
 
 ## Platform integration
