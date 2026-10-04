@@ -373,11 +373,16 @@
 }
 
 /* The section behind the list keeps its layout (controls such as the language
-   picker measure their text on mount, and measure 0 inside display:none). */
+   picker measure their text on mount, and measure 0 inside display:none), so it
+   is parked off-screen. `visibility: hidden` would not do: controls that set
+   `visibility: visible` themselves (the API key Save/Clear flip buttons) would
+   show straight through over the list. */
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-body {
   position: absolute;
-  inset: 0;
-  visibility: hidden;
+  top: 0;
+  left: -200vw;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
@@ -582,4 +587,84 @@
 :root:has(.app[data-android='true']) .context-modal .ui-modal-title {
   font-size: 22px;
   font-weight: 700;
+}
+
+/* ------------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes m-in-right {
+    from { opacity: 0; transform: translate3d(32px, 0, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  @keyframes m-in-left {
+    from { opacity: 0; transform: translate3d(-32px, 0, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  @keyframes m-rise {
+    from { opacity: 0; transform: translate3d(0, 14px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  /* Drilling in: the section arrives from the right, its first rows follow. */
+  .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='detail'] :is(.m-bar, .settings-body) {
+    animation: m-in-right 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  .app[data-compact-nav='true'] .settings-body .panel-inner > * {
+    animation: m-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(2) { animation-delay: 40ms; }
+  .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(3) { animation-delay: 80ms; }
+  .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(4) { animation-delay: 120ms; }
+  .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(5) { animation-delay: 150ms; }
+  .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(n + 6) { animation-delay: 180ms; }
+
+  /* Coming back to (or opening) the list: it settles in group by group. */
+  .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .m-list {
+    animation: m-in-left 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  .app[data-compact-nav='true'] .m-list > * {
+    animation: m-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  .app[data-compact-nav='true'] .m-list > :nth-child(2) { animation-delay: 50ms; }
+  .app[data-compact-nav='true'] .m-list > :nth-child(3) { animation-delay: 100ms; }
+  .app[data-compact-nav='true'] .m-list > :nth-child(4) { animation-delay: 150ms; }
+
+  .m-list-row {
+    transition: background-color 140ms ease, transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .m-list-row:active {
+    transform: scale(0.985);
+  }
+
+  .m-list-row .m-list-chevron {
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .m-list-row:active .m-list-chevron {
+    transform: translateX(3px);
+  }
+
+  .m-bar-back {
+    transition: background-color 140ms ease, transform 140ms ease;
+  }
+
+  .m-bar-back:active {
+    transform: scale(0.9);
+  }
+
+  /* Taps feel physical across the shell. */
+  .app[data-android='true'] :is(.btn-primary, .btn-ghost, .btn-danger, .ctx-chip, .tab) {
+    transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1), background-color 140ms ease, border-color 140ms ease;
+  }
+
+  .app[data-android='true'] :is(.btn-primary, .btn-ghost, .btn-danger, .ctx-chip):active:not(:disabled) {
+    transform: scale(0.97);
+  }
 }
