@@ -29,7 +29,6 @@ pub struct PipelineConfig {
     pub custom_keys: std::collections::HashMap<String, String>,
     pub default_tone: String,
     pub cleanup_intensity: String,
-    pub app_context_hint: bool,
     pub auto_learn_enabled: bool,
     pub contextual_formatting_enabled: bool,
     pub caps_lock_uppercase_enabled: bool,
@@ -406,10 +405,6 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             "medium",
             is_supported_cleanup_intensity,
         ),
-        app_context_hint: store
-            .get(APP_CONTEXT_HINT)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
         auto_learn_enabled: store
             .get(AUTO_LEARN_ENABLED)
             .and_then(|v| v.as_bool())

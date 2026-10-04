@@ -43,7 +43,6 @@ const PRIORITY_SETTINGS = [
   'setup_complete',
   'advanced_model_ui',
   'auto_learn_enabled',
-  'app_context_hint',
   'ruin_accessibility',
 ] as const;
 

@@ -170,7 +170,6 @@ pub struct RetryCapture {
     /// into retry/finalize work rather than resolved again from focus later.
     pub context: ResolvedContextIdentity,
     pub profile: String,
-    pub app_context: Option<String>,
     pub caps_lock_on: bool,
 }
 
@@ -1119,7 +1118,6 @@ mod tests {
                     label: "Everywhere".into(),
                 },
                 profile: String::new(),
-                app_context: None,
                 caps_lock_on: false,
             });
         }

@@ -12,19 +12,17 @@ pub fn build_relevant_dictionary_prompt_from(
     entries: &[db::DictionaryEntry],
     raw_text: &str,
 ) -> String {
-    build_relevant_dictionary_prompt_from_sources(entries, raw_text, None, None)
+    build_relevant_dictionary_prompt_from_sources(entries, raw_text, None)
 }
 
-/// Build vocabulary evidence from the candidate transcripts and the small
-/// app/context hint. Matching entries are ranked instead of dumping the
-/// context dictionary into every request. The primary candidate has the
-/// highest weight; an alternate or context hit can surface a useful term but
-/// never becomes a replacement rule.
+/// Build vocabulary evidence from the candidate transcripts instead of
+/// dumping the whole Context dictionary into every request. The primary
+/// candidate has the highest weight; an alternate hit can surface a useful
+/// term but never becomes a replacement rule.
 pub fn build_relevant_dictionary_prompt_from_sources(
     entries: &[db::DictionaryEntry],
     primary_text: &str,
     alternate_text: Option<&str>,
-    context_text: Option<&str>,
 ) -> String {
     if entries.is_empty() {
         return String::new();
@@ -35,7 +33,6 @@ pub fn build_relevant_dictionary_prompt_from_sources(
     let sources = [
         Some((primary_text, 100u16)),
         alternate_text.map(|text| (text, 82u16)),
-        context_text.map(|text| (text, 52u16)),
     ]
     .into_iter()
     .enumerate()
@@ -607,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn relevant_prompt_uses_context_without_dumping_the_dictionary() {
+    fn relevant_prompt_uses_alternate_transcript_without_dumping_the_dictionary() {
         let entries = vec![
             entry(1, "Claude", Some("clawed")),
             entry(2, "UnrelatedTerm", None),
@@ -615,8 +612,7 @@ mod tests {
         let prompt = build_relevant_dictionary_prompt_from_sources(
             &entries,
             "open the editor",
-            None,
-            Some("Visual Studio Code — Claude"),
+            Some("open the clawed code"),
         );
         assert!(prompt.contains("Claude"));
         assert!(!prompt.contains("UnrelatedTerm"));
@@ -633,7 +629,6 @@ mod tests {
             &entries,
             "please summarize this long sentence without any named product or technical term in it",
             None,
-            None,
         );
         assert!(prompt.is_empty());
     }
@@ -646,7 +641,7 @@ mod tests {
             entry(3, "ordinary", None),
         ];
         entries.extend((4..20).map(|id| entry(id, &format!("Project{id}X"), None)));
-        let prompt = build_relevant_dictionary_prompt_from_sources(&entries, "fix it", None, None);
+        let prompt = build_relevant_dictionary_prompt_from_sources(&entries, "fix it", None);
         let lines = prompt.lines().filter(|line| line.starts_with("- ")).count();
         assert_eq!(lines, 8);
         assert!(prompt.contains("Claude"));
@@ -659,7 +654,7 @@ mod tests {
         let entries: Vec<DictionaryEntry> = (0..500)
             .map(|id| entry(id, &format!("TechnicalIdentifier{id}X"), None))
             .collect();
-        let prompt = build_relevant_dictionary_prompt_from_sources(&entries, "one", None, None);
+        let prompt = build_relevant_dictionary_prompt_from_sources(&entries, "one", None);
         assert!(prompt.chars().count() <= 3_000);
         assert_eq!(
             prompt.lines().filter(|line| line.starts_with("- ")).count(),
