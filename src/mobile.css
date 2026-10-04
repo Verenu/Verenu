@@ -833,7 +833,7 @@
   content: none;
 }
 
-:root:has(.app[data-android='true']) .row-sub > code + * ::before {
+:root:has(.app[data-android='true']) .row-sub > code + *::before {
   content: none;
 }
 
