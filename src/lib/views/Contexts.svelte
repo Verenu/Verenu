@@ -1872,7 +1872,8 @@
   .target-strip { flex-wrap: wrap; gap: 6px; padding: 9px 0 14px; border-top: 1px solid var(--line-soft); }
   .target-label { color: var(--ink-mute); font-family: var(--sans); font-size: 11px; letter-spacing: 0; text-transform: none; margin-right: 3px; }
   .target-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px 4px 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-elev); color: var(--ink-soft); font-size: 11px; }
-  .target-chip button { display: grid; place-items: center; border: 0; background: transparent; color: var(--ink-faint); padding: 2px; cursor: pointer; border-radius: 4px; }
+  .target-chip button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; border: 0; background: transparent; color: var(--ink-faint); padding: 0; line-height: 0; cursor: pointer; border-radius: 4px; }
+  .target-chip button svg { display: block; flex: 0 0 auto; }
   .target-chip button:hover { color: var(--danger); background: var(--danger-bg); }
   .target-empty { color: var(--ink-faint); font-size: 11px; font-style: italic; }
   .sub-app-picker { width: min(300px, calc(100vw - 64px)); }
