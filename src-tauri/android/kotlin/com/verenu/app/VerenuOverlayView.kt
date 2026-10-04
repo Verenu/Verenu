@@ -96,8 +96,8 @@ class VerenuOverlayView @JvmOverloads constructor(
     var listener: Listener? = null
 
     private companion object {
-        /** The desktop pill's height (34px), used by every state except the idle disc. */
-        const val PILL_HEIGHT_DP = 34f
+        /** Height of every state when it is not covering the keyboard's mic key. */
+        const val PILL_HEIGHT_DP = 40f
     }
 
     private val density = context.resources.displayMetrics.density
@@ -258,12 +258,13 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * The idle disc is exactly the keyboard's mic key. Every other state is the
-     * desktop capsule (34dp) however big the key is, centred on the same row.
+     * Over the keyboard every state is as tall as the mic key it covers, so the
+     * keyboard's own chips and keys behind it stay hidden; the idle one is also
+     * exactly the key's width. Elsewhere it is a 40dp capsule.
      */
     private fun applyMinimumSize() {
         val disc = coverSize > 0 && state == State.IDLE
-        pill.minimumHeight = if (disc) coverSize else dpi(PILL_HEIGHT_DP)
+        pill.minimumHeight = if (coverSize > 0) coverSize else dpi(PILL_HEIGHT_DP)
         pill.minimumWidth = if (disc) coverSize else 0
     }
 
@@ -484,9 +485,16 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The desktop's "still working" indicator: the stage name in a dimmed
+     * colour with a narrow bright band sweeping back and forth across it. No
+     * spinner.
+     */
     private fun busyRow(text: String) {
-        row.addView(SpinnerView(context, palette.fg), LinearLayout.LayoutParams(dpi(18f), dpi(18f)))
-        row.addView(label(text, palette.fg), gapStart(10f))
+        row.addView(
+            ShineTextView(context, text, palette.fg, if (compact) 12f else 13.5f),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
     }
 
     private fun label(text: String, color: Int, sizeSp: Float = if (compact) 12f else 13.5f) = TextView(context).apply {
@@ -512,12 +520,12 @@ class VerenuOverlayView @JvmOverloads constructor(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { marginStart = dpi(valueDp) }
 
-    private fun glyphParams() = LinearLayout.LayoutParams(dpi(32f), dpi(32f))
+    private fun glyphParams() = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
 
     /**
      * A borderless glyph, as on the desktop pill: no disc, just the mark, with a
-     * soft circle that appears while it is pressed. 32dp keeps it a fair touch
-     * target inside the 34dp capsule.
+     * soft circle that appears while it is pressed. 36dp is a fair touch target
+     * inside the capsule.
      */
     private fun glyphButton(
         kind: IconView.Kind,
@@ -660,28 +668,51 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-    // ---------------------------------------------------------------- spinner
+    // ------------------------------------------------------------ shine text
 
-    private class SpinnerView(context: Context, color: Int) : View(context) {
-        private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = (color and 0x00FFFFFF) or 0x33000000
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
+    /**
+     * Port of the desktop `.stage-label` + `.stage-shine` pair: the label at 45%
+     * opacity, with a ~3-character band (clear, half, full, half, clear) that
+     * travels from the first letter to the last and back, ease-in-out, every
+     * 1.05 s. The band stays on the word at both ends, so the text never fades
+     * out between sweeps.
+     */
+    private class ShineTextView(context: Context, private val text: String, private val color: Int, sizeSp: Float) : View(context) {
+        private val density = context.resources.displayMetrics.density
+        private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = (color and 0x00FFFFFF) or 0x73000000
+            textSize = sizeSp * context.resources.displayMetrics.scaledDensity
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
-        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
+        private val shine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = base.textSize
+            typeface = base.typeface
         }
-        private var angle = 0f
-        private val animator = ValueAnimator.ofFloat(0f, 360f).apply {
-            duration = 850
-            interpolator = LinearInterpolator()
+        private val bandWidth = 32f * density
+        private val textWidth = base.measureText(text)
+        private var progress = 0f
+        private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1050
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
             addUpdateListener {
-                angle = it.animatedValue as Float
+                progress = it.animatedValue as Float
                 invalidate()
             }
+        }
+        private val rgb = color and 0x00FFFFFF
+
+        init {
+            contentDescription = text
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val fm = base.fontMetrics
+            setMeasuredDimension(
+                kotlin.math.ceil(textWidth).toInt() + 2,
+                kotlin.math.ceil(fm.descent - fm.ascent).toInt(),
+            )
         }
 
         override fun onAttachedToWindow() {
@@ -695,13 +726,19 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
 
         override fun onDraw(canvas: Canvas) {
-            val stroke = max(2f, width * 0.12f)
-            ring.strokeWidth = stroke
-            arc.strokeWidth = stroke
-            val inset = stroke / 2f + 0.5f
-            val rect = RectF(inset, inset, width - inset, height - inset)
-            canvas.drawArc(rect, 0f, 360f, false, ring)
-            canvas.drawArc(rect, angle, 100f, false, arc)
+            val baseline = -base.fontMetrics.ascent
+            canvas.drawText(text, 0f, baseline, base)
+            val travel = max(0f, textWidth - bandWidth)
+            val left = progress * travel
+            shine.shader = android.graphics.LinearGradient(
+                left, 0f, left + bandWidth, 0f,
+                intArrayOf(rgb, rgb or 0x80000000.toInt(), rgb or 0xFF000000.toInt(), rgb or 0x80000000.toInt(), rgb),
+                floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f),
+                android.graphics.Shader.TileMode.CLAMP,
+            )
+            // Clamp keeps the shader transparent beyond the band, so the whole
+            // word is drawn once and only the band shows.
+            canvas.drawText(text, 0f, baseline, shine)
         }
     }
 
