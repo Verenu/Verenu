@@ -97,7 +97,13 @@ impl LocalLlmModelManifest {
             is_downloaded: self.is_downloaded(root),
             is_downloading,
             partial_size: self.partial_size(root),
-            is_recommended: self.is_recommended,
+            // Phones recommend the smallest model: the 1.5B one made cleanup take far
+            // too long on real devices.
+            is_recommended: if cfg!(target_os = "android") {
+                self.id == "qwen2.5-0.5b-instruct"
+            } else {
+                self.is_recommended
+            },
             prompt_family: self.prompt_family,
         }
     }
