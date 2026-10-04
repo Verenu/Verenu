@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,6 +15,8 @@ import {
 } from "./verenu-ai-review-logic.mjs";
 
 test("selectReviewModels returns Gemini then Claude defaults", () => {
+  assert.equal(DEFAULT_MODEL, "gemini-3.8-flash-high");
+  assert.equal(DEFAULT_FALLBACK_MODEL, "claude-sonnet-4-6");
   assert.deepEqual(
     selectReviewModels({ apiKey: "present" }),
     {
@@ -25,10 +28,18 @@ test("selectReviewModels returns Gemini then Claude defaults", () => {
   );
 });
 
+test("CI pins Gemini first and Claude as fallback instead of model secrets", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/verenu-ai-review.yml", import.meta.url), "utf8");
+  assert.match(workflow, /^\s+CLIPROXY_MODEL: gemini-3\.8-flash-high\s*$/m);
+  assert.match(workflow, /^\s+CLIPROXY_FALLBACK_MODEL: claude-sonnet-4-6\s*$/m);
+  assert.doesNotMatch(workflow, /secrets\.CLIPROXY_(?:FALLBACK_)?MODEL/);
+});
+
 test("legacy configured model names migrate to the current review models", () => {
   assert.equal(normalizeReviewModel("gemini-3.6-flash-high", DEFAULT_MODEL), DEFAULT_MODEL);
+  assert.equal(normalizeReviewModel("gemini-3.7-flash-high", DEFAULT_MODEL), DEFAULT_MODEL);
   assert.equal(normalizeReviewModel("claude-sonnet-4.6", DEFAULT_FALLBACK_MODEL), DEFAULT_FALLBACK_MODEL);
-  assert.equal(normalizeReviewModel("claude-sonnet-4-6", DEFAULT_FALLBACK_MODEL), "claude-sonnet-4-6(low)");
+  assert.equal(normalizeReviewModel("claude-sonnet-4-6", DEFAULT_FALLBACK_MODEL), "claude-sonnet-4-6");
   assert.equal(normalizeReviewModel("claude-sonnet-4-6(high)", DEFAULT_FALLBACK_MODEL), "claude-sonnet-4-6(high)");
   assert.deepEqual(selectReviewModels({
     apiKey: "present",

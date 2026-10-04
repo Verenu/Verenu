@@ -1,10 +1,10 @@
-export const DEFAULT_MODEL = "gemini-3.7-flash-high";
-export const DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6(low)";
+export const DEFAULT_MODEL = "gemini-3.8-flash-high";
+export const DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6";
 
 const LEGACY_MODEL_ALIASES = new Map([
   ["gemini-3.6-flash-high", DEFAULT_MODEL],
+  ["gemini-3.7-flash-high", DEFAULT_MODEL],
   ["claude-sonnet-4.6", DEFAULT_FALLBACK_MODEL],
-  ["claude-sonnet-4-6", DEFAULT_FALLBACK_MODEL],
 ]);
 
 const FALLBACK_ERROR_PATTERNS = [

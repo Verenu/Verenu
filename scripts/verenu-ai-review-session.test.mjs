@@ -15,7 +15,7 @@ async function session(t, records) {
   return home;
 }
 
-test("hidden OCR quota errors trigger Sonnet low fallback", async (t) => {
+test("hidden OCR quota errors trigger Sonnet fallback", async (t) => {
   const home = await session(t, [
     { type: "llm_request", content: "private prompt" },
     { type: "llm_error", error: '429 {"error":{"code":"RESOURCE_EXHAUSTED","message":"private upstream details"}}' },
