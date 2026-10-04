@@ -398,6 +398,8 @@ pub const ACCENT_COLOR: &str = "accent_color";
 /// User-entered hex palette for the Custom appearance mode (background, text,
 /// and optional sidebar/surface colors).
 pub const CUSTOM_THEME: &str = "custom_theme";
+/// Named palettes saved on this device, including each palette's accent.
+pub const CUSTOM_THEMES: &str = "custom_themes";
 /// Where the Android dictation pill sits; see `ANDROID_PILL_POSITIONS`.
 pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
 /// Whether the Android pill covers the keyboard's own mic button when it can find it.
