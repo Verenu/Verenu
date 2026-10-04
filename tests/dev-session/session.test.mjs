@@ -162,7 +162,7 @@ check('missing session authentication never falls back to browser mocks', async 
     assert.equal(await page.locator('.app').count(), 0);
   } finally { await browser.close(); }
 });
-check('sub-app pattern Enter saves into the isolated database on desktop and phone', async () => {
+check('sub-app pattern Enter saves on desktop and Sub-apps stay hidden on Android', async () => {
   const browser = await chromium.launch({ headless: true });
   const createdIds = [];
   try {
@@ -175,6 +175,14 @@ check('sub-app pattern Enter saves into the isolated database on desktop and pho
         const page = await context.newPage();
         await page.goto(access.localAccessUrl);
         await page.getByRole('button', { name: /^Dev tests/ }).waitFor();
+        if (viewport.width < 700) {
+          await page.locator('.mobile-nav').getByRole('button', { name: 'Settings', exact: true }).click();
+          const sections = page.getByRole('navigation', { name: 'Settings sections' });
+          await sections.waitFor();
+          assert.equal(await sections.getByRole('button', { name: 'Sub-apps', exact: true }).count(), 0,
+            'Android Settings must hide the desktop-only Sub-apps section');
+          continue;
+        }
         const label = `Synthetic sub-app ${viewport.width} ${Date.now()}`;
         // Supply a public synthetic capture instead of invoking native hotkeys.
         await page.evaluate(async (label) => {
@@ -195,7 +203,7 @@ check('sub-app pattern Enter saves into the isolated database on desktop and pho
         assert.ok(saved, 'Enter from the pattern input must persist a sub-app');
         createdIds.push(saved.id);
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
-        await page.getByRole(viewport.width < 700 ? 'tab' : 'button', { name: 'Sub-apps', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('button', { name: 'Sub-apps', exact: true }).filter({ visible: true }).click();
         await page.locator('.settings-h').filter({ hasText: /^General$/ }).waitFor({ state: 'detached' });
         await page.getByRole('heading', { name: 'Sub-apps', exact: true, level: 2 }).waitFor();
         assert.equal(await page.getByRole('heading', { name: 'Shortcut', exact: true, level: 3 }).isVisible(), true);
