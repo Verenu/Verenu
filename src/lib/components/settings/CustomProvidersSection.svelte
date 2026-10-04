@@ -298,8 +298,8 @@
       </div>
       {#if editing.base_url.includes('YOUR_')}<p class="callout warn" role="note">Replace the placeholder in the base URL before saving.</p>{/if}
       <p class="callout" class:local={isLocalUrl(editing.base_url)}>
-        {#if isLocalUrl(editing.base_url)}<span class="net-badge">Stays on your network</span>{/if}
-        Dictated {editing.supports_transcription && editing.supports_cleanup ? 'audio and text' : editing.supports_transcription ? 'audio' : 'text'} will be sent to <strong>{displayHost(editing.base_url) || 'the endpoint you enter'}</strong>.
+        {#if isLocalUrl(editing.base_url)}<svg class="local-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.5l5 2v4c0 3-2.1 5.4-5 6.5-2.9-1.1-5-3.5-5-6.5v-4l5-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M5.8 8l1.6 1.6L10.4 6.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>{/if}
+        <span>Dictated {editing.supports_transcription && editing.supports_cleanup ? 'audio and text' : editing.supports_transcription ? 'audio' : 'text'} will be sent to <strong>{displayHost(editing.base_url) || 'the endpoint you enter'}</strong>{isLocalUrl(editing.base_url) ? ', which stays on your network' : ''}.</span>
       </p>
 
       <div class="cap-grid" role="group" aria-label="What this provider handles">
@@ -426,10 +426,10 @@
   small { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
 
   .callout { margin: 0; padding: 9px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.5; background: var(--paper-2); color: var(--ink-soft); overflow-wrap: anywhere; }
-  .callout.local { background: var(--success-bg); }
+  .callout.local { display: flex; align-items: flex-start; gap: 8px; }
+  .local-icon { flex: none; margin-top: 2px; color: var(--success); }
   .callout.warn { background: var(--warning-bg); color: var(--ink); }
   .callout strong { color: var(--ink); }
-  .net-badge { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; background: var(--success); color: #fff; }
 
   .cap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .cap { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; transition: border-color 120ms ease, background 120ms ease; }
