@@ -3,13 +3,13 @@ import { test, expect } from './fixtures.mjs';
 async function expectMenuInsideViewport(menu, page) {
   const bounds = await menu.boundingBox();
   const viewport = page.viewportSize();
-  const content = await page.locator('.settings-page .panel-inner:visible').last().boundingBox();
+  const content = await page.locator('.settings-page .panel:visible').last().boundingBox();
   expect(bounds).not.toBeNull();
   expect(content).not.toBeNull();
   expect(bounds.x).toBeGreaterThanOrEqual(0);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-  expect(bounds.y).toBeGreaterThanOrEqual(0);
-  expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+  expect(bounds.y).toBeGreaterThanOrEqual(content.y);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(content.y + content.height);
   expect(bounds.x).toBeGreaterThanOrEqual(content.x);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(content.x + content.width);
 }
@@ -44,6 +44,15 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     await waitForPanelMotion(retention);
     await expect(retention).toHaveClass(/ui-dropdown-trigger--compact/);
     await expect(retention).not.toHaveClass(/btn-ghost/);
+
+    await retention.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('option', { name: '30 days' })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('option', { name: '90 days' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(retention).toBeFocused();
+
     await retention.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
     await waitForPanelMotion(retention);
     await retention.click();
@@ -81,7 +90,28 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
 
     const developer = page.locator('[data-debug-id="settings.developer"]');
     await expect(developer).toBeVisible();
+
+    await page.evaluate(() => {
+      window.addEventListener('unhandledrejection', (event) => {
+        if (String(event.reason).includes('set_diagnostics_monitoring')) {
+          document.documentElement.dataset.diagnosticsMonitorUnhandled = String(event.reason);
+        }
+      });
+    });
+    const monitorRequestPromise = page.waitForRequest((request) =>
+      request.url().endsWith('/__verenu_dev/invoke')
+      && request.method() === 'POST'
+      && request.postData()?.includes('"command":"set_diagnostics_monitoring"'),
+    );
     await developer.click();
+    const monitorRequest = await monitorRequestPromise;
+    expect(monitorRequest.postDataJSON()).toEqual({ command: 'set_diagnostics_monitoring', args: { enabled: true } });
+    expect((await monitorRequest.response())?.status()).toBe(403);
+    const unhandledMonitorError = await page.evaluate(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return document.documentElement.dataset.diagnosticsMonitorUnhandled ?? '';
+    });
+    expect(unhandledMonitorError).toBe('');
     await page.getByRole('tab', { name: 'Fault Injection' }).click();
 
     const provider = page.getByRole('button', { name: 'Fault injection provider' });
