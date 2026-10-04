@@ -4,6 +4,7 @@ import { disableBrowserContextMenu } from './lib/disable-context-menu';
 import './theme.css';
 import './app.css';
 import './ui.css';
+import './mobile.css';
 import { initializeDevSession, isBrowserDevSession } from './lib/devSession';
 
 disableBrowserContextMenu(); // The app webview lives until the process exits.

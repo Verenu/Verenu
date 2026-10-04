@@ -55,6 +55,12 @@ untouched.
 - States mirror the desktop pill: idle → recording → transcribing → cleaning →
   inserting, plus error (retry) and cancelled. The recording waveform uses the
   recorder's peak envelope and redraws each display frame.
+- By default the pill covers the keyboard's own mic key (Settings -> General turns
+  this off) so it never sits over the text being typed.
+- The cancelled notice shows an X (dismiss, back to the idle pill) and a back
+  arrow (restart). It does not keep the pill alive after the keyboard closes.
+  Error notices carry a title, the reason, and a Retry button when retrying can
+  help.
 - Settings -> General -> Pill position selects above-keyboard center, left or
   right, top, middle, or under the camera hole. Keyboard placement follows the
   IME bounds. The pill waits for those bounds before appearing and animates
@@ -102,9 +108,10 @@ Local AI requires Android 9 (API 28) or newer. Android 8 can still use cloud
 providers. The capability check also verifies that both runtimes are present;
 Settings and Setup hide local options when the installed build lacks them.
 
-Phone presets start with Moonshine Tiny (English speech, about 31 MB) and
-Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer speech
-without AI cleanup. Larger cleanup models remain available in Advanced Models.
+Every phone gets the same single local preset: Moonshine Tiny (English speech, about
+31 MB) with Qwen 2.5 0.5B cleanup (about 430 MB). Devices with little memory offer
+speech without AI cleanup. Larger cleanup models, including 1.5B, remain available
+in Advanced Models.
 Downloads require a connection; inference works offline afterward. The existing
 memory policy controls unloading both engines.
 
@@ -121,6 +128,10 @@ foldables, landscape, outer displays, unfolded Fold/Pixel Fold, tablets,
 split-screen, and freeform windows all reclassify live (no restart, no state
 loss). Compact → bottom nav + single column; expanded → rail + comfortable
 multi-column (`shouldUseMultiPane` is available for list-detail views).
+On compact and medium windows Settings is a section list that drills into each
+section (list and section side by side on medium); expanded windows keep the
+sidebar rail. Mobile-only styling lives in `src/mobile.css`, scoped to
+`.app[data-android='true']` so desktop is untouched.
 Safe-area insets, cutouts, gesture nav, and hinge half-open postures are
 handled; `android:configChanges` (set by the Tauri template) keeps rotation
 and folding from recreating the activity.
@@ -198,10 +209,11 @@ turns on the accessibility service's event log (event types only, never text).
 
 ## Known limitations (v1)
 
-- Context resolution falls back to Everywhere on Android (the pipeline
-  resolves before Kotlin reports the package). The ack already carries the
-  package; feeding it into resolution is the designed follow-up
-  (`android_context_for_package` exists for it).
+- Context resolution uses the package Kotlin reports when recording starts, and in
+  a browser the page's host read from its address bar (with the last site seen as a
+  fallback while the omnibox is being edited). Apps without a readable address bar,
+  or pages with the toolbar scrolled away for longer than ten minutes, resolve to
+  Everywhere.
 - Contextual caps/spacing probes use desktop focus reads; on Android the
   cleanup model + dictionary carry formatting. Kotlin can supply surrounding
   text later for full parity.

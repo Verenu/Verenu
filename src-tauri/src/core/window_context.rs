@@ -79,7 +79,16 @@ pub fn is_browser_exe(process_name: &str) -> bool {
     BROWSER_EXES.iter().any(|(exe, _)| *exe == process_name)
         || matches!(process_name, "google-chrome" | "chromium" | "brave-browser" | "firefox" | "librewolf")
 }
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "android")]
+pub fn is_browser_exe(process_name: &str) -> bool {
+    crate::android::is_browser_package(process_name)
+}
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android"
+)))]
 pub fn is_browser_exe(_process_name: &str) -> bool {
     false
 }
@@ -145,7 +154,19 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
             .map(|window| window.class_name.to_ascii_lowercase())
             .filter(|class| !class.is_empty())
     }
-    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    // Android has no window handles; Kotlin reports the foreground package
+    // when a recording starts and that is the "executable" Contexts match on.
+    #[cfg(target_os = "android")]
+    {
+        let _ = hwnd;
+        crate::android::bridge::dictation_package()
+    }
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android"
+    )))]
     None
 }
 

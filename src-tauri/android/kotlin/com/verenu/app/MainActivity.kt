@@ -1,5 +1,6 @@
 package com.verenu.app
 
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.content.res.Configuration
 import android.graphics.Color
@@ -13,6 +14,7 @@ import androidx.core.view.WindowInsetsCompat
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
   @Volatile private var navOverlapPx = 0
+  @Volatile private var imeVisible = false
   private var navBarPx = 0
 
   override fun onWebViewCreate(webView: WebView) {
@@ -22,6 +24,10 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(object {
       @JavascriptInterface
       fun bottomInsetCssPx(): Float = navOverlapPx / resources.displayMetrics.density
+
+      /** Whether the soft keyboard is actually showing (not inferred from the window size). */
+      @JavascriptInterface
+      fun imeVisible(): Boolean = this@MainActivity.imeVisible
     }, "VerenuInsets")
     webView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateNavOverlap() }
   }
@@ -42,6 +48,9 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Portrait only: Verenu has no landscape layout. (Android 16 ignores this on
+    // large screens such as an unfolded foldable.)
+    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     installSystemBarInsets()
     // The accessibility service starts this activity only to load the Rust
     // backend (Tauri hosts it in this process). Don't leave the UI over the
@@ -72,12 +81,20 @@ class MainActivity : TauriActivity() {
     val baseLeft = content.paddingLeft
     val baseTop = content.paddingTop
     val baseRight = content.paddingRight
+    val baseBottom = content.paddingBottom
 
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
       val bars = insets.getInsets(
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
       navBarPx = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+      val nowVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+      if (nowVisible != imeVisible) {
+        imeVisible = nowVisible
+        // The page asks `imeVisible()` when this fires; resize events alone cannot
+        // tell a keyboard from a window that was simply made shorter.
+        webView?.post { webView?.evaluateJavascript("window.dispatchEvent(new Event('verenu-ime'))", null) }
+      }
       updateNavOverlap()
       view.setPadding(
         baseLeft + bars.left,
@@ -85,7 +102,14 @@ class MainActivity : TauriActivity() {
         baseRight + bars.right,
         // Samsung's WebView viewport already accounts for the navigation bar.
         // Applying it again lifts Verenu's bottom navigation unnecessarily.
-        content.paddingBottom,
+        // The keyboard is the exception: edge-to-edge disables the platform's
+        // adjustResize, so shrink the page by the keyboard's height ourselves.
+        // Sheets, forms and search fields then stay above it instead of under.
+        if (insets.isVisible(WindowInsetsCompat.Type.ime())) {
+          insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        } else {
+          baseBottom
+        },
       )
       insets
     }

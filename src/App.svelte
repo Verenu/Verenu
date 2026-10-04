@@ -143,6 +143,38 @@
   // Compact Android windows collapse the desktop rail to the bottom bar.
   // Desktop keeps its rail at every width.
   const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
+  // Settings needs to know whether it is the one-screen-at-a-time phone layout.
+  $effect(() => {
+    appStore.mobileCompact = isAndroid && viewport.widthClass === 'compact';
+  });
+
+  // The Android shell shrinks the page by the keyboard's height (MainActivity),
+  // so a viewport much shorter than the tallest one seen at this width means the
+  // keyboard is open. Pages hide the bottom bar then, instead of stacking it on
+  // top of the keyboard and squeezing the form being typed into.
+  let keyboardOpen = $state(false);
+  let stableViewport = { width: 0, height: 0 };
+  // The native shell reports whether the keyboard is really up. Window size alone
+  // cannot say: a split-screen or freeform window made shorter looks the same.
+  function nativeKeyboardOpen(): boolean | null {
+    const value = (window as any).VerenuInsets?.imeVisible?.();
+    return typeof value === 'boolean' ? value : null;
+  }
+  function trackKeyboard(snapshot: ViewportSnapshot) {
+    if (!isAndroid) return;
+    const native = nativeKeyboardOpen();
+    if (native !== null) {
+      keyboardOpen = native;
+      return;
+    }
+    // No native bridge (a browser session): fall back to the window-size heuristic.
+    if (Math.abs(snapshot.widthDp - stableViewport.width) > 1) {
+      stableViewport = { width: snapshot.widthDp, height: snapshot.heightDp };
+    } else if (snapshot.heightDp > stableViewport.height) {
+      stableViewport.height = snapshot.heightDp;
+    }
+    keyboardOpen = snapshot.heightDp < stableViewport.height - 140;
+  }
 
   // Error toast
   let errorToast = $state('');
@@ -217,6 +249,7 @@
         SETTINGS_SECTION_ORDER,
       );
       appStore.settingsSection = 'models';
+      appStore.settingsMobileList = false;
       appStore.settingsOpen = true;
       return;
     }
@@ -232,6 +265,7 @@
       SETTINGS_SECTION_ORDER,
     );
     appStore.settingsSection = section;
+    appStore.settingsMobileList = false;
     appStore.settingsOpen = true;
     errorToast = '';
     errorToastKind = null;
@@ -475,7 +509,7 @@
     // split-screen, freeform). No restart, no lost state on reclassification.
     const stopViewport = trackViewport(
       () => ({ width: window.innerWidth, height: window.innerHeight }),
-      (snapshot) => { viewport = snapshot; },
+      (snapshot) => { viewport = snapshot; trackKeyboard(snapshot); },
     );
 
     // The WebView draws under the system navigation/gesture bar on most
@@ -494,9 +528,29 @@
       applyInsets();
       const timers = [150, 600, 1500].map((ms) => window.setTimeout(applyInsets, ms));
       window.addEventListener('resize', applyInsets);
+      // Keep the field being typed in visible once the keyboard has resized the page.
+      let focusTimer: ReturnType<typeof setTimeout> | undefined;
+      const revealFocused = (event: FocusEvent) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement) || !target.matches('input, textarea, [contenteditable="true"]')) return;
+        clearTimeout(focusTimer);
+        focusTimer = setTimeout(() => {
+          if (target.isConnected) target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }, 320);
+      };
+      document.addEventListener('focusin', revealFocused);
+      const onNativeIme = () => {
+        const native = nativeKeyboardOpen();
+        if (native !== null) keyboardOpen = native;
+      };
+      window.addEventListener('verenu-ime', onNativeIme);
+      onNativeIme();
       stopInsets = () => {
+        window.removeEventListener('verenu-ime', onNativeIme);
         timers.forEach((t) => window.clearTimeout(t));
         window.removeEventListener('resize', applyInsets);
+        document.removeEventListener('focusin', revealFocused);
+        clearTimeout(focusTimer);
       };
     }
 
@@ -538,6 +592,7 @@
   data-android={isAndroid ? 'true' : 'false'}
   data-width-class={viewport.widthClass}
   data-compact-nav={compactNav ? 'true' : 'false'}
+  data-keyboard={keyboardOpen ? 'open' : 'closed'}
 >
   {#if isLinux && !isAndroid}
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
@@ -619,7 +674,7 @@
       <button class="btn-ghost btn-compact" aria-label="Dismiss model notice" onclick={() => { modelNotice = ''; clearTimeout(modelNoticeTimer); }}>Dismiss</button>
     </div>
   {/if}
-  {#if compactNav}
+  {#if compactNav && !keyboardOpen}
     <MobileNav />
   {/if}
 </div>
@@ -745,7 +800,7 @@
      behind it. */
   .app[data-compact-nav='true'] {
     --sidebar-w: 0px;
-    --mobile-nav-h: calc(60px + var(--safe-bottom));
+    --mobile-nav-h: calc(68px + var(--safe-bottom));
   }
 
   /* MainActivity applies the top/side WindowInsets to the WebView content root,

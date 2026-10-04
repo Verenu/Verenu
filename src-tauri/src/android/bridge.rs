@@ -485,7 +485,9 @@ fn state_payload(state: &BridgeState) -> Value {
                 .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
                 .and_then(Value::as_bool)
         })
-        .unwrap_or(false);
+        // On by default: the pill sits over the keyboard's own mic key instead
+        // of floating over the text being typed.
+        .unwrap_or(true);
     let appearance_mode = settings
         .as_ref()
         .and_then(|settings| {
@@ -630,6 +632,51 @@ pub(crate) fn last_pill_stage() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Dictation target (the app and site the recording started in)
+// ---------------------------------------------------------------------------
+
+/// What Kotlin reported when the recording started: the foreground package and,
+/// in a browser, the page's host. The pipeline has no window handle on Android,
+/// so Context resolution reads these instead. Hostname only, never a URL.
+#[derive(Default, Clone)]
+struct DictationTarget {
+    package: String,
+    domain: String,
+}
+
+fn dictation_target_cell() -> &'static Mutex<DictationTarget> {
+    static CELL: OnceLock<Mutex<DictationTarget>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(DictationTarget::default()))
+}
+
+fn set_dictation_target(package: &str, domain: &str) {
+    *dictation_target_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = DictationTarget {
+        package: package.trim().to_ascii_lowercase(),
+        domain: domain.trim().to_ascii_lowercase(),
+    };
+}
+
+/// Lowercased package of the app the current dictation started in.
+pub(crate) fn dictation_package() -> Option<String> {
+    let target = dictation_target_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    (!target.package.is_empty()).then_some(target.package)
+}
+
+/// Host of the page open in the browser the dictation started in.
+pub(crate) fn dictation_domain() -> Option<String> {
+    let target = dictation_target_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    (!target.domain.is_empty()).then_some(target.domain)
+}
+
+// ---------------------------------------------------------------------------
 // Error mirror (fed by pipeline::pill::show_error_pill)
 // ---------------------------------------------------------------------------
 
@@ -768,6 +815,7 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
         }
         ("POST", "/v1/recording/start") => {
             let package = str_field("package");
+            set_dictation_target(&package, &str_field("domain"));
             *state.package_hint.lock().unwrap_or_else(|e| e.into_inner()) = package;
             let Some(app) = state.app.clone() else {
                 return err(
@@ -1225,6 +1273,22 @@ mod tests {
             (store::CLEANUP_MODEL.into(), json!("local/qwen")),
         ]);
         assert!(!hide_pill_offline(&legacy));
+    }
+
+    #[test]
+    fn dictation_target_is_lowercased_and_replaced_each_recording() {
+        let _guard = crate::android::test_serial();
+        set_dictation_target(" com.Android.Chrome ", "Mail.Google.com");
+        assert_eq!(dictation_package().as_deref(), Some("com.android.chrome"));
+        assert_eq!(dictation_domain().as_deref(), Some("mail.google.com"));
+
+        // A later dictation in a non-browser app must not inherit the old site.
+        set_dictation_target("com.slack", "");
+        assert_eq!(dictation_package().as_deref(), Some("com.slack"));
+        assert_eq!(dictation_domain(), None);
+
+        set_dictation_target("", "");
+        assert_eq!(dictation_package(), None);
     }
 
     #[test]

@@ -68,7 +68,11 @@ class VerenuOverlayView @JvmOverloads constructor(
         fun onPillTap()
         fun onPillCancel()
         fun onPillRetry()
+        /** Start a fresh dictation from the cancelled notice. */
+        fun onPillRestart()
         fun onPillDismiss()
+        /** The pill's height changed (e.g. a one-line state became a two-line one). */
+        fun onPillResized() {}
         /** Long-press on the idle pill: it can now be dragged (raw screen px). */
         fun onPillDragStart()
         fun onPillDragMove(rawX: Int, rawY: Int)
@@ -85,10 +89,16 @@ class VerenuOverlayView @JvmOverloads constructor(
         val fg: Int,
         val muted: Int,
         val errorBg: Int,
+        val errorBorder: Int,
         val errorFg: Int,
     )
 
     var listener: Listener? = null
+
+    private companion object {
+        /** Height of every state when it is not covering the keyboard's mic key. */
+        const val PILL_HEIGHT_DP = 40f
+    }
 
     private val density = context.resources.displayMetrics.density
     private fun dp(value: Float) = value * density
@@ -116,6 +126,7 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     private var state: State = State.IDLE
     private var errorMessage = "Something went wrong"
+    private var errorRetry = true
 
     private val pill = FrameLayout(context)
     private val row = LinearLayout(context).apply {
@@ -189,8 +200,10 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    fun setError(message: String) {
+    /** [retry] shows the retry glyph; false when the only response is to dismiss. */
+    fun setError(message: String, retry: Boolean = true) {
         errorMessage = message.ifEmpty { "Something went wrong" }
+        errorRetry = retry
         if (state == State.ERROR) {
             render(animated = false)
         } else {
@@ -228,9 +241,41 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
+    /**
+     * A WRAP_CONTENT window is first measured against the system's preferred
+     * dialog width (about 320dp) and an ellipsized or single-line child never
+     * asks for more, so wide content (the error notice) got squeezed to fit.
+     * Measure against the real screen width instead.
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
+        val screen = resources.displayMetrics.widthPixels
+        val bounded = MeasureSpec.makeMeasureSpec(
+            if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) screen
+            else max(MeasureSpec.getSize(widthMeasureSpec), screen),
+            MeasureSpec.AT_MOST,
+        )
+        super.onMeasure(bounded, heightMeasureSpec)
+    }
+
+    /**
+     * Over the keyboard every state is as tall as the mic key it covers, so the
+     * keyboard's own chips and keys behind it stay hidden; the idle one is also
+     * exactly the key's width. Elsewhere it is a 40dp capsule.
+     */
     private fun applyMinimumSize() {
-        pill.minimumHeight = if (coverSize > 0) coverSize else dpi(36f)
-        pill.minimumWidth = if (coverSize > 0) coverSize else 0
+        val disc = coverSize > 0 && state == State.IDLE
+        pill.minimumHeight = if (coverSize > 0) coverSize else dpi(PILL_HEIGHT_DP)
+        pill.minimumWidth = if (disc) coverSize else 0
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // A taller or shorter state must stay centred on the keyboard's mic row.
+        if (h != oldh && oldh != 0) listener?.onPillResized()
     }
 
     /** 10 ms peak-envelope samples (linear 0..1) from the recorder. */
@@ -303,9 +348,11 @@ class VerenuOverlayView @JvmOverloads constructor(
         bg = if (dark) 0xE00F0E0E.toInt() else 0xE6FFFFFF.toInt(),
         border = if (dark) 0x12FFFFFF else 0x1F111110,
         fg = if (dark) 0xFFFFFFFF.toInt() else 0xFF111110.toInt(),
-        muted = if (dark) 0x73FFFFFF else 0x73111110,
-        errorBg = 0xEB351613.toInt(),
-        errorFg = 0xFFFFA194.toInt(),
+        muted = if (dark) 0x99FFFFFF.toInt() else 0x99111110.toInt(),
+        // Desktop --pill-error-*: a flat red-tinted capsule with a 1px ring.
+        errorBg = 0xFF351613.toInt(),
+        errorBorder = 0xFF7A3027.toInt(),
+        errorFg = 0xFFFF8F80.toInt(),
     )
 
     private fun applyChrome(animated: Boolean) {
@@ -313,7 +360,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         // Covering the keyboard's own button needs an opaque fill.
         val target = if (coverSize > 0) base or 0xFF000000.toInt() else base
         background.cornerRadius = dp(40f)
-        background.setStroke(dpi(1f), if (state == State.ERROR) 0x33FF8F80 else palette.border)
+        background.setStroke(dpi(1f), if (state == State.ERROR) palette.errorBorder else palette.border)
         val from = lastBg
         lastBg = target
         bgAnimator?.cancel()
@@ -334,9 +381,16 @@ class VerenuOverlayView @JvmOverloads constructor(
 
         val fromWidth = pill.width
         row.removeAllViews()
+        applyMinimumSize()
         val covering = coverSize > 0 && state == State.IDLE
-        val padH = if (covering) 0 else dpi(if (compact) 10f else 14f)
-        row.setPadding(padH, 0, padH, 0)
+        // Rows with a glyph button at either end hug it (desktop uses 5-8px).
+        val padH = when {
+            covering -> 0
+            state == State.RECORDING || state == State.CANCELLED -> dpi(if (compact) 8f else 5f)
+            state == State.ERROR -> dpi(5f)
+            else -> dpi(if (compact) 12f else 16f)
+        }
+        row.setPadding(padH, 0, if (state == State.ERROR && !errorRetry) dpi(16f) else padH, 0)
 
         when (state) {
             State.IDLE -> {
@@ -345,35 +399,56 @@ class VerenuOverlayView @JvmOverloads constructor(
             }
             State.RECORDING -> {
                 if (!compact) {
-                    row.addView(circleButton(IconView.Kind.CLOSE, palette.fg, "Cancel") { listener?.onPillCancel() }, LinearLayout.LayoutParams(dpi(28f), dpi(28f)))
+                    row.addView(glyphButton(IconView.Kind.CLOSE, palette.muted, "Cancel") { listener?.onPillCancel() }, glyphParams())
                 }
                 val w = WaveView(context, palette.fg, compact).also { wave = it }
                 row.addView(w, LinearLayout.LayoutParams(w.preferredWidth(), w.preferredHeight()).apply {
-                    marginStart = dpi(if (compact) 4f else 8f)
+                    marginStart = dpi(if (compact) 4f else 6f)
                     marginEnd = dpi(8f)
                 })
-                val stopSize = dpi(if (compact) 26f else 28f)
-                row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginStart = dpi(6f) })
+                val stopSize = dpi(26f)
+                row.addView(stopButton(), LinearLayout.LayoutParams(stopSize, stopSize).apply { marginEnd = dpi(3f) })
                 w.start()
             }
             State.TRANSCRIBING -> busyRow("Transcribing…")
             State.CLEANING -> busyRow("Cleaning up…")
             State.INSERTING -> busyRow("Pasting…")
             State.ERROR -> {
-                row.addView(circleButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss") { listener?.onPillDismiss() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)))
-                row.addView(icon(IconView.Kind.ALERT, 18f, palette.errorFg), iconParams(18f, 4f))
+                // Same as desktop: no status icon, the red surface says "error".
+                // Dismiss sits left (quiet), Retry right (the action).
+                row.addView(glyphButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss", alpha = 0.75f) { listener?.onPillDismiss() }, glyphParams())
                 row.addView(
-                    label(errorMessage, palette.errorFg).apply {
+                    label(errorMessage, palette.errorFg, 12.5f).apply {
                         maxLines = 2
-                        maxWidth = dpi(220f)
+                        maxWidth = dpi(236f)
                     },
-                    gapStart(8f),
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        marginStart = dpi(6f)
+                        marginEnd = dpi(if (errorRetry) 6f else 0f)
+                    },
                 )
-                row.addView(circleButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, LinearLayout.LayoutParams(dpi(30f), dpi(30f)).apply { marginStart = dpi(4f) })
+                if (errorRetry) {
+                    row.addView(glyphButton(IconView.Kind.RETRY, palette.errorFg, "Retry") { listener?.onPillRetry() }, glyphParams())
+                }
             }
             State.CANCELLED -> {
-                row.addView(icon(IconView.Kind.CLOSE, 16f, palette.muted), iconParams(16f))
-                row.addView(label("Cancelled", palette.muted), gapStart(8f))
+                // Desktop layout: muted dismiss, centred label, undo on the right.
+                // The pill body does nothing, so a stray tap never restarts.
+                row.addView(glyphButton(IconView.Kind.CLOSE, palette.muted, "Dismiss") { listener?.onPillDismiss() }, glyphParams())
+                row.addView(
+                    label("Cancelled", palette.fg, 12.5f).apply {
+                        gravity = Gravity.CENTER
+                        minWidth = dpi(84f)
+                    },
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply { marginStart = dpi(6f); marginEnd = dpi(6f) },
+                )
+                row.addView(glyphButton(IconView.Kind.UNDO, palette.fg, "Restart dictation") { listener?.onPillRestart() }, glyphParams())
             }
         }
 
@@ -414,14 +489,21 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The desktop's "still working" indicator: the stage name in a dimmed
+     * colour with a narrow bright band sweeping back and forth across it. No
+     * spinner.
+     */
     private fun busyRow(text: String) {
-        row.addView(SpinnerView(context, palette.fg), LinearLayout.LayoutParams(dpi(18f), dpi(18f)))
-        row.addView(label(text, palette.fg), gapStart(10f))
+        row.addView(
+            ShineTextView(context, text, palette.fg, if (compact) 12f else 13.5f),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
     }
 
-    private fun label(text: String, color: Int) = TextView(context).apply {
+    private fun label(text: String, color: Int, sizeSp: Float = if (compact) 12f else 13.5f) = TextView(context).apply {
         this.text = text
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, if (compact) 12f else 14f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         setTextColor(color)
         includeFontPadding = false
@@ -442,31 +524,40 @@ class VerenuOverlayView @JvmOverloads constructor(
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { marginStart = dpi(valueDp) }
 
-    /** A faint disc with a small glyph: the quiet counterpart to the solid stop button. */
-    private fun circleButton(
+    private fun glyphParams() = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
+
+    /**
+     * A borderless glyph, as on the desktop pill: no disc, just the mark, with a
+     * soft circle that appears while it is pressed. 36dp is a fair touch target
+     * inside the capsule.
+     */
+    private fun glyphButton(
         kind: IconView.Kind,
         color: Int,
         description: String,
+        alpha: Float = 1f,
         onClick: () -> Unit,
     ) = FrameLayout(context).apply {
         contentDescription = description
         isClickable = true
         isFocusable = false
-        layoutParams = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
-        background = GradientDrawable().apply {
+        this.alpha = alpha
+        val pressed = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor((color and 0x00FFFFFF) or 0x1F000000)
+            setColor((color and 0x00FFFFFF) or 0x26000000)
         }
-        addView(
-            IconView(context, kind, color),
-            LayoutParams(dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), dpi(if (kind == IconView.Kind.CLOSE) 10f else 16f), Gravity.CENTER),
-        )
+        background = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        }
+        val glyph = if (kind == IconView.Kind.CLOSE) 16f else 18f
+        addView(IconView(context, kind, color), LayoutParams(dpi(glyph), dpi(glyph), Gravity.CENTER))
         setOnClickListener { onClick() }
     }
 
     /** Solid light disc with a dark rounded square: the unmistakable stop. */
     private fun stopButton(): View {
-        val size = if (compact) 26f else 28f
+        val size = 26f
         return FrameLayout(context).apply {
             contentDescription = "Stop and transcribe"
             isClickable = true
@@ -493,7 +584,7 @@ class VerenuOverlayView @JvmOverloads constructor(
     // ------------------------------------------------------------------ icons
 
     private class IconView(context: Context, val kind: Kind, color: Int) : View(context) {
-        enum class Kind { MIC, CLOSE, RETRY, ALERT }
+        enum class Kind { MIC, CLOSE, RETRY, UNDO, ALERT }
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.color = color
@@ -522,24 +613,55 @@ class VerenuOverlayView @JvmOverloads constructor(
                     canvas.drawLine(cx, top + s * 0.8f, cx, top + s * 0.94f, paint)
                 }
                 Kind.CLOSE -> {
-                    val inset = s * 0.1f
-                    canvas.drawLine(left + inset, top + inset, left + s - inset, top + s - inset, paint)
-                    canvas.drawLine(left + s - inset, top + inset, left + inset, top + s - inset, paint)
+                    // Desktop glyph: "M6 6l12 12M6 18 18 6" on a 24 grid.
+                    val u = s / 24f
+                    paint.strokeWidth = 2.2f * u
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 6f * u, top + 6f * u)
+                            lineTo(left + 18f * u, top + 18f * u)
+                            moveTo(left + 6f * u, top + 18f * u)
+                            lineTo(left + 18f * u, top + 6f * u)
+                        },
+                        paint,
+                    )
                 }
                 Kind.RETRY -> {
-                    val oval = RectF(left + s * 0.14f, top + s * 0.14f, left + s * 0.86f, top + s * 0.86f)
-                    canvas.drawArc(oval, -40f, 290f, false, paint)
-                    // Arrowhead at the arc's start (-40°).
-                    val radius = s * 0.36f
-                    val angle = Math.toRadians(-40.0)
-                    val ax = cx + radius * cos(angle).toFloat()
-                    val ay = cy + radius * sin(angle).toFloat()
-                    val head = Path().apply {
-                        moveTo(ax + s * 0.04f, ay - s * 0.22f)
-                        lineTo(ax, ay)
-                        lineTo(ax + s * 0.22f, ay + s * 0.02f)
-                    }
-                    canvas.drawPath(head, paint)
+                    // Desktop glyph: arc "M21 12a9 9 0 1 1-2.64-6.36" and arrow "M21 4v5h-5".
+                    val u = s / 24f
+                    paint.strokeWidth = 2.2f * u
+                    canvas.drawArc(RectF(left + 3f * u, top + 3f * u, left + 21f * u, top + 21f * u), 0f, 315f, false, paint)
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 21f * u, top + 4f * u)
+                            lineTo(left + 21f * u, top + 9f * u)
+                            lineTo(left + 16f * u, top + 9f * u)
+                        },
+                        paint,
+                    )
+                }
+                Kind.UNDO -> {
+                    // Desktop glyph: "M9 14 4 9l5-5" and "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11".
+                    val u = s / 24f
+                    paint.strokeWidth = 2.2f * u
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 9f * u, top + 14f * u)
+                            lineTo(left + 4f * u, top + 9f * u)
+                            lineTo(left + 9f * u, top + 4f * u)
+                        },
+                        paint,
+                    )
+                    canvas.drawPath(
+                        Path().apply {
+                            moveTo(left + 4f * u, top + 9f * u)
+                            lineTo(left + 14.5f * u, top + 9f * u)
+                            arcTo(RectF(left + 9f * u, top + 9f * u, left + 20f * u, top + 20f * u), -90f, 90f)
+                            arcTo(RectF(left + 9f * u, top + 9f * u, left + 20f * u, top + 20f * u), 0f, 90f)
+                            lineTo(left + 11f * u, top + 20f * u)
+                        },
+                        paint,
+                    )
                 }
                 Kind.ALERT -> {
                     canvas.drawCircle(cx, cy, s * 0.42f, paint)
@@ -550,28 +672,74 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-    // ---------------------------------------------------------------- spinner
+    // ------------------------------------------------------------ shine text
 
-    private class SpinnerView(context: Context, color: Int) : View(context) {
-        private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = (color and 0x00FFFFFF) or 0x33000000
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
+    /**
+     * Port of the desktop `.stage-label` + `.stage-shine` pair: the label dimmed
+     * (70% here, 45% on desktop), with a ~3-character band (clear, half, full, half, clear) that
+     * travels from the first letter to the last and back, ease-in-out, every
+     * 1.05 s. The band stays on the word at both ends, so the text never fades
+     * out between sweeps.
+     */
+    private class ShineTextView(context: Context, private val text: String, private val color: Int, sizeSp: Float) : View(context) {
+        private val density = context.resources.displayMetrics.density
+        private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            // 70%, not the desktop's 45%: on a phone, at arm's length, over a keyboard,
+            // 45% left everything outside the band unreadable.
+            // `this@ShineTextView.color`: inside Paint.apply a bare `color` is the
+            // paint's own (black) colour, which is what this used to draw in.
+            this.color = (this@ShineTextView.color and 0x00FFFFFF) or 0xB3000000.toInt()
+            textSize = sizeSp * context.resources.displayMetrics.scaledDensity
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
-        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
+        private val bandWidth = 32f * density
+        private val textWidth = base.measureText(text)
+        private val baseline = -base.fontMetrics.ascent
+        private val travel = kotlin.math.max(0f, textWidth - bandWidth)
+        private val rgb = color and 0x00FFFFFF
+        private val gradientColors = intArrayOf(
+            rgb,
+            rgb or 0x80000000.toInt(),
+            rgb or 0xFF000000.toInt(),
+            rgb or 0x80000000.toInt(),
+            rgb,
+        )
+        private val gradientStops = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
+        private val gradient = android.graphics.LinearGradient(
+            0f, 0f, bandWidth, 0f,
+            gradientColors,
+            gradientStops,
+            android.graphics.Shader.TileMode.CLAMP,
+        )
+        private val gradientMatrix = android.graphics.Matrix()
+        private val shine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = base.textSize
+            typeface = base.typeface
+            shader = gradient
         }
-        private var angle = 0f
-        private val animator = ValueAnimator.ofFloat(0f, 360f).apply {
-            duration = 850
-            interpolator = LinearInterpolator()
+        private var progress = 0f
+        private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1050
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
             addUpdateListener {
-                angle = it.animatedValue as Float
+                progress = it.animatedValue as Float
                 invalidate()
             }
+        }
+        init {
+            contentDescription = text
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val fm = base.fontMetrics
+            val desiredWidth = kotlin.math.ceil(textWidth).toInt() + 2
+            val desiredHeight = kotlin.math.ceil(fm.descent - fm.ascent).toInt()
+            setMeasuredDimension(
+                resolveSizeAndState(desiredWidth, widthMeasureSpec, 0),
+                resolveSizeAndState(desiredHeight, heightMeasureSpec, 0),
+            )
         }
 
         override fun onAttachedToWindow() {
@@ -585,13 +753,13 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
 
         override fun onDraw(canvas: Canvas) {
-            val stroke = max(2f, width * 0.12f)
-            ring.strokeWidth = stroke
-            arc.strokeWidth = stroke
-            val inset = stroke / 2f + 0.5f
-            val rect = RectF(inset, inset, width - inset, height - inset)
-            canvas.drawArc(rect, 0f, 360f, false, ring)
-            canvas.drawArc(rect, angle, 100f, false, arc)
+            canvas.drawText(text, 0f, baseline, base)
+            val left = progress * travel
+            gradientMatrix.setTranslate(left, 0f)
+            gradient.setLocalMatrix(gradientMatrix)
+            // Clamp keeps the shader transparent beyond the band, so the whole
+            // word is drawn once and only the band shows.
+            canvas.drawText(text, 0f, baseline, shine)
         }
     }
 

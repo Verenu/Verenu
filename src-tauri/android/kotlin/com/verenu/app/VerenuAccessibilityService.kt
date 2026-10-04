@@ -21,6 +21,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 
 /**
@@ -53,9 +54,37 @@ import android.widget.Toast
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
-        private const val IME_SETTLE_MS = 140L
+        private const val IME_SETTLE_MS = 40L
         private const val CONTEXT_CHARS = 200
         private const val SNOOZE_MS = 15L * 60_000L
+        /** Address-bar view ids per browser package (resource names, no package prefix). */
+        private val BROWSER_URL_BAR_IDS = mapOf(
+            "com.android.chrome" to listOf("url_bar"),
+            "com.chrome.beta" to listOf("url_bar"),
+            "com.chrome.dev" to listOf("url_bar"),
+            "com.chrome.canary" to listOf("url_bar"),
+            "com.brave.browser" to listOf("url_bar"),
+            "com.microsoft.emmx" to listOf("url_bar"),
+            "com.vivaldi.browser" to listOf("url_bar"),
+            "com.kiwibrowser.browser" to listOf("url_bar"),
+            "com.opera.browser" to listOf("url_bar", "url_field"),
+            "com.sec.android.app.sbrowser" to listOf("location_bar_edit_text"),
+            "org.mozilla.firefox" to listOf("mozac_browser_toolbar_url_view"),
+            "org.mozilla.firefox_beta" to listOf("mozac_browser_toolbar_url_view"),
+            "org.mozilla.fenix" to listOf("mozac_browser_toolbar_url_view"),
+            "com.duckduckgo.mobile.android" to listOf("omnibarTextInput"),
+        )
+
+        /** "https://www.example.com/a?b" or "example.com" → "example.com"; "" if not a host. */
+        internal fun hostFromAddressText(raw: String): String {
+            val text = raw.trim().lowercase()
+            if (text.isEmpty() || text.any { it.isWhitespace() }) return ""
+            val host = text.substringAfter("://").substringBefore('/').substringBefore('?')
+                .substringBefore('#').substringAfterLast('@').substringBefore(':')
+                .removePrefix("www.")
+            return if (host.contains('.')) host else ""
+        }
+
         private val MIC_LABEL = Regex("voice|dictat|microphone|speech|\\bmic\\b", RegexOption.IGNORE_CASE)
         private val MIC_EXCLUDE = Regex("permission|settings|language|\\bsend\\b", RegexOption.IGNORE_CASE)
         const val TAG = "VerenuA11y"
@@ -67,6 +96,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         const val BACKEND_LAUNCH_COOLDOWN_MS = 20_000L
         const val BACKEND_START_WAIT_MS = 12_000L
         const val HIDE_DEBOUNCE_MS = 450L
+        const val MIC_MISS_RETRY_MS = 120L
+        const val BROWSER_SITE_TTL_MS = 10L * 60_000L
+        const val BROWSER_SCAN_INTERVAL_MS = 1_500L
         const val POLL_RECORDING_MS = 60L
         const val INSERT_ATTEMPT_MS = 350L
         const val INSERT_WAIT_FOR_FIELD_MS = 6_000L
@@ -220,8 +252,21 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         // IME events describe the keyboard, not the app being edited. Never
         // let Gboard/Samsung Keyboard become the Context or insertion target.
-        if (VerenuFocusPackages.isAppWindow(pkg, packageName, imePackage)) {
-            foregroundPackage = pkg
+        // Content changes also arrive from unfocused split-screen apps. Only
+        // focus events and the focused application window can change targets.
+        foregroundPackage = VerenuFocusPackages.eventTarget(
+            foregroundPackage, pkg, event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            packageName, imePackage,
+        )
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            refreshForegroundPackage(imePackage)
+        }
+        if (pkg == foregroundPackage && BROWSER_URL_BAR_IDS.containsKey(pkg) &&
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        ) {
+            rememberBrowserDomain(pkg)
         }
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
@@ -282,13 +327,36 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun scheduleKeyboardVisibilityCheck() {
         mainHandler.removeCallbacks(imeVisibilityCheck)
-        mainHandler.postDelayed(imeVisibilityCheck, 100L)
+        // While the pill is waiting for the keyboard to appear, look again at
+        // once rather than a tenth of a second later (every event re-arms this,
+        // so the longer delay always landed 100 ms after the keyboard's own event).
+        mainHandler.postDelayed(imeVisibilityCheck, if (keyboardVisible && !overlayAttached) 16L else 100L)
     }
 
     private fun defaultImePackage(): String? = Settings.Secure.getString(
         contentResolver,
         Settings.Secure.DEFAULT_INPUT_METHOD,
     )?.substringBefore('/')
+
+    private fun refreshForegroundPackage(imePackage: String?) {
+        val interactiveWindows = windows
+        try {
+            for (window in interactiveWindows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION || !window.isFocused) continue
+                val root = window.root ?: continue
+                try {
+                    val owner = root.packageName?.toString().orEmpty()
+                    if (VerenuFocusPackages.isAppWindow(owner, packageName, imePackage)) {
+                        foregroundPackage = owner
+                    }
+                } finally {
+                    root.recycle()
+                }
+            }
+        } finally {
+            interactiveWindows.forEach { it.recycle() }
+        }
+    }
 
     private fun isDeviceLocked(): Boolean =
         (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked == true
@@ -393,7 +461,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         if (keyboardVisible) {
             if (overlayAttached) applyOverlayPresentation() else refreshOverlayVisibility()
-            mainHandler.postDelayed(imeVisibilityCheck, 60L)
+            mainHandler.postDelayed(imeVisibilityCheck, if (overlayAttached) 60L else 30L)
         }
     }
 
@@ -518,9 +586,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
     }
 
+    // A cancelled notice only belongs to the keyboard it was shown over; it
+    // never keeps the pill alive on its own (errors do, so they are not missed).
     private fun transientNoticeVisible(): Boolean =
-        (overlayState == VerenuOverlayView.State.ERROR ||
-            overlayState == VerenuOverlayView.State.CANCELLED) &&
+        overlayState == VerenuOverlayView.State.ERROR &&
             System.currentTimeMillis() - transientShownAtMs < TRANSIENT_AUTO_HIDE_MS
 
     private fun refreshOverlayVisibility() {
@@ -636,10 +705,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val imeRight = (imeBounds?.right ?: screenWidth).coerceAtMost(screenWidth)
                 val imeTopEdge = imeBounds?.top ?: 0
                 val right = minOf(cover.centerX() + size / 2, imeRight - (2 * density).toInt())
-                val top = maxOf(cover.centerY() - size / 2, imeTopEdge)
+                // Centre whatever state is showing on the key's row: the idle disc
+                // is the key's size, the other states are shorter or taller.
+                val viewHeight = overlay?.height?.takeIf { it > 0 } ?: (size + 2 * pad)
                 params.gravity = Gravity.TOP or Gravity.END
                 params.x = (screenWidth - right - pad).coerceAtLeast(0)
-                params.y = (top - pad).coerceAtLeast(0)
+                params.y = (cover.centerY() - viewHeight / 2).coerceAtLeast(imeTopEdge - pad).coerceAtLeast(0)
             }
             // Docked while the keyboard is away: out of the way, at the top.
             docked && followsKeyboard() -> underPunchHole()
@@ -680,6 +751,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     /** Push theme/compact state into the view and glide it to its placement. */
     private fun applyOverlayPresentation() {
         val view = overlay ?: return
+        if (keyboardVisible && imeBoundsSettled()) imeBoundsPx()?.let { rememberImeHeight(it) }
         view.setDark(resolveDark())
         view.setCompact(isDocked())
         refreshCover(view)
@@ -687,9 +759,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     /** Decide whether, and where, the pill covers the keyboard's mic button. */
-    private fun refreshCover(view: VerenuOverlayView) {
+    private fun refreshCover(view: VerenuOverlayView, preferPrediction: Boolean = false) {
         val rect = if (coverKeyboardMic && followsKeyboard() && !isDocked() && keyboardVisible) {
-            keyboardMicBounds()
+            if (preferPrediction) predictedMicBounds() ?: keyboardMicBounds() else keyboardMicBounds()
         } else {
             null
         }
@@ -719,10 +791,17 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
      */
     private fun keyboardMicBounds(): android.graphics.Rect? {
         val ime = imeBoundsPx() ?: return null
+        // Keys report mid-flight positions while the keyboard slides in (and not
+        // in step with its window), so only read them once it has docked. Until
+        // then the remembered position stands in (see predictedMicBounds).
+        if (imeIsSliding()) return null
         val now = SystemClock.elapsedRealtime()
         // Re-check often: the keyboard can swap rows (e.g. to symbols) and move or
         // drop the mic key without its window bounds changing.
-        val fresh = micCacheKey == ime && now - micCacheAtMs < 600L
+        // A miss is retried quickly: the key tree is often not populated yet while
+        // the keyboard is still appearing.
+        val ttl = if (micCache == null) MIC_MISS_RETRY_MS else 600L
+        val fresh = micCacheKey == ime && now - micCacheAtMs < ttl
         if (fresh) return micCache
         micCacheKey = android.graphics.Rect(ime)
         micCacheAtMs = now
@@ -746,7 +825,54 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             null
         }
         if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "keyboard mic lookup ime=$ime found=$micCache")
+        micCache?.let { rememberMicPlacement(ime, it) }
         return micCache
+    }
+
+    private val placementPrefs by lazy { getSharedPreferences("verenu_overlay_placement", MODE_PRIVATE) }
+
+    private fun placementKey(ime: android.graphics.Rect) =
+        "mic:${defaultImePackage().orEmpty()}:${ime.width()}"
+
+    /** Remember where this keyboard keeps its mic key, relative to its own bounds. */
+    private fun rememberMicPlacement(ime: android.graphics.Rect, mic: android.graphics.Rect) {
+        if (!android.graphics.Rect(ime).contains(mic)) return
+        val value = "${mic.left - ime.left},${ime.bottom - mic.top},${mic.width()},${mic.height()}"
+        if (placementPrefs.getString(placementKey(ime), null) != value) {
+            placementPrefs.edit().putString(placementKey(ime), value).apply()
+        }
+    }
+
+    private var lastRememberedImeHeight = -1
+
+    private fun imeHeightKey(ime: android.graphics.Rect) =
+        "h:${defaultImePackage().orEmpty()}:${ime.width()}"
+
+    /** Remember the keyboard's settled height so the next opening can skip the settle wait. */
+    private fun rememberImeHeight(ime: android.graphics.Rect) {
+        if (ime.height() == lastRememberedImeHeight) return
+        lastRememberedImeHeight = ime.height()
+        placementPrefs.edit().putInt(imeHeightKey(ime), ime.height()).apply()
+    }
+
+    /** True when this keyboard has the same height as the last time we placed the pill over it. */
+    private fun imeLayoutKnown(): Boolean {
+        val ime = imeBoundsPx() ?: return false
+        return placementPrefs.getInt(imeHeightKey(ime), -1) == ime.height()
+    }
+
+    /**
+     * Where the mic key was the last time this keyboard was seen. Used for the
+     * first frames after the keyboard opens, before its key tree can be read;
+     * the real position replaces it as soon as the lookup succeeds.
+     */
+    private fun predictedMicBounds(): android.graphics.Rect? {
+        val ime = imeBoundsPx() ?: return null
+        val parts = placementPrefs.getString(placementKey(ime), null)?.split(',')?.mapNotNull { it.toIntOrNull() }
+        if (parts == null || parts.size != 4) return null
+        val (dx, fromBottom, w, h) = parts
+        val rect = android.graphics.Rect(ime.left + dx, ime.bottom - fromBottom, ime.left + dx + w, ime.bottom - fromBottom + h)
+        return if (ime.contains(rect)) rect else null
     }
 
     private fun findMicNode(node: AccessibilityNodeInfo, imeWidth: Int, depth: Int): android.graphics.Rect? {
@@ -820,16 +946,39 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    /**
+     * The keyboard window's bounds, as they will be once it has finished sliding
+     * in. While it slides its window is reported hanging off the bottom of the
+     * screen at full height; shifting it up by the overhang gives the final
+     * position straight away, so the pill does not have to wait out the animation.
+     */
     private fun imeBoundsPx(): android.graphics.Rect? = try {
         val rect = android.graphics.Rect()
         windows
             .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let {
                 it.getBoundsInScreen(rect)
+                val overhang = slideOverhang(rect)
+                if (overhang > 0) rect.offset(0, -overhang)
                 if (rect.height() > 0) rect else null
             }
     } catch (e: Exception) {
         null
+    }
+
+    /** How far below the screen a still-sliding keyboard window currently hangs (0 once docked). */
+    private fun slideOverhang(raw: android.graphics.Rect): Int {
+        val overhang = raw.bottom - realScreenHeightPx()
+        return if (overhang > 2 && overhang < raw.height()) overhang else 0
+    }
+
+    private fun imeIsSliding(): Boolean = try {
+        val rect = android.graphics.Rect()
+        windows
+            .firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            ?.let { it.getBoundsInScreen(rect); slideOverhang(rect) > 0 } ?: false
+    } catch (e: Exception) {
+        false
     }
 
     private fun imeTopPx(): Int? = imeBoundsPx()?.top
@@ -899,13 +1048,16 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         // window reports bounds while it is still sliding up, so wait until
         // they stop changing; otherwise the pill spawns mid-keyboard and then
         // jumps. The 60 ms IME check retries.
-        if (followsKeyboard() && !isDictationActive() && !imeBoundsSettled()) return
+        if (followsKeyboard() && !isDictationActive() && !imeLayoutKnown() && !imeBoundsSettled()) {
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "overlay waiting for keyboard bounds ime=${imeBoundsPx()}")
+            return
+        }
         try {
             val view = VerenuOverlayView(this).apply {
                 listener = this@VerenuAccessibilityService
                 setDark(resolveDark())
                 setCompact(isDocked())
-                refreshCover(this)
+                refreshCover(this, preferPrediction = true)
             }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -924,6 +1076,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             overlayAttached = true
             setOverlayState(overlayState)
             view.animateIn()
+            if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "overlay attached cover=$coverSizePx")
             if (Log.isLoggable(TAG, Log.DEBUG)) {
                 view.postDelayed({ Log.d(TAG, "overlay ${view.debugDescribe()}") }, 700L)
             }
@@ -942,6 +1095,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         overlayMoveAnimator?.cancel()
         dragging = false
         hideSnoozeTarget()
+        // A cancelled notice must not reappear with the next keyboard.
+        if (overlayState == VerenuOverlayView.State.CANCELLED) overlayState = VerenuOverlayView.State.IDLE
         val view = overlay ?: return
         overlay = null
         overlayParams = null
@@ -972,7 +1127,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         refreshOverlayVisibility()
         val view = overlay ?: return
         if (next == VerenuOverlayView.State.ERROR && overlayErrorMessage.isNotEmpty()) {
-            view.setError(overlayErrorMessage)
+            view.setError(overlayErrorMessage, retry = errorAction != ErrorAction.DISMISS)
         } else {
             view.updateState(next)
         }
@@ -993,9 +1148,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     override fun onPillTap() {
         when (overlayState) {
-            VerenuOverlayView.State.IDLE,
-            VerenuOverlayView.State.CANCELLED,
-            -> startDictation()
+            VerenuOverlayView.State.IDLE -> startDictation()
+            // The cancelled notice has its own dismiss and restart buttons.
+            VerenuOverlayView.State.CANCELLED -> Unit
             VerenuOverlayView.State.RECORDING -> stopDictation()
             VerenuOverlayView.State.ERROR -> retryDictation()
             else -> Unit // transcribing/cleaning/inserting: taps are no-ops
@@ -1196,15 +1351,110 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    override fun onPillResized() {
+        if (overlayAttached) repositionOverlay()
+    }
+
+    override fun onPillRestart() {
+        if (overlayState != VerenuOverlayView.State.CANCELLED) return
+        setOverlayState(VerenuOverlayView.State.IDLE)
+        startDictation()
+    }
+
     override fun onPillDismiss() {
         if (!isDictationActive() &&
             errorAction != ErrorAction.RETRY_STOP &&
             errorAction != ErrorAction.RETRY_CANCEL
         ) {
             overlayErrorMessage = ""
+            // Back to the idle pill when the keyboard is still up, so a new
+            // dictation can start without reopening it; otherwise get out of
+            // the way immediately.
             setOverlayState(VerenuOverlayView.State.IDLE)
-            hideOverlay()
+            if (!shouldShowOverlay()) hideOverlay()
         }
+    }
+
+    private var lastBrowserSite: Triple<String, String, Long>? = null
+    private var lastBrowserScanMs = 0L
+
+    /**
+     * The host of the page open in a browser (never the full URL), so Contexts
+     * attached to websites can match. Best effort: reads the address bar's text
+     * and returns "" for any app that is not a known browser.
+     */
+    private fun readBrowserDomain(pkg: String): String {
+        if (!BROWSER_URL_BAR_IDS.containsKey(pkg)) return ""
+        val live = scanAddressBar(pkg)
+        if (live.isNotEmpty()) {
+            lastBrowserSite = Triple(pkg, live, SystemClock.elapsedRealtime())
+            return live
+        }
+        // The address bar is empty or hidden exactly when someone is typing in
+        // the omnibox or the page has scrolled the toolbar away, so fall back to
+        // the last site seen in this browser a moment ago.
+        val seen = lastBrowserSite
+        return if (seen != null && seen.first == pkg &&
+            SystemClock.elapsedRealtime() - seen.third < BROWSER_SITE_TTL_MS
+        ) seen.second else ""
+    }
+
+    /** Cheap, throttled refresh while a browser is in front, so the last site is known. */
+    private fun rememberBrowserDomain(pkg: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBrowserScanMs < BROWSER_SCAN_INTERVAL_MS) return
+        lastBrowserScanMs = now
+        val host = scanAddressBar(pkg)
+        if (host.isNotEmpty()) lastBrowserSite = Triple(pkg, host, now)
+    }
+
+    private fun scanAddressBar(pkg: String): String {
+        val ids = BROWSER_URL_BAR_IDS[pkg] ?: return ""
+        try {
+            val root = browserApplicationRoot(pkg) ?: return ""
+            try {
+                for (id in ids) {
+                    val nodes = root.findAccessibilityNodeInfosByViewId("$pkg:id/$id") ?: continue
+                    var found = ""
+                    for (node in nodes) {
+                        try {
+                            if (found.isEmpty()) {
+                                val raw = node.text?.toString()?.trim().orEmpty()
+                                found = hostFromAddressText(raw)
+                            }
+                        } finally {
+                            node.recycle()
+                        }
+                    }
+                    if (found.isNotEmpty()) return found
+                }
+            } finally {
+                root.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "address bar unreadable", e)
+        }
+        return ""
+    }
+
+    /** Prefer the active browser root, then find that package's application window. */
+    private fun browserApplicationRoot(pkg: String): AccessibilityNodeInfo? {
+        val active = rootInActiveWindow
+        if (active?.packageName?.toString() == pkg) return active
+        active?.recycle()
+
+        val interactiveWindows = windows
+        try {
+            for (window in interactiveWindows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                val root = window.root ?: continue
+                if (root.packageName?.toString() == pkg) return root
+                root.recycle()
+            }
+        } finally {
+            interactiveWindows.forEach { it.recycle() }
+        }
+        return null
     }
 
     private fun startDictation() {
@@ -1216,6 +1466,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             showOverlayError("Could not start recording", ErrorAction.RETRY_START)
             return
         }
+        // Read on the calling thread: accessibility node access belongs here.
+        val domain = readBrowserDomain(pkg)
+        if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "dictation target browser=${BROWSER_URL_BAR_IDS.containsKey(pkg)} siteFound=${domain.isNotEmpty()}")
         handler.post {
             // Make sure Rust is up first (cold-started service process).
             val backendUp = ensureBackendRunning(waitMs = BACKEND_START_WAIT_MS)
@@ -1237,7 +1490,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 return@post
             }
             val resp = try {
-                bridge.startRecording(pkg, editable, setText)
+                bridge.startRecording(pkg, editable, setText, domain)
             } catch (e: Exception) {
                 Log.w(TAG, "start recording failed", e)
                 null

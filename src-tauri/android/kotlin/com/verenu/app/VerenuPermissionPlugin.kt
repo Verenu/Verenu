@@ -7,12 +7,18 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
+import android.util.Base64
+import java.io.ByteArrayOutputStream
+import org.json.JSONObject
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.appcompat.app.AppCompatActivity
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -20,7 +26,14 @@ import app.tauri.annotation.Permission
 import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSArray
+import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+
+@InvokeArg
+internal class AppIconArgs {
+  lateinit var packageName: String
+}
 
 @InvokeArg
 internal class PermissionRequestArgs {
@@ -37,9 +50,93 @@ internal class PermissionRequestArgs {
 class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) {
   private var pendingRuntimePermission: String? = null
   private var pendingSettingsPermission: String? = null
+  private val appInfoWorker = VerenuAppInfoWorker()
+
+  override fun onDestroy(activity: AppCompatActivity) {
+    appInfoWorker.close()
+    iconCache.clear()
+    super.onDestroy(activity)
+  }
 
   private val askedPrefs by lazy {
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
+  }
+
+  /** An app's launcher icon as a PNG data URI (null when it cannot be read). */
+  @Command
+  fun appIcon(invoke: Invoke) {
+    val args = invoke.parseArgs(AppIconArgs::class.java)
+    val cached = iconCache[args.packageName]
+    if (cached != null) {
+      invoke.resolve(iconResponse(cached))
+      return
+    }
+    appInfoWorker.submit(
+      work = {
+        try {
+          iconCache.computeIfAbsent(args.packageName) { loadIconSafely(it) }
+        } catch (_: Exception) {
+          ""
+        } catch (_: OutOfMemoryError) {
+          ""
+        }
+      },
+      complete = { invoke.resolve(iconResponse(it)) },
+      cancelled = { invoke.resolve(iconResponse("")) },
+    )
+  }
+
+  private fun iconResponse(uri: String) =
+    JSObject().put("icon", if (uri.isEmpty()) JSONObject.NULL else uri)
+
+  private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+  private fun loadIconSafely(pkg: String): String = try {
+    launcherIconDataUri(pkg) ?: ""
+  } catch (_: Exception) {
+    ""
+  } catch (_: OutOfMemoryError) {
+    ""
+  }
+
+  private fun launcherIconDataUri(pkg: String): String? {
+    val drawable = activity.packageManager.getApplicationIcon(pkg)
+    val size = (48 * activity.resources.displayMetrics.density).toInt().coerceIn(48, 192)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    try {
+      val canvas = Canvas(bitmap)
+      drawable.setBounds(0, 0, size, size)
+      drawable.draw(canvas)
+      val out = ByteArrayOutputStream()
+      if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) return null
+      return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    } finally {
+      bitmap.recycle()
+    }
+  }
+
+  /** Launcher apps (label + package), for the Contexts app picker. */
+  @Command
+  fun installedApps(invoke: Invoke) {
+    appInfoWorker.submit(
+      work = {
+          val pm = activity.packageManager
+          val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+          val seen = HashSet<String>()
+          val apps = JSArray()
+          pm.queryIntentActivities(launcher, 0)
+            .asSequence()
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString().trim() }
+            .filter { (pkg, label) -> label.isNotEmpty() && pkg != activity.packageName && seen.add(pkg) }
+            .sortedBy { it.second.lowercase() }
+            .forEach { (pkg, label) ->
+              apps.put(JSObject().put("name", label).put("exe", pkg))
+            }
+          JSObject().put("apps", apps)
+      },
+      complete = { invoke.resolve(it) },
+      cancelled = { invoke.reject("Could not list installed apps") },
+    )
   }
 
   @Command

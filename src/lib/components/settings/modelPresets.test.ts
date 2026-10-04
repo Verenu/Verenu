@@ -58,10 +58,13 @@ describe('Android offline presets', () => {
     expect(presets).toHaveLength(1);
     expect(presets[0].target?.cleanupDefaultModel).toBe('local/qwen2.5-0.5b-instruct');
   });
-  it('offers stronger cleanup without recommending multi-GB desktop speech models', () => {
-    const presets = buildPresets(noKeys, { ...phone, totalRamMb: 12288 }, true);
-    expect(presets.map(p => p.target?.cleanupDefaultModel)).toEqual(['local/qwen2.5-0.5b-instruct', 'local/qwen2.5-1.5b-instruct']);
-    expect(presets.every(p => p.target?.transcriptionDefaultModel === 'local/moonshine-tiny')).toBe(true);
+  it('defaults every phone to the 0.5B cleanup model, however much RAM it has', () => {
+    for (const totalRamMb of [4096, 8192, 12288, 16384]) {
+      const presets = buildPresets(noKeys, { ...phone, totalRamMb }, true);
+      expect(presets).toHaveLength(1);
+      expect(presets[0].target?.cleanupDefaultModel).toBe('local/qwen2.5-0.5b-instruct');
+      expect(presets[0].target?.transcriptionDefaultModel).toBe('local/moonshine-tiny');
+    }
   });
   it('still hides offline choices when packaged runtimes are missing', () => {
     expect(buildPresets(noKeys, phone, false).map(p => p.kind)).toEqual(['add-key']);

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
   import { fade, fly, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
@@ -8,6 +8,7 @@
   import { isTrustworthy, CLOUD_PROVIDERS, modelCatalogStore, refreshCatalog, trackedIds } from '../../modelCatalogStore.svelte';
   import { expandFromOrigin, modalBackdrop, MOTION_MS, motionMs } from '../../motion';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
+  import { isAndroid } from '../../platform';
   import LocalDownloadProgress from './LocalDownloadProgress.svelte';
   import type { ProviderId } from '../../settings';
   import { modelId, providerDisplayLabel, splitModelId, taskLabel, type TaskType } from './models';
@@ -78,7 +79,25 @@
 
   let modalEl = $state<HTMLElement | null>(null);
   let query = $state('');
-  let providerFilter = $state<ProviderId | 'all'>('all');
+  // The unfiltered list is every provider's models (about 45 rows with inline
+  // logos). On a phone, open on the provider of the current choice instead: a
+  // fraction of the DOM to build, lay out and animate when the dialog opens.
+  let providerFilter = $state<ProviderId | 'all'>(
+    // Read once on purpose: the filter is the user's from then on.
+    isAndroid ? (untrack(() => splitModelId(defaultModel)?.provider) ?? 'all') : 'all',
+  );
+
+  // Row and dialog motion is dropped or simplified on Android: dozens of
+  // simultaneous transitions, plus a scale from 18% on a card this size, is what
+  // made opening the picker stall a phone.
+  const rowIn = (node: Element, params: Parameters<typeof fly>[1]) =>
+    isAndroid ? { duration: 0 } : fly(node, params);
+  const rowOut = (node: Element, params: Parameters<typeof fade>[1]) =>
+    isAndroid ? { duration: 0 } : fade(node, params);
+  const cardMotion = (node: Element, params: { origin?: { x: number; y: number }; duration?: number }) =>
+    isAndroid
+      ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
+      : expandFromOrigin(node, params);
   /**
    * Everything a provider lists that Verenu hasn't vetted. Off by default —
    * these come straight from the live `/v1/models` fetch, so a brand-new model
@@ -101,7 +120,9 @@
     updatePanelLeft();
     window.addEventListener('resize', updatePanelLeft);
     requestAnimationFrame(() => {
-      if (modalEl?.isConnected) {
+      // Android: do not raise the keyboard on open; it resizes the whole page
+      // while the dialog is still animating in.
+      if (!isAndroid && modalEl?.isConnected) {
         modalEl.querySelector<HTMLElement>('.picker-search')?.focus();
       }
     });
@@ -162,12 +183,16 @@
     'not-found': 4,
   };
 
+  /** Phones list the recommended 0.5B cleanup model first; the rest stay alphabetical. */
+  const phonePreferred = (row: ModelRow) =>
+    isAndroid && row.provider === 'local' && row.id === 'qwen2.5-0.5b-instruct' ? 0 : 1;
+
   const grouped = $derived(
     RAIL_ORDER.map((provider) => ({
       provider,
       rows: shown
         .filter((row) => row.provider === provider)
-        .sort((a, b) => RANK[a.state] - RANK[b.state] || a.label.localeCompare(b.label)),
+        .sort((a, b) => RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
     })).filter((group) => group.rows.length > 0),
   );
 
@@ -292,7 +317,7 @@
     class="picker-card"
     use:modalFocusTrap={{
       active: true,
-      initialFocus: () => modalEl?.querySelector<HTMLElement>('.picker-search') ?? modalEl,
+      initialFocus: () => (isAndroid ? modalEl : modalEl?.querySelector<HTMLElement>('.picker-search') ?? modalEl),
     }}
     role="dialog"
     aria-modal="true"
@@ -301,8 +326,8 @@
       : `Choose a ${taskLabel(task).toLowerCase()} model`}
     tabindex="-1"
     onkeydown={onKeydown}
-    in:expandFromOrigin={{ origin: origin ?? undefined, duration: MOTION_MS.base }}
-    out:expandFromOrigin={{ origin: origin ?? undefined, duration: MOTION_MS.fast }}
+    in:cardMotion={{ origin: origin ?? undefined, duration: MOTION_MS.base }}
+    out:cardMotion={{ origin: origin ?? undefined, duration: MOTION_MS.fast }}
   >
     <header class="picker-head">
       <div class="picker-title">
@@ -431,13 +456,13 @@
               class="model-row"
               class:row-active={active}
               class:row-dim={row.state === 'needs-setup'}
-              in:fly|global={{
+              in:rowIn|global={{
                 y: 6,
                 duration: motionMs(MOTION_MS.base),
                 delay: motionMs(Math.min(index, 8) * 12),
                 easing: cubicOut,
               }}
-              out:fade|global={{ duration: motionMs(MOTION_MS.fast) }}
+              out:rowOut|global={{ duration: motionMs(MOTION_MS.fast) }}
             >
               <button
                 class="row-main"

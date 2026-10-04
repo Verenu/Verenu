@@ -64,8 +64,8 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     assert(!phoneRequests.some((url) => url.includes('/PermissionsSection.svelte')),
       'Android permissions must remain deferred on Home');
     await phone.locator('.mobile-nav').getByRole('button', { name: 'Settings', exact: true }).click();
-    await phone.getByRole('tab', { name: 'Permissions', exact: true }).click();
-    await phone.locator('h2.settings-h', { hasText: 'Permissions' }).waitFor({ state: 'visible', timeout: TIMEOUT });
+    await phone.getByRole('button', { name: 'Permissions', exact: true }).click();
+    await phone.locator('.m-bar-title', { hasText: 'Permissions' }).waitFor({ state: 'visible', timeout: TIMEOUT });
     await phone.locator('.android-perms').waitFor({ state: 'visible', timeout: TIMEOUT });
     assert.equal(await phone.locator('.android-perms .perm-row').count(), 4,
       'the deferred Android section must render its permission controls');

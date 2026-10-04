@@ -53,4 +53,11 @@ describe('settings search', () => {
       target: 'audio-mic-mute-button',
     });
   });
+
+  it('finds the Android pill settings only on Android', () => {
+    expect(searchSettings('pill', visibleSections, 24, true).map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['general-pill-position', 'general-cover-keyboard-mic']),
+    );
+    expect(searchSettings('pill', visibleSections, 24, false)).toEqual([]);
+  });
 });
