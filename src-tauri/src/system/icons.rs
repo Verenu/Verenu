@@ -47,10 +47,8 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
 pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     let exe = exe.trim().to_lowercase();
     let icon = linux::desktop_icon_name(&exe)?;
-    let context = gtk::glib::MainContext::default();
     let theme_icon = icon.clone();
     let theme_png = run_icon_work(
-        &context,
         move || linux::theme_icon_png(&theme_icon),
         |callback| app.run_on_main_thread(callback).map_err(|_| ()),
     )
@@ -73,13 +71,13 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn run_icon_work<T: Send + 'static>(
-    context: &gtk::glib::MainContext,
     work: impl FnOnce() -> T + Send + 'static,
     dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), ()>,
 ) -> Option<T> {
-    // Running and waiting on a closure queued to the context we already own
-    // would block the UI thread. Resolve directly when called from that thread.
-    if context.is_owner() {
+    // Tao dispatches UI callbacks on GTK's initialized thread even when that
+    // thread does not own the default GLib context. Use GTK's thread marker to
+    // avoid queueing work to, then synchronously blocking, the same UI thread.
+    if gtk::is_initialized_main_thread() {
         return Some(work());
     }
 
@@ -88,7 +86,9 @@ fn run_icon_work<T: Send + 'static>(
         let _ = sender.send(work());
     }))
     .ok()?;
-    receiver.recv_timeout(std::time::Duration::from_secs(3)).ok()
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .ok()
 }
 
 /// Desktop-entry display name for a Linux app identity (see sub-app capture).
@@ -138,26 +138,20 @@ mod linux {
         use std::cell::Cell;
 
         #[test]
-        fn icon_work_runs_inline_when_the_main_context_is_owned() {
-            let context = gtk::glib::MainContext::new();
-            let _owner = context.acquire().expect("own the GTK main context");
+        fn linux_theme_icons_resolve_inherited_categories_sizes_and_formats() {
+            gtk::init().expect("This native test requires a desktop display");
+            assert!(gtk::is_initialized_main_thread());
             let dispatched = Cell::new(false);
             let result = super::super::run_icon_work(
-                &context,
                 || 64,
                 |_| {
                     dispatched.set(true);
                     Err(())
                 },
             );
-
             assert_eq!(result, Some(64));
-            assert!(!dispatched.get(), "work was queued to the context we own");
-        }
+            assert!(!dispatched.get(), "work was queued to the GTK main thread");
 
-        #[test]
-        fn linux_theme_icons_resolve_inherited_categories_sizes_and_formats() {
-            gtk::init().expect("This native test requires a desktop display");
             let root = std::env::temp_dir().join(format!("verenu-icon-test-{}", uuid::Uuid::new_v4()));
             struct Cleanup(PathBuf);
             impl Drop for Cleanup {
