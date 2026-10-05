@@ -35,6 +35,13 @@ features on them without an explicit request.
   branch and diff before writes; stage only this task's files or hunks.
 - Keep session data, ports, browser profiles, and build output separate. Never
   reuse another thread's running backend to verify changes to your own branch.
+- Keep temporary plans, investigation notes, handoff reports, and release drafts
+  outside the checkout. Use a task-specific directory such as
+  `~/.local/state/verenu/agent-notes/<session-id>/` on Linux, or an equivalent
+  user-local directory on other platforms. Report results in chat by default.
+  Commit Markdown only when it documents the product or a reusable project
+  procedure, or the user explicitly requests it. Test evidence stays in ignored
+  `test-results/` as required by the verification tools.
 - Use `apply_patch` for local edits. Never kill a process you did not start.
 - Keep API keys, dictated text, clipboard contents, private screenshots, and
   local secrets out of code, logs, fixtures, commits, and test output.
