@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
+import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
 import { run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
@@ -45,17 +46,18 @@ try {
     exitCode: playwright.exitCode,
     processReason: playwright.reason,
   });
-  report.playwright = browserSummary;
+  const failureDiagnostics = summarizePlaywrightFailures(browserReport.report);
+  report.playwright = { ...browserSummary, failureDiagnostics };
   report.checks.push(...playwrightSummaryChecks(browserSummary));
   const failedTests = browserSummary.tests.filter((test) => test.status === 'failed');
-  if (failedTests.length) {
-    const cases = failedTests.map(({ project, file, line, title, menuGeometry, assertionLine }) => {
+  if (failureDiagnostics.length) {
+    const cases = failureDiagnostics.map(({ project, file, line, title, menuGeometry, assertionLine }) => {
       const source = file ? `${file}:${line ?? '?'}` : 'unknown source';
       const assertion = assertionLine ? ` assertion:${assertionLine}` : '';
       const geometry = menuGeometry ? ` geometry:${JSON.stringify(menuGeometry)}` : '';
       return `${project}: ${source} ${title}${assertion}${geometry}`;
     }).join('; ');
-    console.error(`Real-session Playwright failures: ${cases}`);
+    console.error(`Real-session Playwright failure diagnostics: ${cases}`);
   }
   if (browserSummary.status !== 'passed') {
     throw new Error(failedTests.length
