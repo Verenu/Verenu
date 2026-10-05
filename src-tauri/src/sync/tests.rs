@@ -21,6 +21,58 @@ mod device_tests;
 // ---- helpers ----
 
 #[test]
+fn imported_settings_and_counter_only_gossip_queue_relay_without_log_changes() {
+    use super::manager::ChangeStamp;
+    let db = db::open(":memory:").unwrap();
+    let conn = db.lock().unwrap();
+    let initial = ChangeStamp::read(&conn).unwrap();
+    let log = sync_store::max_log_seq(&conn).unwrap();
+    sync_store::set_setting_stamp(&conn, "default_tone", 100, "origin-a").unwrap();
+    let setting = ChangeStamp::read(&conn).unwrap();
+    assert_ne!(initial, setting);
+    sync_store::set_setting_stamp(&conn, "default_tone", 100, "origin-b").unwrap();
+    let tied = ChangeStamp::read(&conn).unwrap();
+    assert_ne!(setting, tied, "same-time origin tie breaks must also relay");
+    sync_store::upsert_remote_stats(&conn, &sync_store::DeviceStats {
+        device_id: "origin-a".into(), total_words: 3, dictionary_fixes: 1,
+    }).unwrap();
+    let counters = ChangeStamp::read(&conn).unwrap();
+    assert_ne!(tied, counters);
+    sync_store::upsert_remote_stats(&conn, &sync_store::DeviceStats {
+        device_id: "origin-a".into(), total_words: 1, dictionary_fixes: 0,
+    }).unwrap();
+    assert_eq!(counters, ChangeStamp::read(&conn).unwrap(), "stale gossip must not create a relay loop");
+    assert_eq!(log, sync_store::max_log_seq(&conn).unwrap());
+}
+
+#[test]
+fn authenticated_peer_errors_do_not_fall_back_to_other_addresses() {
+    for message in [
+        "peer error: a sync session with this device is already running",
+        "certificate does not match the paired device",
+        "sync batch could not be committed",
+    ] {
+        assert!(!super::manager::should_try_next_address(&anyhow::anyhow!(message)));
+    }
+}
+
+#[test]
+fn connection_details_validate_device_identity_and_tailscale_route() {
+    use super::manager::parse_connection_details;
+    let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    let (id, address) = parse_connection_details(&format!(" verenu-sync://{uuid}@100.64.0.1:50000 ")).unwrap();
+    assert_eq!(id, uuid);
+    assert_eq!(address.to_string(), "100.64.0.1:50000");
+    for value in [
+        format!("verenu-sync://{uuid}@127.0.0.1:50000"),
+        format!("verenu-sync://{uuid}@100.64.0.1:0"),
+        format!("verenu-sync://{uuid}@example.com:50000"),
+        "verenu-sync://bad-id@100.64.0.1:50000".into(),
+        format!("https://{uuid}@100.64.0.1:50000"),
+    ] { assert!(parse_connection_details(&value).is_err(), "{value}"); }
+}
+
+#[test]
 fn listener_port_is_stable_and_device_specific() {
     let first = super::manager::listener_port_for_uuid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     let repeated = super::manager::listener_port_for_uuid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
@@ -51,6 +103,77 @@ fn automatic_sync_has_exactly_one_initiator() {
     let b = "be256d68-0000-0000-0000-000000000000";
     assert!(super::manager::should_auto_initiate(a, b));
     assert!(!super::manager::should_auto_initiate(b, a));
+}
+
+#[test]
+fn local_edits_sync_from_either_device_without_waiting_for_idle_interval() {
+    use super::manager::automatic_session_due;
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let idle = Some((0, now + Duration::from_secs(30)));
+    assert!(automatic_session_due("a", "b", true, false, idle, now));
+    assert!(automatic_session_due("b", "a", true, false, idle, now));
+    assert!(!automatic_session_due("b", "a", false, false, None, now));
+    assert!(!automatic_session_due("a", "b", true, true, None, now));
+    assert!(!automatic_session_due(
+        "b",
+        "a",
+        true,
+        false,
+        Some((1, now + Duration::from_secs(3))),
+        now
+    ));
+    assert!(automatic_session_due(
+        "b",
+        "a",
+        true,
+        false,
+        Some((1, now)),
+        now
+    ));
+}
+
+#[test]
+fn change_detection_covers_contexts_and_counters_without_compaction_churn() {
+    let db = test_db(&uuid("aaaa"));
+    let conn = db.lock().unwrap();
+    let initial = super::manager::ChangeStamp::read(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO contexts(name) VALUES('Synthetic automatic sync')",
+        [],
+    )
+    .unwrap();
+    let context = super::manager::ChangeStamp::read(&conn).unwrap();
+    assert_ne!(initial, context);
+    conn.execute("DELETE FROM sync_log", []).unwrap();
+    assert_eq!(context, super::manager::ChangeStamp::read(&conn).unwrap());
+    conn.execute(
+        "INSERT OR REPLACE INTO lifetime_stats(id,total_words,dictionary_fixes) VALUES(1,7,2)",
+        [],
+    )
+    .unwrap();
+    assert_ne!(context, super::manager::ChangeStamp::read(&conn).unwrap());
+}
+
+#[test]
+fn saved_routes_only_accept_tailscale_addresses() {
+    use super::manager::parse_tailscale_address;
+    assert_eq!(
+        parse_tailscale_address("100.88.83.103:49522")
+            .unwrap()
+            .port(),
+        49522
+    );
+    for value in [
+        "127.0.0.1:80",
+        "192.168.0.86:49522",
+        "100.128.0.1:80",
+        "100.64.0.1:0",
+        "https://test.ts.net",
+        "bad",
+    ] {
+        assert!(parse_tailscale_address(value).is_err(), "{value}");
+    }
 }
 
 #[tokio::test]
@@ -954,7 +1077,10 @@ fn natural_key_tombstone_does_not_drop_children_before_winner_arrives() {
     };
     engine::apply_ops(&conn, &[tombstone]).expect("apply natural-key tombstone");
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"), 1);
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
+        1
+    );
 
     let winner = dictionary_op_with_uuid(
         &uuid("natural-tombstone-winner"),
@@ -1591,7 +1717,10 @@ async fn session_exchanges_changes_incrementally() {
 async fn run_two_sessions(a: &DbHandle, b: &DbHandle, host_a: &TestHost, host_b: &TestHost) {
     for (db, peer_uuid) in [(a, &host_b.uuid), (b, &host_a.uuid)] {
         let conn = db.lock().expect("lock");
-        if sync_store::get_peer(&conn, peer_uuid).expect("peer").is_none() {
+        if sync_store::get_peer(&conn, peer_uuid)
+            .expect("peer")
+            .is_none()
+        {
             sync_store::upsert_peer(&conn, peer_uuid, "Peer", "test-pin").expect("pair");
         }
     }
@@ -1795,6 +1924,18 @@ fn syncable_settings_exclude_device_local_keys() {
         crate::data::store::BETA_UPDATES_ENABLED,
         crate::data::store::LOCAL_MODEL_MEMORY_POLICY,
         crate::data::store::HISTORY_RETENTION,
+        crate::data::store::SYNC_PEER_ADDRESSES,
+        crate::data::store::TRANSCRIPTION_PROVIDER,
+        crate::data::store::CLEANUP_PROVIDER,
+        crate::data::store::TRANSCRIPTION_MODEL,
+        crate::data::store::CLEANUP_MODEL,
+        crate::data::store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+        crate::data::store::CLEANUP_MODELS_BY_PROVIDER,
+        crate::data::store::TRANSCRIPTION_DEFAULT_MODEL,
+        crate::data::store::CLEANUP_DEFAULT_MODEL,
+        crate::data::store::TRANSCRIPTION_FALLBACK_MODELS,
+        crate::data::store::CLEANUP_FALLBACK_MODELS,
+        crate::data::store::DUAL_TRANSCRIPTION_ENABLED,
     ] {
         assert!(
             !SYNCABLE_SETTINGS.contains(&key),
@@ -2173,7 +2314,8 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
             };
             let (msg_b, cipher) = pairing::responder_start(&code_b, &spake_msg).expect("start");
             let outcome =
-                pairing::responder_exchange(&mut b, &cipher, msg_b, &identity_b, &device_uuid).await?;
+                pairing::responder_exchange(&mut b, &cipher, msg_b, &identity_b, &device_uuid)
+                    .await?;
             send_message(&mut b, &Message::PairComplete).await?;
             Ok::<_, anyhow::Error>(outcome)
         },
