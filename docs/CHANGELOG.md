@@ -4,6 +4,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.
+
+- Fixed Linux global shortcuts failing when Verenu is launched outside an editor or terminal with a known app identity. Verenu now registers its own portal connection, reconnects after listener failure, and shows persistent shortcut errors with the cause and recovery guidance in Home and Settings.
+
 - Fixed the Android Microphone gain and Sound effects volume sliders rendering as thick slabs. They now draw a slim rounded track with a centered, touch-sized thumb.
 
 - Linux Context matching now keeps the captured app and window title throughout dictation. Executable aliases also match sub-app rules, including T3 Code's differing Wayland class. Website detection activates Chromium's accessibility tree, distinguishes windows sharing a process, recognizes more browser app IDs and channels, and ignores ambiguous or changed targets. Localhost websites are detected too. Address-bar reads have a hard deadline and never stack workers.

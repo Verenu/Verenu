@@ -21,7 +21,24 @@ Download installers from GitHub Releases or the tracked [`../installers/`](../in
 
 API keys should never appear in logs, screenshots, issues, PR comments, or exported test output.
 
-## Dictation Produces No Text
+## Linux shortcuts are unavailable
+
+Home and Settings > General show whether the desktop actually registered the
+dictation shortcut. Registration failures retain the failing step, the portal's
+reason, and recovery guidance. Verenu retries automatically and clears the
+message after shortcuts reconnect.
+
+If the details say `An app id is required`, the desktop portal could not identify
+Verenu. Reinstall a release containing the Linux portal identity fix and restart
+the app. Changing the key combination cannot repair this error.
+
+For a missing or unresponsive portal, check that `xdg-desktop-portal` and
+`xdg-desktop-portal-hyprland` are installed and running in the Hyprland session.
+If a shortcut request was denied or cancelled, allow Verenu in the desktop
+shortcut prompt. A conflict message instead names the alternate shortcut or
+asks you to choose another combination.
+
+## Dictation produces no text
 
 Verenu intentionally rejects recordings that are too short or too quiet. The pill shows the reason instead of failing silently.
 

@@ -156,6 +156,8 @@ fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    crate::core::hyprland::initialize_app_identity();
     #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
     dev_session::prepare().expect("failed to prepare isolated dev session");
     #[cfg(target_os = "linux")]
@@ -321,6 +323,12 @@ pub fn run() {
             }
             app.manage(db_handle);
             crate::system::logger::attach_app(app.handle());
+            #[cfg(target_os = "linux")]
+            if !is_dev_session() {
+                if let Err(error) = crate::core::hyprland::ensure_window_rules() {
+                    log::error!("Linux window setup failed: {error}");
+                }
+            }
             let build_mode = if cfg!(debug_assertions) {
                 "debug"
             } else {

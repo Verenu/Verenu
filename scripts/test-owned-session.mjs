@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { run } from './verification/process.mjs';
+import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
-import { failedPlaywrightChecks } from './verification/playwright.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -38,15 +38,18 @@ try {
   report.checks.push(...suite.checks);
   const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
   report.artifacts.push(artifact(playwright.log));
-  if (playwright.status !== 'passed') {
-    try {
-      const results = JSON.parse(await fs.readFile(path.join(session.directory, 'playwright.json'), 'utf8'));
-      report.checks.push(...failedPlaywrightChecks(results));
-    } catch {
-      report.checks.push({ name: 'Playwright result report', status: 'failed', reason: 'Structured test results unavailable' });
-    }
+  const browserReport = await readPlaywrightReport(path.join(session.directory, 'playwright.json'));
+  const browserSummary = summarizePlaywrightReport(browserReport.report, {
+    availability: browserReport.availability,
+    processStatus: playwright.status,
+    exitCode: playwright.exitCode,
+    processReason: playwright.reason,
+  });
+  report.playwright = browserSummary;
+  report.checks.push(...playwrightSummaryChecks(browserSummary));
+  if (browserSummary.status !== 'passed') {
+    throw new Error(browserSummary.reason || 'Real-session Playwright flows failed.');
   }
-  assert.equal(playwright.status, 'passed', 'Real-session Playwright flows failed');
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
   const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;
