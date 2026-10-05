@@ -11,21 +11,37 @@
 /// Returns `None` for input that doesn't look like a URL/domain at all (pure
 /// search-bar text with spaces).
 pub fn extract_domain(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().to_lowercase();
-    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let without_scheme = trimmed.split("://").last().unwrap_or(&trimmed);
-    let host = without_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(without_scheme);
-    let host = host.split('@').next_back().unwrap_or(host);
-    let host = host.split(':').next().unwrap_or(host);
-    if host.is_empty() || !host.contains('.') {
+    let has_scheme = trimmed
+        .find("://")
+        .is_some_and(|separator| !trimmed[..separator].contains(['/', '?', '#']));
+    let url = if has_scheme {
+        reqwest::Url::parse(trimmed).ok()?
+    } else {
+        reqwest::Url::parse(&format!("https://{trimmed}")).ok()?
+    };
+    if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
-    Some(host.to_string())
+    url.host_str()?;
+    // Keep the same host spelling as saved Context targets. URL parsing is
+    // validation here; IDNA conversion would break existing Unicode targets.
+    let authority = (if has_scheme {
+        trimmed
+            .split_once("://")
+            .map_or(trimmed, |(_, remainder)| remainder)
+    } else {
+        trimmed
+    })
+        .split(['/', '?', '#']).next()?;
+    let host = authority.split('@').next_back()?.split(':').next()?.trim_end_matches('.');
+    if host.contains(char::is_whitespace) || !(host.contains('.') || host.eq_ignore_ascii_case("localhost")) || host.split('.').any(str::is_empty) {
+        return None;
+    }
+    Some(host.to_lowercase())
 }
 
 #[cfg(windows)]
@@ -172,11 +188,6 @@ mod mac {
 use mac::read_address_bar_text as platform_read_address_bar_text;
 #[cfg(windows)]
 use win::read_address_bar_text as platform_read_address_bar_text;
-/// On Linux the window id is the client's pid; AT-SPI finds the omnibox.
-#[cfg(target_os = "linux")]
-fn platform_read_address_bar_text(window_id: usize) -> Option<String> {
-    crate::core::atspi::read_address_bar(u32::try_from(window_id).ok()?)
-}
 /// On Android Kotlin reads the address bar when the recording starts and sends
 /// the host along, so there is nothing to probe here.
 #[cfg(target_os = "android")]
@@ -197,9 +208,26 @@ fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
 /// "mail.google.com". Caller must confirm the captured process is a
 /// browser (`window_context::is_browser_exe`) before calling this — it does
 /// not check that itself, since the OS-level read is comparatively costly.
-pub fn read_browser_domain_for_window(window_id: usize) -> Option<String> {
+#[cfg(not(target_os = "linux"))]
+fn read_browser_domain_for_window(window_id: usize) -> Option<String> {
     let raw = platform_read_address_bar_text(window_id)?;
     extract_domain(&raw)
+}
+
+pub fn read_browser_domain_for_target(target: &crate::core::window_geometry::WindowTarget) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let window = target.linux.as_ref()?;
+        // A focus change during the read makes the result uncertain. Never
+        // apply a different window's website Context to the captured target.
+        let still_focused = || crate::core::hyprland::active_window()
+            .is_some_and(|active| active.address == window.address && active.pid == window.pid);
+        if !still_focused() { return None; }
+        let raw = crate::core::atspi::read_address_bar_for_window(window.pid, &window.title)?;
+        still_focused().then(|| extract_domain(&raw)).flatten()
+    }
+    #[cfg(not(target_os = "linux"))]
+    read_browser_domain_for_window(target.id)
 }
 
 #[cfg(test)]
@@ -215,6 +243,26 @@ mod tests {
     }
 
     #[test]
+    fn ignores_scheme_delimiters_in_path_and_query() {
+        assert_eq!(
+            extract_domain("https://example.com/redirect?to=https://other.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("https://example.com/search?q=https://something"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("example.com/redirect?to=https://other.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("example.com?url=http://foo.bar"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
     fn extracts_domain_from_bare_host() {
         assert_eq!(
             extract_domain("Example.com"),
@@ -226,6 +274,17 @@ mod tests {
     fn rejects_search_bar_text() {
         assert_eq!(extract_domain("how to bake bread"), None);
         assert_eq!(extract_domain(""), None);
-        assert_eq!(extract_domain("localhost"), None);
+        assert_eq!(extract_domain("file://example.com/local"), None);
+        assert_eq!(extract_domain("chrome://example.com"), None);
+        assert_eq!(extract_domain("example..com"), None);
+        assert_eq!(extract_domain("javascript://example.com"), None);
+    }
+
+    #[test]
+    fn extracts_local_sites_and_ignores_path_whitespace_and_trailing_dot() {
+        assert_eq!(extract_domain("localhost:5173/editor"), Some("localhost".into()));
+        assert_eq!(extract_domain("127.0.0.1:5173"), Some("127.0.0.1".into()));
+        assert_eq!(extract_domain("https://Example.com./a path"), Some("example.com".into()));
+        assert_eq!(extract_domain("https://BÜCHER.de/read"), Some("bücher.de".into()));
     }
 }
