@@ -4,6 +4,10 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.
+
+- Fixed Linux global shortcuts failing when Verenu is launched outside an editor or terminal with a known app identity. Verenu now registers its own portal connection, reconnects after listener failure, and shows persistent shortcut errors with the cause and recovery guidance in Home and Settings.
+
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.

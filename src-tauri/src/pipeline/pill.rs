@@ -134,9 +134,8 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
         return false;
     }
     match tauri::WebviewWindowBuilder::new(app, "pill", tauri::WebviewUrl::App("/pill.html".into()))
-        // A stable, non-localized identity lets a user add a Hyprland floating
-        // rule if their compositor policy tiles utility windows. Decorations
-        // remain disabled, so this never becomes visible chrome.
+        // The app installs a floating rule for this non-localized title before
+        // mapping the pill. Decorations remain disabled.
         .title("Verenu Dictation Pill")
         .inner_size(PILL_WIDTH_POINTS, PILL_HEIGHT_POINTS)
         .decorations(false)
