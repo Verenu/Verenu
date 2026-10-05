@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS contexts (
   color             TEXT,
   custom_instructions TEXT,
   contextual_formatting_disabled INTEGER NOT NULL DEFAULT 0 CHECK (contextual_formatting_disabled IN (0, 1)),
+  paste_in_chunks INTEGER NOT NULL DEFAULT 0 CHECK (paste_in_chunks IN (0, 1)),
   pinned_at         DATETIME,
   created_at        DATETIME NOT NULL DEFAULT (datetime('now')),
   updated_at        DATETIME NOT NULL DEFAULT (datetime('now'))
@@ -1036,6 +1037,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
                 )?;
             }
             conn.execute_batch("PRAGMA user_version = 30;")?;
+            Ok(())
+        })?;
+    }
+    if user_version < 31 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "contexts", "paste_in_chunks",
+                "ALTER TABLE contexts ADD COLUMN paste_in_chunks INTEGER NOT NULL DEFAULT 0 CHECK (paste_in_chunks IN (0, 1));")?;
+            conn.execute_batch("PRAGMA user_version = 31;")?;
             Ok(())
         })?;
     }

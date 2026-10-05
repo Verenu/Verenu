@@ -959,7 +959,7 @@
             errorTimer = null;
             if (state === 'error') goIdle();
           }, 10000);
-        } else if (state !== 'copied' && state !== 'clipboard_warning') {
+        } else if (state !== 'copied' && state !== 'clipboard_warning' && state !== 'paste_failed') {
           // Don't clear errorMsg on 'copied' — show_copied_pill carries its
           // confirmation text through the pill-error event, which fires just
           // before this pill-state one.
@@ -1445,7 +1445,7 @@
       <svg class="err-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
       </svg>
-      <span class="paste-failed-text">Not pasted</span>
+      <span class="paste-failed-text">{errorMsg === 'Partly pasted' ? 'Partly pasted' : 'Not pasted'}</span>
       {#if showCopyBtn}
         <button class="hf-btn copy-btn" onclick={copyPasteFailure} aria-label="Copy to clipboard">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">

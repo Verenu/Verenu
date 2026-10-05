@@ -171,6 +171,7 @@ pub struct RetryCapture {
     pub context: ResolvedContextIdentity,
     pub profile: String,
     pub caps_lock_on: bool,
+    pub paste_in_chunks: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1119,6 +1120,7 @@ mod tests {
                 },
                 profile: String::new(),
                 caps_lock_on: false,
+                paste_in_chunks: false,
             });
         }
         release_expired_capture_audio(&state);
