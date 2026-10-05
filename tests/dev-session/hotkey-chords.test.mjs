@@ -43,7 +43,37 @@ test('hotkey capture saves the whole held chord on release and keeps rejected bi
         });
         const button = page.getByRole('button', { name: 'Change dictation hotkey' });
         await button.waitFor();
-        const before = await invoke('get_setting', { key: 'hotkey' });
+        let before = await invoke('get_setting', { key: 'hotkey' });
+        if (session.platform === 'linux') {
+          for (const side of ['Left', 'Right']) {
+            for (const superFirst of [false, true]) {
+              await button.click();
+              await page.locator('.keybind-btn.recording').waitFor();
+              await page.evaluate(({ side, superFirst }) => {
+                const codes = superFirst ? [`OS${side}`, 'ControlLeft'] : ['ControlLeft', `OS${side}`];
+                for (const code of codes) {
+                  window.dispatchEvent(new KeyboardEvent('keydown', { code, ctrlKey: code === 'ControlLeft' || !superFirst, bubbles: true }));
+                }
+                window.dispatchEvent(new KeyboardEvent('keyup', { code: `OS${side}`, ctrlKey: true, bubbles: true }));
+              }, { side, superFirst });
+              await page.waitForFunction(() => !document.querySelector('.keybind-btn')?.classList.contains('saving'));
+              const expected = superFirst ? [`Meta${side}`, 'ControlLeft'] : ['ControlLeft', `Meta${side}`];
+              assert.deepEqual(await invoke('get_setting', { key: 'hotkey' }), expected, 'WebKit OS codes must save as canonical Meta codes');
+              assert.equal(await page.locator('#hotkey-help[role="alert"]').count(), 0);
+            }
+          }
+          await page.reload();
+          await page.getByRole('button', { name: /^Dev tests/ }).waitFor();
+          await page.evaluate(async () => {
+            const { emit } = await import('/src/lib/tauri.ts');
+            await emit('open-flow:open-settings-section', 'general');
+          });
+          await button.waitFor();
+          assert.deepEqual(await invoke('get_setting', { key: 'hotkey' }), ['MetaRight', 'ControlLeft']);
+          await page.waitForFunction(() => document.querySelector('.keybind-btn')?.textContent?.trim() === 'Super + Ctrl');
+          assert.equal((await button.innerText()).trim(), 'Super + Ctrl');
+          before = await invoke('get_setting', { key: 'hotkey' });
+        }
         await button.click();
         await page.locator('.keybind-btn.recording').waitFor();
         for (const code of codes) await page.keyboard.down(code);
