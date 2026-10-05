@@ -216,13 +216,10 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
     }
     let resp = resp.error_for_status()?;
     let mut releases: Vec<GhRelease> = resp.json().await?;
-    // Nightly releases can push the last stable release beyond the first 100.
-    // GitHub's latest endpoint finds it without scanning every nightly page.
-    if channel == UpdateChannel::Stable
-        && !releases
-            .iter()
-            .any(|release| !release.draft && release_matches_channel(release, channel))
-    {
+    // Nightly releases can push the latest stable release beyond the first 100.
+    // If the newest page entry is a prerelease, an older stable entry elsewhere
+    // in the page does not prove that the latest stable release is present.
+    if channel == UpdateChannel::Stable && needs_latest_stable_fallback(&releases) {
         let latest = super::client::get()
             .get(format!(
                 "https://api.github.com/repos/{repo}/releases/latest"
@@ -235,6 +232,13 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
         }
     }
     Ok(releases)
+}
+
+fn needs_latest_stable_fallback(releases: &[GhRelease]) -> bool {
+    releases
+        .first()
+        .map(|release| release.draft || !release_matches_channel(release, UpdateChannel::Stable))
+        .unwrap_or(true)
 }
 
 fn select_compatible_release(
@@ -921,6 +925,22 @@ mod tests {
         let mut release = release_with_prerelease(tag_name, target_commitish, prerelease);
         release.name = Some(name.to_string());
         release
+    }
+
+    #[test]
+    fn stable_channel_checks_latest_endpoint_when_prereleases_lead_the_page() {
+        let nightly = release_with_prerelease("Verenu-0.21.0-nightly.20261005", "master", true);
+        let older_stable = release("Verenu-0.20.0", "master");
+
+        assert!(super::needs_latest_stable_fallback(&[
+            nightly,
+            older_stable
+        ]));
+        assert!(!super::needs_latest_stable_fallback(&[
+            release("Verenu-0.20.0", "master"),
+            release_with_prerelease("Verenu-0.21.0-nightly.20261005", "master", true),
+        ]));
+        assert!(super::needs_latest_stable_fallback(&[]));
     }
 
     #[test]
