@@ -2,6 +2,7 @@
 //! priority chain that decides the cleanup profile for a dictation.
 
 use super::*;
+use crate::core::window_geometry::WindowTarget;
 pub(super) fn resolve_app_mapping(
     store: Option<&store::SettingsSnapshot>,
     process_name: &str,
@@ -55,56 +56,33 @@ pub(super) fn apply_app_style_overrides(
 }
 
 /// Resolves the context that would apply to a foreground window without
-/// running the full pipeline, and emits its name to the pill so the recording
-/// state can show where the dictation is headed. Used at recording start,
-/// where the full `open_config_and_context` (chain validation + error pills)
-/// is too heavy and would double-resolve; the pipeline re-emits the
-/// domain-refined context at processing time.
-///
-/// The hwnd→process-name read can come up empty (elevated target processes,
-/// race between capture and start), so the process name falls back to the
-/// live foreground window. Browser domains are read from the captured target
-/// too, making website-only groups available before recording begins; an
-/// unresolved context remains hidden until processing resolves one.
+/// running the full pipeline. The identity is retained for the dictation,
+/// including retries and history, even if focus moves after recording starts.
 pub(super) fn resolve_context_for_window(
     app: &AppHandle,
-    hwnd: usize,
+    target: &WindowTarget,
 ) -> Option<crate::core::context::ResolvedContextIdentity> {
-    let process_name = if hwnd != 0 {
-        window_context::get_process_name_for_hwnd(hwnd)
-    } else {
-        None
-    }
-    .or_else(window_context::get_active_process_name)
-    .unwrap_or_default();
+    let process_name = target.process_name().unwrap_or_default();
     // Read the domain from the captured browser window as well as the exe.
     // This keeps website-only context groups accurate on the recording pill;
     // the bounded UIA probe remains best-effort and falls back to exe lookup.
-    let browser_domain = if window_context::is_browser_exe(&process_name) {
-        crate::core::browser_probe::read_browser_domain_for_window(hwnd)
+    let browser_domain = if window_context::is_browser_target(&process_name, target.id) {
+        crate::core::browser_probe::read_browser_domain_for_target(target)
     } else {
         None
     };
     // Sub-app rules match on the captured window's title. It is read here
     // only and never stored or logged.
-    let window_title = if hwnd != 0 {
-        window_context::get_window_title(hwnd)
-    } else {
-        None
-    };
+    let window_title = target.window_title();
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
-    let (mut context, sub_app) = crate::core::context::resolve_context_with_title(
+    let (context, sub_app) = crate::core::context::resolve_context_for_captured_window(
         &db_handle,
         &process_name,
         browser_domain.as_deref(),
         window_title.as_deref(),
+        target.id,
     )
     .ok()?;
-    if context.is_everywhere {
-        context = crate::core::context::resolve_context_for_window(
-            &db_handle, &process_name, browser_domain.as_deref(), hwnd,
-        ).ok()?;
-    }
     Some(crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
         &context,
         sub_app.as_ref(),
@@ -113,9 +91,9 @@ pub(super) fn resolve_context_for_window(
 
 pub(super) fn emit_context_for_window(
     app: &AppHandle,
-    hwnd: usize,
+    target: &WindowTarget,
 ) -> Option<crate::core::context::ResolvedContextIdentity> {
-    let context = resolve_context_for_window(app, hwnd)?;
+    let context = resolve_context_for_window(app, target)?;
     crate::pipeline::pill::queue_pill_context(&context.label);
     Some(context)
 }

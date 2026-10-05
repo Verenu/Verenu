@@ -40,6 +40,24 @@ pub struct LinuxWindowTarget {
 }
 
 impl WindowTarget {
+    /// Context lookup must use the same window snapshot as insertion. A PID
+    /// alone cannot distinguish two browser windows in the same process.
+    pub fn process_name(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        if let Some(window) = &self.linux {
+            return Some(window.class_name.to_ascii_lowercase()).filter(|name| !name.is_empty());
+        }
+        window_context::get_process_name_for_hwnd(self.id)
+    }
+
+    pub fn window_title(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        if let Some(window) = &self.linux {
+            return Some(window.title.clone()).filter(|title| !title.is_empty());
+        }
+        window_context::get_window_title(self.id)
+    }
+
     pub fn capture_foreground() -> Self {
         #[cfg(target_os = "linux")]
         if let Some(window) = crate::core::hyprland::active_window() {
@@ -271,4 +289,24 @@ fn window_center(id: usize) -> Option<DesktopPoint> {
 #[cfg(not(any(windows, target_os = "macos")))]
 fn window_center(_id: usize) -> Option<DesktopPoint> {
     None
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod context_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn context_metadata_remains_bound_to_captured_window_without_live_pid() {
+        let target = WindowTarget {
+            id: 0,
+            display_point: None,
+            linux: Some(LinuxWindowTarget {
+                address: "0x1".into(), pid: 0, class_name: "com.t3tools.T3Code".into(),
+                title: "Public project - T3 Code".into(), workspace_id: 1, monitor: 0, tags: vec![],
+            }),
+        };
+        assert_eq!(target.process_name().as_deref(), Some("com.t3tools.t3code"));
+        assert_eq!(target.window_title().as_deref(), Some("Public project - T3 Code"));
+        assert!(WindowTarget::default().process_name().is_none());
+    }
 }
