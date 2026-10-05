@@ -6,6 +6,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Split cloud priorities from Local AI choices in grouped model lists. Each row opens model and fallback details, with one row expanded at a time and the standard Settings dropdown style. Cloud presets can prepare on-device recovery for speech and cleanup. Quality keeps dual transcription to catch hallucinated additions and reports when only one transcript succeeds. Cleanup failures preserve completed speech. Automatic priorities can use private session timings while Advanced selections keep their explicit order; local speed tests use bundled synthetic speech. Recommendations respect language support and confirmed catalog retirement.
 
+- Unified remaining Settings dropdown controls with the compact Insights style and kept privacy retention and model strategy menus within narrow panels.
+
 - Removed field-specific microphone buttons from term, vocabulary, and snippet dialogs. Normal hotkey dictation can now paste into Verenu's captured main window on Windows instead of falling back to manual paste.
 
 - Reduced the Linux dictation pill window to fit its capsule and context chip, with room for animation. It grows for longer errors and shrinks afterward. Passive recording and processing states stay click-through, while visible controls accept clicks inside the capsule. Delayed state updates can no longer make hold-to-dictate interactive.

@@ -1166,13 +1166,35 @@
     }
 
     .models-dropdown-menu {
-      min-width: 100%;
-      left: 0;
+      width: max-content;
+      min-width: min(240px, 100cqw);
+      max-width: min(320px, 100cqw);
+      left: auto;
       right: 0;
+    }
+
+    .models-dropdown-item {
+      min-width: 0;
+      white-space: normal;
+    }
+
+    .models-dropdown-item small {
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
 
     /* Thumb-sized rows on phones. */
     .models-dropdown-btn { min-height: 44px; }
     .models-dropdown-item { min-height: 44px; padding-block: 10px; }
+  }
+
+  @container settings-panel (max-width: 400px) {
+    .models-dropdown-menu {
+      width: 100%;
+      min-width: 100%;
+      max-width: 100%;
+      left: 0;
+      right: 0;
+    }
   }
 </style>
