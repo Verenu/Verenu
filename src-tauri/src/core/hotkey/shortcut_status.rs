@@ -27,19 +27,30 @@ pub fn initialize(app: tauri::AppHandle) {
 
 #[cfg(target_os = "linux")]
 pub fn publish(status: ShortcutStatus) {
+    publish_many(vec![status]);
+}
+
+#[cfg(target_os = "linux")]
+pub fn publish_many(updates: Vec<ShortcutStatus>) {
     let Ok(mut statuses) = STATUS.lock() else {
         return;
     };
-    if let Some(existing) = statuses.iter_mut().find(|s| s.id == status.id) {
-        if *existing == status {
-            return;
+    let mut changed = false;
+    for status in updates {
+        if let Some(existing) = statuses.iter_mut().find(|s| s.id == status.id) {
+            if *existing != status {
+                *existing = status;
+                changed = true;
+            }
+        } else {
+            statuses.push(status);
+            changed = true;
         }
-        *existing = status;
-    } else {
-        statuses.push(status);
     }
-    if let Some(app) = APP.get() {
-        let _ = app.emit("verenu:shortcuts-changed", &*statuses);
+    if changed {
+        if let Some(app) = APP.get() {
+            let _ = app.emit("verenu:shortcuts-changed", &*statuses);
+        }
     }
 }
 
