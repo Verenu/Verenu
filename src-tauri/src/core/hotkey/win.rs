@@ -203,6 +203,7 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
 
 static KEYS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SYNTHETIC_PASTE_SUPPRESSION_UNTIL: AtomicU64 = AtomicU64::new(0);
 fn is_menu_trigger_vk(vk: u32) -> bool {
     matches!(vk, 164 | 165 | 18 | 91 | 92)
 }
@@ -254,6 +255,13 @@ pub fn reset_chord_state() {
 
 pub fn set_handless_active(v: bool) {
     HANDLESS_ACTIVE.store(v, Ordering::SeqCst);
+}
+
+/// Prevent injected paste keys from matching the configured global hotkey.
+/// Physical user input remains active while the suppression window is open.
+pub fn begin_synthetic_paste_suppression(duration_ms: u64) {
+    let until = unsafe { GetTickCount64() }.saturating_add(duration_ms);
+    SYNTHETIC_PASTE_SUPPRESSION_UNTIL.fetch_max(until, Ordering::SeqCst);
 }
 
 // 0 = not processing. Set once, at Stopping -> Processing; cleared via
@@ -437,6 +445,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let msg = wparam.0 as u32;
         let vk = kb.vkCode;
+        let is_injected = (kb.flags.0 & LLKHF_INJECTED.0) != 0;
+        if should_suppress_synthetic_paste_event(
+            is_injected,
+            GetTickCount64(),
+            SYNTHETIC_PASTE_SUPPRESSION_UNTIL.load(Ordering::SeqCst),
+        ) {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
 
         // This thread pumps messages (see `start`'s GetMessageW loop), so
         // GetKeyState's toggle bit is reliably in sync here.
@@ -655,7 +671,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // Synthetic events (LLKHF_INJECTED) are skipped - this prevents our own
         // Ctrl+V paste and any app-generated keyboard events from corrupting the
         // history that backs backspace recovery.
-        let is_injected = (kb.flags.0 & LLKHF_INJECTED.0) != 0;
         if !is_injected && is_down && !MODIFIER_VKS.contains(&vk) {
             if vk == VK_BACK {
                 // Ctrl+Backspace and Alt+Backspace both delete a whole word -
@@ -688,6 +703,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     CallNextHookEx(None, code, wparam, lparam)
 }
 
+fn should_suppress_synthetic_paste_event(is_injected: bool, now: u64, suppress_until: u64) -> bool {
+    is_injected && now < suppress_until
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +716,13 @@ mod tests {
         for key in ["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft"] {
             assert!(!is_hotkey_available(&[key.to_string()]).unwrap());
         }
+    }
+
+    #[test]
+    fn paste_suppression_only_skips_injected_events_before_deadline() {
+        assert!(should_suppress_synthetic_paste_event(true, 499, 500));
+        assert!(!should_suppress_synthetic_paste_event(true, 500, 500));
+        assert!(!should_suppress_synthetic_paste_event(false, 499, 500));
     }
 }
 
