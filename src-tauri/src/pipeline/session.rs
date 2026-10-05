@@ -144,7 +144,7 @@ pub fn start_recording_session_ex_with_context(
     // user selected. This identity is immutable for the whole dictation; the
     // processing path must not infer it again from whichever window happens
     // to be focused after recording or while AutoLearn is monitoring.
-    let target_hwnd = lock_state(state).map(|st| st.target.id).unwrap_or(0);
+    let target = lock_state(state).map(|st| st.target.clone()).unwrap_or_default();
     // An interrupted processing task hands its audio to a replacement
     // recording through `recording_context`. Prefer that state handoff when
     // no explicit resume payload was supplied. Fresh reservations clear the
@@ -156,7 +156,7 @@ pub fn start_recording_session_ex_with_context(
     });
     let has_captured_context = captured_context.is_some();
     let recording_context = captured_context.unwrap_or_else(|| {
-        emit_context_for_window(app, target_hwnd).unwrap_or_else(|| {
+        emit_context_for_window(app, &target).unwrap_or_else(|| {
             let context = ResolvedContextIdentity::everywhere();
             crate::pipeline::pill::queue_pill_context(&context.label);
             context

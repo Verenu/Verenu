@@ -495,8 +495,7 @@ async fn run_pipeline_with_delivery(
         .as_ref()
         .map(|input| input.process_name.clone())
         .or_else(|| {
-            window_context::get_process_name_for_hwnd(target.id)
-                .or_else(window_context::get_active_process_name)
+            target.process_name()
         })
         .unwrap_or_else(|| "unknown".into())
         .to_lowercase();
