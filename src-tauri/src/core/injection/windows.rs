@@ -1,5 +1,56 @@
 use super::*;
 
+fn clipboard_sequence() -> u32 {
+    unsafe { ::windows::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+struct ChunkBackend<'a> {
+    target_hwnd: usize,
+    restore: &'a mut ClipboardRestoreGuard,
+}
+impl chunks::PasteBackend for ChunkBackend<'_> {
+    async fn check(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(crate::core::window_context::get_foreground_hwnd() == self.target_hwnd, "Paste target lost focus");
+        if let Some(expected) = self.restore.expected_sequence {
+            anyhow::ensure!(clipboard_sequence() == expected, "Clipboard changed during paste");
+        }
+        anyhow::ensure!(!crate::core::hotkey::is_win_key_down(), "Release the Windows key before pasting");
+        Ok(())
+    }
+    async fn write(&mut self, text: &str) -> anyhow::Result<()> {
+        let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+        unsafe { write_clipboard_unicode_tracking(&wide, Some(&mut self.restore.expected_sequence)) }
+    }
+    async fn paste(&mut self) -> anyhow::Result<()> {
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_LMENU, VK_V};
+        crate::core::hotkey::begin_synthetic_paste_suppression(500);
+        // Preserve the normal paste path's modifier release, then check again
+        // after settling so focus cannot drift during that wait.
+        {
+            let release = |vk| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: KEYEVENTF_KEYUP, ..Default::default() } },
+            };
+            let events = [release(VK_LMENU), release(VK_CONTROL)];
+            unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(MODIFIER_GAP_MS)).await;
+        <Self as chunks::PasteBackend>::check(self).await?;
+        let key = |vk, up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() }, ..Default::default() } },
+        };
+        let events = [key(VK_CONTROL, false), key(VK_V, false), key(VK_V, true), key(VK_CONTROL, true)];
+        let sent = unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
+        if sent != events.len() as u32 {
+            let release = [key(VK_V, true), key(VK_CONTROL, true)];
+            unsafe { SendInput(&release, std::mem::size_of::<INPUT>() as i32) };
+            anyhow::bail!("Could not dispatch paste keys");
+        }
+        Ok(())
+    }
+}
+
 struct SavedClipboard {
     entries: Vec<(u32, Vec<u8>)>,
 }
@@ -11,12 +62,16 @@ struct SavedClipboard {
 /// second (redundant) restore.
 struct ClipboardRestoreGuard {
     saved: Option<SavedClipboard>,
+    expected_sequence: Option<u32>,
 }
 impl ClipboardRestoreGuard {
     fn new(saved: SavedClipboard) -> Self {
-        Self { saved: Some(saved) }
+        Self { saved: Some(saved), expected_sequence: None }
     }
     fn restore_now(&mut self) {
+        if self.expected_sequence.is_some_and(|expected| expected != clipboard_sequence()) {
+            self.saved = None;
+        }
         if let Some(saved) = self.saved.take() {
             unsafe {
                 restore_clipboard_all(&saved);
@@ -154,6 +209,13 @@ unsafe fn restore_clipboard_all(saved: &SavedClipboard) {
 }
 
 unsafe fn write_clipboard_unicode(data: &[u16]) -> anyhow::Result<()> {
+    write_clipboard_unicode_tracking(data, None)
+}
+
+unsafe fn write_clipboard_unicode_tracking(
+    data: &[u16],
+    owned_sequence: Option<&mut Option<u32>>,
+) -> anyhow::Result<()> {
     use ::windows::Win32::Foundation::{GlobalFree, HANDLE};
     use ::windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -162,40 +224,52 @@ unsafe fn write_clipboard_unicode(data: &[u16]) -> anyhow::Result<()> {
 
     const CF_UNICODETEXT: u32 = 13;
 
-    if OpenClipboard(None).is_ok() {
-        EmptyClipboard().ok();
-        let hg = match GlobalAlloc(GMEM_MOVEABLE, data.len() * 2) {
-            Ok(hg) => hg,
-            Err(e) => {
-                // Allocation failed after the clipboard was opened: release it
-                // before erroring, otherwise the system clipboard stays locked
-                // for every other process until we exit.
+    let mut changed = false;
+    let result = (|| {
+        if OpenClipboard(None).is_ok() {
+            EmptyClipboard().ok();
+            changed = true;
+            let hg = match GlobalAlloc(GMEM_MOVEABLE, data.len() * 2) {
+                Ok(hg) => hg,
+                Err(e) => {
+                    // Allocation failed after the clipboard was opened: release it
+                    // before erroring, otherwise the system clipboard stays locked
+                    // for every other process until we exit.
+                    CloseClipboard().ok();
+                    return Err(anyhow::anyhow!("GlobalAlloc failed: {e}"));
+                }
+            };
+            let ptr = GlobalLock(hg) as *mut u16;
+            if ptr.is_null() {
+                // GlobalLock failed: free the block we own and release the
+                // clipboard rather than dereferencing null / leaking hg.
+                let _ = GlobalFree(Some(hg));
                 CloseClipboard().ok();
-                return Err(anyhow::anyhow!("GlobalAlloc failed: {e}"));
+                return Err(anyhow::anyhow!("GlobalLock failed"));
             }
-        };
-        let ptr = GlobalLock(hg) as *mut u16;
-        if ptr.is_null() {
-            // GlobalLock failed: free the block we own and release the
-            // clipboard rather than dereferencing null / leaking hg.
-            let _ = GlobalFree(Some(hg));
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            let _ = GlobalUnlock(hg);
+            if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hg.0))) {
+                // The system only takes ownership of hg on success, so on failure we
+                // still own it: free it and release the clipboard before erroring.
+                let _ = GlobalFree(Some(hg));
+                CloseClipboard().ok();
+                return Err(anyhow::anyhow!("SetClipboardData failed: {e}"));
+            }
             CloseClipboard().ok();
-            return Err(anyhow::anyhow!("GlobalLock failed"));
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("OpenClipboard failed"))
         }
-        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
-        let _ = GlobalUnlock(hg);
-        if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hg.0))) {
-            // The system only takes ownership of hg on success, so on failure we
-            // still own it: free it and release the clipboard before erroring.
-            let _ = GlobalFree(Some(hg));
-            CloseClipboard().ok();
-            return Err(anyhow::anyhow!("SetClipboardData failed: {e}"));
+    })();
+    // Failed opens never claim a clipboard change made by another process.
+    // A failure after clearing still owns that mutation and must restore it.
+    if changed {
+        if let Some(sequence) = owned_sequence {
+            *sequence = Some(clipboard_sequence());
         }
-        CloseClipboard().ok();
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("OpenClipboard failed"))
     }
+    result
 }
 
 // Reads CF_UNICODETEXT from the clipboard. Returns `Some("")` when the format
@@ -275,6 +349,8 @@ const PASTE_VERIFY_MAX_RETRY_MS: u64 = 260;
 const PASTE_VERIFY_FULLTEXT_ATTEMPTS: u32 = 2;
 
 #[allow(unused_variables)]
+// Keep the existing injection arguments explicit across native backends.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn inject_text(
     text: &str,
     target_hwnd: usize,
@@ -283,6 +359,7 @@ pub(super) async fn inject_text(
     profile: &str,
     language: &str,
     protected_initial_case: bool,
+    paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     use ::windows::Win32::Foundation::HWND;
     use ::windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -354,8 +431,10 @@ pub(super) async fn inject_text(
     // has been restored (Rust drops in reverse declaration order).
     let _injection_guard = super::injection_lock().lock().await;
 
+    let clipboard_before_snapshot = clipboard_sequence();
     let saved = unsafe { save_clipboard_all() };
     let mut restore_guard = ClipboardRestoreGuard::new(saved);
+    if paste_in_chunks { restore_guard.expected_sequence = Some(clipboard_before_snapshot); }
 
     if target_hwnd != 0 {
         let _ = unsafe { SetForegroundWindow(HWND(target_hwnd as *mut core::ffi::c_void)) };
@@ -419,6 +498,27 @@ pub(super) async fn inject_text(
         &injection_probe,
     );
 
+    if paste_in_chunks {
+        // Allow the dictation shortcut's Windows key to settle before the
+        // first safety check. Later chunks abort if the user presses it again.
+        for _ in 0..WIN_KEY_GRACE_POLL_ATTEMPTS {
+            if !crate::core::hotkey::is_win_key_down() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(WIN_KEY_GRACE_POLL_MS)).await;
+        }
+        let mut backend = ChunkBackend { target_hwnd, restore: &mut restore_guard };
+        let result = chunks::paste(&mut backend, &adjusted).await;
+        restore_guard.restore_now();
+        result?;
+        if let Ok(mut history) = last_injection().lock() {
+            let mut tail = adjusted.clone();
+            trim_tail_to_limit(&mut tail);
+            *history = CursorContextState::Known { hwnd: target_hwnd, tail, instant: Instant::now() };
+        }
+        return Ok(InjectionOutcome {
+            text: adjusted, context_state: context_kind.as_str(), case_decision: case_decision.as_str(),
+            probe_source: injection_probe.source.as_str(), selection_state: injection_probe.selection_state.as_str(),
+        });
+    }
     let text_to_inject = adjusted.as_str();
     let wide: Vec<u16> = text_to_inject
         .encode_utf16()

@@ -307,6 +307,7 @@ pub(super) async fn finalize_pipeline_completion(
             ctx.profile,
             &ctx.cfg.transcription_language,
             protected_initial_case,
+            ctx.cfg.paste_in_chunks,
         )
         .await
         {
@@ -319,7 +320,12 @@ pub(super) async fn finalize_pipeline_completion(
                         captured_at: std::time::Instant::now(),
                     });
                 }
-                show_paste_failed_pill(app);
+                #[cfg(desktop)]
+                let partial = e.downcast_ref::<injection::ChunkedPasteError>()
+                    .is_some_and(|error| error.attempted_chunks > 0);
+                #[cfg(not(desktop))]
+                let partial = false;
+                if partial { show_partial_paste_pill(app); } else { show_paste_failed_pill(app); }
                 injection::InjectionOutcome {
                     text: delivered_text.clone(),
                     context_state: "unknown",

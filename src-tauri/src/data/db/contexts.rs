@@ -23,6 +23,8 @@ pub struct Context {
     pub color: Option<String>,
     pub custom_instructions: Option<String>,
     pub contextual_formatting_disabled: bool,
+    #[serde(default)]
+    pub paste_in_chunks: bool,
     /// `NULL` when unpinned. Pinned contexts sort newest-pin-first in the
     /// sidebar; Everywhere is pinned implicitly by the UI and never sets this.
     pub pinned_at: Option<String>,
@@ -107,6 +109,7 @@ fn context_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Context> {
         color: row.get(6)?,
         custom_instructions: row.get(7)?,
         contextual_formatting_disabled: row.get::<_, i64>(8)? != 0,
+        paste_in_chunks: row.get::<_, i64>(12)? != 0,
         pinned_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -175,7 +178,7 @@ pub fn everywhere_context_id(db: &Db) -> Result<i64> {
 pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
          FROM contexts
          ORDER BY id ASC",
     )?;
@@ -250,7 +253,7 @@ pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<Contex
 
 pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
          FROM contexts WHERE id = ?1",
         params![context_id],
         context_from_row,
@@ -258,6 +261,7 @@ pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -
     .map_err(Into::into)
 }
 
+#[cfg(test)]
 pub fn insert_context_returning(
     db: &Db,
     name: &str,
@@ -266,6 +270,14 @@ pub fn insert_context_returning(
     cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>,
     contextual_formatting_disabled: bool,
+) -> Result<Context> {
+    insert_context_with_delivery(db, name, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_context_with_delivery(
+    db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: bool,
 ) -> Result<Context> {
     let normalized_name = normalize_context_name(name)?;
     if normalized_name.eq_ignore_ascii_case("Everywhere") {
@@ -283,7 +295,7 @@ pub fn insert_context_returning(
         anyhow::bail!("You've reached the limit of {MAX_USER_CONTEXTS} context groups");
     }
     conn.execute(
-        "INSERT INTO contexts (name, is_everywhere, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO contexts (name, is_everywhere, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled, paste_in_chunks) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             normalized_name,
             normalize_optional_trimmed(icon),
@@ -291,6 +303,7 @@ pub fn insert_context_returning(
             normalize_optional_trimmed(cleanup_intensity),
             normalized_custom_instructions,
             contextual_formatting_disabled,
+            paste_in_chunks,
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -347,8 +360,8 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     tx.execute(
         "INSERT INTO contexts (
            name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
+           custom_instructions, contextual_formatting_disabled, paste_in_chunks
+         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             name,
             source.icon,
@@ -357,6 +370,7 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
             source.color,
             source.custom_instructions,
             source.contextual_formatting_disabled,
+            source.paste_in_chunks,
         ],
     )?;
     let duplicate_id = tx.last_insert_rowid();
@@ -390,6 +404,7 @@ pub fn update_context(db: &Db, context_id: i64, name: &str) -> Result<()> {
 /// Sets the context's icon/tone/cleanup override in one shot (always
 /// overwrites all three — `None` clears a field back to "use default").
 /// Kept separate from `update_context` so the plain rename flow is untouched.
+#[cfg(test)]
 pub fn update_context_settings(
     db: &Db,
     context_id: i64,
@@ -399,10 +414,18 @@ pub fn update_context_settings(
     custom_instructions: Option<&str>,
     contextual_formatting_disabled: bool,
 ) -> Result<()> {
+    update_context_settings_with_delivery(db, context_id, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_context_settings_with_delivery(
+    db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: Option<bool>,
+) -> Result<()> {
     let normalized_custom_instructions = normalize_custom_instructions(custom_instructions)?;
     let conn = lock_conn(db)?;
     let changed = conn.execute(
-        "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, updated_at = datetime('now') WHERE id = ?1",
+        "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, paste_in_chunks = COALESCE(?7, paste_in_chunks), updated_at = datetime('now') WHERE id = ?1",
         params![
             context_id,
             normalize_optional_trimmed(icon),
@@ -410,7 +433,19 @@ pub fn update_context_settings(
             normalize_optional_trimmed(cleanup_intensity),
             normalized_custom_instructions,
             contextual_formatting_disabled,
+            paste_in_chunks,
         ],
+    )?;
+    require_row_changed(changed, "Context", context_id)
+}
+
+/// Updates the desktop delivery preference independently of styling.
+#[cfg(test)]
+pub fn update_context_paste_in_chunks(db: &Db, context_id: i64, enabled: bool) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let changed = conn.execute(
+        "UPDATE contexts SET paste_in_chunks = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![context_id, enabled],
     )?;
     require_row_changed(changed, "Context", context_id)
 }
@@ -1071,6 +1106,19 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn paste_chunks_context_defaults_updates_and_duplicates() {
+        let db = open(":memory:").unwrap();
+        assert!(!query_context(&db, EVERYWHERE_CONTEXT_ID).unwrap().paste_in_chunks);
+        let context = insert_context_with_delivery(&db, "Terminal chunks", None, None, None, None, false, true).unwrap();
+        assert!(context.paste_in_chunks);
+        update_context_settings_with_delivery(&db, context.id, None, None, None, None, false, None).unwrap();
+        assert!(query_context(&db, context.id).unwrap().paste_in_chunks);
+        assert!(duplicate_context(&db, context.id).unwrap().paste_in_chunks);
+        update_context_settings_with_delivery(&db, context.id, None, None, None, None, false, Some(false)).unwrap();
+        assert!(!query_context(&db, context.id).unwrap().paste_in_chunks);
     }
 
     #[test]

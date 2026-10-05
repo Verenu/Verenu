@@ -762,6 +762,13 @@ pub struct PasteboardSnapshot {
     items: Vec<Vec<(String, Vec<u8>)>>,
 }
 
+pub fn pasteboard_change_count() -> Option<isize> {
+    autoreleasepool(|_| unsafe {
+        let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pb.is_null() { None } else { Some(msg_send![pb, changeCount]) }
+    })
+}
+
 /// Takes a conservative plain-text snapshot of the general pasteboard.
 ///
 /// Do not eagerly call `dataForType:` for every advertised representation.

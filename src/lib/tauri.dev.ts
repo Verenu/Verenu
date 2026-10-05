@@ -61,6 +61,7 @@ type DevContext = {
   color: string | null;
   custom_instructions: string | null;
   contextual_formatting_disabled: boolean;
+  paste_in_chunks: boolean;
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
@@ -230,6 +231,7 @@ function readDevContexts(): DevContext[] {
   const rows = readDevList<DevContext>(DEV_CONTEXTS_KEY).map((row) => ({
     ...row,
     contextual_formatting_disabled: row.contextual_formatting_disabled ?? false,
+    paste_in_chunks: row.paste_in_chunks ?? false,
     pinned_at: row.pinned_at ?? null,
   }));
   if (rows.some((context) => context.id === DEV_EVERYWHERE_CONTEXT_ID)) return rows;
@@ -244,6 +246,7 @@ function readDevContexts(): DevContext[] {
     color: null,
     custom_instructions: null,
     contextual_formatting_disabled: false,
+    paste_in_chunks: false,
     pinned_at: null,
     created_at: now,
     updated_at: now,
@@ -728,6 +731,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         color: null,
         custom_instructions: ((args?.customInstructions ?? args?.custom_instructions) as string | null | undefined) ?? null,
         contextual_formatting_disabled: Boolean(args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
+        paste_in_chunks: Boolean(args?.pasteInChunks ?? args?.paste_in_chunks ?? false),
         pinned_at: null,
         created_at: now,
         updated_at: now,
@@ -760,6 +764,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         cleanup_intensity: (args?.cleanupIntensity ?? args?.cleanup_intensity) as string | null | undefined ?? null,
         custom_instructions: (args?.customInstructions ?? args?.custom_instructions) as string | null | undefined ?? null,
         contextual_formatting_disabled: Boolean(args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
+        paste_in_chunks: Boolean(args?.pasteInChunks ?? args?.paste_in_chunks ?? rows[index]?.paste_in_chunks ?? false),
         updated_at: devNow(),
       };
       writeDevList(DEV_CONTEXTS_KEY, rows);
