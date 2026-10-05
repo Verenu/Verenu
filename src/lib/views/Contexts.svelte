@@ -53,7 +53,7 @@
   import SiteIcon from '../components/SiteIcon.svelte';
   import Toggle from '../components/Toggle.svelte';
   import { matchesAppSearch, rankAppMatches } from '../components/appMappings/helpers';
-  import { isAndroid } from '../platform';
+  import { isAndroid, isMobile } from '../platform';
 
   // The page swap leaves a transform on the page, which re-bases `position: fixed`.
   // On Android the pickers dock to the screen, so they move to <body> like the dialogs.
@@ -184,6 +184,7 @@
   let modalCleanupIntensity = $state<string | null>(null);
   let modalCustomInstructions = $state('');
   let modalContextualFormattingDisabled = $state(false);
+  let modalPasteInChunks = $state(false);
   let modalAdvancedOpen = $state(false);
   let editingContextId = $state<number | null>(null);
   // Tone/cleanup dropdown menus render fixed-position at the top level (not
@@ -687,6 +688,7 @@
     modalCleanupIntensity = editing?.cleanup_intensity ?? null;
     modalCustomInstructions = editing?.custom_instructions ?? '';
     modalContextualFormattingDisabled = editing?.contextual_formatting_disabled ?? false;
+    modalPasteInChunks = editing?.paste_in_chunks ?? false;
     modalAdvancedOpen = false;
     modalApps = [];
     modalAppQuery = '';
@@ -879,12 +881,13 @@
           cleanupIntensity: modalCleanupIntensity,
           customInstructions: modalCustomInstructions.trim() || null,
           contextualFormattingDisabled: modalContextualFormattingDisabled,
+          ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         if (modalColor !== editing.color) {
           await invoke('update_context_color', { contextId: editing.id, color: modalColor });
         }
         contextsStore.contexts = contexts.map((context) => context.id === editing.id
-          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: modalContextualFormattingDisabled, color: modalColor, updated_at: new Date().toISOString() }
+          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: modalContextualFormattingDisabled, paste_in_chunks: modalPasteInChunks, color: modalColor, updated_at: new Date().toISOString() }
           : context);
       } else {
         const created = await invoke<Context>('create_context', {
@@ -894,6 +897,7 @@
           cleanupIntensity: modalCleanupIntensity,
           customInstructions: modalCustomInstructions.trim() || null,
           contextualFormattingDisabled: modalContextualFormattingDisabled,
+          ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         createdContextId = created.id;
         if (modalColor) {
@@ -1659,6 +1663,15 @@
               </div>
               <Toggle checked={modalContextualFormattingDisabled} onchange={(value) => modalContextualFormattingDisabled = value} label="Disable smart formatting for this context" />
             </div>
+            {#if !isMobile}
+              <div class="advanced-setting-row">
+                <div>
+                  <span class="advanced-setting-label">Paste in Chunks</span>
+                  <p>Pastes small pieces with pauses to keep text visible in CLI tools.</p>
+                </div>
+                <Toggle checked={modalPasteInChunks} onchange={(value) => modalPasteInChunks = value} label="Paste in Chunks" />
+              </div>
+            {/if}
           </div>
         {/if}
       </div>

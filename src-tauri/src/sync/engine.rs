@@ -335,6 +335,8 @@ pub struct ContextAggregate {
     #[serde(default)]
     pub contextual_formatting_disabled: bool,
     #[serde(default)]
+    pub paste_in_chunks: bool,
+    #[serde(default)]
     pub pinned_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -659,7 +661,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
     let row = conn
         .query_row(
             "SELECT name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions,
-                    contextual_formatting_disabled, pinned_at, created_at, updated_at
+                    contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
              FROM contexts WHERE id = ?1",
             params![context_id],
             |r| {
@@ -675,6 +677,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
                     pinned_at: r.get(8)?,
                     created_at: r.get(9)?,
                     updated_at: r.get(10)?,
+                    paste_in_chunks: r.get::<_, i64>(11)? != 0,
                     targets: Vec::new(),
                     websites: Vec::new(),
                     dictionary_uuids: Vec::new(),
@@ -2244,14 +2247,15 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         conn.execute(
             "INSERT INTO contexts (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
                                    custom_instructions, contextual_formatting_disabled, pinned_at,
-                                   created_at, updated_at)
-             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                   created_at, updated_at, paste_in_chunks)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(uuid) DO UPDATE SET
                name = excluded.name, icon = excluded.icon, tone = excluded.tone,
                cleanup_intensity = excluded.cleanup_intensity, color = excluded.color,
                custom_instructions = excluded.custom_instructions,
                contextual_formatting_disabled = excluded.contextual_formatting_disabled,
-               pinned_at = excluded.pinned_at, updated_at = excluded.updated_at",
+               pinned_at = excluded.pinned_at, updated_at = excluded.updated_at,
+               paste_in_chunks = excluded.paste_in_chunks",
             params![
                 op.row_uuid,
                 aggregate.name,
@@ -2263,7 +2267,8 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
                 aggregate.contextual_formatting_disabled as i64,
                 aggregate.pinned_at,
                 aggregate.created_at,
-                aggregate.updated_at
+                aggregate.updated_at,
+                aggregate.paste_in_chunks
             ],
         )
     };
@@ -2337,7 +2342,7 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
     }
     conn.execute(
         "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3, color = ?4,
-                custom_instructions = ?5, contextual_formatting_disabled = ?6, pinned_at = ?7
+                custom_instructions = ?5, contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9
          WHERE id = ?8",
         params![
             aggregate.icon,
@@ -2347,7 +2352,8 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
             aggregate.custom_instructions,
             aggregate.contextual_formatting_disabled as i64,
             aggregate.pinned_at,
-            everywhere_id
+            everywhere_id,
+            aggregate.paste_in_chunks
         ],
     )?;
     reconcile_context_members(conn, everywhere_id, aggregate)?;
