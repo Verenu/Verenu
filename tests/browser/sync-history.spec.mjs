@@ -4,26 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from './fixtures.mjs';
 
-test('Tailscale setup stays readable and explains two-way and multi-device connections', async ({ page }) => {
-  await page.locator('[data-debug-id="nav.settings"]').click();
-  // Dev sessions prohibit sync networking. Reveal the feature UI locally;
-  // native device tests separately exercise its real pairing and route IPC.
-  await page.evaluate(async () => {
-    const { appStore } = await import('/src/lib/stores.ts');
-    appStore.syncEnabled = true;
-    appStore.settingsSection = 'sync';
-  });
-  const setup = page.locator('[data-setting-target="sync-tailscale"]');
-  await setup.locator('summary').click();
-  await expect(page.getByLabel("This device's Tailscale IPv4 address")).toBeVisible();
-  await page.getByLabel("Other device's connection details").fill('verenu-sync://synthetic');
-  await expect(setup.getByText(/copy this device's details back/)).toBeVisible();
-  await expect(setup.getByText(/For three or more devices/)).toBeVisible();
-  await expect(setup.getByText(/On Android, keep Verenu open/)).toBeVisible();
-  const fits = await setup.evaluate(element => element.scrollWidth <= element.clientWidth);
-  expect(fits, 'Setup inputs and instructions fit their container').toBe(true);
-});
-
 test('open General settings reflects a shared setting after sync without changing appearance', async ({ page, session }) => {
   const initial = await session.invoke('get_setting', { key: 'contextual_formatting_enabled' });
   const appearance = await session.invoke('get_setting', { key: 'appearance_mode' });

@@ -6,6 +6,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.
 - Added copyable Tailscale connection details, remote code-based pairing, and a saved connection editor in Sync. Setup explains relayed multi-device sync and Android foreground limits. Android enables nearby Wi-Fi multicast discovery while Verenu is visible.
+- Redesigned the Sync page. Paired devices keep their status, last sync, and route in one row, and the Connection editor opens inside that row. Tailscale setup is a three-step flow with a copy button that confirms, and a newly paired device offers a reminder to give the other side a way back. Pairing shows connecting, code, and checking phases, and its dialogs no longer sit under the phone sidebar. All motion follows the shared reduced-motion settings.
 - Multi-device hubs promptly relay imported settings and counter-only updates. Busy peers end the connection attempt without probing alternate LAN addresses, allowing simultaneous edits to recover promptly.
 
 - Paired devices automatically sync committed edits from either side within the next 750 ms check, with queued follow-up sessions and retry backoff. Existing pairs can save a persistent Tailscale route. Connection errors include the destination port and firewall guidance. Provider/model choices remain local; the open General settings page refreshes shared values after sync.
