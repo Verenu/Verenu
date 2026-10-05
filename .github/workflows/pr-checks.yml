@@ -229,7 +229,7 @@ jobs:
         run: mkdir -p tests/reports
 
       - name: Check privacy-safe browser failure summaries
-        run: node --test tests/verification/playwright-summary.test.mjs
+        run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
 
       - name: Run unified fast profile
         run: npm test -- --strict --json-report tests/reports/fast-profile.json --junit-report tests/reports/fast-profile.junit.xml
