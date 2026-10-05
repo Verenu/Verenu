@@ -1,10 +1,11 @@
-//! Thin wrapper over tauri-plugin-notification for app-level system
-//! notifications. Keeping these calls in Rust gives Windows notifications
-//! Verenu's native app identity instead of the WebView host process.
+//! App-level system notifications. Native Linux delivery acknowledges the
+//! daemon's result outside the async runtime; native Windows delivery keeps
+//! Verenu's app identity instead of the WebView host process.
 
 use tauri::AppHandle;
 #[cfg(windows)]
 use tauri::Emitter;
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(windows)]
@@ -59,12 +60,158 @@ fn show(
         }
     }
 
+    #[cfg(target_os = "linux")]
+    let result = {
+        let _ = app;
+        show_linux(linux_notification(title, &body))
+    };
+    #[cfg(not(target_os = "linux"))]
     let result = app.notification().builder().title(title).body(body).show();
     if let Err(err) = result {
-        log::debug!("notify: {title} notification failed: {err}");
+        log::warn!("notify: {title} notification failed: {err}");
         return Err(err.to_string());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_notification(title: &str, body: &str) -> notify_rust::Notification {
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .appname("Verenu")
+        .icon("verenu")
+        .hint(notify_rust::Hint::DesktopEntry("verenu".to_owned()))
+        .summary(title)
+        .body(body);
+    notification
+}
+
+#[cfg(target_os = "linux")]
+fn show_linux(notification: notify_rust::Notification) -> Result<(), String> {
+    // notify-rust's blocking D-Bus API starts its own Tokio runtime. Calling it
+    // on a Tauri or model-download runtime worker panics. A separate thread
+    // also lets us return the daemon's acknowledgement instead of the plugin's
+    // fire-and-forget success, so failed update/service sends can retry.
+    std::thread::spawn(move || {
+        notification
+            .show()
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    })
+    .join()
+    .map_err(|_| "Linux notification delivery thread failed.".to_owned())?
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::{linux_notification, show_linux};
+    use std::collections::HashMap;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+
+    type ReceivedNotification = (String, String, String, String, String);
+
+    struct NotificationServer {
+        reject: Arc<AtomicBool>,
+        received: Arc<Mutex<Vec<ReceivedNotification>>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.Notifications")]
+    impl NotificationServer {
+        #[allow(clippy::too_many_arguments)]
+        fn notify(
+            &self,
+            app_name: String,
+            _replaces_id: u32,
+            app_icon: String,
+            summary: String,
+            body: String,
+            _actions: Vec<String>,
+            hints: HashMap<String, zbus::zvariant::OwnedValue>,
+            _expire_timeout: i32,
+        ) -> zbus::fdo::Result<u32> {
+            if self.reject.load(Ordering::SeqCst) {
+                return Err(zbus::fdo::Error::Failed(
+                    "Synthetic delivery rejection".to_owned(),
+                ));
+            }
+            let desktop_entry = hints
+                .get("desktop-entry")
+                .and_then(|value| <&str>::try_from(value).ok())
+                .unwrap_or_default()
+                .to_owned();
+            self.received
+                .lock()
+                .unwrap()
+                .push((app_name, app_icon, summary, body, desktop_entry));
+            Ok(1)
+        }
+    }
+
+    // Uses a disposable daemon, never the user's notification service:
+    // dbus-run-session -- cargo test --manifest-path src-tauri/Cargo.toml \
+    //   linux_notification_delivery_from_tokio -- --ignored
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires an isolated D-Bus session via dbus-run-session"]
+    async fn linux_notification_delivery_from_tokio() {
+        let reject = Arc::new(AtomicBool::new(false));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let _server = zbus::connection::Builder::session()
+            .unwrap()
+            .name("org.freedesktop.Notifications")
+            .unwrap()
+            .serve_at(
+                "/org/freedesktop/Notifications",
+                NotificationServer {
+                    reject: reject.clone(),
+                    received: received.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        // The old plugin panicked here and reported success without delivery.
+        show_linux(linux_notification(
+            "Model ready",
+            "Synthetic model is ready.",
+        ))
+        .unwrap();
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![(
+                "Verenu".to_owned(),
+                "verenu".to_owned(),
+                "Model ready".to_owned(),
+                "Synthetic model is ready.".to_owned(),
+                "verenu".to_owned(),
+            )]
+        );
+        reject.store(true, Ordering::SeqCst);
+        let error = show_linux(linux_notification(
+            "Verenu service notice",
+            "Synthetic notice.",
+        ))
+        .unwrap_err();
+        assert!(error.contains("Synthetic delivery rejection"), "{error}");
+        assert_eq!(received.lock().unwrap().len(), 1);
+        reject.store(false, Ordering::SeqCst);
+        show_linux(linux_notification(
+            "Verenu service notice",
+            "Synthetic notice.",
+        ))
+        .unwrap();
+        assert_eq!(received.lock().unwrap().len(), 2);
+        drop(_server);
+        assert!(show_linux(linux_notification(
+            "Verenu update available",
+            "Synthetic update."
+        ))
+        .is_err());
+    }
 }
 
 /// Raises a download-complete system notification from the backend so it can
