@@ -39,3 +39,57 @@ test('Playwright summaries omit passing, skipped, and missing results', () => {
   }), []);
   assert.deepEqual(summarizePlaywrightFailures(null), []);
 });
+
+test('Playwright summaries retain only allowlisted menu geometry diagnostics', () => {
+  const report = {
+    suites: [{
+      file: 'tests/browser/settings-dropdowns.spec.mjs',
+      specs: [{
+        title: 'menus stay in the viewport',
+        line: 34,
+        tests: [{
+          projectName: 'phone',
+          results: [{
+            status: 'failed',
+            errors: [{
+              message: 'private assertion value\nMENU_GEOMETRY:{"menuId":"transcription-mode-menu","check":"right-panel","bounds":{"x":8,"y":12,"width":374,"height":240,"privateText":"do-not-share"},"content":{"x":16,"y":24,"width":358,"height":700},"viewport":{"width":390,"height":844},"privateText":"do-not-share"}',
+              location: { file: '/runner/work/app/tests/browser/settings-dropdowns.spec.mjs', line: 80, column: 5 },
+            }],
+          }],
+        }],
+      }],
+    }],
+  };
+
+  assert.deepEqual(summarizePlaywrightFailures(report), [{
+    project: 'phone',
+    file: 'settings-dropdowns.spec.mjs',
+    line: 34,
+    title: 'menus stay in the viewport',
+    assertionLine: 80,
+    menuGeometry: {
+      check: 'right-panel',
+      menuId: 'transcription-mode-menu',
+      bounds: { x: 8, y: 12, width: 374, height: 240 },
+      content: { x: 16, y: 24, width: 358, height: 700 },
+      viewport: { width: 390, height: 844 },
+    },
+  }]);
+
+  const unsafe = {
+    suites: [{
+      specs: [{
+        tests: [{
+          projectName: 'phone',
+          results: [{
+            status: 'failed',
+            errors: [{
+              message: 'MENU_GEOMETRY:{"menuId":"private-menu","check":"right-panel","bounds":{"x":0,"y":0,"width":1,"height":1},"content":{"x":0,"y":0,"width":1,"height":1},"viewport":{"width":1,"height":1}}',
+            }],
+          }],
+        }],
+      }],
+    }],
+  };
+  assert.equal(Object.hasOwn(summarizePlaywrightFailures(unsafe)[0], 'menuGeometry'), false);
+});
