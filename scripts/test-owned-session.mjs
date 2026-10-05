@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
+import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
 import { run } from './verification/process.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
 
@@ -37,7 +38,22 @@ try {
   report.checks.push(...suite.checks);
   const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
   report.artifacts.push(artifact(playwright.log));
-  assert.equal(playwright.status, 'passed', 'Real-session Playwright flows failed');
+  const playwrightReport = await fs.readFile(path.join(session.directory, 'playwright.json'), 'utf8')
+    .then(JSON.parse)
+    .catch(() => null);
+  const failedTests = summarizePlaywrightFailures(playwrightReport);
+  report.checks.push({
+    name: 'Real-session Playwright desktop and phone flows',
+    status: playwright.status,
+    ...(failedTests.length ? { failedTests } : {}),
+  });
+  if (playwright.status !== 'passed') {
+    const cases = failedTests.map(({ project, file, line, title }) =>
+      `${project}: ${file}:${line ?? '?'} ${title}`).join('; ');
+    throw new Error(cases
+      ? `Real-session Playwright flows failed: ${cases}`
+      : 'Real-session Playwright flows failed; no failed test cases were recorded.');
+  }
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
   const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;
