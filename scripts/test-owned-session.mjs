@@ -50,6 +50,7 @@ try {
   if (playwright.status !== 'passed') {
     const cases = failedTests.map(({ project, file, line, title }) =>
       `${project}: ${file}:${line ?? '?'} ${title}`).join('; ');
+    if (cases) console.error(`Real-session Playwright failures: ${cases}`);
     throw new Error(cases
       ? `Real-session Playwright flows failed: ${cases}`
       : 'Real-session Playwright flows failed; no failed test cases were recorded.');
