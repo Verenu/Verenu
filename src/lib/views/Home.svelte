@@ -14,6 +14,7 @@
   import HistoryList from './home/HistoryList.svelte';
   import StatsCard from './home/StatsCard.svelte';
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
+  import { listenForSyncCompletion } from '../syncStore.svelte';
   import type { ShortcutStatus } from '../shortcutStatus.svelte';
   import type { InstalledApp } from '../appMappings';
 
@@ -287,6 +288,10 @@
     }));
 
     trackListener(listen('verenu:history-pruned', () => load(true, true)));
+    trackListener(listenForSyncCompletion(() => {
+      load(true, true);
+      invoke<string[]>('get_history_apps').then(list => { apps = list ?? []; }).catch(() => {});
+    }));
 
     trackListener(listen<string>('verenu:pipeline-failed', (ev) => {
       failedEntry = { created_at: ev.payload };

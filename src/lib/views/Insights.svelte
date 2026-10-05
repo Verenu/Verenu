@@ -5,6 +5,7 @@
   import { expoOut } from 'svelte/easing';
   import { invoke, listen } from '../tauri';
   import { startPolling } from '../polling';
+  import { listenForSyncCompletion } from '../syncStore.svelte';
   import { formatIpcError } from '../stores';
   import { MOTION_MS, motionMs } from '../motion';
   import Dropdown from '../components/Dropdown.svelte';
@@ -120,6 +121,13 @@
     // once a minute while visible, and immediately when the window returns.
     const poll = startPolling(() => load({ silent: true }), 60_000, { immediate: false });
     let unlisten: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
+    listenForSyncCompletion(() => poll.request())
+      .then(cleanup => {
+        if (!mounted) cleanup();
+        else unlistenSync = cleanup;
+      })
+      .catch(() => {});
     // Refresh live as new dictations land, so the page never shows stale
     // numbers while it's open. Silent so a background refresh never flashes
     // the loading state.
@@ -138,6 +146,7 @@
     return () => {
       mounted = false;
       unlisten?.();
+      unlistenSync?.();
       poll.stop();
     };
   });

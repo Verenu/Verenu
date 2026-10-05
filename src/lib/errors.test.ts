@@ -97,6 +97,14 @@ describe('actionable errors', () => {
     expect(formatSyncError('TLS handshake failed: certificate rejected')).toContain('pair the device again');
   });
 
+  it('keeps the sync port and firewall recovery guidance instead of a generic timeout', () => {
+    const raw = 'Could not connect to Sync test book at 100.88.83.103:49522: connection timed out. A firewall or network rule may be blocking TCP port 49522. Open Verenu and allow this connection through both firewalls.';
+    expect(formatSyncError(raw)).toContain('TCP port 49522');
+    expect(formatSyncError(raw)).toContain('both firewalls');
+    expect(formatSyncError('connection refused')).toContain('firewall');
+    expect(formatSyncError('connection refused')).toContain('Tailscale');
+  });
+
   it.each([null, undefined, {}, new Error('Recording task panicked: internal details')])('gives a recovery step for an unusable error %j', (error) => {
     expect(classifyIpcError(error).message).toContain('restart Verenu');
   });

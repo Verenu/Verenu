@@ -61,18 +61,7 @@ pub struct SnapshotProgress {
 /// full classification. API keys never appear here (they are not even stored
 /// in settings.json; they live in the OS credential store).
 pub const SYNCABLE_SETTINGS: &[&str] = &[
-    store::TRANSCRIPTION_PROVIDER,
     store::TRANSCRIPTION_LANGUAGE,
-    store::CLEANUP_PROVIDER,
-    store::TRANSCRIPTION_MODEL,
-    store::CLEANUP_MODEL,
-    store::TRANSCRIPTION_MODELS_BY_PROVIDER,
-    store::CLEANUP_MODELS_BY_PROVIDER,
-    store::TRANSCRIPTION_DEFAULT_MODEL,
-    store::CLEANUP_DEFAULT_MODEL,
-    store::TRANSCRIPTION_FALLBACK_MODELS,
-    store::CLEANUP_FALLBACK_MODELS,
-    store::DUAL_TRANSCRIPTION_ENABLED,
     store::CLEANUP_ENABLED,
     store::DEFAULT_TONE,
     store::CLEANUP_INTENSITY,
