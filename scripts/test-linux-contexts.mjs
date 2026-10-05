@@ -13,8 +13,23 @@ const directory = await fs.mkdtemp(path.join(root, 'test-results', 'linux-contex
 const identity = sourceIdentity();
 const checks = [];
 let browser;
+let browserStarted = false;
 let socket;
 let original;
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once('exit', onExit);
+  });
+}
 const server = http.createServer((request, response) => {
   const host = request.headers.host.split(':')[0];
   response.writeHead(200, { 'Content-Type': 'text/html' });
@@ -25,7 +40,13 @@ try {
   assert.ok(process.env.HYPRLAND_INSTANCE_SIGNATURE, 'Requires a real Hyprland session');
   original = JSON.parse(execFileSync('hyprctl', ['-j', 'activewindow'], { encoding: 'utf8' }));
   const build = execFileSync('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--lib', '--no-run', '--message-format=json'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  const executable = build.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  const executable = build.split('\n').filter(Boolean).flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  })
     .findLast((row) => row.reason === 'compiler-artifact' && row.profile.test && row.executable)?.executable;
   assert.ok(executable, 'Missing native test executable');
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -38,12 +59,22 @@ try {
     '--host-resolver-rules=MAP *.example.test 127.0.0.1', '--remote-debugging-port=0',
     '--ozone-platform=wayland', '--disable-features=Vulkan', firstUrl,
   ], { stdio: ['ignore', 'ignore', 'ignore'] });
-  browser.on('error', () => {});
+  await new Promise((resolve, reject) => {
+    browser.once('spawn', () => {
+      browserStarted = true;
+      resolve();
+    });
+    browser.once('error', reject);
+  }).catch((error) => {
+    throw new Error(`Could not start Chrome at ${chrome}: ${error.message}`);
+  });
   let debuggerPort;
   for (let attempt = 0; attempt < 100; attempt++) {
     const activePort = await fs.readFile(path.join(directory, 'profile', 'DevToolsActivePort'), 'utf8').catch(() => '');
     if (activePort) { debuggerPort = Number(activePort.split('\n')[0]); break; }
-    if (browser.exitCode !== null) throw new Error('Owned Chrome exited before initialization');
+    if (browser.exitCode !== null || browser.signalCode !== null) {
+      throw new Error(`Owned Chrome exited before initialization (${browser.exitCode ?? browser.signalCode})`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(debuggerPort, 'Owned Chrome startup timed out');
@@ -69,8 +100,10 @@ try {
     let window;
     for (let attempt = 0; attempt < 100; attempt++) {
       const clients = JSON.parse(execFileSync('hyprctl', ['-j', 'clients'], { encoding: 'utf8' }));
-      window = clients.find((client) => client.pid === browser.pid && client.title === title);
-      if (window) break;
+      const matchingWindows = clients.filter((client) => client.pid === browser.pid && client.title === title);
+      window = matchingWindows[0];
+      if (window && (expected !== 'unavailable' || matchingWindows.length >= 2)) break;
+      window = undefined;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.ok(window, `Native fixture window missing: ${name}`);
@@ -114,7 +147,14 @@ try {
   console.error(error.message);
 } finally {
   socket?.close();
-  if (browser && browser.exitCode === null) browser.kill('SIGTERM');
+  if (browser && browserStarted && browser.exitCode === null && browser.signalCode === null) {
+    browser.kill('SIGTERM');
+    if (!(await waitForExit(browser, 3_000))) {
+      browser.kill('SIGKILL');
+      if (!(await waitForExit(browser, 3_000))) browser.unref();
+    }
+  }
+  server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
   if (original?.address) {
     try {

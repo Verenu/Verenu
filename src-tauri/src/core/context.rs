@@ -89,7 +89,10 @@ pub fn resolve_context_for_captured_window(
             return Ok(resolved);
         }
         let alias = crate::core::window_context::linux_executable_for_pid(target_id);
-        resolve_alias_with_title(db, resolved, alias.as_deref(), domain, title)
+        let alias = alias
+            .as_deref()
+            .filter(|alias| !alias.trim().eq_ignore_ascii_case(executable.trim()));
+        resolve_alias_with_title(db, executable, resolved, alias, domain, title)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -101,31 +104,38 @@ pub fn resolve_context_for_captured_window(
 #[cfg(any(target_os = "linux", test))]
 fn resolve_alias_with_title(
     db: &Db,
+    executable: &str,
     resolved: (Context, Option<db::ContextSubApp>),
     alias: Option<&str>,
     domain: Option<&str>,
     title: Option<&str>,
 ) -> Result<(Context, Option<db::ContextSubApp>)> {
-    if resolved.1.is_none() {
-        if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
-            let alias_match = if title.is_some() {
-                db::resolve_context_with_sub_app(db, alias, domain, title)?
-            } else {
-                (db::resolve_context_for_target(db, alias, domain)?, None)
-            };
-            // A sub-app is more specific than a website/app. Otherwise keep
-            // a class or website assignment ahead of an executable alias.
-            if alias_match.1.is_some() || resolved.0.is_everywhere {
-                return Ok(alias_match);
-            }
-        }
+    if resolved.1.is_some() {
+        return Ok(resolved);
     }
-    Ok(resolved)
+    let Some(alias) = alias.filter(|value| !value.trim().is_empty()) else {
+        return Ok(resolved);
+    };
+    if alias.trim().eq_ignore_ascii_case(executable.trim()) {
+        return Ok(resolved);
+    }
+    let title = title.filter(|value| !value.trim().is_empty());
+    if !resolved.0.is_everywhere && title.is_none() {
+        return Ok(resolved);
+    }
+    let alias_match = db::resolve_context_with_sub_app(db, alias, domain, title)?;
+    // A sub-app is more specific than a website/app. Otherwise keep
+    // a class or website assignment ahead of an executable alias.
+    if alias_match.1.is_some() || resolved.0.is_everywhere {
+        Ok(alias_match)
+    } else {
+        Ok(resolved)
+    }
 }
 
 #[cfg(test)]
 fn resolve_executable_alias(db: &Db, context: Context, alias: Option<&str>) -> Result<Context> {
-    resolve_alias_with_title(db, (context, None), alias, None, None)
+    resolve_alias_with_title(db, "", (context, None), alias, None, None)
         .map(|(context, _)| context)
 }
 
@@ -145,7 +155,15 @@ mod tests {
         }).unwrap();
         db::assign_sub_app(&db, sub.id, Some(coding.id)).unwrap();
         let base = db::resolve_context_with_sub_app(&db, "com.t3tools.T3Code", Some("example.com"), Some("Verenu - T3 Code")).unwrap();
-        let resolved = resolve_alias_with_title(&db, base, Some("t3code"), Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        let resolved = resolve_alias_with_title(
+            &db,
+            "com.t3tools.T3Code",
+            base,
+            Some("t3code"),
+            Some("example.com"),
+            Some("Verenu - T3 Code"),
+        )
+        .unwrap();
         assert_eq!(resolved.0.id, coding.id);
         assert_eq!(resolved.1.unwrap().id, sub.id);
         let explicit = db::create_sub_app(&db, db::NewSubApp {
@@ -154,7 +172,15 @@ mod tests {
         }).unwrap();
         db::assign_sub_app(&db, explicit.id, Some(website.id)).unwrap();
         let base = db::resolve_context_with_sub_app(&db, "com.t3tools.T3Code", Some("example.com"), Some("Verenu - T3 Code")).unwrap();
-        let resolved = resolve_alias_with_title(&db, base, Some("t3code"), Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        let resolved = resolve_alias_with_title(
+            &db,
+            "com.t3tools.T3Code",
+            base,
+            Some("t3code"),
+            Some("example.com"),
+            Some("Verenu - T3 Code"),
+        )
+        .unwrap();
         assert_eq!(resolved.1.unwrap().id, explicit.id);
     }
 

@@ -15,7 +15,10 @@ pub fn extract_domain(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let url = if trimmed.contains("://") {
+    let has_scheme = trimmed
+        .find("://")
+        .is_some_and(|separator| !trimmed[..separator].contains(['/', '?', '#']));
+    let url = if has_scheme {
         reqwest::Url::parse(trimmed).ok()?
     } else {
         reqwest::Url::parse(&format!("https://{trimmed}")).ok()?
@@ -26,9 +29,13 @@ pub fn extract_domain(raw: &str) -> Option<String> {
     url.host_str()?;
     // Keep the same host spelling as saved Context targets. URL parsing is
     // validation here; IDNA conversion would break existing Unicode targets.
-    let authority = trimmed
-        .split_once("://")
-        .map_or(trimmed, |(_, remainder)| remainder)
+    let authority = (if has_scheme {
+        trimmed
+            .split_once("://")
+            .map_or(trimmed, |(_, remainder)| remainder)
+    } else {
+        trimmed
+    })
         .split(['/', '?', '#']).next()?;
     let host = authority.split('@').next_back()?.split(':').next()?.trim_end_matches('.');
     if host.contains(char::is_whitespace) || !(host.contains('.') || host.eq_ignore_ascii_case("localhost")) || host.split('.').any(str::is_empty) {
@@ -243,6 +250,14 @@ mod tests {
         );
         assert_eq!(
             extract_domain("https://example.com/search?q=https://something"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("example.com/redirect?to=https://other.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("example.com?url=http://foo.bar"),
             Some("example.com".to_string())
         );
     }
