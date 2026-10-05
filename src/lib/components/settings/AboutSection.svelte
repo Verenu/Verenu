@@ -7,12 +7,14 @@
   import Toggle from '../Toggle.svelte';
   import { modalFocusTrap } from '../../modalFocus';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import { installAvailableUpdate, updateActionLabel } from '../../updateActions';
 
   let { appVersion }: { appVersion: string } = $props();
 
   type UpdateCheckState = 'idle' | 'checking' | 'up-to-date' | 'available';
   let updateCheckState: UpdateCheckState = $state('idle');
-  let installingFromAbout = $state(false);
+  let updateCheckError = $state('');
+  let checkGeneration = 0;
   let versionTapCount = $state(0);
   let versionTapTimer: ReturnType<typeof setTimeout> | null = null;
   let devModeHintVisible = $state(false);
@@ -31,7 +33,7 @@
   onMount(() => {
     invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' })
       .then((value) => {
-        betaUpdatesEnabled = value ?? false;
+        betaUpdatesEnabled = value ?? /-(beta|nightly|dev)/i.test(appVersion);
         appStore.betaUpdatesEnabled = betaUpdatesEnabled;
       })
       .catch((error) => console.error('Failed to load beta update setting:', error));
@@ -47,18 +49,25 @@
   }
 
   async function checkForUpdateManual() {
+    const generation = ++checkGeneration;
     updateCheckState = 'checking';
+    updateCheckError = '';
+    appStore.updateInstallError = '';
     try {
       const update = await invoke<UpdateInfo | null>('check_for_update');
+      if (generation !== checkGeneration) return;
       if (update) {
         try { await saveSetting('update_dismissed_version', null); } catch {}
         appStore.updateInfo = update;
         updateCheckState = 'available';
       } else {
+        appStore.updateInfo = null;
         updateCheckState = 'up-to-date';
       }
     } catch (err) {
+      if (generation !== checkGeneration) return;
       updateCheckState = 'idle';
+      updateCheckError = formatIpcError(err, 'Could not check for updates');
       void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
     }
   }
@@ -95,6 +104,7 @@
       try { await saveSetting('update_dismissed_version', null); } catch {}
       try { await saveSetting('update_notified_version', null); } catch {}
       appStore.updateInfo = null;
+      checkGeneration += 1;
       updateCheckState = 'idle';
       await checkForUpdateManual();
     } finally {
@@ -115,27 +125,12 @@
     }
   }
 
-  function downloadActionLabel(update: UpdateInfo): string {
-    return update.assetName.toLowerCase().endsWith('.dmg')
-      ? 'Download DMG'
-      : 'Download Installer';
-  }
-
-  function installActionLabel(update: UpdateInfo | null): string {
-    if (!update) return 'Install Now';
-    return update.installMode === 'download' ? downloadActionLabel(update) : 'Install Now';
-  }
-
   async function handleInstall() {
-    if (!appStore.updateInfo) return;
-    installingFromAbout = true;
     try {
-      await invoke('install_update', { downloadUrl: appStore.updateInfo.downloadUrl });
+      await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
       void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
-    } finally {
-      installingFromAbout = false;
     }
   }
 
@@ -199,6 +194,12 @@
 <div class="setting-row" data-setting-target="about-updates">
   <div>
     <div class="label">Updates</div>
+    <div role="status" aria-live="polite">
+    {#if appStore.updateProgress}
+      <div class="desc">{appStore.updateProgress}</div>
+    {:else if appStore.updateInstallError || updateCheckError}
+      <div class="desc">{appStore.updateInstallError || updateCheckError}</div>
+    {/if}
     {#if updateCheckState === 'up-to-date'}
       <div class="update-status-wrap">
         <div class="desc update-ok update-status">You're on the latest version</div>
@@ -206,16 +207,25 @@
     {:else if updateCheckState === 'available' && appStore.updateInfo}
       <div class="update-status-wrap">
         <div class="desc update-available update-status">v{appStore.updateInfo.version} is available</div>
+        {#if appStore.updateInfo.installHint && !appStore.updateInstalled}
+          <div class="desc">{appStore.updateInfo.installHint}</div>
+        {/if}
       </div>
     {/if}
+    </div>
   </div>
   <div class="update-controls">
     {#if updateCheckState === 'available' && appStore.updateInfo}
-      <button class="btn-ghost" onclick={handleInstall} disabled={installingFromAbout}>
-        {installingFromAbout
-          ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Installing…')
-          : installActionLabel(appStore.updateInfo)}
+      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled}>
+        {appStore.updateInstalled ? 'Installed' : appStore.updateInstalling
+          ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Updating…')
+          : updateActionLabel(appStore.updateInfo, false)}
       </button>
+      {#if !appStore.updateInstalled}
+        <button class="btn-ghost" onclick={checkForUpdateManual} disabled={appStore.updateInstalling}>
+          Check for Updates
+        </button>
+      {/if}
     {:else}
       <button
         class="btn-ghost"
@@ -232,7 +242,7 @@
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
   </div>
-  <Toggle checked={betaUpdatesEnabled} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
+  <Toggle checked={betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
 </div>
 
 {#if confirmBetaUpdates}
@@ -270,7 +280,7 @@
 {/if}
 
 <style>
-  .update-controls { flex-shrink: 0; }
+  .update-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
   .version-tap {
     border: none;
     background: transparent;
