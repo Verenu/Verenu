@@ -38,22 +38,29 @@ pub async fn reinstall_latest_update(app: AppHandle) -> Result<String, String> {
 
 fn selected_update_channel(app: &AppHandle) -> Result<crate::api::updater::UpdateChannel, String> {
     let handle = store::settings_handle(app)?;
-    let beta_enabled = handle
+    let preference = handle
         .get(store::BETA_UPDATES_ENABLED)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let installed_version = crate::api::updater::current_package_version();
-    Ok(
-        if beta_enabled || crate::api::updater::is_beta_version(&installed_version) {
-            crate::api::updater::UpdateChannel::Beta
-        } else {
-            crate::api::updater::UpdateChannel::Stable
-        },
-    )
+        .and_then(|v| v.as_bool());
+    Ok(update_channel(
+        preference,
+        &crate::api::updater::current_package_version(),
+    ))
+}
+
+fn update_channel(preference: Option<bool>, version: &str) -> crate::api::updater::UpdateChannel {
+    if preference.unwrap_or_else(|| crate::api::updater::is_beta_version(version)) {
+        crate::api::updater::UpdateChannel::Beta
+    } else {
+        crate::api::updater::UpdateChannel::Stable
+    }
 }
 
 #[tauri::command]
 pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), String> {
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _attempt = INSTALL_LOCK.try_lock().map_err(|_| {
+        "An update is already in progress. Wait for it to finish before trying again.".to_owned()
+    })?;
     // Defense-in-depth: `download_url` ultimately originates from a GitHub
     // release asset (`browser_download_url`), but this command accepts it
     // straight from the frontend and either opens it (macOS) or downloads and
@@ -78,7 +85,13 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
         Ok(())
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::system::linux_updater::install(&app, &download_url, selected_update_channel(&app)?)
+            .await
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = (&app, &download_url);
         Err("In-app update installation is unavailable on this platform. Download the latest Verenu release and install it with your usual package manager.".into())
@@ -445,6 +458,17 @@ pub fn backup_sqlite_database(
 #[cfg(test)]
 mod tests {
     use super::is_silent_nsis_setup_url;
+    #[test]
+    fn explicit_beta_opt_out_returns_to_stable_on_a_beta_install() {
+        use crate::api::updater::UpdateChannel::{Beta, Stable};
+        assert_eq!(
+            super::update_channel(Some(false), "0.20.0-nightly.20261005"),
+            Stable
+        );
+        assert_eq!(super::update_channel(Some(true), "0.20.0"), Beta);
+        assert_eq!(super::update_channel(None, "0.20.0-beta.1"), Beta);
+        assert_eq!(super::update_channel(None, "0.20.0"), Stable);
+    }
 
     #[test]
     fn only_nsis_setup_urls_use_the_silent_installer_handoff() {

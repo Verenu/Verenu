@@ -1,10 +1,13 @@
 pkgname=verenu
-pkgver="${VERENU_PKGVER:?Set VERENU_PKGVER to the release version}"
+_app_version="${VERENU_PKGVER:?Set VERENU_PKGVER to the release version}"
+# Arch pkgver forbids hyphens; keep the actual app version in the source name.
+pkgver="${_app_version//-/_}"
 pkgrel=1
 pkgdesc='Local-first dictation app for Omarchy and Arch Linux'
 arch=('x86_64')
 url='https://github.com/MONKE2525E/Verenu'
 license=('MIT')
+options=('!strip' '!debug')
 depends=(
   'gtk3'
   'webkit2gtk-4.1'
@@ -17,15 +20,16 @@ optdepends=(
   'gnome-keyring: Secret Service provider for API key storage'
   'wireplumber: PipeWire session manager'
   'xdg-desktop-portal-hyprland: XDG portal backend for Omarchy and Hyprland'
+  'polkit: administrator authorization for built-in package updates'
 )
-source=("Verenu_${pkgver}_x86_64.AppImage" 'LICENSE')
-noextract=("Verenu_${pkgver}_x86_64.AppImage")
+source=("Verenu_${_app_version}_x86_64.AppImage" 'LICENSE')
+noextract=("Verenu_${_app_version}_x86_64.AppImage")
 sha256sums=('SKIP' 'SKIP')
 
 prepare() {
-  chmod +x "$srcdir/Verenu_${pkgver}_x86_64.AppImage"
+  chmod +x "$srcdir/Verenu_${_app_version}_x86_64.AppImage"
   cd "$srcdir"
-  ./"Verenu_${pkgver}_x86_64.AppImage" --appimage-extract
+  ./"Verenu_${_app_version}_x86_64.AppImage" --appimage-extract
 }
 
 package() {
@@ -35,6 +39,9 @@ package() {
   test -x "$appdir/AppRun"
   install -d "$pkgdir/opt/verenu"
   cp -a "$appdir/." "$pkgdir/opt/verenu/"
+  # AppImage extraction can retain private build-directory permissions.
+  # Pacman installs as root, so every runtime directory must be traversable.
+  chmod -R a+rX "$pkgdir/opt/verenu"
 
   install -d "$pkgdir/usr/bin"
   ln -s /opt/verenu/AppRun "$pkgdir/usr/bin/verenu"

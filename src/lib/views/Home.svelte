@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { invoke, getVersion, listen, emit } from '../tauri';
   import { appStore } from '../stores';
+  import { installAvailableUpdate } from '../updateActions';
   import { saveSetting } from '../settings';
   import { formatKeyLabel, defaultHotkey, isAndroid } from '../platform';
   import { getGreeting, HISTORY_PAGE_SIZE, type Entry, type Stats } from './home/helpers';
@@ -23,7 +24,6 @@
 
   let copiedId: number | null = null;
   let currentVersion = '';
-  let installing = false;
   let failedEntry: { created_at: string } | null = null;
   let retrying = false;
   let failedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -203,15 +203,11 @@
   }
 
   async function handleInstall() {
-    if (!appStore.updateInfo) return;
-    installing = true;
     try {
-      await invoke('install_update', { downloadUrl: appStore.updateInfo.downloadUrl });
+      await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
       void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
-    } finally {
-      installing = false;
     }
   }
 
@@ -369,7 +365,7 @@
         <UpdateBanner
           {currentVersion}
           updateInfo={appStore.updateInfo}
-          {installing}
+          installing={appStore.updateInstalling}
           onInstall={handleInstall}
           onDismiss={dismissUpdate}
         />

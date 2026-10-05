@@ -18,6 +18,8 @@ struct GhRelease {
 struct GhAsset {
     name: String,
     browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -35,6 +37,7 @@ pub struct UpdateInfo {
     pub download_url: String,
     pub asset_name: String,
     pub install_mode: InstallMode,
+    pub install_hint: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -43,6 +46,9 @@ enum UpdateTarget {
     Windows,
     MacOsAppleSilicon,
     MacOsIntel,
+    LinuxArch,
+    LinuxAppImage,
+    LinuxDownload,
     Unsupported,
 }
 
@@ -93,7 +99,14 @@ pub fn is_authorized_release_asset_url(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
-    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") {
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
         return false;
     }
 
@@ -158,6 +171,32 @@ async fn check_repo(
     channel: UpdateChannel,
     require_newer: bool,
 ) -> anyhow::Result<Option<UpdateInfo>> {
+    let releases = fetch_releases(repo, channel).await?;
+    let target = tokio::task::spawn_blocking(current_update_target).await?;
+    let Some((_, asset, install_mode)) = select_compatible_release(&releases, channel, target)
+    else {
+        return Err(anyhow::anyhow!("No compatible Verenu installer is published for this device on the selected update channel. Try again later or check the release page."));
+    };
+    let display_version = installer_version(&asset.name).expect("selected installer version");
+    if !should_offer_release(&display_version, &current_package_version(), require_newer) {
+        return Ok(None);
+    }
+    let install_hint = match target {
+        UpdateTarget::LinuxArch => Some("Verenu will verify the download and ask for administrator authorization to update its pacman package. Restart Verenu afterward.".into()),
+        UpdateTarget::LinuxAppImage => Some("Verenu will verify and replace this AppImage, keeping the previous image beside it. Restart Verenu afterward.".into()),
+        UpdateTarget::LinuxDownload => Some("This installation is managed externally. Download the AppImage, or update Verenu with your package manager.".into()),
+        _ => None,
+    };
+    Ok(Some(UpdateInfo {
+        version: display_version,
+        download_url: asset.browser_download_url.clone(),
+        asset_name: asset.name.clone(),
+        install_mode,
+        install_hint,
+    }))
+}
+
+async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Vec<GhRelease>> {
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
     let resp = super::client::get()
         .get(&url)
@@ -166,44 +205,142 @@ async fn check_repo(
         .await?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
+        anyhow::bail!("The Verenu release repository is unavailable. Try again later.");
+    }
+    if matches!(resp.status().as_u16(), 403 | 429) {
+        anyhow::bail!("GitHub is limiting update checks. Wait and try again later.");
+    }
+    if resp.status().is_server_error() {
+        anyhow::bail!("GitHub's update service is temporarily unavailable. Try again later.");
     }
     let resp = resp.error_for_status()?;
-
-    let releases: Vec<GhRelease> = resp.json().await?;
-    let Some(release) = select_release(&releases, channel) else {
-        return Ok(None);
-    };
-    let Some((asset, install_mode)) =
-        select_release_asset_for_target(&release.assets, current_update_target())
-    else {
-        log::warn!(
-            "No compatible update asset found for target {:?} in release {}",
-            current_update_target(),
-            release.tag_name
-        );
-        return Ok(None);
-    };
-    let Some(display_version) = installer_version(&asset.name) else {
-        log::warn!(
-            "Ignoring release with malformed installer filename: {}",
-            asset.name
-        );
-        return Ok(None);
-    };
-
-    if !should_offer_release(&display_version, &current_package_version(), require_newer) {
-        return Ok(None);
+    let mut releases: Vec<GhRelease> = resp.json().await?;
+    // Nightly releases can push the last stable release beyond the first 100.
+    // GitHub's latest endpoint finds it without scanning every nightly page.
+    if channel == UpdateChannel::Stable
+        && !releases
+            .iter()
+            .any(|release| !release.draft && release_matches_channel(release, channel))
+    {
+        let latest = super::client::get()
+            .get(format!(
+                "https://api.github.com/repos/{repo}/releases/latest"
+            ))
+            .header("User-Agent", "verenu")
+            .send()
+            .await?;
+        if latest.status() != reqwest::StatusCode::NOT_FOUND {
+            releases.push(latest.error_for_status()?.json().await?);
+        }
     }
-
-    Ok(Some(UpdateInfo {
-        version: display_version,
-        download_url: asset.browser_download_url.clone(),
-        asset_name: asset.name.clone(),
-        install_mode,
-    }))
+    Ok(releases)
 }
 
+fn select_compatible_release(
+    releases: &[GhRelease],
+    channel: UpdateChannel,
+    target: UpdateTarget,
+) -> Option<(&GhRelease, &GhAsset, InstallMode)> {
+    releases
+        .iter()
+        .enumerate()
+        .filter(|(_, release)| !release.draft && release_matches_channel(release, channel))
+        .filter_map(|(index, release)| {
+            let (asset, mode) = select_release_asset_for_target(&release.assets, target)?;
+            let version = installer_version(&asset.name)?;
+            is_authorized_release_asset_url(&asset.browser_download_url)
+                .then_some((index, release, asset, mode, version))
+        })
+        .max_by(|(li, _, _, _, lv), (ri, _, _, _, rv)| {
+            compare_versions(lv, rv).then_with(|| ri.cmp(li))
+        })
+        .map(|(_, release, asset, mode, _)| (release, asset, mode))
+}
+
+/// Resolve metadata again in Rust; never accept a checksum or installer type
+/// supplied by the renderer. Reject stale offers after a channel change.
+#[cfg(target_os = "linux")]
+pub async fn resolve_linux_download(
+    url: &str,
+    channel: UpdateChannel,
+) -> anyhow::Result<(String, String)> {
+    let releases = fetch_releases(RELEASE_REPO, channel).await?;
+    let target = tokio::task::spawn_blocking(current_update_target).await?;
+    let (release, asset, _) =
+        select_compatible_release(&releases, channel, target).ok_or_else(|| {
+            anyhow::anyhow!("No compatible release is available. Check for updates again.")
+        })?;
+    anyhow::ensure!(
+        asset.browser_download_url == url,
+        "The update offer changed. Check for updates again before installing."
+    );
+    if let Some(digest) = asset.digest.as_deref() {
+        let hash = digest
+            .strip_prefix("sha256:")
+            .filter(|hash| valid_sha256(hash))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "The release has an invalid SHA256 digest. Installation was blocked."
+                )
+            })?;
+        return Ok((asset.name.clone(), hash.to_ascii_lowercase()));
+    }
+    let sums = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == "SHA256SUMS.txt")
+        .filter(|asset| is_authorized_release_asset_url(&asset.browser_download_url))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "This release has no SHA256 verification metadata. Installation was blocked."
+            )
+        })?;
+    let mut response = super::client::get()
+        .get(&sums.browser_download_url)
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        anyhow::ensure!(
+            bytes.len() + chunk.len() <= 128 * 1024,
+            "Release checksum file is too large"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    let hash = checksum_for_asset(std::str::from_utf8(&bytes)?, &asset.name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "The release checksum file does not contain one valid checksum for this installer."
+        )
+    })?;
+    Ok((asset.name.clone(), hash))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn valid_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn checksum_for_asset(sums: &str, name: &str) -> Option<String> {
+    let matches: Vec<_> = sums
+        .lines()
+        .filter_map(|line| {
+            let (hash, filename) = line.split_once(char::is_whitespace)?;
+            let filename = filename
+                .trim_start()
+                .strip_prefix('*')
+                .unwrap_or(filename.trim_start());
+            (filename == name).then_some(hash)
+        })
+        .collect();
+    match matches.as_slice() {
+        [hash] if valid_sha256(hash) => Some(hash.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 fn select_release(releases: &[GhRelease], channel: UpdateChannel) -> Option<&GhRelease> {
     releases
         .iter()
@@ -226,6 +363,7 @@ fn select_release(releases: &[GhRelease], channel: UpdateChannel) -> Option<&GhR
 /// Installer filenames are the version source of truth. Release tags have
 /// historically included stale beta/nightly suffixes, while the filenames
 /// are also the names the user actually installs.
+#[cfg(test)]
 fn release_installer_version(release: &GhRelease) -> Option<String> {
     release
         .assets
@@ -234,6 +372,16 @@ fn release_installer_version(release: &GhRelease) -> Option<String> {
 }
 
 fn installer_version(asset_name: &str) -> Option<String> {
+    if let Some(version) = asset_name
+        .strip_prefix("verenu-")
+        .and_then(|name| name.strip_suffix("-x86_64.pkg.tar.zst"))
+    {
+        let (version, pkgrel) = version.rsplit_once('-')?;
+        if pkgrel.parse::<u32>().ok()? == 0 {
+            return None;
+        }
+        return release_version(&version.replace('_', "-"));
+    }
     let lowercase_name = asset_name.to_ascii_lowercase();
     let prefix_start = lowercase_name.find("verenu_")?;
     let version_and_platform = &asset_name[prefix_start + "verenu_".len()..];
@@ -486,6 +634,16 @@ fn should_offer_release(latest: &str, current: &str, require_newer: bool) -> boo
 }
 
 fn current_update_target() -> UpdateTarget {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        return match crate::system::linux_updater::installation() {
+            crate::system::linux_updater::Installation::Arch { .. } => UpdateTarget::LinuxArch,
+            crate::system::linux_updater::Installation::AppImage { .. } => {
+                UpdateTarget::LinuxAppImage
+            }
+            crate::system::linux_updater::Installation::Manual => UpdateTarget::LinuxDownload,
+        };
+    }
     #[cfg(windows)]
     {
         return UpdateTarget::Windows;
@@ -510,6 +668,30 @@ fn select_release_asset_for_target(
     target: UpdateTarget,
 ) -> Option<(&GhAsset, InstallMode)> {
     match target {
+        UpdateTarget::LinuxArch => assets
+            .iter()
+            .find(|asset| {
+                asset.name.starts_with("verenu-")
+                    && asset.name.ends_with("-x86_64.pkg.tar.zst")
+                    && installer_version(&asset.name).is_some()
+            })
+            .map(|asset| (asset, InstallMode::Install)),
+        UpdateTarget::LinuxAppImage | UpdateTarget::LinuxDownload => assets
+            .iter()
+            .find(|asset| {
+                asset.name.starts_with("Verenu_") && asset.name.ends_with("_amd64.AppImage")
+                    || asset.name.starts_with("Verenu_") && asset.name.ends_with("_x86_64.AppImage")
+            })
+            .map(|asset| {
+                (
+                    asset,
+                    if target == UpdateTarget::LinuxAppImage {
+                        InstallMode::Install
+                    } else {
+                        InstallMode::Download
+                    },
+                )
+            }),
         UpdateTarget::Windows => select_windows_asset(assets),
         // Apple Silicon can run Intel builds via Rosetta 2, so it may fall back
         // to a generic/Intel DMG.
@@ -588,6 +770,7 @@ fn find_asset_with_suffix_and_hints<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::{checksum_for_asset, select_compatible_release};
     use super::{
         current_package_version, find_asset_with_suffix, installer_version,
         is_authorized_release_asset_url, is_beta_version, is_newer, normalize_version,
@@ -600,7 +783,106 @@ mod tests {
         GhAsset {
             name: name.to_string(),
             browser_download_url: format!("https://example.invalid/{name}"),
+            digest: None,
         }
+    }
+
+    fn official_asset(name: &str) -> GhAsset {
+        let mut asset = asset(name);
+        asset.browser_download_url =
+            format!("https://github.com/MONKE2525E/Verenu/releases/download/Verenu-1.0.0/{name}");
+        asset
+    }
+
+    #[test]
+    fn linux_assets_follow_installation_type_and_architecture() {
+        let assets = [
+            asset("Verenu_0.20.0_aarch64.AppImage"),
+            asset("Verenu_0.20.0_amd64.AppImage"),
+            asset("verenu-0.20.0-1-x86_64.pkg.tar.zst"),
+        ];
+        let arch = select_release_asset_for_target(&assets, UpdateTarget::LinuxArch).unwrap();
+        assert_eq!(arch.0.name, "verenu-0.20.0-1-x86_64.pkg.tar.zst");
+        assert_eq!(arch.1, InstallMode::Install);
+        let portable =
+            select_release_asset_for_target(&assets, UpdateTarget::LinuxAppImage).unwrap();
+        assert_eq!(portable.0.name, "Verenu_0.20.0_amd64.AppImage");
+        assert_eq!(portable.1, InstallMode::Install);
+        assert_eq!(
+            select_release_asset_for_target(&assets, UpdateTarget::LinuxDownload)
+                .unwrap()
+                .1,
+            InstallMode::Download
+        );
+        assert!(
+            select_release_asset_for_target(&assets[..1], UpdateTarget::LinuxAppImage).is_none()
+        );
+        assert!(select_release_asset_for_target(&assets[..2], UpdateTarget::LinuxArch).is_none());
+    }
+
+    #[test]
+    fn arch_package_versions_preserve_nightly_ordering() {
+        assert_eq!(
+            installer_version("verenu-0.20.0_nightly.20261005-1-x86_64.pkg.tar.zst"),
+            Some("0.20.0-nightly.20261005".into())
+        );
+        assert_eq!(
+            installer_version("verenu-0.20.0-beta.1-2-x86_64.pkg.tar.zst"),
+            Some("0.20.0-beta.1".into())
+        );
+        assert_eq!(
+            installer_version("verenu-0.20.0-0-x86_64.pkg.tar.zst"),
+            None
+        );
+        assert_eq!(
+            installer_version("verenu-0.20.0-1-aarch64.pkg.tar.zst"),
+            None
+        );
+        assert_eq!(
+            installer_version("Verenu_0.20.0-nightly.20261005_amd64.AppImage"),
+            Some("0.20.0-nightly.20261005".into())
+        );
+    }
+
+    #[test]
+    fn compatible_release_ignores_incomplete_newer_and_unsafe_releases() {
+        let mut newest = release("Verenu-0.99.0", "master");
+        newest.assets = vec![official_asset("Verenu_0.99.0_x64-setup.exe")];
+        let mut linux = release("Verenu-0.20.1", "master");
+        linux.assets = vec![official_asset("Verenu_0.20.1_amd64.AppImage")];
+        let mut unsafe_release = release("Verenu-9.0.0", "master");
+        unsafe_release.assets = vec![asset("Verenu_9.0.0_amd64.AppImage")];
+        let releases = [newest, linux, unsafe_release];
+        let (_, selected, _) = select_compatible_release(
+            &releases,
+            UpdateChannel::Stable,
+            UpdateTarget::LinuxAppImage,
+        )
+        .unwrap();
+        assert_eq!(selected.name, "Verenu_0.20.1_amd64.AppImage");
+        assert!(select_compatible_release(
+            &releases,
+            UpdateChannel::Beta,
+            UpdateTarget::LinuxAppImage
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn checksum_manifest_requires_one_exact_valid_entry() {
+        let hash = "a".repeat(64);
+        let name = "Verenu_0.20.0_amd64.AppImage";
+        assert_eq!(
+            checksum_for_asset(&format!("{hash}  {name}\n"), name),
+            Some(hash.clone())
+        );
+        assert_eq!(
+            checksum_for_asset(&format!("{hash} *{name}\r\n"), name),
+            Some(hash.clone())
+        );
+        assert!(checksum_for_asset(&format!("{hash}  {name}.bad\n"), name).is_none());
+        assert!(checksum_for_asset(&format!("{hash}  {name}\n{hash}  {name}\n"), name).is_none());
+        assert!(checksum_for_asset(&format!("invalid  {name}\n"), name).is_none());
     }
 
     fn release(tag_name: &str, target_commitish: &str) -> GhRelease {
