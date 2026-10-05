@@ -870,6 +870,8 @@ pub fn run() {
             commands::import_data,
             commands::sync_get_status,
             commands::sync_set_device_name,
+            commands::sync_set_peer_address,
+            commands::sync_pair_connection,
             commands::sync_start_pairing,
             commands::sync_respond_to_pairing,
             commands::sync_cancel_pairing,
