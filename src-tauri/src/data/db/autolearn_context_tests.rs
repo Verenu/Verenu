@@ -142,7 +142,7 @@ fn v25_reopen_runs_schema_before_scoped_autolearn_migration() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 30);
+    assert_eq!(version, 31);
     assert!(table_has_column(&conn, "pending_corrections", "context_id").expect("pending scope"));
     assert!(
         table_has_column(&conn, "auto_learn_candidates", "context_id").expect("candidate scope")

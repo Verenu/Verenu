@@ -568,6 +568,7 @@ fn context_can_disable_contextual_formatting_without_changing_global_setting() {
         color: None,
         custom_instructions: None,
         contextual_formatting_disabled: true,
+        paste_in_chunks: true,
         pinned_at: None,
         created_at: String::new(),
         updated_at: String::new(),
@@ -575,6 +576,7 @@ fn context_can_disable_contextual_formatting_without_changing_global_setting() {
 
     apply_app_style_overrides(&mut cfg, None, Some(&context));
     assert!(!cfg.contextual_formatting_enabled);
+    assert_eq!(cfg.paste_in_chunks, cfg!(desktop));
 
     let global_cfg = base_config();
     assert!(global_cfg.contextual_formatting_enabled);
@@ -621,6 +623,7 @@ fn base_config() -> store::PipelineConfig {
         clipboard_phrase: "paste clipboard here".into(),
         auto_learn_enabled: false,
         contextual_formatting_enabled: true,
+        paste_in_chunks: false,
         caps_lock_uppercase_enabled: false,
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
@@ -1870,4 +1873,28 @@ fn orphaned_session_pill_hides_only_when_idle_with_session_state() {
     ] {
         assert!(!should_hide_orphaned_pill(true, state), "state={state}");
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn paste_chunks_pipeline_passes_delivery_preference_to_injection() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for enabled in [false, true] {
+        reset();
+        set_enabled(true);
+        register_fixture(FixtureSpec {
+            task: "transcription".into(), provider: "groq".into(),
+            model: "whisper-large-v3-turbo".into(),
+            response: Some("Public synthetic dictation for the terminal.".into()),
+            error_kind: None, error_message: None,
+        });
+        let mut config = base_config();
+        config.cleanup_enabled = false;
+        config.paste_in_chunks = enabled;
+        let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+        let injections = take_injections();
+        assert_eq!(injections.len(), 1);
+        assert_eq!(injections[0].text, result.injected_text);
+        assert_eq!(injections[0].paste_in_chunks, cfg!(desktop) && enabled);
+    }
+    reset();
 }

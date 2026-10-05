@@ -239,6 +239,7 @@ mod tests {
             color: None,
             custom_instructions: None,
             contextual_formatting_disabled: false,
+        paste_in_chunks: false,
             pinned_at: None,
             created_at: String::new(),
             updated_at: String::new(),

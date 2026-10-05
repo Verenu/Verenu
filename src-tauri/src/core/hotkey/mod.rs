@@ -5,7 +5,7 @@
 //!   `start(on_press, on_release, on_handless, on_cancel, on_escape, on_copy_last)`,
 //!   `update_keys`, `map_code_to_vk`, `is_hotkey_available`,
 //!   `reset_chord_state`, `set_handless_active`,
-//!   `is_win_key_down`,
+//!   `begin_synthetic_paste_suppression`, `is_win_key_down`,
 //!   `force_release_win_key`.
 //!
 //! Windows uses a `WH_KEYBOARD_LL` hook; macOS uses Carbon `RegisterEventHotKey`

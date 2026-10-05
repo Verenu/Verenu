@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
+
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.
 - Added copyable Tailscale connection details, remote code-based pairing, and a saved connection editor in Sync. Setup explains relayed multi-device sync and Android foreground limits. Android enables nearby Wi-Fi multicast discovery while Verenu is visible.
 - Redesigned the Sync page. Paired devices keep their status, last sync, and route in one row, and the Connection editor opens inside that row. Tailscale setup is a three-step flow with a copy button that confirms, and a newly paired device offers a reminder to give the other side a way back. Pairing shows connecting, code, and checking phases, and its dialogs no longer sit under the phone sidebar. All motion follows the shared reduced-motion settings.

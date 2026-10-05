@@ -198,6 +198,7 @@ pub async fn run_pipeline_fixture(
         &request.profile,
         &request.config.transcription_language,
         false,
+        request.config.paste_in_chunks,
     )
     .await?;
     let recent = db::query_recent(&db_handle)?;

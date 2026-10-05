@@ -12,6 +12,7 @@ pub async fn get_contexts(app: AppHandle) -> Result<Vec<db::Context>, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_context(
     app: AppHandle,
     name: String,
@@ -20,10 +21,11 @@ pub async fn create_context(
     cleanup_intensity: Option<String>,
     custom_instructions: Option<String>,
     contextual_formatting_disabled: bool,
+    paste_in_chunks: Option<bool>,
 ) -> Result<db::Context, String> {
     let db = db_state(&app);
     run_blocking("create_context", move || {
-        db::insert_context_returning(
+        db::insert_context_with_delivery(
             &db,
             &name,
             icon.as_deref(),
@@ -31,6 +33,7 @@ pub async fn create_context(
             cleanup_intensity.as_deref(),
             custom_instructions.as_deref(),
             contextual_formatting_disabled,
+            paste_in_chunks.unwrap_or(false),
         )
         .map_err(|e| e.to_string())
     })
@@ -56,6 +59,7 @@ pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Re
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_context_settings(
     app: AppHandle,
     context_id: i64,
@@ -64,10 +68,11 @@ pub async fn update_context_settings(
     cleanup_intensity: Option<String>,
     custom_instructions: Option<String>,
     contextual_formatting_disabled: bool,
+    paste_in_chunks: Option<bool>,
 ) -> Result<(), String> {
     let db = db_state(&app);
     run_blocking("update_context_settings", move || {
-        db::update_context_settings(
+        db::update_context_settings_with_delivery(
             &db,
             context_id,
             icon.as_deref(),
@@ -75,6 +80,7 @@ pub async fn update_context_settings(
             cleanup_intensity.as_deref(),
             custom_instructions.as_deref(),
             contextual_formatting_disabled,
+            paste_in_chunks,
         )
         .map_err(|e| e.to_string())
     })

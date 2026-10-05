@@ -962,7 +962,11 @@ pub(super) fn show_paste_failed_pill(app: &AppHandle) {
     if super::start_stop_sounds_enabled(app) {
         crate::media::sound::play(crate::media::sound::SoundCue::Error);
     }
-    show_pill_msg(app, "paste_failed", None);
+    show_pill_msg(app, "paste_failed", Some("Not pasted"));
+}
+
+pub(super) fn show_partial_paste_pill(app: &AppHandle) {
+    show_pill_msg(app, "paste_failed", Some("Partly pasted"));
 }
 
 /// Shows the pill's "Copied" confirmation for the global copy-last-dictation

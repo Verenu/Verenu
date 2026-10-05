@@ -15,6 +15,53 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(400);
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SNAPSHOT_MIME_TYPES: usize = 64;
 
+struct ChunkBackend<'a> {
+    target: &'a crate::core::window_geometry::LinuxWindowTarget,
+    expected: Option<String>,
+}
+
+async fn current_clipboard_text() -> Option<String> {
+    tokio::time::timeout(SNAPSHOT_TIMEOUT, tokio::task::spawn_blocking(|| {
+        let mut clipboard = Clipboard::new().ok()?;
+        clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()
+    })).await.ok()?.ok().flatten()
+}
+
+async fn restore_owned_clipboard(saved: Option<ClipboardSnapshot>, expected: Option<&str>) {
+    if let Some(expected) = expected {
+        if current_clipboard_text().await.as_deref() == Some(expected) {
+            if let Some(saved) = saved {
+                let result = match saved {
+                    ClipboardSnapshot::Data(sources) => restore_clipboard(sources).await,
+                    ClipboardSnapshot::Empty => clear_clipboard().await,
+                };
+                if let Err(error) = result { log::warn!("Could not restore clipboard: {error}"); }
+            }
+        }
+    }
+}
+
+impl chunks::PasteBackend for ChunkBackend<'_> {
+    async fn check(&mut self) -> anyhow::Result<()> {
+        let focused = crate::core::hyprland::active_window()
+            .is_some_and(|window| window.address == self.target.address);
+        anyhow::ensure!(focused, "Paste target lost focus");
+        if let Some(expected) = &self.expected {
+            anyhow::ensure!(current_clipboard_text().await.as_ref() == Some(expected), "Clipboard changed during paste");
+        }
+        Ok(())
+    }
+    async fn write(&mut self, text: &str) -> anyhow::Result<()> {
+        write_clipboard(text.to_owned(), true).await?;
+        self.expected = Some(text.to_owned());
+        Ok(())
+    }
+    async fn paste(&mut self) -> anyhow::Result<()> {
+        crate::core::hyprland::dispatch_paste_for_target(&self.target.class_name, &self.target.tags)
+            .map_err(anyhow::Error::msg)
+    }
+}
+
 enum ClipboardSnapshot {
     Empty,
     Data(Vec<MimeSource>),
@@ -124,6 +171,37 @@ async fn clear_clipboard() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod chunk_native_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "Requires an owned terminal fixture on Hyprland/Wayland"]
+    async fn paste_chunks_native_terminal_preserves_clipboard() {
+        let address = std::env::var("VERENU_CHUNK_FIXTURE_ADDRESS").expect("owned terminal address");
+        let _lock = super::super::injection_lock().lock().await;
+        let window = crate::core::hyprland::window_by_address(&address).expect("fixture window");
+        assert_eq!(window.class_name, "foot.verenu-paste-chunks-fixture");
+        crate::core::hyprland::focus(&address).unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let target = crate::core::window_geometry::WindowTarget::capture_foreground();
+        assert_eq!(target.linux.as_ref().unwrap().address, address);
+        // Release the lock before calling the production injection function.
+        drop(_lock);
+        let original = snapshot_clipboard().await.unwrap();
+        let sentinel = "Public synthetic clipboard sentinel";
+        write_clipboard(sentinel.into(), true).await.unwrap();
+        let text = "First public synthetic line about dictation.\nSecond public synthetic line about clipboard insertion.\nThird public synthetic line about preserving formatting.\nFourth public synthetic line about reviewing the prompt.\nFifth public synthetic line completing this fixture. Unicode: 👩🏽‍💻 café 尾.";
+        let result = inject_text(text, &target, false, false, "casual", "en", false, true).await;
+        let preserved = current_clipboard_text().await.as_deref() == Some(sentinel);
+        restore_owned_clipboard(Some(original), Some(sentinel)).await;
+        assert_eq!(result.unwrap().text, text);
+        assert!(preserved, "Synthetic clipboard sentinel should be restored");
+    }
+}
+
+// Keep the existing injection arguments explicit across native backends.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn inject_text(
     text: &str,
     target: &crate::core::window_geometry::WindowTarget,
@@ -132,6 +210,7 @@ pub(super) async fn inject_text(
     profile: &str,
     language: &str,
     protected_initial_case: bool,
+    paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     let _guard = super::injection_lock().lock().await;
     let linux_target = target.linux.as_ref().ok_or_else(|| anyhow::anyhow!(
@@ -171,6 +250,16 @@ pub(super) async fn inject_text(
             None
         }
     };
+    if paste_in_chunks {
+        let mut backend = ChunkBackend { target: linux_target, expected: None };
+        let result = chunks::paste(&mut backend, &adjusted).await;
+        restore_owned_clipboard(saved, backend.expected.as_deref()).await;
+        result?;
+        return Ok(InjectionOutcome {
+            text: adjusted, context_state: context_kind.as_str(), case_decision: case_decision.as_str(),
+            probe_source: probe.source.as_str(), selection_state: probe.selection_state.as_str(),
+        });
+    }
     write_clipboard(adjusted.clone(), true).await?;
     tokio::time::sleep(CLIPBOARD_SETTLE).await;
     crate::core::hyprland::dispatch_paste_for_target(&linux_target.class_name, &linux_target.tags)

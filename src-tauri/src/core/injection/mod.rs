@@ -15,6 +15,10 @@ pub(super) fn injection_lock() -> &'static tokio::sync::Mutex<()> {
 
 use crate::core::context_probe::{ContextProbeSource, InjectionContextProbe, SelectionState};
 use crate::core::text_context;
+#[cfg(any(desktop, test))]
+mod chunks;
+#[cfg(any(desktop, test))]
+pub(crate) use chunks::ChunkedPasteError;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -754,6 +758,8 @@ pub async fn read_current_clipboard_text() -> Option<String> {
 }
 
 #[allow(unused_variables)]
+// Keep the existing injection arguments explicit across native backends.
+#[allow(clippy::too_many_arguments)]
 pub async fn inject_text(
     text: &str,
     target: &crate::core::window_geometry::WindowTarget,
@@ -762,6 +768,7 @@ pub async fn inject_text(
     profile: &str,
     language: &str,
     protected_initial_case: bool,
+    paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     #[cfg(any(test, debug_assertions))]
     if crate::testing::is_enabled() {
@@ -771,6 +778,7 @@ pub async fn inject_text(
             contextual_caps,
             auto_spacing,
             profile: profile.to_string(),
+            paste_in_chunks: cfg!(desktop) && paste_in_chunks,
         });
         return Ok(InjectionOutcome {
             text: text.to_string(),
@@ -791,6 +799,7 @@ pub async fn inject_text(
             profile,
             language,
             protected_initial_case,
+            paste_in_chunks,
         )
         .await;
     }
@@ -805,6 +814,7 @@ pub async fn inject_text(
             profile,
             language,
             protected_initial_case,
+            paste_in_chunks,
         )
         .await;
     }
@@ -812,7 +822,7 @@ pub async fn inject_text(
     #[cfg(target_os = "linux")]
     {
         return linux::inject_text(
-            text, target, contextual_caps, auto_spacing, profile, language, protected_initial_case,
+            text, target, contextual_caps, auto_spacing, profile, language, protected_initial_case, paste_in_chunks,
         ).await;
     }
 
