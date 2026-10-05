@@ -148,7 +148,7 @@ const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
   'recording-too-large': 'The provider could not accept a recording this large. Try a shorter dictation or choose another transcription provider.',
   'file-missing': 'The required file or folder could not be found. Select an existing file, or download it again if it is a model or update.',
   'pairing-code': 'The pairing code did not match. Enter the six-digit code shown on the other device, or start pairing again.',
-  'sync-connection': 'Verenu could not reach the other device. Open Verenu on both devices, connect them to the same local network, and try again.',
+  'sync-connection': 'Verenu could not reach the other device. Open Verenu on both devices and check that they share the same local network or a saved Tailscale connection. A firewall may be blocking sync. Allow Verenu through both firewalls, then try again.',
   'sync-protocol': 'The devices could not complete a secure sync. Update Verenu on both devices and try again. If it persists, remove and pair the device again.',
   'local-runtime': 'The local cleanup engine could not start. Check its installation in Settings > Models, or choose a cloud cleanup model.',
   'model-download': 'The downloaded model failed its integrity check. Retry the download in Settings > Models.',
@@ -312,7 +312,11 @@ export function formatSyncError(err: unknown, action?: string): string {
     message = KIND_MESSAGES['sync-protocol']!;
   }
   const lower = raw.toLowerCase();
-  if (lower.includes('already running') || lower.includes('pairing is already in progress')) {
+  if (lower.includes('a firewall or network rule may be blocking tcp port')) {
+    // Preserve the native connection target and port so the recovery step is
+    // actionable. The native message does not contain dictation/provider data.
+    message = raw;
+  } else if (lower.includes('already running') || lower.includes('pairing is already in progress')) {
     message = 'A sync or pairing session is already running. Wait for it to finish, or cancel pairing before starting again.';
   } else if (lower.includes('no incoming pairing') || lower.includes('pairing was cancelled')) {
     message = 'This pairing request is no longer active. Start pairing again from Settings > Sync on the other device.';

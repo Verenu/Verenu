@@ -391,6 +391,8 @@ pub const CLIPBOARD_PHRASE: &str = "clipboard_phrase";
 pub const CLIPBOARD_PHRASE_ENABLED: &str = "clipboard_phrase_enabled";
 pub const LEGACY_FEATURES_ENABLED: &str = "legacy_features_enabled";
 pub const SYNC_ENABLED: &str = "sync_enabled";
+/// Device-local routes for already paired devices. Never transferred to peers.
+pub const SYNC_PEER_ADDRESSES: &str = "sync_peer_addresses";
 pub const AUTO_LEARN_ENABLED: &str = "auto_learn_enabled";
 pub const AUTO_LEARN_EVENT_MODE: &str = "auto_learn_event_mode";
 pub const CONTEXTUAL_FORMATTING: &str = "contextual_formatting_enabled";

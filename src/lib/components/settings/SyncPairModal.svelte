@@ -109,7 +109,7 @@
       <div>
         <div class="pair-title">Pair this device?</div>
         <div class="pair-sub">
-          <strong>{incoming.peer_name}</strong> wants to sync with this device over your local network.
+          <strong>{incoming.peer_name}</strong> wants to sync with this device.
         </div>
       </div>
     </div>
@@ -119,6 +119,7 @@
       bind:this={codeInput}
       value={code}
       class="ui-input pair-code"
+      class:ready={code.length === 6}
       inputmode="numeric"
       autocomplete="off"
       placeholder="000000"
@@ -201,13 +202,13 @@
   }
   .pair-sub {
     font-size: 12.5px;
-    color: var(--text-dim);
+    color: var(--ink-mute);
     margin-top: 2px;
     line-height: 1.45;
   }
   .pair-label {
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--ink-mute);
   }
   .pair-code {
     font-family: var(--mono);
@@ -215,6 +216,12 @@
     letter-spacing: 0.35em;
     text-align: center;
     padding: 10px 8px;
+    transition:
+      border-color var(--ui-duration-base) var(--ui-ease-out),
+      background-color var(--ui-duration-base) var(--ui-ease-out);
+  }
+  .pair-code.ready {
+    border-color: var(--accent);
   }
   .pair-error {
     font-size: 12px;
