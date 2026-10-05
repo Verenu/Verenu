@@ -6,12 +6,19 @@ async function expectMenuInsideViewport(menu, page) {
   const content = await page.locator('.settings-page .panel:visible').last().boundingBox();
   expect(bounds).not.toBeNull();
   expect(content).not.toBeNull();
-  expect(bounds.x).toBeGreaterThanOrEqual(0);
-  expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-  expect(bounds.y).toBeGreaterThanOrEqual(content.y);
-  expect(bounds.y + bounds.height).toBeLessThanOrEqual(content.y + content.height);
-  expect(bounds.x).toBeGreaterThanOrEqual(content.x);
-  expect(bounds.x + bounds.width).toBeLessThanOrEqual(content.x + content.width);
+  const geometry = {
+    menuId: await menu.getAttribute('id'),
+    bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+    content: { x: content.x, y: content.y, width: content.width, height: content.height },
+    viewport,
+  };
+  const diagnostic = (check) => `MENU_GEOMETRY:${JSON.stringify({ ...geometry, check })}`;
+  expect(bounds.x, diagnostic('left-edge')).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width, diagnostic('right-viewport')).toBeLessThanOrEqual(viewport.width);
+  expect(bounds.y, diagnostic('top-panel')).toBeGreaterThanOrEqual(content.y);
+  expect(bounds.y + bounds.height, diagnostic('bottom-panel')).toBeLessThanOrEqual(content.y + content.height);
+  expect(bounds.x, diagnostic('left-panel')).toBeGreaterThanOrEqual(content.x);
+  expect(bounds.x + bounds.width, diagnostic('right-panel')).toBeLessThanOrEqual(content.x + content.width);
 }
 
 async function expectMenuOptionsNotClipped(menu) {
