@@ -358,19 +358,25 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
         // configure events and leaves the painted surface at an older size.
         if let Some(window) = crate::core::hyprland::pill_window() {
             if window.size != [placement.width, placement.height] {
-                crate::core::hyprland::resize_window(
+                if let Err(error) = crate::core::hyprland::resize_window(
                     &window.address,
                     placement.width,
                     placement.height,
-                )
-                .ok();
+                ) {
+                    log::warn!("Linux pill resize failed: {error}");
+                }
             }
             needs_reposition = position_changed(window.at[0], placement.x)
                 || position_changed(window.at[1], placement.y);
             if needs_reposition {
-                crate::core::hyprland::move_window(&window.address, placement.x, placement.y).ok();
+                if let Err(error) = crate::core::hyprland::move_window(&window.address, placement.x, placement.y) {
+                    log::warn!("Linux pill positioning failed: {error}");
+                }
             }
         } else {
+            if pill.is_visible().unwrap_or(false) && crate::core::hyprland::session_available() {
+                log::warn!("Linux pill placement unavailable: the compositor has not exposed this process's pill window");
+            }
             needs_reposition = false;
             if needs_resize {
                 pill.set_size(tauri::LogicalSize::new(
