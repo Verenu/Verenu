@@ -123,11 +123,14 @@ type SettingsValueMap = {
   provider_model_cache: Record<string, unknown>;
   legacy_features_enabled: boolean;
   sync_enabled: boolean;
+  /** Per-peer Tailscale routes, written only by SyncManager's validated command. */
+  sync_peer_addresses: Record<string, string> | null;
 };
 
 type SettingKey = keyof SettingsValueMap;
+type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
 
-export function saveSetting<K extends SettingKey>(key: K, value: SettingsValueMap[K]) {
+export function saveSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
   return invoke('save_setting', { key, value }).catch((error) => {
     const classified = classifyIpcError(error);
     if (typeof window !== 'undefined') {
