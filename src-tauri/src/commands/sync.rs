@@ -25,12 +25,10 @@ pub struct SyncStatusDto {
 pub async fn sync_get_status(app: AppHandle) -> Result<SyncStatusDto, String> {
     let manager = manager(&app)?;
     let snapshot = manager.snapshot();
-    // Surface a firewall-style hint when the listener never came up - the most
-    // common "nothing shows up" cause.
+    // A listener startup failure does not establish that a firewall blocked it.
     let last_error_hint = if snapshot.listener_failed {
         Some(
-            "Verenu couldn't open its local network listener. Check Windows Firewall / macOS \
-             Firewall settings and allow Verenu on private networks."
+            "Verenu couldn't start sync. Restart Verenu and check that your system keyring is unlocked. If it persists, check Verenu's diagnostics for a listener or discovery startup error."
                 .to_string(),
         )
     } else {
@@ -51,6 +49,24 @@ pub async fn sync_set_device_name(app: AppHandle, name: String) -> Result<(), St
     manager(&app)?
         .set_device_name(name)
         .map_err(|e| e.to_string())
+}
+
+/// A persistent, device-local Tailscale route for an already trusted peer.
+/// An empty address restores LAN discovery. Pairing authentication is unchanged.
+#[tauri::command]
+pub async fn sync_set_peer_address(
+    app: AppHandle,
+    device_uuid: String,
+    address: String,
+) -> Result<(), String> {
+    manager(&app)?
+        .set_peer_address(&device_uuid, &address)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sync_pair_connection(app: AppHandle, details: String) -> Result<String, String> {
+    manager(&app)?.pair_connection(&details).await.map_err(|e| e.to_string())
 }
 
 /// Starts pairing with a discovered device. Returns the 6-digit code to show

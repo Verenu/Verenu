@@ -25,6 +25,17 @@
   let removingUuid = $state('');
   let statusMsg = $state('');
   let statusKind = $state<'' | 'ok' | 'err'>('');
+  let tailscaleIp = $state('');
+  let connectionDetails = $state('');
+  let connectionBusy = $state(false);
+  let connectionError = $state('');
+  let editingConnection = $state<PairedDevice | null>(null);
+  let peerAddress = $state('');
+  let routeBusy = $state(false);
+  let routeError = $state('');
+  const ownIp = $derived(tailscaleIp.trim() || syncStore.status?.this_device.tailscale_ips?.[0] || '');
+  const ownDetails = $derived(ownIp && syncStore.status?.this_device.port
+    ? `verenu-sync://${syncStore.status.this_device.uuid}@${ownIp}:${syncStore.status.this_device.port}` : '');
 
   let confirmRemove = $state<PairedDevice | null>(null);
   let cancelRemoveButton = $state<HTMLButtonElement | null>(null);
@@ -109,6 +120,50 @@
   function cancelOutgoing(): void {
     void invoke('sync_cancel_pairing').catch(() => {});
     void refreshSyncStatus();
+  }
+
+  async function pairConnection(): Promise<void> {
+    connectionBusy = true;
+    connectionError = '';
+    try {
+      await invoke('sync_pair_connection', { details: connectionDetails });
+      await refreshSyncStatus();
+    } catch (err) {
+      connectionError = formatIpcError(err, 'Could not pair this connection');
+    } finally {
+      connectionBusy = false;
+    }
+  }
+
+  async function copyDetails(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(ownDetails);
+      flash('Connection details copied. Paste them on your other device.', 'ok');
+    } catch {
+      connectionError = 'Could not copy. Select the connection details below and copy them manually.';
+    }
+  }
+
+  function editConnection(device: PairedDevice): void {
+    editingConnection = device;
+    peerAddress = device.connection_address ?? '';
+    routeError = '';
+  }
+
+  async function saveConnection(): Promise<void> {
+    if (!editingConnection) return;
+    routeBusy = true;
+    routeError = '';
+    try {
+      await invoke('sync_set_peer_address', { deviceUuid: editingConnection.uuid, address: peerAddress });
+      editingConnection = null;
+      await refreshSyncStatus();
+      flash('Connection saved. Verenu will try syncing automatically.', 'ok');
+    } catch (err) {
+      routeError = formatIpcError(err, 'Could not save this connection');
+    } finally {
+      routeBusy = false;
+    }
   }
 
   async function syncNow(device: PairedDevice): Promise<void> {
@@ -255,6 +310,28 @@
 {/if}
 
 <!-- Paired devices -->
+<details class="connection-setup" data-setting-target="sync-tailscale">
+  <summary>Connect through Tailscale</summary>
+  <div class="setup-fields">
+    <p class="desc">Install Tailscale on both devices and connect them to the same tailnet. Open Verenu on both. No Serve or HTTPS setup is needed.</p>
+    <label for="sync-own-ip">This device's Tailscale IPv4 address</label>
+    <input id="sync-own-ip" class="connection-input" bind:value={tailscaleIp} placeholder={syncStore.status?.this_device.tailscale_ips?.[0] ?? '100.x.x.x from the Tailscale app'} spellcheck="false" />
+    <div class="desc">{ownIp ? 'Check that this address belongs to this device in Tailscale.' : 'The address could not be detected. Copy it from the Tailscale app.'} Sync port: {syncStore.status?.this_device.port ?? 'unavailable'}.</div>
+    {#if ownDetails}
+      <label for="sync-own-details">This device's connection details</label>
+      <input id="sync-own-details" class="connection-input" value={ownDetails} readonly spellcheck="false" />
+      <button class="btn-ghost btn-compact" onclick={() => void copyDetails()} disabled={!listenerActive}>Copy connection details</button>
+    {/if}
+    <label for="sync-other-details">Other device's connection details</label>
+    <input id="sync-other-details" class="connection-input" bind:value={connectionDetails} placeholder="Paste from the other device" spellcheck="false" />
+    <button class="btn-primary btn-compact" onclick={() => void pairConnection()} disabled={connectionBusy || !!outgoing || !connectionDetails.trim() || !listenerActive}>{connectionBusy ? 'Connecting…' : 'Pair connection'}</button>
+    {#if connectionError}<p class="desc data-err" role="alert">{connectionError}</p>{/if}
+    <p class="desc">Confirm the short code on the other device. Then copy this device's details back to its paired-device Connection button, so either side can reconnect.</p>
+    <p class="desc">For three or more devices, pair each new device with an existing one. Changes relay through connected paired devices. Add more pairings if you need sync while that device is offline.</p>
+    <p class="desc">Keep Verenu and Tailscale running. On Android, keep Verenu open while syncing; Android can suspend apps in the background. If a connection fails, allow the shown TCP sync port through your firewall and Tailscale access rules.</p>
+  </div>
+</details>
+
 <h3 class="settings-subhead" data-setting-target="sync-paired">Paired devices</h3>
 {#if peers.length === 0}
   <div class="desc empty-note">
@@ -278,7 +355,9 @@
           </div>
           <div class="desc">
             Last synced {relativeTime(device.last_sync_at)}
-            {#if device.online}
+            {#if device.connection_address}
+              · Tailscale connection
+            {:else if device.online}
               · on this network
             {/if}
           </div>
@@ -295,6 +374,10 @@
             {syncingUuid === device.uuid || device.state === 'syncing' ? 'Syncing…' : 'Sync now'}
           </button>
           <button
+            class="btn-ghost btn-compact"
+            onclick={() => editConnection(device)}
+          >Connection</button>
+          <button
             class="btn-ghost btn-compact danger-ghost"
             onclick={() => askRemove(device)}
             disabled={removingUuid !== ''}
@@ -303,6 +386,18 @@
           </button>
         </div>
       </div>
+      {#if editingConnection?.uuid === device.uuid}
+        <form class="connection-editor" onsubmit={(event) => { event.preventDefault(); void saveConnection(); }}>
+          <label for="sync-peer-address">Connection for {device.name}</label>
+          <input id="sync-peer-address" class="connection-input" bind:value={peerAddress} placeholder="Paste connection details or 100.x.x.x:port" spellcheck="false" disabled={routeBusy} />
+          <div class="desc">Paste this device's details from its Sync page. Leave empty to use only nearby discovery.</div>
+          {#if routeError}<div class="desc data-err" role="alert">{routeError}</div>{/if}
+          <div class="connection-actions">
+            <button class="btn-primary btn-compact" type="submit" disabled={routeBusy}>{routeBusy ? 'Saving…' : 'Save connection'}</button>
+            <button class="btn-ghost btn-compact" type="button" onclick={() => editingConnection = null} disabled={routeBusy}>Cancel</button>
+          </div>
+        </form>
+      {/if}
     {/each}
   </div>
 {/if}
@@ -454,11 +549,20 @@
   >
     {@html icons.lock}
   </svg>
-  Sync runs only between paired devices on your local network, encrypted end to end. Nothing
-  leaves your network — no account, no cloud. API keys and microphone settings never sync.
+  Sync runs between paired devices over your local network or a saved Tailscale connection,
+  encrypted end to end. Provider and model choices, themes, API keys,
+  microphone settings, and hotkeys stay on each device.
 </div>
 
 <style>
+  .connection-setup { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; }
+  .connection-setup summary { cursor: pointer; font-weight: 600; }
+  .setup-fields, .connection-editor { display: grid; gap: 10px; margin-top: 12px; }
+  .setup-fields label, .connection-editor label { font-size: 12px; font-weight: 600; }
+  .setup-fields button { justify-self: start; }
+  .connection-input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 10px; background: var(--control-hover); color: var(--ink-strong); font-family: var(--mono); font-size: 12px; }
+  .connection-editor { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; }
+  .connection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .data-status {
     margin-top: 8px;
     animation: data-drop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -570,6 +674,7 @@
   }
   .device-card {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 14px;
     padding: 12px 14px;
@@ -582,7 +687,7 @@
   }
   .device-main {
     min-width: 0;
-    flex: 1;
+    flex: 1 1 160px;
   }
   .device-top {
     display: flex;
@@ -591,18 +696,22 @@
     flex-wrap: wrap;
   }
   .device-name {
+    overflow-wrap: anywhere;
     font-size: 13.5px;
     font-weight: 600;
     color: var(--ink-strong);
   }
   .device-error {
+    overflow-wrap: anywhere;
     color: var(--danger);
     margin-top: 4px;
   }
   .device-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
-    flex-shrink: 0;
+    max-width: 100%;
+    margin-left: auto;
   }
   .danger-ghost:hover {
     color: var(--danger);

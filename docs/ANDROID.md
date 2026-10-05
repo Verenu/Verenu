@@ -32,6 +32,11 @@ platforms. Platform differences sit behind `#[cfg(target_os = "android")]`
 branches and the `src-tauri/src/android/` module — Windows/macOS paths are
 untouched.
 
+For device sync setup, see [the Tailscale and multi-device guide](lan-sync.md#setup).
+Android uses the same paired TLS transport and merge engine. Keep the app open
+while syncing; Android can suspend background apps. Nearby Wi-Fi discovery
+holds a multicast lock while the activity is visible, and releases it on stop.
+
 ### Android-specific
 
 | Area | Implementation |

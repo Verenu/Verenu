@@ -560,3 +560,92 @@ async fn three_devices_relay_data_without_regressing_lifetime_counters() {
     session(&c, &b).await.unwrap();
     assert_eq!(logical_state(&a), logical_state(&b));
 }
+
+fn seed_device_edit(device: &Device, name: &str) -> i64 {
+    let context = db::insert_context_returning(
+        &device.db, name, None, None, None, Some("Synthetic mesh instructions"), false,
+    ).unwrap();
+    db::assign_context_website(&device.db, context.id, &format!("{name}.example")).unwrap();
+    db::insert_dictionary_entry_returning(&device.db, &format!("Term{name}"), None, Some(context.id)).unwrap();
+    db::insert_snippet_returning(&device.db, name, "Synthetic mesh expansion", "", Some(context.id)).unwrap();
+    db::insert_transcription_returning(&device.db, "Three synthetic words", name, 3, 1200, "fixture-model", None, Some(context.id)).unwrap();
+    context.id
+}
+
+#[tokio::test]
+async fn three_device_chain_relays_bidirectional_edits_and_deletions() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let context = seed_device_edit(&a, "chain-a");
+    seed_device_edit(&c, "chain-c");
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&b, &a).await.unwrap();
+    assert_eq!(logical_state(&a), logical_state(&b));
+    assert_eq!(logical_state(&a), logical_state(&c));
+    assert!(store::get_peer(&a.db.lock().unwrap(), &c.host.uuid).unwrap().is_none(), "relay must not grant transitive pairing trust");
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    db::delete_context(&a.db, context).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&c, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b, &c] {
+        assert_eq!(count(&device.db.lock().unwrap(), "SELECT COUNT(*) FROM contexts WHERE name='chain-a'"), 0);
+        assert_eq!(store::effective_lifetime_totals(&device.db.lock().unwrap()).unwrap().0, 6);
+        assert_eq!(count(&device.db.lock().unwrap(), "SELECT COUNT(*) FROM transcriptions"), 2);
+    }
+    assert_eq!(logical_state(&a), logical_state(&c));
+}
+
+#[tokio::test]
+async fn four_device_mesh_converges_after_concurrent_edits_offline_restart_and_stale_gossip() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    let mut d = Device::new();
+    let devices = [&a, &b, &c, &d];
+    for left in 0..4 {
+        for right in left + 1..4 { pair(devices[left], devices[right], true).await.unwrap(); }
+    }
+    let context = seed_device_edit(&a, "mesh-a");
+    seed_device_edit(&b, "mesh-b");
+    seed_device_edit(&c, "mesh-c");
+    seed_device_edit(&d, "mesh-d");
+    let (ab, cd) = tokio::join!(session(&a, &b), session(&c, &d));
+    ab.unwrap(); cd.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&a, &c).await.unwrap();
+    session(&a, &d).await.unwrap();
+    session(&b, &d).await.unwrap();
+    for device in [&b, &c, &d] { assert_eq!(logical_state(&a), logical_state(device)); }
+    // D goes offline with a complete but now stale snapshot. The other three
+    // receive a deletion while D makes a new independent edit and reopens DB.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    db::delete_context(&a.db, context).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    seed_device_edit(&d, "mesh-offline-d");
+    d.restart_database();
+    session(&d, &c).await.unwrap();
+    session(&c, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    let devices = [&a, &b, &c, &d];
+    for left in 0..4 {
+        for right in left + 1..4 { session(devices[right], devices[left]).await.unwrap(); }
+    }
+    let sequences: Vec<_> = devices.iter().map(|device| store::max_log_seq(&device.db.lock().unwrap()).unwrap()).collect();
+    for left in 0..4 {
+        for right in left + 1..4 { session(devices[left], devices[right]).await.unwrap(); }
+    }
+    for (index, device) in devices.iter().enumerate() {
+        assert_eq!(logical_state(&a), logical_state(device));
+        assert_eq!(count(&device.db.lock().unwrap(), "SELECT COUNT(*) FROM contexts WHERE name='mesh-a'"), 0);
+        assert_eq!(count(&device.db.lock().unwrap(), "SELECT COUNT(*) FROM transcriptions"), 5);
+        assert_eq!(store::effective_lifetime_totals(&device.db.lock().unwrap()).unwrap().0, 15);
+        assert_eq!(store::max_log_seq(&device.db.lock().unwrap()).unwrap(), sequences[index], "repeat gossip must not amplify changes");
+    }
+}

@@ -5,7 +5,7 @@ const stores = vi.hoisted(() => ({ fetchSnippets: vi.fn(), fetchDictionary: vi.f
 vi.mock('./tauri', () => ipc);
 vi.mock('./stores.svelte', () => stores);
 vi.mock('./contextsStore.svelte', () => ({ loadContexts: vi.fn() }));
-import { startSyncListeners, syncStore } from './syncStore.svelte';
+import { listenForSyncCompletion, startSyncListeners, syncStore } from './syncStore.svelte';
 
 type SyncEventHandler = (event?: { payload?: { tables?: string[] } }) => void;
 let handlers: Map<string, SyncEventHandler>;
@@ -47,6 +47,18 @@ it('refreshes the legacy dictionary store when a mapping-only sync lands', async
 
   handlers.get('verenu:sync-data-changed')!({ payload: { tables: ['dictionary_corrections'] } });
   expect(stores.fetchDictionary).toHaveBeenCalledTimes(1);
+});
+
+it('refreshes history consumers only after a sync commits, including counter-only sessions', async () => {
+  const refresh = vi.fn();
+  const cleanup = await listenForSyncCompletion(refresh);
+  const handler = ipc.listen.mock.calls[ipc.listen.mock.calls.length - 1][1];
+  for (const state of ['connecting', 'syncing', 'error', 'offline']) handler({ payload: { state } });
+  expect(refresh).not.toHaveBeenCalled();
+  handler({ payload: { state: 'synced' } });
+  expect(refresh).toHaveBeenCalledTimes(1);
+  cleanup();
+  expect(handlers.has('verenu:sync-status')).toBe(false);
 });
 
 it('reacts to hidden incoming pairing events and retains the missed-event fallback', async () => {

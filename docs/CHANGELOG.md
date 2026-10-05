@@ -5,6 +5,12 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.
+- Added copyable Tailscale connection details, remote code-based pairing, and a saved connection editor in Sync. Setup explains relayed multi-device sync and Android foreground limits. Android enables nearby Wi-Fi multicast discovery while Verenu is visible.
+- Multi-device hubs promptly relay imported settings and counter-only updates. Busy peers end the connection attempt without probing alternate LAN addresses, allowing simultaneous edits to recover promptly.
+
+- Paired devices automatically sync committed edits from either side within the next 750 ms check, with queued follow-up sessions and retry backoff. Existing pairs can save a persistent Tailscale route. Connection errors include the destination port and firewall guidance. Provider/model choices remain local; the open General settings page refreshes shared values after sync.
+
+- Home history, lifetime totals, app filters, and Insights now refresh after a device sync completes, including sessions that only merge lifetime counters.
 
 - Split cloud priorities from Local AI choices in grouped model lists. Each row opens model and fallback details, with one row expanded at a time and the standard Settings dropdown style. Cloud presets can prepare on-device recovery for speech and cleanup. Quality keeps dual transcription to catch hallucinated additions and reports when only one transcript succeeds. Cleanup failures preserve completed speech. Automatic priorities can use private session timings while Advanced selections keep their explicit order; local speed tests use bundled synthetic speech. Recommendations respect language support and confirmed catalog retirement.
 
