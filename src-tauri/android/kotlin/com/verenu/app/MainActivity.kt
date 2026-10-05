@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.net.wifi.WifiManager
+import android.util.Log
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -16,6 +18,28 @@ class MainActivity : TauriActivity() {
   @Volatile private var navOverlapPx = 0
   @Volatile private var imeVisible = false
   private var navBarPx = 0
+  private var syncMulticastLock: WifiManager.MulticastLock? = null
+
+  override fun onStart() {
+    super.onStart()
+    // Android filters multicast by default. Nearby sync discovery needs it
+    // only while the app is visible; direct paired connections use unicast.
+    try {
+      val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+      syncMulticastLock = wifi?.createMulticastLock("verenu-sync-discovery")?.apply {
+        setReferenceCounted(false)
+        acquire()
+      }
+    } catch (error: RuntimeException) {
+      Log.w("VerenuSync", "Nearby discovery multicast unavailable", error)
+    }
+  }
+
+  override fun onStop() {
+    syncMulticastLock?.let { if (it.isHeld) it.release() }
+    syncMulticastLock = null
+    super.onStop()
+  }
 
   override fun onWebViewCreate(webView: WebView) {
     this.webView = webView
