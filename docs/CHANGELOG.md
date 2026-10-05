@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.
+
 - Split cloud priorities from Local AI choices in grouped model lists. Each row opens model and fallback details, with one row expanded at a time and the standard Settings dropdown style. Cloud presets can prepare on-device recovery for speech and cleanup. Quality keeps dual transcription to catch hallucinated additions and reports when only one transcript succeeds. Cleanup failures preserve completed speech. Automatic priorities can use private session timings while Advanced selections keep their explicit order; local speed tests use bundled synthetic speech. Recommendations respect language support and confirmed catalog retirement.
 
 - Removed field-specific microphone buttons from term, vocabulary, and snippet dialogs. Normal hotkey dictation can now paste into Verenu's captured main window on Windows instead of falling back to manual paste.
