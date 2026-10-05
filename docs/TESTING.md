@@ -20,6 +20,28 @@ as the app counter does. Compare startup, repeated navigation, and idle memory
 after dictation or model unload. The native allocator trim runs at most once
 every 30 seconds while dictation is idle and does not unload active models.
 
+For request-allocation comparisons and capture-buffer regression coverage:
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml --example audio-request-memory
+cargo test --manifest-path src-tauri/Cargo.toml captured_audio --lib
+```
+
+The allocation example compares buffered JSON serialization with synthetic
+audio and no provider calls. It measures request allocations, not total app RAM.
+
+An opt-in WebKit renderer experiment compares independent and related views:
+
+```bash
+WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 cargo run --manifest-path src-tauri/Cargo.toml --example webview-memory -- separate
+WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 cargo run --manifest-path src-tauri/Cargo.toml --example webview-memory -- shared
+```
+
+Use a working Linux display and repeat runs under matching conditions. The probe
+checks IPC handshakes and visibility events, then reports process-tree PSS.
+It uses minimal HTML; it does not measure the installed app or change production
+renderer behavior.
+
 ## Linux cursor formatting verification
 
 Run a disposable GTK entry in one terminal (requires Python PyGObject and GTK3):

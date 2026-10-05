@@ -19,6 +19,9 @@ This directory contains user, contributor, release, and architecture docs for Ve
 - [Snippets](SNIPPETS.md)
 - [Cleanup Levels](CLEANUP_LEVELS.md)
 - [Local Transcription](LOCAL_TRANSCRIPTION.md)
+- [Custom providers](CUSTOM_PROVIDERS.md)
+- [Live model discovery](MODEL_DISCOVERY.md)
+- [LAN sync](lan-sync.md)
 - [Privacy & Data summary](PRIVACY_SUMMARY.md)
 
 Contexts are the current home for app and website targets, cleanup settings, vocabulary, and snippets. [Vocabulary](VOCABULARY.md) and [Snippets](SNIPPETS.md) explain the two content types inside a context. The old [Dictionary](DICTIONARY.md) and [App Mappings & Profiles](APP_MAPPINGS.md) pages are kept only as legacy compatibility references.
@@ -31,7 +34,7 @@ Contexts are the current home for app and website targets, cleanup settings, voc
 - [Browser dev sessions](DEV_SESSIONS.md)
 - [Agent verification](AGENT_VERIFICATION.md)
 - [Android development](ANDROID.md)
-- [LAN sync](lan-sync.md)
+- [Product analytics contract](ANALYTICS.md)
 - [Release Process](RELEASE.md)
 - [Changelog](CHANGELOG.md)
 - [Security Policy](SECURITY.md)
@@ -46,6 +49,7 @@ Contexts are the current home for app and website targets, cleanup settings, voc
 - [`../AGENTS.md`](../AGENTS.md) is the canonical agent and architecture context used by AI coding tools.
 - [`../Agent-Skills/`](../Agent-Skills/) contains task-specific agent playbooks.
 - [`../.github/`](../.github/) contains GitHub Actions, PR templates, issue forms, and review instructions.
+- Temporary agent notes, task reports, and release drafts belong outside the checkout; see the file rules in [`../AGENTS.md`](../AGENTS.md).
 
 ## Related Docs
 
