@@ -25,13 +25,13 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
     if target.id == 0 {
         return None;
     }
-    let executable = crate::core::window_context::get_process_name_for_hwnd(target.id)?
+    let executable = target.process_name()?
         .trim()
         .to_lowercase();
     if executable.is_empty() || executable.starts_with("verenu") {
         return None;
     }
-    let window_title = crate::core::window_context::get_window_title(target.id)
+    let window_title = target.window_title()
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty())?;
     // The shared cache is empty until its first background scan finishes;

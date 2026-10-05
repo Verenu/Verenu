@@ -9,6 +9,7 @@ import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
 import { run } from './verification/process.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
+import { failedPlaywrightChecks } from './verification/playwright.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -41,6 +42,8 @@ try {
   const playwrightReport = await fs.readFile(path.join(session.directory, 'playwright.json'), 'utf8')
     .then(JSON.parse)
     .catch(() => null);
+  if (playwrightReport) report.checks.push(...failedPlaywrightChecks(playwrightReport));
+  else report.checks.push({ name: 'Playwright result report', status: 'failed', reason: 'Structured test results unavailable' });
   const failedTests = summarizePlaywrightFailures(playwrightReport);
   report.checks.push({
     name: 'Real-session Playwright desktop and phone flows',
