@@ -2,6 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { HotkeyCapture } from './hotkeyCapture';
 
 describe('hotkey capture', () => {
+  it.each(['Left', 'Right'])('normalizes WebKit OS%s on press and release', (side) => {
+    const capture = new HotkeyCapture();
+    capture.press('ControlLeft', false, { Control: true });
+    expect(capture.press(`OS${side}`, false, { Control: true }))
+      .toEqual(['ControlLeft', `Meta${side}`]);
+    expect(capture.release(`OS${side}`)).toEqual(['ControlLeft', `Meta${side}`]);
+    expect(capture.release('ControlLeft')).toBeNull();
+  });
+
+  it('does not duplicate Super when an OS key also sets the Meta flag', () => {
+    const capture = new HotkeyCapture();
+    expect(capture.press('OSRight', false, { Control: true, Meta: true }))
+      .toEqual(['ControlLeft', 'MetaRight']);
+    expect(capture.release('OSRight')).toEqual(['ControlLeft', 'MetaRight']);
+  });
+
   it('collects the entire held chord without saving on keydown', () => {
     const capture = new HotkeyCapture();
     for (const code of ['ControlLeft', 'AltLeft', 'ShiftLeft', 'MetaLeft', 'KeyK']) {
