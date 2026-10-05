@@ -146,6 +146,7 @@ coreaudio          = { package = "coreaudio-rs", version = "0.11" }  # CoreAudio
 # Hyprland (and falls back to XWayland where available); `keyring` uses the
 # Freedesktop Secret Service implementation supplied by GNOME Keyring/KWallet.
 [target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4.18.0"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
