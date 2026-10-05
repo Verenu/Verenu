@@ -76,6 +76,7 @@ mod pill {
     pub(crate) fn show_interrupted_pill(_app: &AppHandle) {}
 
     pub(crate) fn show_paste_failed_pill(_app: &AppHandle) {}
+    pub(crate) fn show_partial_paste_pill(_app: &AppHandle) {}
 }
 mod pill_animation;
 mod pill_position;
@@ -111,7 +112,7 @@ pub(crate) use pill::{
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
-    show_paste_failed_pill,
+    show_paste_failed_pill, show_partial_paste_pill,
 };
 pub(crate) use pill_position::{
     apply_pill_placement, placement_for_current_monitor, PillPlacement,
@@ -728,6 +729,7 @@ async fn run_pipeline_with_delivery(
             process_name: process_name.clone(),
             context: resolved_context_identity.clone(),
             profile: profile.clone(),
+            paste_in_chunks: cfg.paste_in_chunks,
             caps_lock_on,
         });
     }
@@ -1186,6 +1188,7 @@ pub async fn retry_transcription_impl(
     let db_handle = app.state::<DbHandle>().inner().clone();
     let context = db::query_context(&db_handle, capture.context.id).ok();
     capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref());
+    cfg.paste_in_chunks = cfg!(desktop) && capture.paste_in_chunks;
     emit_pill_context(app, &capture.context.label);
 
     emit_pill_stage(app, "transcribing");

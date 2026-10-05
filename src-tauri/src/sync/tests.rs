@@ -21,6 +21,22 @@ mod device_tests;
 // ---- helpers ----
 
 #[test]
+fn paste_chunks_context_sync_preserves_desktop_preference() {
+    let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    let b = test_db("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    db::insert_context_with_delivery(&a, "CLI chunks sync", None, None, None, None, false, true).unwrap();
+    db::update_context_paste_in_chunks(&a, db::EVERYWHERE_CONTEXT_ID, true).unwrap();
+    exchange(&a, &b);
+    let rows = db::query_contexts(&b).unwrap();
+    assert!(rows.iter().find(|c| c.name == "CLI chunks sync").unwrap().paste_in_chunks);
+    assert!(rows.iter().find(|c| c.is_everywhere).unwrap().paste_in_chunks);
+    let old: engine::ContextAggregate = serde_json::from_value(json!({
+        "name": "Old context", "created_at": "2026-01-01", "updated_at": "2026-01-01"
+    })).unwrap();
+    assert!(!old.paste_in_chunks);
+}
+
+#[test]
 fn imported_settings_and_counter_only_gossip_queue_relay_without_log_changes() {
     use super::manager::ChangeStamp;
     let db = db::open(":memory:").unwrap();

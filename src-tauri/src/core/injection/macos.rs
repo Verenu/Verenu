@@ -1,6 +1,50 @@
 use super::*;
 use std::time::Duration;
 
+struct ChunkBackend<'a> {
+    target_pid: i32,
+    restore: &'a mut ClipboardRestoreGuard,
+}
+impl chunks::PasteBackend for ChunkBackend<'_> {
+    async fn check(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(crate::system::mac_app::frontmost_pid() == Some(self.target_pid), "Paste target lost focus");
+        anyhow::ensure!(crate::system::mac_app::is_accessibility_verified() || crate::commands::check_accessibility_permission(false), "Accessibility permission is required for paste");
+        if let Some(expected) = self.restore.expected_change_count {
+            anyhow::ensure!(crate::system::mac_app::pasteboard_change_count() == Some(expected), "Clipboard changed during paste");
+        }
+        Ok(())
+    }
+    async fn write(&mut self, text: &str) -> anyhow::Result<()> {
+        match crate::system::mac_app::pasteboard_write_string(text) {
+            Ok(count) => { self.restore.mark_temporary_write(count); Ok(()) }
+            Err(count) => { self.restore.mark_temporary_write(count); anyhow::bail!("Could not write pasteboard payload") }
+        }
+    }
+    async fn paste(&mut self) -> anyhow::Result<()> {
+        let posted = tokio::task::spawn_blocking(|| -> Option<()> {
+            use core_graphics::{event::{CGEvent, CGEventFlags, CGEventTapLocation}, event_source::{CGEventSource, CGEventSourceStateID}};
+            let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+            // Create every event before posting so allocation failure cannot
+            // leave Command or V held down.
+            let down = CGEvent::new_keyboard_event(source.clone(), 55, true).ok()?;
+            let v_down = CGEvent::new_keyboard_event(source.clone(), 9, true).ok()?;
+            let v_up = CGEvent::new_keyboard_event(source.clone(), 9, false).ok()?;
+            let up = CGEvent::new_keyboard_event(source, 55, false).ok()?;
+            crate::core::hotkey::begin_synthetic_paste_suppression(400);
+            for event in [down, v_down, v_up] {
+                event.set_flags(CGEventFlags::CGEventFlagCommand);
+                event.post(CGEventTapLocation::HID);
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            up.set_flags(CGEventFlags::empty());
+            up.post(CGEventTapLocation::HID);
+            Some(())
+        }).await.ok().flatten();
+        anyhow::ensure!(posted.is_some(), "Could not dispatch paste keys");
+        Ok(())
+    }
+}
+
 pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     crate::system::mac_app::pasteboard_write_string(text)
         .map(|_| ())
@@ -37,6 +81,8 @@ impl Drop for ClipboardRestoreGuard {
     }
 }
 
+// Keep the existing injection arguments explicit across native backends.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn inject_text(
     text: &str,
     target_hwnd: usize,
@@ -45,6 +91,7 @@ pub(super) async fn inject_text(
     profile: &str,
     language: &str,
     protected_initial_case: bool,
+    paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -88,6 +135,21 @@ pub(super) async fn inject_text(
         &injection_probe,
     );
 
+    if paste_in_chunks {
+        let mut backend = ChunkBackend { target_pid: target_pid as i32, restore: &mut restore_guard };
+        let result = chunks::paste(&mut backend, &adjusted).await;
+        restore_guard.restore_now();
+        result?;
+        if let Ok(mut history) = last_injection().lock() {
+            let mut tail = adjusted.clone();
+            trim_tail_to_limit(&mut tail);
+            *history = CursorContextState::Known { hwnd: target_hwnd, tail, instant: Instant::now() };
+        }
+        return Ok(InjectionOutcome {
+            text: adjusted, context_state: context_kind.as_str(), case_decision: case_decision.as_str(),
+            probe_source: injection_probe.source.as_str(), selection_state: injection_probe.selection_state.as_str(),
+        });
+    }
     let change_count = match crate::system::mac_app::pasteboard_write_string(&adjusted) {
         Ok(change_count) => change_count,
         Err(change_count) => {

@@ -21,6 +21,7 @@ pub struct InjectionRecord {
     pub contextual_caps: bool,
     pub auto_spacing: bool,
     pub profile: String,
+    pub paste_in_chunks: bool,
 }
 
 #[derive(Default)]
