@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
+  import { listenForSyncCompletion } from '../../syncStore.svelte';
   import { emit, invoke } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -523,6 +524,28 @@
     removeHotkeyCaptureListeners();
     capture.reset();
     recordingHotkey = false;
+  });
+
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let active = true;
+    listenForSyncCompletion(() => {
+      // Refresh shared values only. Do not reset a theme preview, microphone,
+      // shortcut capture, or other device-local controls during a peer sync.
+      void Promise.all([
+        invoke<boolean | null>('get_setting', { key: 'contextual_formatting_enabled' }),
+        invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
+        invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
+      ]).then(([formatting, cleanup, language]) => {
+        if (!active) return;
+        contextualFormatting = formatting ?? true;
+        appStore.cleanupEnabled = cleanup ?? true;
+        if (!languageDropdownOpen && language && transcriptionLanguages.some(option => option.code === language)) {
+          selectedLanguage = language;
+        }
+      }).catch(() => {});
+    }).then(cleanup => { if (active) unlisten = cleanup; else cleanup(); }).catch(() => {});
+    return () => { active = false; unlisten?.(); };
   });
 
   loadSettings();
