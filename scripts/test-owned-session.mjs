@@ -50,6 +50,7 @@ try {
   if (browserSummary.status !== 'passed') {
     throw new Error(browserSummary.reason || 'Real-session Playwright flows failed.');
   }
+  report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
   const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;
   await invokeSession(session, 'save_setting', { key: 'legacy_features_enabled', value: !initialLegacy });
