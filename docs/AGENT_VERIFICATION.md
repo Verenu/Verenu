@@ -80,6 +80,9 @@ New browser tests in `tests/browser/` use a shared real-session fixture and
 desktop/phone projects with retries disabled. Failures retain private traces,
 screenshots, and videos. Traces may contain ephemeral tokens and customization.
 Never publish raw traces/access files. CI uploads structured reports by default.
+The owned-session summary records only project, repository-relative spec path,
+line, static test title, outcome, and retry count for each Playwright case. It
+omits raw browser errors and reporter attachments.
 
 Frozen smoke tests remain unchanged. A process-local adapter redirects their
 fixed localhost URLs and screenshots to owned servers/directories. It changes
