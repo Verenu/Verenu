@@ -41,6 +41,8 @@ pub(crate) const MAX_INCOMING_CONNECTIONS: usize = 8;
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
+const CHANGE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
+const IDLE_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 const PRIVATE_PORT_START: u16 = 49_152;
 const PRIVATE_PORT_COUNT: u32 = 16_384;
 const VIRTUAL_INTERFACE_MARKERS: &[&str] = &[
@@ -143,6 +145,8 @@ pub(crate) struct Inner {
     pub status: Mutex<HashMap<String, PeerStatus>>,
     pub backoff: Mutex<HashMap<String, Backoff>>,
     pub dirty: AtomicBool,
+    pub last_change: Mutex<Option<ChangeStamp>>,
+    pub pending_changes: Mutex<HashSet<String>>,
     pub mdns: tokio::sync::Mutex<Option<ServiceDaemon>>,
     pub listener_port: AtomicU16,
     pub available: AtomicBool,
@@ -207,12 +211,100 @@ pub(crate) struct Backoff {
     next_attempt: Instant,
 }
 
+/// Read committed change capture and local counters, including counter-only
+/// dictations. sqlite_sequence survives log compaction, avoiding false edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChangeStamp {
+    local: (i64, i64, i64),
+    settings: Vec<(String, i64, String)>,
+    remote_counters: Vec<(String, i64, i64)>,
+}
+
+impl ChangeStamp {
+    pub(crate) fn read(conn: &rusqlite::Connection) -> Result<Self> {
+        let local = conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_log'),0),
+                    COALESCE((SELECT total_words FROM lifetime_stats WHERE id=1),0),
+                    COALESCE((SELECT dictionary_fixes FROM lifetime_stats WHERE id=1),0)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        // Imported settings and counter-only gossip do not create sync_log
+        // rows. Observe their committed metadata too, so a hub promptly relays
+        // them to its other peers rather than waiting for the idle interval.
+        let mut settings = sync_store::list_setting_stamps(conn)?.into_iter()
+            .map(|(key, stamp)| (key, stamp.ts_ms, stamp.origin)).collect::<Vec<_>>();
+        let mut remote_counters = sync_store::list_remote_stats(conn)?.into_iter()
+            .map(|stats| (stats.device_id, stats.total_words, stats.dictionary_fixes)).collect::<Vec<_>>();
+        settings.sort_unstable();
+        remote_counters.sort_unstable();
+        Ok(Self { local, settings, remote_counters })
+    }
+}
+
+pub(crate) fn automatic_session_due(
+    local_uuid: &str,
+    peer_uuid: &str,
+    changed: bool,
+    active: bool,
+    retry: Option<(u32, Instant)>,
+    now: Instant,
+) -> bool {
+    !active
+        && (changed || should_auto_initiate(local_uuid, peer_uuid))
+        && retry.is_none_or(|(failures, next)| now >= next || (changed && failures == 0))
+}
+
+/// Explicit routes are restricted to Tailscale IPv4 addresses. The paired
+/// certificate still authenticates the device, independently of its address.
+pub(crate) fn parse_tailscale_address(value: &str) -> Result<SocketAddr> {
+    let address: SocketAddr = value.trim().parse().map_err(|_| {
+        anyhow!("Enter a Tailscale IPv4 address and sync port, such as 100.64.0.1:50000")
+    })?;
+    if address.port() == 0 || !matches!(address.ip(), IpAddr::V4(ip) if is_tailscale_address(ip)) {
+        return Err(anyhow!(
+            "Use the paired device's Tailscale IPv4 address and a nonzero sync port"
+        ));
+    }
+    Ok(address)
+}
+
+pub(crate) fn parse_connection_details(value: &str) -> Result<(String, SocketAddr)> {
+    let (uuid, address) = value.trim().strip_prefix("verenu-sync://")
+        .and_then(|value| value.split_once('@'))
+        .ok_or_else(|| anyhow!("Paste the connection details copied from Settings > Sync on the other device"))?;
+    let uuid = uuid::Uuid::parse_str(uuid)
+        .map_err(|_| anyhow!("These connection details have an invalid device ID. Copy them again from the other device"))?;
+    Ok((uuid.to_string(), parse_tailscale_address(address)?))
+}
+
+#[derive(Debug)]
+struct ConnectionFailure(String);
+
+impl std::fmt::Display for ConnectionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConnectionFailure {}
+
+fn connection_error(name: &str, address: SocketAddr, detail: &str) -> anyhow::Error {
+    ConnectionFailure(format!("Could not connect to {name} at {address}: {detail}. A firewall or network rule may be blocking TCP port {}. Open Verenu on the other device and allow this connection through both firewalls. For Tailscale, also check that both devices are connected and tailnet access rules allow this port.", address.port())).into()
+}
+
+pub(crate) fn should_try_next_address(error: &anyhow::Error) -> bool {
+    error.is::<ConnectionFailure>()
+}
+
 // ---- DTOs surfaced to the frontend ----
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfoDto {
     pub uuid: String,
     pub name: String,
+    pub port: u16,
+    pub tailscale_ips: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -234,6 +326,7 @@ pub struct PeerDto {
     pub state: String,
     pub error: Option<String>,
     pub online: bool,
+    pub connection_address: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -276,6 +369,8 @@ impl SyncManager {
             status: Mutex::new(HashMap::new()),
             backoff: Mutex::new(HashMap::new()),
             dirty: AtomicBool::new(false),
+            last_change: Mutex::new(None),
+            pending_changes: Mutex::new(HashSet::new()),
             mdns: tokio::sync::Mutex::new(None),
             listener_port: AtomicU16::new(0),
             available: AtomicBool::new(false),
@@ -409,13 +504,18 @@ impl SyncManager {
         }
 
         // Discovery.
+        let initial_change = {
+            let conn = self.lock_db()?;
+            ChangeStamp::read(&conn)?
+        };
+        *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
         self.start_discovery().await?;
 
         // Change-driven + fallback sync scheduling.
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(CHANGE_CHECK_INTERVAL).await;
                 monitor.monitor_tick().await;
             }
         });
@@ -649,10 +749,18 @@ impl SyncManager {
             Some(identity) => DeviceInfoDto {
                 uuid: identity.uuid.clone(),
                 name: identity.name.clone(),
+                port: self.inner.listener_port.load(Ordering::Relaxed),
+                tailscale_ips: if_addrs::get_if_addrs().unwrap_or_default().into_iter()
+                    .filter_map(|interface| match interface.ip() {
+                        IpAddr::V4(ip) if is_tailscale_address(ip) => Some(ip.to_string()),
+                        _ => None,
+                    }).collect(),
             },
             None => DeviceInfoDto {
                 uuid: String::new(),
                 name: String::new(),
+                port: 0,
+                tailscale_ips: Vec::new(),
             },
         }
     }
@@ -695,6 +803,9 @@ impl SyncManager {
                         error: peer.last_error.clone(),
                     });
                 PeerDto {
+                    connection_address: self
+                        .saved_peer_address(&peer.device_uuid)
+                        .map(|address| address.to_string()),
                     uuid: peer.device_uuid.clone(),
                     name: if peer.name.is_empty() {
                         discovered
@@ -747,6 +858,30 @@ impl SyncManager {
             .get(&peer_uuid)
             .cloned()
             .ok_or_else(|| anyhow!("that device is no longer visible on the network"))?;
+        self.start_pairing_target(target, None).await
+    }
+
+    pub async fn pair_connection(&self, details: &str) -> Result<String> {
+        let (uuid, address) = parse_connection_details(details)?;
+        if uuid == self.device_info().uuid {
+            return Err(anyhow!("These are this device's details. Copy the details from your other device"));
+        }
+        let paired = {
+            let conn = self.lock_db()?;
+            sync_store::get_peer(&conn, &uuid)?.is_some()
+        };
+        if paired {
+            return Err(anyhow!("This device is already paired. Use its Connection button to update the address"));
+        }
+        let target = DiscoveredDevice {
+            uuid, name: "Tailscale device".into(), addresses: vec![address.ip().to_string()],
+            port: address.port(), last_seen_ms: now_ms_u64(),
+        };
+        self.start_pairing_target(target, Some(address)).await
+    }
+
+    async fn start_pairing_target(&self, target: DiscoveredDevice, route: Option<SocketAddr>) -> Result<String> {
+        let peer_uuid = target.uuid.clone();
         let generation;
         {
             let mut pending = self.inner.pending.lock().await;
@@ -778,8 +913,12 @@ impl SyncManager {
         let task_code = code.clone();
         let task = tokio::spawn(async move {
             let result = manager
-                .run_outgoing_pairing(&target, &task_code, generation)
+                .run_outgoing_pairing(&target, &task_code, generation, route)
                 .await;
+            let result = result.and_then(|()| match route {
+                Some(address) => manager.set_peer_address(&target.uuid, &address.to_string()),
+                None => Ok(()),
+            });
             if let Err(err) = result {
                 log::warn!("sync: pairing with {} failed: {err:#}", target.name);
                 manager.inner.fail_pairing(generation, format!("{err:#}"));
@@ -821,6 +960,7 @@ impl SyncManager {
         target: &DiscoveredDevice,
         code: &str,
         generation: u64,
+        route: Option<SocketAddr>,
     ) -> Result<()> {
         let identity = self.identity_exchange()?;
         if target.addresses.is_empty() {
@@ -834,15 +974,17 @@ impl SyncManager {
         let connector = transport::tls_connector(client_cfg);
         let mut tcp = None;
         let mut failures = Vec::new();
-        for addr in connection_candidates(&target.addresses, target.port, &target.uuid) {
+        let candidates = route.map(|address| vec![address]).unwrap_or_else(||
+            connection_candidates(&target.addresses, target.port, &target.uuid));
+        for addr in candidates {
             match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await
             {
                 Ok(Ok(stream)) => {
                     tcp = Some(stream);
                     break;
                 }
-                Ok(Err(err)) => failures.push(format!("{addr}: {err}")),
-                Err(_) => failures.push(format!("{addr}: timed out")),
+                Ok(Err(err)) => failures.push(connection_error(&target.name, addr, &err.to_string()).to_string()),
+                Err(_) => failures.push(connection_error(&target.name, addr, "timed out").to_string()),
             }
         }
         let tcp = tcp.ok_or_else(|| {
@@ -1224,10 +1366,71 @@ impl SyncManager {
             .discovered
             .lock()
             .map_err(|_| anyhow!("discovery lock poisoned"))?;
-        Ok(discovered
+        let mut addresses = discovered
             .get(peer_uuid)
             .map(|d| connection_candidates(&d.addresses, d.port, peer_uuid))
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if let Some(address) = self.saved_peer_address(peer_uuid) {
+            // Prefer the persistent route; mDNS is unavailable across networks.
+            addresses.insert(0, address);
+            addresses.dedup();
+        }
+        Ok(addresses)
+    }
+
+    fn saved_peer_address(&self, peer_uuid: &str) -> Option<SocketAddr> {
+        store::settings_handle(&self.inner.app)
+            .ok()?
+            .get(store::SYNC_PEER_ADDRESSES)?
+            .get(peer_uuid)?
+            .as_str()
+            .and_then(|value| parse_tailscale_address(value).ok())
+    }
+
+    pub fn set_peer_address(&self, peer_uuid: &str, address: &str) -> Result<()> {
+        let conn = self.lock_db()?;
+        if sync_store::get_peer(&conn, peer_uuid)?.is_none() {
+            return Err(anyhow!(
+                "Pair this device before saving a Tailscale connection"
+            ));
+        }
+        let address = if address.trim().is_empty() {
+            None
+        } else if address.trim().starts_with("verenu-sync://") {
+            let (uuid, address) = parse_connection_details(address)?;
+            if uuid != peer_uuid {
+                return Err(anyhow!("These details belong to a different device. Copy them from the device named on this connection"));
+            }
+            Some(address.to_string())
+        } else {
+            Some(parse_tailscale_address(address)?.to_string())
+        };
+        let settings = store::settings_handle(&self.inner.app).map_err(|e| anyhow!(e))?;
+        let mut routes = settings
+            .get(store::SYNC_PEER_ADDRESSES)
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        if let Some(address) = address {
+            routes.insert(peer_uuid.to_string(), address.into());
+        } else {
+            routes.remove(peer_uuid);
+        }
+        settings
+            .save_value(store::SYNC_PEER_ADDRESSES, routes.into())
+            .map_err(|e| anyhow!(e))?;
+        drop(conn);
+        self.inner
+            .backoff
+            .lock()
+            .expect("backoff lock")
+            .remove(peer_uuid);
+        self.inner
+            .pending_changes
+            .lock()
+            .expect("pending changes lock")
+            .insert(peer_uuid.to_string());
+        self.inner.emit_devices_changed();
+        Ok(())
     }
 
     /// Manual "Sync now". `None` attempts every paired peer and reports errors.
@@ -1292,38 +1495,79 @@ impl SyncManager {
     }
 
     async fn monitor_tick(&self) {
-        let dirty = self.inner.dirty.swap(false, Ordering::Relaxed);
+        let paired = conn_peers(&self.inner.db);
+        if paired.is_empty() {
+            return;
+        }
+        let stamp = self.lock_db().and_then(|conn| ChangeStamp::read(&conn));
+        let mut dirty = self.inner.dirty.swap(false, Ordering::Relaxed);
+        if let Ok(stamp) = stamp {
+            let mut previous = self.inner.last_change.lock().expect("change stamp lock");
+            dirty |= previous.as_ref().is_some_and(|previous| previous != &stamp);
+            *previous = Some(stamp);
+        }
+        if dirty {
+            self.inner
+                .pending_changes
+                .lock()
+                .expect("pending changes lock")
+                .extend(paired.iter().map(|peer| peer.device_uuid.clone()));
+        }
         let now = Instant::now();
         let targets: Vec<String> = {
             let discovered = match self.inner.discovered.lock() {
                 Ok(map) => map.values().cloned().collect::<Vec<_>>(),
                 Err(_) => return,
             };
-            // No possible targets: avoid opening/querying the peer database
-            // every five seconds on machines with no discovered devices.
-            if discovered.is_empty() {
-                return;
-            }
-            let paired = paired_set(conn_peers(&self.inner.db));
             let backoff = match self.inner.backoff.lock() {
                 Ok(b) => b,
                 Err(_) => return,
             };
-            discovered
+            let pending = self
+                .inner
+                .pending_changes
+                .lock()
+                .expect("pending changes lock");
+            let active = self.inner.sessions.lock().expect("sessions lock");
+            paired
                 .into_iter()
-                .filter(|d| paired.contains(&d.uuid))
-                .filter(|d| should_auto_initiate(&self.device_info().uuid, &d.uuid))
-                .filter(|d| match backoff.get(&d.uuid) {
-                    Some(entry) => now >= entry.next_attempt || dirty,
-                    None => true,
+                .filter(|peer| {
+                    discovered
+                        .iter()
+                        .any(|device| device.uuid == peer.device_uuid)
+                        || self.saved_peer_address(&peer.device_uuid).is_some()
                 })
-                .map(|d| d.uuid)
+                .filter(|peer| {
+                    automatic_session_due(
+                        &self.device_info().uuid,
+                        &peer.device_uuid,
+                        pending.contains(&peer.device_uuid),
+                        active.contains(&peer.device_uuid),
+                        backoff
+                            .get(&peer.device_uuid)
+                            .map(|entry| (entry.failures, entry.next_attempt)),
+                        now,
+                    )
+                })
+                .map(|peer| peer.device_uuid)
                 .collect()
         };
         for uuid in targets {
+            self.inner
+                .pending_changes
+                .lock()
+                .expect("pending changes lock")
+                .remove(&uuid);
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = manager.sync_to_peer(&uuid).await;
+                if manager.sync_to_peer(&uuid).await.is_err() {
+                    manager
+                        .inner
+                        .pending_changes
+                        .lock()
+                        .expect("pending changes lock")
+                        .insert(uuid);
+                }
             });
         }
     }
@@ -1340,7 +1584,9 @@ impl SyncManager {
                 .lock()
                 .map_err(|_| anyhow!("session lock poisoned"))?;
             if !sessions.insert(peer_uuid.to_string()) {
-                return Err(anyhow!("A sync session with this device is already running"));
+                return Err(anyhow!(
+                    "A sync session with this device is already running"
+                ));
             }
         }
         let _guard = SessionGuard(self.inner.clone(), peer_uuid.to_string());
@@ -1362,7 +1608,15 @@ impl SyncManager {
                     result = Ok(summary);
                     break;
                 }
-                Err(err) => result = Err(err),
+                Err(err) => {
+                    // A busy/authenticated peer or failed transfer is the same
+                    // peer on every address. Release this slot for its retry;
+                    // probing unreachable LAN addresses can otherwise livelock
+                    // simultaneous edits on a working Tailscale connection.
+                    let try_next = should_try_next_address(&err);
+                    result = Err(err);
+                    if !try_next { break; }
+                }
             }
         }
         match result {
@@ -1423,8 +1677,8 @@ impl SyncManager {
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
         let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
             .await
-            .map_err(|_| anyhow!("connection to {} timed out", peer.name))?
-            .map_err(|e| anyhow!("could not reach {}: {e}", peer.name))?;
+            .map_err(|_| connection_error(&peer.name, addr, "connection timed out"))?
+            .map_err(|e| connection_error(&peer.name, addr, &e.to_string()))?;
         let mut tls = tokio::time::timeout(
             CONNECT_TIMEOUT,
             connector.connect(transport::server_name_for(&peer.device_uuid), tcp),
@@ -1489,7 +1743,7 @@ impl SyncManager {
                 peer_uuid.to_string(),
                 Backoff {
                     failures: 0,
-                    next_attempt: Instant::now() + Duration::from_secs(600),
+                    next_attempt: Instant::now() + IDLE_SYNC_INTERVAL,
                 },
             );
         }
@@ -1505,7 +1759,14 @@ impl SyncManager {
             next_attempt: Instant::now(),
         });
         entry.failures = entry.failures.saturating_add(1);
-        let secs = (30u64)
+        // Different retry delays resolve simultaneous edits without repeatedly
+        // starting competing sessions on both devices.
+        let base = if should_auto_initiate(&self.device_info().uuid, peer_uuid) {
+            2u64
+        } else {
+            3u64
+        };
+        let secs = base
             .saturating_mul(1u64 << entry.failures.saturating_sub(1).min(5))
             .min(MAX_BACKOFF.as_secs());
         entry.next_attempt = Instant::now() + Duration::from_secs(secs);
@@ -1994,7 +2255,11 @@ async fn handle_sync_hello(
             if let Ok(conn) = inner.db.lock() {
                 let _ = sync_store::mark_peer_error(&conn, &peer.device_uuid, &format!("{err:#}"));
             }
-            manager.set_status(&peer.device_uuid, PeerState::Error, Some(&format!("{err:#}")));
+            manager.set_status(
+                &peer.device_uuid,
+                PeerState::Error,
+                Some(&format!("{err:#}")),
+            );
         }
     }
 }
