@@ -456,14 +456,34 @@
 
 /* -------------------------------------------------------------- sliders */
 
-/* Range thumbs are ~12px on desktop; make them a real touch target. */
+/* Range thumbs are ~12px on desktop; make them a real touch target. The desktop
+   sliders paint their fill as a background on the input itself, so growing the
+   input for touch turned the whole 32px box into the track. Keep the input
+   transparent and draw the slim fill/track on the track pseudo-element. */
 .app[data-android='true'] input[type='range'] {
+  height: 32px;
   min-height: 32px;
+  background: transparent;
+  margin: 0;
+  touch-action: pan-y;
+}
+
+.app[data-android='true'] input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%, var(--accent) var(--pct, 0%),
+    var(--line-strong) var(--pct, 0%), var(--line-strong) 100%
+  );
 }
 
 .app[data-android='true'] input[type='range']::-webkit-slider-thumb {
   width: 24px;
   height: 24px;
+  margin-top: -9px; /* centre the thumb on the 6px track: (6 - 24) / 2 */
+  border-width: 3px;
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 /* ------------------------------------------------------------- keyboard */
