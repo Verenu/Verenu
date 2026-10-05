@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed the Android Microphone gain and Sound effects volume sliders rendering as thick slabs. They now draw a slim rounded track with a centered, touch-sized thumb.
+
 - Linux Context matching now keeps the captured app and window title throughout dictation. Executable aliases also match sub-app rules, including T3 Code's differing Wayland class. Website detection activates Chromium's accessibility tree, distinguishes windows sharing a process, recognizes more browser app IDs and channels, and ignores ambiguous or changed targets. Localhost websites are detected too. Address-bar reads have a hard deadline and never stack workers.
 
 - Fixed Linux system notifications failing with a nested-runtime panic. Update, model-ready, and service notices now send with Verenu branding and report delivery errors so failed update and service notices can retry.
