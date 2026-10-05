@@ -3,6 +3,7 @@
 
   export let keyLabels: string[];
   export let android = false;
+  export let shortcutUnavailable = false;
 
   // Svelte's legacy prop bridge can briefly supply the default value while
   // the Android WebView is bootstrapping. Read the platform directly as well
@@ -15,6 +16,8 @@
     <h2 class="hero-photo-title">
       {#if showAndroid}
         Tap the Verenu pill to dictate
+      {:else if shortcutUnavailable}
+        Dictation shortcut unavailable
       {:else}
         Hold {#each keyLabels as label}<kbd>{label}</kbd>{' '}{/each}to dictate
       {/if}
@@ -22,6 +25,8 @@
     <p class="hero-photo-sub">
       {#if showAndroid}
         Open a text field and use the pill above your keyboard.
+      {:else if shortcutUnavailable}
+        Open Settings > General for shortcut details.
       {:else}
         Verenu works in any app. Try it in
         <em class="hero-em">email, messages, docs</em> &mdash; or anywhere else.
