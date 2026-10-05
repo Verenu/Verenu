@@ -27,6 +27,8 @@ const STATE_SHOWING: u32 = 25;
 const STATE_MANAGES_DESCENDANTS: u32 = 31;
 const ROLE_PASSWORD_TEXT: u32 = 40;
 const ROLE_ENTRY: u32 = 79;
+const ROLE_TOOL_BAR: u32 = 63;
+const ROLE_PAGE_TAB_LIST: u32 = 38;
 const ROLE_DOCUMENT_FRAME: u32 = 82;
 const ROLE_DOCUMENT_WEB: u32 = 95;
 
@@ -36,6 +38,10 @@ const METHOD_TIMEOUT: Duration = Duration::from_millis(150);
 const WALK_BUDGET: usize = 600;
 /// Total time allowed for the browser address-bar walk.
 const ADDRESS_BAR_DEADLINE: Duration = Duration::from_millis(250);
+/// Includes connection setup and application/frame discovery. The worker
+/// may finish a timed-out D-Bus call later, but recording must continue.
+const ADDRESS_BAR_TIMEOUT: Duration = Duration::from_millis(350);
+static ADDRESS_BAR_BUSY: AtomicBool = AtomicBool::new(false);
 /// Characters read on each side of the caret.
 pub const LOCAL_TEXT_CHARS: i32 = 2048;
 
@@ -98,7 +104,9 @@ fn connection_slot() -> &'static Mutex<Option<Connection>> {
 }
 
 fn connect() -> zbus::Result<Connection> {
-    let session = Connection::session()?;
+    let session = zbus::blocking::connection::Builder::session()?
+        .method_timeout(METHOD_TIMEOUT)
+        .build()?;
     let reply = session.call_method(
         Some("org.a11y.Bus"),
         "/org/a11y/bus",
@@ -444,52 +452,170 @@ pub fn read_focused(pid: u32, radius: i32) -> FocusProbe {
     .unwrap_or(FocusProbe::Unavailable)
 }
 
-/// Text of the first browser-chrome entry (outside web content) that looks
-/// like an address. Chromium labels and structures its omnibox differently
-/// from Firefox, so this matches on shape rather than on names.
-pub fn read_address_bar(pid: u32) -> Option<String> {
+/// Compatibility entry point for native fixtures. Production uses the
+/// captured title as well as the PID to distinguish browser windows.
+#[cfg(test)]
+fn read_address_bar(pid: u32) -> Option<String> {
+    read_address_bar_for_window(pid, "")
+}
+
+fn address_bar_identifier(attributes: &HashMap<String, String>) -> bool {
+    attributes.iter().any(|(key, value)| {
+        matches!(key.as_str(), "class" | "id" | "html-id")
+            && matches!(value.as_str(), "OmniboxView" | "OmniboxViewViews" | "urlbar" | "urlbar-input" | "urlbar-entry")
+    })
+}
+
+fn frame_matches(active: bool, name: Option<&str>, title: &str) -> bool {
+    // Chromium on Wayland can omit ACTIVE even for the compositor's focused
+    // window. The caller validates its stable Hyprland address around this
+    // read; an exact, unique frame title identifies the captured window here.
+    if title.is_empty() { active } else { name == Some(title) }
+}
+
+fn is_browser_chrome(conn: &Connection, obj: &ObjRef, frame: &ObjRef) -> bool {
+    let mut current = obj.clone();
+    let mut toolbar = false;
+    for _ in 0..16 {
+        if current.bus == frame.bus && current.path == frame.path { return toolbar; }
+        let role = call::<_, u32>(conn, &current, ACCESSIBLE, "GetRole", &());
+        if matches!(role, Some(ROLE_DOCUMENT_WEB | ROLE_DOCUMENT_FRAME)) { return false; }
+        toolbar |= role == Some(ROLE_TOOL_BAR);
+        let Some((bus, path)) = get_property::<(String, OwnedObjectPath)>(conn, &current, ACCESSIBLE, "Parent") else { return false; };
+        current = ObjRef { bus, path };
+    }
+    false
+}
+
+/// Let the toolkit find known browser-owned controls in one query, avoiding
+/// a D-Bus round trip for every button/tab in a large Chromium window.
+/// Verify ancestry before reading text, since page CSS can reuse class names.
+fn address_bar_via_collection(conn: &Connection, frame: &ObjRef) -> Option<Option<String>> {
+    let rule = (
+        vec![1i32 << STATE_SHOWING, 0i32], 1i32,
+        HashMap::from([("class".to_string(), "OmniboxViewViews".to_string())]), 1i32,
+        // Collection's D-Bus roles are 32-bit bitset words, unlike the
+        // libatspi constructor's enum array. Entry 79 is word 2, bit 15.
+        // https://github.com/GNOME/at-spi2-core/blob/main/xml/Collection.xml
+        vec![0i32, 0i32, 1i32 << (ROLE_ENTRY - 64), 0i32], 1i32,
+        Vec::<String>::new(), 1i32, false,
+    );
+    let matches: Vec<(String, OwnedObjectPath)> =
+        call(conn, frame, COLLECTION, "GetMatches", &(rule, 1u32, 8i32, true))?;
+    for (bus, path) in matches {
+        let obj = ObjRef { bus, path };
+        if !is_browser_chrome(conn, &obj, frame) { continue; }
+        let text = get_property::<i32>(conn, &obj, TEXT, "CharacterCount")
+            .filter(|count| (1..=2048).contains(count))
+            .and_then(|count| call::<_, String>(conn, &obj, TEXT, "GetText", &(0i32, count)));
+        return Some(text);
+    }
+    None
+}
+
+/// Read browser chrome only. Activating Chromium's native placeholder is
+/// necessary even when renderer accessibility has not been requested yet.
+/// No page text, tab titles, or URL values are logged or cached.
+pub fn read_address_bar_for_window(pid: u32, title: &str) -> Option<String> {
     if pid == 0 {
         return None;
     }
+    bounded_address_read(&ADDRESS_BAR_BUSY, ADDRESS_BAR_TIMEOUT, {
+        let title = title.to_owned();
+        move || read_address_bar_inner(pid, &title)
+    })
+}
+
+fn bounded_address_read(
+    busy: &'static AtomicBool,
+    timeout: Duration,
+    read: impl FnOnce() -> Option<String> + Send + 'static,
+) -> Option<String> {
+    if busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return None;
+    }
+    struct BusyGuard(&'static AtomicBool);
+    impl Drop for BusyGuard {
+        fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+    }
+    let guard = BusyGuard(busy);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new().name("verenu-browser-context".into()).spawn(move || {
+        let _guard = guard;
+        let _ = sender.send(read());
+    }).ok()?;
+    receiver.recv_timeout(timeout).ok().flatten()
+}
+
+fn read_address_bar_inner(pid: u32, title: &str) -> Option<String> {
     let started = std::time::Instant::now();
     with_connection(|conn| {
         for app in app_roots_for_pid(conn, pid) {
-            let mut frames = children(conn, &app);
-            if let Some(active) = frames
-                .iter()
-                .find(|frame| states(conn, frame).is_some_and(|s| has(s, STATE_ACTIVE)))
-                .cloned()
-            {
-                frames = vec![active];
-            }
-            let mut stack: Vec<ObjRef> = frames.into_iter().rev().collect();
+            let _: Option<HashMap<String, String>> = call(conn, &app, ACCESSIBLE, "GetAttributes", &());
+            let frames: Vec<_> = children(conn, &app).into_iter().filter(|frame| {
+                if started.elapsed() > ADDRESS_BAR_DEADLINE { return false; }
+                let _: Option<HashMap<String, String>> = call(conn, frame, ACCESSIBLE, "GetAttributes", &());
+                let active = states(conn, frame).is_some_and(|s| has(s, STATE_ACTIVE));
+                let name = if title.is_empty() { None } else {
+                    get_property::<String>(conn, frame, ACCESSIBLE, "Name")
+                };
+                frame_matches(active, name.as_deref(), title)
+            }).collect();
+            if frames.len() != 1 { continue; }
+            if let Some(text) = address_bar_via_collection(conn, &frames[0]) { return text; }
+            // Toolbar nodes are visited before siblings such as tab strips.
+            // Never walk inactive frames when none matches the capture.
+            let mut stack: Vec<(ObjRef, bool, Option<u32>)> = frames.into_iter().rev().map(|obj| (obj, false, None)).collect();
             let mut visited = 0;
-            while let Some(obj) = stack.pop() {
+            let mut fallback = None;
+            let mut ambiguous = false;
+            while let Some((obj, in_toolbar, cached_role)) = stack.pop() {
                 visited += 1;
                 // Runs on the recording-start path: bound total time as well
                 // as node count so a slow browser cannot delay dictation.
                 if visited > WALK_BUDGET || started.elapsed() > ADDRESS_BAR_DEADLINE {
                     break;
                 }
-                let role: u32 = call(conn, &obj, ACCESSIBLE, "GetRole", &()).unwrap_or(0);
-                if role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME {
+                let role: u32 = cached_role.or_else(|| call(conn, &obj, ACCESSIBLE, "GetRole", &())).unwrap_or(0);
+                if role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME || role == ROLE_PAGE_TAB_LIST {
                     continue;
                 }
                 if role == ROLE_ENTRY {
+                    if !states(conn, &obj).is_some_and(|state| has(state, STATE_SHOWING)) { continue; }
+                    let attrs = call::<_, HashMap<String, String>>(conn, &obj, ACCESSIBLE, "GetAttributes", &()).unwrap_or_default();
+                    let exact = address_bar_identifier(&attrs);
+                    if !exact && !in_toolbar { continue; }
                     let text = get_property::<i32>(conn, &obj, TEXT, "CharacterCount")
                         .filter(|count| (1..=2048).contains(count))
                         .and_then(|count| call::<_, String>(conn, &obj, TEXT, "GetText", &(0i32, count)));
+                    // A known omnibox is authoritative, including an empty
+                    // value, a search query, or an internal browser page.
+                    // Another toolbar input cannot replace that answer.
+                    if exact { return text; }
                     if let Some(text) = text {
                         if crate::core::browser_probe::extract_domain(&text).is_some() {
-                            return Some(text);
+                            ambiguous |= fallback.is_some();
+                            fallback = Some(text);
                         }
                     }
                     continue;
                 }
                 let showing = states(conn, &obj).is_some_and(|s| has(s, STATE_SHOWING));
                 if showing {
-                    stack.extend(children(conn, &obj).into_iter().rev());
+                    let mut next = Vec::new();
+                    for child in children(conn, &obj).into_iter().take(WALK_BUDGET - visited).rev() {
+                        if started.elapsed() > ADDRESS_BAR_DEADLINE { break; }
+                        let role = call::<_, u32>(conn, &child, ACCESSIBLE, "GetRole", &());
+                        next.push((child, in_toolbar || role == Some(ROLE_TOOL_BAR), role));
+                    }
+                    // The tree is normally small once page documents and
+                    // tab strips are excluded. Prefer toolbars at each level.
+                    next.sort_by_key(|(_, _, role)| *role == Some(ROLE_TOOL_BAR));
+                    stack.extend(next);
                 }
+            }
+            if !ambiguous && started.elapsed() <= ADDRESS_BAR_DEADLINE && fallback.is_some() {
+                return fallback;
             }
         }
         None
@@ -633,13 +759,76 @@ mod tests {
 
 #[cfg(test)]
 mod live_address_bar {
+    #[test]
+    fn slow_address_read_times_out_without_stacking_workers_and_recovers() {
+        static BUSY: super::AtomicBool = super::AtomicBool::new(false);
+        let (release, blocked) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        assert!(super::bounded_address_read(&BUSY, std::time::Duration::from_millis(20), move || {
+            blocked.recv().unwrap();
+            Some("https://example.com".into())
+        }).is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(super::bounded_address_read(&BUSY, std::time::Duration::from_millis(20), || {
+            panic!("a second browser worker must not start while one is blocked")
+        }).is_none());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while BUSY.load(super::Ordering::Acquire) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(super::bounded_address_read(&BUSY, std::time::Duration::from_secs(1), || {
+            Some("https://example.org".into())
+        }).as_deref(), Some("https://example.org"));
+    }
+
     /// `VERENU_ATSPI_PID=<browser pid> cargo test atspi_live_address -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "requires an owned focused browser and VERENU_ATSPI_EXPECTED_DOMAIN"]
     fn atspi_live_address_bar() {
-        let pid = std::env::var("VERENU_ATSPI_PID").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
-        let domain = super::read_address_bar(pid)
-            .and_then(|text| crate::core::browser_probe::extract_domain(&text));
-        println!("domain={domain:?}");
+        let pid: u32 = std::env::var("VERENU_ATSPI_PID").expect("owned browser PID").parse().unwrap();
+        let expected = std::env::var("VERENU_ATSPI_EXPECTED_DOMAIN").expect("public fixture domain");
+        let window = std::env::var("VERENU_ATSPI_WINDOW_ADDRESS").ok()
+            .and_then(|address| crate::core::hyprland::window_by_address(&address))
+            .or_else(|| crate::core::hyprland::window_by_pid(pid)).expect("owned browser window");
+        assert_eq!(window.pid, pid);
+        crate::core::hyprland::focus(&window.address).expect("focus owned fixture");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let target = crate::core::window_geometry::WindowTarget::capture_foreground();
+        assert_eq!(target.id, pid as usize, "fixture must be focused");
+        let started = std::time::Instant::now();
+        let domain = crate::core::browser_probe::read_browser_domain_for_target(&target);
+        if expected == "unavailable" {
+            assert!(domain.is_none(), "ambiguous window must use app Context");
+            return;
+        }
+        assert_eq!(domain.as_deref(), Some(expected.as_str()));
+        assert!(started.elapsed() < std::time::Duration::from_millis(800), "domain read exceeded recording-start budget");
+        let db = crate::data::db::open(":memory:").unwrap();
+        let context = crate::data::db::insert_context_returning(&db, "Website fixture", None, None, None, None, false).unwrap();
+        crate::data::db::assign_context_website(&db, context.id, &expected).unwrap();
+        let resolved = crate::core::context::resolve_context_for_captured_window(
+            &db, &target.process_name().unwrap(), domain.as_deref(), target.window_title().as_deref(), target.id,
+        ).unwrap();
+        assert_eq!(resolved.0.id, context.id);
+        let mut wrong_window = target.clone();
+        wrong_window.linux.as_mut().unwrap().address = "0x0".into();
+        assert!(crate::core::browser_probe::read_browser_domain_for_target(&wrong_window).is_none());
+        let mut changed_tab = target;
+        changed_tab.linux.as_mut().unwrap().title = "Other public fixture tab".into();
+        assert!(crate::core::browser_probe::read_browser_domain_for_target(&changed_tab).is_none());
+    }
+
+    #[test]
+    fn address_search_requires_captured_active_frame_and_browser_identifiers() {
+        assert!(super::frame_matches(true, Some("Fixture - Browser"), "Fixture - Browser"));
+        assert!(super::frame_matches(false, Some("Fixture - Browser"), "Fixture - Browser"));
+        assert!(!super::frame_matches(false, None, ""));
+        assert!(!super::frame_matches(true, Some("Other - Browser"), "Fixture - Browser"));
+        assert!(!super::frame_matches(true, None, "Fixture - Browser"));
+        for value in ["OmniboxView", "OmniboxViewViews", "urlbar-input", "urlbar-entry"] {
+            assert!(super::address_bar_identifier(&[("class".into(), value.into())].into()));
+        }
+        assert!(!super::address_bar_identifier(&[("class".into(), "SearchField".into())].into()));
     }
 }
