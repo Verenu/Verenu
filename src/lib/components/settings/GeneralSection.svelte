@@ -544,7 +544,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="ui-dropdown pill-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
       <button
-        class="btn-ghost ui-dropdown-trigger mic-btn"
+        class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
         onclick={() => (pillDropdownOpen = !pillDropdownOpen)}
         aria-haspopup="true"
         aria-expanded={pillDropdownOpen}
@@ -644,7 +644,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="ui-dropdown language-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && languageDropdownOpen) { languageDropdownOpen = false; e.stopPropagation(); } }}>
     <button
-      class="btn-ghost ui-dropdown-trigger language-btn"
+      class="ui-dropdown-trigger ui-dropdown-trigger--compact language-btn"
       use:animateWidth={{ text: getTranscriptionLanguageLabel(selectedLanguage) }}
       onclick={() => (languageDropdownOpen = !languageDropdownOpen)}
       aria-haspopup="true"
@@ -662,7 +662,7 @@
       <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div
         id={LANGUAGE_MENU_ID}
-        class="ui-dropdown-menu language-menu scroll-styled scroll-thumb-elev"
+        class="ui-dropdown-menu ui-dropdown-menu--padded language-menu scroll-styled scroll-thumb-elev"
         aria-label="Spoken language options"
         onclick={(e) => e.stopPropagation()}
         in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
@@ -690,7 +690,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="ui-dropdown mic-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && micDropdownOpen) { micDropdownOpen = false; e.stopPropagation(); } }}>
     <button
-      class="btn-ghost ui-dropdown-trigger mic-btn"
+      class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
       use:animateWidth={{ text: selectedMic || microphoneCopy.defaultDevice, max: 180 }}
       onclick={() => (micDropdownOpen = !micDropdownOpen)}
       aria-haspopup="true"

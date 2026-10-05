@@ -4,6 +4,7 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import Toggle from '../Toggle.svelte';
+  import Dropdown from '../Dropdown.svelte';
   import { saveSetting, type HistoryRetention } from '../../settings';
   import { setServiceChecksEnabled } from '../../serviceStatus';
   import { modalFocusTrap } from '../../modalFocus';
@@ -20,6 +21,7 @@
 
   let historyRetention = $state('30 days');
   let historyDropdownOpen = $state(false);
+  let historyMenuOpensUp = $state(false);
   let autoLearn = $state(false);
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
@@ -191,33 +193,6 @@
     return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   }
 
-  function closeHistoryDropdown(e: MouseEvent | PointerEvent) {
-    const target = e.target;
-    if (target instanceof Element && !target.closest('.history-dropdown')) {
-      historyDropdownOpen = false;
-    }
-  }
-
-  function handleHistoryButtonKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && historyDropdownOpen) {
-      historyDropdownOpen = false;
-      e.stopPropagation();
-    }
-  }
-
-  $effect(() => {
-    if (!historyDropdownOpen) return;
-
-    const timeout = window.setTimeout(() => {
-      window.addEventListener('pointerdown', closeHistoryDropdown);
-    });
-
-    return () => {
-      window.clearTimeout(timeout);
-      window.removeEventListener('pointerdown', closeHistoryDropdown);
-    };
-  });
-
   loadSettings();
   refreshCleanupCache().catch((err) => {
     cleanupCacheError = `Cache status unavailable. ${formatIpcError(err)}`;
@@ -253,6 +228,37 @@
   let importMsgKind = $state<'ok' | 'err' | ''>('');
   let fileInput: HTMLInputElement | null = $state(null);
   let historyRetentionButton: HTMLButtonElement | null = $state(null);
+  let historyRetentionMenu: HTMLDivElement | null = $state(null);
+
+  $effect(() => {
+    if (!historyDropdownOpen) {
+      historyMenuOpensUp = false;
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const trigger = historyRetentionButton;
+      const menu = historyRetentionMenu;
+      if (!trigger || !menu) return;
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuHeight = menu.getBoundingClientRect().height;
+      let clipTop = 0;
+      let clipBottom = window.innerHeight;
+      for (let parent = trigger.parentElement; parent; parent = parent.parentElement) {
+        const overflowY = getComputedStyle(parent).overflowY;
+        if (overflowY !== 'auto' && overflowY !== 'scroll' && overflowY !== 'hidden' && overflowY !== 'clip') continue;
+        const bounds = parent.getBoundingClientRect();
+        clipTop = Math.max(clipTop, bounds.top + parent.clientTop);
+        clipBottom = Math.min(clipBottom, bounds.top + parent.clientTop + parent.clientHeight);
+      }
+
+      const spaceAbove = triggerRect.top - clipTop - 4;
+      const spaceBelow = clipBottom - triggerRect.bottom - 4;
+      historyMenuOpensUp = menuHeight > spaceBelow && spaceAbove > spaceBelow;
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   let retentionCancelButton: HTMLButtonElement | null = $state(null);
 
   async function handleExport() {
@@ -378,50 +384,54 @@
 <h3 class="settings-subhead">History & storage</h3>
 <div class="setting-row" data-setting-target="privacy-history">
   <div><div class="label">Transcription history</div><div class="desc">How long to keep past dictations</div></div>
-  <div class="history-dropdown">
-    <button
-      bind:this={historyRetentionButton}
-      class="btn-ghost mic-btn"
-      use:animateWidth={{ text: historyRetention }}
-      onclick={() => (historyDropdownOpen = !historyDropdownOpen)}
-      onkeydown={handleHistoryButtonKeydown}
-      aria-haspopup="listbox"
-      aria-expanded={historyDropdownOpen}
-      aria-controls={HISTORY_MENU_ID}
-      aria-label="Transcription history retention"
-    >
-      <span>{historyRetention}</span>
-      <svg class:open={historyDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="m6 9 6 6 6-6"/>
-      </svg>
-    </button>
-    {#if historyDropdownOpen}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-      <div
-        id={HISTORY_MENU_ID}
-        class="mic-menu scroll-styled scroll-thumb-elev"
-        role="listbox"
-        tabindex="-1"
-        aria-label="History retention options"
-        onclick={(e) => e.stopPropagation()}
-        in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
-        out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+  <Dropdown bind:open={historyDropdownOpen} closeSelector=".history-dropdown">
+    <div class="ui-dropdown history-dropdown">
+      <button
+        bind:this={historyRetentionButton}
+        class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
+        type="button"
+        use:animateWidth={{ text: historyRetention }}
+        onclick={() => (historyDropdownOpen = !historyDropdownOpen)}
+        aria-haspopup="listbox"
+        aria-expanded={historyDropdownOpen}
+        aria-controls={HISTORY_MENU_ID}
+        aria-label="Transcription history retention"
       >
-        {#each historyOptions as opt}
+        <span>{historyRetention}</span>
+        <svg class:open={historyDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      {#if historyDropdownOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
+          bind:this={historyRetentionMenu}
+          id={HISTORY_MENU_ID}
+          class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          class:open-up={historyMenuOpensUp}
+          role="listbox"
+          tabindex="-1"
+          aria-label="History retention options"
+          onclick={(e) => e.stopPropagation()}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
+          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+        >
+          {#each historyOptions as opt}
           <button
-            class="mic-item"
+            class="ui-dropdown-option mic-item"
             class:active={historyRetention === opt}
             onclick={() => requestHistoryRetention(opt)}
-            onkeydown={handleHistoryButtonKeydown}
             role="option"
+            type="button"
             aria-selected={historyRetention === opt}
           >
             {opt}
           </button>
-        {/each}
-      </div>
-    {/if}
-  </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </Dropdown>
 </div>
 <div class="setting-row" data-setting-target="privacy-cache">
   <div>
@@ -542,43 +552,13 @@
   }
 
   .history-dropdown { position: relative; flex-shrink: 0; }
-  .mic-btn { display: flex; align-items: center; gap: 6px; max-width: 180px; }
-  .mic-btn svg { transition: transform 150ms; }
-  .mic-btn svg.open { transform: rotate(180deg); }
+  .mic-btn { max-width: 180px; }
   .mic-btn span { overflow: hidden; white-space: nowrap; }
-  .mic-menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
-    background: var(--bg-elev);
-    border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-    box-shadow: var(--shadow-popover);
-    min-width: 200px;
-    max-width: 280px;
-    max-height: 200px;
-    overflow-y: auto;
-    z-index: 10;
+  .mic-menu { min-width: 200px; max-width: 280px; max-height: 200px; z-index: 10; }
+  .mic-menu.open-up { top: auto; bottom: calc(100% + 4px); }
+  @media (max-width: 600px) {
+    .history-dropdown .mic-menu { left: 0; right: auto; }
   }
-  .mic-item {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 8px 12px;
-    font-size: 12px;
-    font-family: var(--sans);
-    color: var(--ink-strong);
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--line);
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .mic-item:last-child { border-bottom: none; }
-  .mic-item:hover { background: var(--paper); }
-  .mic-item.active { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
   .privacy-eye-wrap { position: relative; display: inline-flex; align-items: center; }
   .privacy-eye { color: var(--ink-mute); cursor: default; flex-shrink: 0; transition: color 0.15s ease, transform 0.15s ease; }
   .privacy-eye-wrap:hover .privacy-eye { color: var(--ink-soft); transform: scale(1.18); }
