@@ -9,13 +9,13 @@ import { spawn, execFileSync } from 'node:child_process';
 import { sourceIdentity } from './verification/identity.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
+await fs.mkdir(path.join(root, 'test-results'), { recursive: true });
 const directory = await fs.mkdtemp(path.join(root, 'test-results', 'linux-contexts-'));
 const identity = sourceIdentity();
 const checks = [];
 let browser;
 let browserStarted = false;
 let socket;
-let original;
 function waitForExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -38,7 +38,7 @@ const server = http.createServer((request, response) => {
 try {
   assert.equal(process.platform, 'linux');
   assert.ok(process.env.HYPRLAND_INSTANCE_SIGNATURE, 'Requires a real Hyprland session');
-  original = JSON.parse(execFileSync('hyprctl', ['-j', 'activewindow'], { encoding: 'utf8' }));
+  assert.equal(process.env.VERENU_CONTEXT_TEST_ISOLATED, '1', 'Run in a disposable Hyprland compositor with VERENU_CONTEXT_TEST_ISOLATED=1');
   const build = execFileSync('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--lib', '--no-run', '--message-format=json'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   const executable = build.split('\n').filter(Boolean).flatMap((line) => {
     try {
@@ -154,15 +154,9 @@ try {
       if (!(await waitForExit(browser, 3_000))) browser.unref();
     }
   }
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
-  if (original?.address) {
-    try {
-      execFileSync('hyprctl', ['dispatch', `focuswindow address:${original.address}`], { stdio: 'ignore' });
-    } catch {
-      // The original window may have closed during the fixture run. Preserve
-      // the verification report even when Hyprland cannot restore focus.
-    }
+  if (server.listening) {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
   }
   await fs.writeFile(path.join(directory, 'verification.json'), JSON.stringify({ identity, checks, status: checks.length === 7 && checks.every((check) => check.status === 'passed') ? 'verified' : 'failed' }, null, 2));
 }

@@ -494,6 +494,9 @@ fn address_bar_via_collection(conn: &Connection, frame: &ObjRef) -> Option<Optio
     let rule = (
         vec![1i32 << STATE_SHOWING, 0i32], 1i32,
         HashMap::from([("class".to_string(), "OmniboxViewViews".to_string())]), 1i32,
+        // Collection's D-Bus roles are 32-bit bitset words, unlike the
+        // libatspi constructor's enum array. Entry 79 is word 2, bit 15.
+        // https://github.com/GNOME/at-spi2-core/blob/main/xml/Collection.xml
         vec![0i32, 0i32, 1i32 << (ROLE_ENTRY - 64), 0i32], 1i32,
         Vec::<String>::new(), 1i32, false,
     );
