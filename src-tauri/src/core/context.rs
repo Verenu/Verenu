@@ -40,7 +40,8 @@ impl ResolvedContextIdentity {
     }
 }
 
-pub fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Context> {
+#[cfg(test)]
+fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Context> {
     resolve_context_with_title(db, executable, domain, None).map(|(context, _)| context)
 }
 
@@ -63,45 +64,99 @@ pub fn resolve_context_with_title(
 /// Linux window classes can differ from the executable targets already saved
 /// in Contexts. Prefer the class/domain match, then try the captured process's
 /// executable basename. Never inspect the live foreground for this fallback.
-pub fn resolve_context_for_window(
+#[cfg(test)]
+fn resolve_context_for_window(
     db: &Db,
     executable: &str,
     domain: Option<&str>,
     target_id: usize,
 ) -> Result<Context> {
-    let context = resolve_context(db, executable, domain)?;
+    resolve_context_for_captured_window(db, executable, domain, None, target_id)
+        .map(|(context, _)| context)
+}
+
+pub fn resolve_context_for_captured_window(
+    db: &Db,
+    executable: &str,
+    domain: Option<&str>,
+    title: Option<&str>,
+    target_id: usize,
+) -> Result<(Context, Option<db::ContextSubApp>)> {
+    let resolved = resolve_context_with_title(db, executable, domain, title)?;
     #[cfg(target_os = "linux")]
     {
-        if !context.is_everywhere {
-            return Ok(context);
+        if resolved.1.is_some() {
+            return Ok(resolved);
         }
-        let alias = u32::try_from(target_id)
-            .ok()
-            .filter(|pid| *pid != 0)
-            .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
-            .and_then(|path| path.file_name()?.to_str().map(str::to_owned));
-        resolve_executable_alias(db, context, alias.as_deref())
+        let alias = crate::core::window_context::linux_executable_for_pid(target_id);
+        resolve_alias_with_title(db, resolved, alias.as_deref(), domain, title)
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = target_id;
-        Ok(context)
+        Ok(resolved)
     }
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn resolve_executable_alias(db: &Db, context: Context, alias: Option<&str>) -> Result<Context> {
-    if context.is_everywhere {
+fn resolve_alias_with_title(
+    db: &Db,
+    resolved: (Context, Option<db::ContextSubApp>),
+    alias: Option<&str>,
+    domain: Option<&str>,
+    title: Option<&str>,
+) -> Result<(Context, Option<db::ContextSubApp>)> {
+    if resolved.1.is_none() {
         if let Some(alias) = alias.filter(|value| !value.trim().is_empty()) {
-            return db::resolve_context_for_target(db, alias, None);
+            let alias_match = if title.is_some() {
+                db::resolve_context_with_sub_app(db, alias, domain, title)?
+            } else {
+                (db::resolve_context_for_target(db, alias, domain)?, None)
+            };
+            // A sub-app is more specific than a website/app. Otherwise keep
+            // a class or website assignment ahead of an executable alias.
+            if alias_match.1.is_some() || resolved.0.is_everywhere {
+                return Ok(alias_match);
+            }
         }
     }
-    Ok(context)
+    Ok(resolved)
+}
+
+#[cfg(test)]
+fn resolve_executable_alias(db: &Db, context: Context, alias: Option<&str>) -> Result<Context> {
+    resolve_alias_with_title(db, (context, None), alias, None, None)
+        .map(|(context, _)| context)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_alias_sub_app_wins_over_website_but_keeps_explicit_class_sub_app() {
+        let db = db::open(":memory:").unwrap();
+        let coding = db::insert_context_returning(&db, "AI Coding", None, None, None, None, false).unwrap();
+        let website = db::insert_context_returning(&db, "Website", None, None, None, None, false).unwrap();
+        db::assign_context_website(&db, website.id, "example.com").unwrap();
+        let sub = db::create_sub_app(&db, db::NewSubApp {
+            executable: "t3code", app_name: None, label: "Project", icon: None,
+            title_pattern: "Verenu", match_mode: db::TitleMatchMode::Contains,
+        }).unwrap();
+        db::assign_sub_app(&db, sub.id, Some(coding.id)).unwrap();
+        let base = db::resolve_context_with_sub_app(&db, "com.t3tools.T3Code", Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        let resolved = resolve_alias_with_title(&db, base, Some("t3code"), Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        assert_eq!(resolved.0.id, coding.id);
+        assert_eq!(resolved.1.unwrap().id, sub.id);
+        let explicit = db::create_sub_app(&db, db::NewSubApp {
+            executable: "com.t3tools.T3Code", app_name: None, label: "Explicit", icon: None,
+            title_pattern: "Verenu", match_mode: db::TitleMatchMode::Contains,
+        }).unwrap();
+        db::assign_sub_app(&db, explicit.id, Some(website.id)).unwrap();
+        let base = db::resolve_context_with_sub_app(&db, "com.t3tools.T3Code", Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        let resolved = resolve_alias_with_title(&db, base, Some("t3code"), Some("example.com"), Some("Verenu - T3 Code")).unwrap();
+        assert_eq!(resolved.1.unwrap().id, explicit.id);
+    }
 
     #[test]
     fn executable_alias_matches_saved_linux_target_without_overriding_class_or_website() {

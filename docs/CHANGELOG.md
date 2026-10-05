@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Linux Context matching now keeps the captured app and window title throughout dictation. Executable aliases also match sub-app rules, including T3 Code's differing Wayland class. Website detection activates Chromium's accessibility tree, distinguishes windows sharing a process, recognizes more browser app IDs and channels, and ignores ambiguous or changed targets. Localhost websites are detected too. Address-bar reads have a hard deadline and never stack workers.
+
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.

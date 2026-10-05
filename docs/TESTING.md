@@ -2,6 +2,32 @@
 
 Use the smallest test pass that covers the change, then run broader checks before release or risky PRs.
 
+## Linux Context detection
+
+Run on a real Hyprland/Wayland desktop with Chrome installed:
+
+```bash
+node scripts/test-linux-contexts.mjs
+VERENU_CONTEXT_FIXTURE_PID=PID cargo test --manifest-path src-tauri/Cargo.toml live_linux_window_matches_executable_context --lib -- --ignored
+```
+
+The browser suite creates its own profile and local public fixture websites.
+It checks cold accessibility activation, tab changes, and two browser windows
+sharing one PID. URL-shaped page inputs cannot supply website matches. It
+restores the previous window and closes only its own browser. Set
+`VERENU_CHROME_BINARY` for a different Chrome installation. Reports stay in
+ignored `test-results/linux-contexts-*`. The app-alias check uses an isolated
+database and requires a live window whose class differs from its executable,
+such as T3 Code.
+
+Context resolution retains the window class and title captured at recording
+start. Linux website detection reads only browser chrome and verifies the
+Hyprland address before and after the read. Ambiguous accessibility frames,
+focus changes, unsupported browser pages, and unavailable AT-SPI fall back to
+the captured app Context. These checks do not prove native shortcuts, audio
+capture, or clipboard insertion, and Chrome results do not establish Firefox
+or other browser behavior.
+
 ## Linux webview memory policy verification
 
 Run with a working Linux display:
