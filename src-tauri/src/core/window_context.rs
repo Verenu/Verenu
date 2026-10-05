@@ -39,6 +39,18 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("chromium", "Chromium"), ("brave-browser", "Brave"), ("firefox", "Firefox"),
     ("librewolf", "LibreWolf"), ("microsoft-edge", "Microsoft Edge"),
     ("vivaldi-stable", "Vivaldi"), ("zen", "Zen Browser"),
+    ("chrome", "Google Chrome"), ("chromium-browser", "Chromium"),
+    ("brave", "Brave"), ("brave-browser-beta", "Brave"),
+    ("brave-browser-nightly", "Brave"), ("firefox-esr", "Firefox"),
+    ("firefox-bin", "Firefox"), ("waterfox", "Waterfox"),
+    ("microsoft-edge-stable", "Microsoft Edge"), ("microsoft-edge-beta", "Microsoft Edge"),
+    ("microsoft-edge-dev", "Microsoft Edge"), ("vivaldi", "Vivaldi"),
+    ("vivaldi-snapshot", "Vivaldi"), ("opera", "Opera"),
+    ("google-chrome-beta", "Google Chrome"), ("google-chrome-unstable", "Google Chrome"),
+    ("org.mozilla.firefox", "Firefox"), ("org.chromium.chromium", "Chromium"),
+    ("com.google.chrome", "Google Chrome"), ("com.brave.browser", "Brave"),
+    ("io.gitlab.librewolf-community", "LibreWolf"),
+    ("app.zen_browser.zen", "Zen Browser"),
 ];
 
 /// The focus target to refocus before paste. On Windows this is the foreground
@@ -76,8 +88,30 @@ pub fn get_foreground_hwnd() -> usize {
 /// attempted against a non-browser foreground window.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn is_browser_exe(process_name: &str) -> bool {
-    BROWSER_EXES.iter().any(|(exe, _)| *exe == process_name)
-        || matches!(process_name, "google-chrome" | "chromium" | "brave-browser" | "firefox" | "librewolf")
+    BROWSER_EXES.iter().any(|(exe, _)| exe.eq_ignore_ascii_case(process_name))
+}
+
+/// A Wayland app ID may differ from its executable. Check both exact
+/// identities; never classify arbitrary Electron apps as browsers.
+pub fn is_browser_target(process_name: &str, target_id: usize) -> bool {
+    if is_browser_exe(process_name) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    return linux_executable_for_pid(target_id).is_some_and(|exe| is_browser_exe(&exe));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = target_id;
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_executable_for_pid(target_id: usize) -> Option<String> {
+    let pid = u32::try_from(target_id).ok().filter(|pid| *pid != 0)?;
+    let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    // Running AppImages/package upgrades can unlink the old executable.
+    Some(path.file_name()?.to_str()?.trim_end_matches(" (deleted)").to_ascii_lowercase())
 }
 #[cfg(target_os = "android")]
 pub fn is_browser_exe(process_name: &str) -> bool {
@@ -91,10 +125,6 @@ pub fn is_browser_exe(process_name: &str) -> bool {
 )))]
 pub fn is_browser_exe(_process_name: &str) -> bool {
     false
-}
-
-pub fn get_active_process_name() -> Option<String> {
-    get_process_name_for_hwnd(get_foreground_hwnd())
 }
 
 #[cfg_attr(not(windows), allow(unused_variables))]
@@ -224,5 +254,18 @@ fn get_window_title_platform(target_id: usize) -> Option<String> {
         }
         let _ = target_id;
         None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod browser_identity_tests {
+    #[test]
+    fn recognizes_linux_browser_classes_channels_and_flatpaks_only() {
+        for browser in ["Google-Chrome", "chrome", "brave", "firefox", "org.mozilla.firefox", "com.brave.Browser", "vivaldi-snapshot", "zen", "microsoft-edge-dev", "opera"] {
+            assert!(super::is_browser_exe(browser), "browser identity: {browser}");
+        }
+        for app in ["com.t3tools.T3Code", "electron", "chromium-editor", "firefox-notes", "unknown"] {
+            assert!(!super::is_browser_target(app, 0), "non-browser identity: {app}");
+        }
     }
 }
