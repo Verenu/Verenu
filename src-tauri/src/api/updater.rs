@@ -19,6 +19,7 @@ struct GhAsset {
     name: String,
     browser_download_url: String,
     #[serde(default)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     digest: Option<String>,
 }
 
