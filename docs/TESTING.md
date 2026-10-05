@@ -119,6 +119,27 @@ builds and tests the platform code on Windows and macOS.
 
 ## Linux hotkey gesture verification
 
+For portal identity regressions, build the disposable native probe and run it
+outside the editor's inherited app scope:
+
+```bash
+cargo build --manifest-path src-tauri/Cargo.toml --example linux-shortcut-portal
+systemd-run --user --collect --wait --pipe --unit=verenu-portal-verification \
+  "$PWD/src-tauri/target/debug/examples/linux-shortcut-portal" --keyboard
+```
+
+The probe uses the production portal connection code. Both connection rounds
+must register Verenu's own identity, bind a disposable portal action, and receive
+activation through Hyprland. `--keyboard` temporarily binds an unused
+Ctrl+Alt+Shift+Super+F12 and drives it with `wtype`, then disables only its own
+binding. It fails if the chord is occupied. It never records audio or reads the
+clipboard. Without `--keyboard`, it checks compositor dispatch only.
+
+An editor-launched probe alone cannot catch missing identity registration:
+its process can inherit the editor's app identity. The browser error/recovery
+test exercises the shortcut status event contract; browser sessions do not
+register native shortcuts.
+
 For Linux hotkey gesture changes, run the Rust classifier tests and the generated
 Hyprland Lua fixture. The fixture requires `lua` and uses a fake compositor;
 it does not change desktop bindings, capture audio, or call providers.
