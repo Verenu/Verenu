@@ -1,6 +1,6 @@
 {
   "name": "verenu",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Verenu - An open-source AI dictation app for Windows, macOS, and Linux",
   "type": "module",
   "scripts": {
