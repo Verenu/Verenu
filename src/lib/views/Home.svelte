@@ -16,11 +16,18 @@
   import StatsCard from './home/StatsCard.svelte';
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
   import { listenForSyncCompletion } from '../syncStore.svelte';
-  import type { ShortcutStatus } from '../shortcutStatus.svelte';
+  import { desktopShortcut, type ShortcutStatus } from '../shortcutStatus.svelte';
   import type { InstalledApp } from '../appMappings';
 
   let hotkey = defaultHotkey;
+  let dictationShortcut: ShortcutStatus | undefined;
   $: keyLabels = hotkey.filter(Boolean).map(formatKeyLabel);
+  $: shortcutUnavailable = dictationShortcut?.active === null;
+
+  function refreshShortcut(status = desktopShortcut('dictation')) {
+    dictationShortcut = status;
+    hotkey = status?.active === null ? ['Unavailable'] : hotkeyCodes();
+  }
 
   let copiedId: number | null = null;
   let currentVersion = '';
@@ -229,7 +236,7 @@
       .catch(() => { apps = []; });
     loadHotkey()
       .then(() => {
-        hotkey = hotkeyCodes().length ? hotkeyCodes() : ['Unavailable', ''];
+        refreshShortcut();
       })
       .catch(() => { /* use platform default if setting unavailable */ });
     load(true, true);
@@ -265,10 +272,13 @@
 
     trackListener(listen<ShortcutStatus[]>('verenu:shortcuts-changed', (event) => {
       const dictation = event.payload.find((item) => item.id === 'dictation');
-      if (dictation) hotkey = dictation.codes.length ? dictation.codes : ['Unavailable', ''];
+      if (dictation) {
+        dictationShortcut = dictation;
+        hotkey = dictation.active === null ? ['Unavailable'] : dictation.codes;
+      }
     }));
     trackListener(listen<string[]>('verenu:hotkey-changed', (event) => {
-      hotkey = event.payload;
+      if (dictationShortcut?.active !== null) hotkey = event.payload;
     }));
     trackListener(listen('verenu:transcribed', () => {
       failedEntry = null;
@@ -349,7 +359,11 @@
       <h1 class="page-h">Welcome back</h1>
       <p class="page-sub">{greeting}</p>
 
-      <HomeHero {keyLabels} android={isAndroid} />
+      <HomeHero {keyLabels} {shortcutUnavailable} android={isAndroid} />
+
+      {#if !isAndroid && shortcutUnavailable && dictationShortcut?.note}
+        <GlobalMessageBanner message={dictationShortcut.note} />
+      {/if}
 
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
@@ -384,6 +398,7 @@
         {resumingCancelled}
         {copiedId}
         {keyLabels}
+        {shortcutUnavailable}
         android={isAndroid}
         {search}
         {apps}

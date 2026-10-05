@@ -229,13 +229,18 @@ jobs:
         run: mkdir -p tests/reports
 
       - name: Check privacy-safe browser failure summaries
-        run: node --test tests/verification/playwright-report.test.mjs
+        run: node --test tests/verification/playwright-summary.test.mjs
 
       - name: Run unified fast profile
         run: npm test -- --strict --json-report tests/reports/fast-profile.json --junit-report tests/reports/fast-profile.junit.xml
 
       - name: Install real-session fixture tools
-        run: sudo apt-get install -y espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring
+        run: sudo apt-get install -y espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring lua5.4
+
+      - name: Verify Linux window identity and generated compositor gestures
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
+          cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
 
       - name: Exercise an isolated Rust-backed browser session
         run: |

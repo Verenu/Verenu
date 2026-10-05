@@ -6,10 +6,9 @@ import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
-import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
 import { run } from './verification/process.mjs';
+import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
-import { failedPlaywrightChecks } from './verification/playwright.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -39,24 +38,29 @@ try {
   report.checks.push(...suite.checks);
   const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
   report.artifacts.push(artifact(playwright.log));
-  const playwrightReport = await fs.readFile(path.join(session.directory, 'playwright.json'), 'utf8')
-    .then(JSON.parse)
-    .catch(() => null);
-  if (playwrightReport) report.checks.push(...failedPlaywrightChecks(playwrightReport));
-  else report.checks.push({ name: 'Playwright result report', status: 'failed', reason: 'Structured test results unavailable' });
-  const failedTests = summarizePlaywrightFailures(playwrightReport);
-  report.checks.push({
-    name: 'Real-session Playwright desktop and phone flows',
-    status: playwright.status,
-    ...(failedTests.length ? { failedTests } : {}),
+  const browserReport = await readPlaywrightReport(path.join(session.directory, 'playwright.json'));
+  const browserSummary = summarizePlaywrightReport(browserReport.report, {
+    availability: browserReport.availability,
+    processStatus: playwright.status,
+    exitCode: playwright.exitCode,
+    processReason: playwright.reason,
   });
-  if (playwright.status !== 'passed') {
-    const cases = failedTests.map(({ project, file, line, title }) =>
-      `${project}: ${file}:${line ?? '?'} ${title}`).join('; ');
-    if (cases) console.error(`Real-session Playwright failures: ${cases}`);
-    throw new Error(cases
-      ? `Real-session Playwright flows failed: ${cases}`
-      : 'Real-session Playwright flows failed; no failed test cases were recorded.');
+  report.playwright = browserSummary;
+  report.checks.push(...playwrightSummaryChecks(browserSummary));
+  const failedTests = browserSummary.tests.filter((test) => test.status === 'failed');
+  if (failedTests.length) {
+    const cases = failedTests.map(({ project, file, line, title, menuGeometry, assertionLine }) => {
+      const source = file ? `${file}:${line ?? '?'}` : 'unknown source';
+      const assertion = assertionLine ? ` assertion:${assertionLine}` : '';
+      const geometry = menuGeometry ? ` geometry:${JSON.stringify(menuGeometry)}` : '';
+      return `${project}: ${source} ${title}${assertion}${geometry}`;
+    }).join('; ');
+    console.error(`Real-session Playwright failures: ${cases}`);
+  }
+  if (browserSummary.status !== 'passed') {
+    throw new Error(failedTests.length
+      ? `Real-session Playwright flows failed in ${failedTests.length} case(s).`
+      : browserSummary.reason || 'Real-session Playwright flows failed.');
   }
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });

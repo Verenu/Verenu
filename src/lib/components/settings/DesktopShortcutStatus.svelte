@@ -7,5 +7,5 @@
 </script>
 
 {#if status?.note}
-  <p class="desc" role="status">{status.note}</p>
+  <p class="desc" role={status.active === null ? 'alert' : 'status'}>{status.note}</p>
 {/if}

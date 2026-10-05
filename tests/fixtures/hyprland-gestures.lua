@@ -1,7 +1,9 @@
 -- Execute the generated production bindings without changing the desktop.
 local time, timers, bindings, actions = 0, {}, {}, {}
 local keyboard
+local window_rules = {}
 hl = {
+  window_rule = function(rule) window_rules[#window_rules + 1] = rule end,
   dsp = {
     global = function(id) return id end,
     exec_cmd = function(command) return command end,
@@ -36,6 +38,13 @@ local function count(action)
 end
 
 -- GENERATED_BINDINGS
+
+-- GENERATED_WINDOW_RULES
+assert(#window_rules == 2, "fresh setup did not install both window policies")
+assert(window_rules[1].match.class == "^(com\\.verenu\\.app|[Vv]erenu)$", "window policy depends on executable filename")
+assert(window_rules[1].float and window_rules[1].center and window_rules[1].min_size[1] == 1100 and window_rules[1].min_size[2] == 700, "main window size policy missing")
+assert(window_rules[2].float and window_rules[2].pin and window_rules[2].no_initial_focus, "pill can tile or steal initial focus")
+assert(not window_rules[2].no_focus, "pill buttons cannot receive clicks")
 
 -- Replay the reported 312 ms first tap and 163 ms gap while Ctrl stays down.
 bindings["CTRL + Super_L"]()
@@ -74,4 +83,18 @@ bindings["CTRL + Super_L"]()
 assert(count("app:dictate") == 3, "combo follow-up started another dictation")
 assert(count("handsfree") == 1, "combo follow-up entered hands-free")
 advance(4000)
+
+-- Keyboard volume/media/brightness controls must not discard a held capture.
+bindings["CTRL + Super_L"]()
+local cancelled_before = count("app:cancel-chord")
+local released_before = count("release")
+for _, keycode in ipairs({121, 122, 123, 171, 172, 173, 174, 208, 209, 215, 232, 233, 236, 237, 238, 251, 252, 256}) do
+  keyboard(keycode, nil, 1)
+  keyboard(keycode, nil, 0)
+end
+assert(count("app:cancel-chord") == cancelled_before, "media control cancelled held dictation")
+assert(count("release") == released_before, "media control ended held dictation")
+keyboard(133, nil, 0)
+advance(5000)
+assert(count("release") == released_before + 1, "modifier release no longer finishes dictation")
 print("Generated Hyprland gesture regressions passed")

@@ -11,6 +11,16 @@ use serde::Deserialize;
 use std::fs;
 
 #[cfg(target_os = "linux")]
+const WINDOW_APP_ID: &str = "com.verenu.app";
+
+/// GTK's Wayland window class defaults to GLib's program name, even when the
+/// GtkApplication has an explicit app ID. Set it before GTK initializes.
+#[cfg(target_os = "linux")]
+pub(crate) fn initialize_app_identity() {
+    gtk::glib::set_prgname(Some(WINDOW_APP_ID));
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ActiveWindow {
     pub address: String,
@@ -315,16 +325,73 @@ pub(crate) fn raise_window(address: &str) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub(crate) fn pill_window() -> Option<ActiveWindow> {
     let clients = hyprctl_json(&["-j", "clients"])?;
+    owned_pill_window(&clients, std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn owned_pill_window(clients: &serde_json::Value, pid: u32) -> Option<ActiveWindow> {
     clients
         .as_array()?
         .iter()
         .find(|w| {
-            w.get("class").and_then(|v| v.as_str()) == Some("verenu")
-                && w.get("title").and_then(|v| v.as_str()) == Some("Verenu Dictation Pill")
-                && w.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(std::process::id()))
+            // PID and our non-localized title identify this process's pill.
+            // Executable/AppImage renaming must never break placement.
+            w.get("title").and_then(|v| v.as_str()) == Some("Verenu Dictation Pill")
+                && w.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(pid))
         })
         .cloned()
         .and_then(|w| serde_json::from_value(w).ok())
+}
+
+#[cfg(target_os = "linux")]
+const WINDOW_RULE_MARKERS: (&str, &str) = (
+    "-- >>> Verenu window rules (do not edit) <<<",
+    "-- <<< End Verenu window rules >>>",
+);
+
+/// Installed before either window is mapped, including on a fresh profile.
+/// Use Hyprland's own API rather than a version-specific Omarchy helper.
+/// Tauri's GTK app ID comes from the bundle identifier, never the filename.
+#[cfg(target_os = "linux")]
+fn window_rule_block() -> String {
+    let (start, end) = WINDOW_RULE_MARKERS;
+    format!(r#"{start}
+hl.window_rule({{ name = "verenu-main", match = {{ class = "^(com\\.verenu\\.app|[Vv]erenu)$", title = "^Verenu$" }}, float = true, center = true, min_size = {{ 1100, 700 }} }})
+hl.window_rule({{ name = "verenu-pill", match = {{ class = "^(com\\.verenu\\.app|[Vv]erenu)$", title = "^Verenu Dictation Pill$" }}, float = true, pin = true, border_size = 0, no_initial_focus = true }})
+{end}"#)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn ensure_window_rules() -> Result<(), String> {
+    if !session_available() {
+        return Ok(());
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
+        .ok_or_else(|| "XDG config directory is unavailable".to_string())?;
+    let path = config.join("hypr/bindings.lua");
+    let current = fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read Hyprland user bindings: {e}"))?;
+    let (start, end) = WINDOW_RULE_MARKERS;
+    let next = replace_managed_block(&current, start, end, &window_rule_block())?;
+    if next != current {
+        let tmp = path.with_extension(format!("lua.verenu-windows-{}.tmp", std::process::id()));
+        fs::write(&tmp, next).map_err(|e| format!("cannot write Verenu window rules: {e}"))?;
+        fs::rename(&tmp, &path).map_err(|e| format!("cannot install Verenu window rules: {e}"))?;
+        let output = std::process::Command::new("hyprctl").arg("reload").output()
+            .map_err(|e| format!("Hyprland window rule reload failed: {e}"))?;
+        if !output.status.success() {
+            return Err("Hyprland rejected Verenu window rules".into());
+        }
+    }
+    let output = std::process::Command::new("hyprctl").arg("configerrors").output()
+        .map_err(|e| format!("cannot validate Hyprland window rules: {e}"))?;
+    if !output.status.success() || !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+        // Config error contents may contain private user commands or paths.
+        return Err("Hyprland reports configuration errors. Run hyprctl configerrors to inspect them.".into());
+    }
+    Ok(())
 }
 
 /// `pill_window()` right after `show()` races Hyprland: the Wayland client is
@@ -356,6 +423,7 @@ pub(crate) fn ensure_global_shortcut_binding(
     handsfree_command: &str,
     release_keycodes: &[u32],
 ) -> Result<(), String> {
+    ensure_window_rules()?;
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -456,9 +524,16 @@ fn sub_app_capture_binding_block(chord: &str, capture_command: &str) -> String {
 }
 
 /// xkb keycodes that do not turn a held chord into a different shortcut:
-/// Escape, Space, Caps Lock, and the Shift/Ctrl/Alt/Super modifiers.
+/// Escape, Space, Caps Lock, modifiers, and hardware media controls. Linux
+/// evdev media codes are translated to XKB codes by adding 8, just like the
+/// compositor's modifier keycodes. These controls remain usable during a hold.
 #[cfg(target_os = "linux")]
-const NON_COMBO_KEYCODES: [u32; 11] = [9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134];
+const NON_COMBO_KEYCODES: &[u32] = &[
+    9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134,
+    121, 122, 123, // mute, volume down/up
+    171, 172, 173, 174, 208, 209, 215, // next/play/pause/previous/stop
+    232, 233, 236, 237, 238, 251, 252, 256, // display/keyboard brightness, mic mute
+];
 
 #[cfg(target_os = "linux")]
 const GLOBAL_SHORTCUT_TEMPLATE: &str = r#"{start}
@@ -636,6 +711,64 @@ pub(crate) fn active_window() -> Option<()> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn fresh_window_rules_are_installed_idempotently_and_upgrade_dev_rules() {
+        let (start, end) = super::WINDOW_RULE_MARKERS;
+        let block = super::window_rule_block();
+        let personal = "-- personal bindings\nhl.bind('SUPER + A', 'custom')\n";
+        let fresh = super::replace_managed_block(personal, start, end, &block).unwrap();
+        assert!(fresh.starts_with(personal));
+        assert_eq!(super::replace_managed_block(&fresh, start, end, &block).unwrap(), fresh);
+        let old = format!("{personal}{start}\no.window({{ class = '^verenu$' }}, {{ float = true }})\n{end}\n-- personal tail");
+        let upgraded = super::replace_managed_block(&old, start, end, &block).unwrap();
+        assert!(upgraded.starts_with(personal));
+        assert!(upgraded.ends_with("\n-- personal tail"));
+        assert!(!upgraded.contains("^verenu$"));
+        assert_eq!(upgraded.matches("name = \"verenu-pill\"").count(), 1);
+        assert!(block.contains("no_initial_focus = true"));
+        assert!(!block.contains("no_focus = true"));
+    }
+
+    #[test]
+    fn window_policy_matches_release_identity_and_size_contract() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        // Keep GTK's default registration behavior: headless dev sessions
+        // and the installed app must not share a remote GtkApplication.
+        assert_ne!(config["app"]["enableGTKAppId"], true);
+        assert_eq!(config["identifier"], super::WINDOW_APP_ID);
+        super::initialize_app_identity();
+        assert_eq!(gtk::glib::prgname().as_deref(), Some(super::WINDOW_APP_ID));
+        assert_eq!(config["app"]["windows"][0]["minWidth"], 1100);
+        assert_eq!(config["app"]["windows"][0]["minHeight"], 700);
+        let block = super::window_rule_block();
+        assert!(block.contains(r#"class = "^(com\\.verenu\\.app|[Vv]erenu)$""#));
+        assert!(block.contains("center = true"));
+        assert!(block.contains("min_size = { 1100, 700 }"));
+    }
+
+    #[test]
+    fn pill_lookup_survives_renamed_release_binaries_and_rejects_other_processes() {
+        for class in ["verenu", "Verenu", "verenu-0.20.0", "com.verenu.app"] {
+            let clients = serde_json::json!([
+                { "class": class, "title": "Verenu Dictation Pill", "pid": 99, "address": "other" },
+                { "class": class, "title": "Verenu", "pid": 42, "address": "main" },
+                { "class": class, "title": "Verenu Dictation Pill", "pid": 42, "address": "pill" }
+            ]);
+            assert_eq!(super::owned_pill_window(&clients, 42).unwrap().address, "pill");
+            assert!(super::owned_pill_window(&clients, 43).is_none());
+        }
+    }
+
+    #[test]
+    fn media_controls_are_not_competing_chords_but_letters_are() {
+        for key in [121, 122, 123, 171, 172, 173, 174, 232, 233, 256] {
+            assert!(super::NON_COMBO_KEYCODES.contains(&key));
+        }
+        for key in [38, 39, 40, 41, 67] {
+            assert!(!super::NON_COMBO_KEYCODES.contains(&key));
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn managed_blocks_reject_partial_or_inverted_markers() {
@@ -662,6 +795,7 @@ mod tests {
             &[37, 105, 133, 134],
         );
         let fixture = include_str!("../../../tests/fixtures/hyprland-gestures.lua")
+            .replace("-- GENERATED_WINDOW_RULES", &super::window_rule_block())
             .replace("-- GENERATED_BINDINGS", &block);
         let mut child = Command::new("lua")
             .arg("-")
@@ -744,7 +878,7 @@ mod tests {
         assert!(block.contains("local verenu_release_keycodes = { 65 }"));
         assert!(block.contains("local verenu_cancel = hl.dsp.global(\"app:cancel-chord\")"));
         assert!(block.contains(
-            "for _, ignored in ipairs({ 65, 9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134 }) do"
+            "for _, ignored in ipairs({ 65, 9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134, 121, 122, 123,"
         ));
         assert!(block.contains("type = \"oneshot\""));
         assert!(block.contains(
