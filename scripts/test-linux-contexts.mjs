@@ -14,7 +14,7 @@ const identity = sourceIdentity();
 const checks = [];
 let browser;
 let socket;
-const original = JSON.parse(execFileSync('hyprctl', ['-j', 'activewindow'], { encoding: 'utf8' }));
+let original;
 const server = http.createServer((request, response) => {
   const host = request.headers.host.split(':')[0];
   response.writeHead(200, { 'Content-Type': 'text/html' });
@@ -23,6 +23,7 @@ const server = http.createServer((request, response) => {
 try {
   assert.equal(process.platform, 'linux');
   assert.ok(process.env.HYPRLAND_INSTANCE_SIGNATURE, 'Requires a real Hyprland session');
+  original = JSON.parse(execFileSync('hyprctl', ['-j', 'activewindow'], { encoding: 'utf8' }));
   const build = execFileSync('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--lib', '--no-run', '--message-format=json'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   const executable = build.split('\n').filter(Boolean).map((line) => JSON.parse(line))
     .findLast((row) => row.reason === 'compiler-artifact' && row.profile.test && row.executable)?.executable;
@@ -115,6 +116,13 @@ try {
   socket?.close();
   if (browser && browser.exitCode === null) browser.kill('SIGTERM');
   await new Promise((resolve) => server.close(resolve));
-  if (original.address) execFileSync('hyprctl', ['dispatch', `hl.dsp.focus({ window = 'address:${original.address}' })`], { stdio: 'ignore' });
+  if (original?.address) {
+    try {
+      execFileSync('hyprctl', ['dispatch', `focuswindow address:${original.address}`], { stdio: 'ignore' });
+    } catch {
+      // The original window may have closed during the fixture run. Preserve
+      // the verification report even when Hyprland cannot restore focus.
+    }
+  }
   await fs.writeFile(path.join(directory, 'verification.json'), JSON.stringify({ identity, checks, status: checks.length === 7 && checks.every((check) => check.status === 'passed') ? 'verified' : 'failed' }, null, 2));
 }

@@ -26,7 +26,9 @@ pub fn extract_domain(raw: &str) -> Option<String> {
     url.host_str()?;
     // Keep the same host spelling as saved Context targets. URL parsing is
     // validation here; IDNA conversion would break existing Unicode targets.
-    let authority = trimmed.split("://").last().unwrap_or(trimmed)
+    let authority = trimmed
+        .split_once("://")
+        .map_or(trimmed, |(_, remainder)| remainder)
         .split(['/', '?', '#']).next()?;
     let host = authority.split('@').next_back()?.split(':').next()?.trim_end_matches('.');
     if host.contains(char::is_whitespace) || !(host.contains('.') || host.eq_ignore_ascii_case("localhost")) || host.split('.').any(str::is_empty) {
@@ -230,6 +232,18 @@ mod tests {
         assert_eq!(
             extract_domain("https://user@mail.google.com:443/mail/u/0?tab=rm#inbox"),
             Some("mail.google.com".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_scheme_delimiters_in_path_and_query() {
+        assert_eq!(
+            extract_domain("https://example.com/redirect?to=https://other.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_domain("https://example.com/search?q=https://something"),
+            Some("example.com".to_string())
         );
     }
 
