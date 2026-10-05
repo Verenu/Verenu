@@ -6701,6 +6701,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "transcribe-rs",
+ "unicode-segmentation",
  "uuid",
  "webkit2gtk",
  "windows 0.61.3",

@@ -120,6 +120,8 @@ pub struct ExportContext {
     #[serde(default)]
     pub contextual_formatting_disabled: bool,
     #[serde(default)]
+    pub paste_in_chunks: bool,
+    #[serde(default)]
     pub pinned_at: Option<String>,
     #[serde(default)]
     pub dictionary: Vec<ExportContextDictionaryEntry>,
@@ -540,7 +542,7 @@ fn export_contextual_library(
     let mut contexts = Vec::new();
     let mut context_stmt = conn.prepare(
         "SELECT id, uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-                custom_instructions, contextual_formatting_disabled, pinned_at
+                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks
            FROM contexts
           ORDER BY is_everywhere DESC, id",
     )?;
@@ -558,6 +560,7 @@ fn export_contextual_library(
                 custom_instructions: row.get(8)?,
                 contextual_formatting_disabled: row.get::<_, i64>(9)? != 0,
                 pinned_at: row.get(10)?,
+                paste_in_chunks: row.get::<_, i64>(11)? != 0,
                 dictionary: Vec::new(),
                 snippets: Vec::new(),
                 targets: Vec::new(),
@@ -1140,7 +1143,7 @@ fn import_context_conn(
         conn.execute(
             "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3,
                     color = ?4, custom_instructions = ?5,
-                    contextual_formatting_disabled = ?6, pinned_at = ?7,
+                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
                     updated_at = datetime('now')
               WHERE id = ?8",
             params![
@@ -1152,6 +1155,7 @@ fn import_context_conn(
                 source.contextual_formatting_disabled as i64,
                 source.pinned_at,
                 id,
+                source.paste_in_chunks,
             ],
         )?;
         stats.contexts_already_existed += 1;
@@ -1190,7 +1194,7 @@ fn import_context_conn(
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
                         cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
-                        contextual_formatting_disabled = ?7, pinned_at = ?8,
+                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10,
                         updated_at = datetime('now')
                   WHERE id = ?9",
                 params![
@@ -1203,13 +1207,14 @@ fn import_context_conn(
                     source.contextual_formatting_disabled as i64,
                     source.pinned_at,
                     id,
+                    source.paste_in_chunks,
                 ],
             )?;
         } else {
             conn.execute(
                 "UPDATE contexts SET icon = ?1, tone = ?2,
                         cleanup_intensity = ?3, color = ?4, custom_instructions = ?5,
-                        contextual_formatting_disabled = ?6, pinned_at = ?7,
+                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
                         updated_at = datetime('now')
                   WHERE id = ?8",
                 params![
@@ -1221,6 +1226,7 @@ fn import_context_conn(
                     source.contextual_formatting_disabled as i64,
                     source.pinned_at,
                     id,
+                    source.paste_in_chunks,
                 ],
             )?;
         }
@@ -1247,8 +1253,8 @@ fn import_context_conn(
     let inserted = conn.execute(
         "INSERT INTO contexts
            (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-            custom_instructions, contextual_formatting_disabled, pinned_at)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             uuid,
             name,
@@ -1259,6 +1265,7 @@ fn import_context_conn(
             source.custom_instructions,
             source.contextual_formatting_disabled as i64,
             source.pinned_at,
+            source.paste_in_chunks,
         ],
     );
     match inserted {
@@ -1536,6 +1543,26 @@ fn later_timestamp(left: Option<String>, right: Option<String>) -> Option<String
 mod tests {
     use super::*;
     use crate::data::db;
+
+    #[test]
+    fn paste_chunks_backup_round_trip_and_old_payload_default() {
+        let source = db::open(":memory:").unwrap();
+        db::insert_context_with_delivery(&source, "CLI chunks", None, None, None, None, false, true).unwrap();
+        let (_, contexts) = export_contextual_library(&source).unwrap();
+        let context = contexts.into_iter().find(|c| c.name == "CLI chunks").unwrap();
+        assert!(context.paste_in_chunks);
+        let target = db::open(":memory:").unwrap();
+        let conn = target.lock().unwrap();
+        let mut stats = LibraryImportStats::default();
+        let id = import_context_conn(&conn, &context, &mut stats).unwrap().unwrap();
+        assert!(conn.query_row("SELECT paste_in_chunks FROM contexts WHERE id = ?1", [id], |row| row.get::<_, bool>(0)).unwrap());
+        import_context_conn(&conn, &context, &mut stats).unwrap();
+        assert!(conn.query_row("SELECT paste_in_chunks FROM contexts WHERE id = ?1", [id], |row| row.get::<_, bool>(0)).unwrap());
+        let mut old = serde_json::to_value(&context).unwrap();
+        old.as_object_mut().unwrap().remove("paste_in_chunks");
+        let old: ExportContext = serde_json::from_value(old).unwrap();
+        assert!(!old.paste_in_chunks);
+    }
 
     #[test]
     fn contextual_backup_round_trip_preserves_context_scoped_corrections() {

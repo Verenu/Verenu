@@ -27,6 +27,7 @@ pub(super) fn apply_app_style_overrides(
     mapping: Option<&AppMapping>,
     context: Option<&db::Context>,
 ) -> String {
+    cfg.paste_in_chunks = cfg!(desktop) && context.is_some_and(|c| c.paste_in_chunks);
     let context_intensity = context
         .and_then(|c| c.cleanup_intensity.as_deref())
         .map(str::trim)

@@ -1,5 +1,25 @@
 use super::*;
 
+#[test]
+fn paste_chunks_migrates_v30_defaults_and_survives_reopen() {
+    let path = temp_db_path("paste_chunks_v30");
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE contexts DROP COLUMN paste_in_chunks; PRAGMA user_version = 30;").unwrap();
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(!query_context(&db, EVERYWHERE_CONTEXT_ID).unwrap().paste_in_chunks);
+        update_context_paste_in_chunks(&db, EVERYWHERE_CONTEXT_ID, true).unwrap();
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(query_context(&db, EVERYWHERE_CONTEXT_ID).unwrap().paste_in_chunks);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 fn test_db() -> Db {
     open(":memory:").expect("test db")
 }
@@ -452,7 +472,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 30);
+    assert_eq!(version, 31);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);

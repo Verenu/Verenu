@@ -31,6 +31,8 @@ pub struct PipelineConfig {
     pub cleanup_intensity: String,
     pub auto_learn_enabled: bool,
     pub contextual_formatting_enabled: bool,
+    /// Context delivery preference, never a global setting.
+    pub paste_in_chunks: bool,
     pub caps_lock_uppercase_enabled: bool,
     pub clipboard_phrase_enabled: bool,
     pub clipboard_phrase: String,
@@ -413,6 +415,7 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .get(CONTEXTUAL_FORMATTING)
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        paste_in_chunks: false,
         caps_lock_uppercase_enabled: store
             .get(CAPS_LOCK_UPPERCASE)
             .and_then(|v| v.as_bool())
