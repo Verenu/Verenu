@@ -8,6 +8,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed Linux global shortcuts failing when Verenu is launched outside an editor or terminal with a known app identity. Verenu now registers its own portal connection, reconnects after listener failure, and shows persistent shortcut errors with the cause and recovery guidance in Home and Settings.
 
+- Fixed Linux system notifications failing with a nested-runtime panic. Update, model-ready, and service notices now send with Verenu branding and report delivery errors so failed update and service notices can retry.
+
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.
