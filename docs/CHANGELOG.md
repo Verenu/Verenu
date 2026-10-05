@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Fixed the Android Microphone gain and Sound effects volume sliders rendering as thick slabs. They now draw a slim rounded track with a centered, touch-sized thumb.
+- Fixed Linux system notifications failing with a nested-runtime panic. Update, model-ready, and service notices now send with Verenu branding and report delivery errors so failed update and service notices can retry.
 
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 
