@@ -64,6 +64,14 @@ impl PipelineTelemetry {
         self.with_run(|analytics, id| analytics.feature_used(id, feature));
     }
 
+    pub(super) fn fallback(&self, kind: &'static str) {
+        self.with_run(|analytics, id| analytics.fallback_used(id, kind));
+    }
+
+    pub(super) fn retry(&self, attempt: u8, reason: &'static str) {
+        self.with_run(|analytics, id| analytics.retry_attempted(id, attempt, reason));
+    }
+
     pub(super) fn input_health(&self, outcome: &'static str) {
         self.with_run(|analytics, _| analytics.input_health(outcome));
     }
@@ -201,6 +209,8 @@ mod tests {
         let id = telemetry.run_id.as_deref().unwrap();
         analytics.dictation_cancelled(id, true);
         analytics.delivery_outcome(id, "cancelled_user");
+        telemetry.fallback("cleanup");
+        telemetry.retry(2, "timeout");
         telemetry.delivered("direct_insertion", 7);
         drop(telemetry);
         let events = analytics.captured_events();
@@ -208,9 +218,34 @@ mod tests {
             events.iter().filter(|e| e.0 == "dictation_outcome").count(),
             1
         );
-        assert!(!events
+        assert!(!events.iter().any(|e| matches!(
+            e.0,
+            "dictation_inserted" | "pipeline_failed" | "fallback_used" | "retry_attempted"
+        )));
+    }
+
+    #[test]
+    fn provider_recovery_keeps_original_run_when_a_new_take_starts() {
+        let (analytics, telemetry) = run();
+        let original = telemetry.run_id.as_deref().unwrap();
+        let next = analytics.new_run_id();
+        analytics.dictation_started(&next, false, false);
+        telemetry.fallback("transcription");
+        telemetry.fallback("cleanup");
+        telemetry.retry(2, "timeout");
+        telemetry.delivered("direct_insertion", 7);
+        let events = analytics.captured_events();
+        let recovery: Vec<_> = events
             .iter()
-            .any(|e| matches!(e.0, "dictation_inserted" | "pipeline_failed")));
+            .filter(|e| matches!(e.0, "fallback_used" | "retry_attempted"))
+            .collect();
+        assert_eq!(recovery.len(), 3);
+        assert!(recovery.iter().all(|e| e.1["run_id"] == original));
+        assert!(!analytics.run_has_final_outcome(&next));
+        let outcome = events.iter().find(|e| e.0 == "dictation_outcome").unwrap();
+        assert_eq!(outcome.1["run_id"], original);
+        assert_eq!(outcome.1["transcription_fallback_used"], true);
+        assert_eq!(outcome.1["cleanup_fallback_used"], true);
     }
 
     #[test]
