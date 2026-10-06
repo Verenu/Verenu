@@ -7,6 +7,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VerenuPillGestureTest {
+    @Test fun detachmentBeforeTimeoutPreventsLateHold() {
+        val g = VerenuPillGesture()
+        g.down()
+        assertTrue(g.up(cancelled = true).isEmpty())
+        assertEquals(Event.NONE, g.longPress(idle = true, recording = false))
+    }
+
+    @Test fun detachmentDuringStartupQueuesHoldStop() {
+        val g = VerenuPillGesture()
+        val r = VerenuHoldRelease()
+        g.down()
+        assertEquals(Event.HOLD_START, g.longPress(idle = true, recording = false))
+        assertTrue(r.holdStart(idle = true))
+        assertTrue(r.beginStart())
+        assertEquals(listOf(Event.HOLD_END), g.up(cancelled = true))
+        assertFalse(r.holdEnd(recording = false))
+        assertTrue(r.startFinished(recording = true))
+        assertTrue(g.up(cancelled = true).isEmpty())
+    }
+
     @Test fun cancelledHoldEndsAndAllowsAccessibilityClick() {
         val g = VerenuPillGesture()
         g.down()

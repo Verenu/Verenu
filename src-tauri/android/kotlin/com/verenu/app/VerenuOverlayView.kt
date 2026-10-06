@@ -116,6 +116,8 @@ class VerenuOverlayView @JvmOverloads constructor(
     private var entered = false
     private var downRawX = 0f
     private var downRawY = 0f
+    private var lastRawX = 0
+    private var lastRawY = 0
     private val gesture = VerenuPillGesture()
     private val longPress = Runnable {
         val event = gesture.longPress(state == State.IDLE, state == State.RECORDING)
@@ -168,6 +170,8 @@ class VerenuOverlayView @JvmOverloads constructor(
         pill.setOnTouchListener { view, event ->
             val rawX = event.rawX.toInt()
             val rawY = event.rawY.toInt()
+            lastRawX = rawX
+            lastRawY = rawY
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     gesture.down()
@@ -347,6 +351,8 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(longPress)
+        gesture.up(cancelled = true).forEach { dispatch(it, lastRawX, lastRawY) }
         widthAnimator?.cancel()
         bgAnimator?.cancel()
         wave?.stop()
