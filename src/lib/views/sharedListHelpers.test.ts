@@ -20,4 +20,8 @@ describe('shared legacy list formatting', () => {
     expect(fmtDate('2026-10-04T11:00:00Z')).toBe('Yesterday');
     expect(countCodePoints('A😀')).toBe(2);
   });
+
+  it.each(['', 'abc', '😀😀', '\ud800', '\udc00', 'a\ud800b', 'e\u0301', '👩‍💻'])('counts %j without changing Unicode semantics', (value) => {
+    expect(countCodePoints(value)).toBe([...value].length);
+  });
 });
