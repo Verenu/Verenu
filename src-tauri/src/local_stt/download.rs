@@ -1,5 +1,4 @@
 use super::model::LocalSttModelManifest;
-use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,28 +7,11 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalSttDownloadProgressPayload {
-    pub model_id: String,
-    pub downloaded_bytes: u64,
-    pub total_bytes: Option<u64>,
-    pub progress: f32,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalSttModelEventPayload {
-    pub model_id: String,
-    pub error: Option<String>,
-}
+pub use crate::api::model_download::ModelEvent as LocalSttModelEventPayload;
+use crate::api::model_download::{self, ensure_not_cancelled};
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LocalSttExtractionProgressPayload {
-    pub model_id: String,
-    pub progress: f32,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalSttVerificationProgressPayload {
     pub model_id: String,
     pub progress: f32,
 }
@@ -101,23 +83,12 @@ impl<'a, R: Read> Read for ProgressReader<'a, R> {
 }
 
 fn emit_progress(app: &AppHandle, model_id: &str, downloaded_bytes: u64, total_bytes: Option<u64>) {
-    let progress = total_bytes
-        .map(|total| {
-            if total == 0 {
-                0.0
-            } else {
-                (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0)
-            }
-        })
-        .unwrap_or(0.0);
-    let _ = app.emit(
+    model_download::emit_download_progress(
+        app,
         "local-stt-model-download-progress",
-        LocalSttDownloadProgressPayload {
-            model_id: model_id.to_string(),
-            downloaded_bytes,
-            total_bytes,
-            progress,
-        },
+        model_id,
+        downloaded_bytes,
+        total_bytes,
     );
 }
 
@@ -129,13 +100,6 @@ fn emit_model_event(app: &AppHandle, event: &str, model_id: &str, error: Option<
             error,
         },
     );
-}
-
-fn ensure_not_cancelled(cancel: &AtomicBool) -> anyhow::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        anyhow::bail!("download cancelled")
-    }
-    Ok(())
 }
 
 fn verify_checksum_if_present(
@@ -157,47 +121,13 @@ fn verify_checksum_if_present(
         None,
     );
     if let Some(expected) = manifest.sha256 {
-        let mut file = std::fs::File::open(archive_path)?;
-        // Verification hashes the whole (often multi-hundred-MB) archive and
-        // can take tens of seconds on a large model, so emit a real fraction
-        // as we go instead of letting the bar sit frozen at the download's
-        // 100%. Reuses the archive size as the denominator; the hash reads it
-        // front-to-back, so bytes-hashed tracks wall-clock progress closely.
-        let total_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-        let mut hashed_bytes: u64 = 0;
-        let mut last_emit = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 1024 * 128];
-        loop {
-            ensure_not_cancelled(cancel)?;
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-            hashed_bytes += read as u64;
-            if total_bytes > 0 && last_emit.elapsed() >= Duration::from_millis(150) {
-                let progress = (hashed_bytes as f32 / total_bytes as f32).clamp(0.0, 1.0);
-                let _ = app.emit(
-                    "local-stt-model-verification-progress",
-                    LocalSttVerificationProgressPayload {
-                        model_id: manifest.id.to_string(),
-                        progress,
-                    },
-                );
-                last_emit = Instant::now();
-            }
-        }
-        let _ = app.emit(
+        let actual = model_download::verify_sha256(
+            app,
             "local-stt-model-verification-progress",
-            LocalSttVerificationProgressPayload {
-                model_id: manifest.id.to_string(),
-                progress: 1.0,
-            },
-        );
-        let actual = format!("{:x}", hasher.finalize());
+            manifest.id,
+            archive_path,
+            cancel,
+        )?;
         if actual != expected.to_lowercase() {
             log::error!(
                 "local-stt: checksum mismatch id={} expected={} actual={}",
@@ -489,22 +419,7 @@ pub async fn download_model(
 
     let mut downloaded_bytes = partial_size;
 
-    if let Some(total) = total_bytes {
-        let required_additional = total.saturating_sub(downloaded_bytes);
-        if required_additional > 0 {
-            if let Ok(free_bytes) = crate::system::memory::free_bytes_for_path(root) {
-                if free_bytes < required_additional {
-                    let required_mb = required_additional / (1024 * 1024);
-                    let free_mb = free_bytes / (1024 * 1024);
-                    anyhow::bail!(
-                        "Not enough disk space to download model. Required: {} MB, Available: {} MB",
-                        required_mb,
-                        free_mb
-                    );
-                }
-            }
-        }
-    }
+    model_download::ensure_disk_space(root, downloaded_bytes, total_bytes)?;
 
     let mut last_emit = Instant::now()
         .checked_sub(Duration::from_secs(1))
