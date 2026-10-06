@@ -50,6 +50,8 @@ enum UpdateTarget {
     LinuxArch,
     LinuxAppImage,
     LinuxDownload,
+    AndroidArm64,
+    AndroidX86_64,
     Unsupported,
 }
 
@@ -207,6 +209,10 @@ async fn check_repo(
     let target = tokio::task::spawn_blocking(current_update_target).await?;
     let Some((_, asset, install_mode)) = select_compatible_release(&releases, channel, target)
     else {
+        if matches!(target, UpdateTarget::AndroidArm64 | UpdateTarget::AndroidX86_64) {
+            // Desktop-only releases are normal until Android publishing starts.
+            return Ok(None);
+        }
         return Err(anyhow::anyhow!("No compatible Verenu installer is published for this device on the selected update channel. Try again later or check the release page."));
     };
     let display_version = installer_version(&asset.name).expect("selected installer version");
@@ -217,6 +223,7 @@ async fn check_repo(
         UpdateTarget::LinuxArch => Some("Verenu will verify the download and ask for administrator authorization to update its pacman package. Restart Verenu afterward.".into()),
         UpdateTarget::LinuxAppImage => Some("Verenu will verify and replace this AppImage, keeping the previous image beside it. Restart Verenu afterward.".into()),
         UpdateTarget::LinuxDownload => Some("This installation is managed externally. Download the AppImage, or update Verenu with your package manager.".into()),
+        UpdateTarget::AndroidArm64 | UpdateTarget::AndroidX86_64 => Some("Verenu will download and verify the APK. Android will ask you to approve installation. If prompted, allow updates from Verenu, then tap Update Verenu again.".into()),
         _ => None,
     };
     Ok(Some(UpdateInfo {
@@ -305,10 +312,13 @@ fn select_compatible_release(
         .map(|(_, release, asset, mode, _)| (release, asset, mode))
 }
 
+#[cfg(target_os = "linux")]
+pub use resolve_verified_download as resolve_linux_download;
+
 /// Resolve metadata again in Rust; never accept a checksum or installer type
 /// supplied by the renderer. Reject stale offers after a channel change.
-#[cfg(target_os = "linux")]
-pub async fn resolve_linux_download(
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub async fn resolve_verified_download(
     url: &str,
     channel: UpdateChannel,
 ) -> anyhow::Result<(String, String)> {
@@ -366,12 +376,12 @@ pub async fn resolve_linux_download(
     Ok((asset.name.clone(), hash))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 fn valid_sha256(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "android", test))]
 fn checksum_for_asset(sums: &str, name: &str) -> Option<String> {
     let matches: Vec<_> = sums
         .lines()
@@ -684,6 +694,10 @@ fn should_offer_release(latest: &str, current: &str, require_newer: bool) -> boo
 }
 
 fn current_update_target() -> UpdateTarget {
+    #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+    return UpdateTarget::AndroidArm64;
+    #[cfg(all(target_os = "android", target_arch = "x86_64"))]
+    return UpdateTarget::AndroidX86_64;
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         return match crate::system::linux_updater::installation() {
@@ -718,6 +732,17 @@ fn select_release_asset_for_target(
     target: UpdateTarget,
 ) -> Option<(&GhAsset, InstallMode)> {
     match target {
+        UpdateTarget::AndroidArm64 | UpdateTarget::AndroidX86_64 => {
+            let abi = if target == UpdateTarget::AndroidArm64 { "arm64-v8a" } else { "x86_64" };
+            [abi, "universal"].into_iter().find_map(|abi| {
+                let suffix = format!("_android_{abi}.apk");
+                assets.iter().find(|asset| {
+                    asset.name.strip_prefix("Verenu_")
+                        .and_then(|name| name.strip_suffix(&suffix))
+                        .is_some_and(|version| release_version(version).as_deref() == Some(version))
+                }).map(|asset| (asset, InstallMode::Install))
+            })
+        }
         UpdateTarget::LinuxArch => assets
             .iter()
             .find(|asset| {
@@ -842,6 +867,43 @@ mod tests {
         asset.browser_download_url =
             format!("https://github.com/MONKE2525E/Verenu/releases/download/Verenu-1.0.0/{name}");
         asset
+    }
+
+    #[test]
+    fn android_assets_use_exact_names_and_prefer_device_abi() {
+        let assets = [
+            asset("Verenu_0.21.0_android_universal.apk"),
+            asset("Verenu_0.21.0_android_x86_64.apk"),
+            asset("Verenu_0.21.0_android_arm64-v8a.apk"),
+        ];
+        for (target, index) in [(UpdateTarget::AndroidArm64, 2), (UpdateTarget::AndroidX86_64, 1)] {
+            let (selected, mode) = select_release_asset_for_target(&assets, target).unwrap();
+            assert_eq!(selected.name, assets[index].name);
+            assert_eq!(mode, InstallMode::Install);
+            assert_eq!(select_release_asset_for_target(&assets[..1], target).unwrap().0.name, assets[0].name);
+        }
+        for name in ["app-release.apk", "Verenu_0.21.0_arm64.apk", "Verenu_bad_android_universal.apk", "Verenu_0.21.0_android_arm64-v8a-debug.apk", "Verenu_0.21_android_arm64-v8a.apk"] {
+            assert!(select_release_asset_for_target(&[asset(name)], UpdateTarget::AndroidArm64).is_none());
+        }
+        assert!(select_release_asset_for_target(&assets[1..2], UpdateTarget::AndroidArm64).is_none());
+        assert_eq!(installer_version("Verenu_0.21.0-nightly.20261006_android_arm64-v8a.apk"), Some("0.21.0-nightly.20261006".into()));
+    }
+
+    #[test]
+    fn android_ignores_desktop_only_releases_and_obeys_channels() {
+        let make_release = |prerelease, name: &str| GhRelease {
+            tag_name: if prerelease { "v0.21.0-nightly.20261006" } else { "v0.21.0" }.into(),
+            name: None, target_commitish: "master".into(), draft: false,
+            prerelease, assets: vec![official_asset(name)],
+        };
+        let desktop = [make_release(false, "Verenu_9.0.0_x64-setup.exe")];
+        assert!(select_compatible_release(&desktop, UpdateChannel::Stable, UpdateTarget::AndroidArm64).is_none());
+        let releases = [
+            make_release(true, "Verenu_0.21.0-nightly.20261006_android_arm64-v8a.apk"),
+            make_release(false, "Verenu_0.21.0_android_arm64-v8a.apk"),
+        ];
+        assert_eq!(select_compatible_release(&releases, UpdateChannel::Beta, UpdateTarget::AndroidArm64).unwrap().1.name, releases[0].assets[0].name);
+        assert_eq!(select_compatible_release(&releases, UpdateChannel::Stable, UpdateTarget::AndroidArm64).unwrap().1.name, releases[1].assets[0].name);
     }
 
     #[test]
