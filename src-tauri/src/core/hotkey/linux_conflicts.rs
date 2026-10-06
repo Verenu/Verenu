@@ -70,7 +70,11 @@ fn owned(description: &str) -> bool {
         "Verenu switch to hands-free",
     ]
     .iter()
-    .any(|name| description == *name || description.starts_with(&format!("{name} (")))
+    .any(|name| {
+        description
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(" ("))
+    })
 }
 
 fn parse(trigger: &str) -> (u32, String) {
@@ -194,6 +198,16 @@ pub(super) fn status(id: &str, requested: String, active: Option<String>, codes:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_binding_names_require_an_exact_name_or_annotation() {
+        assert!(owned("Verenu dictation"));
+        assert!(owned("Verenu dictation (release)"));
+        assert!(owned("Verenu copy last dictation (fallback)"));
+        assert!(!owned("Verenu dictation-other"));
+        assert!(!owned("Verenu dictation(release)"));
+        assert!(!owned("Other Verenu dictation"));
+    }
 
     #[test]
     fn newly_supported_regular_keys_check_numeric_desktop_bindings() {
