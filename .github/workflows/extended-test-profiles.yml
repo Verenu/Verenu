@@ -12,6 +12,7 @@ jobs:
   live-profile:
     name: Live profile
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -54,20 +55,26 @@ jobs:
 
       - name: Skip live profile when secrets are absent
         if: steps.live-secrets.outputs.enabled != 'true'
-        run: echo "Skipping live profile because no API secrets are configured."
+        run: |
+          mkdir -p tests/reports
+          node -e 'require("node:fs").writeFileSync("tests/reports/live-availability.json", JSON.stringify({status:"incomplete",reason:"No provider credentials are configured",providerExecution:"not-tested"},null,2))'
+          echo '### Live verification incomplete' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No provider credentials are configured. No live behavior was tested.' >> "$GITHUB_STEP_SUMMARY"
+          exit 2
 
       - name: Run live profile
         if: steps.live-secrets.outputs.enabled == 'true'
         env:
           VERENU_LIVE_AUDIO_WAV: ${{ github.workspace }}/test-results/audio/plain.wav
-        run: npm run test:live -- --strict --json-report test-results/live-profile.json --junit-report test-results/live-profile.xml
+        run: npm run test:live -- --strict --json-report tests/reports/live-profile.json --junit-report tests/reports/live-profile.xml
 
       - name: Upload live regression results
-        if: always() && steps.live-secrets.outputs.enabled == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: live-regression-results
-          path: test-results/
+          path: tests/reports/
+          if-no-files-found: error
 
   native-profile:
     name: Native WebView (${{ matrix.os }})
@@ -76,6 +83,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -101,15 +109,16 @@ jobs:
 
       - name: Run native profile
         if: runner.os != 'Linux'
-        run: npm run test:native:webview -- --report test-results/native-profile.json
+        run: npm run test:native:webview -- --report tests/reports/native-profile.json
 
       - name: Run Linux native WebView
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report test-results/native-profile.json
+        run: dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report tests/reports/native-profile.json
 
       - name: Upload native regression results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-regression-results-${{ matrix.os }}
-          path: test-results/
+          path: tests/reports/
+          if-no-files-found: error
