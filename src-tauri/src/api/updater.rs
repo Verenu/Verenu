@@ -84,6 +84,37 @@ impl UpdateChannel {
 const RELEASE_REPO: &str = "MONKE2525E/Verenu";
 const LEGACY_RELEASE_REPO: &str = "Verenu/Verenu";
 
+pub(crate) fn request_error(error: reqwest::Error) -> anyhow::Error {
+    anyhow::anyhow!(request_error_message(&error))
+}
+
+pub(crate) fn request_error_message(error: &reqwest::Error) -> String {
+    if let Some(status) = error.status() {
+        return update_status_error_message(status.as_u16()).to_owned();
+    }
+    if error.is_timeout() {
+        return "The GitHub update service took too long to respond. Check your internet connection and try again.".into();
+    }
+    if error.is_connect() {
+        return "Could not reach GitHub's update service. Check your internet connection and try again.".into();
+    }
+    if error.is_decode() {
+        return "GitHub returned update data Verenu could not read. Try again later.".into();
+    }
+    "Could not retrieve or download the update from GitHub. Try again later.".into()
+}
+
+fn update_status_error_message(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "GitHub denied access to update metadata. Try again later.",
+        408 | 504 => "The GitHub update service took too long to respond. Check your internet connection and try again.",
+        429 => "GitHub is limiting update requests. Wait a moment and try again.",
+        500..=599 => "GitHub's update service is temporarily unavailable. Try again later.",
+        404 => "The requested release or installer asset was not found. Check for updates again.",
+        _ => "GitHub could not provide the requested update data. Try again later.",
+    }
+}
+
 /// Returns true only for URLs that point at an official release asset for
 /// [`RELEASE_REPO`]. GitHub serves release assets from
 /// `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>` — exactly
@@ -203,19 +234,20 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
         .get(&url)
         .header("User-Agent", "verenu")
         .send()
-        .await?;
+        .await
+        .map_err(request_error)?;
 
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         anyhow::bail!("The Verenu release repository is unavailable. Try again later.");
     }
-    if matches!(resp.status().as_u16(), 403 | 429) {
-        anyhow::bail!("GitHub is limiting update checks. Wait and try again later.");
+    if matches!(resp.status().as_u16(), 401 | 403 | 429) {
+        anyhow::bail!(update_status_error_message(resp.status().as_u16()));
     }
     if resp.status().is_server_error() {
         anyhow::bail!("GitHub's update service is temporarily unavailable. Try again later.");
     }
-    let resp = resp.error_for_status()?;
-    let mut releases: Vec<GhRelease> = resp.json().await?;
+    let resp = resp.error_for_status().map_err(request_error)?;
+    let mut releases: Vec<GhRelease> = resp.json().await.map_err(request_error)?;
     // Nightly releases can push the latest stable release beyond the first 100.
     // If the newest page entry is a prerelease, an older stable entry elsewhere
     // in the page does not prove that the latest stable release is present.
@@ -226,11 +258,20 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
             ))
             .header("User-Agent", "verenu")
             .send()
-            .await?;
+            .await
+            .map_err(request_error)?;
         if latest.status() != reqwest::StatusCode::NOT_FOUND {
             // Equal installer versions prefer the earlier list entry, so keep
             // this authoritative fallback ahead of older paginated entries.
-            releases.insert(0, latest.error_for_status()?.json().await?);
+            releases.insert(
+                0,
+                latest
+                    .error_for_status()
+                    .map_err(request_error)?
+                    .json()
+                    .await
+                    .map_err(request_error)?,
+            );
         }
     }
     Ok(releases)
@@ -305,10 +346,12 @@ pub async fn resolve_linux_download(
     let mut response = super::client::get()
         .get(&sums.browser_download_url)
         .send()
-        .await?
-        .error_for_status()?;
+        .await
+        .map_err(request_error)?
+        .error_for_status()
+        .map_err(request_error)?;
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
         anyhow::ensure!(
             bytes.len() + chunk.len() <= 128 * 1024,
             "Release checksum file is too large"
@@ -777,7 +820,7 @@ fn find_asset_with_suffix_and_hints<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{checksum_for_asset, select_compatible_release};
+    use super::{checksum_for_asset, select_compatible_release, update_status_error_message};
     use super::{
         current_package_version, find_asset_with_suffix, installer_version,
         is_authorized_release_asset_url, is_beta_version, is_newer, normalize_version,
@@ -888,6 +931,21 @@ mod tests {
                 .unwrap();
 
         assert_eq!(selected.name, "verenu-0.20.0-2-x86_64.pkg.tar.zst");
+    }
+
+    #[test]
+    fn github_update_errors_do_not_claim_provider_api_key_failures() {
+        for (status, expected) in [
+            (401, "GitHub denied access to update metadata"),
+            (403, "GitHub denied access to update metadata"),
+            (429, "GitHub is limiting update requests"),
+            (503, "GitHub's update service is temporarily unavailable"),
+        ] {
+            let message = update_status_error_message(status);
+            assert!(message.contains(expected));
+            assert!(!message.to_ascii_lowercase().contains("api key"));
+            assert!(!message.contains("provider"));
+        }
     }
 
     #[test]
