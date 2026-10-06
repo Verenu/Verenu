@@ -34,7 +34,6 @@ import {
   DEFAULT_MODEL,
   failureCategory,
   failureExitCode,
-  fallbackReason,
   formatProgressSummary,
   reviewOutcome,
   selectReviewModels,
@@ -623,7 +622,7 @@ async function main() {
       const nextModel = selection.models[attempt + 1];
       if (!shouldFallback(result, activeModel, nextModel)) break;
 
-      const reason = fallbackReason(result);
+      const reason = failureCategory(result);
       stateComment = await updateProgress(
         prNumber,
         stateComment,

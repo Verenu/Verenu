@@ -73,7 +73,10 @@ export function failureCategory(result) {
   if (!result || result.code === 0) return null;
   if (result?.previewFailed) return "preview_failed";
   if (result.timedOut) return "review_timeout";
-  return fallbackReason(result) || "review_failed";
+  // Review stdout can contain findings about quotas or HTTP 429. Only OCR's
+  // structured provider diagnostics can make an unsuccessful review optional.
+  return ["quota", "rate_limit", "model_unavailable"].includes(result.providerFailureReason)
+    ? result.providerFailureReason : "review_failed";
 }
 
 export function failureExitCode(result) {
