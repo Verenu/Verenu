@@ -5,6 +5,14 @@ const CACHE_SECONDS: i64 = 15 * 60;
 const REFRESH_COOLDOWN_SECONDS: i64 = 60;
 const MAX_TZ_OVERRIDE_BYTES: usize = 4096;
 
+#[derive(Clone, Debug)]
+struct RefreshAttempt {
+    username: String,
+    attempted_at: i64,
+    timezone_id: Option<String>,
+    utc_offset: i32,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct CachedCommitSnapshot {
     #[serde(flatten)]
@@ -81,19 +89,22 @@ fn cache_is_fresh(
 }
 
 fn refresh_attempt_is_throttled(
-    last_username: &str,
-    last_attempt: i64,
+    last_attempt: Option<&RefreshAttempt>,
     username: &str,
     now: i64,
-    automatic: bool,
+    manual_refresh: bool,
     timezone_id: Option<&str>,
-) -> bool {
-    let cooldown = if automatic && timezone_id.is_none() {
-        CACHE_SECONDS
-    } else {
+    utc_offset: i32,
+) -> Option<i64> {
+    let last_attempt = last_attempt.filter(|last| last.username.eq_ignore_ascii_case(username))?;
+    let same_timezone_context =
+        last_attempt.timezone_id.as_deref() == timezone_id && last_attempt.utc_offset == utc_offset;
+    let cooldown = if manual_refresh || !same_timezone_context {
         REFRESH_COOLDOWN_SECONDS
+    } else {
+        CACHE_SECONDS
     };
-    last_username.eq_ignore_ascii_case(username) && now.saturating_sub(last_attempt) < cooldown
+    (now.saturating_sub(last_attempt.attempted_at) < cooldown).then_some(cooldown)
 }
 
 fn cached_failure_snapshot(
@@ -257,8 +268,7 @@ mod suggestion_tests {
     }
 }
 // Serialize refreshes across remounts and simultaneous IPC callers.
-static REFRESH: tokio::sync::Mutex<(String, i64)> =
-    tokio::sync::Mutex::const_new((String::new(), 0));
+static REFRESH: tokio::sync::Mutex<Option<RefreshAttempt>> = tokio::sync::Mutex::const_new(None);
 
 #[tauri::command]
 pub async fn get_github_commits(
@@ -299,22 +309,27 @@ pub async fn get_github_commits(
         }
     }
     let timezone_before_fetch = current_timezone_id();
-    let result = if refresh_attempt_is_throttled(
-        &attempt.0,
-        attempt.1,
+    let result = if let Some(cooldown) = refresh_attempt_is_throttled(
+        attempt.as_ref(),
         &username,
         now,
-        !manual_refresh,
+        manual_refresh,
         timezone_id.as_deref(),
+        current_offset,
     ) {
-        let message = if !manual_refresh && timezone_id.is_none() {
-            "Automatic refresh is paused until the 15-minute cache window expires."
+        let message = if cooldown == CACHE_SECONDS {
+            "Automatic refresh is paused for up to 15 minutes after the last attempt."
         } else {
             "Please wait a minute before refreshing GitHub again."
         };
         Err(message.to_owned())
     } else {
-        *attempt = (username.clone(), now);
+        *attempt = Some(RefreshAttempt {
+            username: username.clone(),
+            attempted_at: now,
+            timezone_id: timezone_id.clone(),
+            utc_offset: current_offset,
+        });
         match tokio::time::timeout(
             std::time::Duration::from_secs(60),
             crate::api::github::fetch_commits(&username),
@@ -399,45 +414,124 @@ mod cache_tests {
     }
 
     #[test]
-    fn unknown_timezone_automatic_retry_uses_fifteen_minutes_but_manual_and_account_changes_do_not()
-    {
-        assert!(refresh_attempt_is_throttled(
-            "octocat", 100, "OCTOCAT", 999, true, None
-        ));
-        assert!(!refresh_attempt_is_throttled(
-            "octocat", 100, "octocat", 1_000, true, None
-        ));
+    fn automatic_failures_wait_fifteen_minutes_for_unchanged_timezone_context() {
+        let known = RefreshAttempt {
+            username: "octocat".to_owned(),
+            attempted_at: 100,
+            timezone_id: Some("iana:America/Los_Angeles".to_owned()),
+            utc_offset: -28_800,
+        };
+        for now in [160, 999] {
+            assert_eq!(
+                refresh_attempt_is_throttled(
+                    Some(&known),
+                    "OCTOCAT",
+                    now,
+                    false,
+                    Some("iana:America/Los_Angeles"),
+                    -28_800
+                ),
+                Some(CACHE_SECONDS),
+                "known-zone retries remain throttled at {now}"
+            );
+        }
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&known),
+                "octocat",
+                1_000,
+                false,
+                Some("iana:America/Los_Angeles"),
+                -28_800
+            ),
+            None,
+            "known-zone automatic refresh is allowed at 15 minutes"
+        );
 
-        assert!(refresh_attempt_is_throttled(
-            "octocat", 100, "octocat", 159, false, None
-        ));
-        assert!(!refresh_attempt_is_throttled(
-            "octocat", 100, "octocat", 160, false, None
-        ));
-        assert!(refresh_attempt_is_throttled(
-            "octocat",
-            100,
-            "octocat",
-            159,
-            true,
-            Some("iana:America/Los_Angeles")
-        ));
-        assert!(!refresh_attempt_is_throttled(
-            "octocat",
-            100,
-            "octocat",
-            160,
-            true,
-            Some("iana:America/Los_Angeles")
-        ));
-        assert!(!refresh_attempt_is_throttled(
-            "octocat",
-            100,
-            "other-user",
-            101,
-            true,
+        let unknown = RefreshAttempt {
+            timezone_id: None,
+            ..known
+        };
+        assert_eq!(
+            refresh_attempt_is_throttled(Some(&unknown), "octocat", 999, false, None, -28_800),
+            Some(CACHE_SECONDS)
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(Some(&unknown), "octocat", 1_000, false, None, -28_800),
             None
-        ));
+        );
+    }
+
+    #[test]
+    fn manual_refresh_and_changed_attempt_context_keep_one_minute_retry() {
+        let last = RefreshAttempt {
+            username: "octocat".to_owned(),
+            attempted_at: 100,
+            timezone_id: Some("unix-tz-sha256:new-york".to_owned()),
+            utc_offset: -18_000,
+        };
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&last),
+                "octocat",
+                159,
+                true,
+                Some("unix-tz-sha256:new-york"),
+                -18_000
+            ),
+            Some(REFRESH_COOLDOWN_SECONDS)
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&last),
+                "octocat",
+                160,
+                true,
+                Some("unix-tz-sha256:new-york"),
+                -18_000
+            ),
+            None
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&last),
+                "octocat",
+                159,
+                false,
+                Some("unix-tz-sha256:lima"),
+                -18_000
+            ),
+            Some(REFRESH_COOLDOWN_SECONDS),
+            "a zone identity change keeps the short cooldown"
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&last),
+                "octocat",
+                160,
+                false,
+                Some("unix-tz-sha256:lima"),
+                -18_000
+            ),
+            None
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&last),
+                "octocat",
+                160,
+                false,
+                Some("unix-tz-sha256:new-york"),
+                -25_200
+            ),
+            None,
+            "an offset change keeps the short cooldown"
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(Some(&last), "other-user", 101, false, None, -18_000),
+            None,
+            "a new account is independent of the previous account's attempt"
+        );
     }
 
     #[test]
