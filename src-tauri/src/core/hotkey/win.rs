@@ -201,6 +201,16 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Validate key mapping without probing RegisterHotKey. Dev sessions do not
+/// own host shortcuts, but still reject codes this backend cannot map.
+pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
+    let ids = super::mapped_codes(keys)?;
+    Ok(keys
+        .iter()
+        .zip(&ids)
+        .any(|(code, _)| super::modifier_name(code).is_none()))
+}
+
 static KEYS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
 static SYNTHETIC_PASTE_SUPPRESSION_UNTIL: AtomicU64 = AtomicU64::new(0);

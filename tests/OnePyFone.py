@@ -188,6 +188,7 @@ JS_TESTS: List[TestEntry] = [
     entry("ui.deferred-views", "ui", "Deferred views and slow settings navigation", script="integration/playwright-test-deferred-views-dev.cjs", timeout_s=90, needs_server=True, expected="Unused views remain unloaded and slow settings loads preserve search focus and retry", regression_area="deferred feature loading"),
     entry("ui.style-merge", "ui", "Style and Legacy layout interaction", script="integration/playwright-test-style-merge-dev.cjs", timeout_s=120, needs_server=True, expected="Style controls merge by default and retain the Legacy tabbed behavior", regression_area="style and legacy cross-feature behavior"),
     entry("ui.resilience", "ui", "Malformed state and recovery flows", script="integration/playwright-test-resilience-dev.cjs", timeout_s=90, needs_server=True, expected="Malformed optional state and failed commands do not crash the app", regression_area="error recovery and unusual state"),
+    entry("ui.context-menu", "ui", "Context menu edit and dismissal", script="integration/playwright-test-context-menu-dev.cjs", timeout_s=60, needs_server=True, expected="Context menus open the correct editor and release navigation after dismissal", regression_area="Context navigation"),
     entry("ui.macos-permissions", "ui", "macOS permissions gates and repair states", script="integration/playwright-test-macos-permissions-dev.cjs", timeout_s=45, needs_server=True, expected="macOS onboarding and Settings enforce and explain required permission states", regression_area="macOS permissions UX"),
     entry("accessibility.semantic-audit", "accessibility", "Semantic accessibility audit", script="integration/playwright-test-accessibility-dev.cjs", timeout_s=120, needs_server=True, expected="Visible controls have names, valid semantics, and keyboard access", regression_area="accessibility semantics"),
     entry("accessibility.settings-focus", "accessibility", "Settings and modal focus flow", script="integration/playwright-test-focus-dev.cjs", timeout_s=120, needs_server=True, expected="Keyboard focus enters, stays within, and returns from dialogs", regression_area="keyboard and focus management"),
@@ -202,6 +203,12 @@ JS_TESTS: List[TestEntry] = [
     entry("pipeline.audio-fixture", "pipeline", "Audio fixture integrity", expected="Optional live audio fixture is a valid non-trivial WAV", regression_area="live test infrastructure", required=False, failure_kind="infrastructure"),
     entry("pipeline.provider-smoke", "pipeline", "Configured provider transcription", command=["cargo", "test", "--manifest-path", str(CARGO_TOML), "live_transcription_regression", "--", "--ignored", "--nocapture", "--test-threads=1"], timeout_s=240, required=False, expected="The configured transcription provider transcribes the optional known WAV fixture", regression_area="provider transcription pipeline"),
 ]
+
+# This legacy script calls provider APIs directly. The live profile uses the
+# native credential-aware Rust regression checks instead.
+UNREGISTERED_SCRIPT_EXCLUSIONS = {
+    "smoke/playwright-test-pipeline.cjs": "Superseded by pipeline.provider-smoke and pipeline.prompt-live",
+}
 
 
 class PythonTest:
@@ -244,11 +251,21 @@ class RegistryCheck(PythonTest):
         ids = [test.id for test in ALL_TESTS]
         duplicates = sorted({test_id for test_id in ids if ids.count(test_id) > 1})
         missing = sorted(test.script for test in JS_TESTS if test.script and not (TESTS_DIR / test.script).is_file())
+        registered = {test.script for test in JS_TESTS if test.script}
+        discovered = {
+            path.relative_to(TESTS_DIR).as_posix()
+            for directory in ("smoke", "integration")
+            for path in (TESTS_DIR / directory).glob("*.cjs")
+            if not path.name.startswith("_")
+        }
+        unregistered = sorted(discovered - registered - UNREGISTERED_SCRIPT_EXCLUSIONS.keys())
         issues = []
         if duplicates:
             issues.append("Duplicate test IDs: " + ", ".join(duplicates))
         if missing:
             issues.append("Registered test files missing: " + ", ".join(missing))
+        if unregistered:
+            issues.append("Unregistered automated tests: " + ", ".join(unregistered))
         return TestResult(
             "failed" if issues else "passed",
             output="\n".join(issues) if issues else f"{len(ids)} stable IDs and all registered files exist",
@@ -361,6 +378,7 @@ PYTHON_ENTRIES[2].python_test = SettingsContractCheck()
 PYTHON_ENTRIES[3].python_test = NativeCapabilityCheck()
 
 COMMAND_TESTS = [
+    entry("unit.ci", "unit", "CI gate contracts", command=[NPM, "run", "test:ci:contracts"], timeout_s=90, expected="CI cannot publish unverified source or hide incomplete checks", regression_area="CI gates"),
     entry("unit.verification", "unit", "Verification infrastructure", command=[NPM, "run", "test:verification"], timeout_s=90, expected="Verification cannot accept stale, skipped, missing, or failed evidence", regression_area="verification infrastructure"),
     entry("native.webview", "native", "Real native WebView", command=[NPM, "run", "test:native:webview"], timeout_s=900, expected="An isolated native app executes real IPC and window operations", regression_area="native desktop integration"),
     entry("unit.frontend", "unit", "Frontend unit tests", command=[NPM, "run", "test:unit"], timeout_s=240, expected="All deterministic TypeScript unit tests pass", regression_area="frontend logic"),

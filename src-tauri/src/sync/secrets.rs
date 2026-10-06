@@ -14,61 +14,59 @@ const MAC_SERVICE: &str = "com.verenu.app";
 const MAC_ACCOUNT: &str = "sync.identity";
 const FALLBACK_FILE: &str = "sync-identity.key";
 
-pub fn store_identity_key(key_der: &[u8]) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
+pub fn store_identity_key(app_data_dir: &std::path::Path, key_der: &[u8]) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", not(test)))]
     {
-        win_store::store(WIN_TARGET, key_der)
+        win_store::store(WIN_TARGET, app_data_dir, key_der)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
-        mac_store::store(MAC_SERVICE, MAC_ACCOUNT, key_der)
+        mac_store::store(MAC_SERVICE, MAC_ACCOUNT, app_data_dir, key_der)
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
     {
-        store_fallback(key_der)
+        store_fallback(app_data_dir, key_der)
     }
 }
 
-pub fn load_identity_key() -> Option<Vec<u8>> {
-    #[cfg(target_os = "windows")]
+pub fn load_identity_key(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
+    #[cfg(all(target_os = "windows", not(test)))]
     {
-        win_store::load(WIN_TARGET)
+        win_store::load(WIN_TARGET, app_data_dir)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
-        mac_store::load(MAC_SERVICE, MAC_ACCOUNT)
+        mac_store::load(MAC_SERVICE, MAC_ACCOUNT, app_data_dir)
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
     {
-        load_fallback()
+        load_fallback(app_data_dir)
     }
 }
 
 #[allow(dead_code)] // used by future "forget this device" flows
-pub fn delete_identity_key() {
-    #[cfg(target_os = "windows")]
+pub fn delete_identity_key(app_data_dir: &std::path::Path) {
+    #[cfg(all(target_os = "windows", not(test)))]
     {
         let _ = win_store::delete(WIN_TARGET);
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
         let _ = mac_store::delete(MAC_SERVICE, MAC_ACCOUNT);
     }
-    if let Some(path) = fallback_path() {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = std::fs::remove_file(fallback_path(app_data_dir));
 }
 
 /// Last-resort storage when the OS credential store is unavailable. The key
 /// file is only readable by the current user where the OS enforces modes.
-fn fallback_path() -> Option<std::path::PathBuf> {
-    let dir = crate::app_data_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(FALLBACK_FILE))
+fn fallback_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
+    app_data_dir.join(FALLBACK_FILE)
 }
 
-fn store_fallback(key_der: &[u8]) -> Result<(), String> {
-    let path = fallback_path().ok_or("no app data dir")?;
+fn store_fallback(app_data_dir: &std::path::Path, key_der: &[u8]) -> Result<(), String> {
+    std::fs::create_dir_all(app_data_dir)
+        .map_err(|e| format!("fallback key directory failed: {e}"))?;
+    let path = fallback_path(app_data_dir);
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -92,8 +90,8 @@ fn store_fallback(key_der: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn load_fallback() -> Option<Vec<u8>> {
-    std::fs::read(fallback_path()?).ok()
+fn load_fallback(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
+    std::fs::read(fallback_path(app_data_dir)).ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -102,7 +100,8 @@ mod win_store {
     //! Windows Credential Manager storage, same mechanism as
     //! `data::credentials` but for the sync identity key.
 
-    use super::store_fallback;
+    use super::{load_fallback, store_fallback};
+    use std::path::Path;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
@@ -137,7 +136,7 @@ mod win_store {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub fn store(target: &str, key_der: &[u8]) -> Result<(), String> {
+    pub fn store(target: &str, app_data_dir: &Path, key_der: &[u8]) -> Result<(), String> {
         let mut blob = encode(key_der);
         let mut target_wide = wide(target);
         let mut cred: CREDENTIALW = unsafe { std::mem::zeroed() };
@@ -152,12 +151,12 @@ mod win_store {
         if result.is_err() {
             // Fall back to a protected file rather than losing the identity.
             log::warn!("sync: CredWriteW failed; storing identity key in app data fallback");
-            return store_fallback(key_der);
+            return store_fallback(app_data_dir, key_der);
         }
         Ok(())
     }
 
-    pub fn load(target: &str) -> Option<Vec<u8>> {
+    pub fn load(target: &str, app_data_dir: &Path) -> Option<Vec<u8>> {
         let target_wide = wide(target);
         let mut p_cred: *mut CREDENTIALW = std::ptr::null_mut();
         // SAFETY: target_wide outlives the call; p_cred receives an allocation
@@ -171,7 +170,7 @@ mod win_store {
             )
         };
         if let Err(_err) = result {
-            if let Some(key) = super::load_fallback() {
+            if let Some(key) = load_fallback(app_data_dir) {
                 return Some(key);
             }
             return None;
@@ -203,10 +202,16 @@ mod mac_store {
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
+    use std::path::Path;
 
     const NOT_FOUND: i32 = -25300;
 
-    pub fn store(service: &str, account: &str, key_der: &[u8]) -> Result<(), String> {
+    pub fn store(
+        service: &str,
+        account: &str,
+        app_data_dir: &Path,
+        key_der: &[u8],
+    ) -> Result<(), String> {
         match set_generic_password(service, account, key_der) {
             Ok(()) => Ok(()),
             Err(_) => {
@@ -216,17 +221,17 @@ mod mac_store {
                     Ok(()) => Ok(()),
                     Err(err) => {
                         log::warn!("sync: Keychain write failed; using app data fallback: {err}");
-                        super::store_fallback(key_der)
+                        super::store_fallback(app_data_dir, key_der)
                     }
                 }
             }
         }
     }
 
-    pub fn load(service: &str, account: &str) -> Option<Vec<u8>> {
+    pub fn load(service: &str, account: &str, app_data_dir: &Path) -> Option<Vec<u8>> {
         match get_generic_password(service, account) {
             Ok(bytes) => Some(bytes),
-            Err(_) => super::load_fallback(),
+            Err(_) => super::load_fallback(app_data_dir),
         }
     }
 
