@@ -14,6 +14,8 @@ let mockRuntime: MockRuntime | undefined;
 let mockLoading: Promise<MockRuntime> | undefined;
 
 function loadMockRuntime(): Promise<MockRuntime> {
+  // Keep browser fixtures out of packaged WebViews, including lazy chunks.
+  if (import.meta.env.PROD) return Promise.reject(new Error('Browser mock is unavailable in production'));
   return mockLoading ??= import('./tauri.dev').then((runtime) => {
     mockRuntime = runtime;
     return runtime;
