@@ -40,7 +40,7 @@ import {
   selectReviewModels,
   shouldFallback,
 } from "./verenu-ai-review-logic.mjs";
-import { readProviderFailureReason } from "./verenu-ai-review-session.mjs";
+import { readProviderFailureReason, readPersistedFindings } from "./verenu-ai-review-session.mjs";
 import { runReviewProcess, PREVIEW_TIMEOUT_MS } from "./verenu-ai-review-process.mjs";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
@@ -363,6 +363,9 @@ async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome)
       } catch { /* Findings parsing handles malformed output separately. */ }
     }
     if (result.code !== 0 && !result.providerFailureReason) result.providerFailureReason = await readProviderFailureReason(attemptHome);
+    // Read after close so flushed comments from every concurrent file survive
+    // fast termination, before this attempt's private home is removed.
+    if (result.code !== 0) result.persistedFindings = await readPersistedFindings(attemptHome);
     return result;
   } finally {
     try {
@@ -622,7 +625,10 @@ async function main() {
       result = await reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome);
       // A provider failure can coexist with findings from completed files.
       // Retain them across fallback, even if the next model returns none.
-      findings = mergeReviewFindings(findings, parseOcrFindings(result?.stdout || "", { quiet: result?.code !== 0 }));
+      const outputFindings = parseOcrFindings(result?.stdout || "", { quiet: result?.code !== 0 });
+      const recovered = (result?.persistedFindings || []).filter((saved) =>
+        !outputFindings.some((finding) => finding.file === saved.file && finding.message === saved.message));
+      findings = mergeReviewFindings(findings, outputFindings, recovered);
 
       if (!result || result.code === 0) break;
 
