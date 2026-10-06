@@ -445,10 +445,22 @@ fn shortcut_configuration_for(keys: &[u32]) -> Option<(Option<String>, Vec<Strin
     Some((Some(trigger.clone()), vec![trigger.replace('+', " + ")]))
 }
 
-pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+fn shortcut_triggers(keys: &[String]) -> Result<Vec<String>, String> {
     let ids = super::mapped_codes(keys)?;
     let (_, triggers) = shortcut_configuration_for(&ids)
         .ok_or("Use modifiers plus one regular key, a function key, or a modifier-only combination on Linux")?;
+    Ok(triggers)
+}
+
+/// Validate Linux shortcut shape without consulting the compositor. Browser
+/// dev sessions disable global hotkeys, so they can check supported bindings
+/// while running under Xvfb or another headless fixture.
+pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
+    shortcut_triggers(keys).map(|_| true)
+}
+
+pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+    let triggers = shortcut_triggers(keys)?;
     Ok(conflicts::free(
         &conflicts::bindings("dictation")?,
         &triggers,
@@ -618,6 +630,8 @@ pub fn notify_handless() {
         cb();
     }
 }
+// Compatibility entry points used by the other desktop implementations.
+#[allow(dead_code)]
 pub fn update_capture_keys(_k1: u32, _k2: u32) {}
 pub fn reset_chord_state() {
     HANDLESS.store(false, Ordering::SeqCst);
@@ -627,6 +641,7 @@ pub fn set_handless_active(value: bool) {
     HANDLESS.store(value, Ordering::SeqCst);
     refresh_escape_listening();
 }
+#[allow(dead_code)]
 pub fn begin_synthetic_paste_suppression(_duration_ms: u64) {}
 pub fn set_processing_generation(generation: u64) {
     PROCESSING.store(generation, Ordering::SeqCst);
@@ -636,9 +651,11 @@ pub fn clear_processing_generation(expected: u64) {
     let _ = PROCESSING.compare_exchange(expected, 0, Ordering::SeqCst, Ordering::SeqCst);
     refresh_escape_listening();
 }
+#[allow(dead_code)]
 pub fn is_win_key_down() -> bool {
     false
 }
+#[allow(dead_code)]
 pub fn force_release_win_key() {}
 pub fn caps_lock_is_on() -> bool {
     false
@@ -1509,6 +1526,15 @@ mod tests {
         .is_none());
         assert!(super::shortcut_configuration_for(&[105]).is_some());
         assert!(super::shortcut_configuration_for(&[200]).is_none());
+    }
+
+    #[test]
+    fn dev_session_validation_checks_chord_shape_without_compositor_access() {
+        let chord = ["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft", "KeyK"].map(str::to_string);
+        assert!(super::validate_hotkey(&chord).unwrap());
+
+        let two_regular_keys = ["KeyA", "KeyB"].map(str::to_string);
+        assert!(super::validate_hotkey(&two_regular_keys).is_err());
     }
     use super::{
         escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,

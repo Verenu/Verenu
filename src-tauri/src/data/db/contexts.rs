@@ -861,7 +861,7 @@ pub fn remove_context_website(db: &Db, context_id: i64, domain: &str) -> Result<
 /// the stable Everywhere context.
 /// Resolution order: sub-app (app + window-title rule), website, app,
 /// Everywhere. Returns the matched sub-app too so the pill can name it.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(feature = "dev-session", test))]
 pub fn resolve_context_for_target(
     db: &Db,
     executable: &str,

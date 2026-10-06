@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { run, stopOwned } from './verification/process.mjs';
+import { executedRustTests } from './verification/rust-summary.mjs';
 const args = process.argv.slice(2);
 const index = args.indexOf('--report');
 const directory = path.join(root, 'test-results', `native-fixture-${randomUUID()}`);
@@ -29,9 +30,16 @@ try {
       fixture.stdout.on('data', (chunk) => { if (String(chunk).includes(`Fixture PID: ${fixture.pid}`)) { clearTimeout(timer); resolve(); } });
     });
     const checked = await run('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'atspi_live_formats_disposable_entry', '--lib', '--', '--ignored'], { directory, name: 'focused-text', env: { ...env, VERENU_FORMAT_FIXTURE_PID: String(fixture.pid) }, timeout: 180_000 });
+    if (checked.status === 'passed' && !executedRustTests(await fs.readFile(checked.log, 'utf8'))) {
+      checked.status = 'failed';
+      checked.reason = 'The native Rust fixture did not execute any tests';
+    }
     report.checks.push({ name: 'AT-SPI cursor formatting in owned GTK entry', status: checked.status });
     report.artifacts.push(artifact(checked.log));
     report.status = checked.status === 'passed' ? 'verified' : 'failed';
+  }
+  if (sourceIdentity().fingerprint !== report.identity.fingerprint && report.status !== 'failed') {
+    report.status = 'incomplete'; report.reason = 'Source changed during native fixture verification';
   }
 } catch (error) { report.status = 'failed'; report.reason = error.message; }
 finally {

@@ -50,6 +50,7 @@ pub(crate) struct Workspace {
     #[serde(default)]
     pub id: i32,
     #[serde(default)]
+    #[allow(dead_code)] // Part of the Hyprland workspace response schema.
     pub name: String,
 }
 
