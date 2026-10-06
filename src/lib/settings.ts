@@ -54,6 +54,8 @@ export interface AppMapping {
 }
 
 type SettingsValueMap = {
+  autostart_enabled: boolean;
+  hotkey: string[];
   custom_providers: import('./customProviders.svelte').CustomProvider[];
   transcription_provider: ProviderId;
   transcription_language: TranscriptionLanguageCode;
@@ -129,6 +131,36 @@ type SettingsValueMap = {
 
 type SettingKey = keyof SettingsValueMap;
 type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
+
+/** Nullable persisted values; callers retain their own UI defaults. No cache. */
+export type SettingsSnapshot = {
+  [K in Exclude<SettingKey, 'default_tone' | 'cleanup_intensity' | 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
+};
+
+export function loadSettingsSnapshot(): Promise<SettingsSnapshot> {
+  return invoke<SettingsSnapshot>('get_all_settings');
+}
+
+type BooleanSettingKey = {
+  [K in WritableSettingKey]: SettingsValueMap[K] extends boolean ? K : never;
+}[WritableSettingKey];
+
+export function booleanSettingHandler(
+  key: BooleanSettingKey,
+  update: (value: boolean) => void,
+  failed: () => void,
+) {
+  return async (value: boolean) => {
+    update(value);
+    try {
+      await saveSetting(key, value);
+    } catch (err) {
+      update(!value);
+      failed();
+      console.error(`save ${key} failed:`, err);
+    }
+  };
+}
 
 export function saveSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
   return invoke('save_setting', { key, value }).catch((error) => {
