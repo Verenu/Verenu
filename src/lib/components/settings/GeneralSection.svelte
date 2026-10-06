@@ -9,6 +9,7 @@
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
   import {
+    loadSettingsSnapshot,
     saveSetting,
     ANDROID_PILL_POSITION_OPTIONS,
     DEFAULT_ANDROID_PILL_POSITION,
@@ -165,21 +166,16 @@
   });
 
   async function loadSettings() {
-    const results = await Promise.allSettled([
-      invoke<boolean | null>('get_setting', { key: 'autostart_enabled' }),
-      invoke<string[] | null>('get_setting', { key: 'hotkey' }),
-      invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
-      invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
-      invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
-      invoke<boolean | null>('get_setting', { key: 'contextual_formatting_enabled' }),
-      invoke<boolean | null>('get_setting', { key: 'caps_lock_uppercase_enabled' }),
-      invoke<string[]>('get_microphones'),
-      invoke<string | null>('get_setting', { key: 'microphone_device' }),
-      invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
-      invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
-      invoke<boolean | null>('get_setting', { key: 'android_pill_cover_keyboard_mic' }),
-      invoke<boolean | null>('get_setting', { key: 'android_pill_hide_offline' }),
-    ]);
+    const snapshot = loadSettingsSnapshot();
+    const keys = [
+      'autostart_enabled', 'hotkey', 'appearance_mode', 'transcription_language',
+      'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
+      'microphone_device', 'legacy_features_enabled', 'android_pill_position',
+      'android_pill_cover_keyboard_mic', 'android_pill_hide_offline',
+    ] as const;
+    const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
+    requests.splice(7, 0, invoke<string[]>('get_microphones'));
+    const results = await Promise.allSettled(requests);
 
     const val = <T>(i: number, fallback: T): T =>
       results[i].status === 'fulfilled' ? (results[i] as PromiseFulfilledResult<T>).value ?? fallback : fallback;
@@ -532,11 +528,8 @@
     listenForSyncCompletion(() => {
       // Refresh shared values only. Do not reset a theme preview, microphone,
       // shortcut capture, or other device-local controls during a peer sync.
-      void Promise.all([
-        invoke<boolean | null>('get_setting', { key: 'contextual_formatting_enabled' }),
-        invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
-        invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
-      ]).then(([formatting, cleanup, language]) => {
+      void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
+        cleanup_enabled: cleanup, transcription_language: language }) => {
         if (!active) return;
         contextualFormatting = formatting ?? true;
         appStore.cleanupEnabled = cleanup ?? true;

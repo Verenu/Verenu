@@ -30,12 +30,14 @@
   import Dropdown from '../Dropdown.svelte';
   import { appStore, cleanupPromptStore } from '../../stores.svelte';
   import {
+    loadSettingsSnapshot,
     saveSetting,
     type LocalModelMemoryPolicy,
     type ProviderId,
     type ProviderModelMap,
   } from '../../settings';
   import ModelTaskTile from './ModelTaskTile.svelte';
+  import { localModelDownloads } from './localModelDownloads';
   import ModelPresetPicker from './ModelPresetPicker.svelte';
   import { settingsSearchNavigation } from '../../settingsSearch.svelte';
   import {
@@ -66,7 +68,6 @@
     migrateDeprecatedGroqCleanupModel,
     migrateDeprecatedGoogleModel,
     splitModelId,
-    type AllSettingsPayload,
     type TaskType,
     type UiProviderId,
   } from './models';
@@ -288,7 +289,7 @@
         void (async () => {
           for (const model of missing.filter(model => model.task === task)) {
             if (pendingPreset?.id !== preset.id) return;
-            const started = isExpectedModelDownloading(model) || await (task === 'transcription' ? downloadLocalModel(model.id) : downloadLocalLlmModel(model.id));
+            const started = isExpectedModelDownloading(model) || await localModelDownloads[task].download(model.id);
             if (!started) { clearPendingPreset(); return; }
             while (!installedLocal[task].includes(model.id) || (task === 'cleanup' && !localLlmStore.runtime.installed)) {
               if (pendingPreset?.id !== preset.id) return;
@@ -329,11 +330,8 @@
     if (pendingPreset?.id === preset.id || pendingPreset?.id === `fallback-${preset.id}`) clearPendingPreset();
     for (const model of target.requiredLocalModels) {
       if (!isExpectedModelDownloading(model)) continue;
-      if (model.task === 'transcription') {
-        cancelLocalModelDownload(model.id).catch((err) => console.error('cancel preset stt download failed', err));
-      } else {
-        cancelLocalLlmModelDownload(model.id).catch((err) => console.error('cancel preset llm download failed', err));
-      }
+      localModelDownloads[model.task].cancel(model.id).catch((err) =>
+        console.error(model.task === 'transcription' ? 'cancel preset stt download failed' : 'cancel preset llm download failed', err));
     }
   }
 
@@ -572,7 +570,7 @@
 
   async function migrateAndLoad() {
     const [all, keyStatus] = await Promise.all([
-      invoke<AllSettingsPayload>('get_all_settings'),
+      loadSettingsSnapshot(),
       invoke<Record<ProviderId, boolean>>('get_api_key_status'),
     ]);
     const { advanced_model_ui: advancedRaw, cleanup_enabled: cleanupRaw,
