@@ -1,0 +1,18 @@
+[
+  {
+    "target": [
+      ".language-code"
+    ],
+    "checks": [
+      {
+        "fgColor": "#9b9a96",
+        "bgColor": "#fcfcfa",
+        "contrastRatio": 2.74,
+        "fontSize": "7.9pt (10.5px)",
+        "fontWeight": "normal",
+        "messageKey": null,
+        "expectedContrastRatio": "4.5:1"
+      }
+    ]
+  }
+]

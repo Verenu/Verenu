@@ -629,9 +629,19 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  verify:
+    name: Verify exact nightly source
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/release-quality.yml
+    permissions:
+      contents: read
+    with:
+      source-ref: ${{ needs.prepare.outputs.release_sha }}
+
   publish:
     name: Publish nightly release
-    needs: [prepare, build]
+    needs: [prepare, build, verify]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:

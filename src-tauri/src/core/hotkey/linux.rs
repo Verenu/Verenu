@@ -618,6 +618,8 @@ pub fn notify_handless() {
         cb();
     }
 }
+// Compatibility entry points used by the other desktop implementations.
+#[allow(dead_code)]
 pub fn update_capture_keys(_k1: u32, _k2: u32) {}
 pub fn reset_chord_state() {
     HANDLESS.store(false, Ordering::SeqCst);
@@ -627,6 +629,7 @@ pub fn set_handless_active(value: bool) {
     HANDLESS.store(value, Ordering::SeqCst);
     refresh_escape_listening();
 }
+#[allow(dead_code)]
 pub fn begin_synthetic_paste_suppression(_duration_ms: u64) {}
 pub fn set_processing_generation(generation: u64) {
     PROCESSING.store(generation, Ordering::SeqCst);
@@ -636,9 +639,11 @@ pub fn clear_processing_generation(expected: u64) {
     let _ = PROCESSING.compare_exchange(expected, 0, Ordering::SeqCst, Ordering::SeqCst);
     refresh_escape_listening();
 }
+#[allow(dead_code)]
 pub fn is_win_key_down() -> bool {
     false
 }
+#[allow(dead_code)]
 pub fn force_release_win_key() {}
 pub fn caps_lock_is_on() -> bool {
     false

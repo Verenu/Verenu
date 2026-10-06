@@ -9,6 +9,7 @@ import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
+import { summarizeNodeTests } from './verification/node-reporter.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -31,12 +32,18 @@ try {
   const synthetic = !args.includes('--live');
   session = await startOwnedSession({ id, fixtures, directory, synthetic });
   const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
-  const tested = await run(process.execPath, ['--test', 'tests/dev-session/session.test.mjs'], { directory, name: 'session-tests', env });
+  const sessionFiles = (await fs.readdir(path.join(root, 'tests/dev-session'))).filter(file => file.endsWith('.test.mjs')).sort();
+  const nodeReport = path.join(directory, 'session-cases.json');
+  const tested = await run(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=spec', '--test-reporter=./scripts/verification/node-reporter.mjs', '--test-reporter-destination=stdout', `--test-reporter-destination=${nodeReport}`, ...sessionFiles.map(file => `tests/dev-session/${file}`)], { directory, name: 'session-tests', env });
   report.artifacts.push(artifact(tested.log));
   assert.equal(tested.status, 'passed', 'Real-session regression failed');
+  report.node = summarizeNodeTests(JSON.parse(await fs.readFile(nodeReport, 'utf8')), sessionFiles, { live: args.includes('--live') });
+  report.checks.push({ name: 'Every owned-session test file executed without unexpected skips', status: report.node.status });
+  if (report.node.status !== 'passed') throw Object.assign(new Error('Owned-session cases were skipped or missing'), { verificationStatus: report.node.status });
   const suite = JSON.parse(await fs.readFile(path.join(session.directory, 'verification.json'), 'utf8'));
   report.checks.push(...suite.checks);
-  const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs'], { directory, name: 'playwright', env });
+  const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
+  const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
   report.artifacts.push(artifact(playwright.log));
   const browserReport = await readPlaywrightReport(path.join(session.directory, 'playwright.json'));
   const browserSummary = summarizePlaywrightReport(browserReport.report, {
@@ -44,11 +51,12 @@ try {
     processStatus: playwright.status,
     exitCode: playwright.exitCode,
     processReason: playwright.reason,
+    expectedProjects: ['desktop', 'phone'],
   });
   report.playwright = browserSummary;
   report.checks.push(...playwrightSummaryChecks(browserSummary));
   if (browserSummary.status !== 'passed') {
-    throw new Error(browserSummary.reason || 'Real-session Playwright flows failed.');
+    throw Object.assign(new Error(browserSummary.reason || 'Real-session Playwright flows failed.'), { verificationStatus: browserSummary.status });
   }
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
@@ -71,7 +79,7 @@ try {
   if (args.includes('--live') && report.checks.some((row) => row.status === 'skipped')) report.status = incompleteUnlessFailed(report.status);
   if (sourceIdentity().fingerprint !== identity.fingerprint) { report.status = incompleteUnlessFailed(report.status); report.reason = 'Source changed during verification'; }
 } catch (error) {
-  report.status = 'failed'; report.reason = error.message;
+  report.status = error.verificationStatus === 'incomplete' ? 'incomplete' : 'failed'; report.reason = error.message;
 } finally {
   if (session) {
     try { await session.stop(); }

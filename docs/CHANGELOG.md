@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Strengthened CI and agent verification with strict skipped-test handling, complete owned-session test discovery, native capability/platform evidence, Android Kotlin/JVM checks, native WebView PR checks, workflow linting, and exact-source nightly release verification. Added Context lifecycle, populated-cache clearing, accessibility, and visual regression coverage.
+- Queued runtime icon updates on the UI thread, including tray-handle lookup and disposal, to prevent unsafe reference-count access during concurrent appearance saves. Added an owned-session concurrency regression.
+
 - Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.
 
 - Fixed Linux global shortcuts failing when Verenu is launched outside an editor or terminal with a known app identity. Verenu now registers its own portal connection, reconnects after listener failure, and shows persistent shortcut errors with the cause and recovery guidance in Home and Settings.
