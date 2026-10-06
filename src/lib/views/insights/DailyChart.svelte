@@ -6,8 +6,9 @@
   import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
+  import { alignCommits, commitPath, type GithubSnapshot } from './github';
 
-  let { daily, rangeLabel }: { daily: InsightsDay[]; rangeLabel: string } = $props();
+  let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
 
   // Unique per instance so multiple charts on the page never share a <mask> id.
   const gradientId = `daily-edge-fade-${Math.random().toString(36).slice(2)}`;
@@ -27,6 +28,25 @@
   const max = $derived(niceCeiling(daily.reduce((m, d) => Math.max(m, d.words), 0)));
   const asBars = $derived(daily.length <= BAR_THRESHOLD);
   const plotH = H - PAD_TOP - PAD_BOTTOM;
+  const commits = $derived(alignCommits(daily, github));
+  const commitMax = $derived(Math.max(1, niceCeiling(commits.reduce<number>((m, count) => Math.max(m, count ?? 0), 0))));
+  const commitTotal = $derived(commits.reduce<number>((sum, count) => sum + (count ?? 0), 0));
+  const knownCommitTotal = $derived(commits.some(count => count !== null) ? commitTotal : null);
+  const githubPath = $derived(commitPath(commits, x, c => PAD_TOP + plotH * (1 - c / commitMax)));
+
+  function describeCommits(count: number | null | undefined): string {
+    if (count === null || count === undefined) return 'GitHub data unavailable';
+    return `${github?.complete ? '' : 'At least '}${fmtNumber(count)} public commits`;
+  }
+
+  function onKey(event: KeyboardEvent) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !daily.length) return;
+    event.preventDefault();
+    hover = event.key === 'Home' ? 0 : event.key === 'End' ? daily.length - 1
+      : Math.max(0, Math.min(daily.length - 1, (hover ?? 0) + (event.key === 'ArrowRight' ? 1 : -1)));
+    plotWidth = (event.currentTarget as HTMLElement).clientWidth;
+    cursor.set(hover, { instant: true });
+  }
 
   function x(i: number): number {
     if (daily.length <= 1) return W / 2;
@@ -69,6 +89,7 @@
   /* Held through the fade-out so the tooltip keeps its text on the way out
      instead of blanking the instant the pointer leaves. */
   let lastActive = $state<InsightsDay | null>(null);
+  const activeCommits = $derived(lastActive ? commits[daily.findIndex(d => d.day === lastActive?.day)] : null);
   $effect(() => {
     if (active) lastActive = active;
   });
@@ -142,11 +163,25 @@
     </div>
   </header>
 
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  {#if github}
+    <div class="chart-legend">
+      <span class="legend-item"><span class="legend-line" aria-hidden="true"></span>Words</span>
+      <span class="legend-item"><span class="legend-line commits" class:partial={!github.complete} aria-hidden="true"></span>Commits</span>
+      <details class="scale-details">
+        <summary class="ui-focus-ring" aria-label="Chart scale details" title="Chart scale details">ⓘ</summary>
+        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, commits 0–{fmtNumber(commitMax)}. GitHub covers the last 90 days across all contexts.</p>
+      </details>
+    </div>
+  {/if}
+
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
   <div
     class="plot"
     role="img"
-    aria-label={summary}
+    aria-label={summary + (github ? ` ${describeCommits(knownCommitTotal)} in the covered dates. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
+    tabindex={github ? 0 : undefined}
+    onkeydown={onKey}
+    onblur={() => { hover = null; }}
     onpointermove={onMove}
     onpointerleave={() => { hover = null; plotRect = null; }}
   >
@@ -189,6 +224,14 @@
           class="line-path"
         />
       {/if}
+      {#if github}
+        <path d={githubPath} fill="none" stroke="var(--success)" stroke-width="2" stroke-dasharray={github.complete ? undefined : '4 3'} vector-effect="non-scaling-stroke" class="github-line" />
+        {#each commits as count, i}
+          {#if count !== null && (daily.length === 1 || commits[i - 1] == null && commits[i + 1] == null)}
+            <circle cx={x(i)} cy={PAD_TOP + plotH * (1 - count / commitMax)} r="2" fill="var(--success)" />
+          {/if}
+        {/each}
+      {/if}
       {#if daily.length > 0}
         <line
           class="cursor-line"
@@ -215,12 +258,16 @@
       <span>{daily.length > 1 ? fmtDayLong(daily[daily.length - 1].day) : ''}</span>
     </div>
     {#if lastActive}
-      <ChartTooltip x={cursorLeft} y={cursorPoint.y} visible={hover !== null}>
+      <ChartTooltip x={cursorLeft} y={cursorPoint.y} visible={hover !== null} boundsWidth={plotWidth}>
         <strong>{fmtNumber(lastActive.words)}</strong> words
+        {#if github}<div class="commits-scale">{describeCommits(activeCommits)}</div>{/if}
         <div class="tooltip-dim">{fmtDayLong(lastActive.day)}</div>
       </ChartTooltip>
     {/if}
   </div>
+  {#if github && active}
+    <p class="chart-announcement" aria-live="polite">{fmtDayLong(active.day)}: {fmtNumber(active.words)} dictated words. {describeCommits(activeCommits)}.</p>
+  {/if}
 </section>
 
 <style>
@@ -247,6 +294,19 @@
   }
 
   .plot { flex: 1; position: relative; }
+  .plot:focus-visible { outline: 1px solid var(--ink-mute); outline-offset: 4px; border-radius: var(--r-sm); }
+  .chart-legend { display: flex; align-items: center; gap: 16px; font-size: 11px; color: var(--ink-soft); margin: 0 0 12px; }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-line { width: 14px; border-top: 2px solid var(--accent); }
+  .legend-line.commits { border-color: var(--success); }
+  .legend-line.partial { border-top-style: dashed; }
+  .scale-details { position: relative; margin-left: auto; }
+  .scale-details summary { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: var(--r-sm); color: var(--ink-mute); cursor: pointer; list-style: none; font-size: 14px; }
+  .scale-details summary::-webkit-details-marker { display: none; }
+  .scale-details summary:hover { color: var(--ink); background: var(--control-hover); }
+  .scale-details p { position: absolute; z-index: 3; right: 0; top: 100%; width: 240px; max-width: calc(100vw - 72px); margin: 4px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-elev); box-shadow: var(--shadow-popover); color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+  .commits-scale { color: var(--success); }
+  .chart-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
   svg {
     display: block;

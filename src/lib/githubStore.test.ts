@@ -1,0 +1,70 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { githubState, refreshGithub, setGithubUsername, startGithubRefresh } from './githubStore.svelte';
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn() }));
+vi.mock('./tauri', () => ({ invoke: mocks.invoke }));
+vi.mock('./settings', () => ({ saveSetting: mocks.save }));
+
+describe('GitHub background refresh', () => {
+  let username: string;
+  const snapshot = { username: 'fixture-user', fetched_at: 1, daily: [], warning: null };
+  beforeEach(() => {
+    username = '';
+    mocks.invoke.mockReset();
+    mocks.save.mockImplementation(async (_key, value) => { username = value; });
+    mocks.invoke.mockImplementation(async command => command === 'get_setting' ? username : snapshot);
+    Object.assign(githubState, { username: '', snapshot: null, loading: false, ready: false, error: '' });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('does not fetch commits before the user connects', async () => {
+    await refreshGithub();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('get_github_commits', expect.anything());
+    expect(githubState.snapshot).toBeNull();
+  });
+
+  it('saving the same account preserves its native cache', async () => {
+    username = 'fixture-user';
+    await refreshGithub();
+    await setGithubUsername('fixture-user');
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(githubState.snapshot).toEqual(snapshot);
+  });
+
+  it('refreshes automatically across views and on returning to the app', async () => {
+    vi.useFakeTimers();
+    const doc = Object.assign(new EventTarget(), { hidden: false });
+    vi.stubGlobal('document', doc);
+    username = 'fixture-user';
+    const stop = startGithubRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubState.snapshot).toEqual(snapshot);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_github_commits')).toHaveLength(2);
+    doc.hidden = true;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_github_commits')).toHaveLength(3);
+    doc.hidden = false;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_github_commits')).toHaveLength(4);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('disconnect does not restore a late response from the old account', async () => {
+    username = 'fixture-user';
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise(done => { resolve = done; });
+    mocks.invoke.mockImplementation(async command => command === 'get_setting' ? username : pending);
+    const refresh = refreshGithub();
+    await Promise.resolve();
+    const disconnect = setGithubUsername('');
+    await Promise.resolve();
+    resolve(snapshot);
+    await Promise.all([refresh, disconnect]);
+    expect(githubState.username).toBe('');
+    expect(githubState.snapshot).toBeNull();
+  });
+});

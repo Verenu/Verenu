@@ -6,11 +6,12 @@
   import { invoke, listen } from '../tauri';
   import { startPolling } from '../polling';
   import { listenForSyncCompletion } from '../syncStore.svelte';
-  import { formatIpcError } from '../stores';
+  import { appStore, formatIpcError } from '../stores';
   import { MOTION_MS, motionMs } from '../motion';
   import Dropdown from '../components/Dropdown.svelte';
   import HeroStats from './insights/HeroStats.svelte';
   import DailyChart from './insights/DailyChart.svelte';
+  import { githubState, refreshGithub } from '../githubStore.svelte';
   import StreakHeatmap from './insights/StreakHeatmap.svelte';
   import CostBreakdown from './insights/CostBreakdown.svelte';
   import HourStrip from './insights/HourStrip.svelte';
@@ -33,6 +34,7 @@
   let rangeOpen = $state(false);
   let displayVersion = $state(0);
   let pricing = $state<PricingSnapshot | null>(null);
+  const github = $derived(githubState.snapshot);
 
   let fetchToken = 0;
   let mounted = false;
@@ -106,6 +108,7 @@
 
   onMount(() => {
     mounted = true;
+    void refreshGithub();
     void loadContexts();
     load();
     invoke<PricingSnapshot>('get_insights_pricing')
@@ -164,7 +167,7 @@
     <div>
       <h1 class="page-h">Insights</h1>
       {#if !isAndroid}
-        <p class="page-sub">How much you dictate, how fast, and what it costs. Everything here is computed locally from your own history — nothing leaves your machine.</p>
+        <p class="page-sub">How much you dictate, how fast, and what it costs. Dictation statistics are computed locally. Optionally compare your public GitHub commits.</p>
       {/if}
     </div>
 
@@ -248,6 +251,14 @@
     </div>
   </div>
 
+  {#if githubState.username}
+    <div class="github-status">
+      <span>{githubState.loading ? 'Refreshing GitHub commits…' : github ? 'GitHub commits update automatically' : 'GitHub commits unavailable'}</span>
+      <button class="btn-ghost btn-compact" onclick={() => { appStore.settingsSection = 'integrations'; appStore.settingsOpen = true; }}>Manage in Settings</button>
+    </div>
+    {#if github?.warning || githubState.error}<p class="github-warning" role="status">{github?.warning || githubState.error}</p>{/if}
+  {/if}
+
   {#if status === 'error' && !data}
     <div class="empty-state empty-state-error" role="alert" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
       <p class="empty-h">Could not load insights</p>
@@ -261,7 +272,7 @@
       <div class="skeleton"></div>
       <div class="skeleton"></div>
     </div>
-  {:else if data && isEmpty}
+  {:else if data && isEmpty && !github}
     <div class="empty-state" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
       {#if activeContext}
         <p class="empty-h">Nothing dictated in {activeContext.name} yet</p>
@@ -283,7 +294,7 @@
       <div class="insights-results" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
         <HeroStats {data} />
 
-        <DailyChart daily={data.daily} {rangeLabel} />
+        <DailyChart daily={data.daily} {rangeLabel} {github} />
         <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
         <HourStrip hourly={data.hourly} />
         <WordStats words={data.words} cleanup={data.cleanup} totals={data.totals} />
@@ -294,6 +305,8 @@
 </div>
 
 <style>
+  .github-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 16px; color: var(--ink-mute); font-size: 11.5px; }
+  .github-warning { margin: -6px 0 20px; color: var(--ink-mute); font-size: 11.5px; line-height: 1.5; }
   .content-inner {
     width: min(100%, var(--page-max));
     margin-inline: auto;

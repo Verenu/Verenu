@@ -25,6 +25,7 @@ enum SettingKind {
     DefaultTone,
     CleanupIntensity,
     HistoryRetention,
+    GithubUsername,
     LocalModelMemoryPolicy,
     ModelSelectionMode,
     ModelMap,
@@ -123,6 +124,7 @@ setting_specs! {
     ANALYTICS_ENABLED: Bool = true,
     VERENU_SERVICE_CHECKS_ENABLED: Bool = true,
     HISTORY_RETENTION: HistoryRetention = true,
+    GITHUB_USERNAME: GithubUsername = false,
     LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
     AUTOSTART_ENABLED: Bool = true,
     CAPS_LOCK_UPPERCASE: Bool = true,
@@ -295,6 +297,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::HistoryRetention => value
             .as_str()
             .is_some_and(store::is_supported_history_retention),
+        SettingKind::GithubUsername => value
+            .as_str()
+            .is_some_and(|value| value.is_empty() || crate::api::github::valid_username(value)),
         SettingKind::LocalModelMemoryPolicy => value
             .as_str()
             .is_some_and(store::is_supported_local_model_memory_policy),
@@ -646,7 +651,12 @@ pub async fn save_setting(
                 store::STORAGE_FULL_ERROR
             ));
         }
-        if key_clone == store::CONTEXTUAL_FORMATTING {
+        if key_clone == store::GITHUB_USERNAME {
+            settings.save_values([
+                (store::GITHUB_USERNAME, value),
+                (store::GITHUB_COMMIT_CACHE, serde_json::Value::Null),
+            ])
+        } else if key_clone == store::CONTEXTUAL_FORMATTING {
             settings.save_values([
                 (store::CONTEXTUAL_FORMATTING, value.clone()),
                 (store::CONTEXTUAL_CAPS, value.clone()),
@@ -785,6 +795,7 @@ pub struct AllSettings {
     pub caps_lock_uppercase_enabled: Option<bool>,
     pub mic_gain: Option<f64>,
     pub history_retention: Option<String>,
+    pub github_username: Option<String>,
     pub local_model_memory_policy: Option<String>,
     pub microphone_device: Option<String>,
     pub update_dismissed_version: Option<String>,
@@ -872,6 +883,7 @@ all_settings! {
     caps_lock_uppercase_enabled = bool_val(store::CAPS_LOCK_UPPERCASE),
     mic_gain = f64_val(store::MIC_GAIN),
     history_retention = str_val(store::HISTORY_RETENTION),
+    github_username = str_val(store::GITHUB_USERNAME),
     local_model_memory_policy = str_val(store::LOCAL_MODEL_MEMORY_POLICY),
     microphone_device = str_val(store::MICROPHONE_DEVICE),
     update_dismissed_version = str_val(store::UPDATE_DISMISSED_VERSION),
@@ -904,6 +916,23 @@ pub struct CleanupCacheStatus {
 #[tauri::command]
 pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
     Ok(read_all_settings(&store::settings_snapshot(&app)?))
+}
+
+#[cfg(test)]
+mod github_setting_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn github_username_is_readable_but_not_exported_or_synced() {
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("octocat")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("a repo:private")).is_err());
+        assert!(validate_setting(store::GITHUB_COMMIT_CACHE, &json!({})).is_err());
+        assert!(is_readable_setting_key(store::GITHUB_USERNAME));
+        assert!(!is_exportable_setting_key(store::GITHUB_USERNAME));
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::GITHUB_USERNAME));
+    }
 }
 
 #[cfg(test)]

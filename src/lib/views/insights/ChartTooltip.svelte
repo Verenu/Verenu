@@ -8,11 +8,16 @@
     x,
     y,
     visible,
+    boundsWidth = 0,
     children,
-  }: { x: number; y: number; visible: boolean; children?: import('svelte').Snippet } = $props();
+  }: { x: number; y: number; visible: boolean; boundsWidth?: number; children?: import('svelte').Snippet } = $props();
+  let width = $state(0);
+  const left = $derived(boundsWidth > 0
+    ? Math.max(width / 2, Math.min(x, boundsWidth - width / 2))
+    : x);
 </script>
 
-<div class="chart-tooltip" class:visible style:left="{x}px" style:top="{y}px" aria-hidden="true">
+<div class="chart-tooltip" class:visible class:bounded={boundsWidth > 0} bind:offsetWidth={width} style:left="{left}px" style:top="{y}px" style:max-width={boundsWidth > 0 ? `${boundsWidth}px` : undefined} aria-hidden="true">
   {@render children?.()}
 </div>
 
@@ -39,6 +44,8 @@
     opacity: 1;
     transform: translate(-50%, calc(-100% - 9px)) scale(1);
   }
+
+  .chart-tooltip.bounded { box-sizing: border-box; white-space: normal; width: max-content; }
 
   .chart-tooltip :global(strong) {
     color: var(--ink);

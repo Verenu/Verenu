@@ -4,6 +4,7 @@ pub mod cleanup;
 pub mod client;
 pub mod custom;
 pub mod gemini_types;
+pub mod github;
 pub(crate) mod model_download;
 pub mod openrouter;
 pub mod prompts;
