@@ -193,17 +193,16 @@ pub fn query_snippets(db: &Db) -> Result<Vec<Snippet>> {
 
 pub fn query_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippet>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT s.id, s.trigger, s.expansion, s.instructions, s.use_count, s.created_at
          FROM snippets s
          INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
          WHERE sc.context_id = ?1
          ORDER BY s.created_at DESC",
-    )?;
-    let rows = stmt
-        .query_map(params![context_id], snippet_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        params![context_id],
+        snippet_from_row,
+    )
 }
 
 /// Removes a snippet from Everywhere and assigns the existing row to a
