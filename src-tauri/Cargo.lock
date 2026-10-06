@@ -6665,6 +6665,7 @@ dependencies = [
  "gtk",
  "hkdf 0.12.4",
  "hound",
+ "iana-time-zone",
  "if-addrs",
  "image",
  "jni",
