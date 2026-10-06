@@ -1,4 +1,19 @@
 use super::cleanup_rules::collapse_blank_lines;
+
+#[test]
+fn blank_line_collapse_preserves_crlf_and_unicode_trimming() {
+    for (input, expected) in [
+        ("", ""),
+        ("\r", ""),
+        ("\r\r\n", ""),
+        ("\n\n\ntext\r\n\r\n\r\nnext  ", "\n\ntext\n\nnext"),
+        ("café\r\n🎙\rfinal\u{2003}\n", "café\n🎙\rfinal"),
+        ("\r\n\r\n\r\n", ""),
+        ("\r\r\n\n\r\nnext", "\r\n\nnext"),
+    ] {
+        assert_eq!(collapse_blank_lines(input), expected);
+    }
+}
 use super::{
     cleanup_max_output_tokens, default_cleanup_template, default_static_prompt_token_estimate,
     fusion_max_output_tokens, gemini_generation_config, gemini_generation_reasoning_supported,

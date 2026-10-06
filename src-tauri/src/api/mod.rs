@@ -4,6 +4,7 @@ pub mod cleanup;
 pub mod client;
 pub mod custom;
 pub mod gemini_types;
+pub(crate) mod model_download;
 pub mod openrouter;
 pub mod prompts;
 pub mod service_status;
@@ -354,6 +355,38 @@ enum ProviderHttpError {
     },
 }
 
+impl ProviderHttpError {
+    /// Callers retain their existing trace fields and user-facing context.
+    fn into_error(self, trace: Option<(&str, &str)>, fields: &str, context: &str) -> anyhow::Error {
+        let (kind, error, status, request_id, preview) = match self {
+            Self::Quota(error) => return error,
+            Self::Auth {
+                error,
+                status,
+                request_id,
+                preview,
+            } => ("unauthorized", error, status, request_id, preview),
+            Self::NonSuccess {
+                source,
+                status,
+                request_id,
+                preview,
+            } => {
+                let error = anyhow::Error::new(source).context(format!(
+                    "{context} status={status} request_id={request_id} body_preview={preview}"
+                ));
+                ("non_success", error, status, request_id, preview)
+            }
+        };
+        if let Some((target, trace)) = trace {
+            log::warn!(target: target,
+                "{trace} {kind} {fields} status={status} request_id={request_id} body_preview=\"{preview}\""
+            );
+        }
+        error
+    }
+}
+
 fn response_request_id(resp: &reqwest::Response) -> String {
     resp.headers()
         .get("x-request-id")
@@ -669,6 +702,97 @@ fn extract_http_status_code(msg: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn provider_error_contexts_preserve_status_auth_and_quota_contracts() {
+        use std::io::{Read, Write};
+        for (status, context) in [
+            (200, "unused"),
+            (401, "unused"),
+            (403, "unused"),
+            (429, "unused"),
+            (500, "Gemini Transcribe error"),
+            (500, "Gemini error"),
+            (500, "Google Cleanup API error"),
+            (
+                500,
+                "Cleanup API error provider=fixture model=fixture-model",
+            ),
+            (
+                500,
+                "Transcription API error provider=fixture model=fixture-model",
+            ),
+            (500, "AssemblyAI upload error"),
+            (500, "AssemblyAI submit error"),
+            (500, "AssemblyAI poll error"),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let task = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                assert!(stream.read(&mut buffer).unwrap() > 0);
+                let body = "Invalid API Key";
+                write!(stream, "HTTP/1.1 {status} Test\r\nx-request-id: fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let resp = super::client::get().get(&url).send().await.unwrap();
+            let result = super::ensure_provider_success(
+                resp,
+                "quota-label",
+                Some(("Google", "fixture-model")),
+            )
+            .await;
+            task.join().unwrap();
+            if status == 200 {
+                assert_eq!(result.ok().unwrap().status().as_u16(), 200);
+                continue;
+            }
+            let error = result.err().unwrap();
+            if status == 429 {
+                assert_eq!(
+                    error.into_error(None, "", "ignored").to_string(),
+                    "QUOTA_EXCEEDED: quota-label quota reached"
+                );
+            } else if status == 401 || status == 403 {
+                assert_eq!(
+                    error.into_error(None, "", "ignored").to_string(),
+                    super::auth_status_error(
+                        "Google",
+                        "fixture-model",
+                        "fixture",
+                        status,
+                        super::AuthErrorCategory::InvalidOrRevokedKey
+                    )
+                    .to_string()
+                );
+            } else {
+                // Each adapter keeps its exact context even though status conversion is shared.
+                let super::ProviderHttpError::NonSuccess {
+                    source,
+                    status,
+                    request_id,
+                    preview,
+                } = error
+                else {
+                    panic!("expected HTTP error");
+                };
+                assert_eq!(status.as_u16(), 500);
+                assert_eq!(request_id, "fixture");
+                assert_eq!(preview, "Invalid API Key");
+                let error = super::ProviderHttpError::NonSuccess {
+                    source,
+                    status,
+                    request_id,
+                    preview,
+                }
+                .into_error(None, "", context);
+                assert_eq!(error.to_string(), format!("{context} status=500 Internal Server Error request_id=fixture body_preview=Invalid API Key"));
+                assert!(error.source().is_some());
+            }
+        }
+    }
     use super::{
         auth_401_display_message, classify_unauthorized_body, parse_auth_401_error,
         sanitize_error_body_preview, AuthErrorCategory, ParsedAuth401Error,

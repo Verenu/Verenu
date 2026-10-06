@@ -1278,7 +1278,7 @@ fn snapshot_locked(state: &DiagnosticsStore, now: u64) -> DiagnosticsSnapshot {
     let operations = state
         .operations
         .iter()
-        .map(|metric| public_operation_metric(metric, now, state.config.max_duration_samples))
+        .map(|metric| public_operation_metric(metric, now))
         .collect();
     let profiler_elapsed_ms = state
         .profiler_started
@@ -1438,16 +1438,15 @@ fn update_operation_metric(
     state.metric.p95_duration_ms = percentile_95(&state.durations);
 }
 
-fn public_operation_metric(
-    state: &OperationMetricState,
-    now: u64,
-    max_duration_samples: usize,
-) -> OperationMetric {
+fn public_operation_metric(state: &OperationMetricState, now: u64) -> OperationMetric {
     let mut metric = state.metric.clone();
-    let mut call_times = state.call_times.clone();
-    trim_call_times_at(&mut call_times, now, max_duration_samples);
-    metric.calls_per_minute = call_times.len() as u64;
-    metric.p95_duration_ms = percentile_95(&state.durations);
+    // The queue is already capped on every write. Count live entries without
+    // cloning it; p95 is likewise maintained when a duration is recorded.
+    metric.calls_per_minute = state
+        .call_times
+        .iter()
+        .skip_while(|at| now.saturating_sub(**at) > ROLLING_CALL_WINDOW_MS)
+        .count() as u64;
     metric
 }
 
@@ -1472,9 +1471,8 @@ fn percentile_95(values: &VecDeque<u64>) -> Option<u64> {
         return None;
     }
     let mut sorted: Vec<u64> = values.iter().copied().collect();
-    sorted.sort_unstable();
     let index = ((sorted.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
-    sorted.get(index).copied()
+    Some(*sorted.select_nth_unstable(index).1)
 }
 
 fn bound_measurements(values: BTreeMap<String, f64>, limit: usize) -> BTreeMap<String, f64> {
@@ -1927,6 +1925,42 @@ mod tests {
         let completed_snapshot = snapshot();
         assert_eq!(completed_snapshot.operations[0].currently_running, 0);
         assert_eq!(completed_snapshot.operations[0].success_count, 6);
+    }
+
+    #[test]
+    fn operation_snapshot_excludes_expired_calls_without_changing_history() {
+        let _guard = TEST_LOCK.lock().expect("test lock");
+        reset();
+        assert!(record_operation(
+            "commands::read",
+            10,
+            OperationOutcome::Success
+        ));
+        let now = now_ms();
+        with_store(|state| {
+            state.operations[0].call_times =
+                VecDeque::from([now.saturating_sub(ROLLING_CALL_WINDOW_MS + 1), now]);
+        });
+
+        let snapshot = with_store(|state| snapshot_locked(state, now));
+        let metric = &snapshot.operations[0];
+        assert_eq!(metric.calls_per_minute, 1);
+        assert_eq!(metric.p95_duration_ms, Some(10));
+        with_store(|state| assert_eq!(state.operations[0].call_times.len(), 2));
+    }
+
+    #[test]
+    fn percentile_selection_matches_sorted_nearest_rank() {
+        for len in 1..=100 {
+            let values = (0..len)
+                .rev()
+                .map(|value| (value % 11) as u64)
+                .collect::<VecDeque<_>>();
+            let mut sorted = values.iter().copied().collect::<Vec<_>>();
+            sorted.sort_unstable();
+            let index = ((len as f64 * 0.95).ceil() as usize).saturating_sub(1);
+            assert_eq!(percentile_95(&values), sorted.get(index).copied());
+        }
     }
 
     #[test]

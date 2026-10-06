@@ -5,7 +5,7 @@
   import { expoOut } from 'svelte/easing';
   import Toggle from '../Toggle.svelte';
   import Dropdown from '../Dropdown.svelte';
-  import { saveSetting, type HistoryRetention } from '../../settings';
+  import { loadSettingsSnapshot, saveSetting, type HistoryRetention } from '../../settings';
   import { setServiceChecksEnabled } from '../../serviceStatus';
   import { modalFocusTrap } from '../../modalFocus';
   import { animateWidth, modalBackdrop, modalCard, MOTION_MS, MOTION_PX, motionMs, motionPx } from '../../motion';
@@ -44,21 +44,17 @@
 
   async function loadSettings() {
     try {
-      const [retention, learn, serviceChecks, analytics, cacheEnabled, summary, recent] = await Promise.all([
-        invoke<string | null>('get_setting', { key: 'history_retention' }),
-        invoke<boolean | null>('get_setting', { key: 'auto_learn_enabled' }),
-        invoke<boolean | null>('get_setting', { key: 'verenu_service_checks_enabled' }),
-        invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
-        invoke<boolean | null>('get_setting', { key: 'cleanup_cache_enabled' }),
+      const [settings, summary, recent] = await Promise.all([
+        loadSettingsSnapshot(),
         invoke<typeof autoLearnSummary>('get_auto_learn_status_summary'),
         invoke<typeof recentAutoLearn>('get_recent_auto_learn_activity', { limit: 5 }),
       ]);
-      if (retention) historyRetention = retention;
-      autoLearn = learn ?? false;
-      serviceChecksEnabled = serviceChecks ?? true;
-      analyticsEnabled = analytics ?? true;
+      if (settings.history_retention) historyRetention = settings.history_retention;
+      autoLearn = settings.auto_learn_enabled ?? false;
+      serviceChecksEnabled = settings.verenu_service_checks_enabled ?? true;
+      analyticsEnabled = settings.analytics_enabled ?? true;
       setServiceChecksEnabled(serviceChecksEnabled);
-      cleanupCacheEnabled = cacheEnabled ?? true;
+      cleanupCacheEnabled = settings.cleanup_cache_enabled ?? true;
       autoLearnSummary = summary ?? autoLearnSummary;
       recentAutoLearn = recent ?? [];
     } catch (err) {

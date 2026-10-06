@@ -1,12 +1,17 @@
 <script lang="ts">
   import { classifyIpcError } from './lib/errors';
   import { onMount, tick } from 'svelte';
+  import { createListenerScope } from './lib/listenerScope';
+  import { createTimers } from './lib/timers';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import { isAndroid, isLinux } from './lib/platform';
 
   type PillState = 'idle' | 'recording' | 'processing' | 'loading_local_model' | 'handsfree' | 'error' | 'cancelled' | 'interrupted' | 'paste_failed' | 'copied' | 'clipboard_warning';
+  const timers = createTimers<'errorTimer' | 'hfTimer' | 'cancelBtnTimer' | 'cancelDismissTimer' | 'copyBtnTimer' | 'pasteFailedDismissTimer' | 'copiedPillTimer' | 'copiedTimer' | 'dyingTimer' | 'audioGraceTimer' | 'audioZeroTimer' | 'audioStatusCooldownTimer' | 'stageTimer' | 'settleTimer'>();
+  const terminalStates = new Set<PillState>(['error', 'cancelled', 'interrupted', 'paste_failed', 'copied', 'clipboard_warning']);
+  const isTerminalState = (s: PillState) => terminalStates.has(s);
   const isCancelLike = (s: PillState) => s === 'cancelled' || s === 'interrupted';
   let state: PillState = 'idle';
   let errorMsg = '';
@@ -18,22 +23,13 @@
   let errScroll = false;
   let errTextEl: HTMLSpanElement | null = null;
   let errSizerEl: HTMLSpanElement | null = null;
-  let errorTimer: ReturnType<typeof setTimeout> | null = null;
   let showHfButtons = false;
-  let hfTimer: ReturnType<typeof setTimeout> | null = null;
   let cancelOpen = false;
   let showCancelBtn = false;
-  let cancelBtnTimer: ReturnType<typeof setTimeout> | null = null;
-  let cancelDismissTimer: ReturnType<typeof setTimeout> | null = null;
   let showCopyBtn = false;
-  let copyBtnTimer: ReturnType<typeof setTimeout> | null = null;
-  let pasteFailedDismissTimer: ReturnType<typeof setTimeout> | null = null;
-  let copiedPillTimer: ReturnType<typeof setTimeout> | null = null;
   let copied = false;
-  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   let prevState: PillState = 'idle';
   let dying = false;
-  let dyingTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Keep the native pill click-through until a state has a real control.
   // Delayed notification controls enable cursor events when they mount.
@@ -86,9 +82,6 @@
   let zeroInputConfirmed = false;
   let audioNoiseFloor = AUDIO_NOISE_SEED_RMS;
   let audioSessionStartedAt = 0;
-  let audioGraceTimer: ReturnType<typeof setTimeout> | null = null;
-  let audioZeroTimer: ReturnType<typeof setTimeout> | null = null;
-  let audioStatusCooldownTimer: ReturnType<typeof setTimeout> | null = null;
   // The status a non-immediate switch is waiting to confirm, and when it
   // first became the desired value — reset whenever the desired value
   // changes, so only a value that holds steady for AUDIO_STATUS_STABLE_MS
@@ -109,18 +102,7 @@
   const rollEase = (t: number) => 1 - Math.pow(1 - t, 3);
 
   function clearAudioStatusTimers() {
-    if (audioGraceTimer) {
-      clearTimeout(audioGraceTimer);
-      audioGraceTimer = null;
-    }
-    if (audioZeroTimer) {
-      clearTimeout(audioZeroTimer);
-      audioZeroTimer = null;
-    }
-    if (audioStatusCooldownTimer) {
-      clearTimeout(audioStatusCooldownTimer);
-      audioStatusCooldownTimer = null;
-    }
+    timers.clear('audioGraceTimer', 'audioZeroTimer', 'audioStatusCooldownTimer');
   }
 
   function resetAudioStatus() {
@@ -132,8 +114,7 @@
     audioNoiseFloor = AUDIO_NOISE_SEED_RMS;
     audioSessionStartedAt = performance.now();
     audioStatusCandidate = null;
-    audioGraceTimer = setTimeout(() => {
-      audioGraceTimer = null;
+    timers.set('audioGraceTimer', () => {
       refreshAudioStatus();
     }, AUDIO_START_GRACE_MS);
   }
@@ -169,10 +150,7 @@
 
   function commitAudioStatus(next: AudioStatus) {
     audioStatusCandidate = null;
-    if (audioStatusCooldownTimer) {
-      clearTimeout(audioStatusCooldownTimer);
-      audioStatusCooldownTimer = null;
-    }
+    timers.clear('audioStatusCooldownTimer');
     if (audioStatus === next) return;
     audioStatus = next;
   }
@@ -180,10 +158,7 @@
   function requestAudioStatus(next: AudioStatus, immediate = false) {
     if (!isAudioState(state) || next === audioStatus) {
       audioStatusCandidate = null;
-      if (audioStatusCooldownTimer) {
-        clearTimeout(audioStatusCooldownTimer);
-        audioStatusCooldownTimer = null;
-      }
+      timers.clear('audioStatusCooldownTimer');
       return;
     }
 
@@ -205,9 +180,8 @@
       return;
     }
 
-    if (audioStatusCooldownTimer) return;
-    audioStatusCooldownTimer = setTimeout(() => {
-      audioStatusCooldownTimer = null;
+    if (timers.has('audioStatusCooldownTimer')) return;
+    timers.set('audioStatusCooldownTimer', () => {
       refreshAudioStatus();
     }, AUDIO_STATUS_STABLE_MS - elapsed);
   }
@@ -223,9 +197,8 @@
     rawAudioLevel = nextLevel;
 
     if (nextLevel <= AUDIO_ZERO_RMS) {
-      if (!audioZeroTimer) {
-        audioZeroTimer = setTimeout(() => {
-          audioZeroTimer = null;
+      if (!timers.has('audioZeroTimer')) {
+        timers.set('audioZeroTimer', () => {
           if (isAudioState(state) && rawAudioLevel <= AUDIO_ZERO_RMS) {
             zeroInputConfirmed = true;
             // AUDIO_ZERO_DEBOUNCE_MS already confirmed this is a real mute,
@@ -239,10 +212,7 @@
       return;
     }
 
-    if (audioZeroTimer) {
-      clearTimeout(audioZeroTimer);
-      audioZeroTimer = null;
-    }
+    timers.clear('audioZeroTimer');
     zeroInputConfirmed = false;
     if (!speechDetected) updateNoiseFloor(nextLevel);
 
@@ -255,10 +225,7 @@
 
   function onSpeechDetected() {
     if (!isAudioState(state)) return;
-    if (audioZeroTimer) {
-      clearTimeout(audioZeroTimer);
-      audioZeroTimer = null;
-    }
+    timers.clear('audioZeroTimer');
     zeroInputConfirmed = false;
     speechDetected = true;
     refreshAudioStatus(true);
@@ -313,7 +280,6 @@
   const STAGE_ROW_H = 16;
   let stageIndex = -1;
   let pendingStageIndex: number | null = null;
-  let stageTimer: ReturnType<typeof setTimeout> | null = null;
   let stageShownAt = 0;
 
   // Which stages this dictation has actually reached, in pipeline order. Rows
@@ -344,10 +310,9 @@
       return;
     }
     pendingStageIndex = idx;
-    if (stageTimer) return;
+    if (timers.has('stageTimer')) return;
     const remaining = STAGE_MIN_MS - (performance.now() - stageShownAt);
-    stageTimer = setTimeout(() => {
-      stageTimer = null;
+    timers.set('stageTimer', () => {
       if (pendingStageIndex !== null) {
         commitStage(pendingStageIndex);
         pendingStageIndex = null;
@@ -356,10 +321,7 @@
   }
 
   function clearStage() {
-    if (stageTimer) {
-      clearTimeout(stageTimer);
-      stageTimer = null;
-    }
+    timers.clear('stageTimer');
     pendingStageIndex = null;
     stageIndex = -1;
     seenStages = [];
@@ -474,7 +436,6 @@
   // never clipped mid-transition), but shrinking waits for ~100ms of quiet —
   // a shrinking pill's ResizeObserver fires every animation frame, and chasing
   // it with a native resize per frame is exactly the flicker this avoids.
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // At most one set_pill_size call is ever in flight — content-fit resizing
   // fires on every animation frame of a width transition, and firing an
@@ -538,9 +499,7 @@
     if (w > lastSentWidth || h > lastSentHeight) {
       reportPillSize(contentW, contentH);
     }
-    if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      settleTimer = null;
+    timers.set('settleTimer', () => {
       if (clusterEl) reportPillSize(clusterEl.offsetWidth, clusterEl.offsetHeight);
     }, 100);
   }
@@ -709,9 +668,8 @@
     if (dying) return;
     dying = true;
     void setPillInteractive(false);
-    dyingTimer = setTimeout(() => {
+    timers.set('dyingTimer', () => {
       dying = false;
-      dyingTimer = null;
       prevState = state;
       state = 'idle';
       clearStage();
@@ -724,38 +682,17 @@
       errLines = 1;
       errScroll = false;
       errorMsg = '';
-      if (errorTimer) {
-        clearTimeout(errorTimer);
-        errorTimer = null;
-      }
+      timers.clear('errorTimer');
       cancelOpen = false;
       showCancelBtn = false;
-      if (cancelBtnTimer) {
-        clearTimeout(cancelBtnTimer);
-        cancelBtnTimer = null;
-      }
-      if (cancelDismissTimer) {
-        clearTimeout(cancelDismissTimer);
-        cancelDismissTimer = null;
-      }
+      timers.clear('cancelBtnTimer');
+      timers.clear('cancelDismissTimer');
       showCopyBtn = false;
       copied = false;
-      if (copyBtnTimer) {
-        clearTimeout(copyBtnTimer);
-        copyBtnTimer = null;
-      }
-      if (pasteFailedDismissTimer) {
-        clearTimeout(pasteFailedDismissTimer);
-        pasteFailedDismissTimer = null;
-      }
-      if (copiedTimer) {
-        clearTimeout(copiedTimer);
-        copiedTimer = null;
-      }
-      if (copiedPillTimer) {
-        clearTimeout(copiedPillTimer);
-        copiedPillTimer = null;
-      }
+      timers.clear('copyBtnTimer');
+      timers.clear('pasteFailedDismissTimer');
+      timers.clear('copiedTimer');
+      timers.clear('copiedPillTimer');
       import('@tauri-apps/api/core')
         .then(({ invoke }) => invoke('hide_dictation_pill'))
         .catch(() => {});
@@ -859,7 +796,7 @@
   }
 
   onMount(() => {
-    const unlisteners: Array<() => void> = [];
+    const listeners = createListenerScope();
     let mounted = true;
     const onWindowResize = () => { void reportHitRect(true); };
     window.addEventListener('resize', onWindowResize);
@@ -882,11 +819,18 @@
     }
 
     (async () => {
-      const { listen } = await import('@tauri-apps/api/event');
+      const { listen: nativeListen } = await import('@tauri-apps/api/event');
+      if (!mounted) return;
+      const listen: typeof nativeListen = (event, handler, options) => {
+        const registration = nativeListen(event, handler, options);
+        registrations.push(listeners.track(registration));
+        return registration;
+      };
+      const registrations: Promise<void>[] = [];
 
-      const l1 = await listen<string>('pill-state', (ev) => {
+      void listen<string>('pill-state', (ev) => {
         const incoming = (ev.payload as PillState) || 'idle';
-        if (hfTimer !== null) { clearTimeout(hfTimer); hfTimer = null; }
+        timers.clear('hfTimer');
 
         // A fresh recording starts a brand-new dictation: drop the previous
         // one's profile/stage. Terminal states are no longer "in progress", so
@@ -897,23 +841,13 @@
         ) {
           clearStage();
         }
-        if (incoming === 'recording') {
-          contextLabel = null;
+        if (isAudioState(incoming)) {
+          if (incoming === 'recording') contextLabel = null;
           if (!isAudioState(state)) resetAudioStatus();
-        } else if (incoming === 'handsfree') {
-          if (!isAudioState(state)) resetAudioStatus();
-        } else if (
-          incoming === 'error' ||
-          incoming === 'cancelled' ||
-          incoming === 'interrupted' ||
-          incoming === 'paste_failed' ||
-          incoming === 'copied' ||
-          incoming === 'clipboard_warning'
-        ) {
-          clearStage();
+        } else if (isTerminalState(incoming)) {
           contextLabel = null;
         }
-        if (incoming !== 'recording' && incoming !== 'handsfree' && incoming !== 'idle') {
+        if (!isAudioState(incoming) && incoming !== 'idle') {
           clearAudioStatus();
         }
 
@@ -923,12 +857,11 @@
           return;
         }
 
-        if (dyingTimer !== null) { clearTimeout(dyingTimer); dyingTimer = null; dying = false; }
+        if (timers.has('dyingTimer')) { timers.clear('dyingTimer'); dying = false; }
 
         if (incoming === 'handsfree') {
           showHfButtons = false;
-          hfTimer = setTimeout(() => {
-            hfTimer = null;
+          timers.set('hfTimer', () => {
             if (state === 'handsfree') {
               showHfButtons = true;
               void setPillInteractive(true);
@@ -937,36 +870,24 @@
         }
         prevState = state;
         state = incoming;
-        void setPillInteractive(
-          incoming === 'error' ||
-          incoming === 'cancelled' ||
-          incoming === 'interrupted' ||
-          incoming === 'paste_failed' ||
-          incoming === 'copied' ||
-          incoming === 'clipboard_warning'
-        );
-        if (state === 'recording' || state === 'handsfree') {
+        void setPillInteractive(isTerminalState(incoming));
+        if (isAudioState(state)) {
           refreshDpr(); // align snapping to the current monitor before first paint
           startRaf();
         } else {
           stopRaf();
         }
-        if (state !== 'recording' && state !== 'handsfree') resetVisualizer();
+        if (!isAudioState(state)) resetVisualizer();
         if (state === 'error') {
           openError();
-          if (errorTimer) clearTimeout(errorTimer);
-          errorTimer = setTimeout(() => {
-            errorTimer = null;
+          timers.set('errorTimer', () => {
             if (state === 'error') goIdle();
           }, 10000);
         } else if (state !== 'copied' && state !== 'clipboard_warning' && state !== 'paste_failed') {
           // Don't clear errorMsg on 'copied' — show_copied_pill carries its
           // confirmation text through the pill-error event, which fires just
           // before this pill-state one.
-          if (errorTimer) {
-            clearTimeout(errorTimer);
-            errorTimer = null;
-          }
+          timers.clear('errorTimer');
           errorMsg = '';
           errOpen = false;
           errWidth = 0;
@@ -981,33 +902,23 @@
           requestAnimationFrame(() => {
             if (isCancelLike(state)) cancelOpen = true;
           });
-          if (cancelBtnTimer) clearTimeout(cancelBtnTimer);
+          timers.clear('cancelBtnTimer');
           // 150ms, not 200: the undo button now only fades in (its space is
           // reserved from the first frame — see the template), so it no
           // longer has to wait for a width expansion to finish. Landing it
           // just after the entrance morph keeps the "arrives second" beat
           // without trailing the rest of the pill.
-          cancelBtnTimer = setTimeout(() => {
-            cancelBtnTimer = null;
+          timers.set('cancelBtnTimer', () => {
             if (isCancelLike(state)) showCancelBtn = true;
           }, 150);
-          if (cancelDismissTimer) clearTimeout(cancelDismissTimer);
-          cancelDismissTimer = setTimeout(() => {
-            cancelDismissTimer = null;
+          timers.set('cancelDismissTimer', () => {
             // Just hide the toast — the capture itself stays resumable from
             // Home for the full backend window. Only the explicit dismiss
             // button actually discards it (see dismissCancelled()).
             if (isCancelLike(state)) goIdle();
           }, 10000);
         } else {
-          if (cancelBtnTimer) {
-            clearTimeout(cancelBtnTimer);
-            cancelBtnTimer = null;
-          }
-          if (cancelDismissTimer) {
-            clearTimeout(cancelDismissTimer);
-            cancelDismissTimer = null;
-          }
+          timers.clear('cancelBtnTimer', 'cancelDismissTimer');
           cancelOpen = false;
           showCancelBtn = false;
         }
@@ -1017,109 +928,79 @@
           copied = false;
           // A stale copiedTimer from a previous copy click could fire goIdle()
           // on the fresh paste_failed state — clear it alongside the others.
-          if (copiedTimer) {
-            clearTimeout(copiedTimer);
-            copiedTimer = null;
-          }
-          if (copyBtnTimer) clearTimeout(copyBtnTimer);
+          timers.clear('copiedTimer');
+          timers.clear('copyBtnTimer');
           // A brief beat (not the 1.2s this replaced) so the pill still reads
           // as "message, then it widens" rather than popping in fully formed
           // — but short enough that the widen reads as part of the entrance,
           // not as a second, disconnected animation arriving a while later.
-          copyBtnTimer = setTimeout(() => {
-            copyBtnTimer = null;
+          timers.set('copyBtnTimer', () => {
             if (state === 'paste_failed') {
               showCopyBtn = true;
               void setPillInteractive(true);
             }
           }, 180);
-          if (pasteFailedDismissTimer) clearTimeout(pasteFailedDismissTimer);
-          pasteFailedDismissTimer = setTimeout(() => {
-            pasteFailedDismissTimer = null;
+          timers.set('pasteFailedDismissTimer', () => {
             if (state === 'paste_failed') goIdle();
           }, 10000);
         } else {
-          if (copyBtnTimer) {
-            clearTimeout(copyBtnTimer);
-            copyBtnTimer = null;
-          }
-          if (pasteFailedDismissTimer) {
-            clearTimeout(pasteFailedDismissTimer);
-            pasteFailedDismissTimer = null;
-          }
-          if (copiedTimer) {
-            clearTimeout(copiedTimer);
-            copiedTimer = null;
-          }
+          timers.clear('copyBtnTimer', 'pasteFailedDismissTimer', 'copiedTimer');
           showCopyBtn = false;
         }
 
         if (state === 'copied' || state === 'clipboard_warning') {
-          if (copiedPillTimer) clearTimeout(copiedPillTimer);
-          copiedPillTimer = setTimeout(() => {
-            copiedPillTimer = null;
+          timers.set('copiedPillTimer', () => {
             if (state === 'copied' || state === 'clipboard_warning') goIdle();
           }, 5000);
-        } else if (copiedPillTimer) {
-          clearTimeout(copiedPillTimer);
-          copiedPillTimer = null;
-        }
+        } else timers.clear('copiedPillTimer');
       });
-      if (!mounted) { l1(); return; }
-      unlisteners.push(l1);
 
-      const l2 = await listen<string>('pill-error', (ev) => {
+      void listen<string>('pill-error', (ev) => {
         errorMsg = ev.payload ?? '';
         if (state === 'error') {
           openError();
         }
       });
-      if (!mounted) { l2(); return; }
-      unlisteners.push(l2);
 
       // Short-window envelope batches (see EnvelopeTap in media/audio.rs) — the
       // visualizer's real input. The scalar `audio-level` event is still emitted
       // for other consumers, but one RMS value per 50ms cannot show audio
       // flowing, so the pill does not use it.
-      const l3 = await listen<number[]>('audio-envelope', (ev) => {
+      void listen<number[]>('audio-envelope', (ev) => {
         if (ev.payload?.length) visualizer.pushEnvelope(ev.payload);
       });
-      if (!mounted) { l3(); return; }
-      unlisteners.push(l3);
 
-      const l7 = await listen<number>('audio-level-raw', (ev) => {
+      void listen<number>('audio-level-raw', (ev) => {
         onRawAudioLevel(ev.payload ?? 0);
       });
-      if (!mounted) { l7(); return; }
-      unlisteners.push(l7);
 
-      const l8 = await listen('pill-speech-detected', () => {
+      void listen('pill-speech-detected', () => {
         onSpeechDetected();
       });
-      if (!mounted) { l8(); return; }
-      unlisteners.push(l8);
 
-      const l5 = await listen<string>('pill-context', (ev) => {
+      void listen<string>('pill-context', (ev) => {
         const name = ev.payload?.trim();
         contextLabel = name ? name : null;
       });
-      if (!mounted) { l5(); return; }
-      unlisteners.push(l5);
 
-      const l6 = await listen<string>('pill-stage', (ev) => {
+      void listen<string>('pill-stage', (ev) => {
         onPillStage(ev.payload);
       });
-      if (!mounted) { l6(); return; }
-      unlisteners.push(l6);
 
       // Fired when the cancelled capture is resumed or dismissed from
       // *another* window (Home's banner) — if this toast is still showing,
       // it's now stale, so drop it without re-invoking dismiss.
-      const l4 = await listen('verenu:cancelled-capture-cleared', () => {
+      void listen('verenu:cancelled-capture-cleared', () => {
         if (isCancelLike(state)) goIdle();
       });
-      if (!mounted) { l4(); return; }
-      unlisteners.push(l4);
+
+      try {
+        await Promise.all(registrations);
+      } catch {
+        listeners.dispose();
+        console.error('Failed to install pill event listeners.');
+        return;
+      }
 
       // Do not report readiness until every pill listener is installed. The
       // backend creates this window lazily and can emit `pill-state` in the
@@ -1137,27 +1018,13 @@
 
     return () => {
       mounted = false;
-      if (settleTimer) {
-        clearTimeout(settleTimer);
-        settleTimer = null;
-      }
       pillResizeObserver?.disconnect();
       pillResizeObserver = null;
       window.removeEventListener('resize', onWindowResize);
       mq?.removeEventListener('change', onDprChange);
       cancelAnimationFrame(rafId);
-      if (errorTimer) clearTimeout(errorTimer);
-      if (dyingTimer) clearTimeout(dyingTimer);
-      if (stageTimer) clearTimeout(stageTimer);
-      if (hfTimer) clearTimeout(hfTimer);
-      if (cancelBtnTimer) clearTimeout(cancelBtnTimer);
-      if (cancelDismissTimer) clearTimeout(cancelDismissTimer);
-      if (copyBtnTimer) clearTimeout(copyBtnTimer);
-      if (pasteFailedDismissTimer) clearTimeout(pasteFailedDismissTimer);
-      if (copiedTimer) clearTimeout(copiedTimer);
-      if (copiedPillTimer) clearTimeout(copiedPillTimer);
-      clearAudioStatusTimers();
-      unlisteners.forEach(u => u());
+      timers.clearAll();
+      listeners.dispose();
     };
   });
 
@@ -1180,7 +1047,7 @@
   }
 
   async function retryFailed() {
-    if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+    timers.clear('errorTimer');
     const { invoke } = await import('@tauri-apps/api/core');
     // Don't go idle before the call — Rust emits 'processing' on success so
     // the pill morphs from error to processing. If the retry fails, only
@@ -1195,12 +1062,12 @@
   // the 10s auto-dismiss timer is a fallback for "walked away", not a floor
   // on how long the pill has to sit there once the user has already seen it.
   function dismissError() {
-    if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+    timers.clear('errorTimer');
     goIdle();
   }
 
   async function continueCancelled() {
-    if (cancelDismissTimer) { clearTimeout(cancelDismissTimer); cancelDismissTimer = null; }
+    timers.clear('cancelDismissTimer');
     const { invoke } = await import('@tauri-apps/api/core');
     // Don't force idle on success — Rust emits 'handsfree' next so the pill
     // morphs directly from cancelled to handsfree, mirroring confirmHandless.
@@ -1208,7 +1075,7 @@
   }
 
   async function dismissCancelled() {
-    if (cancelDismissTimer) { clearTimeout(cancelDismissTimer); cancelDismissTimer = null; }
+    timers.clear('cancelDismissTimer');
     goIdle();
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('dismiss_cancelled_capture').catch(() => {});
@@ -1219,10 +1086,8 @@
     try {
       await invoke('copy_paste_failure_to_clipboard');
       copied = true;
-      if (pasteFailedDismissTimer) { clearTimeout(pasteFailedDismissTimer); pasteFailedDismissTimer = null; }
-      if (copiedTimer) clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => {
-        copiedTimer = null;
+      timers.clear('pasteFailedDismissTimer');
+      timers.set('copiedTimer', () => {
         if (state === 'paste_failed') goIdle();
       }, 1500);
     } catch {
@@ -1235,14 +1100,12 @@
   // dismissError/dismissCancelled above — the auto-dismiss timers exist for
   // "walked away", not as a floor on how long an already-seen toast must sit.
   function dismissPasteFailed() {
-    if (copyBtnTimer) { clearTimeout(copyBtnTimer); copyBtnTimer = null; }
-    if (pasteFailedDismissTimer) { clearTimeout(pasteFailedDismissTimer); pasteFailedDismissTimer = null; }
-    if (copiedTimer) { clearTimeout(copiedTimer); copiedTimer = null; }
+    timers.clear('copyBtnTimer', 'pasteFailedDismissTimer', 'copiedTimer');
     goIdle();
   }
 
   function dismissCopied() {
-    if (copiedPillTimer) { clearTimeout(copiedPillTimer); copiedPillTimer = null; }
+    timers.clear('copiedPillTimer');
     goIdle();
   }
 

@@ -26,21 +26,22 @@
     return () => window.clearTimeout(timer);
   });
 
-  const filtered = $derived.by(() => {
-    const q = debouncedSearch.trim().toLowerCase();
-    let list = q
-      ? appStore.dictionary.filter(e =>
-          e.term.toLowerCase().includes(q) ||
-          (e.mistake ?? '').toLowerCase().includes(q)
-        )
-      : [...appStore.dictionary];
-
+  const sorted = $derived.by(() => {
+    const list = [...appStore.dictionary];
     if (sort === 'newest')         list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'oldest')         list.sort((a, b) => a.created_at.localeCompare(b.created_at));
     if (sort === 'alpha')          list.sort((a, b) => a.term.localeCompare(b.term));
     if (sort === 'most_corrected') list.sort((a, b) => b.correction_count - a.correction_count);
-
     return list;
+  });
+  const filtered = $derived.by(() => {
+    const q = debouncedSearch.trim().toLowerCase();
+    return q
+      ? sorted.filter(e =>
+          e.term.toLowerCase().includes(q) ||
+          (e.mistake ?? '').toLowerCase().includes(q)
+        )
+      : sorted;
   });
   const visibleFiltered = $derived(filtered.filter((entry) => !leavingIds.has(entry.id)));
 

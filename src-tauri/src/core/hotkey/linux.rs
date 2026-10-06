@@ -680,6 +680,13 @@ fn escape_unbind_snippet() -> String {
 }
 
 fn eval_hyprland(snippet: &str) -> Result<(), String> {
+    if let Some(response) = crate::core::hyprland::socket_request(&format!("/eval {snippet}")) {
+        return response
+            .ok()
+            .filter(|reply| String::from_utf8_lossy(reply).trim() == "ok")
+            .map(|_| ())
+            .ok_or_else(|| "hyprctl eval rejected the snippet".to_string());
+    }
     let output = std::process::Command::new("hyprctl")
         .args(["eval", snippet])
         .stderr(std::process::Stdio::null())

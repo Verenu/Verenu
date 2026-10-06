@@ -259,13 +259,14 @@ pub fn latest_op_stamp(
     row_uuid: &str,
 ) -> Result<Option<(i64, String, i64)>> {
     let row = conn
-        .query_row(
+        .prepare_cached(
             "SELECT ts_ms, origin, origin_seq FROM sync_log
              WHERE table_name = ?1 AND row_uuid = ?2
              ORDER BY seq DESC LIMIT 1",
-            params![table_name, row_uuid],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
+        )?
+        .query_row(params![table_name, row_uuid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .optional()?;
     Ok(row)
 }
@@ -279,9 +280,11 @@ pub fn append_op(
     origin: &str,
     origin_seq: i64,
 ) -> Result<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?
+    .execute(
         params![
             op.table_name(),
             op.row_uuid,
@@ -311,7 +314,7 @@ pub struct LogEntry {
 /// SQLite's bare-column-with-MAX behavior returns the columns of the max-seq
 /// row within each group.
 pub fn changes_since(conn: &Connection, after_seq: i64, limit: i64) -> Result<Vec<LogEntry>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT seq, table_name, row_uuid, op, ts_ms, origin, origin_seq
          FROM (SELECT seq, table_name, row_uuid, op, ts_ms, origin, origin_seq,
                       MAX(seq) OVER (PARTITION BY table_name, row_uuid) AS max_seq

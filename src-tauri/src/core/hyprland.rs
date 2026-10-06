@@ -6,6 +6,8 @@
 //! recording start/retry and insertion, never while audio callbacks run.
 
 #[cfg(target_os = "linux")]
+use serde::de::DeserializeOwned;
+#[cfg(target_os = "linux")]
 use serde::Deserialize;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -104,7 +106,10 @@ impl HyprMonitor {
 }
 
 #[cfg(target_os = "linux")]
-fn hyprctl_json(args: &[&str]) -> Option<serde_json::Value> {
+fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
+    if let Some(response) = socket_request(&format!("j/{}", args[1..].join(" "))) {
+        return serde_json::from_slice(&response.ok()?).ok();
+    }
     // The command is synchronous but used on a non-audio path. Do not include
     // output in diagnostics: titles/classes can be private.
     let output = std::process::Command::new("hyprctl")
@@ -117,9 +122,34 @@ fn hyprctl_json(args: &[&str]) -> Option<serde_json::Value> {
     serde_json::from_slice(&output.stdout).ok()
 }
 
+/// Use the same command socket and five-second timeout as hyprctl. Only fall
+/// back before sending anything: retrying a dispatch after a read failure can
+/// repeat a visible window operation.
+#[cfg(target_os = "linux")]
+pub(crate) fn socket_request(command: &str) -> Option<std::io::Result<Vec<u8>>> {
+    let path = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
+        .join("hypr")
+        .join(std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?)
+        .join(".socket.sock");
+    let stream = std::os::unix::net::UnixStream::connect(path).ok()?;
+    Some(socket_exchange(stream, command))
+}
+
+#[cfg(target_os = "linux")]
+fn socket_exchange(mut stream: std::os::unix::net::UnixStream, command: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let timeout = Some(std::time::Duration::from_secs(5));
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
+    stream.write_all(command.as_bytes())?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    Ok(response)
+}
+
 #[cfg(target_os = "linux")]
 fn monitors() -> Option<Vec<HyprMonitor>> {
-    serde_json::from_value(hyprctl_json(&["-j", "monitors"])?).ok()
+    hyprctl_json(&["-j", "monitors"])
 }
 
 #[cfg(target_os = "linux")]
@@ -136,22 +166,20 @@ pub(crate) fn logical_monitor_for_point(x: f64, y: f64) -> Option<LogicalMonitor
 #[cfg(target_os = "linux")]
 pub(crate) fn session_available() -> bool {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-        && hyprctl_json(&["-j", "version"]).is_some()
+        && hyprctl_json::<serde_json::Value>(&["-j", "version"]).is_some()
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn active_window() -> Option<ActiveWindow> {
-    serde_json::from_value(hyprctl_json(&["-j", "activewindow"])?).ok()
+    hyprctl_json(&["-j", "activewindow"])
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
-    let windows = hyprctl_json(&["-j", "clients"])?;
+    let windows: Vec<serde_json::Value> = hyprctl_json(&["-j", "clients"])?;
     windows
-        .as_array()?
-        .iter()
+        .into_iter()
         .find(|window| window.get("address").and_then(|v| v.as_str()) == Some(address))
-        .cloned()
         .and_then(|window| serde_json::from_value(window).ok())
 }
 
@@ -159,30 +187,44 @@ pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
 /// to resolve a captured target's app after focus has moved elsewhere.
 #[cfg(target_os = "linux")]
 pub(crate) fn window_by_pid(pid: u32) -> Option<ActiveWindow> {
-    let windows = hyprctl_json(&["-j", "clients"])?;
+    let windows: Vec<serde_json::Value> = hyprctl_json(&["-j", "clients"])?;
     windows
-        .as_array()?
-        .iter()
+        .into_iter()
         .filter(|window| window.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(pid)))
         .min_by_key(|window| window.get("focusHistoryID").and_then(|v| v.as_i64()).unwrap_or(i64::MAX))
-        .cloned()
         .and_then(|window| serde_json::from_value(window).ok())
+}
+
+#[cfg(target_os = "linux")]
+fn dispatch(expression: &str, unavailable: &str, failed: &str) -> Result<(), String> {
+    if let Some(response) = socket_request(&format!("/dispatch {expression}")) {
+        return response
+            .ok()
+            .filter(|reply| !reply.starts_with(b"error:"))
+            .map(|_| ())
+            .ok_or_else(|| failed.to_string());
+    }
+    let status = std::process::Command::new("hyprctl")
+        .args(["dispatch", expression])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|err| format!("{unavailable}: {err}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| failed.to_string())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn focus(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");
     let expression = format!("hl.dsp.focus({{ window = '{selector}' }})");
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|err| format!("Hyprland IPC is unavailable: {err}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not focus the original target window".to_string())
+    dispatch(
+        &expression,
+        "Hyprland IPC is unavailable",
+        "Hyprland could not focus the original target window",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -219,15 +261,11 @@ pub(crate) fn dispatch_paste_for_target(class_name: &str, tags: &[String]) -> Re
         let expression = format!(
             "hl.dsp.send_key_state({{ mods = '{mods}', key = '{key}', state = '{state}' }})"
         );
-        let status = std::process::Command::new("hyprctl")
-            .args(["dispatch", &expression])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| format!("Hyprland paste IPC unavailable: {e}"))?;
-        if !status.success() {
-            return Err("Hyprland could not dispatch paste to the original target".to_string());
-        }
+        dispatch(
+            &expression,
+            "Hyprland paste IPC unavailable",
+            "Hyprland could not dispatch paste to the original target",
+        )?;
         if state == "down" {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -241,16 +279,11 @@ pub(crate) fn move_window(address: &str, x: i32, y: i32) -> Result<(), String> {
     let expression = format!(
         "hl.dsp.window.move({{ x = {x}, y = {y}, relative = false, window = '{selector}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland move IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not position the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland move IPC unavailable",
+        "Hyprland could not position the dictation pill",
+    )
 }
 
 /// Raises a floating window without focusing it. Wayland does not guarantee
@@ -265,16 +298,11 @@ pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<()
     let expression = format!(
         "hl.dsp.window.resize({{ x = {width}, y = {height}, relative = false, window = '{selector}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland resize IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not size the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland resize IPC unavailable",
+        "Hyprland could not size the dictation pill",
+    )
 }
 
 /// Lets the pointer reach a window that a user rule marked `no_focus`.
@@ -294,16 +322,11 @@ pub(crate) fn set_pointer_input(address: &str, interactive: bool) -> Result<(), 
     let expression = format!(
         "hl.dsp.window.set_prop({{ window = '{selector}', prop = 'no_focus', value = '{no_focus}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland property IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not enable pointer input for the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland property IPC unavailable",
+        "Hyprland could not enable pointer input for the dictation pill",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -311,21 +334,16 @@ pub(crate) fn raise_window(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");
     let expression =
         format!("hl.dsp.window.alter_zorder({{ mode = 'top', window = '{selector}' }})");
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland z-order IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not raise the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland z-order IPC unavailable",
+        "Hyprland could not raise the dictation pill",
+    )
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn pill_window() -> Option<ActiveWindow> {
-    let clients = hyprctl_json(&["-j", "clients"])?;
+    let clients: serde_json::Value = hyprctl_json(&["-j", "clients"])?;
     owned_pill_window(&clients, std::process::id())
 }
 
@@ -724,6 +742,37 @@ pub(crate) fn active_window() -> Option<()> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn socket_exchange_sends_exact_command_and_reads_all_response_fragments() {
+        use std::io::{Read, Write};
+        let (client, mut compositor) = std::os::unix::net::UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut request = [0; 9];
+            compositor.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"j/clients");
+            compositor.write_all(b"[{\"address\":").unwrap();
+            compositor.write_all(b"\"pill\"}]").unwrap();
+        });
+        let response = super::socket_exchange(client, "j/clients").unwrap();
+        server.join().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(value[0]["address"], "pill");
+    }
+
+    #[test]
+    fn socket_exchange_preserves_compositor_errors_without_replaying_dispatch() {
+        use std::io::{Read, Write};
+        let (client, mut compositor) = std::os::unix::net::UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut request = [0; 14];
+            compositor.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"/dispatch test");
+            compositor.write_all(b"error: fixture").unwrap();
+        });
+        assert_eq!(super::socket_exchange(client, "/dispatch test").unwrap(), b"error: fixture");
+        server.join().unwrap();
+    }
+
     #[test]
     fn fresh_window_rules_are_installed_idempotently_and_upgrade_dev_rules() {
         let (start, end) = super::WINDOW_RULE_MARKERS;

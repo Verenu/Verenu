@@ -19,6 +19,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Android now starts with a higher microphone gain (4.5x instead of 3.5x), because phone microphones record quieter than desktop ones. A gain you already chose is kept.
 
+- Reduced settings-loading IPC calls, sped up pill placement on Hyprland, and shrank the production app bundle by excluding browser mocks.
+
 - Restored desktop dictation telemetry for recording completion, pipeline stages, delivery, and final outcomes. Each run keeps its own correlation ID across asynchronous processing. Failed insertion no longer counts as delivery, and cleanup recovery is recorded as fallback success. The existing telemetry preference and content restrictions still apply.
 
 - Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.

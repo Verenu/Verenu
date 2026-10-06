@@ -129,10 +129,10 @@
      above a mid-month column. */
   const monthLabels = $derived.by(() => {
     const labels: Array<{ col: number; label: string }> = [];
-    let lastMonth = -1;
+    let lastMonth = '';
     let lastCol = -Infinity;
     cells.forEach((cell, i) => {
-      const month = parseLocalDay(cell.day).getMonth();
+      const month = cell.day.slice(0, 7);
       if (month !== lastMonth) {
         lastMonth = month;
         const col = Math.floor(i / 7);
@@ -168,11 +168,16 @@
   });
 
   const rangeActivity = $derived.by(() => {
-    const active = cells.filter((day) => !day.noData && day.words > 0);
-    const words = active.reduce((sum, day) => sum + day.words, 0);
-    return { days: active.length, average: active.length > 0 ? words / active.length : 0 };
+    let days = 0;
+    let words = 0;
+    for (const day of cells) {
+      if (day.noData || day.words <= 0) continue;
+      days++;
+      words += day.words;
+    }
+    return { days, average: days > 0 ? words / days : 0 };
   });
-  const visibleActiveDays = $derived(cells.filter((day) => !day.noData && day.words > 0).length);
+  const visibleActiveDays = $derived(rangeActivity.days);
   const visibleRangeLabel = $derived.by(() => {
     if (cells.length === 0) return 'recent activity';
     return `${fmtDay(cells[0].day)} to ${fmtDay(cells[cells.length - 1].day)}`;
