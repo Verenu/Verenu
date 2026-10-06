@@ -12,17 +12,20 @@ documented in `docs/ANDROID.md` — this directory is ONLY what the OS requires:
 | `kotlin/com/verenu/app/VerenuDictationService.kt` | Microphone-type foreground-service holder (Rust/cpal captures) |
 | `kotlin/com/verenu/app/VerenuBridge.kt` | Authed loopback client for `src-tauri/src/android/bridge.rs` |
 | `kotlin/com/verenu/app/VerenuKeystore.kt` | `EncryptedSharedPreferences` (Android Keystore) credential store |
+| `kotlin/com/verenu/app/VerenuUpdatePolicy.kt` | Package, signer, and version-code checks for update APKs |
+| `kotlin/com/verenu/app/VerenuUpdaterPlugin.kt` | Tauri commands for install permission and Android installer handoff |
 | `res/xml/accessibility_service_config.xml` | Accessibility-service declaration |
 | `res/values/verenu_strings.xml` | Service/notification strings |
 | `AndroidManifest.snippet.xml` | Permissions + services merged into the generated manifest |
 
 ## Deliberate constraints
 
-- **Zero Tauri imports in Kotlin.** The service talks to Rust over the
-  token-authed loopback bridge (`VerenuBridge.kt` ↔ `bridge.rs`), so this
-  code compiles against any AGP/CLI combination and keeps working when the
-  main activity is dead. Only Android SDK + `androidx.security:security-crypto`
-  + `androidx.core` APIs are used.
+- **Separate service and WebView integration.** Long-lived accessibility and
+  microphone services use Android APIs and the token-authenticated loopback
+  bridge (`VerenuBridge.kt` ↔ `bridge.rs`), so they keep working when the
+  WebView is dead. Operations initiated from the WebView use Tauri's Android
+  `Plugin`/`Invoke` APIs; `VerenuUpdaterPlugin.kt` uses this adapter for install
+  permission and the package-installer handoff.
 - **No audio capture in Kotlin.** `cpal` (AAudio backend) captures in Rust;
   the foreground service only holds mic priority and process liveness.
 - **`src-tauri/gen/` stays gitignored.** Nothing here is edited into

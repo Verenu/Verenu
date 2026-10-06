@@ -8,7 +8,7 @@ export interface UpdateProgress {
   total: number | null;
 }
 
-type InstallOutcome = 'installed' | 'downloadOpened';
+type InstallOutcome = 'installed' | 'downloadOpened' | 'installerOpened';
 
 export function progressLabel(progress: UpdateProgress): string {
   switch (progress.phase) {
@@ -34,7 +34,7 @@ export function updateActionLabel(update: UpdateInfo, restart = true): string {
     if (update.assetName.toLowerCase().endsWith('.appimage')) return 'Download AppImage';
     return 'Download Installer';
   }
-  if (isLinuxInstaller(update)) return 'Update Verenu';
+  if (isLinuxInstaller(update) || update.assetName.endsWith('.apk')) return 'Update Verenu';
   return restart ? 'Install & Restart' : 'Install Now';
 }
 
@@ -60,6 +60,8 @@ export async function installAvailableUpdate(): Promise<void> {
       appStore.updateProgress = 'Update installed. Restart Verenu to finish.';
     } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
+    } else if (outcome === 'installerOpened') {
+      appStore.updateProgress = 'Approve the update in the Android installer.';
     } else {
       throw new Error('The updater returned an unexpected result. Check for updates and try again.');
     }
