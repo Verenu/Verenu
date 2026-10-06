@@ -113,9 +113,8 @@ pub async fn save_app_mappings(app: AppHandle, mappings: Vec<AppMapping>) -> Res
 
 #[tauri::command]
 pub async fn get_snippets(app: AppHandle) -> Result<Vec<db::Snippet>, String> {
-    let db = db_state(&app);
-    run_blocking("get_snippets", move || {
-        let rows = db::query_snippets(&db).map_err(|e| e.to_string())?;
+    run_db(&app, "get_snippets", move |db| {
+        let rows = db::query_snippets(db)?;
         if crate::system::logger::is_verbose() {
             log::info!("snippets:get count={}", rows.len());
         }
@@ -132,8 +131,7 @@ pub async fn create_snippet(
     instructions: String,
     context_id: Option<i64>,
 ) -> Result<db::CreatedRecordMeta, String> {
-    let db = db_state(&app);
-    run_blocking("create_snippet", move || {
+    run_db(&app, "create_snippet", move |db| {
         log::info!(
             "snippets:create trigger_chars={} expansion_chars={} instructions_chars={}",
             trigger.chars().count(),
@@ -141,10 +139,10 @@ pub async fn create_snippet(
             instructions.chars().count()
         );
         let created =
-            db::insert_snippet_returning(&db, &trigger, &expansion, &instructions, context_id)
+            db::insert_snippet_returning(db, &trigger, &expansion, &instructions, context_id)
                 .map_err(|e| {
                     log::warn!("snippets:create failed: {e}");
-                    e.to_string()
+                    e
                 })?;
         log::info!("snippets:create ok id={}", created.id);
         Ok(created)
@@ -160,31 +158,22 @@ pub async fn edit_snippet(
     expansion: String,
     instructions: String,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("edit_snippet", move || {
-        db::update_snippet(&db, id, &trigger, &expansion, &instructions).map_err(|e| e.to_string())
+    run_db(&app, "edit_snippet", move |db| {
+        db::update_snippet(db, id, &trigger, &expansion, &instructions)
     })
     .await
 }
 
 #[tauri::command]
 pub async fn remove_snippet(app: AppHandle, id: i64) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("remove_snippet", move || {
-        db::delete_snippet(&db, id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "remove_snippet", move |db| db::delete_snippet(db, id)).await
 }
 
 // ---------- dictionary ----------
 
 #[tauri::command]
 pub async fn get_dictionary(app: AppHandle) -> Result<Vec<db::DictionaryEntry>, String> {
-    let db = db_state(&app);
-    run_blocking("get_dictionary", move || {
-        db::query_dictionary(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_dictionary", db::query_dictionary).await
 }
 
 #[tauri::command]
@@ -194,17 +183,16 @@ pub async fn create_dictionary_entry(
     mistake: Option<String>,
     context_id: Option<i64>,
 ) -> Result<db::CreatedRecordMeta, String> {
-    let db = db_state(&app);
-    run_blocking("create_dictionary_entry", move || {
+    run_db(&app, "create_dictionary_entry", move |db| {
         log::info!(
             "dictionary:create term_chars={} mistake_chars={}",
             term.chars().count(),
             mistake.as_deref().map_or(0, |m| m.chars().count())
         );
-        db::insert_dictionary_entry_returning(&db, &term, mistake.as_deref(), context_id).map_err(
+        db::insert_dictionary_entry_returning(db, &term, mistake.as_deref(), context_id).map_err(
             |e| {
                 log::warn!("dictionary:create failed: {e}");
-                e.to_string()
+                e
             },
         )
     })
@@ -223,8 +211,8 @@ pub async fn edit_dictionary_entry(
     correction_id: Option<i64>,
     correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("edit_dictionary_entry", move || {
+    let event_app = app.clone();
+    run_db(&app, "edit_dictionary_entry", move |db| {
         // The mapping ids are accepted for forward/backward IPC compatibility
         // and diagnostics, but the canonical row plus Context is the actual
         // edit target. The backend re-reads authoritative child mappings in a
@@ -232,25 +220,18 @@ pub async fn edit_dictionary_entry(
         let _ = (dictionary_id, correction_id, correction_ids);
         let result = match context_id {
             Some(context_id) => db::update_dictionary_entry_for_context(
-                &db,
+                db,
                 context_id,
                 id,
                 &term,
                 mistake.as_deref(),
             ),
-            None => db::update_dictionary_entry(&db, id, &term, mistake.as_deref()),
+            None => db::update_dictionary_entry(db, id, &term, mistake.as_deref()),
         };
         if result.is_ok() {
-            app.emit(
-                "verenu:dictionary-updated",
-                serde_json::json!({
-                    "context_id": context_id,
-                    "dictionary_id": id,
-                }),
-            )
-            .ok();
+            emit_dictionary_updated(&event_app, context_id, id);
         }
-        result.map_err(|e| e.to_string())
+        result
     })
     .await
 }
@@ -264,24 +245,17 @@ pub async fn remove_dictionary_entry(
     correction_id: Option<i64>,
     correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("remove_dictionary_entry", move || {
+    let event_app = app.clone();
+    run_db(&app, "remove_dictionary_entry", move |db| {
         let _ = (dictionary_id, correction_id, correction_ids);
         let result = match context_id {
-            Some(context_id) => db::remove_dictionary_entry_from_context(&db, context_id, id),
-            None => db::delete_dictionary_entry(&db, id),
+            Some(context_id) => db::remove_dictionary_entry_from_context(db, context_id, id),
+            None => db::delete_dictionary_entry(db, id),
         };
         if result.is_ok() {
-            app.emit(
-                "verenu:dictionary-updated",
-                serde_json::json!({
-                    "context_id": context_id,
-                    "dictionary_id": id,
-                }),
-            )
-            .ok();
+            emit_dictionary_updated(&event_app, context_id, id);
         }
-        result.map_err(|e| e.to_string())
+        result
     })
     .await
 }
@@ -295,32 +269,17 @@ pub async fn move_dictionary_entry_to_context(
     correction_id: Option<i64>,
     correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("move_dictionary_entry_to_context", move || {
+    let event_app = app.clone();
+    run_db(&app, "move_dictionary_entry_to_context", move |db| {
         let _ = (correction_id, correction_ids);
         db::move_dictionary_entry_to_context(
-            &db,
+            db,
             dictionary_id,
             source_context_id,
             target_context_id,
-        )
-        .map_err(|e| e.to_string())?;
-        app.emit(
-            "verenu:dictionary-updated",
-            serde_json::json!({
-                "context_id": source_context_id,
-                "dictionary_id": dictionary_id,
-            }),
-        )
-        .ok();
-        app.emit(
-            "verenu:dictionary-updated",
-            serde_json::json!({
-                "context_id": target_context_id,
-                "dictionary_id": dictionary_id,
-            }),
-        )
-        .ok();
+        )?;
+        emit_dictionary_updated(&event_app, Some(source_context_id), dictionary_id);
+        emit_dictionary_updated(&event_app, Some(target_context_id), dictionary_id);
         Ok(())
     })
     .await
@@ -330,10 +289,11 @@ pub async fn move_dictionary_entry_to_context(
 pub async fn get_auto_learn_status_summary(
     app: AppHandle,
 ) -> Result<db::AutoLearnStatusSummary, String> {
-    let db = db_state(&app);
-    run_blocking("get_auto_learn_status_summary", move || {
-        db::get_auto_learn_status_summary(&db).map_err(|e| e.to_string())
-    })
+    run_db(
+        &app,
+        "get_auto_learn_status_summary",
+        db::get_auto_learn_status_summary,
+    )
     .await
 }
 
@@ -342,9 +302,15 @@ pub async fn get_recent_auto_learn_activity(
     app: AppHandle,
     limit: Option<i64>,
 ) -> Result<Vec<db::AutoLearnEvent>, String> {
-    let db = db_state(&app);
-    run_blocking("get_recent_auto_learn_activity", move || {
-        db::get_recent_auto_learn_activity(&db, limit.unwrap_or(20)).map_err(|e| e.to_string())
+    run_db(&app, "get_recent_auto_learn_activity", move |db| {
+        db::get_recent_auto_learn_activity(db, limit.unwrap_or(20))
     })
     .await
+}
+
+fn emit_dictionary_updated(app: &AppHandle, context_id: Option<i64>, dictionary_id: i64) {
+    let _ = app.emit(
+        "verenu:dictionary-updated",
+        serde_json::json!({ "context_id": context_id, "dictionary_id": dictionary_id }),
+    );
 }
