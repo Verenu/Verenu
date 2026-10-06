@@ -1,5 +1,9 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT");
+    println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT_FILE");
+    if let Ok(fingerprint_file) = std::env::var("VERENU_BUILD_FINGERPRINT_FILE") {
+        println!("cargo:rerun-if-changed={fingerprint_file}");
+    }
     println!(
         "cargo:rustc-env=VERENU_BUILD_FINGERPRINT={}",
         std::env::var("VERENU_BUILD_FINGERPRINT").unwrap_or_default()

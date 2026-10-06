@@ -54,9 +54,8 @@ jobs:
         run: npm ci
 
       - name: Audit npm dependencies
-        # Production dependencies are audited. Dev-only transitive tooling
-        # (e.g. nanoid pinned by the Vite toolchain) is skipped: the webview
-        # bundle is prebuilt at release time and never ships those packages.
+        # The checked-in webview bundle ships production dependencies only;
+        # development tooling is not included in release artifacts.
         run: npm audit --omit=dev --audit-level=moderate
 
       - name: Set up Rust
@@ -193,84 +192,114 @@ jobs:
     name: All-in-one fast profile
     # This job uses its own checkout and consumes no output from other checks.
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Set up Node
-        uses: actions/setup-node@v6
+      - name: Run shared regression gate
+        uses: ./.github/actions/regression-checks
+        with:
+          report-prefix: pr
+
+  workflow-tests:
+    name: Workflow and test infrastructure
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
+      - run: npm ci
+      - run: npm run test:ci
+      - run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
+      - run: node --test scripts/verenu-ai-review-*.test.mjs
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+  android:
+    name: Android Kotlin and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+        with:
+          # setup-android@v3 defaults to the removed `tools` SDK package.
+          packages: platform-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:android
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-unit-reports
+          path: src-tauri/gen/android/app/build/test-results/
+          if-no-files-found: ignore
 
-      - name: Install Linux system dependencies
+  native:
+    name: Native WebView (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
-            patchelf libxdo-dev libssl-dev libayatana-appindicator3-dev \
-            libasound2-dev
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Prepare report directory
-        run: mkdir -p tests/reports
-
-      - name: Check privacy-safe browser failure summaries
-        run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
-
-      - name: Run unified fast profile
-        run: npm test -- --strict --json-report tests/reports/fast-profile.json --junit-report tests/reports/fast-profile.junit.xml
-
-      - name: Install real-session fixture tools
-        run: sudo apt-get install -y espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring lua5.4
-
-      - name: Verify Linux window identity and generated compositor gestures
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
+      - run: npm ci
+      - name: Run native WebView
+        if: runner.os != 'Linux'
+        run: npm run test:native:webview -- --report tests/reports/native.json
+      - name: Run Linux native WebView
+        if: runner.os == 'Linux'
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
-          cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
-
-      - name: Exercise an isolated Rust-backed browser session
-        run: |
-          test_home="$(mktemp -d "${RUNNER_TEMP}/verenu-session-home.XXXXXX")"
-          test_runtime="$(mktemp -d "${RUNNER_TEMP}/verenu-session-runtime.XXXXXX")"
-          chmod 700 "$test_home" "$test_runtime"
-          trap 'find "$test_home" "$test_runtime" -depth -delete' EXIT
-          runner_home="$HOME"
-          cargo_home="${CARGO_HOME:-$runner_home/.cargo}"
-          rustup_home="${RUSTUP_HOME:-$runner_home/.rustup}"
-          browser_path="${PLAYWRIGHT_BROWSERS_PATH:-$runner_home/.cache/ms-playwright}"
-          dbus-run-session -- env \
-            HOME="$test_home" \
-            XDG_RUNTIME_DIR="$test_runtime" \
-            CARGO_HOME="$cargo_home" \
-            RUSTUP_HOME="$rustup_home" \
-            PLAYWRIGHT_BROWSERS_PATH="$browser_path" \
-            xvfb-run -a bash -euo pipefail -c '
-              passphrase="$(openssl rand -hex 32)"
-              if ! printf "%s\n" "$passphrase" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>"$HOME/gnome-keyring-start.log"; then
-                cat "$HOME/gnome-keyring-start.log"
-                exit 1
-              fi
-              unset passphrase
-              npm run test:session:owned -- --report tests/reports/real-session.json
-            '
-
-      - name: Upload fast-profile reports
+          runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"
+          chmod 700 "$runtime_dir"
+          XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report tests/reports/native.json
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: fast-profile-reports
+          name: native-pr-reports-${{ matrix.os }}
           path: tests/reports/
+          if-no-files-found: error
+
+  required:
+    name: CI required
+    if: always()
+    needs: [frontend, dependency-audits, rust, blob-size-guard, all-in-one-fast, workflow-tests, android, native]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e 'const jobs=JSON.parse(process.env.RESULTS); const failed=Object.entries(jobs).filter(([,job])=>job.result!=="success"); if(failed.length) { console.error(failed.map(([name,job])=>`${name}: ${job.result}`).join("\n")); process.exit(1); }'

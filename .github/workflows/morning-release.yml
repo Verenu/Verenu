@@ -643,9 +643,19 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  verify:
+    name: Verify exact nightly source
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/release-quality.yml
+    permissions:
+      contents: read
+    with:
+      source-ref: ${{ needs.prepare.outputs.release_sha }}
+
   arch-package:
     name: Build nightly Arch package
-    needs: [prepare, build]
+    needs: [prepare, build, verify]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -689,7 +699,7 @@ jobs:
 
   publish:
     name: Publish nightly release
-    needs: [prepare, build, arch-package]
+    needs: [prepare, build, verify, arch-package]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
