@@ -943,6 +943,7 @@ pub struct AllSettings {
     pub pause_media_during_dictation: Option<bool>,
     pub play_start_stop_sounds: Option<bool>,
     pub sound_effects_volume: Option<f64>,
+    pub setup_progress: Option<serde_json::Value>,
     pub autostart_enabled: Option<bool>,
     pub auto_learn_enabled: Option<bool>,
     pub contextual_caps_enabled: Option<bool>,
@@ -1027,6 +1028,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         pause_media_during_dictation: bool_val(store::PAUSE_MEDIA_DURING_DICTATION),
         play_start_stop_sounds: bool_val(store::PLAY_START_STOP_SOUNDS),
         sound_effects_volume: f64_val(store::SOUND_EFFECTS_VOLUME),
+        setup_progress: json_val(store::SETUP_PROGRESS),
         autostart_enabled: bool_val(store::AUTOSTART_ENABLED),
         auto_learn_enabled: bool_val(store::AUTO_LEARN_ENABLED),
         contextual_caps_enabled: bool_val(store::CONTEXTUAL_CAPS),
@@ -1160,6 +1162,8 @@ mod provider_model_cache_tests {
     fn is_readable_but_not_exportable() {
         assert!(is_readable_setting_key(store::PROVIDER_MODEL_CACHE));
         assert!(!is_exportable_setting_key(store::PROVIDER_MODEL_CACHE));
+        assert!(is_readable_setting_key(store::SETUP_PROGRESS));
+        assert!(!is_exportable_setting_key(store::SETUP_PROGRESS));
     }
 }
 
