@@ -30,3 +30,17 @@ pub fn hardened() -> &'static reqwest::Client {
             .expect("hardened reqwest client")
     })
 }
+
+static DOWNLOAD: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Long-running model downloads do not use the API request timeout. Speech
+/// and cleanup model transfers share this pool because they use the same hosts.
+pub fn download() -> &'static reqwest::Client {
+    DOWNLOAD.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .user_agent("Verenu/0.15.0")
+            .build()
+            .expect("local model download client")
+    })
+}

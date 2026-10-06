@@ -743,6 +743,16 @@ impl SyncManager {
         })
     }
 
+    fn device_uuid(&self) -> String {
+        self.inner
+            .identity
+            .read()
+            .expect("identity lock")
+            .as_ref()
+            .map(|identity| identity.uuid.clone())
+            .unwrap_or_default()
+    }
+
     pub fn device_info(&self) -> DeviceInfoDto {
         let guard = self.inner.identity.read().expect("identity lock");
         match guard.as_ref() {
@@ -768,7 +778,7 @@ impl SyncManager {
     pub fn snapshot(&self) -> SyncStatusSnapshot {
         let this_device = self.device_info();
         let peers = conn_peers(&self.inner.db);
-        let paired: HashSet<String> = paired_set(peers.clone());
+        let paired: HashSet<&str> = peers.iter().map(|peer| peer.device_uuid.as_str()).collect();
         let discovered = self
             .inner
             .discovered
@@ -781,7 +791,7 @@ impl SyncManager {
                         name: d.name.clone(),
                         addresses: d.addresses.clone(),
                         port: d.port,
-                        paired: paired.contains(&d.uuid),
+                        paired: paired.contains(d.uuid.as_str()),
                         last_seen_ms: d.last_seen_ms,
                     })
                     .collect();
@@ -863,7 +873,7 @@ impl SyncManager {
 
     pub async fn pair_connection(&self, details: &str) -> Result<String> {
         let (uuid, address) = parse_connection_details(details)?;
-        if uuid == self.device_info().uuid {
+        if uuid == self.device_uuid() {
             return Err(anyhow!("These are this device's details. Copy the details from your other device"));
         }
         let paired = {
@@ -1233,7 +1243,7 @@ impl SyncManager {
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
-            sync_store::seed_setting_stamps(&tx, &self.device_info().uuid, &keys)?;
+            sync_store::seed_setting_stamps(&tx, &self.device_uuid(), &keys)?;
             tx.commit()?;
         }
         drop(_pairing_generation_guard);
@@ -1254,7 +1264,7 @@ impl SyncManager {
         // Pull right away, from one deterministic side only. Both peers finish
         // pairing at nearly the same time and used to open competing sessions.
         let uuid = outcome.device_uuid.clone();
-        if should_auto_initiate(&self.device_info().uuid, &uuid) {
+        if should_auto_initiate(&self.device_uuid(), &uuid) {
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = manager.sync_to_peer(&uuid).await;
@@ -1345,7 +1355,7 @@ impl SyncManager {
         )
         .await
         .map_err(|_| anyhow!("tls timeout"))??;
-        let my_uuid = self.device_info().uuid;
+        let my_uuid = self.device_uuid();
         send_message(
             &mut tls,
             &Message::Unpair {
@@ -1476,7 +1486,7 @@ impl SyncManager {
         }
         {
             let conn = self.lock_db()?;
-            sync_store::ensure_self_identity(&conn, &self.device_info().uuid, &name)?;
+            sync_store::ensure_self_identity(&conn, &self.device_uuid(), &name)?;
         }
         // Re-advertise with the new name (best-effort; the next restart also fixes it).
         let manager = self.clone();
@@ -1514,9 +1524,10 @@ impl SyncManager {
                 .extend(paired.iter().map(|peer| peer.device_uuid.clone()));
         }
         let now = Instant::now();
+        let device_uuid = self.device_uuid();
         let targets: Vec<String> = {
             let discovered = match self.inner.discovered.lock() {
-                Ok(map) => map.values().cloned().collect::<Vec<_>>(),
+                Ok(map) => map.values().map(|device| device.uuid.clone()).collect::<HashSet<_>>(),
                 Err(_) => return,
             };
             let backoff = match self.inner.backoff.lock() {
@@ -1532,14 +1543,12 @@ impl SyncManager {
             paired
                 .into_iter()
                 .filter(|peer| {
-                    discovered
-                        .iter()
-                        .any(|device| device.uuid == peer.device_uuid)
+                    discovered.contains(&peer.device_uuid)
                         || self.saved_peer_address(&peer.device_uuid).is_some()
                 })
                 .filter(|peer| {
                     automatic_session_due(
-                        &self.device_info().uuid,
+                        &device_uuid,
                         &peer.device_uuid,
                         pending.contains(&peer.device_uuid),
                         active.contains(&peer.device_uuid),
@@ -1574,7 +1583,7 @@ impl SyncManager {
 
     /// Runs one sync session with a paired peer (if discovered and idle).
     pub async fn sync_to_peer(&self, peer_uuid: &str) -> Result<()> {
-        if peer_uuid == self.device_info().uuid {
+        if peer_uuid == self.device_uuid() {
             return Err(anyhow!("Cannot sync this device with itself"));
         }
         {
@@ -1761,7 +1770,7 @@ impl SyncManager {
         entry.failures = entry.failures.saturating_add(1);
         // Different retry delays resolve simultaneous edits without repeatedly
         // starting competing sessions on both devices.
-        let base = if should_auto_initiate(&self.device_info().uuid, peer_uuid) {
+        let base = if should_auto_initiate(&self.device_uuid(), peer_uuid) {
             2u64
         } else {
             3u64

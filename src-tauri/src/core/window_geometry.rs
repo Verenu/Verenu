@@ -61,27 +61,31 @@ impl WindowTarget {
     pub fn capture_foreground() -> Self {
         #[cfg(target_os = "linux")]
         if let Some(window) = crate::core::hyprland::active_window() {
-            let point = (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
-                x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
-                y: f64::from(window.at[1]) + f64::from(window.size[1]) / 2.0,
-            });
-            return Self {
-                // Kept for existing target-id contracts; all Linux-native
-                // operations consume the typed `linux` identity below.
-                id: window.pid as usize,
-                display_point: point,
-                linux: Some(LinuxWindowTarget {
-                    address: window.address,
-                    pid: window.pid,
-                    class_name: window.class_name,
-                    title: window.title,
-                    workspace_id: window.workspace.id,
-                    monitor: window.monitor,
-                    tags: window.tags,
-                }),
-            };
+            return Self::from_hyprland(window);
         }
         Self::from_id(window_context::get_foreground_hwnd())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn from_hyprland(window: crate::core::hyprland::ActiveWindow) -> Self {
+        Self {
+            // Kept for existing target-id contracts; Linux-native operations
+            // consume the typed identity below.
+            id: window.pid as usize,
+            display_point: (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
+                x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
+                y: f64::from(window.at[1]) + f64::from(window.size[1]) / 2.0,
+            }),
+            linux: Some(LinuxWindowTarget {
+                address: window.address,
+                pid: window.pid,
+                class_name: window.class_name,
+                title: window.title,
+                workspace_id: window.workspace.id,
+                monitor: window.monitor,
+                tags: window.tags,
+            }),
+        }
     }
 
     pub fn capture_display_only() -> Self {
@@ -113,22 +117,7 @@ impl WindowTarget {
         #[cfg(target_os = "linux")]
         if let Some(linux) = &self.linux {
             if let Some(window) = crate::core::hyprland::window_by_address(&linux.address) {
-                return Self {
-                    id: window.pid as usize,
-                    display_point: (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
-                        x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
-                        y: f64::from(window.at[1]) + f64::from(window.size[1]) / 2.0,
-                    }),
-                    linux: Some(LinuxWindowTarget {
-                        address: window.address,
-                        pid: window.pid,
-                        class_name: window.class_name,
-                        title: window.title,
-                        workspace_id: window.workspace.id,
-                        monitor: window.monitor,
-                        tags: window.tags,
-                    }),
-                };
+                return Self::from_hyprland(window);
             }
         }
         let refreshed = Self::from_id(self.id);
@@ -136,7 +125,7 @@ impl WindowTarget {
             id: self.id,
             display_point: refreshed.display_point.or(self.display_point),
             #[cfg(target_os = "linux")]
-            linux: self.linux.clone(),
+            linux: self.linux,
         }
     }
 }
@@ -294,6 +283,34 @@ fn window_center(_id: usize) -> Option<DesktopPoint> {
 #[cfg(all(test, target_os = "linux"))]
 mod context_snapshot_tests {
     use super::*;
+
+    #[test]
+    fn hyprland_snapshot_preserves_metadata_and_rejects_empty_geometry() {
+        for size in [[400, 200], [0, 200], [400, -1]] {
+            let window = crate::core::hyprland::ActiveWindow {
+                address: "0x123".into(),
+                pid: 123,
+                class_name: "foot".into(),
+                title: "Public fixture".into(),
+                at: [-100, 20],
+                size,
+                workspace: crate::core::hyprland::Workspace { id: 2, name: "2".into() },
+                monitor: 3,
+                tags: vec!["terminal".into()],
+            };
+            let target = WindowTarget::from_hyprland(window);
+            assert_eq!(target.id, 123);
+            assert_eq!(
+                target.display_point,
+                (size == [400, 200]).then_some(DesktopPoint { x: 100.0, y: 120.0 })
+            );
+            assert_eq!(target.linux.unwrap(), LinuxWindowTarget {
+                address: "0x123".into(), pid: 123, class_name: "foot".into(),
+                title: "Public fixture".into(), workspace_id: 2, monitor: 3,
+                tags: vec!["terminal".into()],
+            });
+        }
+    }
 
     #[test]
     fn context_metadata_remains_bound_to_captured_window_without_live_pid() {

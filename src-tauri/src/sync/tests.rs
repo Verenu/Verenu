@@ -256,7 +256,6 @@ fn uuid(prefix: &str) -> String {
         crate::sync::identity::fingerprint_of(prefix.as_bytes())
             .get(..8)
             .expect("len")
-            .to_string()
     )
 }
 
@@ -440,7 +439,7 @@ fn engine_applied_ops_are_not_recaptured() {
     let op = test_dictionary_op("term-a", 100);
     {
         let conn = db.lock().expect("lock");
-        engine::apply_ops(&conn, &[op.clone()]).expect("apply");
+        engine::apply_ops(&conn, std::slice::from_ref(&op)).expect("apply");
     }
     let conn = db.lock().expect("lock");
     // Exactly one log entry: the manually logged remote op (with its original
@@ -450,6 +449,34 @@ fn engine_applied_ops_are_not_recaptured() {
         .expect("stamp")
         .expect("stamp");
     assert_eq!(stamp.0, 100, "remote stamp must be preserved");
+}
+
+#[test]
+fn apply_batch_preserves_equal_rank_order_and_counts_skips() {
+    let db = test_db(&uuid("ordered-batch"));
+    let first = test_dictionary_op("first-payload", 100);
+    let mut duplicate = first.clone();
+    duplicate.payload.as_mut().unwrap()["term"] = json!("second-payload");
+    let mut unknown = first.clone();
+    unknown.table = "unknown-table".into();
+    let ops = vec![first, duplicate, unknown];
+    let before = serde_json::to_value(&ops).unwrap();
+    let conn = db.lock().unwrap();
+    let summary = engine::apply_ops(&conn, &ops).unwrap();
+    assert_eq!((summary.applied, summary.skipped), (1, 2));
+    assert!(summary.dictionary);
+    assert!(!summary.contexts && !summary.history && !summary.deferred);
+    let term: String = conn
+        .query_row("SELECT term FROM dictionary", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        term, "first-payload",
+        "equal-rank operations retain input order"
+    );
+    assert_eq!(
+        serde_json::to_value(&ops).unwrap(), before,
+        "deserialization preserves borrowed payloads"
+    );
 }
 
 fn test_dictionary_op(term: &str, ts_ms: i64) -> super::protocol::SyncOp {
@@ -726,7 +753,7 @@ fn correction_dependency_is_retried_when_parent_arrives_in_a_later_batch() {
         200,
     );
 
-    let first = engine::apply_ops(&conn, &[correction.clone()]).expect("defer correction");
+    let first = engine::apply_ops(&conn, std::slice::from_ref(&correction)).expect("defer correction");
     assert!(first.deferred);
     assert_eq!(first.applied, 0);
     assert_eq!(
@@ -1321,7 +1348,7 @@ fn delete_loses_to_a_newer_edit() {
     let upsert = test_dictionary_op("term-x", 5_000);
     {
         let conn = db.lock().expect("lock");
-        engine::apply_ops(&conn, &[upsert.clone()]).expect("apply");
+        engine::apply_ops(&conn, std::slice::from_ref(&upsert)).expect("apply");
         let delete = super::protocol::SyncOp {
             table: "dictionary".to_string(),
             row_uuid: upsert.row_uuid.clone(),
@@ -1387,7 +1414,7 @@ fn older_op_never_overwrites_newer() {
     let newer = test_dictionary_op("term-new", 5_000);
     {
         let conn = db.lock().expect("lock");
-        engine::apply_ops(&conn, &[newer.clone()]).expect("apply newer");
+        engine::apply_ops(&conn, std::slice::from_ref(&newer)).expect("apply newer");
         // The same row re-delivered with an older stamp must be skipped.
         let mut stale = newer.clone();
         stale.ts_ms = 999;
@@ -1712,9 +1739,10 @@ async fn session_exchanges_changes_incrementally() {
     // First session: seed.
     db::insert_dictionary_entry_returning(&a, "one", None, None).expect("entry");
     run_two_sessions(&a, &b, &host_a, &host_b).await;
-    let conn_b = b.lock().expect("lock");
-    assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM dictionary"), 1);
-    drop(conn_b);
+    {
+        let conn_b = b.lock().expect("lock");
+        assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM dictionary"), 1);
+    }
 
     // Offline edits on both sides, then reconnect: both changes must land.
     db::insert_dictionary_entry_returning(&a, "from-a", None, None).expect("a entry");

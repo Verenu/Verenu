@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { invoke } from '../../tauri';
   import { slide } from 'svelte/transition';
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
-  import { saveSetting } from '../../settings';
+  import { booleanSettingHandler, loadSettingsSnapshot, saveSetting } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
   import { defaultMicGain, shouldPersistMicGain } from './audioGain';
 
@@ -21,16 +20,10 @@
 
   async function loadSettings() {
     try {
-      const [nr, mute, exclusive, pauseMedia, micMute, legacySounds, savedVolume, savedGain] = await Promise.all([
-        invoke<boolean | null>('get_setting', { key: 'noise_reduction' }),
-        invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
-        invoke<boolean | null>('get_setting', { key: 'exclusive_mic' }),
-        invoke<boolean | null>('get_setting', { key: 'pause_media_during_dictation' }),
-        invoke<boolean | null>('get_setting', { key: 'mic_mute_button_dictation' }),
-        invoke<boolean | null>('get_setting', { key: 'play_start_stop_sounds' }),
-        invoke<number | null>('get_setting', { key: 'sound_effects_volume' }),
-        invoke<number | null>('get_setting', { key: 'mic_gain' }),
-      ]);
+      const { noise_reduction: nr, mute_audio: mute, exclusive_mic: exclusive,
+        pause_media_during_dictation: pauseMedia, mic_mute_button_dictation: micMute,
+        play_start_stop_sounds: legacySounds, sound_effects_volume: savedVolume,
+        mic_gain: savedGain } = await loadSettingsSnapshot();
       noiseReduction = nr ?? true;
       muteAudio = mute ?? false;
       exclusiveMic = exclusive ?? false;
@@ -51,69 +44,16 @@
   }
 
   let noiseReductionError = $state(false);
-
-  async function handleNoiseReduction(value: boolean) {
-    noiseReduction = value;
-    try {
-      await saveSetting('noise_reduction', value);
-    } catch (err) {
-      noiseReduction = !value;
-      noiseReductionError = true;
-      console.error('save noise_reduction failed:', err);
-    }
-  }
-
   let muteAudioError = $state(false);
-
-  async function handleMuteAudio(value: boolean) {
-    muteAudio = value;
-    try {
-      await saveSetting('mute_audio', value);
-    } catch (err) {
-      muteAudio = !value;
-      muteAudioError = true;
-      console.error('save mute_audio failed:', err);
-    }
-  }
-
   let exclusiveMicError = $state(false);
-
-  async function handleExclusiveMic(value: boolean) {
-    exclusiveMic = value;
-    try {
-      await saveSetting('exclusive_mic', value);
-    } catch (err) {
-      exclusiveMic = !value;
-      exclusiveMicError = true;
-      console.error('save exclusive_mic failed:', err);
-    }
-  }
-
   let pauseMediaError = $state(false);
-
-  async function handlePauseMedia(value: boolean) {
-    pauseMediaDuringDictation = value;
-    try {
-      await saveSetting('pause_media_during_dictation', value);
-    } catch (err) {
-      pauseMediaDuringDictation = !value;
-      pauseMediaError = true;
-      console.error('save pause_media_during_dictation failed:', err);
-    }
-  }
-
   let micMuteButtonDictationError = $state(false);
 
-  async function handleMicMuteButtonDictation(value: boolean) {
-    micMuteButtonDictation = value;
-    try {
-      await saveSetting('mic_mute_button_dictation', value);
-    } catch (err) {
-      micMuteButtonDictation = !value;
-      micMuteButtonDictationError = true;
-      console.error('save mic_mute_button_dictation failed:', err);
-    }
-  }
+  const handleNoiseReduction = booleanSettingHandler('noise_reduction', value => noiseReduction = value, () => noiseReductionError = true);
+  const handleMuteAudio = booleanSettingHandler('mute_audio', value => muteAudio = value, () => muteAudioError = true);
+  const handleExclusiveMic = booleanSettingHandler('exclusive_mic', value => exclusiveMic = value, () => exclusiveMicError = true);
+  const handlePauseMedia = booleanSettingHandler('pause_media_during_dictation', value => pauseMediaDuringDictation = value, () => pauseMediaError = true);
+  const handleMicMuteButtonDictation = booleanSettingHandler('mic_mute_button_dictation', value => micMuteButtonDictation = value, () => micMuteButtonDictationError = true);
 
   async function saveSoundEffectsVolume() {
     try {

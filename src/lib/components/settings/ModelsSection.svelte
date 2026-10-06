@@ -30,12 +30,14 @@
   import Dropdown from '../Dropdown.svelte';
   import { appStore, cleanupPromptStore } from '../../stores.svelte';
   import {
+    loadSettingsSnapshot,
     saveSetting,
     type LocalModelMemoryPolicy,
     type ProviderId,
     type ProviderModelMap,
   } from '../../settings';
   import ModelTaskTile from './ModelTaskTile.svelte';
+  import { localModelDownloads } from './localModelDownloads';
   import ModelPresetPicker from './ModelPresetPicker.svelte';
   import { settingsSearchNavigation } from '../../settingsSearch.svelte';
   import {
@@ -66,7 +68,6 @@
     migrateDeprecatedGroqCleanupModel,
     migrateDeprecatedGoogleModel,
     splitModelId,
-    type AllSettingsPayload,
     type TaskType,
     type UiProviderId,
   } from './models';
@@ -288,7 +289,7 @@
         void (async () => {
           for (const model of missing.filter(model => model.task === task)) {
             if (pendingPreset?.id !== preset.id) return;
-            const started = isExpectedModelDownloading(model) || await (task === 'transcription' ? downloadLocalModel(model.id) : downloadLocalLlmModel(model.id));
+            const started = isExpectedModelDownloading(model) || await localModelDownloads[task].download(model.id);
             if (!started) { clearPendingPreset(); return; }
             while (!installedLocal[task].includes(model.id) || (task === 'cleanup' && !localLlmStore.runtime.installed)) {
               if (pendingPreset?.id !== preset.id) return;
@@ -329,11 +330,8 @@
     if (pendingPreset?.id === preset.id || pendingPreset?.id === `fallback-${preset.id}`) clearPendingPreset();
     for (const model of target.requiredLocalModels) {
       if (!isExpectedModelDownloading(model)) continue;
-      if (model.task === 'transcription') {
-        cancelLocalModelDownload(model.id).catch((err) => console.error('cancel preset stt download failed', err));
-      } else {
-        cancelLocalLlmModelDownload(model.id).catch((err) => console.error('cancel preset llm download failed', err));
-      }
+      localModelDownloads[model.task].cancel(model.id).catch((err) =>
+        console.error(model.task === 'transcription' ? 'cancel preset stt download failed' : 'cancel preset llm download failed', err));
     }
   }
 
@@ -395,16 +393,8 @@
   ];
 
   function localMemoryPolicyLabel(policy: LocalModelMemoryPolicy): string {
-    switch (policy) {
-      case 'keep_loaded':
-        return 'Keep loaded';
-      case 'unload_after_15m':
-        return 'Unload after 15 minutes';
-      case 'unload_immediately':
-        return 'Unload immediately';
-      default:
-        return 'Unload after 5 minutes';
-    }
+    return localMemoryPolicyOptions.find((option) => option.value === policy)?.label
+      ?? localMemoryPolicyOptions[0].label;
   }
 
   function taskMap(type: TaskType): ProviderModelMap {
@@ -579,14 +569,12 @@
   }
 
   async function migrateAndLoad() {
-    const [all, keyStatus, advancedRaw, cleanupRaw, language, selectionMode] = await Promise.all([
-      invoke<AllSettingsPayload>('get_all_settings'),
+    const [all, keyStatus] = await Promise.all([
+      loadSettingsSnapshot(),
       invoke<Record<ProviderId, boolean>>('get_api_key_status'),
-      invoke<boolean | null>('get_setting', { key: 'advanced_model_ui' }),
-      invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
-      invoke<string | null>('get_setting', { key: 'transcription_language' }),
-      invoke<string | null>('get_setting', { key: 'model_selection_mode' }),
     ]);
+    const { advanced_model_ui: advancedRaw, cleanup_enabled: cleanupRaw,
+      transcription_language: language, model_selection_mode: selectionMode } = all;
 
     apiKeyStatus = { ...apiKeyStatus, ...keyStatus, local: true };
     transcriptionLanguage = language ?? 'en';

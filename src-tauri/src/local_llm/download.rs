@@ -1,70 +1,26 @@
 use super::model::{LocalLlmArtifact, LocalLlmModelManifest};
-use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalLlmDownloadProgressPayload {
-    pub model_id: String,
-    pub downloaded_bytes: u64,
-    pub total_bytes: Option<u64>,
-    pub progress: f32,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalLlmModelEventPayload {
-    pub model_id: String,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LocalLlmVerificationProgressPayload {
-    pub model_id: String,
-    pub progress: f32,
-}
+pub use crate::api::model_download::ModelEvent as LocalLlmModelEventPayload;
+use crate::api::model_download::{self, ensure_not_cancelled};
 
 pub(super) fn download_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .user_agent("Verenu/0.15.0")
-            .build()
-            .expect("local cleanup model download client")
-    })
+    crate::api::client::download()
 }
 
 fn emit_progress(app: &AppHandle, model_id: &str, downloaded_bytes: u64, total_bytes: Option<u64>) {
-    let progress = total_bytes
-        .map(|total| {
-            if total == 0 {
-                0.0
-            } else {
-                (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0)
-            }
-        })
-        .unwrap_or(0.0);
-    let _ = app.emit(
+    model_download::emit_download_progress(
+        app,
         "local-llm-model-download-progress",
-        LocalLlmDownloadProgressPayload {
-            model_id: model_id.to_string(),
-            downloaded_bytes,
-            total_bytes,
-            progress,
-        },
+        model_id,
+        downloaded_bytes,
+        total_bytes,
     );
-}
-
-fn ensure_not_cancelled(cancel: &AtomicBool) -> anyhow::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        anyhow::bail!("download cancelled")
-    }
-    Ok(())
 }
 
 fn partial_file_path(
@@ -89,17 +45,7 @@ fn final_file_path(
 /// so the actual hashing/comparison logic is unit-testable without needing a
 /// real `AppHandle` to drive event emission.
 pub(super) fn sha256_hex(path: &Path) -> anyhow::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 128];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+    model_download::sha256_with_progress(path, &AtomicBool::new(false), |_| {})
 }
 
 /// Same hash as `sha256_hex`, but emits `local-llm-model-verification-progress`
@@ -113,42 +59,13 @@ fn sha256_hex_with_progress(
     path: &Path,
     cancel: &AtomicBool,
 ) -> anyhow::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let total_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-    let mut hashed_bytes: u64 = 0;
-    let mut last_emit = Instant::now()
-        .checked_sub(Duration::from_secs(1))
-        .unwrap_or_else(Instant::now);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 128];
-    loop {
-        ensure_not_cancelled(cancel)?;
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        hashed_bytes += read as u64;
-        if total_bytes > 0 && last_emit.elapsed() >= Duration::from_millis(150) {
-            let progress = (hashed_bytes as f32 / total_bytes as f32).clamp(0.0, 1.0);
-            let _ = app.emit(
-                "local-llm-model-verification-progress",
-                LocalLlmVerificationProgressPayload {
-                    model_id: model_id.to_string(),
-                    progress,
-                },
-            );
-            last_emit = Instant::now();
-        }
-    }
-    let _ = app.emit(
+    model_download::verify_sha256(
+        app,
         "local-llm-model-verification-progress",
-        LocalLlmVerificationProgressPayload {
-            model_id: model_id.to_string(),
-            progress: 1.0,
-        },
-    );
-    Ok(format!("{:x}", hasher.finalize()))
+        model_id,
+        path,
+        cancel,
+    )
 }
 
 /// Verifies a freshly-downloaded artifact's SHA256 against its manifest
@@ -370,22 +287,7 @@ pub async fn download_model(
     let total_bytes = negotiate_total_bytes(manifest, root).await?;
     let mut downloaded_bytes = manifest.partial_size(root);
 
-    if let Some(total) = total_bytes {
-        let required_additional = total.saturating_sub(downloaded_bytes);
-        if required_additional > 0 {
-            if let Ok(free_bytes) = crate::system::memory::free_bytes_for_path(root) {
-                if free_bytes < required_additional {
-                    let required_mb = required_additional / (1024 * 1024);
-                    let free_mb = free_bytes / (1024 * 1024);
-                    anyhow::bail!(
-                        "Not enough disk space to download model. Required: {} MB, Available: {} MB",
-                        required_mb,
-                        free_mb
-                    );
-                }
-            }
-        }
-    }
+    model_download::ensure_disk_space(root, downloaded_bytes, total_bytes)?;
 
     emit_progress(app, manifest.id, downloaded_bytes, total_bytes);
 

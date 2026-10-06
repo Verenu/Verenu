@@ -38,7 +38,7 @@ use super::protocol::{
     SNAPSHOT_ROW_CHUNK,
 };
 use super::store as sync_store;
-use super::store::SyncPeer;
+use super::store::{latest_op_stamp as latest_stamp, SyncPeer};
 
 /// Where a snapshot send has gotten to. Held by the sender across batches.
 #[derive(Debug, Default, Clone, Copy)]
@@ -133,9 +133,8 @@ pub fn unresolved_app_target(source: &str) -> String {
     )
 }
 
-fn resolve_context_targets_in_ops(host: &dyn SyncHost, ops: &[SyncOp]) -> Vec<SyncOp> {
-    ops.iter()
-        .cloned()
+fn resolve_context_targets_in_ops(host: &dyn SyncHost, ops: Vec<SyncOp>) -> Vec<SyncOp> {
+    ops.into_iter()
         .map(|mut op| {
             if op.table == "context_sub_apps" && op.op != "delete" {
                 // A sub-app names an app the same way a target does: remap it
@@ -519,19 +518,13 @@ pub fn append_self_log(
     )
 }
 
-fn latest_stamp(
-    conn: &Connection,
-    table: &str,
-    row_uuid: &str,
-) -> Result<Option<(i64, String, i64)>> {
-    sync_store::latest_op_stamp(conn, table, row_uuid)
-}
-
 fn latest_op_name(conn: &Connection, table: &str, row_uuid: &str) -> Result<Option<String>> {
-    conn.query_row(
+    conn.prepare_cached(
         "SELECT op FROM sync_log
           WHERE table_name = ?1 AND row_uuid = ?2
           ORDER BY seq DESC LIMIT 1",
+    )?
+    .query_row(
         params![table, row_uuid],
         |r| r.get(0),
     )
@@ -559,128 +552,150 @@ fn latest_dictionary_stamp(
 // Send side: resolving log entries and snapshots into wire ops
 // ---------------------------------------------------------------------------
 
-fn dictionary_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at
-             FROM dictionary WHERE uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(DictionaryRow {
-                    term: r.get(0)?,
-                    // Context-specific mistakes are carried by
-                    // dictionary_corrections. Do not put the legacy global
-                    // projection on the wire, even if a partially migrated
-                    // database still has it populated.
-                    mistake: None,
-                    auto_learned: r.get::<_, i64>(2)? != 0,
-                    correction_count: r.get(3)?,
-                    confidence_tier: r.get(4)?,
-                    last_seen_at: r.get(5)?,
-                    created_at: r.get(6)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize dictionary row")))
+// Keep column mappings explicit: several records project foreign keys to UUIDs,
+// and dictionary mistakes belong only to context-specific correction records.
+macro_rules! row_payloads {
+    ($($name:ident, $ty:ident, $message:literal, $sql:literal,
+        |$r:ident| { $($field:ident: $value:expr),* $(,)? };)*) => {
+        $(fn $name(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
+            let row = conn.prepare_cached($sql)?
+                .query_row(params![uuid], |$r| Ok($ty { $($field: $value),* }))
+                .optional()?;
+            Ok(row.map(|row| serde_json::to_value(row).expect($message)))
+        })*
+    };
 }
 
-fn dictionary_correction_payload(
-    conn: &Connection,
-    uuid: &str,
-) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT COALESCE(ctx.uuid, ''), COALESCE(d.uuid, ''), d.term, c.mistake, c.auto_learned,
-                    c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at
-               FROM dictionary_corrections c
-               INNER JOIN contexts ctx ON ctx.id = c.context_id
-               INNER JOIN dictionary d ON d.id = c.dictionary_id
-              WHERE c.uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(DictionaryCorrectionRow {
-                    context_uuid: r.get(0)?,
-                    dictionary_uuid: r.get(1)?,
-                    dictionary_term: r.get(2)?,
-                    mistake: r.get(3)?,
-                    auto_learned: r.get::<_, i64>(4)? != 0,
-                    correction_count: r.get(5)?,
-                    confidence_tier: r.get(6)?,
-                    last_seen_at: r.get(7)?,
-                    created_at: r.get(8)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize dictionary correction row")))
-}
-
-fn snippet_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT trigger, expansion, instructions, use_count, created_at
-             FROM snippets WHERE uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(SnippetRow {
-                    trigger: r.get(0)?,
-                    expansion: r.get(1)?,
-                    instructions: r.get(2)?,
-                    use_count: r.get(3)?,
-                    created_at: r.get(4)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize snippet row")))
+row_payloads! {
+    dictionary_payload, DictionaryRow, "serialize dictionary row",
+    "SELECT term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at
+     FROM dictionary WHERE uuid = ?1",
+    |r| {
+        term: r.get(0)?,
+        // Never send the legacy global mistake, including partially migrated DBs.
+        mistake: None,
+        auto_learned: r.get::<_, i64>(2)? != 0,
+        correction_count: r.get(3)?,
+        confidence_tier: r.get(4)?,
+        last_seen_at: r.get(5)?,
+        created_at: r.get(6)?,
+    };
+    dictionary_correction_payload, DictionaryCorrectionRow, "serialize dictionary correction row",
+    "SELECT COALESCE(ctx.uuid, ''), COALESCE(d.uuid, ''), d.term, c.mistake, c.auto_learned,
+            c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at
+       FROM dictionary_corrections c
+       INNER JOIN contexts ctx ON ctx.id = c.context_id
+       INNER JOIN dictionary d ON d.id = c.dictionary_id
+      WHERE c.uuid = ?1",
+    |r| {
+        context_uuid: r.get(0)?,
+        dictionary_uuid: r.get(1)?,
+        dictionary_term: r.get(2)?,
+        mistake: r.get(3)?,
+        auto_learned: r.get::<_, i64>(4)? != 0,
+        correction_count: r.get(5)?,
+        confidence_tier: r.get(6)?,
+        last_seen_at: r.get(7)?,
+        created_at: r.get(8)?,
+    };
+    snippet_payload, SnippetRow, "serialize snippet row",
+    "SELECT trigger, expansion, instructions, use_count, created_at
+     FROM snippets WHERE uuid = ?1",
+    |r| {
+        trigger: r.get(0)?,
+        expansion: r.get(1)?,
+        instructions: r.get(2)?,
+        use_count: r.get(3)?,
+        created_at: r.get(4)?,
+    };
+    sub_app_payload, SubAppRow, "serialize sub-app row",
+    "SELECT s.executable, s.platform, s.app_name, s.label, s.icon, s.title_pattern,
+            s.match_mode, c.uuid, s.created_at
+       FROM context_sub_apps s LEFT JOIN contexts c ON c.id = s.context_id
+      WHERE s.uuid = ?1",
+    |r| {
+        executable: r.get(0)?,
+        platform: r.get(1)?,
+        app_name: r.get(2)?,
+        label: r.get(3)?,
+        icon: r.get(4)?,
+        title_pattern: r.get(5)?,
+        match_mode: r.get(6)?,
+        context_uuid: r.get(7)?,
+        created_at: r.get(8)?,
+    };
+    transcription_payload, TranscriptionRow, "serialize transcription row",
+    "SELECT t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used,
+            t.app_name, c.uuid, t.created_at
+     FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
+     WHERE t.uuid = ?1",
+    |r| {
+        raw_text: r.get(0)?,
+        clean_text: r.get(1)?,
+        words: r.get(2)?,
+        spoken_words: r.get(3)?,
+        duration_ms: r.get(4)?,
+        api_used: r.get(5)?,
+        app_name: r.get(6)?,
+        context_uuid: r.get(7)?,
+        created_at: r.get(8)?,
+    };
+    api_call_payload, ApiCallRow, "serialize api call row",
+    "SELECT t.uuid, a.model, a.provider, a.task, a.audio_ms, a.input_chars, a.output_chars, a.created_at
+     FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
+     WHERE a.uuid = ?1",
+    |r| {
+        transcription_uuid: r.get(0)?,
+        model: r.get(1)?,
+        provider: r.get(2)?,
+        task: r.get(3)?,
+        audio_ms: r.get(4)?,
+        input_chars: r.get(5)?,
+        output_chars: r.get(6)?,
+        created_at: r.get(7)?,
+    };
 }
 
 fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let Some(context_id) = conn
-        .query_row(
-            "SELECT id FROM contexts WHERE uuid = ?1",
-            params![uuid],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
     let row = conn
-        .query_row(
-            "SELECT name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions,
+        .prepare_cached(
+            "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions,
                     contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
-             FROM contexts WHERE id = ?1",
-            params![context_id],
+             FROM contexts WHERE uuid = ?1",
+        )?
+        .query_row(
+            params![uuid],
             |r| {
-                Ok(ContextAggregate {
-                    name: r.get(0)?,
-                    is_everywhere: r.get::<_, i64>(1)? != 0,
-                    icon: r.get(2)?,
-                    tone: r.get(3)?,
-                    cleanup_intensity: r.get(4)?,
-                    color: r.get(5)?,
-                    custom_instructions: r.get(6)?,
-                    contextual_formatting_disabled: r.get::<_, i64>(7)? != 0,
-                    pinned_at: r.get(8)?,
-                    created_at: r.get(9)?,
-                    updated_at: r.get(10)?,
-                    paste_in_chunks: r.get::<_, i64>(11)? != 0,
-                    targets: Vec::new(),
-                    websites: Vec::new(),
-                    dictionary_uuids: Vec::new(),
-                    dictionary_entries: Vec::new(),
-                    snippet_uuids: Vec::new(),
-                })
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    ContextAggregate {
+                        name: r.get(1)?,
+                        is_everywhere: r.get::<_, i64>(2)? != 0,
+                        icon: r.get(3)?,
+                        tone: r.get(4)?,
+                        cleanup_intensity: r.get(5)?,
+                        color: r.get(6)?,
+                        custom_instructions: r.get(7)?,
+                        contextual_formatting_disabled: r.get::<_, i64>(8)? != 0,
+                        pinned_at: r.get(9)?,
+                        created_at: r.get(10)?,
+                        updated_at: r.get(11)?,
+                        paste_in_chunks: r.get::<_, i64>(12)? != 0,
+                        targets: Vec::new(),
+                        websites: Vec::new(),
+                        dictionary_uuids: Vec::new(),
+                        dictionary_entries: Vec::new(),
+                        snippet_uuids: Vec::new(),
+                    },
+                ))
             },
         )
         .optional()?;
-    let mut aggregate = match row {
-        Some(aggregate) => aggregate,
+    let (context_id, mut aggregate) = match row {
+        Some(row) => row,
         None => return Ok(None),
     };
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT executable, platform, app_name, developer
          FROM context_targets WHERE context_id = ?1 ORDER BY executable",
     )?;
@@ -694,13 +709,13 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT domain FROM context_website_targets WHERE context_id = ?1 ORDER BY domain",
     )?;
     aggregate.websites = stmt
         .query_map(params![context_id], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT d.uuid, d.term
            FROM dictionary_contexts dc
            JOIN dictionary d ON d.id = dc.dictionary_id
@@ -720,7 +735,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
         .map(|entry| entry.uuid.clone())
         .collect();
     aggregate.dictionary_entries = dictionary_entries;
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT s.uuid FROM snippet_contexts sc JOIN snippets s ON s.id = sc.snippet_id
          WHERE sc.context_id = ?1 ORDER BY s.id",
     )?;
@@ -732,115 +747,45 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
     ))
 }
 
-fn sub_app_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT s.executable, s.platform, s.app_name, s.label, s.icon, s.title_pattern,
-                    s.match_mode, c.uuid, s.created_at
-               FROM context_sub_apps s LEFT JOIN contexts c ON c.id = s.context_id
-              WHERE s.uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(SubAppRow {
-                    executable: r.get(0)?,
-                    platform: r.get(1)?,
-                    app_name: r.get(2)?,
-                    label: r.get(3)?,
-                    icon: r.get(4)?,
-                    title_pattern: r.get(5)?,
-                    match_mode: r.get(6)?,
-                    context_uuid: r.get(7)?,
-                    created_at: r.get(8)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize sub-app row")))
-}
-
-fn transcription_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used,
-                    t.app_name, c.uuid, t.created_at
-             FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
-             WHERE t.uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(TranscriptionRow {
-                    raw_text: r.get(0)?,
-                    clean_text: r.get(1)?,
-                    words: r.get(2)?,
-                    spoken_words: r.get(3)?,
-                    duration_ms: r.get(4)?,
-                    api_used: r.get(5)?,
-                    app_name: r.get(6)?,
-                    context_uuid: r.get(7)?,
-                    created_at: r.get(8)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize transcription row")))
-}
-
-fn api_call_payload(conn: &Connection, uuid: &str) -> Result<Option<serde_json::Value>> {
-    let row = conn
-        .query_row(
-            "SELECT t.uuid, a.model, a.provider, a.task, a.audio_ms, a.input_chars, a.output_chars, a.created_at
-             FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
-             WHERE a.uuid = ?1",
-            params![uuid],
-            |r| {
-                Ok(ApiCallRow {
-                    transcription_uuid: r.get(0)?,
-                    model: r.get(1)?,
-                    provider: r.get(2)?,
-                    task: r.get(3)?,
-                    audio_ms: r.get(4)?,
-                    input_chars: r.get(5)?,
-                    output_chars: r.get(6)?,
-                    created_at: r.get(7)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row.map(|row| serde_json::to_value(row).expect("serialize api call row")))
+fn row_payload(conn: &Connection, table: &str, uuid: &str) -> Result<Option<serde_json::Value>> {
+    match table {
+        "dictionary" => dictionary_payload(conn, uuid),
+        "dictionary_corrections" => dictionary_correction_payload(conn, uuid),
+        "snippets" => snippet_payload(conn, uuid),
+        "contexts" => context_aggregate(conn, uuid),
+        "context_sub_apps" => sub_app_payload(conn, uuid),
+        "transcriptions" => transcription_payload(conn, uuid),
+        "api_calls" => api_call_payload(conn, uuid),
+        _ => Ok(None),
+    }
 }
 
 /// Resolves a collapsed log entry into a full wire op. History is append-only
 /// for sync purposes: retention pruning is device-local, so old transcription
 /// delete tombstones from pre-v22 databases must never be sent to peers.
-fn resolve_entry(conn: &Connection, entry: &sync_store::LogEntry) -> Result<Option<SyncOp>> {
+fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Option<SyncOp>> {
     if entry.table_name == "transcriptions" && entry.op == "delete" {
         return Ok(None);
     }
-    let payload = match entry.table_name.as_str() {
-        "dictionary" if entry.op == "upsert" => dictionary_payload(conn, &entry.row_uuid)?,
-        "dictionary_corrections" if entry.op == "upsert" => {
-            dictionary_correction_payload(conn, &entry.row_uuid)?
-        }
-        "snippets" if entry.op == "upsert" => snippet_payload(conn, &entry.row_uuid)?,
-        "contexts" if entry.op == "upsert" => context_aggregate(conn, &entry.row_uuid)?,
-        "context_sub_apps" if entry.op == "upsert" => sub_app_payload(conn, &entry.row_uuid)?,
-        "transcriptions" if entry.op == "upsert" => transcription_payload(conn, &entry.row_uuid)?,
-        "api_calls" if entry.op == "upsert" => api_call_payload(conn, &entry.row_uuid)?,
-        _ => None,
+    let payload = if entry.op == "upsert" {
+        row_payload(conn, &entry.table_name, &entry.row_uuid)?
+    } else {
+        None
     };
     let op = if entry.op == "upsert" && payload.is_none() {
         if entry.table_name == "transcriptions" {
             return Ok(None);
         }
-        "delete"
+        "delete".to_string()
     } else {
-        &entry.op
+        entry.op
     };
     Ok(Some(SyncOp {
-        table: entry.table_name.clone(),
-        row_uuid: entry.row_uuid.clone(),
-        op: op.to_string(),
+        table: entry.table_name,
+        row_uuid: entry.row_uuid,
+        op,
         ts_ms: entry.ts_ms,
-        origin: entry.origin.clone(),
+        origin: entry.origin,
         origin_seq: entry.origin_seq,
         payload,
     }))
@@ -924,7 +869,7 @@ pub fn collect_ops(
                 _ => unreachable!("snapshot stage is complete"),
             };
             if stage == 7 {
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
                      FROM sync_log AS current
                      WHERE current.op = 'delete'
@@ -979,7 +924,7 @@ pub fn collect_ops(
             } else {
                 format!("SELECT id, uuid FROM {table} WHERE id > ?1 ORDER BY id LIMIT ?2")
             };
-            let mut stmt = conn.prepare(&row_query)?;
+            let mut stmt = conn.prepare_cached(&row_query)?;
             let rows = stmt
                 .query_map(params![progress.last_id, chunk], |r| {
                     Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -988,16 +933,7 @@ pub fn collect_ops(
             let fetched = rows.len() as i64;
             for (id, uuid) in rows {
                 progress.last_id = id;
-                let payload = match table {
-                    "dictionary" => dictionary_payload(conn, &uuid)?,
-                    "dictionary_corrections" => dictionary_correction_payload(conn, &uuid)?,
-                    "snippets" => snippet_payload(conn, &uuid)?,
-                    "contexts" => context_aggregate(conn, &uuid)?,
-                    "context_sub_apps" => sub_app_payload(conn, &uuid)?,
-                    "transcriptions" => transcription_payload(conn, &uuid)?,
-                    "api_calls" => api_call_payload(conn, &uuid)?,
-                    _ => unreachable!("snapshot table is complete"),
-                };
+                let payload = row_payload(conn, table, &uuid)?;
                 let stamp = latest_stamp(conn, table, &uuid)?;
                 push(table, uuid, payload, stamp, &mut ops);
             }
@@ -1026,17 +962,17 @@ pub fn collect_ops(
 
     let entries = sync_store::changes_since(conn, since_seq, limit)?;
     let mut ops = Vec::with_capacity(entries.len());
-    for entry in &entries {
-        if let Some(op) = resolve_entry(conn, entry)? {
-            ops.push(op);
-        }
-    }
     let done = entries.len() < limit as usize;
     let cursor = if done {
         sync_store::max_log_seq(conn)?
     } else {
         entries.last().map(|entry| entry.seq).unwrap_or(since_seq)
     };
+    for entry in entries {
+        if let Some(op) = resolve_entry(conn, entry)? {
+            ops.push(op);
+        }
+    }
     Ok((ops, cursor, done))
 }
 
@@ -1094,84 +1030,43 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
     // Apply in dependency order rather than trusting the order in a delta
     // batch. Snapshot batches are naturally ordered too, but this explicit
     // sort makes hand-built batches and compacted logs safe as well.
-    let mut ordered: Vec<(usize, &SyncOp)> = ops.iter().enumerate().collect();
-    ordered.sort_by_key(|(index, op)| (apply_rank(op), *index));
-    for (_, op) in ordered {
-        match op.table.as_str() {
+    let mut ordered: Vec<&SyncOp> = ops.iter().collect();
+    ordered.sort_by_key(|op| apply_rank(op));
+    for op in ordered {
+        let (applied, touched) = match op.table.as_str() {
             "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
-                if apply_dictionary_op(conn, op)? == Applied::Yes {
-                    summary.dictionary = true;
-                    summary.applied += 1;
-                } else {
-                    summary.skipped += 1;
-                }
+                (apply_dictionary_op(conn, op)?, &mut summary.dictionary)
             }
-            "snippets" => {
-                if apply_snippet_op(conn, op)? == Applied::Yes {
-                    summary.snippets = true;
-                    summary.applied += 1;
-                } else {
-                    summary.skipped += 1;
-                }
-            }
-            "contexts" => {
-                match apply_context_op(conn, op)? {
-                    Applied::Yes => {
-                        summary.contexts = true;
-                        summary.applied += 1;
-                    }
-                    Applied::Skipped => summary.skipped += 1,
-                    Applied::Deferred => {
-                        summary.deferred = true;
-                        summary.skipped += 1;
-                    }
-                }
-            }
+            "snippets" => (apply_snippet_op(conn, op)?, &mut summary.snippets),
+            "contexts" => (apply_context_op(conn, op)?, &mut summary.contexts),
             "context_sub_apps" => {
-                if apply_sub_app_op(conn, op)? == Applied::Yes {
-                    // Sub-apps render on the Contexts page and in Settings.
-                    summary.contexts = true;
-                    summary.applied += 1;
-                } else {
-                    summary.skipped += 1;
-                }
+                // Sub-apps render on the Contexts page and in Settings.
+                (apply_sub_app_op(conn, op)?, &mut summary.contexts)
             }
             "dictionary_corrections" => {
-                match apply_dictionary_correction_op(conn, op)? {
-                    Applied::Yes => {
-                        // Keep the legacy dictionary refresh bit set as well
-                        // as a precise flag. Existing desktop clients listen
-                        // only for "dictionary"; Context-aware clients can
-                        // use the more specific table name.
-                        summary.dictionary = true;
-                        summary.dictionary_corrections = true;
-                        summary.applied += 1;
-                    }
-                    Applied::Skipped => summary.skipped += 1,
-                    Applied::Deferred => {
-                        summary.deferred = true;
-                        summary.skipped += 1;
-                    }
+                let applied = apply_dictionary_correction_op(conn, op)?;
+                if applied == Applied::Yes {
+                    // Older clients only listen for the dictionary refresh.
+                    summary.dictionary = true;
                 }
+                (applied, &mut summary.dictionary_corrections)
             }
-            "transcriptions" => {
-                if apply_transcription_op(conn, op)? == Applied::Yes {
-                    summary.history = true;
-                    summary.applied += 1;
-                } else {
-                    summary.skipped += 1;
-                }
-            }
-            "api_calls" => {
-                if apply_api_call_op(conn, op)? == Applied::Yes {
-                    summary.history = true;
-                    summary.applied += 1;
-                } else {
-                    summary.skipped += 1;
-                }
-            }
+            "transcriptions" => (apply_transcription_op(conn, op)?, &mut summary.history),
+            "api_calls" => (apply_api_call_op(conn, op)?, &mut summary.history),
             other => {
                 log::warn!("sync: ignoring op for unknown table {other:?}");
+                summary.skipped += 1;
+                continue;
+            }
+        };
+        match applied {
+            Applied::Yes => {
+                *touched = true;
+                summary.applied += 1;
+            }
+            Applied::Skipped => summary.skipped += 1,
+            Applied::Deferred => {
+                summary.deferred = true;
                 summary.skipped += 1;
             }
         }
@@ -1559,6 +1454,19 @@ fn restore_dictionary_children(
     Ok(())
 }
 
+fn op_payload<'a, T: Deserialize<'a>>(
+    op: &'a SyncOp,
+    missing: &'static str,
+    invalid: &'static str,
+) -> Result<T> {
+    T::deserialize(
+        op.payload
+            .as_ref()
+            .ok_or_else(|| anyhow!("{missing} upsert missing payload"))?,
+    )
+    .with_context(|| format!("invalid {invalid} payload"))
+}
+
 fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.table == NATURAL_KEY_TOMBSTONE_TABLE {
         return apply_dictionary_natural_key_delete(conn, op);
@@ -1571,12 +1479,7 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let row: DictionaryRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("dictionary upsert missing payload"))?,
-    )
-    .context("invalid dictionary payload")?;
+    let row: DictionaryRow = op_payload(op, "dictionary", "dictionary")?;
 
     let insert = |conn: &Connection| -> rusqlite::Result<usize> {
         conn.execute(
@@ -1768,12 +1671,8 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
             return Ok(Applied::Skipped);
         }
     }
-    let row: DictionaryCorrectionRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("dictionary correction upsert missing payload"))?,
-    )
-    .context("invalid dictionary correction payload")?;
+    let row: DictionaryCorrectionRow =
+        op_payload(op, "dictionary correction", "dictionary correction")?;
 
     let Some(context_id) = conn
         .query_row(
@@ -1941,12 +1840,7 @@ fn apply_sub_app_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let row: SubAppRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("sub-app upsert missing payload"))?,
-    )
-    .context("invalid sub-app payload")?;
+    let row: SubAppRow = op_payload(op, "sub-app", "sub-app")?;
     let mode = db::TitleMatchMode::parse(&row.match_mode)?;
     let executable = row.executable.trim().to_lowercase();
     let pattern = row.title_pattern.trim();
@@ -2010,12 +1904,7 @@ fn apply_snippet_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let row: SnippetRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("snippet upsert missing payload"))?,
-    )
-    .context("invalid snippet payload")?;
+    let row: SnippetRow = op_payload(op, "snippet", "snippet")?;
 
     let insert = |conn: &Connection| -> rusqlite::Result<usize> {
         conn.execute(
@@ -2215,12 +2104,7 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let aggregate: ContextAggregate = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("context upsert missing payload"))?,
-    )
-    .context("invalid context payload")?;
+    let aggregate: ContextAggregate = op_payload(op, "context", "context")?;
 
     if context_has_missing_members(conn, &aggregate)? {
         return Ok(Applied::Deferred);
@@ -2499,27 +2383,15 @@ fn reconcile_context_children(
 /// that aggregate as applied until its live members can be resolved. Durable
 /// deletes are final and do not need replay.
 fn context_has_missing_members(conn: &Connection, aggregate: &ContextAggregate) -> Result<bool> {
-    let entries = if aggregate.dictionary_entries.is_empty() {
-        aggregate
-            .dictionary_uuids
-            .iter()
-            .map(|uuid| DictionaryReference {
-                uuid: uuid.clone(),
-                term: String::new(),
-            })
-            .collect::<Vec<_>>()
-    } else {
-        aggregate.dictionary_entries.clone()
-    };
-    for entry in entries {
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM dictionary WHERE uuid = ?1 OR (?2 <> '' AND term = ?2))",
-            params![entry.uuid, entry.term.trim()],
-            |r| r.get(0),
-        )?;
+    for (uuid, term) in context_dictionary_references(aggregate) {
+        let exists: bool = conn
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM dictionary WHERE uuid = ?1 OR (?2 <> '' AND term = ?2))",
+            )?
+            .query_row(params![uuid, term.trim()], |r| r.get(0))?;
         if !exists
-            && !latest_is_delete(conn, "dictionary", &entry.uuid)?
-            && !latest_is_delete(conn, NATURAL_KEY_TOMBSTONE_TABLE, &entry.uuid)?
+            && !latest_is_delete(conn, "dictionary", uuid)?
+            && !latest_is_delete(conn, NATURAL_KEY_TOMBSTONE_TABLE, uuid)?
         {
             return Ok(true);
         }
@@ -2537,6 +2409,21 @@ fn context_has_missing_members(conn: &Connection, aggregate: &ContextAggregate) 
     Ok(false)
 }
 
+fn context_dictionary_references(
+    aggregate: &ContextAggregate,
+) -> impl Iterator<Item = (&str, &str)> {
+    let legacy_uuids = if aggregate.dictionary_entries.is_empty() {
+        aggregate.dictionary_uuids.as_slice()
+    } else {
+        &[]
+    };
+    aggregate
+        .dictionary_entries
+        .iter()
+        .map(|entry| (entry.uuid.as_str(), entry.term.as_str()))
+        .chain(legacy_uuids.iter().map(|uuid| (uuid.as_str(), "")))
+}
+
 /// Junction membership reconcile: add everything in the payload that resolves
 /// locally, remove everything currently present that the payload lacks. A
 /// dictionary reference carries its natural term as well as its UUID so a
@@ -2546,33 +2433,23 @@ fn reconcile_context_members(
     context_id: i64,
     aggregate: &ContextAggregate,
 ) -> Result<()> {
-    let dictionary_entries = if aggregate.dictionary_entries.is_empty() {
-        aggregate
-            .dictionary_uuids
-            .iter()
-            .map(|uuid| DictionaryReference {
-                uuid: uuid.clone(),
-                term: String::new(),
-            })
-            .collect::<Vec<_>>()
+    let entry_count = if aggregate.dictionary_entries.is_empty() {
+        aggregate.dictionary_uuids.len()
     } else {
-        aggregate.dictionary_entries.clone()
+        aggregate.dictionary_entries.len()
     };
-    let mut resolved_dictionary: Vec<i64> = Vec::with_capacity(dictionary_entries.len());
+    let mut resolved_dictionary: Vec<i64> = Vec::with_capacity(entry_count);
     let mut unresolved_dictionary = false;
     {
-        let mut stmt = conn.prepare("SELECT id FROM dictionary WHERE uuid = ?1")?;
-        for entry in &dictionary_entries {
+        let mut stmt = conn.prepare_cached("SELECT id FROM dictionary WHERE uuid = ?1")?;
+        for (uuid, term) in context_dictionary_references(aggregate) {
             let by_uuid = stmt
-                .query_row(params![entry.uuid], |r| r.get::<_, i64>(0))
+                .query_row(params![uuid], |r| r.get::<_, i64>(0))
                 .optional()?;
-            let by_term = if by_uuid.is_none() && !entry.term.trim().is_empty() {
-                conn.query_row(
-                    "SELECT id FROM dictionary WHERE term = ?1",
-                    params![entry.term.trim()],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()?
+            let by_term = if by_uuid.is_none() && !term.trim().is_empty() {
+                conn.prepare_cached("SELECT id FROM dictionary WHERE term = ?1")?
+                    .query_row(params![term.trim()], |r| r.get::<_, i64>(0))
+                    .optional()?
             } else {
                 None
             };
@@ -2730,12 +2607,7 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let row: TranscriptionRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("transcription upsert missing payload"))?,
-    )
-    .context("invalid transcription payload")?;
+    let row: TranscriptionRow = op_payload(op, "transcription", "transcription")?;
     let context_id: Option<i64> = match &row.context_uuid {
         Some(context_uuid) => conn
             .query_row(
@@ -2794,12 +2666,7 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             return Ok(Applied::Skipped);
         }
     }
-    let row: ApiCallRow = serde_json::from_value(
-        op.payload
-            .clone()
-            .ok_or_else(|| anyhow!("api_call upsert missing payload"))?,
-    )
-    .context("invalid api call payload")?;
+    let row: ApiCallRow = op_payload(op, "api_call", "api call")?;
     let Some(transcription_uuid) = row.transcription_uuid.as_deref() else {
         log::warn!(
             "sync: skipping api call {} without a transcription",
@@ -3165,15 +3032,18 @@ where
     loop {
         match read_message(stream).await? {
             Message::Ops(batch) => {
-                let resolved_ops = resolve_context_targets_in_ops(host, &batch.ops);
+                let OpsBatch {
+                    ops, cursor, done, ..
+                } = batch;
+                let resolved_ops = resolve_context_targets_in_ops(host, ops);
                 let applied = {
                     let conn = lock(db)?;
                     apply_ops(&conn, &resolved_ops)?
                 };
                 summary.merge(applied);
-                let acked = batch.cursor;
+                let acked = cursor;
                 send_message(stream, &Message::Ack { seq: acked }).await?;
-                if batch.done {
+                if done {
                     // Final batch: remember the position so the next session
                     // pulls only fresh changes. A deferred correction keeps
                     // the old cursor, causing the sender to replay the
@@ -3293,5 +3163,159 @@ impl ApplySummary {
         self.deferred |= other.deferred;
         self.applied += other.applied;
         self.skipped += other.skipped;
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sync_record_payloads_preserve_wire_bytes_and_round_trip() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO contexts (id, uuid, name, icon, tone, cleanup_intensity, color,
+                custom_instructions, contextual_formatting_disabled, paste_in_chunks, pinned_at,
+                created_at, updated_at)
+             VALUES (2, 'context', 'Work', 'W', 'casual', 'light', '#123456', 'Keep café',
+                1, 1, '2026-01-02', '2026-01-01', '2026-01-02');
+             INSERT INTO dictionary (id, uuid, term, mistake, auto_learned, correction_count,
+                confidence_tier, last_seen_at, created_at)
+             VALUES (1, 'dictionary', 'café', 'legacy mistake', 1, 7, 'high', '2026-01-02', '2026-01-01');
+             INSERT INTO dictionary_contexts (context_id, dictionary_id) VALUES (2, 1);
+             INSERT INTO dictionary_corrections (uuid, dictionary_id, context_id, mistake,
+                auto_learned, correction_count, confidence_tier, last_seen_at, created_at)
+             VALUES ('correction', 1, 2, 'cafe', 1, 3, 'medium', NULL, '2026-01-01');
+             INSERT INTO snippets (id, uuid, trigger, expansion, instructions, use_count, created_at)
+             VALUES (1, 'snippet', 'sig', 'Line one\nLine two', 'Keep lines', 4, '2026-01-01');
+             INSERT INTO snippet_contexts (context_id, snippet_id) VALUES (2, 1);
+             INSERT INTO context_targets (context_id, executable, platform, app_name, developer)
+             VALUES (2, 'editor', 'linux', 'Editor', 'Example');
+             INSERT INTO context_website_targets (context_id, domain) VALUES (2, 'example.com');
+             INSERT INTO context_sub_apps (uuid, context_id, executable, platform, app_name,
+                label, icon, title_pattern, match_mode, created_at)
+             VALUES ('subapp', 2, 'editor', NULL, 'Editor', 'Work tabs', NULL, 'Work', 'contains', '2026-01-01');
+             INSERT INTO transcriptions (id, uuid, context_id, raw_text, clean_text, words,
+                spoken_words, duration_ms, api_used, app_name, created_at)
+             VALUES (1, 'transcription', 2, 'raw café', 'Clean café.', 2, 3, 1234, 'provider/model', NULL, '2026-01-01');
+             INSERT INTO api_calls (uuid, transcription_id, model, provider, task, audio_ms,
+                input_chars, output_chars, created_at)
+             VALUES ('call', 1, 'model', 'provider', 'cleanup', 1234, 8, 11, '2026-01-01');",
+        ).unwrap();
+        let cases = [
+            (
+                "dictionary",
+                "dictionary",
+                json!({
+                    "term": "café", "mistake": null, "auto_learned": true,
+                    "correction_count": 7, "confidence_tier": "high", "last_seen_at": "2026-01-02",
+                    "created_at": "2026-01-01"
+                }),
+            ),
+            (
+                "dictionary_corrections",
+                "correction",
+                json!({
+                    "context_uuid": "context", "dictionary_uuid": "dictionary", "dictionary_term": "café",
+                    "mistake": "cafe", "auto_learned": true, "correction_count": 3,
+                    "confidence_tier": "medium", "last_seen_at": null, "created_at": "2026-01-01"
+                }),
+            ),
+            (
+                "snippets",
+                "snippet",
+                json!({
+                    "trigger": "sig", "expansion": "Line one\nLine two", "instructions": "Keep lines",
+                    "use_count": 4, "created_at": "2026-01-01"
+                }),
+            ),
+            (
+                "contexts",
+                "context",
+                json!({
+                    "name": "Work", "is_everywhere": false, "icon": "W", "tone": "casual",
+                    "cleanup_intensity": "light", "color": "#123456", "custom_instructions": "Keep café",
+                    "contextual_formatting_disabled": true, "paste_in_chunks": true,
+                    "pinned_at": "2026-01-02", "created_at": "2026-01-01", "updated_at": "2026-01-02",
+                    "targets": [{"executable": "editor", "platform": "linux", "app_name": "Editor", "developer": "Example"}],
+                    "websites": ["example.com"], "dictionary_uuids": ["dictionary"],
+                    "dictionary_entries": [{"uuid": "dictionary", "term": "café"}], "snippet_uuids": ["snippet"]
+                }),
+            ),
+            (
+                "context_sub_apps",
+                "subapp",
+                json!({
+                    "executable": "editor", "platform": null, "app_name": "Editor", "label": "Work tabs",
+                    "icon": null, "title_pattern": "Work", "match_mode": "contains",
+                    "context_uuid": "context", "created_at": "2026-01-01"
+                }),
+            ),
+            (
+                "transcriptions",
+                "transcription",
+                json!({
+                    "raw_text": "raw café", "clean_text": "Clean café.", "words": 2, "spoken_words": 3,
+                    "duration_ms": 1234, "api_used": "provider/model", "app_name": null,
+                    "context_uuid": "context", "created_at": "2026-01-01"
+                }),
+            ),
+            (
+                "api_calls",
+                "call",
+                json!({
+                    "transcription_uuid": "transcription", "model": "model", "provider": "provider",
+                    "task": "cleanup", "audio_ms": 1234, "input_chars": 8, "output_chars": 11,
+                    "created_at": "2026-01-01"
+                }),
+            ),
+        ];
+        for (table, uuid, expected) in cases {
+            let actual = row_payload(&conn, table, uuid).unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_vec(&actual).unwrap(),
+                serde_json::to_vec(&expected).unwrap(),
+                "{table}"
+            );
+            let op = SyncOp {
+                table: table.into(),
+                row_uuid: uuid.into(),
+                op: "upsert".into(),
+                ts_ms: 1,
+                origin: "fixture".into(),
+                origin_seq: 1,
+                payload: Some(actual),
+            };
+            macro_rules! round_trip {
+                ($ty:ty) => {{
+                    let row: $ty = op_payload(&op, "missing", "invalid").unwrap();
+                    serde_json::to_value(row).unwrap()
+                }};
+            }
+            let decoded = match table {
+                "dictionary" => round_trip!(DictionaryRow),
+                "dictionary_corrections" => round_trip!(DictionaryCorrectionRow),
+                "snippets" => round_trip!(SnippetRow),
+                "contexts" => round_trip!(ContextAggregate),
+                "context_sub_apps" => round_trip!(SubAppRow),
+                "transcriptions" => round_trip!(TranscriptionRow),
+                "api_calls" => round_trip!(ApiCallRow),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                serde_json::to_vec(&decoded).unwrap(),
+                serde_json::to_vec(&expected).unwrap(),
+                "{table} round trip"
+            );
+            assert!(
+                row_payload(&conn, table, "absent").unwrap().is_none(),
+                "{table} missing UUID"
+            );
+        }
+        assert!(row_payload(&conn, "unknown", "dictionary")
+            .unwrap()
+            .is_none());
     }
 }

@@ -301,24 +301,30 @@
   const modalWebsiteValid = $derived(modalWebsitePreview.length > 0 && isLikelyValidDomain(modalWebsitePreview));
   const websitePreview = $derived(normalizeDomainInput(websiteInput));
   const websiteValid = $derived(websitePreview.length > 0 && isLikelyValidDomain(websitePreview));
-  const filteredDictionary = $derived.by(() => {
-    const q = search.trim().toLowerCase();
-    let list = q
-      ? dictionary.filter((entry) => entry.term.toLowerCase().includes(q) || (entry.mistake ?? '').toLowerCase().includes(q))
-      : [...dictionary];
+  const sortedDictionary = $derived.by(() => {
+    const list = [...dictionary];
     if (sort === 'newest') list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'alpha') list.sort((a, b) => a.term.localeCompare(b.term));
     return list;
   });
-
-  const filteredSnippets = $derived.by(() => {
+  const filteredDictionary = $derived.by(() => {
     const q = search.trim().toLowerCase();
-    let list = q
-      ? snippets.filter((snippet) => snippet.trigger.toLowerCase().includes(q) || snippet.expansion.toLowerCase().includes(q))
-      : [...snippets];
+    return q
+      ? sortedDictionary.filter((entry) => entry.term.toLowerCase().includes(q) || (entry.mistake ?? '').toLowerCase().includes(q))
+      : sortedDictionary;
+  });
+
+  const sortedSnippets = $derived.by(() => {
+    const list = [...snippets];
     if (sort === 'newest') list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'alpha') list.sort((a, b) => a.trigger.localeCompare(b.trigger));
     return list;
+  });
+  const filteredSnippets = $derived.by(() => {
+    const q = search.trim().toLowerCase();
+    return q
+      ? sortedSnippets.filter((snippet) => snippet.trigger.toLowerCase().includes(q) || snippet.expansion.toLowerCase().includes(q))
+      : sortedSnippets;
   });
 
   // A compact usage line, not an analytics panel — deeper context analytics
