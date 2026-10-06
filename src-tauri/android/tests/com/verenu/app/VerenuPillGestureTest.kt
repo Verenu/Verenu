@@ -124,4 +124,14 @@ class VerenuHoldReleaseTest {
         assertFalse(r.holdEnd(recording = false))
         assertFalse(r.startFinished(recording = true))
     }
+
+    @Test fun secondHoldDuringPendingStartKeepsQueuedRelease() {
+        val r = VerenuHoldRelease()
+        r.holdStart(idle = true)
+        r.beginStart()
+        r.holdEnd(recording = false)
+        assertFalse(r.holdStart(idle = true))
+        assertFalse(r.holdEnd(recording = false))
+        assertTrue(r.startFinished(recording = true))
+    }
 }
