@@ -37,6 +37,8 @@ enum SettingKind {
     CustomTheme,
     CustomThemes,
     AndroidPillPosition,
+    AndroidPillDockPosition,
+    SetupProgress,
     Bool,
     MicGain,
     SoundEffectsVolume,
@@ -186,6 +188,7 @@ const SETTING_SPECS: &[SettingSpec] = &[
         true,
     ),
     setting_spec(store::SETUP_COMPLETE, SettingKind::Bool, true, false),
+    setting_spec(store::SETUP_PROGRESS, SettingKind::SetupProgress, true, false),
     setting_spec(store::AUTO_LEARN_ENABLED, SettingKind::Bool, true, true),
     setting_spec(store::AUTO_LEARN_EVENT_MODE, SettingKind::Bool, true, true),
     setting_spec(store::CONTEXTUAL_CAPS, SettingKind::Bool, true, true),
@@ -203,6 +206,12 @@ const SETTING_SPECS: &[SettingSpec] = &[
     setting_spec(
         store::ANDROID_PILL_POSITION,
         SettingKind::AndroidPillPosition,
+        true,
+        true,
+    ),
+    setting_spec(
+        store::ANDROID_PILL_DOCK_POSITION,
+        SettingKind::AndroidPillDockPosition,
         true,
         true,
     ),
@@ -484,6 +493,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::AndroidPillPosition => value
             .as_str()
             .is_some_and(|v| crate::android::ANDROID_PILL_POSITIONS.contains(&v)),
+        SettingKind::AndroidPillDockPosition => value
+            .as_str()
+            .is_some_and(|v| crate::android::ANDROID_PILL_SCREEN_POSITIONS.contains(&v)),
         SettingKind::AccentColor => {
             value.is_null()
                 || value
@@ -496,6 +508,7 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::CustomThemes => {
             value.is_null() || is_saved_themes(value)
         }
+        SettingKind::SetupProgress => is_setup_progress(value),
         SettingKind::Bool => value.is_boolean(),
         SettingKind::MicGain => value.as_f64().is_some_and(|v| (1.0..=8.0).contains(&v)),
         SettingKind::SoundEffectsVolume => {
@@ -516,6 +529,27 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
     } else {
         Err(format!("Invalid or unsupported setting: {key}"))
     }
+}
+
+/// Highest wizard step number any platform uses (the Done screen).
+const SETUP_PROGRESS_MAX_STEP: u64 = 12;
+
+/// `null` clears the saved progress; otherwise a bounded step and, optionally,
+/// the provider the wizard was configuring.
+fn is_setup_progress(value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    map.iter().all(|(key, value)| match key.as_str() {
+        "step" => value
+            .as_u64()
+            .is_some_and(|step| step <= SETUP_PROGRESS_MAX_STEP),
+        "provider" => value.as_str().is_some_and(|v| store::PROVIDERS.contains(&v)),
+        _ => false,
+    }) && map.contains_key("step")
 }
 
 #[cfg(test)]
@@ -616,6 +650,48 @@ mod setting_key_tests {
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(100)).is_ok());
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(-1)).is_err());
         assert!(validate_setting(store::SOUND_EFFECTS_VOLUME, &serde_json::json!(101)).is_err());
+    }
+
+    #[test]
+    fn setup_progress_accepts_a_bounded_step_and_known_provider() {
+        for valid in [
+            serde_json::Value::Null,
+            serde_json::json!({"step": 0}),
+            serde_json::json!({"step": 4, "provider": "groq"}),
+            serde_json::json!({"step": 12, "provider": "local"}),
+        ] {
+            assert!(validate_setting(store::SETUP_PROGRESS, &valid).is_ok(), "{valid}");
+        }
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"provider": "groq"}),
+            serde_json::json!({"step": 13}),
+            serde_json::json!({"step": -1}),
+            serde_json::json!({"step": 1.5}),
+            serde_json::json!({"step": 2, "provider": "nope"}),
+            serde_json::json!({"step": 2, "apiKey": "secret"}),
+            serde_json::json!(3),
+        ] {
+            assert!(validate_setting(store::SETUP_PROGRESS, &invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn android_pill_dock_position_accepts_only_known_placements() {
+        for position in crate::android::ANDROID_PILL_SCREEN_POSITIONS {
+            assert!(
+                validate_setting(store::ANDROID_PILL_DOCK_POSITION, &serde_json::json!(position))
+                    .is_ok()
+            );
+        }
+        for invalid in [
+            serde_json::json!("keyboard-center"),
+            serde_json::json!("floating"),
+            serde_json::json!(3),
+            serde_json::Value::Null,
+        ] {
+            assert!(validate_setting(store::ANDROID_PILL_DOCK_POSITION, &invalid).is_err());
+        }
     }
 
     #[test]
@@ -867,6 +943,7 @@ pub struct AllSettings {
     pub pause_media_during_dictation: Option<bool>,
     pub play_start_stop_sounds: Option<bool>,
     pub sound_effects_volume: Option<f64>,
+    pub setup_progress: Option<serde_json::Value>,
     pub autostart_enabled: Option<bool>,
     pub auto_learn_enabled: Option<bool>,
     pub contextual_caps_enabled: Option<bool>,
@@ -888,6 +965,7 @@ pub struct AllSettings {
     pub custom_theme: Option<serde_json::Value>,
     pub custom_themes: Option<serde_json::Value>,
     pub android_pill_position: Option<String>,
+    pub android_pill_dock_position: Option<String>,
     pub android_pill_cover_keyboard_mic: Option<bool>,
     pub android_pill_hide_offline: Option<bool>,
     pub cleanup_prompt_override: Option<String>,
@@ -950,6 +1028,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         pause_media_during_dictation: bool_val(store::PAUSE_MEDIA_DURING_DICTATION),
         play_start_stop_sounds: bool_val(store::PLAY_START_STOP_SOUNDS),
         sound_effects_volume: f64_val(store::SOUND_EFFECTS_VOLUME),
+        setup_progress: json_val(store::SETUP_PROGRESS),
         autostart_enabled: bool_val(store::AUTOSTART_ENABLED),
         auto_learn_enabled: bool_val(store::AUTO_LEARN_ENABLED),
         contextual_caps_enabled: bool_val(store::CONTEXTUAL_CAPS),
@@ -977,6 +1056,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
         custom_theme: json_val(store::CUSTOM_THEME),
         custom_themes: json_val(store::CUSTOM_THEMES),
         android_pill_position: str_val(store::ANDROID_PILL_POSITION),
+        android_pill_dock_position: str_val(store::ANDROID_PILL_DOCK_POSITION),
         android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
         android_pill_hide_offline: bool_val(store::ANDROID_PILL_HIDE_OFFLINE),
         cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
@@ -1082,6 +1162,8 @@ mod provider_model_cache_tests {
     fn is_readable_but_not_exportable() {
         assert!(is_readable_setting_key(store::PROVIDER_MODEL_CACHE));
         assert!(!is_exportable_setting_key(store::PROVIDER_MODEL_CACHE));
+        assert!(is_readable_setting_key(store::SETUP_PROGRESS));
+        assert!(!is_exportable_setting_key(store::SETUP_PROGRESS));
     }
 }
 
