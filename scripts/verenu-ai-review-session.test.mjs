@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL, shouldFallback } from "./verenu-ai-review-logic.mjs";
-import { readProviderFailureReason } from "./verenu-ai-review-session.mjs";
+import { readProviderFailureReason, readPersistedFindings } from "./verenu-ai-review-session.mjs";
 
 async function session(t, records) {
   const home = await mkdtemp(path.join(tmpdir(), "verenu-review-session-test-"));
@@ -46,4 +46,19 @@ test("prompt and response text cannot trigger fallback", async (t) => {
 test("missing records and another attempt's quota do not misclassify failures", async (t) => {
   const home = await session(t, [{ type: "llm_error", error: "quota exceeded" }]);
   assert.equal(await readProviderFailureReason(path.join(home, "fresh-attempt")), null);
+});
+
+test("recovers only structured main-task comments without exposing diagnostic content", async (t) => {
+  const args = JSON.stringify({ path: "model-path.mjs", comments: JSON.stringify([{ content: "Fix this bug", thinking: "private reasoning" }]) });
+  const record = { type: "llm_response", taskType: "main_task", filePath: "actual-file.mjs", content: "private response", tool_calls: [{ name: "code_comment", arguments: args }] };
+  const home = await session(t, [
+    { ...record, type: "llm_request" },
+    { ...record, taskType: "plan_task" },
+    { ...record, tool_calls: [{ name: "read_file", arguments: args }] },
+    { ...record, tool_calls: [{ name: "code_comment", arguments: "malformed" }] },
+    record, record,
+    { type: "llm_error", error: "quota exhausted private details" },
+  ]);
+  assert.deepEqual(await readPersistedFindings(home), [{ file: "actual-file.mjs", line: null, severity: "info", message: "Fix this bug" }]);
+  assert.deepEqual(await readPersistedFindings(path.join(home, "other-attempt")), []);
 });

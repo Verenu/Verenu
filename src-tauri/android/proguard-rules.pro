@@ -6,3 +6,4 @@
 # Tauri discovers plugin commands and callbacks by reflection.
 -keep class com.verenu.app.VerenuPermissionPlugin { *; }
 -keep class com.verenu.app.VerenuSecurityPlugin { *; }
+-keep class com.verenu.app.VerenuUpdaterPlugin { *; }

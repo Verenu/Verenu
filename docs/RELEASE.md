@@ -1,5 +1,60 @@
 # Release Process
 
+## Android update publication contract
+
+Android uses the existing startup, six-hour, and reconnect update checks and
+stable/beta preference. No APK job is enabled in the nightly workflow yet.
+Until a compatible APK is published, Android receives no update offer.
+
+Publish signed, standalone APKs on the same GitHub Release as the desktop
+assets, using these exact, case-sensitive names:
+
+- `Verenu_<version>_android_arm64-v8a.apk` for ARM64 phones.
+- `Verenu_<version>_android_x86_64.apk` for x86_64 devices.
+- `Verenu_<version>_android_universal.apk` as an optional fallback containing
+  every supported ABI and its native inference runtimes.
+
+For example, `Verenu_0.21.0-nightly.20261006_android_arm64-v8a.apk` belongs
+on a prerelease from `master`. A stable APK uses `Verenu_0.21.0_android_arm64-v8a.apk`
+on a normal release. The filename version must match the app's semantic version.
+Each device prefers its ABI-specific APK, then universal. Debug APKs, split APKs,
+AABs, other ABIs, and desktop assets are not update candidates.
+
+Include GitHub's `sha256:` asset digest or an entry for the exact filename in
+`SHA256SUMS.txt`. The updater refreshes release metadata before downloading and
+blocks stale offers, missing verification metadata, checksum mismatches, empty
+downloads, and downloads over 1 GiB. Downloads stay in private cache storage;
+the FileProvider exposes only the update subdirectory to Android's installer.
+
+When enabling Android release CI later:
+
+1. Build release APKs with the existing application ID and the same persistent
+   signing key across stable and nightly builds. Keep signing secrets in CI.
+   Debug builds signed with a development key cannot receive production updates.
+   The current native preflight requires the same signer set; signing-key rotation
+   requires a separate migration before publishing rotated APKs.
+2. Assign a monotonically increasing Android `versionCode` across both channels.
+   Use one persisted build counter, not a counter that resets per workflow or
+   semantic version. Store-safe values must stay at or below 2,100,000,000.
+   Verify the packaged `versionName` matches the filename and Rust version.
+3. Verify the APK and bundled native runtimes on a device, rename it according
+   to the contract, and upload the APK and checksum with the desktop assets.
+4. Test the installed older release updating to the new release, source-permission
+   denial and approval, cancellation/retry, offline recovery, and preserved data.
+
+Users tap **Update Verenu** inside the app. If Android has not allowed Verenu
+to install updates, Verenu opens the per-app source settings and asks the user
+to return and retry. After download, native preflight checks the package ID,
+signer set, and nondecreasing version code, then opens Android's installer.
+Android owns signature verification and final installation approval. Opening
+the installer does not mark the update installed; cancellation allows retry.
+The staged APK remains available until the next attempt or Android clears cache.
+No GitHub page or manual file handling is needed.
+
+This path is for directly distributed Android APKs. A future Play Store build
+must use Play-managed updates and omit the self-install permission. iOS would
+need its own App Store/TestFlight update path.
+
 This document is the practical release checklist for Verenu. For release note wording, use [`../Agent-Skills/Release_Description_Writing.md`](../Agent-Skills/Release_Description_Writing.md).
 
 ## Branch Flow
