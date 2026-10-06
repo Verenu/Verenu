@@ -570,25 +570,50 @@ fn export_contextual_library(
         ))
     })?;
 
+    let mut dictionary_stmt = conn.prepare(
+        "SELECT d.term, d.uuid, d.id
+           FROM dictionary d
+           INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
+          WHERE dc.context_id = ?1
+          ORDER BY d.id",
+    )?;
+    let mut snippet_stmt = conn.prepare(
+        "SELECT trigger, expansion, instructions, created_at
+           FROM snippets s
+           INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
+          WHERE sc.context_id = ?1
+          ORDER BY s.id",
+    )?;
+    let mut target_stmt = conn.prepare(
+        "SELECT executable, app_name, developer, platform
+           FROM context_targets
+          WHERE context_id = ?1
+          ORDER BY id",
+    )?;
+    let mut website_stmt = conn.prepare(
+        "SELECT domain
+           FROM context_website_targets
+          WHERE context_id = ?1
+          ORDER BY id",
+    )?;
+    let mut sub_app_stmt = conn.prepare(
+        "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
+           FROM context_sub_apps
+          WHERE context_id IS ?1 AND executable NOT LIKE '?::%'
+          ORDER BY id",
+    )?;
+
     for row in context_rows {
         let (context_id, mut context) = row?;
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT d.term, d.uuid, d.id
-                   FROM dictionary d
-                   INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
-                  WHERE dc.context_id = ?1
-                  ORDER BY d.id",
-            )?;
-            let rows = stmt.query_map(params![context_id], |row| {
+            let rows = dictionary_stmt.query_map(params![context_id], |row| {
                 let dictionary_id = row.get::<_, i64>(2)?;
                 Ok(ExportContextDictionaryEntry {
                     term: row.get(0)?,
                     dictionary_uuid: row.get(1)?,
                     corrections: corrections_by_key
-                        .get(&(context_id, dictionary_id))
-                        .cloned()
+                        .remove(&(context_id, dictionary_id))
                         .unwrap_or_default(),
                 })
             })?;
@@ -596,14 +621,7 @@ fn export_contextual_library(
         }
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT trigger, expansion, instructions, created_at
-                   FROM snippets s
-                   INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
-                  WHERE sc.context_id = ?1
-                  ORDER BY s.id",
-            )?;
-            context.snippets = stmt
+            context.snippets = snippet_stmt
                 .query_map(params![context_id], |row| {
                     Ok(ExportSnippet {
                         trigger: row.get(0)?,
@@ -616,13 +634,7 @@ fn export_contextual_library(
         }
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT executable, app_name, developer, platform
-                   FROM context_targets
-                  WHERE context_id = ?1
-                  ORDER BY id",
-            )?;
-            context.targets = stmt
+            context.targets = target_stmt
                 .query_map(params![context_id], |row| {
                     Ok(ExportContextTarget {
                         executable: row.get(0)?,
@@ -635,13 +647,7 @@ fn export_contextual_library(
         }
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT domain
-                   FROM context_website_targets
-                  WHERE context_id = ?1
-                  ORDER BY id",
-            )?;
-            context.website_targets = stmt
+            context.website_targets = website_stmt
                 .query_map(params![context_id], |row| {
                     Ok(ExportContextWebsiteTarget {
                         domain: row.get(0)?,
@@ -651,13 +657,7 @@ fn export_contextual_library(
         }
 
         {
-            let mut stmt = conn.prepare(
-                "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
-                   FROM context_sub_apps
-                  WHERE context_id IS ?1 AND executable NOT LIKE '?::%'
-                  ORDER BY id",
-            )?;
-            context.sub_apps = stmt
+            context.sub_apps = sub_app_stmt
                 .query_map(params![context_id], export_sub_app_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
         }
