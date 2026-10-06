@@ -42,3 +42,27 @@ describe('rankAppMatches on desktop', () => {
     expect(rankAppMatches(apps, 'slack', false).every((app) => matchesAppSearch(app, 'slack', false))).toBe(true);
   });
 });
+
+describe('app search normalization', () => {
+  const variants = [
+    { name: 'Visual Studio Code', exe: 'Code.exe' },
+    { name: 'VS_Code', exe: 'vscode.exe' },
+    { name: '', exe: 'VSCode.exe' },
+    { name: 'Other', exe: 'visual-studio-code.exe' },
+  ];
+
+  it('matches compact names while excluding executables on Android', () => {
+    expect(rankAppMatches(variants, '  VSCODE  ', true)).toEqual([variants[2], variants[1]]);
+    expect(rankAppMatches(variants, 'VisualStudioCode', false)).toEqual([variants[0], variants[3]]);
+  });
+
+  it('retains input order for equally ranked name matches', () => {
+    expect(rankAppMatches(variants, 'code', true)).toEqual(variants.slice(0, 3));
+  });
+
+  it('handles punctuation-only queries without matching every compact name', () => {
+    expect(rankAppMatches(apps, '.', true)).toEqual([apps[2]]);
+    expect(rankAppMatches(apps, '.', false)).toEqual(apps);
+    expect(matchesAppSearch(apps[0], '  ', true)).toBe(true);
+  });
+});

@@ -11,20 +11,23 @@ export function customExeFromSearch(search: string): string {
  */
 export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = isAndroid) {
   const query = search.trim().toLowerCase();
-  if (!query) return true;
+  return matchesSearch(app, query, query.replace(/[^a-z0-9]/g, ''), nameOnly);
+}
 
-  const appName = cleanAppName(app.name || app.exe).toLowerCase();
-  const appExe = normalizeExe(app.exe);
-  const compactQuery = query.replace(/[^a-z0-9]/g, '');
+function matchesName(appName: string, query: string, compactQuery: string) {
+  if (appName.includes(query)) return true;
   const compactName = appName.replace(/[^a-z0-9]/g, '');
-  const compactExe = appExe.replace(/[^a-z0-9]/g, '');
+  return compactQuery.length > 0 && compactName.includes(compactQuery);
+}
 
-  if (nameOnly) {
-    return appName.includes(query) || (compactQuery.length > 0 && compactName.includes(compactQuery));
-  }
-  return appName.includes(query)
-    || appExe.includes(query)
-    || (compactQuery.length > 0 && (compactName.includes(compactQuery) || compactExe.includes(compactQuery)));
+function matchesSearch(app: InstalledApp, query: string, compactQuery: string, nameOnly: boolean) {
+  if (!query) return true;
+  const appName = cleanAppName(app.name || app.exe).toLowerCase();
+  if (matchesName(appName, query, compactQuery)) return true;
+  if (nameOnly) return false;
+  const appExe = normalizeExe(app.exe);
+  return appExe.includes(query)
+    || (compactQuery.length > 0 && appExe.replace(/[^a-z0-9]/g, '').includes(compactQuery));
 }
 
 /**
@@ -36,17 +39,19 @@ export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = i
 export function rankAppMatches(apps: InstalledApp[], search: string, android = isAndroid): InstalledApp[] {
   const query = search.trim().toLowerCase();
   if (!query) return apps;
+  const compactQuery = query.replace(/[^a-z0-9]/g, '');
   // Desktop keeps its established behaviour: filter only, in the platform's order.
-  if (!android) return apps.filter((app) => matchesAppSearch(app, search, false));
-  const score = (app: InstalledApp) => {
-    const name = cleanAppName(app.name || app.exe).toLowerCase();
+  if (!android) return apps.filter((app) => matchesSearch(app, query, compactQuery, false));
+  const score = (name: string) => {
     if (name.startsWith(query)) return 0;
     if (name.split(/[^a-z0-9]+/).some((word) => word.startsWith(query))) return 1;
     return 2;
   };
   return apps
-    .filter((app) => matchesAppSearch(app, search, true))
-    .map((app, index) => ({ app, index, rank: score(app) }))
+    .flatMap((app, index) => {
+      const name = cleanAppName(app.name || app.exe).toLowerCase();
+      return matchesName(name, query, compactQuery) ? [{ app, index, rank: score(name) }] : [];
+    })
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.app);
 }
