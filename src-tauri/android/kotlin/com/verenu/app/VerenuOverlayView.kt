@@ -66,6 +66,9 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     interface Listener {
         fun onPillTap()
+        /** The idle pill was held still: start dictating until [onPillHoldEnd]. */
+        fun onPillHoldStart() {}
+        fun onPillHoldEnd() {}
         fun onPillCancel()
         fun onPillRetry()
         /** Start a fresh dictation from the cancelled notice. */
@@ -113,12 +116,20 @@ class VerenuOverlayView @JvmOverloads constructor(
     private var entered = false
     private var dragging = false
     private var suppressClick = false
+    private var holding = false
     private var downRawX = 0f
     private var downRawY = 0f
     private val longPress = Runnable {
-        // Recording too: a dictation can outlive the keyboard, and that is when
-        // the pill needs moving. Tapping still stops it; only a hold drags.
-        if (state == State.IDLE || state == State.RECORDING) {
+        if (state == State.IDLE) {
+            // Held still on the idle pill: push-to-talk. Moving before this
+            // fires drags the pill instead (see ACTION_MOVE).
+            holding = true
+            suppressClick = true
+            pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener?.onPillHoldStart()
+        } else if (state == State.RECORDING) {
+            // A dictation can outlive the keyboard, and that is when the pill
+            // needs moving. Tapping still stops it; only a hold drags.
             dragging = true
             suppressClick = true
             pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -171,11 +182,22 @@ class VerenuOverlayView @JvmOverloads constructor(
                         listener?.onPillDragMove(event.rawX.toInt(), event.rawY.toInt())
                     } else if (hypot(event.rawX - downRawX, event.rawY - downRawY) > touchSlop) {
                         removeCallbacks(longPress)
+                        // A quick drag from the idle pill moves it (hold = dictate).
+                        if (state == State.IDLE && !holding) {
+                            dragging = true
+                            suppressClick = true
+                            listener?.onPillDragStart()
+                            listener?.onPillDragMove(event.rawX.toInt(), event.rawY.toInt())
+                        }
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     removeCallbacks(longPress)
                     view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+                    if (holding) {
+                        holding = false
+                        listener?.onPillHoldEnd()
+                    }
                     if (dragging) {
                         dragging = false
                         listener?.onPillDragEnd(event.rawX.toInt(), event.rawY.toInt())

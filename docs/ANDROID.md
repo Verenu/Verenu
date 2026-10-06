@@ -74,7 +74,7 @@ holds a multicast lock while the activity is visible, and releases it on stop.
 - Settings -> General -> Pill position without a keyboard (`android_pill_dock_position`,
   default bottom center) is where the pill rests when a dictation outlives the
   keyboard. Any screen position is valid.
-- Hold the idle or recording pill to drag it. On drop it snaps to the nearest
+- Hold the idle pill still to dictate; release to stop. Drag it right away (or hold the recording pill) to move it. On drop it snaps to the nearest
   position and saves it through `POST /v1/pill/position`, the same setting
   Settings edits; Settings refreshes on the `verenu:android-pill-position-changed`
   event and whenever the app returns to the foreground. The setting that
