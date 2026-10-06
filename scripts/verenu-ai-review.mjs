@@ -35,6 +35,7 @@ import {
   failureCategory,
   failureExitCode,
   formatProgressSummary,
+  mergeReviewFindings,
   reviewOutcome,
   selectReviewModels,
   shouldFallback,
@@ -435,13 +436,15 @@ function extractJson(stdout) {
   throw new Error("no valid JSON structure found in stdout");
 }
 
-function parseOcrFindings(stdout) {
+function parseOcrFindings(stdout, { quiet = false } = {}) {
   let data;
   try {
     data = extractJson(stdout);
   } catch (err) {
-    console.error(`failed to parse OCR findings JSON: ${err.message}`);
-    console.error(`raw stdout: ${stdout.slice(0, 2000)}`);
+    if (!quiet) {
+      console.error(`failed to parse OCR findings JSON: ${err.message}`);
+      console.error(`raw stdout: ${stdout.slice(0, 2000)}`);
+    }
     return [];
   }
   // ocr's actual --format json shape is { comments: [...] }, each with
@@ -595,6 +598,7 @@ async function main() {
 
     let activeModel = selection.model;
     let result;
+    let findings = [];
 
     for (let attempt = 0; attempt < selection.models.length; attempt++) {
       activeModel = selection.models[attempt];
@@ -616,6 +620,9 @@ async function main() {
       const providerEnvVars = providerEnv(activeModel);
       const args = ocrReviewArgs({ baseSha: pr.base.sha, headSha: pr.head.sha, model: activeModel, background });
       result = await reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome);
+      // A provider failure can coexist with findings from completed files.
+      // Retain them across fallback, even if the next model returns none.
+      findings = mergeReviewFindings(findings, parseOcrFindings(result?.stdout || "", { quiet: result?.code !== 0 }));
 
       if (!result || result.code === 0) break;
 
@@ -639,30 +646,33 @@ async function main() {
       );
     }
 
+    await postFindings(prNumber, pr, findings);
+    const outcome = reviewOutcome(findings);
     if (!result || result.code !== 0) {
       const reason = failureCategory(result);
       stateComment = await updateProgress(
         prNumber,
         stateComment,
-        formatProgressSummary({ stage: "failed", reason }),
+        outcome.hasFindings
+          ? `${formatProgressSummary({ stage: "findings", model: activeModel, findings: outcome.count, headSha: pr.head.sha })} Review incomplete (${reason}).`
+          : formatProgressSummary({ stage: "failed", reason }),
         {
           ...baseState,
           model: activeModel,
           attemptedModels: [...attemptedModels],
           status: "failed",
-          stage: "failed",
+          stage: outcome.hasFindings ? "findings" : "failed",
+          findings: outcome.count,
+          completed: false,
           reason,
           timestamp: new Date().toISOString(),
         },
       );
       console.error(`OCR review failed: category=${reason} exit=${result?.code ?? "unknown"}`);
-      process.exitCode = failureExitCode(result);
+      process.exitCode = failureExitCode(result, findings);
       return;
     }
 
-    const findings = parseOcrFindings(result.stdout);
-    await postFindings(prNumber, pr, findings);
-    const outcome = reviewOutcome(findings);
     const finalStage = outcome.hasFindings ? "findings" : "complete";
     const finalSummary = formatProgressSummary({
       stage: finalStage,
