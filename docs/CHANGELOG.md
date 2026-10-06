@@ -12,6 +12,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Reduced settings-loading IPC calls, sped up pill placement on Hyprland, and shrank the production app bundle by excluding browser mocks.
 
+- Restored desktop dictation telemetry for recording completion, pipeline stages, delivery, and final outcomes. Each run keeps its own correlation ID across asynchronous processing. Failed insertion no longer counts as delivery, and cleanup recovery is recorded as fallback success. The existing telemetry preference and content restrictions still apply.
+
 - Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.
 
 - Fixed Linux global shortcuts failing when Verenu is launched outside an editor or terminal with a known app identity. Verenu now registers its own portal connection, reconnects after listener failure, and shows persistent shortcut errors with the cause and recovery guidance in Home and Settings.
