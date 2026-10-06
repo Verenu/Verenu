@@ -49,6 +49,8 @@ impl DeliveryKind {
 
 #[derive(Clone)]
 pub struct Analytics {
+    #[cfg(test)]
+    captured_events: Arc<Mutex<Vec<(&'static str, Value)>>>,
     enabled: Arc<AtomicBool>,
     install_id: Arc<Mutex<Option<String>>>,
     first_seen_version: Arc<Mutex<Option<String>>>,
@@ -286,6 +288,8 @@ impl Analytics {
         );
         Self {
             enabled: Arc::new(AtomicBool::new(enabled)),
+            #[cfg(test)]
+            captured_events: Arc::new(Mutex::new(Vec::new())),
             install_id: Arc::new(Mutex::new(install_id)),
             first_seen_version: Arc::new(Mutex::new(first_seen_version)),
             session_id: Arc::new(Mutex::new(Uuid::new_v4().to_string())),
@@ -805,6 +809,12 @@ impl Analytics {
         }
     }
 
+    pub(crate) fn run_has_final_outcome(&self, run_id: &str) -> bool {
+        self.sent_once
+            .lock()
+            .is_ok_and(|seen| seen.contains(&format!("dictation_outcome:{run_id}")))
+    }
+
     fn resolved_outcome(&self, run_id: &str, requested: &str) -> &'static str {
         let requested = normalize_outcome(requested);
         if !matches!(requested, "success_clean" | "unknown") {
@@ -903,7 +913,18 @@ impl Analytics {
     }
 
     fn capture(&self, event: &'static str, properties: Value) {
-        self.dispatch(event, safe_properties(event, properties));
+        let safe = safe_properties(event, properties);
+        #[cfg(test)]
+        self.captured_events
+            .lock()
+            .unwrap()
+            .push((event, safe.clone()));
+        self.dispatch(event, safe);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn captured_events(&self) -> Vec<(&'static str, Value)> {
+        self.captured_events.lock().unwrap().clone()
     }
 
     fn dispatch(&self, event: &'static str, properties: Value) {
@@ -2060,7 +2081,8 @@ mod tests {
                 "$geoip_subdivision_1_name": "Sentinel subdivision",
                 "$geoip_accuracy_radius": 5,
                 "$geoip_time_zone": "America/Vancouver",
-            }));
+            }),
+        );
         let payload = outbound_payload(
             "token",
             "app_launched",
