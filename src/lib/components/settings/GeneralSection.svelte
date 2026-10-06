@@ -2,7 +2,7 @@
   import { formatIpcError } from '../../errors';
   import { onDestroy, onMount } from 'svelte';
   import { listenForSyncCompletion } from '../../syncStore.svelte';
-  import { emit, invoke } from '../../tauri';
+  import { emit, invoke, listen } from '../../tauri';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
@@ -12,8 +12,11 @@
     loadSettingsSnapshot,
     saveSetting,
     ANDROID_PILL_POSITION_OPTIONS,
+    ANDROID_PILL_SCREEN_POSITION_OPTIONS,
     DEFAULT_ANDROID_PILL_POSITION,
+    DEFAULT_ANDROID_PILL_DOCK_POSITION,
     type AndroidPillPosition,
+    type AndroidPillScreenPosition,
     type AppearanceMode,
   } from '../../settings';
   import { modalFocusTrap } from '../../modalFocus';
@@ -55,6 +58,7 @@
   let selectedMic = $state('');
   let micDropdownOpen = $state(false);
   let pillPosition = $state<AndroidPillPosition>(DEFAULT_ANDROID_PILL_POSITION);
+  let pillDockPosition = $state<AndroidPillScreenPosition>(DEFAULT_ANDROID_PILL_DOCK_POSITION);
   let coverKeyboardMic = $state(true);
   let coverKeyboardMicError = $state(false);
   let hidePillOffline = $state(true);
@@ -82,12 +86,18 @@
     }
   }
   let pillDropdownOpen = $state(false);
+  let dockDropdownOpen = $state(false);
   const defaultPillPositionLabel =
     ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === DEFAULT_ANDROID_PILL_POSITION)?.label ??
     ANDROID_PILL_POSITION_OPTIONS[0]?.label ??
     '';
   const pillPositionLabel = $derived(
     ANDROID_PILL_POSITION_OPTIONS.find((o) => o.id === pillPosition)?.label ?? defaultPillPositionLabel,
+  );
+  const pillDockPositionLabel = $derived(
+    ANDROID_PILL_SCREEN_POSITION_OPTIONS.find((o) => o.id === pillDockPosition)?.label ??
+      ANDROID_PILL_SCREEN_POSITION_OPTIONS[0]?.label ??
+      '',
   );
   const microphoneCopy = {
     inputDeviceLabel: 'Input device',
@@ -112,6 +122,7 @@
   const LANGUAGE_MENU_ID = 'spoken-language-menu';
   const MIC_MENU_ID = 'microphone-menu';
   const PILL_MENU_ID = 'pill-position-menu';
+  const DOCK_MENU_ID = 'pill-dock-position-menu';
   let keybindEl: HTMLElement | null = $state(null);
   let capturedWidth = 0;
 
@@ -165,13 +176,41 @@
     el.style.width = `${newW}px`;
   });
 
+  /** Take saved placements as given; an unknown or missing value falls back to the default. */
+  function applyPillPlacement(position: AndroidPillPosition | null, dock: AndroidPillScreenPosition | null) {
+    pillPosition = ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === position)
+      ? (position as AndroidPillPosition)
+      : DEFAULT_ANDROID_PILL_POSITION;
+    pillDockPosition = ANDROID_PILL_SCREEN_POSITION_OPTIONS.some((o) => o.id === dock)
+      ? (dock as AndroidPillScreenPosition)
+      : DEFAULT_ANDROID_PILL_DOCK_POSITION;
+  }
+
+  /**
+   * The pill can change its own placement (dragging it snaps and saves), and
+   * this page only read the settings once on mount, so re-read them whenever
+   * the pill reports a move or the app comes back to the foreground.
+   */
+  async function refreshPillPlacement() {
+    if (!isAndroid) return;
+    try {
+      const [position, dock] = await Promise.all([
+        invoke<AndroidPillPosition | null>('get_setting', { key: 'android_pill_position' }),
+        invoke<AndroidPillScreenPosition | null>('get_setting', { key: 'android_pill_dock_position' }),
+      ]);
+      if (!destroyed) applyPillPlacement(position, dock);
+    } catch (err) {
+      console.error('refreshPillPlacement failed:', err);
+    }
+  }
+
   async function loadSettings() {
     const snapshot = loadSettingsSnapshot();
     const keys = [
       'autostart_enabled', 'hotkey', 'appearance_mode', 'transcription_language',
       'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
       'microphone_device', 'legacy_features_enabled', 'android_pill_position',
-      'android_pill_cover_keyboard_mic', 'android_pill_hide_offline',
+      'android_pill_cover_keyboard_mic', 'android_pill_hide_offline', 'android_pill_dock_position',
     ] as const;
     const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
     requests.splice(7, 0, invoke<string[]>('get_microphones'));
@@ -204,10 +243,7 @@
     microphones = val<string[]>(7, []);
     selectedMic = val<string | null>(8, null) ?? '';
     appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
-    const savedPillPosition = val<AndroidPillPosition | null>(10, null);
-    if (savedPillPosition && ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === savedPillPosition)) {
-      pillPosition = savedPillPosition;
-    }
+    applyPillPlacement(val<AndroidPillPosition | null>(10, null), val<AndroidPillScreenPosition | null>(13, null));
 
     coverKeyboardMic = val<boolean | null>(11, null) ?? true;
     hidePillOffline = val<boolean | null>(12, null) ?? true;
@@ -221,6 +257,7 @@
     const target = e.target as HTMLElement;
     if (micDropdownOpen && !target.closest('.mic-dropdown')) micDropdownOpen = false;
     if (pillDropdownOpen && !target.closest('.pill-dropdown')) pillDropdownOpen = false;
+    if (dockDropdownOpen && !target.closest('.dock-dropdown')) dockDropdownOpen = false;
     if (languageDropdownOpen && !target.closest('.language-dropdown')) languageDropdownOpen = false;
   }
 
@@ -231,6 +268,18 @@
       await saveSetting('android_pill_position', position);
     } catch (err) {
       console.error('savePillPosition failed:', err);
+      void refreshPillPlacement();
+    }
+  }
+
+  async function savePillDockPosition(position: AndroidPillScreenPosition) {
+    pillDockPosition = position;
+    dockDropdownOpen = false;
+    try {
+      await saveSetting('android_pill_dock_position', position);
+    } catch (err) {
+      console.error('savePillDockPosition failed:', err);
+      void refreshPillPlacement();
     }
   }
 
@@ -524,7 +573,15 @@
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenPill: (() => void) | undefined;
     let active = true;
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshPillPlacement(); };
+    if (isAndroid) {
+      document.addEventListener('visibilitychange', onVisible);
+      listen('verenu:android-pill-position-changed', () => void refreshPillPlacement())
+        .then(cleanup => { if (active) unlistenPill = cleanup; else cleanup(); })
+        .catch(() => {});
+    }
     listenForSyncCompletion(() => {
       // Refresh shared values only. Do not reset a theme preview, microphone,
       // shortcut capture, or other device-local controls during a peer sync.
@@ -538,7 +595,12 @@
         }
       }).catch(() => {});
     }).then(cleanup => { if (active) unlisten = cleanup; else cleanup(); }).catch(() => {});
-    return () => { active = false; unlisten?.(); };
+    return () => {
+      active = false;
+      unlisten?.();
+      unlistenPill?.();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   });
 
   loadSettings();
@@ -555,7 +617,7 @@
   <div class="setting-row" data-setting-target="general-pill-position">
     <div>
       <div class="label">Pill position</div>
-      <div class="desc">Where the dictation pill appears. It follows the keyboard, and docks to the screen edge while a dictation continues without it.</div>
+      <div class="desc">Where the dictation pill appears while the keyboard is up. Hold the pill and drag it to move it; it snaps to the nearest position here.</div>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="ui-dropdown pill-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
@@ -589,10 +651,47 @@
       {/if}
     </div>
   </div>
+  <div class="setting-row" data-setting-target="general-pill-dock-position">
+    <div>
+      <div class="label">Pill position without a keyboard</div>
+      <div class="desc">Where the pill rests when a dictation continues after the keyboard closes. Hold the pill and drag it to move it; it snaps to the nearest position and saves here.</div>
+    </div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="ui-dropdown dock-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && dockDropdownOpen) { dockDropdownOpen = false; e.stopPropagation(); } }}>
+      <button
+        class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
+        onclick={() => (dockDropdownOpen = !dockDropdownOpen)}
+        aria-haspopup="true"
+        aria-expanded={dockDropdownOpen}
+        aria-controls={DOCK_MENU_ID}
+        aria-label="Pill position without a keyboard"
+      >
+        <span class="mic-btn-label">{pillDockPositionLabel}</span>
+        <svg class:open={dockDropdownOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      {#if dockDropdownOpen}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
+          id={DOCK_MENU_ID}
+          class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          aria-label="Pill position without a keyboard options"
+          onclick={(e) => e.stopPropagation()}
+          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
+          out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+        >
+          {#each ANDROID_PILL_SCREEN_POSITION_OPTIONS as option}
+            <button class="ui-dropdown-option mic-item" class:active={pillDockPosition === option.id} onclick={() => savePillDockPosition(option.id)}>{option.label}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
   <div class="setting-row" data-setting-target="general-cover-keyboard-mic">
     <div>
       <div class="label">Cover the keyboard's mic button</div>
-      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button. Hold the pill and drag it to the top to hide it for 15 minutes.</div>
+      <div class="desc">Sit the pill over your keyboard's own voice-typing button so only Verenu's is tapped. Falls back to the position above when the keyboard has no mic button. Hold the pill and drag it to the top to hide it for 15 minutes; it can't be moved while it covers the button.</div>
     </div>
     <Toggle checked={coverKeyboardMic} onchange={handleCoverKeyboardMic} label="Cover the keyboard's mic button" bind:error={coverKeyboardMicError} />
   </div>

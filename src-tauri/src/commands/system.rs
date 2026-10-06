@@ -198,7 +198,7 @@ fn recording_audio_diagnostics(app: &AppHandle, state: &SharedState) -> Option<s
     let gain = store::settings_snapshot(app)
         .ok()
         .map(|settings| store::load_audio_config(&settings).mic_gain)
-        .unwrap_or(store::DEFAULT_MIC_GAIN);
+        .unwrap_or(store::default_mic_gain());
     let raw_rms = raw_rms.is_finite().then_some(raw_rms.max(0.0));
     let processed_level = processed_level
         .is_finite()

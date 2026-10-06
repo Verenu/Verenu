@@ -41,7 +41,7 @@ holds a multicast lock while the activity is visible, and releases it on stop.
 
 | Area | Implementation |
 | --- | --- |
-| Keyboard detection + overlay | `VerenuAccessibilityService` (`src-tauri/android/kotlin/…`); `TYPE_ACCESSIBILITY_OVERLAY`, top-anchored, `FLAG_NOT_FOCUSABLE` |
+| Keyboard detection + overlay | `VerenuAccessibilityService` (`src-tauri/android/kotlin/…`); `TYPE_ACCESSIBILITY_OVERLAY`, keyboard- or screen-anchored, `FLAG_NOT_FOCUSABLE` |
 | Recording trigger/stop/retry | Loopback bridge `POST /v1/recording/*` → existing `commands::recording` entry points |
 | Text insertion | `ACTION_SET_TEXT` + cursor restoration; clipboard + `ACTION_PASTE` fallback; ack drives pill/diagnostics |
 | Credentials | Kotlin `VerenuKeystore` (durable) + Rust memory-only cache; `android_keystore_save` stages rotations |
@@ -67,9 +67,25 @@ holds a multicast lock while the activity is visible, and releases it on stop.
   Error notices carry a title, the reason, and a Retry button when retrying can
   help.
 - Settings -> General -> Pill position selects above-keyboard center, left or
-  right, top, middle, or under the camera hole. Keyboard placement follows the
-  IME bounds. The pill waits for those bounds before appearing and animates
-  between positions.
+  right, or any screen position (a three-by-three grid of top, middle and bottom
+  by left, center and right, or under the camera hole). Keyboard placement
+  follows the IME bounds. The pill waits for those bounds before appearing and
+  animates between positions.
+- Settings -> General -> Pill position without a keyboard (`android_pill_dock_position`,
+  default bottom center) is where the pill rests when a dictation outlives the
+  keyboard. Any screen position is valid.
+- Hold the idle or recording pill to drag it. On drop it snaps to the nearest
+  position and saves it through `POST /v1/pill/position`, the same setting
+  Settings edits; Settings refreshes on the `verenu:android-pill-position-changed`
+  event and whenever the app returns to the foreground. The setting that
+  currently governs the pill is the one updated: the dock while docked, otherwise
+  the position (above-keyboard positions snap by thirds of the keyboard's width,
+  and a drop well above the keyboard switches to a screen position). A pill
+  covering the keyboard's mic key stays put; dropping it on the hide target
+  hides it for 15 minutes instead, except mid-dictation.
+- The service keeps the last reported placement in its own preferences, applies
+  it before the first poll, and re-reads the backend whenever the keyboard
+  opens, so a restart or a stale poll never places the pill with old settings.
 
 ## Permissions
 
