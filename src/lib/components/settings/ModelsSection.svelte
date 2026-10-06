@@ -395,16 +395,8 @@
   ];
 
   function localMemoryPolicyLabel(policy: LocalModelMemoryPolicy): string {
-    switch (policy) {
-      case 'keep_loaded':
-        return 'Keep loaded';
-      case 'unload_after_15m':
-        return 'Unload after 15 minutes';
-      case 'unload_immediately':
-        return 'Unload immediately';
-      default:
-        return 'Unload after 5 minutes';
-    }
+    return localMemoryPolicyOptions.find((option) => option.value === policy)?.label
+      ?? localMemoryPolicyOptions[0].label;
   }
 
   function taskMap(type: TaskType): ProviderModelMap {
@@ -579,14 +571,12 @@
   }
 
   async function migrateAndLoad() {
-    const [all, keyStatus, advancedRaw, cleanupRaw, language, selectionMode] = await Promise.all([
+    const [all, keyStatus] = await Promise.all([
       invoke<AllSettingsPayload>('get_all_settings'),
       invoke<Record<ProviderId, boolean>>('get_api_key_status'),
-      invoke<boolean | null>('get_setting', { key: 'advanced_model_ui' }),
-      invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
-      invoke<string | null>('get_setting', { key: 'transcription_language' }),
-      invoke<string | null>('get_setting', { key: 'model_selection_mode' }),
     ]);
+    const { advanced_model_ui: advancedRaw, cleanup_enabled: cleanupRaw,
+      transcription_language: language, model_selection_mode: selectionMode } = all;
 
     apiKeyStatus = { ...apiKeyStatus, ...keyStatus, local: true };
     transcriptionLanguage = language ?? 'en';
