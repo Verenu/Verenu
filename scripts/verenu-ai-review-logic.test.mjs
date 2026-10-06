@@ -95,7 +95,8 @@ test("quota, rate-limit, and model-unavailable failures are fallback eligible", 
 
   for (const [result, reason] of cases) {
     assert.equal(fallbackReason(result), reason);
-    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
+    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), Boolean(result.providerFailureReason));
+    assert.equal(shouldFallback({ ...result, providerFailureReason: reason }, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
   }
 });
 
@@ -128,9 +129,27 @@ test("provider exhaustion and bounded timeouts stay nonblocking without claiming
   assert.equal(failureExitCode(timeout), 0);
   assert.equal(shouldFallback(timeout, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
   assert.equal(shouldFallback(timeout, DEFAULT_FALLBACK_MODEL, null), false);
+  const switching = formatProgressSummary({ stage: "switching", model: DEFAULT_MODEL, fallbackModel: DEFAULT_FALLBACK_MODEL, reason: failureCategory(timeout) });
+  assert.match(switching, /timed out, switching/);
+  assert.doesNotMatch(switching, /quota/);
   assert.equal(failureExitCode({ code: 1, timedOut: true, previewFailed: true }), 1);
   assert.equal(failureExitCode({ code: 1, stderr: "invalid API key" }), 1);
   assert.equal(failureExitCode({ code: 1, stderr: "unknown error" }), 1);
+});
+
+test("review content mentioning quotas cannot make unrelated failures nonblocking", () => {
+  for (const message of ["handle HTTP 429", "quota counter", "model unavailable"]) {
+    const result = {
+      code: 1,
+      stdout: JSON.stringify({ status: "completed_with_errors", comments: [{ content: message }] }),
+      stderr: "Some files failed due to an unrelated error",
+    };
+    assert.equal(failureCategory(result), "review_failed");
+    assert.equal(failureExitCode(result), 1);
+    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), false);
+    assert.doesNotMatch(formatProgressSummary({ stage: "failed", reason: failureCategory(result) }), /nonblocking/);
+  }
+  assert.equal(failureExitCode({ code: 1, stderr: "quota exceeded", providerFailureReason: "untrusted category" }), 1);
 });
 
 test("progress summaries expose the expected review stages without provider details", () => {
