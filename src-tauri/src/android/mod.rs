@@ -47,6 +47,9 @@ pub mod bridge;
 #[cfg_attr(not(any(test, target_os = "android")), allow(dead_code))]
 pub mod local_ai;
 
+#[cfg(target_os = "android")]
+pub mod updater;
+
 /// Tauri mobile-plugin glue for Android's real permission prompts and
 /// settings intents. The Kotlin class is copied into the generated project by
 /// `scripts/android-sync.mjs`; keeping the registration here makes the Rust

@@ -5,6 +5,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Android: hold the idle pill to dictate and release to stop, in addition to tapping. Dragging the pill still works: start moving right away, or hold the recording pill.
+- Added the Android updater scaffold using the existing automatic checks: ABI-specific APK selection, SHA256-verified private downloads, package/signing-key/version-code checks, and Android installer approval from the app. APK names follow `Verenu_<version>_android_<abi>.apk`. Android offers no update until compatible release assets exist; nightly APK publishing remains deferred.
+
 - Android Settings, Contexts, Insights, dialogs, and setup now use layouts sized for phones and foldable screens.
 - Strengthened CI and agent verification with strict skipped-test handling, complete owned-session test discovery, native capability/platform evidence, Android Kotlin/JVM checks, native WebView PR checks, workflow linting, and exact-source nightly release verification. Headless sessions now validate supported hotkey chords without probing host shortcuts, while production still checks OS availability. Startup fingerprint mismatches report changed repository paths and file digests without source contents. Added Context lifecycle, populated-cache clearing, accessibility, and visual regression coverage.
 - Queued runtime icon updates on the UI thread, including tray-handle lookup and disposal, to prevent unsafe reference-count access during concurrent appearance saves. Added an owned-session concurrency regression.
