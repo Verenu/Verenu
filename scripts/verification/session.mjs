@@ -29,6 +29,18 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
+export function sessionIdentityMismatch(expected, actual) {
+  const fields = [];
+  if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
+  if (expected?.worktree !== actual?.worktree) fields.push('worktree');
+  if (!fields.length) return null;
+  return {
+    fields,
+    runner: { commit: expected?.commit ?? null, fingerprint: expected?.fingerprint ?? null },
+    backend: { commit: actual?.commit ?? null, fingerprint: actual?.fingerprint ?? null },
+  };
+}
+
 export async function startOwnedSession({ id, fixtures, native = false, directory, synthetic = true }) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(id)) {
     throw new TypeError('startOwnedSession requires a valid session ID');
@@ -85,10 +97,15 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           if (!response.ok) throw new Error(`Session metadata request returned HTTP ${response.status}`);
           const metadata = await response.json();
           const identity = sourceIdentity();
-          if (metadata.fingerprint !== identity.fingerprint || metadata.worktree !== identity.worktree) throw new Error('Rust backend does not match current source');
+          const identityMismatch = sessionIdentityMismatch(identity, metadata);
+          if (identityMismatch) {
+            const error = new Error(`Rust backend source identity mismatch (${identityMismatch.fields.join(', ')})`);
+            error.identityMismatch = identityMismatch;
+            throw error;
+          }
           return { child, stop, directory: sessionDirectory, accessFile, access, metadata, identity };
         } catch (error) {
-          if (error.message === 'Rust backend does not match current source') throw error;
+          if (error.identityMismatch) throw error;
         }
       }
       await new Promise((resolve) => setTimeout(resolve, 500));

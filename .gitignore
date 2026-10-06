@@ -1,6 +1,7 @@
 node_modules/
 dist/
 src-tauri/gen/
+/src-tauri/.verenu-build-identity
 
 # Build artifacts — never track the Rust build tree. Release installers are
 # kept under /installers (and attached to GitHub Releases); the raw build

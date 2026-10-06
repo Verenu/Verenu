@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { sourceIdentity } from './verification/identity.mjs';
+import { syncBuildIdentityFile } from './verification/build-identity.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -151,6 +152,8 @@ async function start() {
     // Capability links belong in a private file, never terminal logs or reports.
     await fs.writeFile(path.join(directory, 'access.json'), JSON.stringify({ token, localAccessUrl: `${localUrl}/#session-token=${token}`, shareAccessUrl: shareUrl ? `${shareUrl}/#session-token=${token}` : null }), { mode: 0o600 });
     const identity = sourceIdentity();
+    const buildIdentityFile = path.join(root, 'src-tauri', '.verenu-build-identity');
+    await syncBuildIdentityFile(buildIdentityFile, identity.fingerprint);
     manifest = { id, directory, ...identity, dirty: git('status', '--porcelain') !== '', localUrl, shareUrl, status: 'starting', startedAt: new Date().toISOString(), launcherPid: process.pid, privateHistory: args.includes('--private-history'), syntheticSeed: args.includes('--synthetic-seed'), nativeTest: args.includes('--native-test') };
     await save();
     await fs.rm(path.join(directory, 'ready'), { force: true });
@@ -165,6 +168,7 @@ async function start() {
     if (!Number.isSafeInteger(maxRuns) || maxRuns < 0 || maxRuns > 10000) throw new Error('--max-runs must be an integer from 0 to 10000');
     const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target') };
     env.VERENU_BUILD_FINGERPRINT = identity.fingerprint;
+    env.VERENU_BUILD_FINGERPRINT_FILE = buildIdentityFile;
     env.VERENU_DEV_WORKTREE = identity.worktree;
     if (syntheticSeed) {
       const seed = path.join(directory, 'synthetic-seed');

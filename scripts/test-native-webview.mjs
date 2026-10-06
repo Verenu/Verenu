@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { startOwnedSession } from './verification/session.mjs';
 import { createNativeSession } from './verification/native-session.mjs';
+import { markCurrentNativePage, waitForNativePage } from './verification/native-page.mjs';
 import { verifyNativePill } from './verification/native-pill.mjs';
 
 class NativeDriver {
@@ -26,13 +27,8 @@ class NativeDriver {
   }
   execute(script) { return this.command('POST', '/execute/sync', { script, args: [] }); }
   executeAsync(fn, ...args) { return this.command('POST', '/execute/async', { script: `(${fn.toString()})(...arguments);`, args }); }
-  async waitForApp() {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      if (await this.execute('return !!document.querySelector(".app");')) return;
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    throw new Error('Native WebView did not render .app');
+  async waitForApp(options) {
+    return waitForNativePage(this, options);
   }
   refresh() { return this.command('POST', '/refresh', {}); }
   getWindowHandles() { return this.command('GET', '/window/handles'); }
@@ -60,9 +56,14 @@ try {
   session = await startOwnedSession({ id: `native-${randomUUID()}`, fixtures: directory, directory, native: true });
   browser = await NativeDriver.start(port);
   const invoke = async (command, args = {}) => {
-    const result = await browser.executeAsync((name, values, done) => {
-      window.__TAURI__.core.invoke(name, values).then((value) => done({ value }), (error) => done({ error: String(error) }));
-    }, command, args);
+    let result;
+    try {
+      result = await browser.executeAsync((name, values, done) => {
+        window.__TAURI__.core.invoke(name, values).then((value) => done({ value }), (error) => done({ error: String(error) }));
+      }, command, args);
+    } catch (error) {
+      throw new Error(`Native Tauri IPC ${command} WebDriver completion failed: ${error.message}`, { cause: error });
+    }
     assert.ok(!result.error, `Real native IPC ${command} failed: ${result.error || ''}`);
     return result.value;
   };
@@ -109,10 +110,14 @@ try {
     report.checks.push({ name: 'Native Linux pill content fit, error growth, control input and stale state rejection', status: 'passed' });
   }
   const created = await invoke('create_context', { name: 'Synthetic native', contextualFormattingDisabled: false });
+  report.checks.push({ name: 'Native IPC remains reachable after pill window cycles', status: 'passed' });
   try {
-    await browser.refresh(); await browser.waitForApp();
+    const previousPage = await markCurrentNativePage(browser);
+    await browser.refresh();
+    await browser.waitForApp({ navigationMarker: previousPage });
     const contexts = await invoke('get_contexts');
     assert.ok(contexts.some((row) => row.id === created.id && row.name === 'Synthetic native'));
+    report.checks.push({ name: 'Native WebView reload waits for a new ready document before follow-up IPC', status: 'passed' });
   } finally {
     try { await invoke('delete_context', { contextId: created.id }); }
     catch (error) { report.checks.push({ name: 'Temporary context cleanup', status: 'failed', reason: error.message }); }
@@ -129,6 +134,7 @@ try {
 } catch (error) {
   report.status = 'failed'; report.reason = error.message;
   if (error.startupFailure) report.startupFailure = error.startupFailure;
+  if (error.identityMismatch) report.identityMismatch = error.identityMismatch;
 }
 finally {
   if (browser) await browser.deleteSession().catch(() => {});
