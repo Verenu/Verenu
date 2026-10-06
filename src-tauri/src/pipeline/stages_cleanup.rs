@@ -257,6 +257,7 @@ async fn run_cleanup_provider_chain(
     app_context: Option<&str>,
     app: Option<&AppHandle>,
     gen: u64,
+    telemetry: Option<&PipelineTelemetry>,
 ) -> (Option<CleanupSuccess>, Option<anyhow::Error>, bool) {
     let mut last_cleanup_err: Option<anyhow::Error> = None;
     let mut saw_soft_timeout = false;
@@ -269,13 +270,8 @@ async fn run_cleanup_provider_chain(
             continue;
         }
         if provider_index > 0 {
-            if let (Some(app), Some(state)) = (app, app.and_then(|a| a.try_state::<SharedState>()))
-            {
-                if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
-                    if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
-                        analytics.fallback_used(&run_id, "cleanup");
-                    }
-                }
+            if let Some(telemetry) = telemetry {
+                telemetry.fallback("cleanup");
             }
         }
         if !crate::api::cleanup::chain_entry_supports_cleanup(
@@ -298,14 +294,8 @@ async fn run_cleanup_provider_chain(
         let attempts = if is_local { 1 } else { CLEANUP_FAST_ATTEMPTS };
         for attempt in 1..=attempts {
             if attempt > 1 {
-                if let (Some(app), Some(state)) =
-                    (app, app.and_then(|a| a.try_state::<SharedState>()))
-                {
-                    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
-                        if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
-                            analytics.retry_attempted(&run_id, attempt, "timeout");
-                        }
-                    }
+                if let Some(telemetry) = telemetry {
+                    telemetry.retry(attempt, "timeout");
                 }
             }
             let custom_template = cfg.cleanup_override(profile);
@@ -443,6 +433,7 @@ pub(super) async fn run_cleanup_and_snippets(
     context_id: i64,
     protected_instruction: Option<&str>,
     gen: u64,
+    telemetry: &PipelineTelemetry,
 ) -> Option<(String, Vec<db::DictionaryEntry>, String, String)> {
     let db_handle = app.state::<DbHandle>();
     match run_cleanup_and_snippets_for_db(
@@ -456,6 +447,7 @@ pub(super) async fn run_cleanup_and_snippets(
         protected_instruction,
         Some(app),
         gen,
+        Some(telemetry),
     )
     .await
     {
@@ -488,6 +480,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     protected_instruction: Option<&str>,
     app: Option<&AppHandle>,
     gen: u64,
+    telemetry: Option<&PipelineTelemetry>,
 ) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String)> {
     let mut db_snippets = db::query_snippets_for_context(db_handle, context_id).unwrap_or_default();
     let dict_entries = db::query_dictionary_for_context(db_handle, context_id).unwrap_or_default();
@@ -640,6 +633,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             app_context,
             app,
             gen,
+            telemetry,
         )
         .await;
         let provider_succeeded = cleanup_res.is_some();
@@ -671,6 +665,11 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         };
 
         record_provider_duration(provider_started.elapsed());
+        if guarded.is_none() {
+            if let Some(telemetry) = telemetry {
+                telemetry.fallback("cleanup");
+            }
+        }
         match guarded {
             Some(cleaned) => {
                 if cleanup_api_used.starts_with("local/")
