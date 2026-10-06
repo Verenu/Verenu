@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { performance } from "node:perf_hooks";
+import { ChildProcess } from "node:child_process";
 import { runReviewProcess } from "./verenu-ai-review-process.mjs";
 import { failureExitCode } from "./verenu-ai-review-logic.mjs";
 
@@ -52,4 +53,18 @@ test("normal output and unrelated failures keep their original result", async ()
 
 test("spawn failures reject and clean up timers", async () => {
   await assert.rejects(runReviewProcess("/nonexistent/verenu-review-test", [], { timeoutMs: 5000 }), { code: "ENOENT" });
+});
+
+test("OS signal refusal cannot escape deadline or escalation callbacks", async (t) => {
+  const refuse = () => { throw Object.assign(new Error("synthetic signal refusal"), { code: "EPERM" }); };
+  t.mock.method(process, "kill", refuse);
+  t.mock.method(ChildProcess.prototype, "kill", refuse);
+  const warnings = t.mock.method(console, "error", () => {});
+  // This real child exits itself since this fixture refuses every signal.
+  const result = await runReviewProcess(process.execPath, ["-e", "setTimeout(() => {}, 250)"], {
+    timeoutMs: 50, killGraceMs: 20,
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.code, 1);
+  assert.ok(warnings.mock.calls.length >= 2);
 });
