@@ -12,4 +12,8 @@ export function fmtDate(iso: string): string {
   }
 }
 
-export const countCodePoints = (value: string): number => [...value].length;
+export function countCodePoints(value: string): number {
+  let count = 0;
+  for (const _ of value) count++;
+  return count;
+}
