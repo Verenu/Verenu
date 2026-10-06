@@ -3,6 +3,47 @@ use crate::api::github::CommitSnapshot;
 
 const CACHE_SECONDS: i64 = 15 * 60;
 
+fn cached_snapshot_for_user(
+    value: Option<serde_json::Value>,
+    username: &str,
+) -> Option<CommitSnapshot> {
+    value
+        .and_then(|value| serde_json::from_value::<CommitSnapshot>(value).ok())
+        .filter(|snapshot| snapshot.username.eq_ignore_ascii_case(username))
+}
+
+fn cache_is_fresh(
+    snapshot: &CommitSnapshot,
+    username: &str,
+    today: chrono::NaiveDate,
+    current_offset: i32,
+    now: i64,
+) -> bool {
+    snapshot.matches(username, today, current_offset)
+        && (0..CACHE_SECONDS).contains(&(now - snapshot.fetched_at))
+}
+
+fn cached_failure_snapshot(
+    mut snapshot: CommitSnapshot,
+    error: &str,
+    current_offset: i32,
+) -> CommitSnapshot {
+    let offset_note = if snapshot.utc_offset != current_offset {
+        " The local UTC offset changed since this fetch; the original daily buckets are retained."
+    } else {
+        ""
+    };
+    let partial = if snapshot.complete {
+        ""
+    } else {
+        " Counts are lower bounds; days without results are unknown."
+    };
+    snapshot.warning = Some(format!(
+        "Showing cached counts. {error}{offset_note}{partial}"
+    ));
+    snapshot
+}
+
 #[derive(serde::Serialize)]
 pub struct GithubUsernameSuggestion {
     username: String,
@@ -155,22 +196,16 @@ pub async fn get_github_commits(
     if !crate::api::github::valid_username(&username) {
         return Err("Enter a valid GitHub username.".to_owned());
     }
-    let cached = settings
-        .get(store::GITHUB_COMMIT_CACHE)
-        .and_then(|value| serde_json::from_value::<CommitSnapshot>(value).ok())
-        .filter(|cache| {
-            cache.username.eq_ignore_ascii_case(&username)
-                && cache.utc_offset == chrono::Local::now().offset().local_minus_utc()
-        });
+    let local_now = chrono::Local::now();
+    let today = local_now.date_naive();
+    let current_offset = local_now.offset().local_minus_utc();
+    let cached = cached_snapshot_for_user(settings.get(store::GITHUB_COMMIT_CACHE), &username);
     let now = chrono::Utc::now().timestamp();
     if !refresh.unwrap_or(false) {
-        if let Some(cache) = cached.as_ref().filter(|cache| {
-            cache.matches(
-                &username,
-                chrono::Local::now().date_naive(),
-                cache.utc_offset,
-            ) && (0..CACHE_SECONDS).contains(&(now - cache.fetched_at))
-        }) {
+        if let Some(cache) = cached
+            .as_ref()
+            .filter(|cache| cache_is_fresh(cache, &username, today, current_offset, now))
+        {
             return Ok(Some(cache.clone()));
         }
     }
@@ -207,16 +242,59 @@ pub async fn get_github_commits(
             Ok(Some(snapshot))
         }
         Err(error) => match cached {
-            Some(mut snapshot) => {
-                let partial = if snapshot.complete {
-                    ""
-                } else {
-                    " Counts are lower bounds; days without results are unknown."
-                };
-                snapshot.warning = Some(format!("Showing cached counts. {error}{partial}"));
-                Ok(Some(snapshot))
-            }
+            Some(snapshot) => Ok(Some(cached_failure_snapshot(
+                snapshot,
+                &error,
+                current_offset,
+            ))),
             None => Err(error),
         },
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn snapshot(username: &str, offset: i32) -> CommitSnapshot {
+        let today = chrono::Local::now().date_naive();
+        CommitSnapshot {
+            username: username.to_owned(),
+            fetched_at: 100,
+            start_day: (today - chrono::Duration::days(crate::api::github::HISTORY_DAYS - 1))
+                .to_string(),
+            end_day: today.to_string(),
+            utc_offset: offset,
+            complete: true,
+            daily: vec![crate::api::github::CommitDay {
+                day: today.to_string(),
+                commits: 4,
+            }],
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn offset_change_forces_refresh_and_failed_refresh_keeps_cached_buckets() {
+        let cached = snapshot("octocat", -28_800);
+        let today = chrono::Local::now().date_naive();
+        assert!(cache_is_fresh(&cached, "octocat", today, -28_800, 200));
+        assert!(!cache_is_fresh(&cached, "octocat", today, -25_200, 200));
+
+        let stale = cached_failure_snapshot(cached.clone(), "GitHub is unavailable.", -25_200);
+        assert_eq!(stale.utc_offset, cached.utc_offset);
+        assert_eq!(stale.daily[0].day, cached.daily[0].day);
+        assert_eq!(stale.daily[0].commits, 4);
+        let warning = stale.warning.unwrap();
+        assert!(warning.contains("Showing cached counts"));
+        assert!(warning.contains("UTC offset changed"));
+        assert!(warning.contains("original daily buckets are retained"));
+    }
+
+    #[test]
+    fn cached_snapshot_is_only_reused_for_the_matching_account() {
+        let value = serde_json::to_value(snapshot("octocat", 0)).unwrap();
+        assert!(cached_snapshot_for_user(Some(value.clone()), "OCTOCAT").is_some());
+        assert!(cached_snapshot_for_user(Some(value), "other-user").is_none());
     }
 }

@@ -100,7 +100,7 @@
     <p class="refresh-meta" role="status">{githubState.loading ? 'Refreshing commits…' : `Last updated ${new Date(githubState.snapshot.fetched_at * 1000).toLocaleString()}`}</p>
     {#if githubState.snapshot.warning}<p class="connection-note" role="status">{githubState.snapshot.warning}</p>{/if}
   {/if}
-  <p id="github-privacy" class="privacy-note">Public commits only, covering the last 90 days. Your dictated text stays on this device.</p>
+  <p id="github-privacy" class="privacy-note">Public commits on repository default branches, covering the last 90 days. Your dictated text stays on this device.</p>
 </section>
 
 <style>
