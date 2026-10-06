@@ -153,8 +153,8 @@
   /** What the search box says it searches — the collapsed tail isn't in it. */
   const listedCount = $derived(curated.length + (showUnverified ? unverified.length : 0));
 
+  const needle = $derived(query.trim().toLowerCase());
   function matches(row: ModelRow): boolean {
-    const needle = query.trim().toLowerCase();
     if (!needle) return true;
     return (
       row.id.toLowerCase().includes(needle) ||
