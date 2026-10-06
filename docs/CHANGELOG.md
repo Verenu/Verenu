@@ -25,6 +25,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed Linux system notifications failing with a nested-runtime panic. Update, model-ready, and service notices now send with Verenu branding and report delivery errors so failed update and service notices can retry.
 
+- Enabled Linux update checks and installation for the official Arch package and portable x86_64 AppImages. Downloads require SHA256 verification and a database backup. Pacman updates use polkit authorization and retain signature and dependency checks; AppImage replacement keeps the previous image. Update controls show progress, errors, and when a restart is needed. Nightly releases now build and hash Linux installers, including Arch-compatible prerelease package versions.
+
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 
 - Fixed Linux shortcut capture rejecting Ctrl + Super when the WebView reports Super as an OS key.

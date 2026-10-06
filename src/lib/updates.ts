@@ -5,8 +5,13 @@ import { invoke } from './tauri';
 import { ensureNotificationPermission } from './notifications';
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let automaticCheckInFlight = false;
 
-async function checkForAutomaticUpdates(): Promise<void> {
+async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
+  if (automaticCheckInFlight || appStore.updateInstalling || appStore.updateInstalled) return;
+  automaticCheckInFlight = true;
+  const channel = appStore.betaUpdatesEnabled;
+  try {
   let update: UpdateInfo | null = null;
 
   try {
@@ -16,7 +21,7 @@ async function checkForAutomaticUpdates(): Promise<void> {
     return;
   }
 
-  if (!update) return;
+  if (!active() || channel !== appStore.betaUpdatesEnabled || appStore.updateInstalling || appStore.updateInstalled || !update) return;
 
   let dismissedVersion: string | null = null;
   let notifiedVersion: string | null = null;
@@ -37,6 +42,12 @@ async function checkForAutomaticUpdates(): Promise<void> {
   } catch (error) {
     console.warn('Update state lookup failed:', error);
   }
+  if (
+    !active()
+    || channel !== appStore.betaUpdatesEnabled
+    || appStore.updateInstalling
+    || appStore.updateInstalled
+  ) return;
 
   if (dismissedVersion === update.version) return;
 
@@ -62,20 +73,28 @@ async function checkForAutomaticUpdates(): Promise<void> {
   } catch (error) {
     console.warn('Failed to persist notified update version:', error);
   }
+  } finally {
+    automaticCheckInFlight = false;
+  }
 }
 
 export function startAutomaticUpdateChecks(): () => void {
+  let active = true;
+  const check = () => { void checkForAutomaticUpdates(() => active); };
   // Fire the first check in the background rather than awaiting it, so this
   // function can return the cleanup synchronously. That removes the unmount
   // race the caller would otherwise have to guard against — the interval is
   // registered before we return, so cleanup can always clear it.
-  void checkForAutomaticUpdates();
+  check();
 
   const timer = window.setInterval(() => {
-    void checkForAutomaticUpdates();
+    check();
   }, UPDATE_CHECK_INTERVAL_MS);
+  window.addEventListener('online', check);
 
   return () => {
+    active = false;
+    window.removeEventListener('online', check);
     window.clearInterval(timer);
   };
 }
