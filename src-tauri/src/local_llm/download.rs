@@ -29,14 +29,7 @@ pub struct LocalLlmVerificationProgressPayload {
 }
 
 pub(super) fn download_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .user_agent("Verenu/0.15.0")
-            .build()
-            .expect("local cleanup model download client")
-    })
+    crate::api::client::download()
 }
 
 fn emit_progress(app: &AppHandle, model_id: &str, downloaded_bytes: u64, total_bytes: Option<u64>) {
