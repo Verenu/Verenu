@@ -3,45 +3,76 @@ use crate::api::github::CommitSnapshot;
 
 const CACHE_SECONDS: i64 = 15 * 60;
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct CachedCommitSnapshot {
+    #[serde(flatten)]
+    snapshot: CommitSnapshot,
+    // Optional for caches written before timezone identity was recorded.
+    #[serde(default)]
+    timezone_id: Option<String>,
+}
+
+fn current_timezone_id() -> Option<String> {
+    iana_time_zone::get_timezone()
+        .ok()
+        .map(|timezone| timezone.trim().to_owned())
+        .filter(|timezone| !timezone.is_empty())
+}
+
 fn cached_snapshot_for_user(
     value: Option<serde_json::Value>,
     username: &str,
-) -> Option<CommitSnapshot> {
+) -> Option<CachedCommitSnapshot> {
     value
-        .and_then(|value| serde_json::from_value::<CommitSnapshot>(value).ok())
-        .filter(|snapshot| snapshot.username.eq_ignore_ascii_case(username))
+        .and_then(|value| serde_json::from_value::<CachedCommitSnapshot>(value).ok())
+        .filter(|cache| cache.snapshot.username.eq_ignore_ascii_case(username))
 }
 
 fn cache_is_fresh(
-    snapshot: &CommitSnapshot,
+    cache: &CachedCommitSnapshot,
     username: &str,
     today: chrono::NaiveDate,
     current_offset: i32,
+    current_timezone_id: Option<&str>,
     now: i64,
 ) -> bool {
-    snapshot.matches(username, today, current_offset)
-        && (0..CACHE_SECONDS).contains(&(now - snapshot.fetched_at))
+    let timezone_matches = cache
+        .timezone_id
+        .as_deref()
+        .zip(current_timezone_id)
+        .is_some_and(|(cached, current)| cached == current);
+    timezone_matches
+        && cache.snapshot.matches(username, today, current_offset)
+        && (0..CACHE_SECONDS).contains(&(now - cache.snapshot.fetched_at))
 }
 
 fn cached_failure_snapshot(
-    mut snapshot: CommitSnapshot,
+    mut cache: CachedCommitSnapshot,
     error: &str,
     current_offset: i32,
+    current_timezone_id: Option<&str>,
 ) -> CommitSnapshot {
-    let offset_note = if snapshot.utc_offset != current_offset {
-        " The local UTC offset changed since this fetch; the original daily buckets are retained."
-    } else {
-        ""
+    let timezone_note = match (cache.timezone_id.as_deref(), current_timezone_id) {
+        (Some(cached), Some(current)) if cached != current => {
+            " The time zone changed since this fetch; the original daily buckets are retained."
+        }
+        (None, _) | (_, None) => {
+            " The time zone identity is missing or unavailable; the original daily buckets are retained."
+        }
+        _ if cache.snapshot.utc_offset != current_offset => {
+            " The local UTC offset changed since this fetch; the original daily buckets are retained."
+        }
+        _ => "",
     };
-    let partial = if snapshot.complete {
+    let partial = if cache.snapshot.complete {
         ""
     } else {
         " Counts are lower bounds; days without results are unknown."
     };
-    snapshot.warning = Some(format!(
-        "Showing cached counts. {error}{offset_note}{partial}"
+    cache.snapshot.warning = Some(format!(
+        "Showing cached counts. {error}{timezone_note}{partial}"
     ));
-    snapshot
+    cache.snapshot
 }
 
 #[derive(serde::Serialize)]
@@ -199,16 +230,24 @@ pub async fn get_github_commits(
     let local_now = chrono::Local::now();
     let today = local_now.date_naive();
     let current_offset = local_now.offset().local_minus_utc();
+    let timezone_id = current_timezone_id();
     let cached = cached_snapshot_for_user(settings.get(store::GITHUB_COMMIT_CACHE), &username);
     let now = chrono::Utc::now().timestamp();
     if !refresh.unwrap_or(false) {
-        if let Some(cache) = cached
-            .as_ref()
-            .filter(|cache| cache_is_fresh(cache, &username, today, current_offset, now))
-        {
-            return Ok(Some(cache.clone()));
+        if let Some(cache) = cached.as_ref().filter(|cache| {
+            cache_is_fresh(
+                cache,
+                &username,
+                today,
+                current_offset,
+                timezone_id.as_deref(),
+                now,
+            )
+        }) {
+            return Ok(Some(cache.snapshot.clone()));
         }
     }
+    let timezone_before_fetch = current_timezone_id();
     let result = if attempt.0.eq_ignore_ascii_case(&username) && now - attempt.1 < 60 {
         Err("Please wait a minute before refreshing GitHub again.".to_owned())
     } else {
@@ -226,8 +265,18 @@ pub async fn get_github_commits(
     match result {
         Ok(snapshot) => {
             // A disconnect or username change during the request must not restore its cache.
+            let timezone_after_fetch = current_timezone_id();
+            let timezone_id = timezone_before_fetch
+                .as_deref()
+                .zip(timezone_after_fetch.as_deref())
+                .filter(|(before, after)| before == after)
+                .map(|(timezone, _)| timezone.to_owned());
+            let cache = CachedCommitSnapshot {
+                snapshot: snapshot.clone(),
+                timezone_id,
+            };
             let value =
-                serde_json::to_value(&snapshot).map_err(|_| "Could not cache GitHub counts.")?;
+                serde_json::to_value(cache).map_err(|_| "Could not cache GitHub counts.")?;
             run_blocking("cache_github_commits", move || {
                 settings
                     .save_value_if_owner_matches(
@@ -242,11 +291,16 @@ pub async fn get_github_commits(
             Ok(Some(snapshot))
         }
         Err(error) => match cached {
-            Some(snapshot) => Ok(Some(cached_failure_snapshot(
-                snapshot,
-                &error,
-                current_offset,
-            ))),
+            Some(cache) => {
+                let current_offset = chrono::Local::now().offset().local_minus_utc();
+                let current_timezone_id = current_timezone_id();
+                Ok(Some(cached_failure_snapshot(
+                    cache,
+                    &error,
+                    current_offset,
+                    current_timezone_id.as_deref(),
+                )))
+            }
             None => Err(error),
         },
     }
@@ -255,6 +309,13 @@ pub async fn get_github_commits(
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    fn cache(username: &str, offset: i32, timezone_id: Option<&str>) -> CachedCommitSnapshot {
+        CachedCommitSnapshot {
+            snapshot: snapshot(username, offset),
+            timezone_id: timezone_id.map(str::to_owned),
+        }
+    }
 
     fn snapshot(username: &str, offset: i32) -> CommitSnapshot {
         let today = chrono::Local::now().date_naive();
@@ -276,14 +337,33 @@ mod cache_tests {
 
     #[test]
     fn offset_change_forces_refresh_and_failed_refresh_keeps_cached_buckets() {
-        let cached = snapshot("octocat", -28_800);
+        let cached = cache("octocat", -28_800, Some("America/Los_Angeles"));
         let today = chrono::Local::now().date_naive();
-        assert!(cache_is_fresh(&cached, "octocat", today, -28_800, 200));
-        assert!(!cache_is_fresh(&cached, "octocat", today, -25_200, 200));
+        assert!(cache_is_fresh(
+            &cached,
+            "octocat",
+            today,
+            -28_800,
+            Some("America/Los_Angeles"),
+            200
+        ));
+        assert!(!cache_is_fresh(
+            &cached,
+            "octocat",
+            today,
+            -25_200,
+            Some("America/Los_Angeles"),
+            200
+        ));
 
-        let stale = cached_failure_snapshot(cached.clone(), "GitHub is unavailable.", -25_200);
-        assert_eq!(stale.utc_offset, cached.utc_offset);
-        assert_eq!(stale.daily[0].day, cached.daily[0].day);
+        let stale = cached_failure_snapshot(
+            cached.clone(),
+            "GitHub is unavailable.",
+            -25_200,
+            Some("America/Los_Angeles"),
+        );
+        assert_eq!(stale.utc_offset, cached.snapshot.utc_offset);
+        assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
         assert_eq!(stale.daily[0].commits, 4);
         let warning = stale.warning.unwrap();
         assert!(warning.contains("Showing cached counts"));
@@ -292,8 +372,77 @@ mod cache_tests {
     }
 
     #[test]
+    fn same_current_offset_with_different_timezone_rules_forces_refresh_and_warns_on_fallback() {
+        // New York and Lima can both be UTC-5, but New York observes DST.
+        let cached = cache("octocat", -18_000, Some("America/New_York"));
+        let today = chrono::Local::now().date_naive();
+        assert!(!cache_is_fresh(
+            &cached,
+            "octocat",
+            today,
+            -18_000,
+            Some("America/Lima"),
+            200
+        ));
+
+        let stale = cached_failure_snapshot(
+            cached.clone(),
+            "GitHub is unavailable.",
+            -18_000,
+            Some("America/Lima"),
+        );
+        assert_eq!(stale.utc_offset, -18_000);
+        assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
+        assert_eq!(stale.daily[0].commits, 4);
+        let warning = stale.warning.unwrap();
+        assert!(warning.contains("time zone changed"));
+        assert!(warning.contains("original daily buckets are retained"));
+    }
+
+    #[test]
+    fn legacy_cache_without_timezone_identity_is_stale_but_remains_fallback_data() {
+        let old_value = serde_json::to_value(snapshot("octocat", 0)).unwrap();
+        let legacy = cached_snapshot_for_user(Some(old_value.clone()), "octocat").unwrap();
+        assert!(legacy.timezone_id.is_none());
+
+        let today = chrono::Local::now().date_naive();
+        assert!(!cache_is_fresh(
+            &legacy,
+            "octocat",
+            today,
+            0,
+            Some("America/Los_Angeles"),
+            200
+        ));
+        assert!(!cache_is_fresh(&legacy, "octocat", today, 0, None, 200));
+
+        let stale = cached_failure_snapshot(
+            legacy,
+            "GitHub is unavailable.",
+            0,
+            Some("America/Los_Angeles"),
+        );
+        assert_eq!(stale.daily[0].commits, 4);
+        let warning = stale.warning.unwrap();
+        assert!(warning.contains("identity is missing or unavailable"));
+        assert!(warning.contains("original daily buckets are retained"));
+    }
+
+    #[test]
+    fn unknown_current_timezone_is_never_fresh_and_warns_on_fallback() {
+        let cached = cache("octocat", 0, Some("Etc/UTC"));
+        let today = chrono::Local::now().date_naive();
+        assert!(!cache_is_fresh(&cached, "octocat", today, 0, None, 200));
+        let stale = cached_failure_snapshot(cached, "GitHub is unavailable.", 0, None);
+        assert!(stale
+            .warning
+            .unwrap()
+            .contains("identity is missing or unavailable"));
+    }
+
+    #[test]
     fn cached_snapshot_is_only_reused_for_the_matching_account() {
-        let value = serde_json::to_value(snapshot("octocat", 0)).unwrap();
+        let value = serde_json::to_value(cache("octocat", 0, Some("Etc/UTC"))).unwrap();
         assert!(cached_snapshot_for_user(Some(value.clone()), "OCTOCAT").is_some());
         assert!(cached_snapshot_for_user(Some(value), "other-user").is_none());
     }
