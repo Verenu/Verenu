@@ -121,17 +121,44 @@ use std::sync::{Mutex, OnceLock};
 /// `androidx.security` MasterKey paths, notification channels, and the
 /// `AccessibilityService.SoftKeyboardController` show/hide callbacks Verenu's
 /// overlay relies on are all available from here.
-/// Placements for the dictation pill (stored in `android_pill_position`).
-/// Mirrored by the Settings dropdown and `VerenuAccessibilityService.kt`.
-pub const ANDROID_PILL_POSITIONS: [&str; 6] = [
+/// Placements anchored to the screen rather than the keyboard.
+pub const ANDROID_PILL_SCREEN_POSITIONS: [&str; 10] = [
+    "screen-top-left",
+    "screen-top",
+    "screen-top-right",
+    "screen-left",
+    "screen-middle",
+    "screen-right",
+    "screen-bottom-left",
+    "screen-bottom",
+    "screen-bottom-right",
+    "punch-hole",
+];
+
+/// Placements for the dictation pill (stored in `android_pill_position`): the
+/// keyboard-relative ones, then every screen placement. Mirrored by the
+/// Settings dropdown and `VerenuPillPlacement.kt`.
+pub const ANDROID_PILL_POSITIONS: [&str; 13] = [
     "keyboard-center",
     "keyboard-left",
     "keyboard-right",
+    "screen-top-left",
     "screen-top",
+    "screen-top-right",
+    "screen-left",
     "screen-middle",
+    "screen-right",
+    "screen-bottom-left",
+    "screen-bottom",
+    "screen-bottom-right",
     "punch-hole",
 ];
 pub const DEFAULT_ANDROID_PILL_POSITION: &str = "keyboard-center";
+
+/// Where the pill rests when there is no keyboard to sit on (a dictation that
+/// outlived the keyboard). Stored in `android_pill_dock_position`; any screen
+/// placement is valid. Set from Settings or by dragging the docked pill.
+pub const DEFAULT_ANDROID_PILL_DOCK_POSITION: &str = "screen-bottom";
 
 pub const ANDROID_MIN_SDK: u32 = 26;
 
@@ -560,6 +587,29 @@ pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pill_positions_stay_in_step_with_the_kotlin_overlay() {
+        // Kotlin cannot import these constants, so the quoted names in its
+        // placement table must match them exactly or a saved position would be
+        // silently treated as unknown on the device.
+        let kotlin = include_str!("../../android/kotlin/com/verenu/app/VerenuPillPlacement.kt");
+        for position in ANDROID_PILL_POSITIONS {
+            assert!(
+                kotlin.contains(&format!("\"{position}\"")),
+                "VerenuPillPlacement.kt does not know {position}"
+            );
+        }
+        for position in ANDROID_PILL_SCREEN_POSITIONS {
+            assert!(
+                ANDROID_PILL_POSITIONS.contains(&position),
+                "{position} is a dock position but not a valid pill position"
+            );
+        }
+        assert!(kotlin.contains(&format!("\"{DEFAULT_ANDROID_PILL_POSITION}\"")));
+        assert!(kotlin.contains(&format!("\"{DEFAULT_ANDROID_PILL_DOCK_POSITION}\"")));
+        assert!(ANDROID_PILL_SCREEN_POSITIONS.contains(&DEFAULT_ANDROID_PILL_DOCK_POSITION));
+    }
 
     #[test]
     fn browser_packages_are_recognized_case_insensitively() {
