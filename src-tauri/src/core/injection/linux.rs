@@ -123,7 +123,7 @@ fn read_clipboard_snapshot() -> anyhow::Result<ClipboardSnapshot> {
 }
 
 async fn snapshot_clipboard() -> anyhow::Result<ClipboardSnapshot> {
-    Ok(tokio::task::spawn_blocking(read_clipboard_snapshot).await??)
+    tokio::task::spawn_blocking(read_clipboard_snapshot).await?
 }
 
 async fn restore_clipboard(sources: Vec<MimeSource>) -> anyhow::Result<()> {
