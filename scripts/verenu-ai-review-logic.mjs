@@ -79,8 +79,18 @@ export function failureCategory(result) {
     ? result.providerFailureReason : "review_failed";
 }
 
-export function failureExitCode(result) {
+export function failureExitCode(result, findings = []) {
+  if (reviewOutcome(findings).hasFindings) return 1;
   return PROVIDER_FAILURE_REASONS.has(failureCategory(result)) ? 0 : 1;
+}
+
+export function mergeReviewFindings(...attempts) {
+  const unique = new Map();
+  for (const finding of attempts.flat()) {
+    const key = JSON.stringify([finding.file, finding.line, finding.severity, finding.message]);
+    if (!unique.has(key)) unique.set(key, finding);
+  }
+  return [...unique.values()];
 }
 
 export function reviewOutcome(findings) {

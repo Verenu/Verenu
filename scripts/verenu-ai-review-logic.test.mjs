@@ -9,6 +9,7 @@ import {
   failureExitCode,
   fallbackReason,
   formatProgressSummary,
+  mergeReviewFindings,
   normalizeReviewModel,
   reviewOutcome,
   selectReviewModels,
@@ -150,6 +151,21 @@ test("review content mentioning quotas cannot make unrelated failures nonblockin
     assert.doesNotMatch(formatProgressSummary({ stage: "failed", reason: failureCategory(result) }), /nonblocking/);
   }
   assert.equal(failureExitCode({ code: 1, stderr: "quota exceeded", providerFailureReason: "untrusted category" }), 1);
+});
+
+test("partial findings remain blocking even with trusted provider exhaustion", () => {
+  const findings = [{ file: "example.mjs", line: 3, severity: "error", message: "Actionable bug" }];
+  for (const reason of ["quota", "rate_limit", "model_unavailable"]) {
+    const result = { code: 1, providerFailureReason: reason };
+    assert.equal(failureExitCode(result, findings), 1);
+    assert.equal(failureExitCode(result, []), 0);
+  }
+  assert.equal(failureExitCode({ code: 1, timedOut: true }, findings), 1);
+  // A clean alternate model cannot discard findings already obtained.
+  const retained = mergeReviewFindings(findings, []);
+  assert.deepEqual(retained, findings);
+  assert.equal(reviewOutcome(retained).exitCode, 1);
+  assert.deepEqual(mergeReviewFindings(findings, structuredClone(findings)), findings);
 });
 
 test("progress summaries expose the expected review stages without provider details", () => {
