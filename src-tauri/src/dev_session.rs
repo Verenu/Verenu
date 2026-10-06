@@ -386,6 +386,7 @@ fn allowed(command: &str) -> bool {
     matches!(
         command,
         "frontend_ready"
+            | "check_for_update"
             | "get_all_settings"
             | "get_setting"
             | "check_hotkey"
