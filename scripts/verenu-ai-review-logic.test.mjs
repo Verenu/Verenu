@@ -6,6 +6,7 @@ import {
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODEL,
   failureCategory,
+  failureExitCode,
   fallbackReason,
   formatProgressSummary,
   normalizeReviewModel,
@@ -114,6 +115,22 @@ test("unrelated failures, preview failures, and successful reviews do not fallba
 test("clean reviews pass and reviews with findings fail", () => {
   assert.deepEqual(reviewOutcome([]), { count: 0, hasFindings: false, exitCode: 0 });
   assert.deepEqual(reviewOutcome([{ message: "bug" }]), { count: 1, hasFindings: true, exitCode: 1 });
+});
+
+test("provider exhaustion and bounded timeouts stay nonblocking without claiming review completion", () => {
+  for (const reason of ["quota", "rate_limit", "model_unavailable"]) {
+    const result = { code: 1, providerFailureReason: reason };
+    assert.equal(failureExitCode(result), 0);
+    assert.match(formatProgressSummary({ stage: "failed", reason }), /not a completed review/);
+  }
+  const timeout = { code: 1, timedOut: true };
+  assert.equal(failureCategory(timeout), "review_timeout");
+  assert.equal(failureExitCode(timeout), 0);
+  assert.equal(shouldFallback(timeout, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
+  assert.equal(shouldFallback(timeout, DEFAULT_FALLBACK_MODEL, null), false);
+  assert.equal(failureExitCode({ code: 1, timedOut: true, previewFailed: true }), 1);
+  assert.equal(failureExitCode({ code: 1, stderr: "invalid API key" }), 1);
+  assert.equal(failureExitCode({ code: 1, stderr: "unknown error" }), 1);
 });
 
 test("progress summaries expose the expected review stages without provider details", () => {

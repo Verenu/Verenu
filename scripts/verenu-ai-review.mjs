@@ -33,6 +33,7 @@ import {
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODEL,
   failureCategory,
+  failureExitCode,
   fallbackReason,
   formatProgressSummary,
   reviewOutcome,
@@ -40,6 +41,7 @@ import {
   shouldFallback,
 } from "./verenu-ai-review-logic.mjs";
 import { readProviderFailureReason } from "./verenu-ai-review-session.mjs";
+import { runReviewProcess, PREVIEW_TIMEOUT_MS } from "./verenu-ai-review-process.mjs";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
 const [OWNER, REPO] = requireEnv("GITHUB_REPOSITORY").split("/");
@@ -69,7 +71,7 @@ async function gh(pathOrUrl, init = {}) {
   if (init.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`GitHub API ${res.status} ${url}: ${body.slice(0, 500)}`);
@@ -267,17 +269,20 @@ function makeOcrHome() {
   return mkdtempSync(path.join(tmpdir(), "verenu-ocr-home-"));
 }
 
-async function runOcrAt(cwd, args, providerEnvVars, ocrHome) {
+async function runOcrAt(cwd, args, providerEnvVars, ocrHome, preview = false) {
   const childEnv = {
     PATH: process.env.PATH,
     HOME: ocrHome,
     ...providerEnvVars,
   };
-  return run("ocr", args, { cwd, env: childEnv });
+  return runReviewProcess("ocr", args, {
+    cwd, env: childEnv,
+    ...(preview ? { timeoutMs: PREVIEW_TIMEOUT_MS } : { ocrHome }),
+  });
 }
 
 async function previewOk(cwd, pr, providerEnvVars, ocrHome) {
-  const result = await runOcrAt(cwd, ["review", "--from", pr.base.sha, "--to", pr.head.sha, "--preview"], providerEnvVars, ocrHome);
+  const result = await runOcrAt(cwd, ["review", "--from", pr.base.sha, "--to", pr.head.sha, "--preview"], providerEnvVars, ocrHome, true);
   if (result.code !== 0) {
     console.log(`ocr preview check failed at ${cwd}: exit ${result.code}: ${result.stderr.slice(0, 300)}`);
     return false;
@@ -296,7 +301,7 @@ function ocrReviewArgs({ baseSha, headSha, model, background }) {
     "--rule", RULE_FILE_PATH,
     "--background", background,
     "--concurrency", "2",
-    "--timeout", "10",
+    "--timeout", "3",
     "--max-git-procs", "2",
   ];
 }
@@ -357,7 +362,7 @@ async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome)
         if (extractJson(result.stdout)?.status === "completed_with_errors") result.code = 1;
       } catch { /* Findings parsing handles malformed output separately. */ }
     }
-    if (result.code !== 0) result.providerFailureReason = await readProviderFailureReason(attemptHome);
+    if (result.code !== 0 && !result.providerFailureReason) result.providerFailureReason = await readProviderFailureReason(attemptHome);
     return result;
   } finally {
     try {
@@ -652,7 +657,7 @@ async function main() {
         },
       );
       console.error(`OCR review failed: category=${reason} exit=${result?.code ?? "unknown"}`);
-      process.exitCode = 1;
+      process.exitCode = failureExitCode(result);
       return;
     }
 
