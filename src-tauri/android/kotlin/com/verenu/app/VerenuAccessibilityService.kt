@@ -1265,6 +1265,26 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
+    /** Release arrived while the recording was still starting; stop once it is up. */
+    private var stopAfterStart = false
+    private var holdStartedDictation = false
+
+    override fun onPillHoldStart() {
+        stopAfterStart = false
+        holdStartedDictation = overlayState == VerenuOverlayView.State.IDLE
+        if (holdStartedDictation) startDictation()
+    }
+
+    override fun onPillHoldEnd() {
+        if (!holdStartedDictation) return
+        holdStartedDictation = false
+        when (overlayState) {
+            VerenuOverlayView.State.RECORDING -> stopDictation()
+            VerenuOverlayView.State.IDLE -> stopAfterStart = true
+            else -> Unit
+        }
+    }
+
     override fun onPillCancel() = requestCancel()
 
     // ---------------------------------------------------- snooze by dragging
@@ -1683,6 +1703,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     private fun startDictation() {
+        stopAfterStart = false
         val pkg = foregroundPackage
         val editable = hasEditableFocus
         val setText = supportsSetText
@@ -1731,7 +1752,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                         resp.optJSONObject("analyticsSettings"),
                     )
                     setOverlayState(VerenuOverlayView.State.RECORDING)
+                    if (stopAfterStart) {
+                        stopAfterStart = false
+                        stopDictation()
+                    }
                 } else {
+                    stopAfterStart = false
                     // Do not leave a foreground notification behind when the
                     // backend rejected the recording request.
                     stopDictationService()

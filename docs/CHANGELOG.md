@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Android: hold the idle pill to dictate and release to stop, in addition to tapping. Dragging the pill still works: start moving right away, or hold the recording pill.
 - Strengthened CI and agent verification with strict skipped-test handling, complete owned-session test discovery, native capability/platform evidence, Android Kotlin/JVM checks, native WebView PR checks, workflow linting, and exact-source nightly release verification. Headless sessions now validate supported hotkey chords without probing host shortcuts, while production still checks OS availability. Startup fingerprint mismatches report changed repository paths and file digests without source contents. Added Context lifecycle, populated-cache clearing, accessibility, and visual regression coverage.
 - Queued runtime icon updates on the UI thread, including tray-handle lookup and disposal, to prevent unsafe reference-count access during concurrent appearance saves. Added an owned-session concurrency regression.
 - Fixed Linux mouse-button dictation cancelling immediately when the mouse sends F13 alongside Control-Super. F13 is accepted only with the initial press; later shortcut keys still discard the hold.
