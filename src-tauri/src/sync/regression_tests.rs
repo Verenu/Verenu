@@ -233,7 +233,7 @@ fn removing_all_context_app_targets_propagates() {
         "fixture-app",
         db::current_platform_tag(),
     );
-    engine::apply_ops(&conn, &[first.clone()]).unwrap();
+    engine::apply_ops(&conn, std::slice::from_ref(&first)).unwrap();
     let mut removed = first;
     removed.ts_ms = sync_store::now_ms() + 1;
     removed.payload.as_mut().unwrap()["targets"] = json!([]);
