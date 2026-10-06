@@ -1182,48 +1182,6 @@ fn runtime_icon_foreground(theme: IconTheme) -> [u8; 4] {
     }
 }
 
-#[cfg(test)]
-mod icon_theme_tests {
-    use super::{cached_icon_art, runtime_icon_image, setting_updates_runtime_icons, IconTheme};
-
-    fn pixel(image: &tauri::image::Image<'_>, size: u32, x: u32, y: u32) -> [u8; 4] {
-        let offset = ((y * size + x) * 4) as usize;
-        image.rgba()[offset..offset + 4].try_into().unwrap()
-    }
-
-    #[test]
-    fn runtime_icon_uses_only_black_and_white_theme_colors() {
-        let light = runtime_icon_image(IconTheme::Light, 128);
-        let dark = runtime_icon_image(IconTheme::Dark, 128);
-
-        assert_eq!(pixel(&light, 128, 64, 24), [255, 255, 255, 255]);
-        assert_eq!(pixel(&dark, 128, 64, 24), [0, 0, 0, 255]);
-        assert_eq!(pixel(&light, 128, 64, 55), [0, 0, 0, 255]);
-        assert_eq!(pixel(&dark, 128, 64, 55), [255, 255, 255, 255]);
-    }
-
-    #[test]
-    fn only_appearance_settings_refresh_runtime_icons() {
-        assert!(setting_updates_runtime_icons("appearance_mode"));
-        assert!(setting_updates_runtime_icons("custom_theme"));
-        assert!(!setting_updates_runtime_icons("accent_color"));
-        assert!(!setting_updates_runtime_icons("default_tone"));
-    }
-
-    #[test]
-    fn icon_art_cache_reuses_bytes_for_unchanged_inputs() {
-        let first = cached_icon_art(IconTheme::Dark, 20);
-        let second = cached_icon_art(IconTheme::Dark, 20);
-        assert_eq!(first.window_rgba, second.window_rgba);
-        assert_eq!(first.tray_rgba, second.tray_rgba);
-        // A different tray size (e.g. after a DPI change) must re-render at
-        // the new size, not serve the old size's bytes.
-        let other_size = cached_icon_art(IconTheme::Dark, 24);
-        assert_eq!(other_size.tray_rgba.len(), 24 * 24 * 4);
-        assert_eq!(other_size.window_rgba, first.window_rgba);
-    }
-}
-
 /// Whether the saved Custom palette is dark; `None` until one is saved.
 pub(crate) fn custom_theme_is_dark(app: &AppHandle) -> Option<bool> {
     crate::data::store::settings_handle(app)
@@ -1368,4 +1326,46 @@ fn is_inside_rounded_rect(
     let dx = px - cx;
     let dy = py - cy;
     dx * dx + dy * dy <= radius * radius
+}
+
+#[cfg(test)]
+mod icon_theme_tests {
+    use super::{cached_icon_art, runtime_icon_image, setting_updates_runtime_icons, IconTheme};
+
+    fn pixel(image: &tauri::image::Image<'_>, size: u32, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * size + x) * 4) as usize;
+        image.rgba()[offset..offset + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn runtime_icon_uses_only_black_and_white_theme_colors() {
+        let light = runtime_icon_image(IconTheme::Light, 128);
+        let dark = runtime_icon_image(IconTheme::Dark, 128);
+
+        assert_eq!(pixel(&light, 128, 64, 24), [255, 255, 255, 255]);
+        assert_eq!(pixel(&dark, 128, 64, 24), [0, 0, 0, 255]);
+        assert_eq!(pixel(&light, 128, 64, 55), [0, 0, 0, 255]);
+        assert_eq!(pixel(&dark, 128, 64, 55), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn only_appearance_settings_refresh_runtime_icons() {
+        assert!(setting_updates_runtime_icons("appearance_mode"));
+        assert!(setting_updates_runtime_icons("custom_theme"));
+        assert!(!setting_updates_runtime_icons("accent_color"));
+        assert!(!setting_updates_runtime_icons("default_tone"));
+    }
+
+    #[test]
+    fn icon_art_cache_reuses_bytes_for_unchanged_inputs() {
+        let first = cached_icon_art(IconTheme::Dark, 20);
+        let second = cached_icon_art(IconTheme::Dark, 20);
+        assert_eq!(first.window_rgba, second.window_rgba);
+        assert_eq!(first.tray_rgba, second.tray_rgba);
+        // A different tray size (e.g. after a DPI change) must re-render at
+        // the new size, not serve the old size's bytes.
+        let other_size = cached_icon_art(IconTheme::Dark, 24);
+        assert_eq!(other_size.tray_rgba.len(), 24 * 24 * 4);
+        assert_eq!(other_size.window_rgba, first.window_rgba);
+    }
 }
