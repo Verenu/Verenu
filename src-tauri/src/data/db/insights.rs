@@ -453,62 +453,17 @@ fn query_totals(
     previous: Option<&DateRange>,
     context_id: Option<i64>,
 ) -> Result<InsightsTotals> {
-    if context_id.is_none() {
-        // The daily table is the source of truth for unscoped totals once raw
-        // transcript text has aged out of retention.
-        let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
-        let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
-        let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
-            "SELECT
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
-               COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
-             FROM transcription_daily_stats",
-            params![
-                range.start_day.format("%Y-%m-%d").to_string(),
-                range.end_day.format("%Y-%m-%d").to_string(),
-                previous_start,
-                previous_end
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-        )?;
-        let total_words: i64 = conn.query_row(
-            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
-            [],
-            |r| r.get(0),
-        )?;
-        return Ok(InsightsTotals {
-            total_words,
-            total_transcriptions,
-            total_speaking_ms,
-            avg_words_per_transcription: if total_transcriptions > 0 {
-                (words_in_range as f64 / total_transcriptions as f64).round() as i64
-            } else {
-                0
-            },
-            avg_wpm: if wpm_count > 0 {
-                wpm_sum / wpm_count as f64
-            } else {
-                0.0
-            },
-            best_wpm: best_wpm as i64,
-            words_in_range,
-            words_prev_range,
-        });
-    }
-    let Some(context_uuid): Option<String> = conn
-        .query_row(
-            "SELECT uuid FROM contexts WHERE id = ?1",
-            params![context_id],
-            |r| r.get(0),
-        )
-        .optional()?
-    else {
+    let context_uuid: Option<String> = match context_id {
+        Some(id) => conn
+            .query_row(
+                "SELECT uuid FROM contexts WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    if context_id.is_some() && context_uuid.is_none() {
         return Ok(InsightsTotals {
             total_words: 0,
             avg_words_per_transcription: 0,
@@ -519,28 +474,67 @@ fn query_totals(
             words_in_range: 0,
             words_prev_range: 0,
         });
+    }
+
+    // Durable daily summaries preserve totals after raw history retention.
+    let source = if context_id.is_none() {
+        "transcription_daily_stats WHERE ?5 IS NULL"
+    } else {
+        "transcription_context_daily_stats WHERE context_uuid = ?5"
     };
     let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
     let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
-    let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
-        "SELECT
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
-           COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
-         FROM transcription_context_daily_stats
-        WHERE context_uuid = ?5",
-        params![range.start_day.to_string(), range.end_day.to_string(), previous_start, previous_end, context_uuid],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    let sql = format!("SELECT
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
+       COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
+     FROM {source}");
+    let (
+        total_transcriptions,
+        words_in_range,
+        total_speaking_ms,
+        wpm_sum,
+        wpm_count,
+        best_wpm,
+        words_prev_range,
+    ): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
+        &sql,
+        params![
+            range.start_day.format("%Y-%m-%d").to_string(),
+            range.end_day.format("%Y-%m-%d").to_string(),
+            previous_start,
+            previous_end,
+            context_uuid
+        ],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        },
     )?;
-    let total_words: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(total_words), 0) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
-        params![context_uuid],
-        |r| r.get(0),
-    )?;
+    let total_words: i64 = if context_id.is_none() {
+        conn.query_row(
+            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
+                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
+            [],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COALESCE(SUM(total_words), 0) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+            params![context_uuid], |r| r.get(0),
+        )?
+    };
     Ok(InsightsTotals {
         total_words,
         total_transcriptions,
@@ -734,38 +728,13 @@ fn query_providers(
          GROUP BY a.model, a.provider, a.task
          ORDER BY COUNT(*) DESC, a.model ASC",
     )?;
-    let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
-        Ok(InsightsProviderUsage {
-            model: r.get(0)?,
-            provider: r.get(1)?,
-            task: r.get(2)?,
-            calls: r.get(3)?,
-            audio_ms: r.get(4)?,
-            input_chars: r.get(5)?,
-            output_chars: r.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![range.start, range.end, context_id],
+        provider_usage_from_row,
+    )?;
     let mut by_key: HashMap<(String, String, String), InsightsProviderUsage> = HashMap::new();
     for row in rows {
-        let value = row?;
-        let key = (
-            value.model.clone(),
-            value.provider.clone(),
-            value.task.clone(),
-        );
-        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
-            model: value.model.clone(),
-            provider: value.provider.clone(),
-            task: value.task.clone(),
-            calls: 0,
-            audio_ms: 0,
-            input_chars: 0,
-            output_chars: 0,
-        });
-        entry.calls += value.calls;
-        entry.audio_ms += value.audio_ms;
-        entry.input_chars += value.input_chars;
-        entry.output_chars += value.output_chars;
+        merge_provider_usage(&mut by_key, row?);
     }
     let mut compacted = conn.prepare(
         "SELECT model, provider, task, SUM(calls), SUM(audio_ms), SUM(input_chars), SUM(output_chars)
@@ -781,42 +750,46 @@ fn query_providers(
             range.end_day.to_string(),
             context_id
         ],
-        |r| {
-            Ok(InsightsProviderUsage {
-                model: r.get(0)?,
-                provider: r.get(1)?,
-                task: r.get(2)?,
-                calls: r.get(3)?,
-                audio_ms: r.get(4)?,
-                input_chars: r.get(5)?,
-                output_chars: r.get(6)?,
-            })
-        },
+        provider_usage_from_row,
     )?;
     for row in rows {
-        let value = row?;
-        let key = (
-            value.model.clone(),
-            value.provider.clone(),
-            value.task.clone(),
-        );
-        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
-            model: value.model.clone(),
-            provider: value.provider.clone(),
-            task: value.task.clone(),
-            calls: 0,
-            audio_ms: 0,
-            input_chars: 0,
-            output_chars: 0,
-        });
-        entry.calls += value.calls;
-        entry.audio_ms += value.audio_ms;
-        entry.input_chars += value.input_chars;
-        entry.output_chars += value.output_chars;
+        merge_provider_usage(&mut by_key, row?);
     }
     let mut usage: Vec<_> = by_key.into_values().collect();
     usage.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.model.cmp(&b.model)));
     Ok(usage)
+}
+
+fn provider_usage_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<InsightsProviderUsage> {
+    Ok(InsightsProviderUsage {
+        model: r.get(0)?,
+        provider: r.get(1)?,
+        task: r.get(2)?,
+        calls: r.get(3)?,
+        audio_ms: r.get(4)?,
+        input_chars: r.get(5)?,
+        output_chars: r.get(6)?,
+    })
+}
+
+fn merge_provider_usage(
+    by_key: &mut HashMap<(String, String, String), InsightsProviderUsage>,
+    value: InsightsProviderUsage,
+) {
+    let key = (
+        value.model.clone(),
+        value.provider.clone(),
+        value.task.clone(),
+    );
+    by_key
+        .entry(key)
+        .and_modify(|entry| {
+            entry.calls += value.calls;
+            entry.audio_ms += value.audio_ms;
+            entry.input_chars += value.input_chars;
+            entry.output_chars += value.output_chars;
+        })
+        .or_insert(value);
 }
 
 fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<CleanupLifetime> {
