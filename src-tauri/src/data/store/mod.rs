@@ -387,6 +387,9 @@ pub const MIC_GAIN: &str = "mic_gain";
 pub const PLAY_START_STOP_SOUNDS: &str = "play_start_stop_sounds";
 pub const SOUND_EFFECTS_VOLUME: &str = "sound_effects_volume";
 pub const SETUP_COMPLETE: &str = "setup_complete";
+/// Where an unfinished setup wizard stands (`{ step, provider }`), so closing
+/// and reopening the app resumes it instead of starting over. Cleared on finish.
+pub const SETUP_PROGRESS: &str = "setup_progress";
 pub const CLIPBOARD_PHRASE: &str = "clipboard_phrase";
 pub const CLIPBOARD_PHRASE_ENABLED: &str = "clipboard_phrase_enabled";
 pub const LEGACY_FEATURES_ENABLED: &str = "legacy_features_enabled";
@@ -410,6 +413,9 @@ pub const CUSTOM_THEME: &str = "custom_theme";
 pub const CUSTOM_THEMES: &str = "custom_themes";
 /// Where the Android dictation pill sits; see `ANDROID_PILL_POSITIONS`.
 pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
+/// Where the Android pill rests with no keyboard to sit on; any of
+/// `ANDROID_PILL_SCREEN_POSITIONS`.
+pub const ANDROID_PILL_DOCK_POSITION: &str = "android_pill_dock_position";
 /// Whether the Android pill covers the keyboard's own mic button when it can find it.
 pub const ANDROID_PILL_COVER_KEYBOARD_MIC: &str = "android_pill_cover_keyboard_mic";
 /// Hide the Android pill offline when selected models need a network provider.

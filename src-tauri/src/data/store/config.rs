@@ -456,7 +456,20 @@ pub fn is_valid_clipboard_phrase(value: &str) -> bool {
     (5..=80).contains(&count) && value.chars().any(char::is_alphanumeric)
 }
 
+/// Reference gain the recording gates are calibrated against.
 pub const DEFAULT_MIC_GAIN: f32 = 3.5;
+/// Phone microphones are far quieter at the app level than desktop ones, so a
+/// fresh Android install starts higher; the user's own choice still wins.
+pub const DEFAULT_ANDROID_MIC_GAIN: f32 = 4.5;
+
+/// The gain a profile with no saved `mic_gain` starts at.
+pub const fn default_mic_gain() -> f32 {
+    if cfg!(target_os = "android") {
+        DEFAULT_ANDROID_MIC_GAIN
+    } else {
+        DEFAULT_MIC_GAIN
+    }
+}
 pub const MIN_MIC_GAIN: f32 = 1.0;
 pub const MAX_MIC_GAIN: f32 = 8.0;
 pub const DEFAULT_SOUND_EFFECTS_VOLUME: f32 = 1.0;
@@ -476,7 +489,7 @@ impl Default for AudioConfig {
         Self {
             device: None,
             noise_reduction: true,
-            mic_gain: DEFAULT_MIC_GAIN,
+            mic_gain: default_mic_gain(),
             mute_audio: false,
             exclusive_mic: false,
             pause_media_during_dictation: false,
@@ -497,7 +510,7 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         .get(MIC_GAIN)
         .and_then(|v| v.as_f64())
         .map(|v| v as f32)
-        .unwrap_or(DEFAULT_MIC_GAIN)
+        .unwrap_or(default_mic_gain())
         .clamp(MIN_MIC_GAIN, MAX_MIC_GAIN);
     let mute_audio = store
         .get(MUTE_AUDIO)
