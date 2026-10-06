@@ -422,6 +422,27 @@ fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
     !local_primary && !ready_local_fallback
 }
 
+/// Maps a drag-to-snap report from the overlay onto the setting it updates.
+/// `target` is `position` (while the keyboard or a screen anchor governs the
+/// pill) or `dock` (while it rests with no keyboard). Anything else, or a value
+/// outside that setting's vocabulary, is rejected.
+fn pill_position_update(target: &str, value: &str) -> Result<&'static str, String> {
+    use crate::data::store;
+    let (key, allowed): (&'static str, &[&str]) = match target {
+        "position" => (store::ANDROID_PILL_POSITION, &super::ANDROID_PILL_POSITIONS),
+        "dock" => (
+            store::ANDROID_PILL_DOCK_POSITION,
+            &super::ANDROID_PILL_SCREEN_POSITIONS,
+        ),
+        _ => return Err("unknown pill target".to_string()),
+    };
+    if allowed.contains(&value) {
+        Ok(key)
+    } else {
+        Err("unknown pill position".to_string())
+    }
+}
+
 fn state_payload(state: &BridgeState) -> Value {
     // The Android client polls this route frequently. Read the settings store
     // once for the entire payload instead of cloning its snapshot per field.
@@ -478,6 +499,16 @@ fn state_payload(state: &BridgeState) -> Value {
         .filter(|value| super::ANDROID_PILL_POSITIONS.contains(value))
         .unwrap_or(super::DEFAULT_ANDROID_PILL_POSITION)
         .to_string();
+    let pill_dock_position = settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .get(crate::data::store::ANDROID_PILL_DOCK_POSITION)
+                .and_then(Value::as_str)
+        })
+        .filter(|value| super::ANDROID_PILL_SCREEN_POSITIONS.contains(value))
+        .unwrap_or(super::DEFAULT_ANDROID_PILL_DOCK_POSITION)
+        .to_string();
     let cover_keyboard_mic = settings
         .as_ref()
         .and_then(|settings| {
@@ -507,6 +538,7 @@ fn state_payload(state: &BridgeState) -> Value {
         "keystorePending": has_keystore_rotation(),
         "analyticsEnabled": analytics_enabled,
         "pillPosition": pill_position,
+        "pillDockPosition": pill_dock_position,
         "coverKeyboardMic": cover_keyboard_mic,
         "hidePillOffline": settings.as_ref().map(hide_pill_offline).unwrap_or(true),
         "appearanceMode": appearance_mode,
@@ -946,6 +978,30 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
                     crate::pipeline::hide_pill(&app);
                 }
             }
+            ok(json!({}))
+        }
+        ("POST", "/v1/pill/position") => {
+            let value = str_field("value");
+            let key = match pill_position_update(&str_field("target"), &value) {
+                Ok(key) => key,
+                Err(message) => return err(400, "Bad Request", &message),
+            };
+            let Some(app) = state.app.clone() else {
+                return err(503, "Service Unavailable", "backend not ready");
+            };
+            // Same path as the Settings screen, so validation, storage and
+            // any change bookkeeping cannot drift between the two writers.
+            if let Err(message) =
+                crate::commands::save_setting(app.clone(), key.to_string(), json!(value)).await
+            {
+                log::warn!("android bridge: pill position save failed: {message}");
+                return err(500, "Internal Server Error", "could not save pill position");
+            }
+            // Settings may be open (or about to be): tell it the pill moved.
+            let _ = app.emit(
+                "verenu:android-pill-position-changed",
+                json!({ "key": key, "value": value }),
+            );
             ok(json!({}))
         }
         ("POST", "/v1/credential") => {
@@ -1589,6 +1645,61 @@ mod tests {
         assert_eq!(ack["ok"], true);
         let (_, state) = roundtrip(addr, &authed(&token, "GET", "/v1/state", "")).await;
         assert!(state["pendingInsertion"].is_null());
+    }
+
+    #[test]
+    fn pill_position_updates_map_to_their_setting_and_reject_strangers() {
+        use crate::data::store;
+        assert_eq!(
+            pill_position_update("position", "keyboard-left"),
+            Ok(store::ANDROID_PILL_POSITION)
+        );
+        assert_eq!(
+            pill_position_update("dock", "screen-bottom-right"),
+            Ok(store::ANDROID_PILL_DOCK_POSITION)
+        );
+        // The dock only rests on the screen: a keyboard anchor has no meaning there.
+        assert!(pill_position_update("dock", "keyboard-left").is_err());
+        assert!(pill_position_update("position", "somewhere").is_err());
+        assert!(pill_position_update("cover", "screen-top").is_err());
+        assert!(pill_position_update("", "").is_err());
+    }
+
+    #[tokio::test]
+    async fn bridge_pill_position_validates_before_it_needs_an_app() {
+        let (addr, token) = spawn_test_server().await;
+        let (status, _) = roundtrip(
+            addr,
+            &authed(
+                &token,
+                "POST",
+                "/v1/pill/position",
+                r#"{"target":"dock","value":"keyboard-left"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, 400);
+        // A valid request with no backend is an honest 503, not a panic.
+        let (status, _) = roundtrip(
+            addr,
+            &authed(
+                &token,
+                "POST",
+                "/v1/pill/position",
+                r#"{"target":"dock","value":"screen-left"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, 503);
+    }
+
+    #[tokio::test]
+    async fn bridge_state_reports_pill_placement_defaults() {
+        let (addr, token) = spawn_test_server().await;
+        let (_, state) = roundtrip(addr, &authed(&token, "GET", "/v1/state", "")).await;
+        assert_eq!(state["pillPosition"], "keyboard-center");
+        assert_eq!(state["pillDockPosition"], "screen-bottom");
+        assert_eq!(state["coverKeyboardMic"], true);
     }
 
     #[tokio::test]

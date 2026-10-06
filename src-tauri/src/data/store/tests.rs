@@ -245,7 +245,7 @@ fn setting_audit_empty_store_resolves_to_documented_defaults() {
     assert_eq!(cfg.local_model_memory_policy, "unload_after_5m");
 
     assert!(audio.noise_reduction, "noise reduction default on");
-    assert_eq!(audio.mic_gain, DEFAULT_MIC_GAIN);
+    assert_eq!(audio.mic_gain, default_mic_gain());
     assert_eq!(audio.sound_effects_volume, 1.0);
     assert!(!audio.mute_audio);
     assert!(!audio.exclusive_mic);
@@ -426,7 +426,21 @@ fn setting_audit_mic_gain_clamped_at_load() {
 #[test]
 fn setting_audit_mic_gain_wrong_type_falls_back_to_default() {
     let store = SettingsSnapshot::from_pairs([(MIC_GAIN.to_string(), json!("loud"))]);
-    assert_eq!(load_audio_config(&store).mic_gain, DEFAULT_MIC_GAIN);
+    assert_eq!(load_audio_config(&store).mic_gain, default_mic_gain());
+}
+
+/// Phones start louder than desktops, and the starting gain is a value the
+/// Settings slider can actually represent.
+#[test]
+fn android_default_mic_gain_is_higher_and_inside_the_slider_range() {
+    assert!(DEFAULT_ANDROID_MIC_GAIN > DEFAULT_MIC_GAIN);
+    assert!((MIN_MIC_GAIN..=MAX_MIC_GAIN).contains(&DEFAULT_ANDROID_MIC_GAIN));
+    let expected = if cfg!(target_os = "android") {
+        DEFAULT_ANDROID_MIC_GAIN
+    } else {
+        DEFAULT_MIC_GAIN
+    };
+    assert_eq!(default_mic_gain(), expected);
 }
 
 /// history_retention_days must map every supported label and return None
