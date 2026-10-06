@@ -19,7 +19,7 @@ class VerenuApplication : Application() {
   private fun configuredValue(value: String?, variableName: String): String? {
     if (!value.isNullOrBlank()) return value
     // Unconfigured analytics must never stop the app from launching; builds
-    // without a PostHog token (contributors, emulators) simply run without it.
+    // without an ingestion token (contributors, emulators) simply run without it.
     if (BuildConfig.DEBUG) {
       Log.w("VerenuApplication", "$variableName is not configured; product analytics are disabled")
     }

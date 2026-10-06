@@ -2,6 +2,7 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 
 pub(super) struct PipelineCompletionContext<'a> {
+    pub(super) telemetry: Option<&'a PipelineTelemetry>,
     pub(super) raw: &'a str,
     pub(super) final_text_before_dict: &'a str,
     pub(super) clipboard_plan: Option<&'a super::clipboard_phrase::ClipboardPhrasePlan>,
@@ -251,6 +252,9 @@ pub(super) async fn finalize_pipeline_completion(
     }
 
     let inject_stage = std::time::Instant::now();
+    if let Some(telemetry) = ctx.telemetry {
+        telemetry.insertion_attempted();
+    }
     let protected_initial_case =
         dictionary_protects_initial_case(&delivered_text, ctx.dict_entries);
 
@@ -281,6 +285,9 @@ pub(super) async fn finalize_pipeline_completion(
         log::info!("pipeline: self-inject detected — clipboard fallback");
         if let Err(e) = injection::copy_to_clipboard(&delivered_text).await {
             log::warn!("pipeline: clipboard fallback write failed: {e}");
+            if let Some(telemetry) = ctx.telemetry {
+                telemetry.failed(FailureCategory::InsertionFailed, false);
+            }
         }
         // This is an informational success, not an error: use the pill's
         // "copied" state instead of verenu:error, which renders as a red
@@ -321,11 +328,16 @@ pub(super) async fn finalize_pipeline_completion(
                     });
                 }
                 #[cfg(desktop)]
-                let partial = e.downcast_ref::<injection::ChunkedPasteError>()
+                let partial = e
+                    .downcast_ref::<injection::ChunkedPasteError>()
                     .is_some_and(|error| error.attempted_chunks > 0);
                 #[cfg(not(desktop))]
                 let partial = false;
-                if partial { show_partial_paste_pill(app); } else { show_paste_failed_pill(app); }
+                if partial {
+                    show_partial_paste_pill(app);
+                } else {
+                    show_paste_failed_pill(app);
+                }
                 injection::InjectionOutcome {
                     text: delivered_text.clone(),
                     context_state: "unknown",
@@ -337,6 +349,21 @@ pub(super) async fn finalize_pipeline_completion(
         }
     };
     let injected_text = injected.text;
+    if let Some(telemetry) = ctx.telemetry {
+        match injected.case_decision {
+            "inject_failed" => telemetry.failed(FailureCategory::InsertionFailed, false),
+            "android_accessibility_handoff" => {}
+            "clipboard_fallback" => telemetry.delivered("clipboard_fallback", entry.words),
+            _ => telemetry.delivered(
+                if ctx.event_only {
+                    "event_only"
+                } else {
+                    "direct_insertion"
+                },
+                entry.words,
+            ),
+        }
+    }
     log::debug!(
         "pipeline: delivery done contextual_formatting={} context_state={} case_decision={} probe_source={} selection_state={} output_chars={} stage_ms={}",
         ctx.cfg.contextual_formatting_enabled,
