@@ -7,6 +7,8 @@ use tauri_plugin_shell::ShellExt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InstallOutcome {
+    // Linux returns after replacement; Windows exits and macOS opens a DMG.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Installed,
     DownloadOpened,
 }
@@ -63,7 +65,10 @@ fn update_channel(preference: Option<bool>, version: &str) -> crate::api::update
 }
 
 #[tauri::command]
-pub async fn install_update(app: AppHandle, download_url: String) -> Result<InstallOutcome, String> {
+pub async fn install_update(
+    app: AppHandle,
+    download_url: String,
+) -> Result<InstallOutcome, String> {
     static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _attempt = INSTALL_LOCK.try_lock().map_err(|_| {
         "An update is already in progress. Wait for it to finish before trying again.".to_owned()
