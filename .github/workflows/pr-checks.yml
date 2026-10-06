@@ -15,7 +15,7 @@ concurrency:
 jobs:
   frontend:
     name: Frontend checks
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -38,7 +38,7 @@ jobs:
 
   dependency-audits:
     name: Dependency audits
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -192,7 +192,7 @@ jobs:
   all-in-one-fast:
     name: All-in-one fast profile
     # This job uses its own checkout and consumes no output from other checks.
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
