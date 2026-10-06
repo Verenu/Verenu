@@ -106,7 +106,7 @@ pub(crate) fn request_error_message(error: &reqwest::Error) -> String {
 
 fn update_status_error_message(status: u16) -> &'static str {
     match status {
-        401 | 403 => "GitHub denied access to update metadata. Try again later.",
+        401 | 403 => "GitHub could not provide the requested update resource. Try again later.",
         408 | 504 => "The GitHub update service took too long to respond. Check your internet connection and try again.",
         429 => "GitHub is limiting update requests. Wait a moment and try again.",
         500..=599 => "GitHub's update service is temporarily unavailable. Try again later.",
@@ -934,15 +934,22 @@ mod tests {
     }
 
     #[test]
-    fn github_update_errors_do_not_claim_provider_api_key_failures() {
+    fn github_update_errors_use_resource_neutral_messages_without_provider_key_claims() {
         for (status, expected) in [
-            (401, "GitHub denied access to update metadata"),
-            (403, "GitHub denied access to update metadata"),
+            (
+                401,
+                "GitHub could not provide the requested update resource",
+            ),
+            (
+                403,
+                "GitHub could not provide the requested update resource",
+            ),
             (429, "GitHub is limiting update requests"),
             (503, "GitHub's update service is temporarily unavailable"),
         ] {
             let message = update_status_error_message(status);
             assert!(message.contains(expected));
+            assert!(!message.contains("metadata"));
             assert!(!message.to_ascii_lowercase().contains("api key"));
             assert!(!message.contains("provider"));
         }
