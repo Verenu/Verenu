@@ -4,6 +4,12 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Android pill placement is now reliable and draggable. Hold the pill and drag it, and it snaps to the nearest position and saves it to Settings, which updates live. A new "Pill position without a keyboard" setting decides where the pill rests when a dictation outlives the keyboard; it now defaults to the bottom of the screen instead of the top, and offers a full grid of positions (left, middle, right, top, bottom). The pill still covers the keyboard's mic button by default, including before the first sync with the app. It remembers its last placement across restarts and picks up changes made in Settings as soon as the keyboard opens instead of up to two seconds later.
+
+- Fixed Android onboarding starting over after Verenu is closed and reopened, for example after signing in to a provider in the browser to get a key or visiting system settings for permissions. Setup now resumes on the step you left, with the provider you chose, and no longer restarts if the backend is slow to answer on a cold start.
+
+- Android now starts with a higher microphone gain (4.5x instead of 3.5x), because phone microphones record quieter than desktop ones. A gain you already chose is kept.
+
 - Reduced settings-loading IPC calls, sped up pill placement on Hyprland, and shrank the production app bundle by excluding browser mocks.
 
 - Fixed installed Linux windows tiling or stretching when a release executable is renamed. Verenu uses a stable GTK app ID and installs its main-window and dictation-pill policies automatically on Omarchy Quattro, including first launch. Volume, playback, and brightness keys no longer cancel held dictation.
