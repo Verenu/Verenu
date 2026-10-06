@@ -327,14 +327,31 @@
         .catch((error) => console.error('Failed to listen for native title bar metrics:', error));
     }
 
+    // On a cold start (Android launches the backend alongside the page) the
+    // first reads can fail before it is ready. Treating that as "setup never
+    // finished" would send a configured user back through onboarding, so wait
+    // briefly for the backend instead of giving up on the first error.
+    async function readSettingsWithRetry<T>(read: () => Promise<T>, attempts = 5): Promise<T> {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await read();
+        } catch (error) {
+          if (attempt >= attempts || !mounted) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+        }
+      }
+    }
+
     // Re-reads the settings the app mirrors globally. Called once on mount and
     // again whenever a backup import lands, so an import can't leave these
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        // Saved themes are device-local and optional; a failed read must not block startup.
-        const savedThemesRead = invoke<unknown>('get_setting', { key: 'custom_themes' }).catch(() => null);
-        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await Promise.all([
+        // Saved themes are optional, but transient startup failures should retry too.
+        const savedThemesRead = readSettingsWithRetry(() =>
+          invoke<unknown>('get_setting', { key: 'custom_themes' }),
+        ).catch(() => null);
+        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
@@ -347,7 +364,7 @@
           invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
           invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
-        ]);
+        ]));
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
         appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
         // An open theme editor is previewing through these fields; keep its draft.

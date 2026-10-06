@@ -17,6 +17,7 @@
   } from '../setup/setupData';
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
+  import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -51,6 +52,8 @@
   const doneStep = onboardingTotalSteps + 1;
 
   let step = $state(0);
+  // Saved progress is read once on mount; nothing may overwrite it before then.
+  let progressLoaded = false;
   let direction = $state<'forward' | 'back'>('forward');
   let animating = $state(false);
   let stepWrapEl = $state<HTMLDivElement | null>(null);
@@ -118,7 +121,7 @@
     }
     try {
       const [
-        savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute, savedAnalytics,
+        savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute, savedAnalytics, savedProgress,
       ] = await Promise.all([
         invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
         invoke<ProviderId | null>('get_setting', { key: 'transcription_provider' }),
@@ -127,6 +130,7 @@
         invoke<Record<ProviderId, boolean> | null>('get_api_key_status'),
         invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
+        invoke<unknown>('get_setting', { key: 'setup_progress' }),
       ]);
       if (savedLanguage && transcriptionLanguages.some((o) => o.code === savedLanguage)) language = savedLanguage;
       if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider as WizardProviderId;
@@ -138,7 +142,43 @@
       // Muting implies speakers — that's the only reason the setting is on.
       if (savedMute === true) usesHeadphones = false;
       analyticsEnabled = savedAnalytics ?? true;
+      await resumeSavedProgress(parseSetupProgress(savedProgress, providers.map((p) => p.id)), keyStatus);
     } catch {}
+    progressLoaded = true;
+  });
+
+  /**
+   * Reopen the wizard where it was left. Signing in to a provider happens in a
+   * browser and granting permissions in system settings, and Android may drop
+   * the app while the user is away, so the wizard must not restart at step 0.
+   */
+  async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Record<ProviderId, boolean> | null) {
+    if (!saved) return;
+    if (saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {
+      provider = saved.provider as WizardProviderId;
+    }
+    let keys: Partial<Record<ProviderId, boolean>> = { ...(keyStatus ?? {}) };
+    if (isAndroid && '__TAURI_INTERNALS__' in window) {
+      // Rust's key cache is memory-only and is empty after a restart until the
+      // accessibility service is on. The key itself survives in the Keystore.
+      try {
+        const durable = await invoke<Partial<Record<ProviderId, boolean>>>('plugin:verenu-security|getCredentialStatus');
+        keys = { ...keys, ...Object.fromEntries(Object.entries(durable).filter(([, present]) => present)) };
+        providerKeyStatus = { ...providerKeyStatus, ...keys, local: true };
+      } catch {}
+    }
+    step = resumeStep(saved.step, {
+      apiKeyStep,
+      doneStep,
+      keyReady: provider === 'local' || !!keys[provider],
+    });
+  }
+
+  // Remember every move and provider change. Writes wait for the saved value
+  // to be read so a fresh mount cannot overwrite it with step 0.
+  $effect(() => {
+    const progress = { step, provider };
+    if (progressLoaded) void saveSetting('setup_progress', progress).catch(() => {});
   });
 
   $effect(() => {
@@ -424,6 +464,7 @@
 
     try {
       await saveSetting('setup_complete', true);
+      void saveSetting('setup_progress', null).catch(() => {});
       sendSetupEvent('setup_completed');
     } catch (err) {
       console.error('Failed to mark setup complete:', err);
