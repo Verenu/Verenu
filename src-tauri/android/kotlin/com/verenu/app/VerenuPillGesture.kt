@@ -68,8 +68,10 @@ class VerenuHoldRelease {
 
     /** A hold began; returns whether it should start a dictation. */
     fun holdStart(idle: Boolean): Boolean {
+        // A start is pending: leave its queued release alone.
+        if (startInFlight) return false
         stopWhenRecording = false
-        startedByHold = idle && !startInFlight
+        startedByHold = idle
         return startedByHold
     }
 
