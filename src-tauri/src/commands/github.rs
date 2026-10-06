@@ -2,6 +2,7 @@ use super::*;
 use crate::api::github::CommitSnapshot;
 
 const CACHE_SECONDS: i64 = 15 * 60;
+const REFRESH_COOLDOWN_SECONDS: i64 = 60;
 const MAX_TZ_OVERRIDE_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -77,6 +78,22 @@ fn cache_is_fresh(
     timezone_matches
         && cache.snapshot.matches(username, today, current_offset)
         && (0..CACHE_SECONDS).contains(&(now - cache.snapshot.fetched_at))
+}
+
+fn refresh_attempt_is_throttled(
+    last_username: &str,
+    last_attempt: i64,
+    username: &str,
+    now: i64,
+    automatic: bool,
+    timezone_id: Option<&str>,
+) -> bool {
+    let cooldown = if automatic && timezone_id.is_none() {
+        CACHE_SECONDS
+    } else {
+        REFRESH_COOLDOWN_SECONDS
+    };
+    last_username.eq_ignore_ascii_case(username) && now.saturating_sub(last_attempt) < cooldown
 }
 
 fn cached_failure_snapshot(
@@ -264,9 +281,10 @@ pub async fn get_github_commits(
     let today = local_now.date_naive();
     let current_offset = local_now.offset().local_minus_utc();
     let timezone_id = current_timezone_id();
+    let manual_refresh = refresh.unwrap_or(false);
     let cached = cached_snapshot_for_user(settings.get(store::GITHUB_COMMIT_CACHE), &username);
     let now = chrono::Utc::now().timestamp();
-    if !refresh.unwrap_or(false) {
+    if !manual_refresh {
         if let Some(cache) = cached.as_ref().filter(|cache| {
             cache_is_fresh(
                 cache,
@@ -281,8 +299,20 @@ pub async fn get_github_commits(
         }
     }
     let timezone_before_fetch = current_timezone_id();
-    let result = if attempt.0.eq_ignore_ascii_case(&username) && now - attempt.1 < 60 {
-        Err("Please wait a minute before refreshing GitHub again.".to_owned())
+    let result = if refresh_attempt_is_throttled(
+        &attempt.0,
+        attempt.1,
+        &username,
+        now,
+        !manual_refresh,
+        timezone_id.as_deref(),
+    ) {
+        let message = if !manual_refresh && timezone_id.is_none() {
+            "Automatic refresh is paused until the 15-minute cache window expires."
+        } else {
+            "Please wait a minute before refreshing GitHub again."
+        };
+        Err(message.to_owned())
     } else {
         *attempt = (username.clone(), now);
         match tokio::time::timeout(
@@ -366,6 +396,48 @@ mod cache_tests {
             }],
             warning: None,
         }
+    }
+
+    #[test]
+    fn unknown_timezone_automatic_retry_uses_fifteen_minutes_but_manual_and_account_changes_do_not()
+    {
+        assert!(refresh_attempt_is_throttled(
+            "octocat", 100, "OCTOCAT", 999, true, None
+        ));
+        assert!(!refresh_attempt_is_throttled(
+            "octocat", 100, "octocat", 1_000, true, None
+        ));
+
+        assert!(refresh_attempt_is_throttled(
+            "octocat", 100, "octocat", 159, false, None
+        ));
+        assert!(!refresh_attempt_is_throttled(
+            "octocat", 100, "octocat", 160, false, None
+        ));
+        assert!(refresh_attempt_is_throttled(
+            "octocat",
+            100,
+            "octocat",
+            159,
+            true,
+            Some("iana:America/Los_Angeles")
+        ));
+        assert!(!refresh_attempt_is_throttled(
+            "octocat",
+            100,
+            "octocat",
+            160,
+            true,
+            Some("iana:America/Los_Angeles")
+        ));
+        assert!(!refresh_attempt_is_throttled(
+            "octocat",
+            100,
+            "other-user",
+            101,
+            true,
+            None
+        ));
     }
 
     #[test]
