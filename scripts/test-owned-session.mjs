@@ -9,7 +9,7 @@ import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
-import { summarizeNodeTests } from './verification/node-reporter.mjs';
+import { summarizeNodeFailure, summarizeNodeTests } from './verification/node-reporter.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -36,10 +36,19 @@ try {
   const nodeReport = path.join(directory, 'session-cases.json');
   const tested = await run(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=spec', '--test-reporter=./scripts/verification/node-reporter.mjs', '--test-reporter-destination=stdout', `--test-reporter-destination=${nodeReport}`, ...sessionFiles.map(file => `tests/dev-session/${file}`)], { directory, name: 'session-tests', env });
   report.artifacts.push(artifact(tested.log));
-  assert.equal(tested.status, 'passed', 'Real-session regression failed');
-  report.node = summarizeNodeTests(JSON.parse(await fs.readFile(nodeReport, 'utf8')), sessionFiles, { live: args.includes('--live') });
+  const nodeEvents = await fs.readFile(nodeReport, 'utf8').then(JSON.parse).catch(() => null);
+  const nodeSummary = summarizeNodeTests(nodeEvents, sessionFiles, { live: args.includes('--live') });
+  if (tested.status !== 'passed' || nodeSummary.status !== 'passed') {
+    report.nodeFailure = summarizeNodeFailure(nodeSummary, sessionFiles, {
+      processStatus: tested.status,
+      exitCode: tested.exitCode,
+      timedOut: tested.reason === 'Check timed out',
+    });
+    if (tested.status === 'passed') throw Object.assign(new Error('Owned-session cases were skipped or missing'), { verificationStatus: 'incomplete' });
+    throw new Error('Real-session regression failed');
+  }
+  report.node = nodeSummary;
   report.checks.push({ name: 'Every owned-session test file executed without unexpected skips', status: report.node.status });
-  if (report.node.status !== 'passed') throw Object.assign(new Error('Owned-session cases were skipped or missing'), { verificationStatus: report.node.status });
   const suite = JSON.parse(await fs.readFile(path.join(session.directory, 'verification.json'), 'utf8'));
   report.checks.push(...suite.checks);
   const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
@@ -80,6 +89,7 @@ try {
   if (sourceIdentity().fingerprint !== identity.fingerprint) { report.status = incompleteUnlessFailed(report.status); report.reason = 'Source changed during verification'; }
 } catch (error) {
   report.status = error.verificationStatus === 'incomplete' ? 'incomplete' : 'failed'; report.reason = error.message;
+  if (error.startupFailure) report.startupFailure = error.startupFailure;
 } finally {
   if (session) {
     try { await session.stop(); }

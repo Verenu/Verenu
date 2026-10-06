@@ -47,7 +47,10 @@ runs:
       shell: bash
       env:
         REPORT_PREFIX: ${{ inputs.report-prefix }}
-      run: dbus-run-session -- xvfb-run -a npm run test:session:owned -- --report "tests/reports/$REPORT_PREFIX-session.json"
+      run: |
+        runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"
+        chmod 700 "$runtime_dir"
+        XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- xvfb-run -a npm run test:session:owned -- --report "tests/reports/$REPORT_PREFIX-session.json"
     - name: Upload safe regression reports
       if: always()
       uses: actions/upload-artifact@v4

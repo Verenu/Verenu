@@ -25,3 +25,29 @@ export function summarizeNodeTests(report, expectedFiles, { live = false } = {})
   });
   return { status: failed ? 'failed' : incomplete ? 'incomplete' : 'passed', tests, missingFiles };
 }
+
+export function summarizeNodeFailure(summary, expectedFiles, { processStatus, exitCode, timedOut = false } = {}) {
+  const tests = Array.isArray(summary?.tests) ? summary.tests : [];
+  const allowedFiles = new Set(expectedFiles);
+  const scopedTests = tests.filter(row => allowedFiles.has(row.file));
+  const filesFor = (status) => [...new Set(scopedTests
+    .filter(row => row.status === status && allowedFiles.has(row.file))
+    .map(row => row.file))].sort();
+  return {
+    status: ['passed', 'failed', 'incomplete'].includes(summary?.status) ? summary.status : 'incomplete',
+    process: {
+      status: processStatus === 'passed' ? 'passed' : 'failed',
+      ...(Number.isInteger(exitCode) ? { exitCode } : {}),
+      ...(timedOut ? { timedOut: true } : {}),
+    },
+    counts: {
+      total: scopedTests.length,
+      passed: scopedTests.filter(row => row.status === 'passed').length,
+      failed: scopedTests.filter(row => row.status === 'failed').length,
+      skipped: scopedTests.filter(row => row.status === 'skipped').length,
+    },
+    failedFiles: filesFor('failed'),
+    skippedFiles: filesFor('skipped'),
+    missingFiles: (Array.isArray(summary?.missingFiles) ? summary.missingFiles : []).filter(file => allowedFiles.has(file)).sort(),
+  };
+}

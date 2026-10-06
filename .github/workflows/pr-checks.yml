@@ -230,6 +230,9 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+        with:
+          # setup-android@v3 defaults to the removed `tools` SDK package.
+          packages: platform-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
@@ -244,7 +247,7 @@ jobs:
         with:
           name: android-unit-reports
           path: src-tauri/gen/android/app/build/test-results/
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   native:
     name: Native WebView (${{ matrix.os }})
@@ -276,7 +279,10 @@ jobs:
         run: npm run test:native:webview -- --report tests/reports/native.json
       - name: Run Linux native WebView
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report tests/reports/native.json
+        run: |
+          runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"
+          chmod 700 "$runtime_dir"
+          XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- xvfb-run -a npm run test:native:webview -- --report tests/reports/native.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -118,14 +118,18 @@ try {
     catch (error) { report.checks.push({ name: 'Temporary context cleanup', status: 'failed', reason: error.message }); }
   }
   assert.ok((await browser.getWindowHandles()).length >= 1);
-  const rect = await browser.getWindowRect();
-  assert.ok(rect.width > 0 && rect.height > 0);
+  const viewport = await browser.execute('return { width: window.innerWidth, height: window.innerHeight };');
+  assert.ok(Number.isFinite(viewport.width) && viewport.width > 0 && Number.isFinite(viewport.height) && viewport.height > 0,
+    `Native WebView content viewport was empty: ${JSON.stringify(viewport)}`);
   const screenshot = path.join(directory, 'native-webview.png'); await browser.saveScreenshot(screenshot);
   report.artifacts.push(artifact(screenshot));
-  report.checks.push({ name: 'Actual native WebView, IPC, reload persistence and window geometry', status: 'passed' });
+  report.checks.push({ name: 'Actual native WebView, IPC, reload persistence and content viewport geometry', status: 'passed' });
   report.status = report.checks.some((row) => row.status === 'failed') ? 'failed' : 'verified';
   if (sourceIdentity().fingerprint !== report.identity.fingerprint) { report.status = 'incomplete'; report.reason = 'Source changed during native verification'; }
-} catch (error) { report.status = 'failed'; report.reason = error.message; }
+} catch (error) {
+  report.status = 'failed'; report.reason = error.message;
+  if (error.startupFailure) report.startupFailure = error.startupFailure;
+}
 finally {
   if (browser) await browser.deleteSession().catch(() => {});
   if (session) {
