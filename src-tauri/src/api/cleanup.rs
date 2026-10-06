@@ -570,48 +570,15 @@ async fn checked_cleanup_response(
     model: &str,
     gen: u64,
 ) -> Result<reqwest::Response> {
-    match super::ensure_provider_success(resp, provider_label, Some((provider_label, model))).await
-    {
-        Ok(resp) => Ok(resp),
-        Err(super::ProviderHttpError::Quota(e)) => Err(e),
-        Err(super::ProviderHttpError::Auth {
-            error,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "cleanup: openai_compat unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            Err(error)
-        }
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "cleanup: openai_compat non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            Err(anyhow::Error::new(source).context(format!(
-                "Cleanup API error provider={} model={} status={} request_id={} body_preview={}",
-                provider_label, model, status, request_id, preview
-            )))
-        }
-    }
+    super::ensure_provider_success(resp, provider_label, Some((provider_label, model)))
+        .await
+        .map_err(|error| {
+            error.into_error(
+                Some((module_path!(), "cleanup: openai_compat")),
+                &format!("gen={gen} provider={provider_label} model={model}"),
+                &format!("Cleanup API error provider={provider_label} model={model}"),
+            )
+        })
 }
 
 fn ensure_openai_compat_reasoning_policy(provider_label: &str, model: &str) -> Result<()> {
@@ -769,45 +736,15 @@ async fn google_cleanup(
         request_started.elapsed().as_millis()
     );
 
-    let resp = match super::ensure_provider_success(resp, "Google", Some(("Google", model))).await {
-        Ok(resp) => resp,
-        Err(super::ProviderHttpError::Quota(e)) => return Err(e),
-        Err(super::ProviderHttpError::Auth {
-            error,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "cleanup: google unauthorized gen={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(error);
-        }
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "cleanup: google non_success gen={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(anyhow::Error::new(source).context(format!(
-                "Google Cleanup API error status={} request_id={} body_preview={}",
-                status, request_id, preview
-            )));
-        }
-    };
+    let resp = super::ensure_provider_success(resp, "Google", Some(("Google", model)))
+        .await
+        .map_err(|error| {
+            error.into_error(
+                Some((module_path!(), "cleanup: google")),
+                &format!("gen={gen} model={model}"),
+                "Google Cleanup API error",
+            )
+        })?;
 
     let data: GeminiResp = resp.json().await?;
     if let Some(candidate) = data.candidates.as_ref().and_then(|c| c.first()) {
