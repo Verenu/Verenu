@@ -296,8 +296,14 @@ async fn openai_compat(
         alternate_transcript,
         policy_key,
     );
-    let mut body = serde_json::to_value(&request_body)?;
-    merge_overrides(&mut body, overrides);
+    let request = wire.apply(wire.client().post(url), api_key);
+    let request = if let Some(overrides) = overrides {
+        let mut body = serde_json::to_value(&request_body)?;
+        merge_overrides(&mut body, Some(overrides));
+        request.json(&body)
+    } else {
+        request.json(&request_body)
+    };
 
     log::debug!(
         "cleanup: openai_compat request gen={} provider={} model={} url={} input_chars={} prompt_chars={}",
@@ -309,11 +315,7 @@ async fn openai_compat(
         prompt.chars().count()
     );
     let request_started = std::time::Instant::now();
-    let resp = wire
-        .apply(wire.client().post(url), api_key)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = request.send().await?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
     log::debug!(
@@ -918,9 +920,21 @@ fn build_google_cleanup_request_with_alternate(
 /// Escapes dictation text for embedding inside the `<raw_dictation>` XML tag
 /// of prompts. Shared with the pipeline's local-cleanup path.
 pub fn escape_transcript_xml(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    let mut escaped = String::with_capacity(text.len());
+    let mut start = 0;
+    for (index, byte) in text.bytes().enumerate() {
+        let replacement = match byte {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            _ => continue,
+        };
+        escaped.push_str(&text[start..index]);
+        escaped.push_str(replacement);
+        start = index + 1;
+    }
+    escaped.push_str(&text[start..]);
+    escaped
 }
 
 /// Formats transcript candidates identically for every cleanup provider. The
@@ -947,6 +961,18 @@ mod tests {
         build_openai_compat_request, build_openai_compat_request_with_alternate,
         ensure_openai_compat_reasoning_policy, model_supports_cleanup_reasoning_policy,
     };
+
+    #[test]
+    fn xml_escaping_preserves_unicode_and_escapes_existing_entities_once() {
+        for (text, expected) in [
+            ("", ""),
+            ("plain café 🎙", "plain café 🎙"),
+            ("<é> &amp; && >", "&lt;é&gt; &amp;amp; &amp;&amp; &gt;"),
+            ("<&><&>", "&lt;&amp;&gt;&lt;&amp;&gt;"),
+        ] {
+            assert_eq!(super::escape_transcript_xml(text), expected);
+        }
+    }
 
     #[tokio::test]
     async fn off_without_alternate_bypasses_the_cleanup_provider() {
