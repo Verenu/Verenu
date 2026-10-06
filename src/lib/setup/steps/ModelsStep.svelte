@@ -14,18 +14,13 @@
     localSttStore,
     refreshLocalModels,
     refreshLocalState,
-    downloadLocalModel,
-    cancelLocalModelDownload,
-    deleteLocalModel,
   } from '../../localSttStore.svelte';
   import {
     localLlmStore,
     refreshLocalLlmModels,
     refreshLocalLlmState,
-    downloadLocalLlmModel,
-    cancelLocalLlmModelDownload,
-    deleteLocalLlmModel,
   } from '../../localLlmStore.svelte';
+  import { localModelDownloads } from '../../components/settings/localModelDownloads';
 
   let {
     provider,
@@ -104,23 +99,20 @@
     // the settings minutes later, and the card shows download progress meanwhile.
     for (const model of next.target.requiredLocalModels ?? []) {
       if (installedLocal[model.task]?.includes(model.id)) continue;
-      const start = model.task === 'transcription' ? downloadLocalModel : downloadLocalLlmModel;
-      start(model.id).catch((err) => console.error('setup preset download failed', err));
+      localModelDownloads[model.task].download(model.id).catch((err) => console.error('setup preset download failed', err));
     }
   }
 
   function cancel(target: Preset) {
     for (const model of target.target?.requiredLocalModels ?? []) {
-      const stop = model.task === 'transcription' ? cancelLocalModelDownload : cancelLocalLlmModelDownload;
-      stop(model.id).catch((err) => console.error('setup preset cancel failed', err));
+      localModelDownloads[model.task].cancel(model.id).catch((err) => console.error('setup preset cancel failed', err));
     }
   }
 
   function remove(target: Preset) {
     for (const model of target.target?.requiredLocalModels ?? []) {
       if (!installedLocal[model.task]?.includes(model.id)) continue;
-      const drop = model.task === 'transcription' ? deleteLocalModel : deleteLocalLlmModel;
-      drop(model.id).catch((err) => console.error('setup preset delete failed', err));
+      localModelDownloads[model.task].delete(model.id).catch((err) => console.error('setup preset delete failed', err));
     }
   }
 
