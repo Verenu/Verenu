@@ -1438,17 +1438,31 @@ fn parse_safe_provider_model(value: &str) -> Option<(&'static str, &'static str)
     (provider != "unknown").then_some((provider, normalize_model_family(model)))
 }
 
-fn normalize_provider(value: &str) -> &'static str {
-    match value {
-        "groq" => "groq",
-        "openai" => "openai",
-        "google" => "google",
-        "assemblyai" => "assemblyai",
-        "openrouter" => "openrouter",
-        "xai" => "xai",
-        "local" => "local",
-        _ => "unknown",
-    }
+// Return static allowlisted literals rather than caller-owned text.
+macro_rules! category_allowlist {
+    ($name:ident, $fallback:literal; $($allowed:literal)|+) => {
+        fn $name(value: &str) -> &'static str {
+            match value {
+                $($allowed => $allowed,)+
+                _ => $fallback,
+            }
+        }
+
+        #[cfg(test)]
+        mod $name {
+            #[test]
+            fn accepts_exact_literals_and_rejects_private_values() {
+                $(assert_eq!(super::$name($allowed), $allowed);)+
+                for rejected in ["", "private endpoint/token", "UNKNOWN", " groq"] {
+                    assert_eq!(super::$name(rejected), $fallback);
+                }
+            }
+        }
+    };
+}
+
+category_allowlist! { normalize_provider, "unknown";
+    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" | "local"
 }
 
 fn normalize_model_family(value: &str) -> &'static str {
@@ -1501,14 +1515,8 @@ fn outcome_reason(outcome: &str, last_failure: &str) -> &'static str {
     }
 }
 
-fn normalize_outcome_status(value: &str) -> &'static str {
-    match value {
-        "success" => "success",
-        "rejected" => "rejected",
-        "cancelled" => "cancelled",
-        "failure" => "failure",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_outcome_status, "unknown";
+    "success" | "rejected" | "cancelled" | "failure"
 }
 
 fn normalize_outcome_reason(value: &str) -> &'static str {
@@ -1523,13 +1531,8 @@ fn normalize_outcome_reason(value: &str) -> &'static str {
     }
 }
 
-fn normalize_context_result(value: &str) -> &'static str {
-    match value {
-        "matched" => "matched",
-        "no_match" => "no_match",
-        "manual" => "manual",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_context_result, "unknown";
+    "matched" | "no_match" | "manual"
 }
 
 fn normalize_category(value: &str) -> &'static str {
@@ -1564,229 +1567,83 @@ fn duration_bucket(ms: u64) -> &'static str {
     }
 }
 
-fn normalize_feature(value: &str) -> &'static str {
-    match value {
-        "dual_transcription" => "dual_transcription",
-        "cleanup" => "cleanup",
-        "transcription_fallback" => "transcription_fallback",
-        "cleanup_fallback" => "cleanup_fallback",
-        "local_transcription" => "local_transcription",
-        "local_cleanup" => "local_cleanup",
-        "noise_reduction" => "noise_reduction",
-        "contextual_formatting" => "contextual_formatting",
-        "auto_learn" => "auto_learn",
-        "media_pause" => "media_pause",
-        "hands_free" => "hands_free",
-        "context_match" => "context_match",
-        "retry" => "retry",
-        "clipboard_fallback" => "clipboard_fallback",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_feature, "unknown";
+    "dual_transcription" | "cleanup" | "transcription_fallback" | "cleanup_fallback" |
+    "local_transcription" | "local_cleanup" | "noise_reduction" | "contextual_formatting" |
+    "auto_learn" | "media_pause" | "hands_free" | "context_match" | "retry" | "clipboard_fallback"
 }
 
-fn normalize_fallback(value: &str) -> &'static str {
-    match value {
-        "transcription" => "transcription",
-        "cleanup" => "cleanup",
-        "clipboard" => "clipboard",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_fallback, "unknown";
+    "transcription" | "cleanup" | "clipboard"
 }
-fn normalize_failure_reason(value: &str) -> &'static str {
-    match value {
-        "provider_failure" => "provider_failure",
-        "timeout" => "timeout",
-        "network" => "network",
-        "empty_response" => "empty_response",
-        "user_requested" => "user_requested",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_failure_reason, "unknown";
+    "provider_failure" | "timeout" | "network" | "empty_response" | "user_requested"
 }
-fn normalize_permission(value: &str) -> &'static str {
-    match value {
-        "microphone" => "microphone",
-        "accessibility" => "accessibility",
-        "notifications" => "notifications",
-        "battery" => "battery",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_permission, "unknown";
+    "microphone" | "accessibility" | "notifications" | "battery"
 }
-fn normalize_permission_status(value: &str) -> &'static str {
-    match value {
-        "missing" => "missing",
-        "request_shown" => "request_shown",
-        "granted" => "granted",
-        "denied" => "denied",
-        "settings_opened" => "settings_opened",
-        "recovered" => "recovered",
-        "still_missing" => "still_missing",
-        "abandoned" => "abandoned",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_permission_status, "unknown";
+    "missing" | "request_shown" | "granted" | "denied" | "settings_opened" | "recovered" |
+    "still_missing" | "abandoned"
 }
-fn normalize_input_outcome(value: &str) -> &'static str {
-    match value {
-        "microphone_available" => "microphone_available",
-        "no_input_device" => "no_input_device",
-        "microphone_permission_missing" => "microphone_permission_missing",
-        "capture_initialized" => "capture_initialized",
-        "capture_initialization_failed" => "capture_initialization_failed",
-        "zero_audio_detected" => "zero_audio_detected",
-        "too_quiet" => "too_quiet",
-        "too_short" => "too_short",
-        "vad_passed" => "vad_passed",
-        "vad_rejected" => "vad_rejected",
-        "vad_internal_failure" => "vad_internal_failure",
-        "capture_stream_failed" => "capture_stream_failed",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_input_outcome, "unknown";
+    "microphone_available" | "no_input_device" | "microphone_permission_missing" |
+    "capture_initialized" | "capture_initialization_failed" | "zero_audio_detected" | "too_quiet" |
+    "too_short" | "vad_passed" | "vad_rejected" | "vad_internal_failure" | "capture_stream_failed"
 }
 
-fn normalize_stage(value: &str) -> &'static str {
-    match value {
-        "permission" => "permission",
-        "capture" => "capture",
-        "vad" => "vad",
-        "preprocessing" => "preprocessing",
-        "transcription" => "transcription",
-        "dual_transcription" => "dual_transcription",
-        "cleanup" => "cleanup",
-        "formatting" => "formatting",
-        "insertion" => "insertion",
-        "clipboard" => "clipboard",
-        "local_model" => "local_model",
-        "sync" => "sync",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_stage, "unknown";
+    "permission" | "capture" | "vad" | "preprocessing" | "transcription" | "dual_transcription" |
+    "cleanup" | "formatting" | "insertion" | "clipboard" | "local_model" | "sync"
 }
 
-fn normalize_failure_category(value: &str) -> &'static str {
-    match value {
-        "permission_missing" => "permission_missing",
-        "permission_denied" => "permission_denied",
-        "network" => "network",
-        "timeout" => "timeout",
-        "provider_unavailable" => "provider_unavailable",
-        "empty_response" => "empty_response",
-        "audio_empty" => "audio_empty",
-        "audio_too_short" => "audio_too_short",
-        "audio_too_quiet" => "audio_too_quiet",
-        "vad_rejected" => "vad_rejected",
-        "model_unavailable" => "model_unavailable",
-        "local_model_failure" => "local_model_failure",
-        "insertion_unavailable" => "insertion_unavailable",
-        "insertion_failed" => "insertion_failed",
-        "cancelled" => "cancelled",
-        "internal" => "internal",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_failure_category, "unknown";
+    "permission_missing" | "permission_denied" | "network" | "timeout" | "provider_unavailable" |
+    "empty_response" | "audio_empty" | "audio_too_short" | "audio_too_quiet" | "vad_rejected" |
+    "model_unavailable" | "local_model_failure" | "insertion_unavailable" | "insertion_failed" |
+    "cancelled" | "internal"
 }
 
-fn normalize_outcome(value: &str) -> &'static str {
-    match value {
-        "success_clean" => "success_clean",
-        "success_after_retry" => "success_after_retry",
-        "success_after_transcription_fallback" => "success_after_transcription_fallback",
-        "success_after_cleanup_fallback" => "success_after_cleanup_fallback",
-        "success_after_clipboard_fallback" => "success_after_clipboard_fallback",
-        "rejected_expected" => "rejected_expected",
-        "cancelled_user" => "cancelled_user",
-        "failure_terminal" => "failure_terminal",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_outcome, "unknown";
+    "success_clean" | "success_after_retry" | "success_after_transcription_fallback" |
+    "success_after_cleanup_fallback" | "success_after_clipboard_fallback" | "rejected_expected" |
+    "cancelled_user" | "failure_terminal"
 }
 
-fn normalize_delivery_method(value: &str) -> &'static str {
-    match value {
-        "direct_insertion" => "direct_insertion",
-        "clipboard_fallback" => "clipboard_fallback",
-        "event_only" => "event_only",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_delivery_method, "unknown";
+    "direct_insertion" | "clipboard_fallback" | "event_only"
 }
 
-fn normalize_match_result(value: &str) -> &'static str {
-    match value {
-        "matched" => "matched",
-        "no_match" => "no_match",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_match_result, "unknown";
+    "matched" | "no_match"
 }
 
-fn normalize_match_source(value: &str) -> &'static str {
-    match value {
-        "automatic" => "automatic",
-        "manual" => "manual",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_match_source, "unknown";
+    "automatic" | "manual"
 }
 
-fn normalize_milestone(value: &str) -> &'static str {
-    match value {
-        "dictations_5" => "dictations_5",
-        "dictations_10" => "dictations_10",
-        "dictations_25" => "dictations_25",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_milestone, "unknown";
+    "dictations_5" | "dictations_10" | "dictations_25"
 }
 
-fn normalize_attempt_bucket(value: &str) -> &'static str {
-    match value {
-        "1" => "1",
-        "2" => "2",
-        "3" => "3",
-        "4+" => "4+",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_attempt_bucket, "unknown";
+    "1" | "2" | "3" | "4+"
 }
 
-fn normalize_setup_step(value: &str) -> &'static str {
-    match value {
-        "intro" => "intro",
-        "analytics" => "analytics",
-        "provider" => "provider",
-        "api_key" => "api_key",
-        "permissions" => "permissions",
-        "models" => "models",
-        "writing_style" => "writing_style",
-        "language" => "language",
-        "audio_environment" => "audio_environment",
-        "audio" => "audio",
-        "try_it" => "try_it",
-        "complete" => "complete",
-        "done" => "done",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_setup_step, "unknown";
+    "intro" | "analytics" | "provider" | "api_key" | "permissions" | "models" | "writing_style" |
+    "language" | "audio_environment" | "audio" | "try_it" | "complete" | "done"
 }
 
-fn normalize_duration_bucket(value: &str) -> &'static str {
-    match value {
-        "<1s" => "<1s",
-        "1-5s" => "1-5s",
-        "5-15s" => "5-15s",
-        "15-60s" => "15-60s",
-        "60s+" => "60s+",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_duration_bucket, "unknown";
+    "<1s" | "1-5s" | "5-15s" | "15-60s" | "60s+"
 }
 
-fn normalize_setting(value: &str) -> &'static str {
-    match value {
-        "cleanup_enabled" => "cleanup_enabled",
-        "dual_transcription_enabled" => "dual_transcription_enabled",
-        "noise_reduction" => "noise_reduction",
-        "auto_learn_enabled" => "auto_learn_enabled",
-        "contextual_formatting" => "contextual_formatting",
-        "pause_media" => "pause_media",
-        "transcription_provider" => "transcription_provider",
-        "cleanup_provider" => "cleanup_provider",
-        "cleanup_intensity" => "cleanup_intensity",
-        "history_retention" => "history_retention",
-        "local_model_memory_policy" => "local_model_memory_policy",
-        "mic_mute_button_dictation" => "mic_mute_button_dictation",
-        "sync_enabled" => "sync_enabled",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_setting, "unknown";
+    "cleanup_enabled" | "dual_transcription_enabled" | "noise_reduction" | "auto_learn_enabled" |
+    "contextual_formatting" | "pause_media" | "transcription_provider" | "cleanup_provider" |
+    "cleanup_intensity" | "history_retention" | "local_model_memory_policy" |
+    "mic_mute_button_dictation" | "sync_enabled"
 }
 
 fn safe_setting_value(value: &Value) -> Value {
@@ -1796,59 +1653,24 @@ fn safe_setting_value(value: &Value) -> Value {
         _ => json!("unknown"),
     }
 }
-fn normalize_sync_status(value: &str) -> &'static str {
-    match value {
-        "enabled" => "enabled",
-        "started" => "started",
-        "completed" => "completed",
-        "failed" => "failed",
-        "pairing_started" => "pairing_started",
-        "pairing_completed" => "pairing_completed",
-        "pairing_failed" => "pairing_failed",
-        "conflict" => "conflict",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_sync_status, "unknown";
+    "enabled" | "started" | "completed" | "failed" | "pairing_started" | "pairing_completed" |
+    "pairing_failed" | "conflict"
 }
 
-fn normalize_error_code(value: &str) -> &'static str {
-    match value {
-        "frontend_unhandled" => "frontend_unhandled",
-        "frontend_handled" => "frontend_handled",
-        "backend_panic" => "backend_panic",
-        "transcription_failed" => "transcription_failed",
-        "cleanup_failed" => "cleanup_failed",
-        "insertion_failed" => "insertion_failed",
-        "sync_transport_failed" => "sync_transport_failed",
-        "update_check_failed" => "update_check_failed",
-        "local_model_failed" => "local_model_failed",
-        "capture_failed" => "capture_failed",
-        "database_operation_failed" => "database_operation_failed",
-        _ => "unknown_error",
-    }
+category_allowlist! { normalize_error_code, "unknown_error";
+    "frontend_unhandled" | "frontend_handled" | "backend_panic" | "transcription_failed" |
+    "cleanup_failed" | "insertion_failed" | "sync_transport_failed" | "update_check_failed" |
+    "local_model_failed" | "capture_failed" | "database_operation_failed"
 }
 
-fn normalize_error_callsite(value: &str) -> &'static str {
-    match value {
-        "frontend_window" => "frontend_window",
-        "frontend_boundary" => "frontend_boundary",
-        "panic_hook" => "panic_hook",
-        "pipeline_transcription" => "pipeline_transcription",
-        "pipeline_cleanup" => "pipeline_cleanup",
-        "pipeline_insertion" => "pipeline_insertion",
-        "sync_command" => "sync_command",
-        "updater" => "updater",
-        _ => "unknown_callsite",
-    }
+category_allowlist! { normalize_error_callsite, "unknown_callsite";
+    "frontend_window" | "frontend_boundary" | "panic_hook" | "pipeline_transcription" |
+    "pipeline_cleanup" | "pipeline_insertion" | "sync_command" | "updater"
 }
 
-fn normalize_recovery_method(value: &str) -> &'static str {
-    match value {
-        "retry" => "retry",
-        "fallback" => "fallback",
-        "clipboard" => "clipboard",
-        "none" => "none",
-        _ => "unknown",
-    }
+category_allowlist! { normalize_recovery_method, "unknown";
+    "retry" | "fallback" | "clipboard" | "none"
 }
 
 fn safe_run_id(run_id: Option<String>) -> Option<String> {

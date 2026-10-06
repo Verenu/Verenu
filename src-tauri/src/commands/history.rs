@@ -13,15 +13,14 @@ pub async fn get_recent(
     search: Option<String>,
     app_name: Option<String>,
 ) -> Result<Vec<db::RecentEntry>, String> {
-    let db = db_state(&app);
     let limit = limit.unwrap_or(100);
     let offset = offset.unwrap_or(0);
     let search = search.filter(|s| !s.trim().is_empty());
     let app_name = app_name.filter(|s| !s.trim().is_empty());
-    run_blocking("get_recent", move || {
+    run_db(&app, "get_recent", move |db| {
         if before_id.is_some() || offset == 0 {
             db::query_recent_page_before(
-                &db,
+                db,
                 limit,
                 before_id,
                 search.as_deref(),
@@ -32,9 +31,8 @@ pub async fn get_recent(
             // supplies before_id after its first page, so normal scrolling
             // never pays the deep-OFFSET cost. The first page also uses this
             // shape so an app filter can use its index.
-            db::query_recent_page(&db, limit, offset, search.as_deref(), app_name.as_deref())
+            db::query_recent_page(db, limit, offset, search.as_deref(), app_name.as_deref())
         }
-        .map_err(|e| e.to_string())
     })
     .await
 }
@@ -42,20 +40,12 @@ pub async fn get_recent(
 /// Distinct apps present in transcription history, for the History app filter.
 #[tauri::command]
 pub async fn get_history_apps(app: AppHandle) -> Result<Vec<String>, String> {
-    let db = db_state(&app);
-    run_blocking("get_history_apps", move || {
-        db::query_distinct_apps(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_history_apps", db::query_distinct_apps).await
 }
 
 #[tauri::command]
 pub async fn get_stats(app: AppHandle) -> Result<db::Stats, String> {
-    let db = db_state(&app);
-    run_blocking("get_stats", move || {
-        db::query_stats(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_stats", db::query_stats).await
 }
 
 /// Aggregated insights for the Insights page. `days` is 7 | 30 | 90 | 0,
@@ -67,9 +57,8 @@ pub async fn get_insights(
     days: i64,
     context_id: Option<i64>,
 ) -> Result<db::Insights, String> {
-    let db = db_state(&app);
-    run_blocking("get_insights", move || {
-        db::query_insights(&db, days, context_id).map_err(|e| e.to_string())
+    run_db(&app, "get_insights", move |db| {
+        db::query_insights(db, days, context_id)
     })
     .await
 }
@@ -79,21 +68,19 @@ pub async fn get_insights(
 /// so a pricing outage never blocks the Insights page.
 #[tauri::command]
 pub async fn get_insights_pricing(app: AppHandle) -> Result<db::PricingSnapshot, String> {
-    let db = db_state(&app);
-    let fresh_db = db.clone();
-    let fresh = run_blocking("get_insights_pricing_freshness", move || {
-        db::pricing_cache_is_fresh(&fresh_db).map_err(|e| e.to_string())
-    })
+    let fresh = run_db(
+        &app,
+        "get_insights_pricing_freshness",
+        db::pricing_cache_is_fresh,
+    )
     .await?;
 
     if !fresh {
         match crate::api::openrouter::fetch_model_pricing().await {
             Ok(rates) => {
                 let fetched_at = chrono::Utc::now().timestamp();
-                let write_db = db.clone();
-                run_blocking("save_insights_pricing", move || {
-                    db::replace_pricing_cache(&write_db, fetched_at, &rates)
-                        .map_err(|e| e.to_string())
+                run_db(&app, "save_insights_pricing", move |db| {
+                    db::replace_pricing_cache(db, fetched_at, &rates)
                 })
                 .await?;
             }
@@ -103,10 +90,7 @@ pub async fn get_insights_pricing(app: AppHandle) -> Result<db::PricingSnapshot,
         }
     }
 
-    run_blocking("get_insights_pricing", move || {
-        db::query_pricing_snapshot(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_insights_pricing", db::query_pricing_snapshot).await
 }
 
 #[tauri::command]
@@ -114,9 +98,8 @@ pub async fn count_old_transcriptions(app: AppHandle, retention: String) -> Resu
     let Some(days) = store::history_retention_days(&retention) else {
         return Ok(0);
     };
-    let db = db_state(&app);
-    run_blocking("count_old_transcriptions", move || {
-        db::count_transcriptions_older_than(&db, days).map_err(|e| e.to_string())
+    run_db(&app, "count_old_transcriptions", move |db| {
+        db::count_transcriptions_older_than(db, days)
     })
     .await
 }
@@ -135,22 +118,17 @@ pub async fn retry_transcription(
 
 #[tauri::command]
 pub async fn clear_cleanup_cache(app: AppHandle) -> Result<usize, String> {
-    let db = db_state(&app);
-    run_blocking("clear_cleanup_cache", move || {
-        db::cleanup_cache_clear_all(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "clear_cleanup_cache", db::cleanup_cache_clear_all).await
 }
 
 #[tauri::command]
 pub async fn get_cleanup_cache_status(app: AppHandle) -> Result<CleanupCacheStatus, String> {
-    let db = db_state(&app);
-    let (payload_bytes, entry_count) = run_blocking("get_cleanup_cache_status", move || {
-        db::cleanup_cache_prune_expired(&db).map_err(|e| e.to_string())?;
-        let payload_bytes = db::cleanup_cache_payload_bytes(&db).map_err(|e| e.to_string())?;
-        let count = db::cleanup_cache_count(&db)
-            .map_err(|e| format!("Failed to count cleanup cache entries: {e}"))?;
-        Ok::<_, String>((payload_bytes, count))
+    let (payload_bytes, entry_count) = run_db(&app, "get_cleanup_cache_status", move |db| {
+        db::cleanup_cache_prune_expired(db)?;
+        let payload_bytes = db::cleanup_cache_payload_bytes(db)?;
+        let count = db::cleanup_cache_count(db)
+            .map_err(|e| anyhow::anyhow!("Failed to count cleanup cache entries: {e}"))?;
+        Ok((payload_bytes, count))
     })
     .await?;
     Ok(CleanupCacheStatus {
