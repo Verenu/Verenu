@@ -209,6 +209,18 @@ fn cached_icon_art(theme: IconTheme, tray_size: u32) -> CachedIconArt {
 }
 
 pub(crate) fn apply_runtime_icons(app: &AppHandle, theme_hint: Option<Theme>) {
+    // TrayIcon wraps Rc<RefCell<_>>. Even obtaining/dropping a tray clone must
+    // happen on the UI thread; queuing only set_icon still races its refcount
+    // against focus/theme callbacks when save_setting runs on a Tokio worker.
+    let owner = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || apply_runtime_icons_on_main_thread(&owner, theme_hint)) {
+        log::warn!("Failed to schedule runtime icon update: {error}");
+    }
+}
+
+fn apply_runtime_icons_on_main_thread(app: &AppHandle, theme_hint: Option<Theme>) {
+    #[cfg(target_os = "linux")]
+    debug_assert!(gtk::is_initialized_main_thread(), "Runtime icons require the GTK main thread");
     let icon_theme = resolve_icon_theme(app, theme_hint);
     #[cfg(target_os = "windows")]
     let tray_size = windows_tray_icon_size(app);

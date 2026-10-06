@@ -253,6 +253,11 @@ function patchGradle() {
   }
   const dependencies = [
     {
+      marker: 'junit:junit',
+      declaration: 'testImplementation("junit:junit:4.13.2")',
+      comment: 'Deterministic native insertion, focus, browser and lifecycle regressions.',
+    },
+    {
       marker: 'security-crypto',
       declaration: 'implementation("androidx.security:security-crypto:1.1.0-alpha06")',
       comment: 'Verenu: Keystore-backed credential storage.',
@@ -306,7 +311,9 @@ copyTree(join(androidSrc, 'tests'), join(genAndroid, 'app', 'src', 'test', 'java
 copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'));
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');
-await syncAndroidLocalRuntimes(root);
+// Kotlin compilation and JVM tests do not link the packaged inference runtimes.
+// APK builds must use the ordinary sync path, which prepares both real runtimes.
+if (!process.argv.includes('--sources-only')) await syncAndroidLocalRuntimes(root);
 removeBundledCppRuntime();
 mergeManifest();
 patchRootGradle();

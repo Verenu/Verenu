@@ -31,7 +31,7 @@ function relativeRepoFile(file, projectRoot) {
   return relative.split(path.sep).join('/');
 }
 
-function safeText(value, limit = 240) {
+export function safeText(value, limit = 240) {
   if (typeof value !== 'string') return '';
   return value
     .replace(/https?:\/\/\S+/gi, '[url]')
@@ -83,7 +83,9 @@ function collectTests(report, projectRoot) {
             file,
             line,
             title,
-            status: browserTestStatus(test.status),
+            status: test.status === 'skipped' ? 'skipped'
+              : results.length !== 1 || results[0].status !== 'passed' || (test.expectedStatus && test.expectedStatus !== 'passed') ? 'failed'
+                : browserTestStatus(test.status),
             retryCount: Math.max(0, results.length - 1),
           });
         }
@@ -112,19 +114,25 @@ export function summarizePlaywrightReport(report, {
   exitCode = null,
   processReason: rawProcessReason,
   projectRoot = root,
+  expectedProjects = [],
 } = {}) {
   const reportAvailable = availability === 'available' && isRecord(report) && Array.isArray(report.suites);
   const tests = reportAvailable ? collectTests(report, projectRoot) : [];
   const failedCases = tests.filter((test) => test.status === 'failed');
   const failedProcess = processStatus !== 'passed';
   const missingCases = reportAvailable && tests.length === 0;
-  const status = failedProcess || failedCases.length > 0 || !reportAvailable || missingCases ? 'failed' : 'passed';
+  const skippedCases = tests.filter((test) => test.status === 'skipped');
+  const missingProjects = expectedProjects.filter((project) => !tests.some((test) => test.project === project));
+  const status = failedProcess || failedCases.length > 0 || !reportAvailable || missingCases ? 'failed'
+    : skippedCases.length || missingProjects.length ? 'incomplete' : 'passed';
   const safeProcessReason = processReason({ processStatus, exitCode, processReason: rawProcessReason });
   let reason;
   if (failedProcess) reason = safeProcessReason;
   else if (failedCases.length > 0) reason = 'One or more Playwright cases did not reach their expected outcome.';
   else if (!reportAvailable) reason = 'Structured Playwright report is missing or invalid.';
   else if (missingCases) reason = 'Playwright report contains no test cases.';
+  else if (missingProjects.length) reason = `Playwright projects did not run: ${missingProjects.join(', ')}.`;
+  else if (skippedCases.length) reason = 'Required Playwright cases were skipped.';
 
   return {
     availability: reportAvailable ? 'available' : availability === 'invalid' ? 'invalid' : 'missing',
@@ -142,6 +150,7 @@ export function summarizePlaywrightReport(report, {
       retries: tests.reduce((sum, test) => sum + test.retryCount, 0),
     },
     tests,
+    missingProjects,
     ...(reason ? { reason } : {}),
   };
 }
@@ -155,10 +164,10 @@ export function playwrightSummaryChecks(summary) {
     },
   ];
   for (const test of summary.tests) {
-    if (test.status !== 'failed') continue;
+    if (test.status === 'passed') continue;
     checks.push({
       name: `Playwright ${test.project}: ${test.title}`,
-      status: 'failed',
+      status: test.status === 'skipped' ? 'incomplete' : 'failed',
       project: test.project,
       file: test.file,
       line: test.line,

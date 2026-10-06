@@ -40,6 +40,7 @@ tests/smoke/*.wav
 __pycache__/
 *.py[cod]
 test-results/
+tests/reports/
 playwright-report/
 blob-report/
 coverage/

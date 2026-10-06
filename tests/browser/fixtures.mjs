@@ -15,7 +15,7 @@ export const test = base.extend({
     try { await use(cache); }
     finally { await session.invoke('save_setting', { key: 'provider_model_cache', value: original ?? {} }); }
   },
-  session: async ({}, use) => {
+  session: async ({}, use, testInfo) => {
     const access = JSON.parse(await fs.readFile(process.env.VERENU_SESSION_ACCESS_FILE, 'utf8'));
     const url = new URL(access.localAccessUrl).origin;
     const invoke = async (command, args = {}) => {
@@ -24,7 +24,12 @@ export const test = base.extend({
       return response.json();
     };
     const metadata = await (await fetch(`${url}/__verenu_dev/session`, { headers: { Authorization: `Bearer ${access.token}` } })).json();
-    expect(metadata.fingerprint).toBe(sourceIdentity().fingerprint);
+    // Baseline generation intentionally changes source during the run. The
+    // runner supplies its initial identity only for explicit update mode and
+    // still reports that run incomplete; ordinary verification stays strict.
+    const expected = testInfo.config.updateSnapshots === 'all' && process.env.VERENU_SNAPSHOT_SOURCE_FINGERPRINT
+      ? process.env.VERENU_SNAPSHOT_SOURCE_FINGERPRINT : sourceIdentity().fingerprint;
+    expect(metadata.fingerprint).toBe(expected);
     await use({ access, invoke });
   },
   page: async ({ page, session }, use) => {

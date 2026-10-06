@@ -275,6 +275,22 @@ GitHub Actions currently run:
 - Extended live/native profiles on schedule or manual dispatch.
 - Manual installer builds through `workflow_dispatch`.
 
+PR checks also run Android Kotlin compilation/JVM tests, native WebViews on all
+three desktop platforms, and workflow/test-infrastructure contracts with
+actionlint. Shared Linux regression steps include Clippy, all owned-session
+suites, desktop/phone visual comparisons, and WCAG accessibility scans. Known
+contrast violations are recorded in reviewed JSON baselines; structural
+violations or changed contrast results fail. These baselines are regression
+protection, not a claim that the existing UI meets every WCAG criterion. The
+nightly publisher waits for those regression checks and Windows/macOS Rust
+checks against its exact versioned source snapshot. Live jobs without provider
+credentials report incomplete and fail instead of claiming provider success.
+
+`node scripts/ci/merge-rules.mjs` checks the deployed required status checks.
+`--apply` installs the master-only CI ruleset without editing other rulesets.
+The new aggregate `CI required` check can be required after the updated workflow
+has landed; the deployed ruleset initially requires the already-existing checks.
+
 ## Related Docs
 
 <p align="center">
