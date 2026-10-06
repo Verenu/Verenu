@@ -97,4 +97,33 @@ assert(count("release") == released_before, "media control ended held dictation"
 keyboard(133, nil, 0)
 advance(5000)
 assert(count("release") == released_before + 1, "modifier release no longer finishes dictation")
+
+-- The mouse's modifier shortcut includes a simultaneous F13 companion.
+bindings["CTRL + Super_L"]()
+cancelled_before = count("app:cancel-chord")
+released_before = count("release")
+keyboard(191, nil, 1)
+advance(6500)
+keyboard(191, nil, 2)
+assert(count("app:cancel-chord") == cancelled_before, "mouse F13 companion cancelled dictation")
+assert(count("release") == released_before, "mouse hold ended before its modifiers were released")
+keyboard(191, nil, 0)
+keyboard(37, nil, 0)
+keyboard(133, nil, 0)
+advance(6600)
+assert(count("release") == released_before + 1, "mouse release must finish exactly once")
+
+-- The companion exception must not accept ordinary shortcut keys on press,
+-- or an F13 pressed later during an established hold.
+bindings["CTRL + Super_L"]()
+keyboard(38, nil, 1)
+assert(count("app:cancel-chord") == cancelled_before + 1, "initial letter shortcut was not rejected")
+keyboard(133, nil, 0)
+advance(7500)
+bindings["CTRL + Super_L"]()
+advance(7560)
+keyboard(191, nil, 1)
+assert(count("app:cancel-chord") == cancelled_before + 2, "later F13 shortcut was not rejected")
+keyboard(133, nil, 0)
+advance(8000)
 print("Generated Hyprland gesture regressions passed")

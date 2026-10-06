@@ -670,6 +670,10 @@
 
   .privacy-link { margin-left:4px; }
 
+  @media (max-width: 600px) {
+    .fault-provider-dropdown :global(.ui-dropdown-menu) { left:0; right:auto; }
+  }
+
   .modal-backdrop { position:fixed; inset:0; border:0; padding:0; appearance:none; background:var(--overlay); z-index:50; outline:none; }
   .modal-card { position:fixed; top:50%; left:50%; translate:-50% -50%; z-index:51; isolation:isolate; background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--r-lg); width:min(420px, calc(100vw - 40px)); box-shadow:var(--shadow-elev); overflow:hidden; }
   .modal-header { padding:20px 20px 0; }

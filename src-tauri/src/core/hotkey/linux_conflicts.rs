@@ -176,6 +176,11 @@ pub(super) fn choose(
         .map(str::to_string)
 }
 
+pub(super) fn control_key(bindings: &[Binding], requested: &str) -> Option<String> {
+    // Unavailable controls must not migrate to an unrequested function key.
+    choose(bindings, requested, &[], true)
+}
+
 pub(super) fn status(id: &str, requested: String, active: Option<String>, codes: Vec<String>) {
     let note = match active.as_deref() {
         Some(active) if active != requested => Some(format!(
@@ -207,6 +212,16 @@ mod tests {
         assert!(!owned("Verenu dictation-other"));
         assert!(!owned("Verenu dictation(release)"));
         assert!(!owned("Other Verenu dictation"));
+    }
+
+    #[test]
+    fn unavailable_controls_do_not_fall_back_to_free_function_keys() {
+        let bindings = [Binding { key: "Escape".into(), ..Binding::default() },
+            Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
+        assert_eq!(control_key(&bindings, "Escape"), None);
+        assert_eq!(control_key(&bindings, "Space"), None);
+        assert_eq!(control_key(&[], "Escape"), Some("Escape".into()));
+        assert_eq!(control_key(&[], "Space"), Some("Space".into()));
     }
 
     #[test]

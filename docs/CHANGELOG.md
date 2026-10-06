@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed Linux mouse-button dictation cancelling immediately when the mouse sends F13 alongside Control-Super. F13 is accepted only with the initial press; later shortcut keys still discard the hold.
+- Linux Cancel dictation and Switch to hands-free no longer fall back to function keys. Unavailable controls disable stale bindings, including after a portal disconnect; changed keys replace their previous bindings.
+
 - Android pill placement is now reliable and draggable. Hold the pill and drag it, and it snaps to the nearest position and saves it to Settings, which updates live. A new "Pill position without a keyboard" setting decides where the pill rests when a dictation outlives the keyboard; it now defaults to the bottom of the screen instead of the top, and offers a full grid of positions (left, middle, right, top, bottom). The pill still covers the keyboard's mic button by default, including before the first sync with the app. It remembers its last placement across restarts and picks up changes made in Settings as soon as the keyboard opens instead of up to two seconds later.
 
 - Fixed Android onboarding starting over after Verenu is closed and reopened, for example after signing in to a provider in the browser to get a key or visiting system settings for permissions. Setup now resumes on the step you left, with the provider you chose, and no longer restarts if the backend is slow to answer on a cold start.
@@ -23,6 +26,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Linux Context matching now keeps the captured app and window title throughout dictation. Executable aliases also match sub-app rules, including T3 Code's differing Wayland class. Website detection activates Chromium's accessibility tree, distinguishes windows sharing a process, recognizes more browser app IDs and channels, and ignores ambiguous or changed targets. Localhost websites are detected too. Address-bar reads have a hard deadline and never stack workers.
 
 - Fixed Linux system notifications failing with a nested-runtime panic. Update, model-ready, and service notices now send with Verenu branding and report delivery errors so failed update and service notices can retry.
+
+- Enabled Linux update checks and installation for the official Arch package and portable x86_64 AppImages. Downloads require SHA256 verification and a database backup. Pacman updates use polkit authorization and retain signature and dependency checks; AppImage replacement keeps the previous image. Update controls show progress, errors, and when a restart is needed. Nightly releases now build and hash Linux installers, including Arch-compatible prerelease package versions.
 
 - Added desktop-only Paste in Chunks in Context Advanced settings. It inserts small pieces with pauses for CLI prompts, preserves the clipboard, and stops remaining chunks when focus or clipboard ownership changes.
 

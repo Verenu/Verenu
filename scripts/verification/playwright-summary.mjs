@@ -2,6 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { root } from './identity.mjs';
 
+const menuIds = new Set(['history-retention-menu', 'transcription-mode-menu']);
+const geometryChecks = new Set([
+  'left-edge', 'right-viewport', 'top-panel', 'bottom-panel', 'left-panel', 'right-panel',
+]);
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -44,6 +49,51 @@ function safeText(value, limit = 240) {
     .slice(0, limit);
 }
 
+function safeMenuGeometry(errors = []) {
+  if (!Array.isArray(errors)) return null;
+  for (const error of errors) {
+    if (typeof error.message !== 'string' || error.message.length > 2048) continue;
+    const match = error.message.match(/MENU_GEOMETRY:(\{[^\r\n]+\})/);
+    if (!match) continue;
+    try {
+      const geometry = JSON.parse(match[1]);
+      const rectangle = (rect) => rect
+        && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(rect[key]))
+        && rect.width >= 0 && rect.height >= 0
+        ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        : null;
+      const bounds = rectangle(geometry.bounds);
+      const content = rectangle(geometry.content);
+      if (!menuIds.has(geometry.menuId) || !geometryChecks.has(geometry.check)
+        || !bounds || !content
+        || !Number.isFinite(geometry.viewport?.width) || geometry.viewport.width < 0
+        || !Number.isFinite(geometry.viewport?.height) || geometry.viewport.height < 0) continue;
+      return {
+        check: geometry.check,
+        menuId: geometry.menuId,
+        bounds,
+        content,
+        viewport: { width: geometry.viewport.width, height: geometry.viewport.height },
+      };
+    } catch {
+      // Ignore malformed diagnostics. They may contain arbitrary page data.
+    }
+  }
+  return null;
+}
+
+function safeAssertionLine(errors = [], expectedFile) {
+  if (!Array.isArray(errors)) return null;
+  const expected = typeof expectedFile === 'string' ? expectedFile.replaceAll('\\', '/').split('/').at(-1) : null;
+  const error = errors.find((item) => {
+    const file = item?.location?.file;
+    if (typeof file !== 'string' || !expected) return false;
+    return file.replaceAll('\\', '/').split('/').at(-1) === expected
+      && Number.isSafeInteger(item.location.line) && item.location.line > 0;
+  });
+  return error?.location.line ?? null;
+}
+
 function browserTestStatus(value) {
   switch (value) {
     case 'expected':
@@ -78,14 +128,20 @@ function collectTests(report, projectRoot) {
         for (const test of spec.tests) {
           if (!isRecord(test)) continue;
           const results = Array.isArray(test.results) ? test.results : [];
-          tests.push({
+          const lastResult = results.at(-1);
+          const row = {
             project: safeText(test.projectName, 80) || 'unknown',
             file,
             line,
             title,
             status: browserTestStatus(test.status),
             retryCount: Math.max(0, results.length - 1),
-          });
+          };
+          const menuGeometry = safeMenuGeometry(lastResult?.errors);
+          if (menuGeometry) row.menuGeometry = menuGeometry;
+          const assertionLine = safeAssertionLine(lastResult?.errors, spec.file ?? suiteFile);
+          if (assertionLine) row.assertionLine = assertionLine;
+          tests.push(row);
         }
       }
     }

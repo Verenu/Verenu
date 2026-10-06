@@ -110,6 +110,7 @@ export interface UpdateInfo {
   downloadUrl: string;
   assetName: string;
   installMode: 'install' | 'download';
+  installHint?: string | null;
 }
 
 export interface ProviderStatusAlert {
@@ -179,6 +180,10 @@ export const appStore = $state({
   dictionaryFetchStatus: 'idle' as FetchStatus,
   dictionaryFetchError: '',
   updateInfo: null as UpdateInfo | null,
+  updateInstalling: false,
+  updateProgress: '',
+  updateInstalled: false,
+  updateInstallError: '',
   betaUpdatesEnabled: false,
   providerStatusAlerts: [] as ProviderStatusAlert[],
   providerStatusSimulation: false,
