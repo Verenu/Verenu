@@ -353,6 +353,58 @@ mod tests {
     }
 
     #[test]
+    fn candidate_events_keep_context_hashes_and_confidence() {
+        for (confidence, repeated, event_type, reason, promoted) in [
+            (0.4, false, "candidate", "low_confidence", false),
+            (0.6, false, "candidate", "below_threshold", false),
+            (0.75, false, "promotion", "promoted", true),
+            (0.6, true, "candidate", "duplicate_in_session", false),
+        ] {
+            let db = db::open(":memory:").unwrap();
+            let context = test_context(1);
+            let mut recorded = HashSet::new();
+            if repeated {
+                assert!(!record_candidate(
+                    &db,
+                    &mut recorded,
+                    &context,
+                    "Koobernetes".into(),
+                    "Kubernetes".into(),
+                    confidence
+                ));
+            }
+            assert_eq!(
+                record_candidate(
+                    &db,
+                    &mut recorded,
+                    &context,
+                    "Koobernetes".into(),
+                    "Kubernetes".into(),
+                    confidence
+                ),
+                promoted
+            );
+            let event = db::get_recent_auto_learn_activity(&db, 10)
+                .unwrap()
+                .into_iter()
+                .max_by_key(|event| event.id)
+                .unwrap();
+            assert_eq!(event.event_type, event_type);
+            assert_eq!(event.reason_code, reason);
+            assert_eq!(event.context_id, Some(context.id));
+            assert_eq!(event.app_context, context.label);
+            assert_eq!(event.confidence, confidence);
+            let expected = if repeated {
+                (String::new(), String::new())
+            } else {
+                pair_hash("Koobernetes", "Kubernetes")
+            };
+            assert_eq!((event.mistake_hash, event.correction_hash), expected);
+            assert_eq!(recorded.len(), 1);
+        }
+    }
+
+    #[test]
     fn repeated_candidate_counts_once_per_session() {
         let db = db::open(":memory:").expect("test db");
         let mut recorded = HashSet::new();

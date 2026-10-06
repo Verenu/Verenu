@@ -1,4 +1,4 @@
-//! Optional Windows dictation trigger driven by the selected microphone's mute
+//! Optional dictation trigger driven by the selected microphone's mute
 //! button. Watches, in parallel:
 //! - endpoint (mixer) mute bit
 //! - hardware mute subunits on the capture topology path
@@ -7,85 +7,81 @@
 //! Binds the selected capture device with relaxed name matching so WASAPI and
 //! CPAL labels for the same mic still resolve. Never calls SetMute.
 
-#[cfg(windows)]
-mod win {
+#[cfg(any(windows, target_os = "linux"))]
+fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
+    let mut silent = 0u32;
+    let mut abs_max = 0.0f32;
+    for a in abs_samples {
+        if a > abs_max {
+            abs_max = a;
+        }
+        if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
+            silent += 1;
+        }
+    }
+    (silent, abs_max)
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+mod common {
     use crate::data::store;
+    use crate::media::digital_silence::SilenceTransition;
+    use crate::core::window_geometry::WindowTarget;
+    use crate::pipeline::{self, start_recording_session, SharedState};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tauri::AppHandle;
+    #[cfg(windows)]
+    use super::win::watcher_loop;
+    #[cfg(target_os = "linux")]
+    use super::linux::watcher_loop;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum DetectionMethod {
+    pub(super) enum DetectionMethod {
+        #[cfg(windows)]
         EndpointNotify,
+        #[cfg(windows)]
         EndpointPoll,
+        #[cfg(windows)]
         HardwareMute,
+        #[cfg(target_os = "linux")]
+        PipeWireMute,
         DigitalSilence,
     }
 
     impl DetectionMethod {
-        fn as_str(self) -> &'static str {
+        pub(super) fn as_str(self) -> &'static str {
             match self {
+                #[cfg(windows)]
                 Self::EndpointNotify => "endpoint_notify",
+                #[cfg(windows)]
                 Self::EndpointPoll => "endpoint_poll",
+                #[cfg(windows)]
                 Self::HardwareMute => "hardware_mute",
+                #[cfg(target_os = "linux")]
+                Self::PipeWireMute => "pipewire_mute",
                 Self::DigitalSilence => "digital_silence",
             }
         }
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum MuteTriggerEvent {
+    pub(super) enum MuteTriggerEvent {
         BecameMuted { method: DetectionMethod },
         BecameUnmuted { method: DetectionMethod },
     }
-    use crate::core::window_geometry::WindowTarget;
-    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer, SilenceTransition};
-    use crate::pipeline::{self, start_recording_session, SharedState};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::{Duration, Instant};
-    use tauri::AppHandle;
-    use windows::core::{implement, GUID};
-    use windows::Win32::Foundation::PROPERTYKEY;
-    use windows::Win32::Media::Audio::Endpoints::{
-        IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
-    };
-    use windows::Win32::Media::Audio::{
-        eCapture, eConsole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-        AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE_ACTIVE, ENDPOINT_HARDWARE_SUPPORT_MUTE,
-    };
-    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
-    };
-    use windows::Win32::System::Variant::VT_LPWSTR;
-    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-
-    const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
-        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
-        pid: 14,
-    };
-    const PKEY_DEVICE_DEVICE_DESC: PROPERTYKEY = PROPERTYKEY {
-        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
-        pid: 2,
-    };
-
-    const POLL_INTERVAL: Duration = Duration::from_millis(20);
-    const REBIND_INTERVAL: Duration = Duration::from_secs(2);
-    const DISABLED_IDLE: Duration = Duration::from_secs(2);
-    const DEBOUNCE: Duration = Duration::from_millis(25);
-    /// Ignore PCM unmute/mute if endpoint already reported a matching transition
-    /// within this window — endpoint path wins.
-    const ENDPOINT_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
-    /// A dictation gesture is unmuted → muted → unmuted. The mute→unmute half
-    /// must land inside this window or it is treated as an ordinary unmute.
+    pub(super) const REBIND_INTERVAL: Duration = Duration::from_secs(2);
+    pub(super) const DISABLED_IDLE: Duration = Duration::from_secs(2);
+    pub(super) const DEBOUNCE: Duration = Duration::from_millis(25);
     const PULSE_MIN: Duration = Duration::from_millis(10);
     const PULSE_MAX: Duration = Duration::from_millis(3000);
-    /// PCM mute detection window. 250ms made a physical mute click feel like
-    /// it needed a half-second hold before unmute would count.
-    const PCM_WINDOW: Duration = Duration::from_millis(40);
-    const PCM_DEBOUNCE: Duration = Duration::from_millis(15);
-
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    pub(super) const PCM_WINDOW: Duration = Duration::from_millis(40);
+    pub(super) const PCM_DEBOUNCE: Duration = Duration::from_millis(15);
+    const PULSE_COOLDOWN: Duration = Duration::from_millis(180);
+    pub(super) static GENERATION: AtomicU64 = AtomicU64::new(0);
     static STARTED: AtomicBool = AtomicBool::new(false);
-    static WATCHER_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
+    pub(super) static WATCHER_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
     static EVENT_TX: OnceLock<
         std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
     > = OnceLock::new();
@@ -98,9 +94,8 @@ mod win {
     /// Idle digital-silence capture client. Taken/dropped before dictation
     /// opens the same mic so the streams never overlap.
     static ACTIVE_PCM: Mutex<Option<PcmMonitorGuard>> = Mutex::new(None);
-    const PULSE_COOLDOWN: Duration = Duration::from_millis(180);
 
-    fn release_active_pcm() {
+    pub(super) fn release_active_pcm() {
         let guard = ACTIVE_PCM.lock().ok().and_then(|mut slot| slot.take());
         if guard.is_some() {
             log::info!("mic_mute_trigger: PCM monitor released");
@@ -109,7 +104,7 @@ mod win {
         drop(guard);
     }
 
-    fn pcm_is_running() -> bool {
+    pub(super) fn pcm_is_running() -> bool {
         let Ok(slot) = ACTIVE_PCM.lock() else {
             return false;
         };
@@ -121,7 +116,7 @@ mod win {
         })
     }
 
-    fn install_active_pcm(guard: PcmMonitorGuard) {
+    pub(super) fn install_active_pcm(guard: PcmMonitorGuard) {
         let previous = if let Ok(mut slot) = ACTIVE_PCM.lock() {
             let old = slot.take();
             *slot = Some(guard);
@@ -161,7 +156,7 @@ mod win {
         let state_hk = shared;
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
-                // Joining the idle PCM WASAPI client can take tens of ms.
+                // Joining the idle PCM client can take tens of ms.
                 // Do that on a blocking pool thread before unmute dispatch may
                 // open the dictation capture stream on this Tokio worker.
                 if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
@@ -187,7 +182,7 @@ mod win {
         }
     }
 
-    fn emit(event: MuteTriggerEvent) {
+    pub(super) fn emit(event: MuteTriggerEvent) {
         let Ok(slot) = event_tx_slot().lock() else {
             return;
         };
@@ -196,7 +191,7 @@ mod win {
         }
     }
 
-    fn feature_enabled(app: &AppHandle) -> bool {
+    pub(super) fn feature_enabled(app: &AppHandle) -> bool {
         store::settings_handle(app)
             .ok()
             .and_then(|s| s.get(store::MIC_MUTE_BUTTON_DICTATION))
@@ -204,7 +199,7 @@ mod win {
             .unwrap_or(false)
     }
 
-    fn selected_device_name(app: &AppHandle) -> Option<String> {
+    pub(super) fn selected_device_name(app: &AppHandle) -> Option<String> {
         store::settings_handle(app)
             .ok()
             .and_then(|s| s.get(store::MICROPHONE_DEVICE))
@@ -217,6 +212,10 @@ mod win {
             return None;
         };
         let muted_at = slot.take()?;
+        pulse_duration(muted_at, now)
+    }
+
+    fn pulse_duration(muted_at: Instant, now: Instant) -> Option<Duration> {
         let elapsed = now.saturating_duration_since(muted_at);
         if elapsed < PULSE_MIN || elapsed > PULSE_MAX {
             log::info!(
@@ -227,13 +226,13 @@ mod win {
         Some(elapsed)
     }
 
-    fn mark_pulse_muted(now: Instant) {
+    pub(super) fn mark_pulse_muted(now: Instant) {
         if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
             *slot = Some(now);
         }
     }
 
-    fn clear_pulse() {
+    pub(super) fn clear_pulse() {
         if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
             *slot = None;
         }
@@ -325,14 +324,14 @@ mod win {
         }
     }
 
-    fn dictation_holds_mic(state: &SharedState) -> bool {
+    pub(super) fn dictation_holds_mic(state: &SharedState) -> bool {
         let Ok(st) = state.lock() else {
             return false;
         };
         !st.lifecycle.is_idle()
     }
 
-    fn recording_raw_level(state: &SharedState) -> Option<f32> {
+    pub(super) fn recording_raw_level(state: &SharedState) -> Option<f32> {
         let Ok(st) = state.lock() else {
             return None;
         };
@@ -344,7 +343,114 @@ mod win {
         }
     }
 
-    fn watcher_loop(app: AppHandle, state: SharedState) {
+    pub(super) struct PcmMonitorGuard {
+        pub(super) stop: Arc<AtomicBool>,
+        pub(super) join: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for PcmMonitorGuard {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.join.take() {
+                // Join so the capture client is released before dictation
+                // opens the same mic. Fire-and-forget stop left the stream up
+                // long enough to starve the pill visualizer.
+                let _ = handle.join();
+            }
+        }
+    }
+
+    pub(super) fn emit_pcm_transition(transition: SilenceTransition) {
+        let muted = matches!(transition, SilenceTransition::BecameMuted);
+        log::info!(
+            "mic_mute_trigger: {} via {}",
+            if muted { "muted" } else { "unmuted" },
+            DetectionMethod::DigitalSilence.as_str()
+        );
+        emit(if muted {
+            MuteTriggerEvent::BecameMuted {
+                method: DetectionMethod::DigitalSilence,
+            }
+        } else {
+            MuteTriggerEvent::BecameUnmuted {
+                method: DetectionMethod::DigitalSilence,
+            }
+        });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn pulse_duration_keeps_inclusive_bounds_and_rejects_reversed_time() {
+            let start = Instant::now();
+            for (millis, valid) in [(0, false), (9, false), (10, true), (180, true), (3000, true), (3001, false)] {
+                assert_eq!(pulse_duration(start, start + Duration::from_millis(millis)).is_some(), valid);
+            }
+            assert_eq!(pulse_duration(start + Duration::from_millis(1), start), None);
+        }
+
+        #[test]
+        fn pcm_guard_stops_and_joins_before_returning() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let completed = Arc::new(AtomicBool::new(false));
+            let worker_completed = completed.clone();
+            let join = std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                worker_completed.store(true, Ordering::SeqCst);
+            });
+            drop(PcmMonitorGuard { stop: stop.clone(), join: Some(join) });
+            assert!(stop.load(Ordering::SeqCst));
+            assert!(completed.load(Ordering::SeqCst));
+        }
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use super::{common::*, pcm_stats};
+
+    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer, SilenceTransition};
+    use crate::pipeline::SharedState;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tauri::AppHandle;
+    use windows::core::{implement, GUID};
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::Media::Audio::Endpoints::{
+        IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+    };
+    use windows::Win32::Media::Audio::{
+        eCapture, eConsole, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+        AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE_ACTIVE, ENDPOINT_HARDWARE_SUPPORT_MUTE,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+    };
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+
+    const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 14,
+    };
+    const PKEY_DEVICE_DEVICE_DESC: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 2,
+    };
+
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    /// Ignore PCM unmute/mute if endpoint already reported a matching transition
+    /// within this window — endpoint path wins.
+    const ENDPOINT_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
+
+    pub(super) fn watcher_loop(app: AppHandle, state: SharedState) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
@@ -743,23 +849,6 @@ mod win {
         unsafe { ptr.to_string() }.map_err(|e| e.to_string())
     }
 
-    struct PcmMonitorGuard {
-        stop: Arc<AtomicBool>,
-        join: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl Drop for PcmMonitorGuard {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(handle) = self.join.take() {
-                // Join so WASAPI releases the capture client before dictation
-                // opens the same mic. Fire-and-forget stop left the stream up
-                // long enough to starve the pill visualizer.
-                let _ = handle.join();
-            }
-        }
-    }
-
     fn start_pcm_monitor(
         device_name: Option<String>,
         last_endpoint_event: Arc<Mutex<Option<(bool, Instant)>>>,
@@ -933,20 +1022,6 @@ mod win {
         Ok(())
     }
 
-    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
-        let mut silent = 0u32;
-        let mut abs_max = 0.0f32;
-        for a in abs_samples {
-            if a > abs_max {
-                abs_max = a;
-            }
-            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
-                silent += 1;
-            }
-        }
-        (silent, abs_max)
-    }
-
     fn handle_pcm_stats(
         total: usize,
         silent: u32,
@@ -998,28 +1073,15 @@ mod win {
                 }
             }
         }
-        log::info!(
-            "mic_mute_trigger: {} via {}",
-            if muted { "muted" } else { "unmuted" },
-            DetectionMethod::DigitalSilence.as_str()
-        );
-        emit(if muted {
-            MuteTriggerEvent::BecameMuted {
-                method: DetectionMethod::DigitalSilence,
-            }
-        } else {
-            MuteTriggerEvent::BecameUnmuted {
-                method: DetectionMethod::DigitalSilence,
-            }
-        });
+        emit_pcm_transition(transition);
     }
+
+
 }
 
-#[cfg(windows)]
-pub use win::{reload, setup};
+#[cfg(any(windows, target_os = "linux"))]
+pub use common::{reload, setup};
 
-#[cfg(target_os = "linux")]
-pub use linux::{reload, setup};
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
@@ -1046,292 +1108,17 @@ pub fn reload(_app: &tauri::AppHandle) {}
 /// so the streams never overlap.
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::core::window_geometry::WindowTarget;
-    use crate::data::store;
+    use super::{common::*, pcm_stats};
     use crate::media::device_match;
-    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer, SilenceTransition};
-    use crate::pipeline::{self, start_recording_session, SharedState};
+    use crate::media::digital_silence::{DigitalSilenceDetector, MuteDebouncer};
+    use crate::pipeline::SharedState;
     use std::io::BufRead;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tauri::AppHandle;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum DetectionMethod {
-        PipeWireMute,
-        DigitalSilence,
-    }
-
-    impl DetectionMethod {
-        fn as_str(self) -> &'static str {
-            match self {
-                Self::PipeWireMute => "pipewire_mute",
-                Self::DigitalSilence => "digital_silence",
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    enum MuteTriggerEvent {
-        BecameMuted { method: DetectionMethod },
-        BecameUnmuted { method: DetectionMethod },
-    }
-
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
-    const REBIND_INTERVAL: Duration = Duration::from_secs(2);
-    const DISABLED_IDLE: Duration = Duration::from_secs(2);
-    const DEBOUNCE: Duration = Duration::from_millis(25);
-    /// A dictation gesture is mute → unmute. The mute→unmute half must land
-    /// inside this window or it is treated as an ordinary unmute.
-    const PULSE_MIN: Duration = Duration::from_millis(10);
-    const PULSE_MAX: Duration = Duration::from_millis(3000);
-    /// PCM mute detection window. Matches the Windows fallback: 40ms keeps a
-    /// physical mute click feeling instant.
-    const PCM_WINDOW: Duration = Duration::from_millis(40);
-    const PCM_DEBOUNCE: Duration = Duration::from_millis(15);
-    const PULSE_COOLDOWN: Duration = Duration::from_millis(180);
-
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    static WATCHER_THREAD: Mutex<Option<std::thread::Thread>> = Mutex::new(None);
-    static EVENT_TX: OnceLock<
-        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
-    > = OnceLock::new();
-    static PULSE_MUTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    static LAST_PULSE_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    static ACTIVE_PCM: Mutex<Option<PcmMonitorGuard>> = Mutex::new(None);
-
-    fn release_active_pcm() {
-        let guard = ACTIVE_PCM.lock().ok().and_then(|mut slot| slot.take());
-        if guard.is_some() {
-            log::info!("mic_mute_trigger: PCM monitor released");
-        }
-        drop(guard);
-    }
-
-    fn pcm_is_running() -> bool {
-        let Ok(slot) = ACTIVE_PCM.lock() else {
-            return false;
-        };
-        slot.as_ref().is_some_and(|guard| {
-            guard
-                .join
-                .as_ref()
-                .is_some_and(|handle| !handle.is_finished())
-        })
-    }
-
-    fn install_active_pcm(guard: PcmMonitorGuard) {
-        let previous = if let Ok(mut slot) = ACTIVE_PCM.lock() {
-            let old = slot.take();
-            *slot = Some(guard);
-            old
-        } else {
-            None
-        };
-        drop(previous);
-    }
-
-    fn event_tx_slot(
-    ) -> &'static std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>
-    {
-        EVENT_TX.get_or_init(|| std::sync::Mutex::new(None))
-    }
-
-    pub fn setup(app: &mut tauri::App, shared: SharedState) {
-        if STARTED.swap(true, Ordering::SeqCst) {
-            reload(app.handle());
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
-        if let Ok(mut slot) = event_tx_slot().lock() {
-            *slot = Some(tx);
-        }
-
-        let app_handle = app.handle().clone();
-        let state_watch = shared.clone();
-        std::thread::Builder::new()
-            .name("mic-mute-trigger".into())
-            .spawn(move || watcher_loop(app_handle, state_watch))
-            .expect("spawn mic-mute-trigger thread");
-
-        let app_hk = app.handle().clone();
-        let state_hk = shared;
-        tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
-                    let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
-                }
-                dispatch_event(&app_hk, &state_hk, event);
-            }
-        });
-
-        GENERATION.fetch_add(1, Ordering::SeqCst);
-        log::info!("mic_mute_trigger: watcher started");
-    }
-
-    pub fn reload(app: &AppHandle) {
-        let _ = app;
-        let gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        log::info!("mic_mute_trigger: reload requested (generation={gen})");
-        if let Ok(slot) = WATCHER_THREAD.lock() {
-            if let Some(thread) = slot.as_ref() {
-                thread.unpark();
-            }
-        }
-    }
-
-    fn emit(event: MuteTriggerEvent) {
-        let Ok(slot) = event_tx_slot().lock() else {
-            return;
-        };
-        if let Some(tx) = slot.as_ref() {
-            let _ = tx.send(event);
-        }
-    }
-
-    fn feature_enabled(app: &AppHandle) -> bool {
-        store::settings_handle(app)
-            .ok()
-            .and_then(|s| s.get(store::MIC_MUTE_BUTTON_DICTATION))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    }
-
-    fn selected_device_name(app: &AppHandle) -> Option<String> {
-        store::settings_handle(app)
-            .ok()
-            .and_then(|s| s.get(store::MICROPHONE_DEVICE))
-            .and_then(|v| v.as_str().map(|s| s.to_owned()))
-            .filter(|s| !s.trim().is_empty())
-    }
-
-    fn take_pulse(now: Instant) -> Option<Duration> {
-        let Ok(mut slot) = PULSE_MUTED_AT.lock() else {
-            return None;
-        };
-        let muted_at = slot.take()?;
-        let elapsed = now.saturating_duration_since(muted_at);
-        if elapsed < PULSE_MIN || elapsed > PULSE_MAX {
-            log::info!(
-                "mic_mute_trigger: ignored unmute — not a mute→unmute pulse (held {elapsed:?}, want {PULSE_MIN:?}..{PULSE_MAX:?})"
-            );
-            return None;
-        }
-        Some(elapsed)
-    }
-
-    fn mark_pulse_muted(now: Instant) {
-        if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
-            *slot = Some(now);
-        }
-    }
-
-    fn clear_pulse() {
-        if let Ok(mut slot) = PULSE_MUTED_AT.lock() {
-            *slot = None;
-        }
-    }
-
-    fn dispatch_event(app: &AppHandle, state: &SharedState, event: MuteTriggerEvent) {
-        if !feature_enabled(app) {
-            log::debug!("mic_mute_trigger: ignored event — feature disabled");
-            clear_pulse();
-            return;
-        }
-
-        match event {
-            MuteTriggerEvent::BecameMuted { method } => {
-                mark_pulse_muted(Instant::now());
-                log::info!(
-                    "mic_mute_trigger: muted via {} — pulse armed (waiting for unmute)",
-                    method.as_str()
-                );
-            }
-            MuteTriggerEvent::BecameUnmuted { method } => {
-                let now = Instant::now();
-                let Some(held) = take_pulse(now) else {
-                    return;
-                };
-                if let Ok(mut last) = LAST_PULSE_AT.lock() {
-                    if let Some(prev) = *last {
-                        if now.saturating_duration_since(prev) < PULSE_COOLDOWN {
-                            log::info!(
-                                "mic_mute_trigger: ignored pulse via {} — cooldown after prior pulse",
-                                method.as_str()
-                            );
-                            return;
-                        }
-                    }
-                    *last = Some(now);
-                }
-                log::info!(
-                    "mic_mute_trigger: mute→unmute pulse via {} (held {held:?}) — toggling hands-free",
-                    method.as_str()
-                );
-
-                let recording = {
-                    let Ok(st) = state.lock() else {
-                        log::error!("mic_mute_trigger: state lock poisoned");
-                        return;
-                    };
-                    st.lifecycle.is_recording()
-                };
-
-                if recording {
-                    crate::core::hotkey::set_handless_active(false);
-                    tauri::async_runtime::spawn(pipeline::run_pipeline(app.clone(), state.clone()));
-                    log::info!("mic_mute_trigger: dictation stop requested");
-                    return;
-                }
-
-                let busy = {
-                    let Ok(st) = state.lock() else {
-                        log::error!("mic_mute_trigger: state lock poisoned");
-                        return;
-                    };
-                    !matches!(st.lifecycle, pipeline::DictationLifecycle::Idle)
-                };
-                if busy {
-                    log::info!("mic_mute_trigger: ignored pulse — lifecycle busy");
-                    return;
-                }
-                if pipeline::reserve_starting(state).is_err() {
-                    log::info!("mic_mute_trigger: ignored pulse — could not reserve starting");
-                    return;
-                }
-                let target = WindowTarget::capture_foreground();
-                if let Ok(mut st) = state.lock() {
-                    st.target = target;
-                    st.pill_placement_stale = true;
-                }
-                start_recording_session(app, state, "handsfree", true);
-                crate::core::hotkey::set_handless_active(true);
-                log::info!("mic_mute_trigger: dictation started (handsfree)");
-            }
-        }
-    }
-
-    fn dictation_holds_mic(state: &SharedState) -> bool {
-        let Ok(st) = state.lock() else {
-            return false;
-        };
-        !st.lifecycle.is_idle()
-    }
-
-    fn recording_raw_level(state: &SharedState) -> Option<f32> {
-        let Ok(st) = state.lock() else {
-            return None;
-        };
-        match &st.lifecycle {
-            pipeline::DictationLifecycle::Recording { session, .. } => {
-                Some(f32::from_bits(session.raw_level.load(Ordering::Relaxed)))
-            }
-            _ => None,
-        }
-    }
 
     // ---------- PipeWire helpers (pure parsing is unit-tested below) ----------
 
@@ -1457,7 +1244,7 @@ mod linux {
         parse_mute_flag(&out).ok_or_else(|| "pactl get-source-mute had no Mute line".to_string())
     }
 
-    fn watcher_loop(app: AppHandle, state: SharedState) {
+    pub(super) fn watcher_loop(app: AppHandle, state: SharedState) {
         if let Ok(mut slot) = WATCHER_THREAD.lock() {
             *slot = Some(std::thread::current());
         }
@@ -1687,20 +1474,6 @@ mod linux {
         Ok(())
     }
 
-    struct PcmMonitorGuard {
-        stop: Arc<AtomicBool>,
-        join: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl Drop for PcmMonitorGuard {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(handle) = self.join.take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
     fn start_pcm_monitor(device_name: Option<String>) -> PcmMonitorGuard {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
@@ -1814,20 +1587,6 @@ mod linux {
         Ok(())
     }
 
-    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
-        let mut silent = 0u32;
-        let mut abs_max = 0.0f32;
-        for a in abs_samples {
-            if a > abs_max {
-                abs_max = a;
-            }
-            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
-                silent += 1;
-            }
-        }
-        (silent, abs_max)
-    }
-
     fn handle_pcm_stats(
         total: usize,
         silent: u32,
@@ -1841,21 +1600,7 @@ mod linux {
         let Some(transition) = det.push_chunk_stats(now, silent, total as u32, abs_max) else {
             return;
         };
-        let muted = matches!(transition, SilenceTransition::BecameMuted);
-        log::info!(
-            "mic_mute_trigger: {} via {}",
-            if muted { "muted" } else { "unmuted" },
-            DetectionMethod::DigitalSilence.as_str()
-        );
-        emit(if muted {
-            MuteTriggerEvent::BecameMuted {
-                method: DetectionMethod::DigitalSilence,
-            }
-        } else {
-            MuteTriggerEvent::BecameUnmuted {
-                method: DetectionMethod::DigitalSilence,
-            }
-        });
+        emit_pcm_transition(transition);
     }
 
     #[cfg(test)]

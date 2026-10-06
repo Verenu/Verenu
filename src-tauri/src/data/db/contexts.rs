@@ -177,15 +177,13 @@ pub fn everywhere_context_id(db: &Db) -> Result<i64> {
 
 pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
          FROM contexts
          ORDER BY id ASC",
-    )?;
-    let rows = stmt
-        .query_map([], context_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        [], context_from_row,
+    )
 }
 
 /// Count of user-created context groups, excluding the built-in "Everywhere"
@@ -208,47 +206,45 @@ pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
 pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<ContextAssignment>> {
     let normalized_term = require_nonempty_trimmed("Term", term)?;
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT c.id, c.name, c.is_everywhere
          FROM contexts c
          INNER JOIN dictionary_contexts dc ON dc.context_id = c.id
          INNER JOIN dictionary d ON d.id = dc.dictionary_id
          WHERE d.term = ?1
          ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_term], |row| {
+        params![normalized_term],
+        |row| {
             Ok(ContextAssignment {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 is_everywhere: row.get::<_, i64>(2)? != 0,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        },
+    )
 }
 
 pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<ContextAssignment>> {
     let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT c.id, c.name, c.is_everywhere
          FROM contexts c
          INNER JOIN snippet_contexts sc ON sc.context_id = c.id
          INNER JOIN snippets s ON s.id = sc.snippet_id
          WHERE s.trigger = ?1
          ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![normalized_trigger], |row| {
+        params![normalized_trigger],
+        |row| {
             Ok(ContextAssignment {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 is_everywhere: row.get::<_, i64>(2)? != 0,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        },
+    )
 }
 
 pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
@@ -596,30 +592,16 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
            output_chars = output_chars + excluded.output_chars",
         params![everywhere_id, context_id],
     )?;
-    tx.execute(
+    for sql in [
         "DELETE FROM transcription_hourly_stats WHERE context_id = ?1",
-        params![context_id],
-    )?;
-    tx.execute(
         "DELETE FROM provider_daily_stats WHERE context_id = ?1",
-        params![context_id],
-    )?;
-    tx.execute(
         "DELETE FROM context_targets WHERE context_id = ?1",
-        params![context_id],
-    )?;
-    tx.execute(
         "DELETE FROM context_website_targets WHERE context_id = ?1",
-        params![context_id],
-    )?;
-    tx.execute(
         "DELETE FROM dictionary_contexts WHERE context_id = ?1",
-        params![context_id],
-    )?;
-    tx.execute(
         "DELETE FROM snippet_contexts WHERE context_id = ?1",
-        params![context_id],
-    )?;
+    ] {
+        tx.execute(sql, params![context_id])?;
+    }
     let changed = tx.execute("DELETE FROM contexts WHERE id = ?1", params![context_id])?;
     require_row_changed(changed, "Context", context_id)?;
     Ok(())
@@ -649,21 +631,17 @@ fn context_target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextT
 /// up — see `sync::manager::reconcile_stale_context_targets`.
 pub fn query_context_targets(db: &Db, context_id: Option<i64>) -> Result<Vec<ContextTarget>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT id, context_id, executable, app_name, developer, platform, created_at
          FROM context_targets
          WHERE (?1 IS NULL OR context_id = ?1)
            AND (?2 IS NULL OR platform IS NULL OR platform = ?2)
            AND executable NOT LIKE '?::%'
          ORDER BY executable COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(
-            params![context_id, current_platform_tag()],
-            context_target_from_row,
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        params![context_id, current_platform_tag()],
+        context_target_from_row,
+    )
 }
 
 #[cfg(test)]
@@ -813,23 +791,22 @@ pub fn query_context_website_targets(
     context_id: Option<i64>,
 ) -> Result<Vec<ContextWebsiteTarget>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT id, context_id, domain, created_at
          FROM context_website_targets
          WHERE (?1 IS NULL OR context_id = ?1)
          ORDER BY domain COLLATE NOCASE ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![context_id], |row| {
+        params![context_id],
+        |row| {
             Ok(ContextWebsiteTarget {
                 id: row.get(0)?,
                 context_id: row.get(1)?,
                 domain: row.get(2)?,
                 created_at: row.get(3)?,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        },
+    )
 }
 
 pub fn assign_context_website(

@@ -24,6 +24,17 @@ pub struct Stats {
     pub day_streak: i64,
 }
 
+fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntry> {
+    Ok(RecentEntry {
+        id: row.get(0)?,
+        clean_text: row.get(1)?,
+        words: row.get(2)?,
+        duration_ms: row.get(3)?,
+        app_name: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
 // One flat call site in the pipeline; bundling these into a params struct
 // would add a type without removing a caller.
 //
@@ -60,16 +71,7 @@ pub fn insert_transcription_returning(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
          RETURNING id, clean_text, words, duration_ms, app_name, created_at",
         params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id],
-        |r| {
-            Ok(RecentEntry {
-                id: r.get(0)?,
-                clean_text: r.get(1)?,
-                words: r.get(2)?,
-                duration_ms: r.get(3)?,
-                app_name: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        },
+        recent_entry_from_row,
     )?;
     // Lifetime counter is intentionally separate from the transcriptions
     // table so history retention pruning never shrinks it. Committed in the
@@ -108,21 +110,12 @@ pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     // primary key. Since IDs are monotonically increasing, this retrieves items in the
     // same chronological order but leverages the primary key index directly, avoiding
     // full table scans and manual sorting overhead in SQLite.
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, clean_text, words, duration_ms, app_name, created_at \
          FROM transcriptions ORDER BY id DESC",
     )?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(RecentEntry {
-                id: r.get(0)?,
-                clean_text: r.get(1)?,
-                words: r.get(2)?,
-                duration_ms: r.get(3)?,
-                app_name: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?
+        .query_map([], recent_entry_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -193,18 +186,12 @@ fn query_recent_page_fts(
     sql.push_str(" ORDER BY t.id DESC LIMIT ? OFFSET ?");
     values.push(rusqlite::types::Value::from(limit));
     values.push(rusqlite::types::Value::from(offset));
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(values.iter()), |r| {
-            Ok(RecentEntry {
-                id: r.get(0)?,
-                clean_text: r.get(1)?,
-                words: r.get(2)?,
-                duration_ms: r.get(3)?,
-                app_name: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?
+        .query_map(
+            rusqlite::params_from_iter(values.iter()),
+            recent_entry_from_row,
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -226,69 +213,14 @@ pub fn query_recent_page(
     app_name: Option<&str>,
 ) -> Result<Vec<RecentEntry>> {
     let conn = lock_conn(db)?;
-    let limit = limit.clamp(1, 500) as i64;
-    let offset = offset.min(i64::MAX as usize) as i64;
-    let search = search.map(str::trim).filter(|s| !s.is_empty());
-    let app_name = app_name.map(str::trim).filter(|s| !s.is_empty());
-    let terms: Vec<String> = search
-        .map(|s| s.split_whitespace().map(escape_like).collect())
-        .unwrap_or_default();
-    if let Some(search) = search.filter(|s| fts_searchable(s)) {
-        if history_fts_available(&conn) {
-            if let Ok(rows) = query_recent_page_fts(&conn, limit, offset, None, search, app_name) {
-                return Ok(rows);
-            }
-        }
-    }
-
-    // We order by id DESC instead of created_at DESC because id is the
-    // autoincrementing primary key. Since IDs are monotonically increasing,
-    // this retrieves items in the same chronological order but leverages the
-    // primary key index directly, avoiding full table scans and manual sorting
-    // overhead in SQLite.
-    let mut sql = if app_name.is_some() {
-        String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at \
-             FROM transcriptions WHERE app_name = ?",
-        )
-    } else {
-        String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at \
-             FROM transcriptions WHERE 1 = 1",
-        )
-    };
-    let mut values = Vec::<rusqlite::types::Value>::new();
-    if let Some(app_name) = app_name {
-        values.push(rusqlite::types::Value::from(app_name.to_string()));
-    }
-    for term in &terms {
-        sql.push_str(
-            " AND (lower(clean_text) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
-             OR lower(raw_text) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
-             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
-        );
-        for _ in 0..3 {
-            values.push(rusqlite::types::Value::from(term.clone()));
-        }
-    }
-    sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
-    values.push(rusqlite::types::Value::from(limit));
-    values.push(rusqlite::types::Value::from(offset));
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(values.iter()), |r| {
-            Ok(RecentEntry {
-                id: r.get(0)?,
-                clean_text: r.get(1)?,
-                words: r.get(2)?,
-                duration_ms: r.get(3)?,
-                app_name: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    query_recent_page_conn(
+        &conn,
+        limit,
+        None,
+        Some(offset.min(i64::MAX as usize) as i64),
+        search,
+        app_name,
+    )
 }
 
 /// Cursor-based history page. `before_id` is the last row already displayed;
@@ -304,6 +236,17 @@ pub fn query_recent_page_before(
     app_name: Option<&str>,
 ) -> Result<Vec<RecentEntry>> {
     let conn = lock_conn(db)?;
+    query_recent_page_conn(&conn, limit, before_id, None, search, app_name)
+}
+
+fn query_recent_page_conn(
+    conn: &rusqlite::Connection,
+    limit: usize,
+    before_id: Option<i64>,
+    offset: Option<i64>,
+    search: Option<&str>,
+    app_name: Option<&str>,
+) -> Result<Vec<RecentEntry>> {
     let limit = limit.clamp(1, 500) as i64;
     let search = search.map(str::trim).filter(|s| !s.is_empty());
     let app_name = app_name.map(str::trim).filter(|s| !s.is_empty());
@@ -311,8 +254,15 @@ pub fn query_recent_page_before(
         .map(|s| s.split_whitespace().map(escape_like).collect())
         .unwrap_or_default();
     if let Some(search) = search.filter(|s| fts_searchable(s)) {
-        if history_fts_available(&conn) {
-            if let Ok(rows) = query_recent_page_fts(&conn, limit, 0, before_id, search, app_name) {
+        if history_fts_available(conn) {
+            if let Ok(rows) = query_recent_page_fts(
+                conn,
+                limit,
+                offset.unwrap_or(0),
+                before_id,
+                search,
+                app_name,
+            ) {
                 return Ok(rows);
             }
         }
@@ -351,19 +301,17 @@ pub fn query_recent_page_before(
     }
     sql.push_str(" ORDER BY id DESC LIMIT ?");
     values.push(rusqlite::types::Value::from(limit));
+    if let Some(offset) = offset {
+        sql.push_str(" OFFSET ?");
+        values.push(rusqlite::types::Value::from(offset));
+    }
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(values.iter()), |r| {
-            Ok(RecentEntry {
-                id: r.get(0)?,
-                clean_text: r.get(1)?,
-                words: r.get(2)?,
-                duration_ms: r.get(3)?,
-                app_name: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?
+        .query_map(
+            rusqlite::params_from_iter(values.iter()),
+            recent_entry_from_row,
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -729,6 +677,15 @@ mod tests {
         assert!(second
             .iter()
             .all(|entry| entry.app_name.as_deref() == Some("code.exe")));
+
+        // Both public pagination forms must apply search and app filtering
+        // before selecting a page, including the FTS-capable search path.
+        let offset_page = query_recent_page(&db, 1, 1, Some("raw"), Some("code.exe"))
+            .expect("offset search page");
+        let cursor_page =
+            query_recent_page_before(&db, 1, Some(first[0].id), Some("raw"), Some("code.exe"))
+                .expect("cursor search page");
+        assert_eq!(offset_page[0].id, cursor_page[0].id);
     }
 
     #[test]

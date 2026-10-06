@@ -437,11 +437,10 @@ fn starts_with_contraction_suffix(text: &str) -> bool {
     const SUFFIXES: &[&str] = &[
         "'s", "’s", "'re", "’re", "'ve", "’ve", "'ll", "’ll", "'d", "’d", "'m", "’m", "n't", "n’t",
     ];
-    let lowercase = text.to_lowercase();
     SUFFIXES.iter().any(|suffix| {
-        lowercase
-            .strip_prefix(suffix)
-            .is_some_and(|rest| rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric()))
+        let mut lowercase = text.chars().flat_map(char::to_lowercase);
+        suffix.chars().all(|ch| lowercase.next() == Some(ch))
+            && lowercase.next().is_none_or(|ch| !ch.is_alphanumeric())
     })
 }
 
@@ -464,8 +463,8 @@ fn first_word_span(text: &str) -> Option<(usize, usize)> {
 }
 
 fn word_is_all_lowercase(word: &str) -> bool {
-    let cased: Vec<char> = word.chars().filter(|ch| ch.is_alphabetic()).collect();
-    !cased.is_empty() && cased.iter().all(|ch| !ch.is_uppercase())
+    let mut cased = word.chars().filter(|ch| ch.is_alphabetic());
+    cased.next().is_some_and(|ch| !ch.is_uppercase()) && cased.all(|ch| !ch.is_uppercase())
 }
 
 fn word_is_simple_titlecase(word: &str) -> bool {
@@ -723,6 +722,40 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contraction_prefix_matches_whole_string_lowercasing() {
+        const SUFFIXES: &[&str] = &[
+            "'s", "’s", "'re", "’re", "'ve", "’ve", "'ll", "’ll", "'d", "’d", "'m", "’m", "n't", "n’t",
+        ];
+        for prefix in SUFFIXES.iter().copied().chain(["", "n", "'", "word", "İ"]) {
+            for prefix in [prefix.to_owned(), prefix.to_uppercase()] {
+                for tail in ["", " ", ".", "x", "1", "界", "İ", "Σ", "\u{301}"] {
+                    let text = format!("{prefix}{tail}");
+                    let lowercase = text.to_lowercase();
+                    let expected = SUFFIXES.iter().any(|suffix| {
+                        lowercase.strip_prefix(suffix).is_some_and(|rest| {
+                            rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric())
+                        })
+                    });
+                    assert_eq!(starts_with_contraction_suffix(&text), expected, "{text:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lowercase_word_check_preserves_uncased_letters_and_empty_words() {
+        for word in ["", "123", "'’"] {
+            assert!(!word_is_all_lowercase(word));
+        }
+        for word in ["hello", "éclair", "界", "a'界", "e\u{301}"] {
+            assert!(word_is_all_lowercase(word));
+        }
+        for word in ["Hello", "Éclair", "aB", "界A"] {
+            assert!(!word_is_all_lowercase(word));
+        }
+    }
 
     fn smart(text: &str, left: &str, right: &str) -> InsertionDecision {
         decide_insertion(
