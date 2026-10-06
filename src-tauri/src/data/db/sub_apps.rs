@@ -73,15 +73,19 @@ pub fn normalize_title(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
+#[cfg(test)]
 pub fn title_rule_matches(pattern: &str, mode: TitleMatchMode, title: &str) -> bool {
     let pattern = normalize_title(pattern);
+    normalized_title_rule_matches(&pattern, mode, &normalize_title(title))
+}
+
+fn normalized_title_rule_matches(pattern: &str, mode: TitleMatchMode, title: &str) -> bool {
     if pattern.is_empty() {
         return false;
     }
-    let title = normalize_title(title);
     match mode {
-        TitleMatchMode::Contains => title.contains(&pattern),
-        TitleMatchMode::StartsWith => title.starts_with(&pattern),
+        TitleMatchMode::Contains => title.contains(pattern),
+        TitleMatchMode::StartsWith => title.starts_with(pattern),
         TitleMatchMode::Equals => title == pattern,
     }
 }
@@ -169,7 +173,7 @@ const SUB_APP_COLUMNS: &str = "id, uuid, context_id, executable, app_name, label
 /// rule as app targets: untagged or tagged for this platform.
 pub fn query_sub_apps(db: &Db) -> Result<Vec<ContextSubApp>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT {SUB_APP_COLUMNS} FROM context_sub_apps
           WHERE (?1 IS NULL OR platform IS NULL OR platform = ?1)
             AND executable NOT LIKE '?::%'
@@ -274,19 +278,28 @@ pub(crate) fn resolve_sub_app_conn(
     if window_title.trim().is_empty() {
         return Ok(None);
     }
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT {SUB_APP_COLUMNS} FROM context_sub_apps
           WHERE executable = ?1 AND context_id IS NOT NULL
             AND (?2 IS NULL OR platform IS NULL OR platform = ?2)
             AND executable NOT LIKE '?::%'"
     ))?;
-    let candidates = stmt
-        .query_map(params![executable.trim().to_lowercase(), current_platform_tag()], sub_app_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(candidates
-        .into_iter()
-        .filter(|sub| title_rule_matches(&sub.title_pattern, sub.match_mode, window_title))
-        .max_by_key(|sub| (sub.match_mode.specificity(), normalize_title(&sub.title_pattern).len())))
+    let title = normalize_title(window_title);
+    let candidates = stmt.query_map(
+        params![executable.trim().to_lowercase(), current_platform_tag()], sub_app_from_row,
+    )?;
+    let mut best = None;
+    let mut best_key = (0, 0);
+    for candidate in candidates {
+        let sub = candidate?;
+        let pattern = normalize_title(&sub.title_pattern);
+        let key = (sub.match_mode.specificity(), pattern.len());
+        if key >= best_key && normalized_title_rule_matches(&pattern, sub.match_mode, &title) {
+            best_key = key;
+            best = Some(sub);
+        }
+    }
+    Ok(best)
 }
 
 #[cfg(test)]

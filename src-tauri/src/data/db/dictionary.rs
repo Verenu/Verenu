@@ -140,7 +140,7 @@ fn query_dictionary_conn(
           ORDER BY created_at DESC"
     };
     let canonical_rows: Vec<(i64, LegacyDictionaryFields)> = conn
-        .prepare(canonical_sql)?
+        .prepare_cached(canonical_sql)?
         .query_map(params![context_id], |row| {
             Ok((
                 row.get(0)?,
@@ -170,24 +170,23 @@ fn query_dictionary_conn(
           WHERE ?1 IS NULL
           ORDER BY dictionary_id, context_id, id"
     };
-    let correction_rows = conn
-        .prepare(correction_sql)?
-        .query_map(params![context_id], |row| {
-            Ok(DictionaryCorrection {
-                id: row.get(0)?,
-                dictionary_id: row.get(1)?,
-                context_id: row.get(2)?,
-                mistake: row.get(3)?,
-                auto_learned: row.get::<_, i64>(4)? != 0,
-                correction_count: row.get(5)?,
-                confidence_tier: row.get(6)?,
-                last_seen_at: row.get(7)?,
-                created_at: row.get(8)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut correction_stmt = conn.prepare_cached(correction_sql)?;
+    let correction_rows = correction_stmt.query_map(params![context_id], |row| {
+        Ok(DictionaryCorrection {
+            id: row.get(0)?,
+            dictionary_id: row.get(1)?,
+            context_id: row.get(2)?,
+            mistake: row.get(3)?,
+            auto_learned: row.get::<_, i64>(4)? != 0,
+            correction_count: row.get(5)?,
+            confidence_tier: row.get(6)?,
+            last_seen_at: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
     let mut corrections_by_dictionary: HashMap<i64, Vec<DictionaryCorrection>> = HashMap::new();
     for correction in correction_rows {
+        let correction = correction?;
         corrections_by_dictionary
             .entry(correction.dictionary_id)
             .or_default()
@@ -257,8 +256,9 @@ fn materialize_dictionary_entry(
         .unwrap_or_else(|| "manual".to_string());
     let last_seen_at = corrections
         .iter()
-        .filter_map(|correction| correction.last_seen_at.clone())
-        .max();
+        .filter_map(|correction| correction.last_seen_at.as_ref())
+        .max()
+        .cloned();
 
     DictionaryEntry {
         id,
