@@ -86,6 +86,14 @@ class VerenuPillPlacementTest {
         assertEquals(Snap("position", "keyboard-right"), VerenuPillPlacement.snapFor(980, 1600, ctx))
     }
 
+    @Test fun dropBesideAFloatingKeyboardIsAScreenPosition() {
+        val ctx = onKeyboard("keyboard-center").copy(keyboardLeft = 400, keyboardRight = 800)
+        // Level with the keyboard but well left of it: the screen's left edge, not keyboard-left.
+        assertEquals(Snap("position", "screen-bottom-left"), VerenuPillPlacement.snapFor(40, 2300, ctx))
+        // A little outside its width still counts as the keyboard.
+        assertEquals(Snap("position", "keyboard-left"), VerenuPillPlacement.snapFor(300, 1600, ctx))
+    }
+
     @Test fun everySnapResultIsAValueRustAccepts() {
         val contexts = listOf(docked(), docked("screen-top"), onKeyboard("keyboard-right"), onKeyboard("screen-middle"))
         for (ctx in contexts) for (x in 0..width step 90) for (y in 0..height step 100) {
