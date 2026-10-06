@@ -841,7 +841,7 @@ async fn run_pipeline_with_delivery(
             )
         };
     let transcribe_race = tokio::select! {
-        r = run_transcription(&app, &captured_audio, &cfg, generation) => Some(r),
+        r = run_transcription(&app, &captured_audio, &cfg, generation, &telemetry) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (during transcription)");
             None
@@ -989,7 +989,7 @@ async fn run_pipeline_with_delivery(
         emit_pill_stage(&app, "cleaning");
     }
     let cleanup_race = tokio::select! {
-        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, None, context_id, clipboard_instruction.as_deref(), generation) => Some(r),
+        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, None, context_id, clipboard_instruction.as_deref(), generation, &telemetry) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (during cleanup)");
             None
@@ -1261,7 +1261,7 @@ pub async fn retry_transcription_impl(
     emit_pill_stage(app, "transcribing");
     telemetry.start_stage(Stage::Transcription);
     let Some((raw_unorm, api_used, alternate)) =
-        run_transcription(app, &capture.audio, &cfg, 0).await
+        run_transcription(app, &capture.audio, &cfg, 0, &telemetry).await
     else {
         hide_pill(app);
         anyhow::bail!("Retry transcription failed");
@@ -1313,6 +1313,7 @@ pub async fn retry_transcription_impl(
             capture.context.id,
             clipboard_instruction.as_deref(),
             0,
+            &telemetry,
         )
         .await
     else {
