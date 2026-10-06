@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
+import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
 import { run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
@@ -62,10 +63,23 @@ try {
     processReason: playwright.reason,
     expectedProjects: ['desktop', 'phone'],
   });
-  report.playwright = browserSummary;
+  const failureDiagnostics = summarizePlaywrightFailures(browserReport.report);
+  report.playwright = { ...browserSummary, failureDiagnostics };
   report.checks.push(...playwrightSummaryChecks(browserSummary));
+  const failedTests = browserSummary.tests.filter((test) => test.status === 'failed');
+  if (failureDiagnostics.length) {
+    const cases = failureDiagnostics.map(({ project, file, line, title, menuGeometry, assertionLine }) => {
+      const source = file ? `${file}:${line ?? '?'}` : 'unknown source';
+      const assertion = assertionLine ? ` assertion:${assertionLine}` : '';
+      const geometry = menuGeometry ? ` geometry:${JSON.stringify(menuGeometry)}` : '';
+      return `${project}: ${source} ${title}${assertion}${geometry}`;
+    }).join('; ');
+    console.error(`Real-session Playwright failure diagnostics: ${cases}`);
+  }
   if (browserSummary.status !== 'passed') {
-    throw Object.assign(new Error(browserSummary.reason || 'Real-session Playwright flows failed.'), { verificationStatus: browserSummary.status });
+    throw Object.assign(new Error(failedTests.length
+      ? `Real-session Playwright flows failed in ${failedTests.length} case(s).`
+      : browserSummary.reason || 'Real-session Playwright flows failed.'), { verificationStatus: browserSummary.status });
   }
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
   const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });

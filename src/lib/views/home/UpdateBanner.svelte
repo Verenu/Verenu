@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { UpdateInfo } from '../../stores';
   import { installActionLabel } from './helpers';
+  import { appStore } from '../../stores';
 
   export let currentVersion: string;
   export let updateInfo: UpdateInfo;
@@ -12,12 +13,19 @@
 <div class="notice-wrap">
   <div class="update-banner">
     <span class="update-text">
-      Update available — v{currentVersion} → v{updateInfo.version}
+      {#if appStore.updateInstalled}
+        Update installed. Restart Verenu to finish.
+      {:else}
+        Update available: v{currentVersion} → v{updateInfo.version}
+        {#if updateInfo.installHint}<span class="update-hint">{updateInfo.installHint}</span>{/if}
+      {/if}
+      {#if appStore.updateProgress && !appStore.updateInstalled}<span class="update-hint" role="status">{appStore.updateProgress}</span>{/if}
+      {#if appStore.updateInstallError}<span class="update-hint" role="status">{appStore.updateInstallError}</span>{/if}
     </span>
     <div class="update-actions">
       <button class="update-dismiss" onclick={onDismiss}>Dismiss</button>
-      <button class="update-btn" onclick={onInstall} disabled={installing}>
-        {installing
+      <button class="update-btn" onclick={onInstall} disabled={installing || appStore.updateInstalled}>
+        {appStore.updateInstalled ? 'Installed' : installing
           ? (updateInfo.installMode === 'download' ? 'Opening…' : 'Installing…')
           : installActionLabel(updateInfo)}
       </button>
@@ -26,6 +34,7 @@
 </div>
 
 <style>
+  .update-hint { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; }
   .notice-wrap {
     position: relative;
     margin-bottom: 22px;
