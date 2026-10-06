@@ -231,6 +231,12 @@
   z-index: 85;
 }
 
+/* Menus portalled to the document root from inside a dialog (the context
+   editor's Tone/Cleanup and app search) must stay above the dialog's layer. */
+:root:has(.app[data-android='true']) :is(.field-menu-fixed, .modal-app-matches) {
+  z-index: 88;
+}
+
 /* Dialogs that render inside a page (About, Privacy, Sync...) live in that
    page's stacking context, so no z-index of their own can clear the bar. While
    one is open the bar steps under the page and its dim, like any modal. */
@@ -730,7 +736,7 @@
    layout, becomes a flex item that shoves the other buttons across the row. */
 :root:has(.app[data-android='true']) .app-picker {
   position: fixed;
-  z-index: 80;
+  z-index: 88;
   top: auto;
   right: 12px;
   bottom: 12px;
