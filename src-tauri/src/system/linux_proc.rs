@@ -49,11 +49,11 @@ pub(crate) fn parse_stat(text: &str) -> Option<ProcStat> {
     Some(ProcStat {
         pid,
         comm,
-        ppid: rest.nth(1)?.parse().ok()?, // field 4
-        utime: rest.nth(9)?.parse().ok()?, // field 14
-        stime: rest.next()?.parse().ok()?, // field 15
+        ppid: rest.nth(1)?.parse().ok()?,        // field 4
+        utime: rest.nth(9)?.parse().ok()?,       // field 14
+        stime: rest.next()?.parse().ok()?,       // field 15
         num_threads: rest.nth(4)?.parse().ok()?, // field 20
-        rss_pages: rest.nth(3)?.parse().ok()?, // field 24
+        rss_pages: rest.nth(3)?.parse().ok()?,   // field 24
     })
 }
 
@@ -110,7 +110,11 @@ pub(crate) fn parse_meminfo(text: &str) -> Option<ProcMeminfo> {
         let Some((key, rest)) = line.split_once(':') else {
             continue;
         };
-        let Some(kb) = rest.split_whitespace().next().and_then(|value| value.parse().ok()) else {
+        let Some(kb) = rest
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse().ok())
+        else {
             continue;
         };
         match key {
@@ -179,8 +183,11 @@ pub(crate) fn fill_resource_snapshot(
     let mut read_total = 0u64;
     let mut write_total = 0u64;
     let mut current_cpu = HashMap::with_capacity(tree.len());
+    let mut resident_total = 0u64;
 
     for pid in &tree {
+        let resident_bytes = process_accounted_kb(*pid).map(|kb| kb.saturating_mul(1024));
+        resident_total = resident_total.saturating_add(resident_bytes.unwrap_or(0));
         let Ok(stat_text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;
         };
@@ -200,13 +207,16 @@ pub(crate) fn fill_resource_snapshot(
             children.push(crate::system::diagnostics::ChildProcessSnapshot {
                 label: stat.comm,
                 pid: Some(*pid),
-                resident_bytes: process_accounted_kb(*pid).map(|kb| kb.saturating_mul(1024)),
+                resident_bytes,
                 thread_count: Some(stat.num_threads.max(1)),
                 ..Default::default()
             });
         }
     }
 
+    // Keep the command's existing whole-MB rounding and unknown-zero semantics.
+    let resident_mb = resident_total / (1024 * 1024);
+    sample.resident_bytes = (resident_mb > 0).then_some(resident_mb.saturating_mul(1024 * 1024));
     sample.thread_count = (thread_count > 0).then_some(thread_count);
     sample.child_processes = children;
     sample.read_bytes_total = Some(read_total);
@@ -295,6 +305,20 @@ mod tests {
 
     const CAT_STAT: &str = "303412 (cat) R 303338 303338 303338 0 -1 4194304 94 0 0 0 0 0 0 0 20 0 1 0 504646 6385664 545 18446744073709551615 94329894354944 94329894381617 140727249584816 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0 94329894398448 94329894400228 94330731192320 140727249587712 140727249587732 140727249587732 140727249596395 0\n";
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resource_snapshot_collects_root_memory_and_metrics_together() {
+        let mut sample = crate::system::diagnostics::ResourceSnapshot::default();
+        fill_resource_snapshot(&mut sample, std::process::id());
+        let resident = sample.resident_bytes.expect("root memory");
+        assert!(resident > 0);
+        assert_eq!(resident % (1024 * 1024), 0);
+        assert!(sample.process_count.unwrap() >= 1);
+        assert!(sample.thread_count.unwrap() >= 1);
+        assert!(sample.read_bytes_total.is_some());
+        assert!(sample.write_bytes_total.is_some());
+    }
+
     #[test]
     fn parse_stat_reads_pid_ppid_cpu_threads_and_rss() {
         let stat = parse_stat(CAT_STAT).expect("stat");
@@ -310,8 +334,9 @@ mod tests {
 
     #[test]
     fn parse_stat_keeps_spaces_inside_comm() {
-        let stat = parse_stat("12 (verenu helper) S 1 1 1 0 -1 0 0 0 0 0 8 4 0 0 20 0 12 0 1 0 99\n")
-            .expect("stat");
+        let stat =
+            parse_stat("12 (verenu helper) S 1 1 1 0 -1 0 0 0 0 0 8 4 0 0 20 0 12 0 1 0 99\n")
+                .expect("stat");
         assert_eq!(stat.pid, 12);
         assert_eq!(stat.comm, "verenu helper");
         assert_eq!(stat.ppid, 1);
@@ -349,18 +374,29 @@ mod tests {
             parse_status_threads("Name:\tverenu\nVmRSS:\t6240 kB\nThreads:\t8\n"),
             Some(8)
         );
-        let mem = parse_meminfo("MemTotal:       31991180 kB\nMemFree: 1000 kB\nMemAvailable:   24824028 kB\n")
-            .expect("meminfo");
+        let mem = parse_meminfo(
+            "MemTotal:       31991180 kB\nMemFree: 1000 kB\nMemAvailable:   24824028 kB\n",
+        )
+        .expect("meminfo");
         assert_eq!(mem.total_kb, 31_991_180);
         assert_eq!(mem.available_kb, 24_824_028);
     }
 
     #[test]
     fn status_memory_prefers_anonymous_rss_and_falls_back_to_total() {
-        assert_eq!(accounted_status_kb("RssAnon: 0 kB\nVmRSS: 64 kB\n"), Some(0));
-        assert_eq!(accounted_status_kb("RssAnon: 32 kB\nVmRSS: 64 kB\n"), Some(32));
+        assert_eq!(
+            accounted_status_kb("RssAnon: 0 kB\nVmRSS: 64 kB\n"),
+            Some(0)
+        );
+        assert_eq!(
+            accounted_status_kb("RssAnon: 32 kB\nVmRSS: 64 kB\n"),
+            Some(32)
+        );
         assert_eq!(accounted_status_kb("VmRSS: 64 kB\n"), Some(64));
-        assert_eq!(accounted_status_kb("RssAnon: unknown\nVmRSS: 64 kB\n"), Some(64));
+        assert_eq!(
+            accounted_status_kb("RssAnon: unknown\nVmRSS: 64 kB\n"),
+            Some(64)
+        );
         assert_eq!(accounted_status_kb("Name: verenu\n"), None);
     }
 
