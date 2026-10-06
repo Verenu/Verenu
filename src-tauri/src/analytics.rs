@@ -16,6 +16,36 @@ pub const IDENTITY_SCHEMA_VERSION: u8 = 2;
 
 static PANIC_ANALYTICS: OnceLock<Analytics> = OnceLock::new();
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+static DELIVERY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+enum DeliveryKind {
+    Event,
+    Exception,
+}
+
+impl DeliveryKind {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Event => "capture/",
+            Self::Exception => "i/v0/e/",
+        }
+    }
+
+    fn log_prefix(self) -> &'static str {
+        match self {
+            Self::Event => "analytics:",
+            Self::Exception => "analytics: error tracking",
+        }
+    }
+
+    fn payload(self, token: &str, event: &str, distinct_id: &str, properties: Value) -> Value {
+        match self {
+            Self::Event => outbound_payload(token, event, distinct_id, properties),
+            Self::Exception => error_tracking_payload(token, event, distinct_id, properties),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Analytics {
@@ -877,86 +907,22 @@ impl Analytics {
     }
 
     fn dispatch(&self, event: &'static str, properties: Value) {
-        if !self.enabled() {
-            return;
-        }
-        let token = option_env!("VERENU_POSTHOG_PROJECT_TOKEN")
-            .unwrap_or("")
-            .to_owned();
-        let host = option_env!("VERENU_POSTHOG_HOST")
-            .unwrap_or("https://us.i.posthog.com")
-            .trim_end_matches('/')
-            .to_owned();
-        if token.is_empty() {
-            return;
-        }
-        let distinct_id = self
-            .install_id
-            .lock()
-            .ok()
-            .and_then(|id| id.clone())
-            .unwrap_or_default();
-        if distinct_id.is_empty() {
-            return;
-        }
-        let session_id = self
-            .session_id
-            .lock()
-            .map(|id| id.clone())
-            .unwrap_or_default();
-        let first_seen_version = self
-            .first_seen_version
-            .lock()
-            .ok()
-            .and_then(|version| version.clone());
-        let safe = match properties {
-            Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        let payload = outbound_payload(
-            &token,
-            event,
-            &distinct_id,
-            add_common_properties(safe, &session_id, first_seen_version.as_deref()),
-        );
-        log::debug!(
-            "analytics: event queued name={} schema={}",
-            event,
-            SCHEMA_VERSION
-        );
-        let enabled = self.enabled.clone();
-        tauri::async_runtime::spawn(async move {
-            if !enabled.load(Ordering::Acquire) {
-                return;
-            }
-            let result = reqwest::Client::new()
-                .post(format!("{host}/capture/"))
-                .json(&payload)
-                .send()
-                .await;
-            if let Err(error) = result {
-                log::debug!(
-                    "analytics: delivery unavailable ({})",
-                    error.status().map(|s| s.as_u16()).unwrap_or(0)
-                );
-            }
-        });
+        self.dispatch_to(DeliveryKind::Event, event, properties);
     }
 
-    /// Error Tracking's documented manual endpoint expects the installation
-    /// ID in `properties`, unlike the legacy `/capture/` event envelope.
-    /// Keeping this separate makes the unusual wire contract reviewable.
+    /// Error Tracking requires the installation ID inside `properties`.
     fn dispatch_exception(&self, event: &'static str, properties: Value) {
+        self.dispatch_to(DeliveryKind::Exception, event, properties);
+    }
+
+    fn dispatch_to(&self, kind: DeliveryKind, event: &'static str, properties: Value) {
         if !self.enabled() {
             return;
         }
-        let token = option_env!("VERENU_POSTHOG_PROJECT_TOKEN")
-            .unwrap_or("")
-            .to_owned();
+        let token = option_env!("VERENU_POSTHOG_PROJECT_TOKEN").unwrap_or("");
         let host = option_env!("VERENU_POSTHOG_HOST")
             .unwrap_or("https://us.i.posthog.com")
-            .trim_end_matches('/')
-            .to_owned();
+            .trim_end_matches('/');
         if token.is_empty() {
             return;
         }
@@ -983,14 +949,15 @@ impl Analytics {
             Value::Object(map) => map,
             _ => serde_json::Map::new(),
         };
-        let payload = error_tracking_payload(
-            &token,
+        let payload = kind.payload(
+            token,
             event,
             &distinct_id,
             add_common_properties(safe, &session_id, first_seen_version.as_deref()),
         );
         log::debug!(
-            "analytics: error tracking event queued name={} schema={}",
+            "{} event queued name={} schema={}",
+            kind.log_prefix(),
             event,
             SCHEMA_VERSION
         );
@@ -999,14 +966,16 @@ impl Analytics {
             if !enabled.load(Ordering::Acquire) {
                 return;
             }
-            let result = reqwest::Client::new()
-                .post(format!("{host}/i/v0/e/"))
+            let result = DELIVERY_CLIENT
+                .get_or_init(reqwest::Client::new)
+                .post(format!("{host}/{}", kind.endpoint()))
                 .json(&payload)
                 .send()
                 .await;
             if let Err(error) = result {
                 log::debug!(
-                    "analytics: error tracking delivery unavailable ({})",
+                    "{} delivery unavailable ({})",
+                    kind.log_prefix(),
                     error.status().map(|s| s.as_u16()).unwrap_or(0)
                 );
             }
@@ -1024,7 +993,10 @@ fn outbound_payload(token: &str, event: &str, distinct_id: &str, properties: Val
 }
 
 fn error_tracking_payload(token: &str, event: &str, distinct_id: &str, properties: Value) -> Value {
-    let mut properties = properties.as_object().cloned().unwrap_or_default();
+    let mut properties = match properties {
+        Value::Object(properties) => properties,
+        _ => serde_json::Map::new(),
+    };
     properties.insert("distinct_id".into(), json!(distinct_id));
     json!({ "token": token, "event": event, "properties": properties })
 }
@@ -1899,6 +1871,23 @@ fn is_official_version(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_routes_keep_distinct_wire_contracts() {
+        let properties = json!({ "schema_version": SCHEMA_VERSION });
+        let event = DeliveryKind::Event.payload("token", "event", "installation", properties.clone());
+        let exception = DeliveryKind::Exception.payload("token", "$exception", "installation", properties);
+        assert_eq!(DeliveryKind::Event.endpoint(), "capture/");
+        assert_eq!(DeliveryKind::Exception.endpoint(), "i/v0/e/");
+        assert_eq!(event["api_key"], "token");
+        assert_eq!(event["distinct_id"], "installation");
+        assert!(event["properties"].get("distinct_id").is_none());
+        assert_eq!(exception["token"], "token");
+        assert!(exception.get("distinct_id").is_none());
+        assert_eq!(exception["properties"]["distinct_id"], "installation");
+        assert_eq!(exception["properties"]["schema_version"], SCHEMA_VERSION);
+    }
+
     #[test]
     fn buckets_are_bounded() {
         assert_eq!(duration_bucket(4_000), "1-5s");
