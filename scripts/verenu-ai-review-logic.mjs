@@ -12,7 +12,8 @@ const FALLBACK_ERROR_PATTERNS = [
   /\b(?:not found|not available|unavailable|does not exist|unknown)\b.{0,60}\b(?:model|engine)\b/is,
   /\bno available (?:model|engine)\b/i,
 ];
-const SAFE_FAILURE_REASONS = new Set(["quota", "rate_limit", "model_unavailable", "preview_failed", "review_failed", "setup_failed", "provider_not_configured"]);
+const PROVIDER_FAILURE_REASONS = new Set(["quota", "rate_limit", "model_unavailable", "review_timeout"]);
+const SAFE_FAILURE_REASONS = new Set([...PROVIDER_FAILURE_REASONS, "preview_failed", "review_failed", "setup_failed", "provider_not_configured"]);
 
 export function normalizeReviewModel(model, defaultModel) {
   const configuredModel = String(model ?? "").trim();
@@ -65,13 +66,31 @@ export function fallbackReason(result) {
 }
 
 export function shouldFallback(result, currentModel, fallbackModel) {
-  return Boolean(fallbackModel && fallbackModel !== currentModel && fallbackReason(result));
+  return Boolean(fallbackModel && fallbackModel !== currentModel && PROVIDER_FAILURE_REASONS.has(failureCategory(result)));
 }
 
 export function failureCategory(result) {
   if (!result || result.code === 0) return null;
   if (result?.previewFailed) return "preview_failed";
-  return fallbackReason(result) || "review_failed";
+  if (result.timedOut) return "review_timeout";
+  // Review stdout can contain findings about quotas or HTTP 429. Only OCR's
+  // structured provider diagnostics can make an unsuccessful review optional.
+  return ["quota", "rate_limit", "model_unavailable"].includes(result.providerFailureReason)
+    ? result.providerFailureReason : "review_failed";
+}
+
+export function failureExitCode(result, findings = []) {
+  if (reviewOutcome(findings).hasFindings) return 1;
+  return PROVIDER_FAILURE_REASONS.has(failureCategory(result)) ? 0 : 1;
+}
+
+export function mergeReviewFindings(...attempts) {
+  const unique = new Map();
+  for (const finding of attempts.flat()) {
+    const key = JSON.stringify([finding.file, finding.line, finding.severity, finding.message]);
+    if (!unique.has(key)) unique.set(key, finding);
+  }
+  return [...unique.values()];
 }
 
 export function reviewOutcome(findings) {
@@ -94,7 +113,7 @@ export function formatProgressSummary({ stage, model, fallbackModel, reason, mod
     case "reviewing":
       return `🔍 Reviewing ${shaText}${modelText}...`;
     case "switching":
-      return `🔁 ${model ? `\`${model}\`` : "Primary model"} ${reason === "model_unavailable" ? "unavailable" : reason === "rate_limit" ? "rate-limited" : "quota unavailable"}, switching to ${fallbackModel ? `\`${fallbackModel}\`` : "the fallback model"}...`;
+      return `🔁 ${model ? `\`${model}\`` : "Primary model"} ${reason === "review_timeout" ? "timed out" : reason === "model_unavailable" ? "unavailable" : reason === "rate_limit" ? "rate-limited" : "quota unavailable"}, switching to ${fallbackModel ? `\`${fallbackModel}\`` : "the fallback model"}...`;
     case "complete":
       {
         const findingCount = Number.isFinite(Number(findings)) ? Number(findings) : 0;
@@ -106,6 +125,7 @@ export function formatProgressSummary({ stage, model, fallbackModel, reason, mod
         return `❌ Verenu AI review found ${findingCount} finding${findingCount === 1 ? "" : "s"}. Reviewed ${shaText}${modelText}.`;
       }
     case "failed":
+      if (PROVIDER_FAILURE_REASONS.has(reason)) return `⚠️ Verenu AI review unavailable (${reason}). CI remains nonblocking. An agent or human must review this commit; this is not a completed review.`;
       return `❌ Verenu AI review failed (${SAFE_FAILURE_REASONS.has(reason) ? reason : "review_failed"}).`;
     default:
       return `👀 Verenu AI review in progress${modelText}...`;

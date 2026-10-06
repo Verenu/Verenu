@@ -27,6 +27,7 @@ jobs:
       (github.event.comment.body == '/verenu-review' ||
       startsWith(github.event.comment.body, '/verenu-review ')))
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Trusted checkout only: this always resolves to a commit on the base
       # repository (the ref that triggered the workflow), never the PR fork.
