@@ -8,7 +8,7 @@ use tauri_plugin_shell::ShellExt;
 #[serde(rename_all = "camelCase")]
 pub enum InstallOutcome {
     // Linux returns after replacement; Windows exits and macOS opens a DMG.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(target_os = "linux")]
     Installed,
     DownloadOpened,
 }
@@ -474,6 +474,7 @@ mod tests {
 
     #[test]
     fn install_outcomes_serialize_as_frontend_contract_values() {
+        #[cfg(target_os = "linux")]
         assert_eq!(
             serde_json::to_value(InstallOutcome::Installed).unwrap(),
             "installed"
