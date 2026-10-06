@@ -228,7 +228,9 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
             .send()
             .await?;
         if latest.status() != reqwest::StatusCode::NOT_FOUND {
-            releases.push(latest.error_for_status()?.json().await?);
+            // Equal installer versions prefer the earlier list entry, so keep
+            // this authoritative fallback ahead of older paginated entries.
+            releases.insert(0, latest.error_for_status()?.json().await?);
         }
     }
     Ok(releases)
@@ -874,6 +876,21 @@ mod tests {
     }
 
     #[test]
+    fn compatible_release_prefers_latest_endpoint_on_equal_installer_versions() {
+        let mut latest = release("Verenu-0.20.0", "master");
+        latest.assets = vec![official_asset("verenu-0.20.0-2-x86_64.pkg.tar.zst")];
+        let mut older_page_entry = release("Verenu-0.20.0", "master");
+        older_page_entry.assets = vec![official_asset("verenu-0.20.0-1-x86_64.pkg.tar.zst")];
+        let releases = [latest, older_page_entry];
+
+        let (_, selected, _) =
+            select_compatible_release(&releases, UpdateChannel::Stable, UpdateTarget::LinuxArch)
+                .unwrap();
+
+        assert_eq!(selected.name, "verenu-0.20.0-2-x86_64.pkg.tar.zst");
+    }
+
+    #[test]
     fn checksum_manifest_requires_one_exact_valid_entry() {
         let hash = "a".repeat(64);
         let name = "Verenu_0.20.0_amd64.AppImage";
@@ -883,6 +900,11 @@ mod tests {
         );
         assert_eq!(
             checksum_for_asset(&format!("{hash} *{name}\r\n"), name),
+            Some(hash.clone())
+        );
+        let uppercase_hash = "A".repeat(64);
+        assert_eq!(
+            checksum_for_asset(&format!("{uppercase_hash}  {name}\n"), name),
             Some(hash.clone())
         );
         assert!(checksum_for_asset(&format!("{hash}  {name}.bad\n"), name).is_none());
