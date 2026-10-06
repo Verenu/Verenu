@@ -26,7 +26,7 @@ beforeEach(() => {
   transports.session = false;
   vi.stubGlobal('window', {});
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('IPC transport routing', () => {
   for (const mode of ['native', 'session', 'mock'] as const) {
@@ -76,5 +76,20 @@ describe('IPC transport routing', () => {
     const saved = invoke('save_setting', { key: 'default_tone', value: 'formal' });
     expect(transports.mockInvoke).toHaveBeenCalledWith('save_setting', { key: 'default_tone', value: 'formal' });
     await saved;
+  });
+
+  it('rejects mock transport in production while preserving native IPC', async () => {
+    vi.stubEnv('PROD', true);
+    vi.resetModules();
+    const production = await import('./tauri');
+    await expect(production.invoke('get_all_settings')).rejects.toThrow('Browser mock is unavailable');
+    await expect(production.listen('changed', vi.fn())).rejects.toThrow('Browser mock is unavailable');
+    await expect(production.emit('changed')).rejects.toThrow('Browser mock is unavailable');
+    expect(transports.mockInvoke).not.toHaveBeenCalled();
+    expect(transports.mockListen).not.toHaveBeenCalled();
+    expect(transports.mockEmit).not.toHaveBeenCalled();
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke: () => {} } });
+    transports.nativeInvoke.mockResolvedValue(42);
+    await expect(production.invoke('get_context', { id: 42 })).resolves.toBe(42);
   });
 });

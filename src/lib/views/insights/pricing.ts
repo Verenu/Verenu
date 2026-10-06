@@ -66,17 +66,32 @@ function shortModelId(model: string): string {
   return model.replace(/^.*\//, '');
 }
 
-function lookupOpenRouterRate(usage: InsightsProviderUsage, snapshot: PricingSnapshot | null): Rate | null {
-  if (usage.task === 'transcription' || !snapshot) return null;
+function indexRates(snapshot: PricingSnapshot | null) {
+  const exact = new Map<string, number>();
+  const short = new Map<string, number>();
+  snapshot?.rates.forEach((rate, i) => {
+    const id = normalizeModelId(rate.model_id);
+    if (!exact.has(id)) exact.set(id, i);
+    const name = shortModelId(id);
+    if (!short.has(name)) short.set(name, i);
+  });
+  return { rates: snapshot?.rates ?? [], exact, short };
+}
+
+type RateIndex = ReturnType<typeof indexRates>;
+
+function lookupOpenRouterRate(usage: InsightsProviderUsage, index: RateIndex): Rate | null {
+  if (usage.task === 'transcription') return null;
   const model = normalizeModelId(usage.model);
   const short = shortModelId(model);
   const provider = String(usage.provider ?? '').trim().toLowerCase();
-  const providerQualified = provider ? `${provider}/${short}` : null;
-  const exact = snapshot.rates.find((rate) => {
-    const id = normalizeModelId(rate.model_id);
-    return id === model || (providerQualified !== null && id === providerQualified);
-  });
-  const published = exact ?? snapshot.rates.find((rate) => shortModelId(normalizeModelId(rate.model_id)) === short);
+  // Either qualified ID can match. Preserve the catalog's first match even
+  // when both IDs are present, and only then fall back to the short name.
+  const first = Math.min(
+    index.exact.get(model) ?? Infinity,
+    (provider ? index.exact.get(`${provider}/${short}`) : undefined) ?? Infinity,
+  );
+  const published = index.rates[Number.isFinite(first) ? first : (index.short.get(short) ?? -1)];
   if (!published) return null;
   return {
     kind: 'token',
@@ -85,9 +100,9 @@ function lookupOpenRouterRate(usage: InsightsProviderUsage, snapshot: PricingSna
   };
 }
 
-function lookupRate(usage: InsightsProviderUsage, snapshot: PricingSnapshot | null): Rate | null {
+function lookupRate(usage: InsightsProviderUsage, index: RateIndex): Rate | null {
   const key = shortModelId(normalizeModelId(usage.model));
-  const openRouterRate = lookupOpenRouterRate(usage, snapshot);
+  const openRouterRate = lookupOpenRouterRate(usage, index);
   if (openRouterRate) return openRouterRate;
   // The backend writes tasks in lowercase, but normalize defensively so a
   // mixed-case or whitespace-padded value still matches the override keys.
@@ -96,8 +111,8 @@ function lookupRate(usage: InsightsProviderUsage, snapshot: PricingSnapshot | nu
 }
 
 /** Cost in USD for one model's usage, or null when the model has no known rate. */
-function modelCost(usage: InsightsProviderUsage, snapshot: PricingSnapshot | null): number | null {
-  const rate = lookupRate(usage, snapshot);
+function modelCost(usage: InsightsProviderUsage, index: RateIndex): number | null {
+  const rate = lookupRate(usage, index);
   if (!rate) return null;
   if (rate.kind === 'audio') {
     return (usage.audio_ms / 3_600_000) * rate.usd_per_hour;
@@ -121,7 +136,8 @@ export interface CostSummary {
 }
 
 export function estimateCost(providers: InsightsProviderUsage[], snapshot: PricingSnapshot | null = null): CostSummary {
-  const priced = providers.map((usage) => ({ usage, cost: modelCost(usage, snapshot) }));
+  const index = indexRates(providers.some((usage) => usage.task !== 'transcription') ? snapshot : null);
+  const priced = providers.map((usage) => ({ usage, cost: modelCost(usage, index) }));
   const total = priced.reduce((sum, p) => sum + (p.cost ?? 0), 0);
 
   const rows: CostRow[] = priced

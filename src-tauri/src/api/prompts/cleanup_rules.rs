@@ -1,4 +1,5 @@
 use super::count_words;
+use crate::api::cleanup::escape_transcript_xml as escape_markup;
 
 /// Layout permission varies by level; spoken commands and literal tokens are
 /// governed once by the shared contract before any changing request data.
@@ -90,13 +91,6 @@ pub(super) fn evidence_block(evidence: &str) -> String {
     }
 }
 
-fn escape_markup(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 pub(super) fn render_cleanup_template(
     template: &str,
     active_app: &str,
@@ -154,10 +148,13 @@ pub(super) fn render_cleanup_template(
 }
 
 pub(super) fn collapse_blank_lines(value: &str) -> String {
-    let value = value.replace("\r\n", "\n");
     let mut result = String::with_capacity(value.len());
     let mut newline_run = 0;
-    for character in value.chars() {
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\r' && characters.peek() == Some(&'\n') {
+            continue;
+        }
         if character == '\n' {
             newline_run += 1;
             if newline_run <= 2 {
@@ -168,7 +165,8 @@ pub(super) fn collapse_blank_lines(value: &str) -> String {
             result.push(character);
         }
     }
-    result.trim_end().to_string()
+    result.truncate(result.trim_end().len());
+    result
 }
 
 pub fn cleanup_max_output_tokens(intensity: &str, input_text: &str) -> u32 {

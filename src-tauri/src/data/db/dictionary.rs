@@ -140,7 +140,7 @@ fn query_dictionary_conn(
           ORDER BY created_at DESC"
     };
     let canonical_rows: Vec<(i64, LegacyDictionaryFields)> = conn
-        .prepare(canonical_sql)?
+        .prepare_cached(canonical_sql)?
         .query_map(params![context_id], |row| {
             Ok((
                 row.get(0)?,
@@ -170,24 +170,23 @@ fn query_dictionary_conn(
           WHERE ?1 IS NULL
           ORDER BY dictionary_id, context_id, id"
     };
-    let correction_rows = conn
-        .prepare(correction_sql)?
-        .query_map(params![context_id], |row| {
-            Ok(DictionaryCorrection {
-                id: row.get(0)?,
-                dictionary_id: row.get(1)?,
-                context_id: row.get(2)?,
-                mistake: row.get(3)?,
-                auto_learned: row.get::<_, i64>(4)? != 0,
-                correction_count: row.get(5)?,
-                confidence_tier: row.get(6)?,
-                last_seen_at: row.get(7)?,
-                created_at: row.get(8)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut correction_stmt = conn.prepare_cached(correction_sql)?;
+    let correction_rows = correction_stmt.query_map(params![context_id], |row| {
+        Ok(DictionaryCorrection {
+            id: row.get(0)?,
+            dictionary_id: row.get(1)?,
+            context_id: row.get(2)?,
+            mistake: row.get(3)?,
+            auto_learned: row.get::<_, i64>(4)? != 0,
+            correction_count: row.get(5)?,
+            confidence_tier: row.get(6)?,
+            last_seen_at: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
     let mut corrections_by_dictionary: HashMap<i64, Vec<DictionaryCorrection>> = HashMap::new();
     for correction in correction_rows {
+        let correction = correction?;
         corrections_by_dictionary
             .entry(correction.dictionary_id)
             .or_default()
@@ -257,8 +256,9 @@ fn materialize_dictionary_entry(
         .unwrap_or_else(|| "manual".to_string());
     let last_seen_at = corrections
         .iter()
-        .filter_map(|correction| correction.last_seen_at.clone())
-        .max();
+        .filter_map(|correction| correction.last_seen_at.as_ref())
+        .max()
+        .cloned();
 
     DictionaryEntry {
         id,
@@ -481,22 +481,22 @@ fn purge_auto_learn_evidence_for_pair_conn(
     context_id: i64,
     mistake: &str,
     term: &str,
-) -> Result<()> {
-    conn.execute(
+) -> Result<usize> {
+    let deleted = conn.execute(
         "DELETE FROM pending_corrections
            WHERE context_id = ?1
              AND lower(wrong_word) = lower(?2)
              AND lower(correct_word) = lower(?3)",
         params![context_id, mistake, term],
     )?;
-    conn.execute(
+    let candidates = conn.execute(
         "DELETE FROM auto_learn_candidates
            WHERE context_id = ?1
              AND lower(wrong_word) = lower(?2)
              AND lower(correct_word) = lower(?3)",
         params![context_id, mistake, term],
     )?;
-    Ok(())
+    Ok(deleted + candidates)
 }
 
 fn purge_auto_learn_evidence_for_term_conn(
@@ -1478,14 +1478,13 @@ pub fn get_auto_learn_status_summary(db: &Db) -> Result<AutoLearnStatusSummary> 
 
 pub fn get_recent_auto_learn_activity(db: &Db, limit: i64) -> Result<Vec<AutoLearnEvent>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT id, event_type, reason_code, context_id, app_context, mistake_hash, correction_hash, confidence, created_at
          FROM auto_learn_events
          ORDER BY created_at DESC
          LIMIT ?1",
-    )?;
-    let rows = stmt
-        .query_map(params![limit.max(1)], |r| {
+        params![limit.max(1)], |r| {
             Ok(AutoLearnEvent {
                 id: r.get(0)?,
                 event_type: r.get(1)?,
@@ -1497,9 +1496,8 @@ pub fn get_recent_auto_learn_activity(db: &Db, limit: i64) -> Result<Vec<AutoLea
                 confidence: r.get(7)?,
                 created_at: r.get(8)?,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1902,18 +1900,7 @@ fn purge_auto_learn_evidence_for_dictionary_conn(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut deleted = 0;
     for (mistake, term) in pairs {
-        deleted += conn.execute(
-            "DELETE FROM pending_corrections
-              WHERE context_id = ?1 AND lower(wrong_word) = lower(?2)
-                AND lower(correct_word) = lower(?3)",
-            params![context_id, mistake, term],
-        )?;
-        deleted += conn.execute(
-            "DELETE FROM auto_learn_candidates
-              WHERE context_id = ?1 AND lower(wrong_word) = lower(?2)
-                AND lower(correct_word) = lower(?3)",
-            params![context_id, mistake, term],
-        )?;
+        deleted += purge_auto_learn_evidence_for_pair_conn(conn, context_id, &mistake, &term)?;
     }
     Ok(deleted)
 }
@@ -1969,20 +1956,7 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
 
     for (context_id, mistake, term) in evidence {
         for variant in dictionary_mistake_variants(&mistake) {
-            tx.execute(
-                "DELETE FROM pending_corrections
-                   WHERE context_id = ?1
-                     AND lower(wrong_word) = lower(?2)
-                     AND lower(correct_word) = lower(?3)",
-                params![context_id, variant, term],
-            )?;
-            tx.execute(
-                "DELETE FROM auto_learn_candidates
-                   WHERE context_id = ?1
-                     AND lower(wrong_word) = lower(?2)
-                     AND lower(correct_word) = lower(?3)",
-                params![context_id, variant, term],
-            )?;
+            purge_auto_learn_evidence_for_pair_conn(&tx, context_id, variant, &term)?;
         }
     }
 
@@ -2032,16 +2006,7 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
     // clear every stale evidence row for this canonical term in the rejected
     // Context before removing its last assignment. This is intentionally
     // scoped: another Context may still have an independently learned pair.
-    conn.execute(
-        "DELETE FROM pending_corrections
-           WHERE context_id = ?1 AND lower(correct_word) = lower(?2)",
-        params![context_id, term],
-    )?;
-    conn.execute(
-        "DELETE FROM auto_learn_candidates
-           WHERE context_id = ?1 AND lower(correct_word) = lower(?2)",
-        params![context_id, term],
-    )?;
+    purge_auto_learn_evidence_for_term_conn(conn, context_id, &term)?;
     conn.execute(
         "DELETE FROM dictionary_contexts WHERE dictionary_id = ?1",
         params![dictionary_id],
@@ -2108,20 +2073,7 @@ pub fn delete_auto_learned_corrections_by_ids(
         // comma-separated representation here keeps cleanup correct for a
         // partially migrated database as well.
         for variant in dictionary_mistake_variants(&mistake) {
-            tx.execute(
-                "DELETE FROM pending_corrections
-                   WHERE context_id = ?1
-                     AND lower(wrong_word) = lower(?2)
-                     AND lower(correct_word) = lower(?3)",
-                params![context_id, variant, term],
-            )?;
-            tx.execute(
-                "DELETE FROM auto_learn_candidates
-                   WHERE context_id = ?1
-                     AND lower(wrong_word) = lower(?2)
-                     AND lower(correct_word) = lower(?3)",
-                params![context_id, variant, term],
-            )?;
+            purge_auto_learn_evidence_for_pair_conn(&tx, context_id, variant, &term)?;
         }
     }
     for dictionary_id in dictionary_ids {
@@ -2168,4 +2120,62 @@ pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
     drop(conn);
     delete_auto_learned_corrections_by_ids(db, everywhere_id, &mapping_ids)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+
+    #[test]
+    fn pair_purge_counts_both_tables_and_preserves_other_evidence() {
+        let db = open(":memory:").unwrap();
+        let conn = lock_conn(&db).unwrap();
+        conn.execute("INSERT INTO contexts (id, name) VALUES (2, 'Other')", [])
+            .unwrap();
+        for table in ["pending_corrections", "auto_learn_candidates"] {
+            for (context_id, mistake, term) in [
+                (1, "Wrong", "Term"),
+                (1, "WRONG", "TERM"),
+                (2, "wrong", "term"),
+                (1, "different", "term"),
+                (1, "wrong", "other"),
+            ] {
+                conn.execute(
+                    &format!("INSERT INTO {table} (context_id, wrong_word, correct_word) VALUES (?1, ?2, ?3)"),
+                    params![context_id, mistake, term],
+                ).unwrap();
+            }
+        }
+        assert_eq!(
+            purge_auto_learn_evidence_for_pair_conn(&conn, 1, "wrong", "term").unwrap(),
+            4
+        );
+        assert_eq!(
+            purge_auto_learn_evidence_for_pair_conn(&conn, 1, "wrong", "term").unwrap(),
+            0
+        );
+        for table in ["pending_corrections", "auto_learn_candidates"] {
+            let remaining = query_all(
+                &conn,
+                &format!("SELECT context_id, wrong_word, correct_word FROM {table} ORDER BY id"),
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                remaining,
+                vec![
+                    (2, "wrong".into(), "term".into()),
+                    (1, "different".into(), "term".into()),
+                    (1, "wrong".into(), "other".into()),
+                ]
+            );
+        }
+    }
 }

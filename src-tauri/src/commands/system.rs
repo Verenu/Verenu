@@ -153,10 +153,10 @@ pub async fn get_diagnostics_snapshot(
             snapshot.runtime.auto_learn = db::get_auto_learn_status_summary(&db)
                 .ok()
                 .and_then(|summary| serde_json::to_value(summary).ok());
-            snapshot.runtime.cleanup_cache = db::cleanup_cache_count(&db)
-                .ok()
-                .map(|entry_count| serde_json::json!({ "entry_count": entry_count,
-                    "session": crate::pipeline::cache::metrics() }));
+            snapshot.runtime.cleanup_cache = db::cleanup_cache_count(&db).ok().map(|entry_count| {
+                serde_json::json!({ "entry_count": entry_count,
+                    "session": crate::pipeline::cache::metrics() })
+            });
             snapshot.runtime.sync = db.lock().ok().and_then(|conn| {
                 let log_entries = conn
                     .query_row("SELECT COUNT(*) FROM sync_log", [], |row| {
@@ -226,13 +226,16 @@ fn collect_resource_sample_if_enabled() {
         return;
     }
     let started = std::time::Instant::now();
-    let memory_mb = crate::system::memory::measure();
     let mut sample = crate::system::diagnostics::ResourceSnapshot {
         observed_at_ms: 0,
-        resident_bytes: (memory_mb > 0).then_some(memory_mb.saturating_mul(1024 * 1024)),
         uptime_ms: Some(diagnostics_uptime_ms()),
         ..Default::default()
     };
+    #[cfg(not(target_os = "linux"))]
+    {
+        let memory_mb = crate::system::memory::measure();
+        sample.resident_bytes = (memory_mb > 0).then_some(memory_mb.saturating_mul(1024 * 1024));
+    }
 
     if let Some(gpu) = crate::system::memory::gpu_vram_statuses()
         .into_iter()
@@ -754,10 +757,7 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
                     use_open = true;
                 }
 
-                let escaped_target_path = target_path
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
+                let escaped_target_path = crate::api::cleanup::escape_transcript_xml(&target_path);
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                 let plist = if use_open {
                     format!(

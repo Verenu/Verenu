@@ -245,16 +245,16 @@ fn contains_eval_term(text: &str, term: &str) -> bool {
 
 fn contains_eval_term_normalized(text: &str, term: &str) -> bool {
     if term.chars().all(char::is_alphanumeric) {
-        let tokens = crate::system::text::tokenize_lower_alnum(&text);
-        if tokens.iter().any(|token| token == &term) {
+        let tokens = crate::system::text::tokenize_lower_alnum(text);
+        if tokens.iter().any(|token| token == term) {
             return true;
         }
-        if let Some(number) = spoken_number_alias(&term) {
+        if let Some(number) = spoken_number_alias(term) {
             return tokens.iter().any(|token| token == number);
         }
         return false;
     }
-    text.contains(&term)
+    text.contains(term)
 }
 
 fn fold_eval_diacritics(text: &str) -> String {

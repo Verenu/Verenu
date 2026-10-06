@@ -1,6 +1,14 @@
 /** Average words in a published novel — the unit behind "you've written N books". */
 const WORDS_PER_BOOK = 80_000;
 
+const subCentUsd = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumSignificantDigits: 2,
+  maximumSignificantDigits: 4,
+  useGrouping: false,
+});
+
 export function fmtNumber(n: number): string {
   return Math.round(n).toLocaleString();
 }
@@ -24,13 +32,7 @@ export function fmtUsd(n: number | null): string {
   // Keep sub-cent estimates visible. Significant digits avoid turning a tiny
   // but real API charge into either $0.00 or an unhelpful "under one cent".
   if (n > 0 && n < 0.01) {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumSignificantDigits: 2,
-      maximumSignificantDigits: 4,
-      useGrouping: false,
-    }).format(n);
+    return subCentUsd.format(n);
   }
   if (n < 0) {
     // Keep the minus before the dollar sign, and let a value that rounds to

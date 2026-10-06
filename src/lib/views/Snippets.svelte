@@ -25,20 +25,21 @@
     const timer = window.setTimeout(() => { debouncedSearch = currentSearch; }, 120);
     return () => window.clearTimeout(timer);
   });
-  const filtered = $derived.by(() => {
-    const q = debouncedSearch.toLowerCase();
-    let list = q
-      ? appStore.snippets.filter(s =>
-          s.trigger.toLowerCase().includes(q) || s.expansion.toLowerCase().includes(q)
-        )
-      : [...appStore.snippets];
-
+  const sorted = $derived.by(() => {
+    const list = [...appStore.snippets];
     if (sort === 'newest')    list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'oldest')    list.sort((a, b) => a.created_at.localeCompare(b.created_at));
     if (sort === 'alpha')     list.sort((a, b) => a.trigger.localeCompare(b.trigger));
     if (sort === 'most_used') list.sort((a, b) => b.use_count - a.use_count);
-
     return list;
+  });
+  const filtered = $derived.by(() => {
+    const q = debouncedSearch.toLowerCase();
+    return q
+      ? sorted.filter(s =>
+          s.trigger.toLowerCase().includes(q) || s.expansion.toLowerCase().includes(q)
+        )
+      : sorted;
   });
   const visibleFiltered = $derived(filtered.filter((snippet) => !leavingIds.has(snippet.id)));
 

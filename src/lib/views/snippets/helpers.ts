@@ -13,21 +13,7 @@ export const sortLabels: { key: SortKey; label: string }[] = [
   { key: 'most_used', label: 'Most used' },
 ];
 
-export function fmtDate(iso: string): string {
-  try {
-    const MS_PER_DAY = 86_400_000;
-    const d = new Date(/[Z+]/.test(iso) ? iso : iso + 'Z');
-    const diffDays = Math.floor((Date.now() - d.getTime()) / MS_PER_DAY);
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  } catch {
-    return iso.slice(0, 10);
-  }
-}
-
-export const countCodePoints = (value: string): number => [...value].length;
+export { fmtDate, countCodePoints } from '../sharedListHelpers';
 
 export function normalizeText(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
