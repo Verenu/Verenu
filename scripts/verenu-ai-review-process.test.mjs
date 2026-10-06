@@ -7,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { ChildProcess } from "node:child_process";
 import { runReviewProcess } from "./verenu-ai-review-process.mjs";
 import { failureExitCode } from "./verenu-ai-review-logic.mjs";
+import { readPersistedFindings } from "./verenu-ai-review-session.mjs";
 
 test("stops hung OCR on a hidden structured quota error before internal retries finish", async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), "verenu-review-process-test-"));
@@ -16,7 +17,8 @@ test("stops hung OCR on a hidden structured quota error before internal retries 
     const path = require('node:path');
     const dir = path.join(process.argv[1], '.opencodereview', 'sessions', 'repo');
     fs.mkdirSync(dir, {recursive:true});
-    fs.writeFileSync(path.join(dir, 'session.jsonl'), JSON.stringify({type:'llm_error', error:'RESOURCE_EXHAUSTED: private detail'}) + '\\n');
+    const finding = {type:'llm_response', taskType:'main_task', filePath:'example.mjs', tool_calls:[{name:'code_comment', arguments:JSON.stringify({comments:[{content:'Actionable bug'}]})}]};
+    fs.writeFileSync(path.join(dir, 'session.jsonl'), JSON.stringify(finding) + '\\n' + JSON.stringify({type:'llm_error', error:'RESOURCE_EXHAUSTED: private detail'}) + '\\n');
     process.on('SIGTERM', () => {});
     setInterval(() => {}, 1000);
   `;
@@ -30,6 +32,10 @@ test("stops hung OCR on a hidden structured quota error before internal retries 
   assert.equal(failureExitCode(result), 0);
   assert.ok(performance.now() - started < 5000);
   assert.doesNotMatch(JSON.stringify(result), /private detail/);
+  assert.equal(result.stdout, "");
+  const recovered = await readPersistedFindings(home);
+  assert.equal(recovered[0].message, "Actionable bug");
+  assert.equal(failureExitCode(result, recovered), 1);
 });
 
 test("deadline stops a silent hung provider and remains nonblocking", async () => {
