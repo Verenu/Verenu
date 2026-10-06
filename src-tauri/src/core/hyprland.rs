@@ -730,24 +730,6 @@ pub(crate) fn active_window() -> Option<()> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     #[test]
-    #[ignore = "requires this user's Hyprland command socket and hyprctl"]
-    fn native_socket_queries_read_monitors_without_process_launches() {
-        let start = std::time::Instant::now();
-        for _ in 0..20 {
-            let bytes = super::socket_request("j/monitors").expect("Hyprland socket unavailable").unwrap();
-            assert!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap().is_array());
-        }
-        let direct = start.elapsed();
-        let start = std::time::Instant::now();
-        for _ in 0..20 {
-            let output = std::process::Command::new("hyprctl").args(["-j", "monitors"]).output().unwrap();
-            assert!(output.status.success());
-            assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap().is_array());
-        }
-        eprintln!("Hyprland monitors, 20 requests: socket={direct:?}, hyprctl={:?}", start.elapsed());
-    }
-
-    #[test]
     fn socket_exchange_sends_exact_command_and_reads_all_response_fragments() {
         use std::io::{Read, Write};
         let (client, mut compositor) = std::os::unix::net::UnixStream::pair().unwrap();
