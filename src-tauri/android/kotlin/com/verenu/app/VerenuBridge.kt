@@ -49,8 +49,10 @@ data class BridgeStateSnapshot(
     val pendingInsertion: BridgePendingInsertion?,
     val targetPackage: String,
     val analyticsEnabled: Boolean,
-    val pillPosition: String = "keyboard-center",
-    val coverKeyboardMic: Boolean = false,
+    val pillPosition: String = VerenuPillPlacement.DEFAULT_POSITION,
+    val pillDockPosition: String = VerenuPillPlacement.DEFAULT_DOCK_POSITION,
+    // On by default, like the Rust setting: the pill sits over the keyboard's mic key.
+    val coverKeyboardMic: Boolean = true,
     val hidePillOffline: Boolean = true,
     val appearanceMode: String = "system",
 )
@@ -161,8 +163,9 @@ class VerenuBridge(appContext: Context) {
             },
             targetPackage = json.optString("targetPackage", ""),
             analyticsEnabled = json.optBoolean("analyticsEnabled", true),
-            pillPosition = json.optString("pillPosition", "keyboard-center"),
-            coverKeyboardMic = json.optBoolean("coverKeyboardMic", false),
+            pillPosition = VerenuPillPlacement.sanitizePosition(json.optString("pillPosition")),
+            pillDockPosition = VerenuPillPlacement.sanitizeDockPosition(json.optString("pillDockPosition")),
+            coverKeyboardMic = json.optBoolean("coverKeyboardMic", true),
             hidePillOffline = json.optBoolean("hidePillOffline", true),
             appearanceMode = json.optString("appearanceMode", "system"),
             overlay = BridgeOverlay(
@@ -177,6 +180,17 @@ class VerenuBridge(appContext: Context) {
             ) else null,
         )
     }
+
+    /**
+     * Saves where a drag left the pill (the same setting Settings edits).
+     * `target` is [VerenuPillPlacement.TARGET_POSITION] or [VerenuPillPlacement.TARGET_DOCK].
+     */
+    fun savePillPosition(target: String, position: String): Boolean =
+        request(
+            "POST",
+            "/v1/pill/position",
+            JSONObject().put("target", target).put("value", position),
+        )?.optBoolean("ok") == true
 
     /** Reports IME + focus; returns the overlay decision (visible/state). */
     fun postFocus(keyboardVisible: Boolean, hasEditableFocus: Boolean): JSONObject? =

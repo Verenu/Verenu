@@ -57,6 +57,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         private const val IME_SETTLE_MS = 40L
         private const val CONTEXT_CHARS = 200
         private const val SNOOZE_MS = 15L * 60_000L
+        private const val PLACEMENT_SYNC_MAX_AGE_MS = 750L
+        private const val PLACEMENT_PREFS = "verenu_pill_placement"
+        private const val PREF_POSITION = "position"
+        private const val PREF_DOCK_POSITION = "dock_position"
+        private const val PREF_COVER_MIC = "cover_keyboard_mic"
         /** Address-bar view ids per browser package (resource names, no package prefix). */
         private val BROWSER_URL_BAR_IDS = mapOf(
             "com.android.chrome" to listOf("url_bar"),
@@ -164,9 +169,18 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     @Volatile private var lastBackendLaunchMs = 0L
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayMoveAnimator: ValueAnimator? = null
-    @Volatile private var pillPosition = "keyboard-center"
-    @Volatile private var coverKeyboardMic = false
+    private var gliding = false
+    // Placement settings. Seeded from the last values the backend reported (see
+    // loadPlacementPrefs) so a restart, or a backend that is not up yet, never
+    // shows the pill somewhere the user did not choose.
+    @Volatile private var pillPosition = VerenuPillPlacement.DEFAULT_POSITION
+    @Volatile private var pillDockPosition = VerenuPillPlacement.DEFAULT_DOCK_POSITION
+    @Volatile private var coverKeyboardMic = true
     @Volatile private var hidePillOffline = true
+    // A drag saves its snap to the backend; until that lands, a poll would
+    // report the old value and bounce the pill back.
+    private val pendingPlacementSaves = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var lastPlacementSyncMs = 0L
     private var coverBounds: android.graphics.Rect? = null
     private var lastCoverState = ""
     private var coverSizePx = 0
@@ -189,6 +203,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         bridge = VerenuBridge(this)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         deviceLocked = isDeviceLocked()
+        loadPlacementPrefs()
         try {
             keystore = VerenuKeystore(this)
         } catch (e: Exception) {
@@ -472,6 +487,72 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (!visible) hasEditableFocus = false
         runOnBridge { bridge.postFocus(visible, hasEditableFocus) }
         refreshOverlayVisibility()
+        // The pill is about to be placed from the settings as last polled, and an
+        // idle poll can be seconds old: pick up a change made in Verenu meanwhile.
+        if (visible) refreshPlacementSettings()
+    }
+
+    /**
+     * Take the placement and look settings from the backend's state. Skipped
+     * for the placement while a dragged snap is still being saved, because the
+     * backend would still report the position the pill was just moved from.
+     */
+    private fun applyPlacementSettings(snapshot: BridgeStateSnapshot) {
+        lastPlacementSyncMs = SystemClock.elapsedRealtime()
+        val placementChanged = pendingPlacementSaves.get() == 0 &&
+            (snapshot.pillPosition != pillPosition ||
+                snapshot.pillDockPosition != pillDockPosition ||
+                snapshot.coverKeyboardMic != coverKeyboardMic)
+        if (!placementChanged &&
+            snapshot.appearanceMode == appearanceMode &&
+            snapshot.hidePillOffline == hidePillOffline
+        ) {
+            return
+        }
+        if (placementChanged) {
+            coverKeyboardMic = snapshot.coverKeyboardMic
+            pillPosition = snapshot.pillPosition
+            pillDockPosition = snapshot.pillDockPosition
+            savePlacementPrefs()
+        }
+        hidePillOffline = snapshot.hidePillOffline
+        appearanceMode = snapshot.appearanceMode
+        mainHandler.post {
+            refreshOverlayVisibility()
+            applyOverlayPresentation()
+        }
+    }
+
+    private fun refreshPlacementSettings() {
+        if (SystemClock.elapsedRealtime() - lastPlacementSyncMs < PLACEMENT_SYNC_MAX_AGE_MS) return
+        runOnBridge { bridge.getState()?.let { applyPlacementSettings(it) } }
+    }
+
+    private fun placementPrefs() = getSharedPreferences(PLACEMENT_PREFS, Context.MODE_PRIVATE)
+
+    /** Start from the placement the backend last reported, not from hardcoded defaults. */
+    private fun loadPlacementPrefs() {
+        try {
+            val prefs = placementPrefs()
+            pillPosition = VerenuPillPlacement.sanitizePosition(prefs.getString(PREF_POSITION, null))
+            pillDockPosition = VerenuPillPlacement.sanitizeDockPosition(prefs.getString(PREF_DOCK_POSITION, null))
+            coverKeyboardMic = prefs.getBoolean(PREF_COVER_MIC, true)
+        } catch (e: Exception) {
+            // Credential-protected storage can be unavailable before first unlock.
+            Log.w(TAG, "placement prefs unavailable", e)
+        }
+    }
+
+    private fun savePlacementPrefs() {
+        try {
+            placementPrefs().edit()
+                .putString(PREF_POSITION, pillPosition)
+                .putString(PREF_DOCK_POSITION, pillDockPosition)
+                .putBoolean(PREF_COVER_MIC, coverKeyboardMic)
+                .apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "placement prefs not saved", e)
+        }
     }
 
     /**
@@ -674,25 +755,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val docked = isDocked()
         val imeTop = if (keyboardVisible) imeTopPx() else null
         val screenWidth = realScreenWidthPx()
-        val cutout = cutoutRect()
         val imeBounds = if (keyboardVisible) imeBoundsPx() else null
-
-        fun top(offset: Int = 0) {
-            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            params.x = offset
-            params.y = statusBarHeightPx() + (8 * density).toInt()
-        }
-
-        fun underPunchHole() {
-            if (cutout != null) {
-                params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                // Offset from center so the pill sits under an off-center camera.
-                params.x = cutout.centerX() - screenWidth / 2
-                params.y = cutout.bottom + (4 * density).toInt()
-            } else {
-                top()
-            }
-        }
 
         val cover = coverBounds
         when {
@@ -708,19 +771,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 // Centre whatever state is showing on the key's row: the idle disc
                 // is the key's size, the other states are shorter or taller.
                 val viewHeight = overlay?.height?.takeIf { it > 0 } ?: (size + 2 * pad)
-                params.gravity = Gravity.TOP or Gravity.END
+                params.gravity = Gravity.TOP or Gravity.RIGHT
                 params.x = (screenWidth - right - pad).coerceAtLeast(0)
                 params.y = (cover.centerY() - viewHeight / 2).coerceAtLeast(imeTopEdge - pad).coerceAtLeast(0)
             }
-            // Docked while the keyboard is away: out of the way, at the top.
-            docked && followsKeyboard() -> underPunchHole()
-            pillPosition == "screen-top" -> top()
-            pillPosition == "screen-middle" -> {
-                params.gravity = Gravity.CENTER
-                params.x = 0
-                params.y = 0
-            }
-            pillPosition == "punch-hole" -> underPunchHole()
+            // Docked while the keyboard is away: its own resting place.
+            docked && followsKeyboard() -> placeOnScreen(params, pillDockPosition)
+            // A screen placement ignores the keyboard altogether.
+            !followsKeyboard() -> placeOnScreen(params, pillPosition)
             imeTop != null -> {
                 val above = (realScreenHeightPx() - imeTop + (8 * density).toInt()).coerceAtLeast(0)
                 params.y = above
@@ -731,11 +789,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val right = (imeBounds?.right ?: screenWidth).coerceIn(left, screenWidth)
                 when (pillPosition) {
                     "keyboard-left" -> {
-                        params.gravity = Gravity.BOTTOM or Gravity.START
+                        params.gravity = Gravity.BOTTOM or Gravity.LEFT
                         params.x = left + margin
                     }
                     "keyboard-right" -> {
-                        params.gravity = Gravity.BOTTOM or Gravity.END
+                        params.gravity = Gravity.BOTTOM or Gravity.RIGHT
                         params.x = screenWidth - right + margin
                     }
                     else -> {
@@ -744,8 +802,57 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     }
                 }
             }
-            else -> underPunchHole()
+            else -> placeOnScreen(params, pillDockPosition)
         }
+    }
+
+    /** Gravity/offsets for a screen-anchored placement (see VerenuPillPlacement). */
+    private fun placeOnScreen(params: WindowManager.LayoutParams, position: String) {
+        val density = resources.displayMetrics.density
+        val margin = (12 * density).toInt()
+        val top = statusBarHeightPx() + (8 * density).toInt()
+        val bottom = navigationBarHeightPx() + margin
+        when (position) {
+            "punch-hole" -> {
+                val cutout = cutoutRect()
+                if (cutout != null) {
+                    params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    // Offset from center so the pill sits under an off-center camera.
+                    params.x = cutout.centerX() - realScreenWidthPx() / 2
+                    params.y = cutout.bottom + (4 * density).toInt()
+                } else {
+                    placeOnScreen(params, "screen-top")
+                }
+            }
+            "screen-top-left" -> edgePlacement(params, Gravity.TOP or Gravity.LEFT, margin, top)
+            "screen-top" -> edgePlacement(params, Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, top)
+            "screen-top-right" -> edgePlacement(params, Gravity.TOP or Gravity.RIGHT, margin, top)
+            "screen-left" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.LEFT, margin, 0)
+            "screen-middle" -> edgePlacement(params, Gravity.CENTER, 0, 0)
+            "screen-right" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.RIGHT, margin, 0)
+            "screen-bottom-left" -> edgePlacement(params, Gravity.BOTTOM or Gravity.LEFT, margin, bottom)
+            "screen-bottom-right" -> edgePlacement(params, Gravity.BOTTOM or Gravity.RIGHT, margin, bottom)
+            else -> edgePlacement(params, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, bottom)
+        }
+    }
+
+    private fun edgePlacement(params: WindowManager.LayoutParams, gravity: Int, x: Int, y: Int) {
+        params.gravity = gravity
+        params.x = x
+        params.y = y
+    }
+
+    /** Height of the navigation/gesture bar the pill must stay clear of. */
+    private fun navigationBarHeightPx(): Int = try {
+        if (Build.VERSION.SDK_INT >= 30) {
+            windowManager.currentWindowMetrics.windowInsets
+                .getInsetsIgnoringVisibility(android.view.WindowInsets.Type.navigationBars()).bottom
+        } else {
+            val id = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+            if (id != 0) resources.getDimensionPixelSize(id) else 0
+        }
+    } catch (e: Exception) {
+        0
     }
 
     /** Push theme/compact state into the view and glide it to its placement. */
@@ -905,7 +1012,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     /** Keep the pill glued to its anchor, easing between positions. */
     private fun repositionOverlay() {
-        if (dragging) return
+        // A finger or the glide that follows it owns the position meanwhile.
+        if (dragging || gliding) return
         val view = overlay ?: return
         val params = overlayParams ?: return
         val fromY = params.y
@@ -1165,14 +1273,15 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (overlayAttached.not()) return
         dragging = true
         overlayMoveAnimator?.cancel()
-        showSnoozeTarget()
+        // Hiding the pill makes no sense in the middle of a dictation.
+        if (!isDictationActive()) showSnoozeTarget()
     }
 
     override fun onPillDragMove(rawX: Int, rawY: Int) {
         if (!dragging) return
         val view = overlay ?: return
         val params = overlayParams ?: return
-        params.gravity = Gravity.TOP or Gravity.START
+        params.gravity = Gravity.TOP or Gravity.LEFT
         params.x = rawX - view.width / 2
         params.y = rawY - view.height / 2
         applyLayout(view, params)
@@ -1187,15 +1296,131 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     override fun onPillDragEnd(rawX: Int, rawY: Int) {
         if (!dragging) return
         val inside = isOverSnoozeTarget(rawX, rawY)
-        dragging = false
         hideSnoozeTarget()
         if (inside) {
+            dragging = false
             snoozeFor(SNOOZE_MS)
-        } else {
-            // Not dropped on the target: glide back to where it belongs.
-            applyOverlayPresentation()
+            return
+        }
+        // Not dropped on the hide target: snap to the nearest place the
+        // settings know about and remember it, or glide back if it is fixed.
+        val snap = VerenuPillPlacement.snapFor(rawX, rawY, dropContext())
+        val unchanged = snap == null || snap.position == placementFor(snap.target)
+        if (snap != null && !unchanged) adoptSnap(snap)
+        glideFromDrag()
+        dragging = false
+    }
+
+    private fun placementFor(target: String) =
+        if (target == VerenuPillPlacement.TARGET_DOCK) pillDockPosition else pillPosition
+
+    private fun dropContext(): VerenuPillPlacement.DropContext {
+        val ime = if (keyboardVisible) imeBoundsPx() else null
+        return VerenuPillPlacement.DropContext(
+            screenWidth = realScreenWidthPx(),
+            screenHeight = realScreenHeightPx(),
+            docked = isDocked(),
+            position = pillPosition,
+            coveringKeyboardMic = coverBounds != null,
+            keyboardLeft = ime?.left,
+            keyboardTop = ime?.top,
+            keyboardRight = ime?.right,
+            keyboardReach = (96 * resources.displayMetrics.density).toInt(),
+        )
+    }
+
+    /** Make a dropped snap the new placement and save it where Settings reads it. */
+    private fun adoptSnap(snap: VerenuPillPlacement.Snap) {
+        val previous = placementFor(snap.target)
+        setPlacement(snap.target, snap.position)
+        Toast.makeText(this, "Pill moved: ${VerenuPillPlacement.label(snap.position)}", Toast.LENGTH_SHORT).show()
+        val handler = requester ?: return
+        pendingPlacementSaves.incrementAndGet()
+        handler.post {
+            var saved = false
+            try {
+                saved = bridge.savePillPosition(snap.target, snap.position)
+            } catch (e: Exception) {
+                Log.w(TAG, "pill position save failed", e)
+            } finally {
+                pendingPlacementSaves.decrementAndGet()
+            }
+            if (!saved) {
+                mainHandler.post {
+                    // Put it back unless something newer has already replaced it.
+                    if (placementFor(snap.target) == snap.position) setPlacement(snap.target, previous)
+                    Toast.makeText(this, "Couldn't save the pill position", Toast.LENGTH_SHORT).show()
+                    if (overlayAttached) repositionOverlay()
+                }
+            }
         }
     }
+
+    private fun setPlacement(target: String, position: String) {
+        if (target == VerenuPillPlacement.TARGET_DOCK) pillDockPosition = position else pillPosition = position
+        savePlacementPrefs()
+    }
+
+    /**
+     * After a drag, ease from where the finger left the pill to its placement.
+     * The drag positions the window from the top-left corner while placements
+     * use gravity, so both ends are resolved to that corner to animate between.
+     */
+    private fun glideFromDrag() {
+        val view = overlay ?: return
+        val params = overlayParams ?: return
+        val screenWidth = realScreenWidthPx()
+        val screenHeight = realScreenHeightPx()
+        val width = view.width
+        val height = view.height
+        // A hold released without moving never went through onPillDragMove, so the
+        // params may still be gravity-relative: resolve where the view really is.
+        val fromX = absoluteLeft(params, width, screenWidth)
+        val fromY = absoluteTop(params, height, screenHeight)
+        val target = WindowManager.LayoutParams()
+        target.copyFrom(params)
+        dragging = false
+        placeOverlay(target)
+        val toX = absoluteLeft(target, width, screenWidth)
+        val toY = absoluteTop(target, height, screenHeight)
+        overlayMoveAnimator?.cancel()
+        gliding = true
+        overlayMoveAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 160
+            addUpdateListener {
+                val f = it.animatedValue as Float
+                params.gravity = Gravity.TOP or Gravity.LEFT
+                params.x = (fromX + (toX - fromX) * f).toInt()
+                params.y = (fromY + (toY - fromY) * f).toInt()
+                applyLayout(view, params)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    gliding = false
+                    // Hand back to gravity-based placement (it tracks the keyboard).
+                    if (!dragging && overlay === view) {
+                        placeOverlay(params)
+                        applyLayout(view, params)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun absoluteLeft(params: WindowManager.LayoutParams, width: Int, screenWidth: Int): Int =
+        when (params.gravity and Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK) {
+            Gravity.START, Gravity.LEFT -> params.x
+            Gravity.END, Gravity.RIGHT -> screenWidth - width - params.x
+            else -> (screenWidth - width) / 2 + params.x
+        }
+
+    private fun absoluteTop(params: WindowManager.LayoutParams, height: Int, screenHeight: Int): Int =
+        when (params.gravity and Gravity.VERTICAL_GRAVITY_MASK) {
+            Gravity.TOP -> params.y
+            Gravity.BOTTOM -> screenHeight - height - params.y
+            else -> (screenHeight - height) / 2 + params.y
+        }
 
     private fun snoozeFor(durationMs: Long) {
         snoozedUntilMs = SystemClock.elapsedRealtime() + durationMs
@@ -1801,20 +2026,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun onBridgeState(snapshot: BridgeStateSnapshot) {
         VerenuAnalytics.setEnabled(snapshot.analyticsEnabled)
-        if (snapshot.pillPosition != pillPosition ||
-            snapshot.appearanceMode != appearanceMode ||
-            snapshot.coverKeyboardMic != coverKeyboardMic ||
-            snapshot.hidePillOffline != hidePillOffline
-        ) {
-            coverKeyboardMic = snapshot.coverKeyboardMic
-            hidePillOffline = snapshot.hidePillOffline
-            pillPosition = snapshot.pillPosition
-            appearanceMode = snapshot.appearanceMode
-            mainHandler.post {
-                refreshOverlayVisibility()
-                applyOverlayPresentation()
-            }
-        }
+        applyPlacementSettings(snapshot)
         // Staged Keystore rotation → persist, then confirm by re-pushing.
         if (snapshot.keystorePending) {
             try {

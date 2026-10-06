@@ -455,7 +455,7 @@ pub async fn cancel_recording_with_resume(
 
     let active_gain = store::settings_snapshot(app)
         .map(|s| store::load_audio_config(&s).mic_gain)
-        .unwrap_or(store::DEFAULT_MIC_GAIN);
+        .unwrap_or(store::default_mic_gain());
 
     if let Some(previous) = prepend_audio {
         match super::merge_prepend_audio(previous, captured_audio, active_gain) {

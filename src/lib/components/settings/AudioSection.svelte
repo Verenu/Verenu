@@ -6,7 +6,7 @@
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
   import { saveSetting } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
-  import { shouldPersistMicGain } from './audioGain';
+  import { defaultMicGain, shouldPersistMicGain } from './audioGain';
 
   let noiseReduction = $state(true);
   let muteAudio = $state(false);
@@ -14,7 +14,7 @@
   let pauseMediaDuringDictation = $state(false);
   let micMuteButtonDictation = $state(false);
   let soundEffectsVolume = $state(100);
-  let micGain = $state(3.5);
+  let micGain = $state(defaultMicGain(isAndroid));
   let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSavedMicGain: number | null = null;
   let micGainChangedByUser = false;

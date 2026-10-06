@@ -73,7 +73,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         fun onPillDismiss()
         /** The pill's height changed (e.g. a one-line state became a two-line one). */
         fun onPillResized() {}
-        /** Long-press on the idle pill: it can now be dragged (raw screen px). */
+        /** Long-press on the idle or recording pill: it can now be dragged (raw screen px). */
         fun onPillDragStart()
         fun onPillDragMove(rawX: Int, rawY: Int)
         fun onPillDragEnd(rawX: Int, rawY: Int)
@@ -116,7 +116,9 @@ class VerenuOverlayView @JvmOverloads constructor(
     private var downRawX = 0f
     private var downRawY = 0f
     private val longPress = Runnable {
-        if (state == State.IDLE) {
+        // Recording too: a dictation can outlive the keyboard, and that is when
+        // the pill needs moving. Tapping still stops it; only a hold drags.
+        if (state == State.IDLE || state == State.RECORDING) {
             dragging = true
             suppressClick = true
             pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
