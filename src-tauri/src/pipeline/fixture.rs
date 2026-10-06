@@ -163,6 +163,7 @@ pub async fn run_pipeline_fixture(
             None,
             None,
             0,
+            None,
         )
         .await?;
     let apply_caps_lock_upper = request.config.caps_lock_uppercase_enabled && request.caps_lock_on;
