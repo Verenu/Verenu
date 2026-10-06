@@ -114,7 +114,7 @@ pub(super) fn record_candidate(
     confidence: f64,
 ) -> bool {
     let key = candidate_session_key(context, &mistake, &correction);
-    if recorded_this_session.contains(&key) {
+    if !recorded_this_session.insert(key) {
         log_context_event(
             db,
             context,
@@ -126,19 +126,21 @@ pub(super) fn record_candidate(
         );
         return false;
     }
-    recorded_this_session.insert(key);
     let (mistake_hash, correction_hash) = pair_hash(&mistake, &correction);
-
-    if confidence < MIN_CANDIDATE_CONFIDENCE {
+    let log_event = |event_type, reason_code| {
         log_context_event(
             db,
             context,
-            "candidate",
-            "low_confidence",
+            event_type,
+            reason_code,
             &mistake_hash,
             &correction_hash,
             confidence,
         );
+    };
+
+    if confidence < MIN_CANDIDATE_CONFIDENCE {
+        log_event("candidate", "low_confidence");
         return false;
     }
 
@@ -152,15 +154,7 @@ pub(super) fn record_candidate(
         Ok(confidence_avg) => confidence_avg,
         Err(e) => {
             log::warn!("auto-learn candidate upsert failed: {e}");
-            log_context_event(
-                db,
-                context,
-                "candidate",
-                "candidate_upsert_failed",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("candidate", "candidate_upsert_failed");
             return false;
         }
     };
@@ -195,68 +189,28 @@ pub(super) fn record_candidate(
         threshold,
     ) {
         Ok(db::AutoLearnPromoteResult::Promoted) => {
-            log_context_event(
-                db,
-                context,
-                "promotion",
-                "promoted",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("promotion", "promoted");
             true
         }
         Ok(db::AutoLearnPromoteResult::BelowThreshold { .. }) => {
-            log_context_event(
-                db,
-                context,
-                "candidate",
-                "below_threshold",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("candidate", "below_threshold");
             false
         }
         Ok(db::AutoLearnPromoteResult::Blocked) => {
             log::debug!("auto-learn: promotion skipped because a manual dictionary entry exists");
-            log_context_event(
-                db,
-                context,
-                "promotion",
-                "promotion_skipped",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("promotion", "promotion_skipped");
             false
         }
         Ok(db::AutoLearnPromoteResult::AlreadyPromoted) => {
             log::debug!(
                 "auto-learn: promotion skipped \u{2014} a concurrent monitor or rejection already claimed this pair"
             );
-            log_context_event(
-                db,
-                context,
-                "promotion",
-                "promotion_skipped",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("promotion", "promotion_skipped");
             false
         }
         Err(e) => {
             log::warn!("auto-learn dictionary promotion failed: {e}");
-            log_context_event(
-                db,
-                context,
-                "promotion",
-                "promotion_failed",
-                &mistake_hash,
-                &correction_hash,
-                confidence,
-            );
+            log_event("promotion", "promotion_failed");
             false
         }
     }

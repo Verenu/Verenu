@@ -255,22 +255,9 @@ async fn transcribe_gemini_dedicated(
         request_id,
         request_started.elapsed().as_millis()
     );
-    let resp = match super::ensure_provider_success(resp, "Google", Some(("Google", model))).await {
-        Ok(resp) => resp,
-        Err(super::ProviderHttpError::Quota(e)) => return Err(e),
-        Err(super::ProviderHttpError::Auth { error, .. }) => return Err(error),
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            return Err(anyhow::Error::new(source).context(format!(
-                "Gemini Transcribe error status={} request_id={} body_preview={}",
-                status, request_id, preview
-            )))
-        }
-    };
+    let resp = super::ensure_provider_success(resp, "Google", Some(("Google", model)))
+        .await
+        .map_err(|error| error.into_error(None, "", "Gemini Transcribe error"))?;
     let body: serde_json::Value = resp.json().await?;
     parse_gemini_interaction_text(&body)
         .ok_or_else(|| anyhow::anyhow!("Gemini Transcribe returned no transcript"))
@@ -342,45 +329,15 @@ async fn transcribe_gemini_with_prompt(
         request_id,
         request_started.elapsed().as_millis()
     );
-    let resp = match super::ensure_provider_success(resp, "Google", Some(("Google", model))).await {
-        Ok(resp) => resp,
-        Err(super::ProviderHttpError::Quota(e)) => return Err(e),
-        Err(super::ProviderHttpError::Auth {
-            error,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "transcription: gemini unauthorized gen={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(error);
-        }
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "transcription: gemini non_success gen={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(anyhow::Error::new(source).context(format!(
-                "Gemini error status={} request_id={} body_preview={}",
-                status, request_id, preview
-            )));
-        }
-    };
+    let resp = super::ensure_provider_success(resp, "Google", Some(("Google", model)))
+        .await
+        .map_err(|error| {
+            error.into_error(
+                Some((module_path!(), "transcription: gemini")),
+                &format!("gen={gen} model={model}"),
+                "Gemini error",
+            )
+        })?;
 
     let raw_body = resp.text().await?;
     let data: GeminiResp =
@@ -478,43 +435,16 @@ async fn transcribe_assemblyai(
         result: Result<reqwest::Response, super::ProviderHttpError>,
         stage: &str,
     ) -> Result<reqwest::Response> {
-        match result {
-            Ok(resp) => Ok(resp),
-            Err(super::ProviderHttpError::Quota(e)) => Err(e),
-            Err(super::ProviderHttpError::Auth {
-                error,
-                status,
-                request_id,
-                preview,
-            }) => {
-                log::warn!(
-                    "transcription: assemblyai {stage} unauthorized gen={} status={} request_id={} body_preview=\"{}\"",
-                    gen,
-                    status,
-                    request_id,
-                    preview
-                );
-                Err(error)
-            }
-            Err(super::ProviderHttpError::NonSuccess {
-                source,
-                status,
-                request_id,
-                preview,
-            }) => {
-                log::warn!(
-                    "transcription: assemblyai {stage} non_success gen={} status={} request_id={} body_preview=\"{}\"",
-                    gen,
-                    status,
-                    request_id,
-                    preview
-                );
-                Err(anyhow::Error::new(source).context(format!(
-                    "AssemblyAI {stage} error status={} request_id={} body_preview={}",
-                    status, request_id, preview
-                )))
-            }
-        }
+        result.map_err(|error| {
+            error.into_error(
+                Some((
+                    module_path!(),
+                    &format!("transcription: assemblyai {stage}"),
+                )),
+                &format!("gen={gen}"),
+                &format!("AssemblyAI {stage} error"),
+            )
+        })
     }
 
     let language_label = crate::data::store::transcription_language_label(language);
@@ -661,47 +591,15 @@ async fn ensure_transcription_response(
     gen: u64,
     trace: &str,
 ) -> Result<reqwest::Response> {
-    match super::ensure_provider_success(resp, model, Some((provider_label, model))).await {
-        Ok(resp) => Ok(resp),
-        Err(super::ProviderHttpError::Quota(e)) => Err(e),
-        Err(super::ProviderHttpError::Auth {
-            error,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "{trace} unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            Err(error)
-        }
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "{trace} non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            Err(anyhow::Error::new(source).context(format!(
-                "Transcription API error provider={} model={} status={} request_id={} body_preview={}",
-                provider_label, model, status, request_id, preview
-            )))
-        }
-    }
+    super::ensure_provider_success(resp, model, Some((provider_label, model)))
+        .await
+        .map_err(|error| {
+            error.into_error(
+                Some((module_path!(), trace)),
+                &format!("gen={gen} provider={provider_label} model={model}"),
+                &format!("Transcription API error provider={provider_label} model={model}"),
+            )
+        })
 }
 
 #[derive(serde::Deserialize)]
