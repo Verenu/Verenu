@@ -915,44 +915,26 @@ struct CaptureBuffer<'a> {
 }
 
 fn enqueue_f32_buffer(data: &[f32], channels: usize, capture: CaptureBuffer<'_>) {
-    if data.is_empty() {
-        capture.level.store(0f32.to_bits(), Ordering::Relaxed);
-        capture.raw_level.store(0f32.to_bits(), Ordering::Relaxed);
-        return;
-    }
-
-    let mut sum = 0.0f32;
-    let mut count = 0usize;
-    if channels <= 1 {
-        for &raw in data {
-            let mono = finite_sample_or_zero(raw);
-            sum += mono * mono;
-            count += 1;
-            push_overwriting_oldest(capture.queue, capture.dropped, mono);
-        }
-    } else {
-        for frame in data.chunks(channels) {
-            let mono =
-                finite_sample_or_zero(frame.iter().copied().sum::<f32>() / frame.len() as f32);
-            sum += mono * mono;
-            count += 1;
-            push_overwriting_oldest(capture.queue, capture.dropped, mono);
-        }
-    }
-
-    let rms = if count == 0 {
-        0.0
-    } else {
-        (sum / count as f32).sqrt()
-    };
-    capture.raw_level.store(rms.to_bits(), Ordering::Relaxed);
-    let display = (rms * capture.display_gain).min(1.0);
-    capture.level.store(display.to_bits(), Ordering::Relaxed);
-    capture.wake.notify();
+    enqueue_mono_buffer(data.chunks(channels.max(1)).map(|frame| {
+        let raw = if channels <= 1 {
+            frame[0]
+        } else {
+            frame.iter().copied().sum::<f32>() / frame.len() as f32
+        };
+        finite_sample_or_zero(raw)
+    }), capture);
 }
 
 fn enqueue_i16_buffer(data: &[i16], channels: usize, capture: CaptureBuffer<'_>) {
-    if data.is_empty() {
+    enqueue_mono_buffer(data.chunks(channels.max(1)).map(|frame| {
+        let sum_raw: i64 = frame.iter().map(|&sample| sample as i64).sum();
+        sum_raw as f32 / (frame.len() as f32 * i16::MAX as f32)
+    }), capture);
+}
+
+fn enqueue_mono_buffer(mono: impl Iterator<Item = f32>, capture: CaptureBuffer<'_>) {
+    let mut mono = mono.peekable();
+    if mono.peek().is_none() {
         capture.level.store(0f32.to_bits(), Ordering::Relaxed);
         capture.raw_level.store(0f32.to_bits(), Ordering::Relaxed);
         return;
@@ -960,21 +942,10 @@ fn enqueue_i16_buffer(data: &[i16], channels: usize, capture: CaptureBuffer<'_>)
 
     let mut sum = 0.0f32;
     let mut count = 0usize;
-    if channels <= 1 {
-        for &raw in data {
-            let mono = raw as f32 / i16::MAX as f32;
-            sum += mono * mono;
-            count += 1;
-            push_overwriting_oldest(capture.queue, capture.dropped, mono);
-        }
-    } else {
-        for frame in data.chunks(channels) {
-            let sum_raw: i64 = frame.iter().map(|&sample| sample as i64).sum();
-            let mono = sum_raw as f32 / (frame.len() as f32 * i16::MAX as f32);
-            sum += mono * mono;
-            count += 1;
-            push_overwriting_oldest(capture.queue, capture.dropped, mono);
-        }
+    for sample in mono {
+        sum += sample * sample;
+        count += 1;
+        push_overwriting_oldest(capture.queue, capture.dropped, sample);
     }
 
     let rms = if count == 0 {
@@ -1071,6 +1042,32 @@ mod tests {
     };
     use crossbeam_queue::ArrayQueue;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+    #[test]
+    fn float_enqueue_preserves_partial_frames_nonfinite_samples_and_empty_levels() {
+        for (data, channels, expected) in [
+            (vec![0.25, -0.5], 0, vec![0.25, -0.5]),
+            (vec![1.0, -1.0, 0.5], 2, vec![0.0, 0.5]),
+            (vec![f32::NAN, 0.25, f32::INFINITY], 1, vec![0.0, 0.25, 0.0]),
+            (vec![], 2, vec![]),
+        ] {
+            let queue = ArrayQueue::new(8);
+            let dropped = AtomicU64::new(0);
+            let level = AtomicU32::new(1f32.to_bits());
+            let raw_level = AtomicU32::new(1f32.to_bits());
+            let wake = WorkerWake::new();
+            super::enqueue_f32_buffer(&data, channels, CaptureBuffer {
+                queue: &queue, dropped: &dropped, level: &level, raw_level: &raw_level,
+                display_gain: DISPLAY_GAIN, wake: &wake,
+            });
+            let actual: Vec<_> = std::iter::from_fn(|| queue.pop()).collect();
+            assert_eq!(actual, expected);
+            if data.is_empty() {
+                assert_eq!(level.load(Ordering::Relaxed), 0f32.to_bits());
+                assert_eq!(raw_level.load(Ordering::Relaxed), 0f32.to_bits());
+            }
+        }
+    }
 
     #[test]
     fn envelope_drain_into_reuses_storage_and_preserves_order() {
