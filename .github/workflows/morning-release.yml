@@ -363,6 +363,8 @@ jobs:
             os-name: windows
           - platform: macos-latest
             os-name: macos
+          - platform: ubuntu-24.04
+            os-name: linux
     runs-on: ${{ matrix.platform }}
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -383,6 +385,13 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux AppImage build dependencies
+        if: matrix.os-name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libasound2-dev patchelf fuse3
 
       - name: Set up macOS targets
         if: matrix.os-name == 'macos'
@@ -610,6 +619,11 @@ jobs:
             test -f "$intel_dmg"
             mv "$intel_dmg" "$intel_release_dmg"
             verify_macos_dmg "$intel_release_dmg"
+          elif [ "${{ matrix.os-name }}" = "linux" ]; then
+            npm run tauri build -- --bundles appimage
+            appimage="src-tauri/target/release/bundle/appimage/Verenu_${APP_VERSION}_amd64.AppImage"
+            test -f "$appimage"
+            mv "$appimage" "release-assets/Verenu_${RELEASE_VERSION}_amd64.AppImage"
           else
             npm run tauri build
             setup_exe="$(find src-tauri/target/release/bundle/nsis -maxdepth 1 -type f -name 'Verenu_*_x64-setup.exe' -print -quit)"
@@ -639,9 +653,53 @@ jobs:
     with:
       source-ref: ${{ needs.prepare.outputs.release_sha }}
 
+  arch-package:
+    name: Build nightly Arch package
+    needs: [prepare, build, verify]
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out nightly snapshot
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Download nightly Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: nightly-assets-linux
+          path: packaging/arch
+
+      - name: Build Arch package
+        env:
+          VERENU_PKGVER: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          mv "packaging/arch/Verenu_${VERENU_PKGVER}_amd64.AppImage" \
+            "packaging/arch/Verenu_${VERENU_PKGVER}_x86_64.AppImage"
+          docker run --rm \
+            -e VERENU_PKGVER="$VERENU_PKGVER" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/packaging/arch \
+            archlinux:base-devel \
+            bash -euo pipefail -c '
+              pacman -Syu --noconfirm --needed squashfs-tools gtk3 webkit2gtk-4.1 \
+                libayatana-appindicator pipewire libsecret xdg-desktop-portal
+              useradd --create-home builder
+              chown -R builder:builder /workspace/packaging/arch
+              su builder -c "makepkg --cleanbuild --noconfirm"
+            '
+
+      - name: Upload nightly Arch package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-assets-arch
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
   publish:
     name: Publish nightly release
-    needs: [prepare, build, verify]
+    needs: [prepare, build, verify, arch-package]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -669,6 +727,8 @@ jobs:
             "Verenu_${RELEASE_VERSION}_x64_en-US.msi"
             "Verenu_${RELEASE_VERSION}_Apple_Silicon.dmg"
             "Verenu_${RELEASE_VERSION}_Intel.dmg"
+            "Verenu_${RELEASE_VERSION}_amd64.AppImage"
+            "verenu-${RELEASE_VERSION//-/_}-1-x86_64.pkg.tar.zst"
           )
           for asset in "${expected[@]}"; do
             test -f "release-assets/$asset"

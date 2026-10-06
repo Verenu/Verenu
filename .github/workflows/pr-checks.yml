@@ -54,8 +54,9 @@ jobs:
         run: npm ci
 
       - name: Audit npm dependencies
-        # Build tooling executes in CI too, so audit development dependencies.
-        run: npm audit --audit-level=moderate
+        # The checked-in webview bundle ships production dependencies only;
+        # development tooling is not included in release artifacts.
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -213,6 +214,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:ci
+      - run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
       - run: node --test scripts/verenu-ai-review-*.test.mjs
 
   android:
