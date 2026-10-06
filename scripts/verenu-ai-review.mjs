@@ -33,13 +33,15 @@ import {
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODEL,
   failureCategory,
-  fallbackReason,
+  failureExitCode,
   formatProgressSummary,
+  mergeReviewFindings,
   reviewOutcome,
   selectReviewModels,
   shouldFallback,
 } from "./verenu-ai-review-logic.mjs";
-import { readProviderFailureReason } from "./verenu-ai-review-session.mjs";
+import { readProviderFailureReason, readPersistedFindings } from "./verenu-ai-review-session.mjs";
+import { runReviewProcess, PREVIEW_TIMEOUT_MS } from "./verenu-ai-review-process.mjs";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
 const [OWNER, REPO] = requireEnv("GITHUB_REPOSITORY").split("/");
@@ -69,7 +71,7 @@ async function gh(pathOrUrl, init = {}) {
   if (init.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`GitHub API ${res.status} ${url}: ${body.slice(0, 500)}`);
@@ -267,17 +269,20 @@ function makeOcrHome() {
   return mkdtempSync(path.join(tmpdir(), "verenu-ocr-home-"));
 }
 
-async function runOcrAt(cwd, args, providerEnvVars, ocrHome) {
+async function runOcrAt(cwd, args, providerEnvVars, ocrHome, preview = false) {
   const childEnv = {
     PATH: process.env.PATH,
     HOME: ocrHome,
     ...providerEnvVars,
   };
-  return run("ocr", args, { cwd, env: childEnv });
+  return runReviewProcess("ocr", args, {
+    cwd, env: childEnv,
+    ...(preview ? { timeoutMs: PREVIEW_TIMEOUT_MS } : { ocrHome }),
+  });
 }
 
 async function previewOk(cwd, pr, providerEnvVars, ocrHome) {
-  const result = await runOcrAt(cwd, ["review", "--from", pr.base.sha, "--to", pr.head.sha, "--preview"], providerEnvVars, ocrHome);
+  const result = await runOcrAt(cwd, ["review", "--from", pr.base.sha, "--to", pr.head.sha, "--preview"], providerEnvVars, ocrHome, true);
   if (result.code !== 0) {
     console.log(`ocr preview check failed at ${cwd}: exit ${result.code}: ${result.stderr.slice(0, 300)}`);
     return false;
@@ -296,7 +301,7 @@ function ocrReviewArgs({ baseSha, headSha, model, background }) {
     "--rule", RULE_FILE_PATH,
     "--background", background,
     "--concurrency", "2",
-    "--timeout", "10",
+    "--timeout", "3",
     "--max-git-procs", "2",
   ];
 }
@@ -357,7 +362,10 @@ async function reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome)
         if (extractJson(result.stdout)?.status === "completed_with_errors") result.code = 1;
       } catch { /* Findings parsing handles malformed output separately. */ }
     }
-    if (result.code !== 0) result.providerFailureReason = await readProviderFailureReason(attemptHome);
+    if (result.code !== 0 && !result.providerFailureReason) result.providerFailureReason = await readProviderFailureReason(attemptHome);
+    // Read after close so flushed comments from every concurrent file survive
+    // fast termination, before this attempt's private home is removed.
+    if (result.code !== 0) result.persistedFindings = await readPersistedFindings(attemptHome);
     return result;
   } finally {
     try {
@@ -431,13 +439,15 @@ function extractJson(stdout) {
   throw new Error("no valid JSON structure found in stdout");
 }
 
-function parseOcrFindings(stdout) {
+function parseOcrFindings(stdout, { quiet = false } = {}) {
   let data;
   try {
     data = extractJson(stdout);
   } catch (err) {
-    console.error(`failed to parse OCR findings JSON: ${err.message}`);
-    console.error(`raw stdout: ${stdout.slice(0, 2000)}`);
+    if (!quiet) {
+      console.error(`failed to parse OCR findings JSON: ${err.message}`);
+      console.error(`raw stdout: ${stdout.slice(0, 2000)}`);
+    }
     return [];
   }
   // ocr's actual --format json shape is { comments: [...] }, each with
@@ -591,6 +601,7 @@ async function main() {
 
     let activeModel = selection.model;
     let result;
+    let findings = [];
 
     for (let attempt = 0; attempt < selection.models.length; attempt++) {
       activeModel = selection.models[attempt];
@@ -612,13 +623,19 @@ async function main() {
       const providerEnvVars = providerEnv(activeModel);
       const args = ocrReviewArgs({ baseSha: pr.base.sha, headSha: pr.head.sha, model: activeModel, background });
       result = await reviewWithQuarantinedWorktree(pr, args, providerEnvVars, ocrHome);
+      // A provider failure can coexist with findings from completed files.
+      // Retain them across fallback, even if the next model returns none.
+      const outputFindings = parseOcrFindings(result?.stdout || "", { quiet: result?.code !== 0 });
+      const recovered = (result?.persistedFindings || []).filter((saved) =>
+        !outputFindings.some((finding) => finding.file === saved.file && finding.message === saved.message));
+      findings = mergeReviewFindings(findings, outputFindings, recovered);
 
       if (!result || result.code === 0) break;
 
       const nextModel = selection.models[attempt + 1];
       if (!shouldFallback(result, activeModel, nextModel)) break;
 
-      const reason = fallbackReason(result);
+      const reason = failureCategory(result);
       stateComment = await updateProgress(
         prNumber,
         stateComment,
@@ -635,30 +652,33 @@ async function main() {
       );
     }
 
+    await postFindings(prNumber, pr, findings);
+    const outcome = reviewOutcome(findings);
     if (!result || result.code !== 0) {
       const reason = failureCategory(result);
       stateComment = await updateProgress(
         prNumber,
         stateComment,
-        formatProgressSummary({ stage: "failed", reason }),
+        outcome.hasFindings
+          ? `${formatProgressSummary({ stage: "findings", model: activeModel, findings: outcome.count, headSha: pr.head.sha })} Review incomplete (${reason}).`
+          : formatProgressSummary({ stage: "failed", reason }),
         {
           ...baseState,
           model: activeModel,
           attemptedModels: [...attemptedModels],
           status: "failed",
-          stage: "failed",
+          stage: outcome.hasFindings ? "findings" : "failed",
+          findings: outcome.count,
+          completed: false,
           reason,
           timestamp: new Date().toISOString(),
         },
       );
       console.error(`OCR review failed: category=${reason} exit=${result?.code ?? "unknown"}`);
-      process.exitCode = 1;
+      process.exitCode = failureExitCode(result, findings);
       return;
     }
 
-    const findings = parseOcrFindings(result.stdout);
-    await postFindings(prNumber, pr, findings);
-    const outcome = reviewOutcome(findings);
     const finalStage = outcome.hasFindings ? "findings" : "complete";
     const finalSummary = formatProgressSummary({
       stage: finalStage,
