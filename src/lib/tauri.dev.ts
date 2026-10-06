@@ -214,7 +214,7 @@ function readDevList<T>(key: string): T[] {
   }
 }
 
-function writeDevList<T>(key: string, rows: T[]) {
+function writeDevList(key: string, rows: unknown) {
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(key, JSON.stringify(rows));
@@ -446,72 +446,40 @@ type DevLocalSttModelsState = Record<string, { downloaded: boolean; partial_size
 type DevLocalLlmModelsState = Record<string, { downloaded: boolean; partial_size?: number }>;
 
 function readDevLocalSttModelsState(): DevLocalSttModelsState {
-  if (typeof localStorage === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem(DEV_LOCAL_STT_MODELS_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as DevLocalSttModelsState : {};
-  } catch {
-    return {};
-  }
+  const parsed = readDevJson(DEV_LOCAL_STT_MODELS_KEY, {});
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as DevLocalSttModelsState : {};
 }
 
 function writeDevLocalSttModelsState(state: DevLocalSttModelsState) {
-  if (typeof localStorage === 'undefined') return;
+  writeDevList(DEV_LOCAL_STT_MODELS_KEY, state);
+}
+
+function readDevJson(key: string, fallback: unknown) {
+  if (typeof localStorage === 'undefined') return fallback;
   try {
-    localStorage.setItem(DEV_LOCAL_STT_MODELS_KEY, JSON.stringify(state));
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
   } catch {
-    // keep dev mode non-fatal
+    return fallback;
   }
+}
+
+function readDevModelState(parsed: ReturnType<typeof readDevJson>) {
+  return {
+    current_model_id: typeof parsed?.current_model_id === 'string' ? parsed.current_model_id : null,
+    is_loaded: Boolean(parsed?.is_loaded),
+    is_loading: Boolean(parsed?.is_loading),
+    is_downloading: Boolean(parsed?.is_downloading),
+    downloading_model_id: typeof parsed?.downloading_model_id === 'string' ? parsed.downloading_model_id : null,
+  };
 }
 
 function readDevLocalTranscriptionState(): LocalTranscriptionState {
-  if (typeof localStorage === 'undefined') {
-    return {
-      current_model_id: null,
-      is_loaded: false,
-      is_loading: false,
-      is_downloading: false,
-      downloading_model_id: null,
-    };
-  }
-  try {
-    const raw = localStorage.getItem(DEV_LOCAL_STT_STATE_KEY);
-    if (!raw) {
-      return {
-        current_model_id: null,
-        is_loaded: false,
-        is_loading: false,
-        is_downloading: false,
-        downloading_model_id: null,
-      };
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      current_model_id: typeof parsed?.current_model_id === 'string' ? parsed.current_model_id : null,
-      is_loaded: Boolean(parsed?.is_loaded),
-      is_loading: Boolean(parsed?.is_loading),
-      is_downloading: Boolean(parsed?.is_downloading),
-      downloading_model_id: typeof parsed?.downloading_model_id === 'string' ? parsed.downloading_model_id : null,
-    };
-  } catch {
-    return {
-      current_model_id: null,
-      is_loaded: false,
-      is_loading: false,
-      is_downloading: false,
-      downloading_model_id: null,
-    };
-  }
+  return readDevModelState(readDevJson(DEV_LOCAL_STT_STATE_KEY, null));
 }
 
 function writeDevLocalTranscriptionState(state: LocalTranscriptionState) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(DEV_LOCAL_STT_STATE_KEY, JSON.stringify(state));
-  } catch {
-    // keep dev mode non-fatal
-  }
+  writeDevList(DEV_LOCAL_STT_STATE_KEY, state);
 }
 
 function devLocalSttModels(): LocalSttModelInfo[] {
@@ -526,99 +494,33 @@ function devLocalSttModels(): LocalSttModelInfo[] {
 }
 
 function readDevLocalLlmModelsState(): DevLocalLlmModelsState {
-  if (typeof localStorage === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem(DEV_LOCAL_LLM_MODELS_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as DevLocalLlmModelsState : {};
-  } catch {
-    return {};
-  }
+  const parsed = readDevJson(DEV_LOCAL_LLM_MODELS_KEY, {});
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as DevLocalLlmModelsState : {};
 }
 
 function writeDevLocalLlmModelsState(state: DevLocalLlmModelsState) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(DEV_LOCAL_LLM_MODELS_KEY, JSON.stringify(state));
-  } catch {
-    // keep dev mode non-fatal
-  }
+  writeDevList(DEV_LOCAL_LLM_MODELS_KEY, state);
 }
 
 function readDevLocalLlmState(): LocalLlmState {
-  if (typeof localStorage === 'undefined') {
-    return {
-      current_model_id: null,
-      is_loaded: false,
-      is_loading: false,
-      is_downloading: false,
-      downloading_model_id: null,
-      endpoint: null,
-    };
-  }
-  try {
-    const raw = localStorage.getItem(DEV_LOCAL_LLM_STATE_KEY);
-    if (!raw) {
-      return {
-        current_model_id: null,
-        is_loaded: false,
-        is_loading: false,
-        is_downloading: false,
-        downloading_model_id: null,
-        endpoint: null,
-      };
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      current_model_id: typeof parsed?.current_model_id === 'string' ? parsed.current_model_id : null,
-      is_loaded: Boolean(parsed?.is_loaded),
-      is_loading: Boolean(parsed?.is_loading),
-      is_downloading: Boolean(parsed?.is_downloading),
-      downloading_model_id: typeof parsed?.downloading_model_id === 'string' ? parsed.downloading_model_id : null,
-      endpoint: typeof parsed?.endpoint === 'string' ? parsed.endpoint : null,
-    };
-  } catch {
-    return {
-      current_model_id: null,
-      is_loaded: false,
-      is_loading: false,
-      is_downloading: false,
-      downloading_model_id: null,
-      endpoint: null,
-    };
-  }
+  const parsed = readDevJson(DEV_LOCAL_LLM_STATE_KEY, null);
+  return {
+    ...readDevModelState(parsed),
+    endpoint: typeof parsed?.endpoint === 'string' ? parsed.endpoint : null,
+  };
 }
 
 function writeDevLocalLlmState(state: LocalLlmState) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(DEV_LOCAL_LLM_STATE_KEY, JSON.stringify(state));
-  } catch {
-    // keep dev mode non-fatal
-  }
+  writeDevList(DEV_LOCAL_LLM_STATE_KEY, state);
 }
 
 function readDevLocalLlmRuntimeState(): { installed: boolean; is_downloading: boolean } {
-  if (typeof localStorage === 'undefined') return { installed: false, is_downloading: false };
-  try {
-    const raw = localStorage.getItem(DEV_LOCAL_LLM_RUNTIME_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return {
-      installed: Boolean(parsed?.installed),
-      is_downloading: Boolean(parsed?.is_downloading),
-    };
-  } catch {
-    return { installed: false, is_downloading: false };
-  }
+  const parsed = readDevJson(DEV_LOCAL_LLM_RUNTIME_KEY, null);
+  return { installed: Boolean(parsed?.installed), is_downloading: Boolean(parsed?.is_downloading) };
 }
 
 function writeDevLocalLlmRuntimeState(state: { installed: boolean; is_downloading: boolean }) {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(DEV_LOCAL_LLM_RUNTIME_KEY, JSON.stringify(state));
-  } catch {
-    // keep dev mode non-fatal
-  }
+  writeDevList(DEV_LOCAL_LLM_RUNTIME_KEY, state);
 }
 
 function devLocalLlmModels(): LocalLlmModelInfo[] {
