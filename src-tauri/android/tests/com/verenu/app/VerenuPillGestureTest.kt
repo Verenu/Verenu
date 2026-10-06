@@ -7,6 +7,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VerenuPillGestureTest {
+    @Test fun cancelledHoldEndsAndAllowsAccessibilityClick() {
+        val g = VerenuPillGesture()
+        g.down()
+        g.longPress(idle = true, recording = false)
+        assertEquals(listOf(Event.HOLD_END), g.up(cancelled = true))
+        assertFalse(g.consumeClickSuppression())
+    }
+
+    @Test fun cancelledDragEndsAndAllowsAccessibilityClick() {
+        val g = VerenuPillGesture()
+        g.down()
+        g.movedPastSlop(idle = true)
+        assertEquals(listOf(Event.DRAG_END), g.up(cancelled = true))
+        assertFalse(g.consumeClickSuppression())
+    }
+
     @Test fun accessibilityClickAfterHoldReleaseIsNotSuppressed() {
         val g = VerenuPillGesture()
         g.down()

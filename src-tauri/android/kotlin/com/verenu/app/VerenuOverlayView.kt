@@ -190,7 +190,8 @@ class VerenuOverlayView @JvmOverloads constructor(
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     removeCallbacks(longPress)
                     view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
-                    gesture.up().forEach { dispatch(it, rawX, rawY) }
+                    gesture.up(cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL)
+                        .forEach { dispatch(it, rawX, rawY) }
                 }
             }
             false
