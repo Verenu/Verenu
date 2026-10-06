@@ -17,6 +17,9 @@
     "test:agent-evals": "node scripts/agent-evals.mjs",
     "dev:tauri-host": "node scripts/vite-dev-server.mjs",
     "test:unit": "vitest run --dir src",
+    "test:ci": "node --test tests/ci/*.test.mjs && node scripts/ci/lint-workflows.mjs",
+    "test:ci:contracts": "node --test tests/ci/*.test.mjs",
+    "test:android": "node scripts/test-android.mjs",
     "test:quality": "npm run check && npm run test:unit",
     "test:prompt": "node scripts/run-onepyfone.mjs --test prompt",
     "build": "vite build",
@@ -61,6 +64,7 @@
     "basic-ftp": "6.2.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.63.0",
     "@sveltejs/vite-plugin-svelte": "^7.1.1",
     "@tauri-apps/api": "^2.11.0",
@@ -71,7 +75,8 @@
     "svelte-check": "^4.4.8",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.2.9",

@@ -68,7 +68,7 @@ pub fn load_or_create(
     let cert_is_fresh = stored_cert
         .as_ref()
         .is_some_and(|_| cert_file_fresh(&cert_path));
-    let stored_key = secrets::load_identity_key();
+    let stored_key = secrets::load_identity_key(app_data_dir);
 
     if let (Some(cert_der), Some(key_der), true) = (stored_cert, stored_key, cert_is_fresh) {
         if let Err(err) = validate_key(&key_der) {
@@ -89,7 +89,7 @@ pub fn load_or_create(
     // Missing, expired, or corrupt: re-issue the whole identity, keeping the
     // known uuid when there is one.
     let identity = create_identity(known_uuid)?;
-    secrets::store_identity_key(&identity.key_der)
+    secrets::store_identity_key(app_data_dir, &identity.key_der)
         .map_err(|e| anyhow!("failed to store sync identity key: {e}"))?;
     std::fs::write(&cert_path, identity.cert_der.as_ref())
         .with_context(|| "failed to write sync certificate")?;
@@ -217,13 +217,13 @@ mod tests {
         );
 
         // Keychain wiped: a new key + certificate, same uuid.
-        secrets::delete_identity_key();
+        secrets::delete_identity_key(&dir);
         let reissued = load_or_create(&dir, Some(first.uuid.clone())).expect("reissue");
         assert_eq!(reissued.uuid, first.uuid, "uuid survives key loss");
 
         drop(reissued);
         drop(first);
+        secrets::delete_identity_key(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        secrets::delete_identity_key();
     }
 }
