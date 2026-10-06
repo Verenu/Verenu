@@ -12,6 +12,23 @@ export function ownedSessionStartupState(manifest, launcherPid) {
   return 'stopped';
 }
 
+export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) {
+  const state = ownedSessionStartupState(manifest, launcherPid);
+  const result = { manifestState: state ?? 'missing' };
+  const failure = state === 'stopped' ? manifest.childFailure : null;
+  if (failure && ['frontend', 'tauri'].includes(failure.component)) {
+    result.failedComponent = failure.component;
+    if (['spawn-error', 'unexpected-exit'].includes(failure.kind)) result.failureKind = failure.kind;
+    if (Number.isInteger(failure.exitCode)) result.childExitCode = failure.exitCode;
+    if (typeof failure.signal === 'string' && /^SIG[A-Z0-9]+$/.test(failure.signal)) result.childSignal = failure.signal;
+    if (typeof failure.errorCode === 'string' && /^E[A-Z0-9_]+$/.test(failure.errorCode)) result.childSpawnErrorCode = failure.errorCode;
+  }
+  if (Number.isInteger(launcher.exitCode)) result.launcherExitCode = launcher.exitCode;
+  if (typeof launcher.signal === 'string' && /^SIG[A-Z0-9]+$/.test(launcher.signal)) result.launcherSignal = launcher.signal;
+  if (typeof launcher.errorCode === 'string' && /^E[A-Z0-9_]+$/.test(launcher.errorCode)) result.launcherSpawnErrorCode = launcher.errorCode;
+  return result;
+}
+
 export async function startOwnedSession({ id, fixtures, native = false, directory, synthetic = true }) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(id)) {
     throw new TypeError('startOwnedSession requires a valid session ID');
@@ -44,11 +61,22 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   })();
   try {
     const deadline = Date.now() + 900_000;
+    let latestManifest = null;
     while (Date.now() < deadline) {
-      if (childError || child.exitCode !== null || child.signalCode !== null) throw new Error('Owned session failed to start; inspect its private startup log');
       const manifest = await fs.readFile(path.join(sessionDirectory, 'session.json'), 'utf8').then(JSON.parse).catch(() => null);
+      if (manifest) latestManifest = manifest;
       const state = ownedSessionStartupState(manifest, child.pid);
-      if (state === 'stopped') throw new Error('Owned session stopped before ready; inspect its private startup log');
+      const launcher = { exitCode: child.exitCode, signal: child.signalCode, errorCode: childError?.code };
+      if (childError || child.exitCode !== null || child.signalCode !== null) {
+        const error = new Error('Owned session process exited before ready');
+        error.startupFailure = sessionStartupDiagnostics(latestManifest, child.pid, launcher);
+        throw error;
+      }
+      if (state === 'stopped') {
+        const error = new Error('Owned session stopped before ready');
+        error.startupFailure = sessionStartupDiagnostics(manifest, child.pid, launcher);
+        throw error;
+      }
       if (state === 'ready') {
         try {
           const accessFile = path.join(sessionDirectory, 'access.json');

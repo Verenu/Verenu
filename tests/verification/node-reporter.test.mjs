@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import reporter, { summarizeNodeTests } from '../../scripts/verification/node-reporter.mjs';
+import reporter, { summarizeNodeFailure, summarizeNodeTests } from '../../scripts/verification/node-reporter.mjs';
 
 test('Node reports preserve failures and skips without private output', async () => {
   const events = [
@@ -25,4 +25,25 @@ test('missing files, unexpected skips and all-skipped suites remain incomplete',
   const live = { ...row, status: 'skipped', name: 'live synthetic corpus reaches providers, Context rules, events, and exact new history' };
   assert.equal(summarizeNodeTests({ tests: [row, live] }, ['session.test.mjs']).status, 'passed');
   assert.equal(summarizeNodeTests({ tests: [row, live] }, ['session.test.mjs'], { live: true }).status, 'incomplete');
+});
+
+test('failed session reports identify only expected files and aggregate outcomes', () => {
+  const summary = summarizeNodeTests({ tests: [
+    { name: 'SYNTHETIC_PRIVATE_DETAIL', file: 'pipeline.test.mjs', status: 'failed' },
+    { name: 'live corpus', file: 'session.test.mjs', status: 'skipped' },
+    { name: 'outside test', file: 'private.test.mjs', status: 'failed' },
+  ] }, ['pipeline.test.mjs', 'session.test.mjs']);
+  const failure = summarizeNodeFailure(summary, ['pipeline.test.mjs', 'session.test.mjs'], {
+    processStatus: 'failed', exitCode: 1,
+  });
+  assert.deepEqual(failure, {
+    status: 'failed',
+    process: { status: 'failed', exitCode: 1 },
+    counts: { total: 2, passed: 0, failed: 1, skipped: 1 },
+    failedFiles: ['pipeline.test.mjs'],
+    skippedFiles: ['session.test.mjs'],
+    missingFiles: [],
+  });
+  assert.equal(JSON.stringify(failure).includes('SYNTHETIC_PRIVATE_DETAIL'), false);
+  assert.equal(JSON.stringify(failure).includes('private.test.mjs'), false);
 });

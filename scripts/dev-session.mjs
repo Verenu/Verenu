@@ -98,11 +98,30 @@ async function start() {
     return cleanupPromise;
   };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void cleanup(); });
-  function run(command, argv, env) {
+  function run(component, command, argv, env) {
     const child = spawn(command, argv, { cwd: root, env, stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32' });
     children.push(child);
-    child.once('error', (error) => { console.error(error.message); void cleanup(); });
-    child.once('exit', (code) => { if (!closing) { process.exitCode = code ?? 1; void cleanup(); } });
+    child.once('error', (error) => {
+      if (manifest) manifest.childFailure = {
+        component,
+        kind: 'spawn-error',
+        ...(typeof error.code === 'string' ? { errorCode: error.code } : {}),
+      };
+      console.error(error.message);
+      void cleanup();
+    });
+    child.once('exit', (code, signal) => {
+      if (!closing) {
+        if (manifest) manifest.childFailure = {
+          component,
+          kind: 'unexpected-exit',
+          exitCode: Number.isInteger(code) ? code : null,
+          signal: typeof signal === 'string' ? signal : null,
+        };
+        process.exitCode = code ?? 1;
+        void cleanup();
+      }
+    });
     return child;
   }
   try {
@@ -161,8 +180,8 @@ async function start() {
     delete env.VERENU_ALLOW_ENV_CREDENTIALS;
     const config = path.join(directory, 'tauri-session.json');
     await fs.writeFile(config, JSON.stringify({ identifier: `com.verenu.session.${id.toLowerCase()}`, build: { devUrl: localUrl, beforeDevCommand: '' }, app: { withGlobalTauri: args.includes('--native-test'), windows: [{ label: 'main', title: 'Verenu dev worker', url: '/', width: 1320, height: 860, visible: args.includes('--native-test') }], security: { devCsp: null, ...(args.includes('--native-test') ? { capabilities: ['default', 'pill', { identifier: 'native-test', windows: ['main'], local: true, remote: { urls: [`${localUrl}/*`] }, permissions: ['wdio:default', 'wdio-webdriver:default'] }] } : {}) } } }));
-    run(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort), '--strictPort'], env);
-    run(process.execPath, [path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'dev', '--features', args.includes('--native-test') ? 'native-testing' : 'dev-session', '--no-watch', '--config', config], env);
+    run('frontend', process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort), '--strictPort'], env);
+    run('tauri', process.execPath, [path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'dev', '--features', args.includes('--native-test') ? 'native-testing' : 'dev-session', '--no-watch', '--config', config], env);
     console.log(`Session ${id}\nLocal: ${localUrl}\nPhone: ${shareUrl || 'Use --share to create a private Tailscale URL'}\nAccess links: ${path.join(directory, 'access.json')}\nManifest: ${path.join(directory, 'session.json')}\nWaiting for this worktree's Rust backend...`);
     const deadline = Date.now() + startupTimeout * 1000;
     while (!closing) {

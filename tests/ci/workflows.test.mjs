@@ -49,8 +49,11 @@ test('native and live workflows publish only safe reports and fail on missing li
 test('PR checks compile and run Android native regressions and native WebViews', () => {
   const jobs = workflow('pr-checks.yml').jobs;
   assert.ok(jobs.android.steps.some(step => step.run === 'npm run test:android'));
+  assert.equal(jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3').with.packages, 'platform-tools');
+  assert.equal(jobs.android.steps.find(step => step.with?.name === 'android-unit-reports').with['if-no-files-found'], 'ignore');
   assert.deepEqual(jobs.native.strategy.matrix.os, ['windows-latest', 'macos-latest', 'ubuntu-latest']);
+  assert.match(jobs.native.steps.find(step => step.name === 'Run Linux native WebView').run, /XDG_RUNTIME_DIR/);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
-  assert.ok(shared.runs.steps.some(step => step.run?.includes('test:session:owned')));
+  assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);
   assert.ok(shared.runs.steps.some(step => step.run?.includes('cargo clippy')));
 });
