@@ -136,6 +136,25 @@ That request does not include your dictated text, history, snippets, or API keys
 
 On Windows and macOS, installing an update opens the published GitHub asset so the platform installer flow can take over. Verenu does not auto-run a downloaded Windows executable from a fixed temp path.
 
+### GitHub commit insights
+
+Insights can optionally compare dictated words with public GitHub commits. This
+is off until you enter a GitHub username. Verenu sends that username and a date
+range to GitHub's public user and commit-search APIs without credentials. No
+dictated text or local Context information is sent. Private repositories are
+excluded. The username and up to 90 days of daily counts are stored locally;
+commit messages and repository names are neither stored nor returned to the UI.
+Counts refresh automatically every 15 minutes while the app is running, and
+cached counts remain available when GitHub cannot be reached. Search is limited
+to 1,000 results and GitHub's indexed history, so partial results are labeled as
+lower bounds. Disconnecting removes the saved username and cached counts. These
+settings are excluded from device sync and settings exports.
+
+Settings > Integrations can suggest the active GitHub CLI username, or an
+explicit global `github.user` Git setting. The CLI authenticates its own request
+to GitHub; Verenu receives only the username and never reads its credentials.
+Suggestions do not connect an account until you choose Connect GitHub.
+
 ### Context website checks
 
 When you attach a website to a context group, Verenu resolves the domain over DNS before accepting it, so a typo can't create a website target that will never match anything. This is a plain DNS lookup, not an HTTP request — it does not fetch the site, send cookies, or reveal your IP to the site owner beyond what any DNS resolution already does. Nothing about your dictation, history, or other settings is included; only the domain you typed leaves your device, to your configured DNS resolver.
