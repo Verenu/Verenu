@@ -120,11 +120,12 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
             .header("User-Agent", "verenu")
             .send()
             .await
-            .and_then(|r| r.error_for_status())
-            .map_err(|e| e.to_string())?
+            .map_err(|error| crate::api::updater::request_error_message(&error))?
+            .error_for_status()
+            .map_err(|error| crate::api::updater::request_error_message(&error))?
             .bytes()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| crate::api::updater::request_error_message(&error))?;
 
         // Everything from here on is blocking file/registry/process I/O -
         // run it off the async executor so it can't stall other Tokio tasks

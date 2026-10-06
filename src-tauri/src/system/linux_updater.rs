@@ -133,8 +133,9 @@ async fn download_file(
         .header("User-Agent", "verenu")
         .send()
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Could not download the update: {e}"))?;
+        .map_err(|error| crate::api::updater::request_error_message(&error))?
+        .error_for_status()
+        .map_err(|error| crate::api::updater::request_error_message(&error))?;
     let total = response.content_length();
     if total.is_some_and(|size| size > MAX_DOWNLOAD) {
         return Err("The update exceeds the 1 GiB download limit.".into());
@@ -153,7 +154,7 @@ async fn download_file(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| format!("The update download was interrupted: {e}. Try again."))?
+        .map_err(|error| crate::api::updater::request_error_message(&error))?
     {
         downloaded += chunk.len() as u64;
         if downloaded > MAX_DOWNLOAD {
