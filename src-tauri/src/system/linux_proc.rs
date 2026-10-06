@@ -45,15 +45,15 @@ pub(crate) fn parse_stat(text: &str) -> Option<ProcStat> {
     }
     let pid = text[..start].trim().parse().ok()?;
     let comm = text[start + 1..end].to_string();
-    let rest: Vec<&str> = text[end + 1..].split_whitespace().collect();
+    let mut rest = text[end + 1..].split_whitespace();
     Some(ProcStat {
         pid,
         comm,
-        ppid: rest.get(1)?.parse().ok()?,
-        utime: rest.get(11)?.parse().ok()?,
-        stime: rest.get(12)?.parse().ok()?,
-        num_threads: rest.get(17)?.parse().ok()?,
-        rss_pages: rest.get(21)?.parse().ok()?,
+        ppid: rest.nth(1)?.parse().ok()?, // field 4
+        utime: rest.nth(9)?.parse().ok()?, // field 14
+        stime: rest.next()?.parse().ok()?, // field 15
+        num_threads: rest.nth(4)?.parse().ok()?, // field 20
+        rss_pages: rest.nth(3)?.parse().ok()?, // field 24
     })
 }
 
@@ -143,7 +143,13 @@ fn process_accounted_kb(pid: u32) -> Option<u64> {
             return Some(kb);
         }
     }
-    read_status_kb(pid, "RssAnon").or_else(|| read_status_kb(pid, "VmRSS"))
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    accounted_status_kb(&text)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn accounted_status_kb(text: &str) -> Option<u64> {
+    parse_status_kb(text, "RssAnon").or_else(|| parse_status_kb(text, "VmRSS"))
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -240,14 +246,6 @@ pub(crate) fn fill_resource_snapshot(
         }
         *previous = Some((now, current_cpu));
     }
-}
-
-#[cfg(target_os = "linux")]
-fn read_status_kb(pid: u32, key: &str) -> Option<u64> {
-    parse_status_kb(
-        &std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?,
-        key,
-    )
 }
 
 #[cfg(target_os = "linux")]
@@ -355,6 +353,15 @@ mod tests {
             .expect("meminfo");
         assert_eq!(mem.total_kb, 31_991_180);
         assert_eq!(mem.available_kb, 24_824_028);
+    }
+
+    #[test]
+    fn status_memory_prefers_anonymous_rss_and_falls_back_to_total() {
+        assert_eq!(accounted_status_kb("RssAnon: 0 kB\nVmRSS: 64 kB\n"), Some(0));
+        assert_eq!(accounted_status_kb("RssAnon: 32 kB\nVmRSS: 64 kB\n"), Some(32));
+        assert_eq!(accounted_status_kb("VmRSS: 64 kB\n"), Some(64));
+        assert_eq!(accounted_status_kb("RssAnon: unknown\nVmRSS: 64 kB\n"), Some(64));
+        assert_eq!(accounted_status_kb("Name: verenu\n"), None);
     }
 
     #[test]
