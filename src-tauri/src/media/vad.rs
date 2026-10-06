@@ -204,9 +204,9 @@ impl LiveSpeechDetector {
     /// latched for the rest of the recording.
     pub fn push(&mut self, samples_16k: &[f32]) -> bool {
         self.frame.extend_from_slice(samples_16k);
-        while self.frame.len() >= FRAME_SAMPLES {
-            let frame = &self.frame[..FRAME_SAMPLES];
-            let fallback_detected = crate::media::audio::rms_f32(frame) >= self.fallback_rms;
+        let mut consumed = 0;
+        while self.frame.len() - consumed >= FRAME_SAMPLES {
+            let frame = &self.frame[consumed..consumed + FRAME_SAMPLES];
 
             let detected = {
                 let probability = self.vad.as_mut().map(|vad| vad.speech_probability(frame));
@@ -217,13 +217,13 @@ impl LiveSpeechDetector {
                             "live VAD inference failed, switching to the RMS fallback: {error}"
                         );
                         self.vad = None;
-                        fallback_detected
+                        crate::media::audio::rms_f32(frame) >= self.fallback_rms
                     }
-                    None => fallback_detected,
+                    None => crate::media::audio::rms_f32(frame) >= self.fallback_rms,
                 }
             };
 
-            self.frame.drain(..FRAME_SAMPLES);
+            consumed += FRAME_SAMPLES;
             self.total_ms += FRAME_MS;
             if detected {
                 self.speech_ms += FRAME_MS;
@@ -241,9 +241,11 @@ impl LiveSpeechDetector {
                 self.min_speech_ratio,
                 self.min_longest_run_ms,
             ) {
+                self.frame.drain(..consumed);
                 return true;
             }
         }
+        self.frame.drain(..consumed);
         false
     }
 }
@@ -335,6 +337,29 @@ pub fn analyze_speech_with_sensitivity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_fallback_preserves_partial_frames_across_batches() {
+        let mut detector = LiveSpeechDetector::new(store::DEFAULT_MIC_GAIN);
+        detector.vad = None;
+        assert!(!detector.push(&vec![0.0; FRAME_SAMPLES * 100 + 137]));
+        assert_eq!(detector.total_ms, FRAME_MS * 100);
+        assert_eq!(detector.frame.len(), 137);
+        assert!(!detector.push(&vec![0.0; FRAME_SAMPLES - 137]));
+        assert_eq!(detector.total_ms, FRAME_MS * 101);
+        assert!(detector.frame.is_empty());
+    }
+
+    #[test]
+    fn live_fallback_retains_unprocessed_samples_when_speech_latches() {
+        let mut detector = LiveSpeechDetector::new(store::DEFAULT_MIC_GAIN);
+        detector.vad = None;
+        let samples = vec![1.0; FRAME_SAMPLES * 20 + 137];
+        assert!(detector.push(&samples));
+        let consumed = (detector.total_ms / FRAME_MS) as usize * FRAME_SAMPLES;
+        assert_eq!(detector.frame, samples[consumed..]);
+        assert_eq!(detector.total_ms, MIN_SPEECH_MS_BASE);
+    }
 
     #[test]
     fn gain_leniency_scale_is_neutral_at_default_gain() {
