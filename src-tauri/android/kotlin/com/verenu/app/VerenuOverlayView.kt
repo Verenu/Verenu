@@ -162,7 +162,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         pill.isFocusable = false
         pill.setOnClickListener {
             // A drag ends with the finger lifting over the pill; that is not a tap.
-            if (gesture.suppressClick) Unit else listener?.onPillTap()
+            if (!gesture.consumeClickSuppression()) listener?.onPillTap()
         }
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         pill.setOnTouchListener { view, event ->
