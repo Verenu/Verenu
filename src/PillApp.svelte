@@ -1,6 +1,7 @@
 <script lang="ts">
   import { classifyIpcError } from './lib/errors';
   import { onMount, tick } from 'svelte';
+  import { createListenerScope } from './lib/listenerScope';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
@@ -859,7 +860,7 @@
   }
 
   onMount(() => {
-    const unlisteners: Array<() => void> = [];
+    const listeners = createListenerScope();
     let mounted = true;
     const onWindowResize = () => { void reportHitRect(true); };
     window.addEventListener('resize', onWindowResize);
@@ -882,9 +883,16 @@
     }
 
     (async () => {
-      const { listen } = await import('@tauri-apps/api/event');
+      const { listen: nativeListen } = await import('@tauri-apps/api/event');
+      if (!mounted) return;
+      const listen: typeof nativeListen = (event, handler, options) => {
+        const registration = nativeListen(event, handler, options);
+        registrations.push(listeners.track(registration));
+        return registration;
+      };
+      const registrations: Promise<void>[] = [];
 
-      const l1 = await listen<string>('pill-state', (ev) => {
+      void listen<string>('pill-state', (ev) => {
         const incoming = (ev.payload as PillState) || 'idle';
         if (hfTimer !== null) { clearTimeout(hfTimer); hfTimer = null; }
 
@@ -1065,61 +1073,53 @@
           copiedPillTimer = null;
         }
       });
-      if (!mounted) { l1(); return; }
-      unlisteners.push(l1);
 
-      const l2 = await listen<string>('pill-error', (ev) => {
+      void listen<string>('pill-error', (ev) => {
         errorMsg = ev.payload ?? '';
         if (state === 'error') {
           openError();
         }
       });
-      if (!mounted) { l2(); return; }
-      unlisteners.push(l2);
 
       // Short-window envelope batches (see EnvelopeTap in media/audio.rs) — the
       // visualizer's real input. The scalar `audio-level` event is still emitted
       // for other consumers, but one RMS value per 50ms cannot show audio
       // flowing, so the pill does not use it.
-      const l3 = await listen<number[]>('audio-envelope', (ev) => {
+      void listen<number[]>('audio-envelope', (ev) => {
         if (ev.payload?.length) visualizer.pushEnvelope(ev.payload);
       });
-      if (!mounted) { l3(); return; }
-      unlisteners.push(l3);
 
-      const l7 = await listen<number>('audio-level-raw', (ev) => {
+      void listen<number>('audio-level-raw', (ev) => {
         onRawAudioLevel(ev.payload ?? 0);
       });
-      if (!mounted) { l7(); return; }
-      unlisteners.push(l7);
 
-      const l8 = await listen('pill-speech-detected', () => {
+      void listen('pill-speech-detected', () => {
         onSpeechDetected();
       });
-      if (!mounted) { l8(); return; }
-      unlisteners.push(l8);
 
-      const l5 = await listen<string>('pill-context', (ev) => {
+      void listen<string>('pill-context', (ev) => {
         const name = ev.payload?.trim();
         contextLabel = name ? name : null;
       });
-      if (!mounted) { l5(); return; }
-      unlisteners.push(l5);
 
-      const l6 = await listen<string>('pill-stage', (ev) => {
+      void listen<string>('pill-stage', (ev) => {
         onPillStage(ev.payload);
       });
-      if (!mounted) { l6(); return; }
-      unlisteners.push(l6);
 
       // Fired when the cancelled capture is resumed or dismissed from
       // *another* window (Home's banner) — if this toast is still showing,
       // it's now stale, so drop it without re-invoking dismiss.
-      const l4 = await listen('verenu:cancelled-capture-cleared', () => {
+      void listen('verenu:cancelled-capture-cleared', () => {
         if (isCancelLike(state)) goIdle();
       });
-      if (!mounted) { l4(); return; }
-      unlisteners.push(l4);
+
+      try {
+        await Promise.all(registrations);
+      } catch {
+        listeners.dispose();
+        console.error('Failed to install pill event listeners.');
+        return;
+      }
 
       // Do not report readiness until every pill listener is installed. The
       // backend creates this window lazily and can emit `pill-state` in the
@@ -1157,7 +1157,7 @@
       if (copiedTimer) clearTimeout(copiedTimer);
       if (copiedPillTimer) clearTimeout(copiedPillTimer);
       clearAudioStatusTimers();
-      unlisteners.forEach(u => u());
+      listeners.dispose();
     };
   });
 
