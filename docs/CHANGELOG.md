@@ -6,6 +6,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Strengthened CI and agent verification with strict skipped-test handling, complete owned-session test discovery, native capability/platform evidence, Android Kotlin/JVM checks, native WebView PR checks, workflow linting, and exact-source nightly release verification. Added Context lifecycle, populated-cache clearing, accessibility, and visual regression coverage.
 - Queued runtime icon updates on the UI thread, including tray-handle lookup and disposal, to prevent unsafe reference-count access during concurrent appearance saves. Added an owned-session concurrency regression.
+- Fixed Linux mouse-button dictation cancelling immediately when the mouse sends F13 alongside Control-Super. F13 is accepted only with the initial press; later shortcut keys still discard the hold.
+- Linux Cancel dictation and Switch to hands-free no longer fall back to function keys. Unavailable controls disable stale bindings, including after a portal disconnect; changed keys replace their previous bindings.
 
 - Android pill placement is now reliable and draggable. Hold the pill and drag it, and it snaps to the nearest position and saves it to Settings, which updates live. A new "Pill position without a keyboard" setting decides where the pill rests when a dictation outlives the keyboard; it now defaults to the bottom of the screen instead of the top, and offers a full grid of positions (left, middle, right, top, bottom). The pill still covers the keyboard's mic button by default, including before the first sync with the app. It remembers its last placement across restarts and picks up changes made in Settings as soon as the keyboard opens instead of up to two seconds later.
 
