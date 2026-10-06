@@ -2,6 +2,7 @@ use super::*;
 use crate::api::github::CommitSnapshot;
 
 const CACHE_SECONDS: i64 = 15 * 60;
+const MAX_TZ_OVERRIDE_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct CachedCommitSnapshot {
@@ -12,11 +13,43 @@ struct CachedCommitSnapshot {
     timezone_id: Option<String>,
 }
 
-fn current_timezone_id() -> Option<String> {
-    iana_time_zone::get_timezone()
-        .ok()
-        .map(|timezone| timezone.trim().to_owned())
+fn timezone_id_for_sources(
+    tz_override: Option<&[u8]>,
+    system_timezone: Option<&str>,
+) -> Option<String> {
+    if let Some(tz_override) = tz_override {
+        if tz_override.len() > MAX_TZ_OVERRIDE_BYTES {
+            return None;
+        }
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(tz_override);
+        let mut identity = String::from("unix-tz-sha256:");
+        use std::fmt::Write;
+        for byte in digest {
+            let _ = write!(identity, "{byte:02x}");
+        }
+        return Some(identity);
+    }
+    system_timezone
+        .map(str::trim)
         .filter(|timezone| !timezone.is_empty())
+        .map(|timezone| format!("iana:{timezone}"))
+}
+
+fn current_timezone_id() -> Option<String> {
+    // Chrono honors Unix TZ overrides, while iana-time-zone reports the system
+    // zone. Hash a bounded override value so equal current offsets with different
+    // historical rules cannot share cache identity. Non-Unicode values are
+    // ignored here because Chrono ignores them too.
+    #[cfg(unix)]
+    let tz_override = std::env::var("TZ").ok();
+    #[cfg(not(unix))]
+    let tz_override: Option<String> = None;
+    let system_timezone = iana_time_zone::get_timezone().ok();
+    timezone_id_for_sources(
+        tz_override.as_deref().map(str::as_bytes),
+        system_timezone.as_deref(),
+    )
 }
 
 fn cached_snapshot_for_user(
@@ -374,14 +407,16 @@ mod cache_tests {
     #[test]
     fn same_current_offset_with_different_timezone_rules_forces_refresh_and_warns_on_fallback() {
         // New York and Lima can both be UTC-5, but New York observes DST.
-        let cached = cache("octocat", -18_000, Some("America/New_York"));
+        let new_york = timezone_id_for_sources(Some(b"America/New_York"), None).unwrap();
+        let lima = timezone_id_for_sources(Some(b"America/Lima"), None).unwrap();
+        let cached = cache("octocat", -18_000, Some(&new_york));
         let today = chrono::Local::now().date_naive();
         assert!(!cache_is_fresh(
             &cached,
             "octocat",
             today,
             -18_000,
-            Some("America/Lima"),
+            Some(&lima),
             200
         ));
 
@@ -389,7 +424,7 @@ mod cache_tests {
             cached.clone(),
             "GitHub is unavailable.",
             -18_000,
-            Some("America/Lima"),
+            Some(&lima),
         );
         assert_eq!(stale.utc_offset, -18_000);
         assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
@@ -397,6 +432,29 @@ mod cache_tests {
         let warning = stale.warning.unwrap();
         assert!(warning.contains("time zone changed"));
         assert!(warning.contains("original daily buckets are retained"));
+    }
+
+    #[test]
+    fn timezone_identity_distinguishes_overrides_system_zone_and_unknown_values() {
+        let new_york = timezone_id_for_sources(Some(b"America/New_York"), Some("Etc/UTC"));
+        let lima = timezone_id_for_sources(Some(b"America/Lima"), Some("Etc/UTC"));
+        let posix = timezone_id_for_sources(Some(b"EST5EDT,M3.2.0/2,M11.1.0/2"), None);
+        let empty_override = timezone_id_for_sources(Some(b""), Some("Etc/UTC"));
+        let system = timezone_id_for_sources(None, Some("America/New_York"));
+
+        assert_ne!(new_york, lima);
+        assert_ne!(new_york, system);
+        assert!(posix.is_some());
+        assert!(empty_override.is_some());
+        assert_ne!(empty_override, system);
+        assert_eq!(
+            timezone_id_for_sources(
+                Some(&vec![b'x'; MAX_TZ_OVERRIDE_BYTES + 1]),
+                Some("Etc/UTC")
+            ),
+            None
+        );
+        assert_eq!(timezone_id_for_sources(None, None), None);
     }
 
     #[test]
