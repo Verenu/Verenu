@@ -171,7 +171,13 @@ class FrontendIpcActivity {
   start(command: string): number {
     const now = Date.now(); let metric = this.metrics.get(command);
     if (!metric) {
-      if (this.metrics.size >= MAX_FRONTEND_METRICS) { const oldest = [...this.metrics.values()].sort((a, b) => a.last_seen - b.last_seen)[0]; if (oldest) this.metrics.delete(oldest.command); }
+      if (this.metrics.size >= MAX_FRONTEND_METRICS) {
+        let oldest: FrontendIpcMetric | undefined;
+        for (const candidate of this.metrics.values()) {
+          if (!oldest || candidate.last_seen < oldest.last_seen) oldest = candidate;
+        }
+        if (oldest) this.metrics.delete(oldest.command);
+      }
       metric = { command, calls: 0, failures: 0, total_duration_ms: 0, average_duration_ms: null, p95_duration_ms: null, max_duration_ms: null, currently_running: 0, hidden_calls: 0, first_seen: now, last_seen: now, samples: [], last_error: null };
       this.metrics.set(command, metric);
     }
@@ -182,10 +188,10 @@ class FrontendIpcActivity {
     metric.currently_running = Math.max(0, metric.currently_running - 1); metric.calls += 1; if (!success) metric.failures += 1;
     metric.total_duration_ms += duration; metric.average_duration_ms = metric.total_duration_ms / metric.calls;
     if (!success) metric.last_error = error ? error.slice(0, 160) : 'Unknown IPC error';
-    metric.max_duration_ms = Math.max(metric.max_duration_ms ?? 0, duration); metric.samples = pushBounded(metric.samples, duration, MAX_FRONTEND_SAMPLES); metric.p95_duration_ms = p95(metric.samples); metric.last_seen = Date.now();
+    metric.max_duration_ms = Math.max(metric.max_duration_ms ?? 0, duration); metric.samples = pushBounded(metric.samples, duration, MAX_FRONTEND_SAMPLES); metric.last_seen = Date.now();
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') metric.hidden_calls += 1;
   }
-  snapshot(): FrontendIpcMetric[] { return [...this.metrics.values()].map((metric) => ({ ...metric, samples: [...metric.samples] })).sort((a, b) => b.total_duration_ms - a.total_duration_ms); }
+  snapshot(): FrontendIpcMetric[] { return [...this.metrics.values()].map((metric) => ({ ...metric, p95_duration_ms: p95(metric.samples), samples: [...metric.samples] })).sort((a, b) => b.total_duration_ms - a.total_duration_ms); }
 }
 
 export const frontendIpcActivity = new FrontendIpcActivity();

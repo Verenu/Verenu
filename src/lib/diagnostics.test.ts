@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   filterLogs,
   formatBytes,
@@ -65,5 +65,24 @@ describe('diagnostics helpers', () => {
     expect(metric?.calls).toBe(1);
     expect(metric?.failures).toBe(1);
     expect(metric?.samples.length).toBeLessThanOrEqual(64);
+  });
+
+  it('reports the current percentile without letting callers mutate retained samples', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      for (let duration = 1; duration <= 70; duration++) {
+        frontendIpcActivity.start('percentile-test');
+        frontendIpcActivity.finish('percentile-test', 1000 - duration, true);
+      }
+      const snapshot = () => frontendIpcActivity.snapshot().find((item) => item.command === 'percentile-test')!;
+      const metric = snapshot();
+      expect(metric.samples).toHaveLength(64);
+      expect(metric.p95_duration_ms).toBe(67);
+      metric.samples.fill(0);
+      expect(snapshot().p95_duration_ms).toBe(67);
+      frontendIpcActivity.start('percentile-test');
+      frontendIpcActivity.finish('percentile-test', 800, true);
+      expect(snapshot().p95_duration_ms).toBe(68);
+    } finally { now.mockRestore(); }
   });
 });
