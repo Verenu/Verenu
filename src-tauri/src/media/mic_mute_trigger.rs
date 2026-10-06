@@ -7,8 +7,24 @@
 //! Binds the selected capture device with relaxed name matching so WASAPI and
 //! CPAL labels for the same mic still resolve. Never calls SetMute.
 
+#[cfg(any(windows, target_os = "linux"))]
+fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
+    let mut silent = 0u32;
+    let mut abs_max = 0.0f32;
+    for a in abs_samples {
+        if a > abs_max {
+            abs_max = a;
+        }
+        if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
+            silent += 1;
+        }
+    }
+    (silent, abs_max)
+}
+
 #[cfg(windows)]
 mod win {
+    use super::pcm_stats;
     use crate::data::store;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -933,20 +949,6 @@ mod win {
         Ok(())
     }
 
-    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
-        let mut silent = 0u32;
-        let mut abs_max = 0.0f32;
-        for a in abs_samples {
-            if a > abs_max {
-                abs_max = a;
-            }
-            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
-                silent += 1;
-            }
-        }
-        (silent, abs_max)
-    }
-
     fn handle_pcm_stats(
         total: usize,
         silent: u32,
@@ -1046,6 +1048,7 @@ pub fn reload(_app: &tauri::AppHandle) {}
 /// so the streams never overlap.
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::pcm_stats;
     use crate::core::window_geometry::WindowTarget;
     use crate::data::store;
     use crate::media::device_match;
@@ -1812,20 +1815,6 @@ mod linux {
         }
         drop(stream);
         Ok(())
-    }
-
-    fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
-        let mut silent = 0u32;
-        let mut abs_max = 0.0f32;
-        for a in abs_samples {
-            if a > abs_max {
-                abs_max = a;
-            }
-            if a <= crate::media::digital_silence::DIGITAL_SILENCE_EPS {
-                silent += 1;
-            }
-        }
-        (silent, abs_max)
     }
 
     fn handle_pcm_stats(
