@@ -85,6 +85,8 @@ mod stages_cleanup;
 mod stages_style;
 mod stages_transcription;
 mod state;
+mod telemetry;
+use crate::analytics::{FailureCategory, Stage};
 use cache::*;
 use chains::*;
 use finalize::{finalize_pipeline_completion, PipelineCompletionContext};
@@ -112,7 +114,7 @@ pub(crate) use pill::{
 };
 use pill::{
     reject_with_pill, show_cancelled_pill, show_error_pill, show_interrupted_pill,
-    show_paste_failed_pill, show_partial_paste_pill,
+    show_partial_paste_pill, show_paste_failed_pill,
 };
 pub(crate) use pill_position::{
     apply_pill_placement, placement_for_current_monitor, PillPlacement,
@@ -122,6 +124,7 @@ use stages_cleanup::*;
 use stages_style::*;
 use stages_transcription::*;
 pub use state::*;
+use telemetry::PipelineTelemetry;
 
 /// Bounded, process-local sensitivity levels used after a rejected capture.
 /// Each fresh attempt can become more permissive without changing the user's
@@ -360,6 +363,13 @@ pub(crate) async fn run_provided_audio(
     _domain: Option<String>,
 ) -> Result<(), String> {
     let generation = state::reserve_provided_capture(&state)?;
+    if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+        let run_id = analytics.new_run_id();
+        analytics.dictation_started(&run_id, false, false);
+        if let Ok(mut st) = lock_state(&state) {
+            st.analytics_run_id = Some(run_id);
+        }
+    }
     run_pipeline_with_delivery(
         app,
         state,
@@ -479,6 +489,15 @@ async fn run_pipeline_with_delivery(
     };
     let trace = diagnostics::start_trace("dictation", None);
     let mut trace_guard = PipelineDiagnosticsGuard::new(trace);
+    let telemetry = PipelineTelemetry::new(
+        app.try_state::<crate::analytics::Analytics>()
+            .map(|a| a.inner().clone()),
+        state::analytics_run_id(&state),
+    );
+    telemetry.context(
+        resolved_context_identity.id != db::EVERYWHERE_CONTEXT_ID,
+        false,
+    );
     let _media_pause_guard = crate::system::media_control::DictationMediaPauseGuard::new();
 
     // Read once, synchronously, as close to the hotkey-release moment as
@@ -494,9 +513,7 @@ async fn run_pipeline_with_delivery(
     let process_name = provided
         .as_ref()
         .map(|input| input.process_name.clone())
-        .or_else(|| {
-            target.process_name()
-        })
+        .or_else(|| target.process_name())
         .unwrap_or_else(|| "unknown".into())
         .to_lowercase();
     let db_handle = app.state::<DbHandle>().inner().clone();
@@ -566,6 +583,7 @@ async fn run_pipeline_with_delivery(
         None
     };
     let Some(stopped_capture) = capture else {
+        telemetry.input_health("capture_stream_failed");
         // Stop/capture failures retain any durable prefix for crash recovery;
         // the duration-limit branch handles its deliberate cleanup itself.
         state::leave_stopping_if_owned(&state, generation);
@@ -579,6 +597,7 @@ async fn run_pipeline_with_delivery(
         ..
     } = stopped_capture;
     if stream_error {
+        telemetry.input_health("capture_stream_failed");
         failover::abandon_live();
         show_error_pill(&app, AUDIO_STREAM_ERROR_MESSAGE).await;
         state::leave_stopping_if_owned(&state, generation);
@@ -600,6 +619,7 @@ async fn run_pipeline_with_delivery(
         rms = merged_rms;
         raw_rms = merged_raw_rms;
     }
+    telemetry.recording_finished(captured_audio.duration_ms);
     // Only reject here on duration or on RMS so low it's obviously digital
     // silence/a dead mic — cheap enough to check before paying for an API
     // call. The real "is there speech" judgment happens in the local VAD gate
@@ -615,6 +635,16 @@ async fn run_pipeline_with_delivery(
         silence_floor,
         active_gain,
     ) {
+        let too_short = captured_audio.duration_ms < MIN_RECORDING_MS;
+        telemetry.input_health(if too_short { "too_short" } else { "too_quiet" });
+        telemetry.failed(
+            if too_short {
+                FailureCategory::AudioTooShort
+            } else {
+                FailureCategory::AudioTooQuiet
+            },
+            true,
+        );
         state::note_sensitivity_rejection(&state);
         failover::abandon_live();
         state::leave_stopping_if_owned(&state, generation);
@@ -633,7 +663,6 @@ async fn run_pipeline_with_delivery(
     if let Some(span) = audio_span {
         let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
     }
-
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
     let active = ActivePipeline {
         generation,
@@ -666,6 +695,7 @@ async fn run_pipeline_with_delivery(
         }
     }
     if !state::install_processing(&state, generation, active) {
+        telemetry.cancelled();
         // Superseded between Stopping and here (should not happen in
         // practice — nothing else can transition out of Stopping — but an
         // interrupt/Escape branch, if it somehow raced this, already owns
@@ -680,12 +710,8 @@ async fn run_pipeline_with_delivery(
         Some("context"),
         None,
     );
-    let Some((cfg, profile)) = open_config_and_context(
-        &app,
-        &process_name,
-        resolved_context.as_ref(),
-    )
-    .await
+    let Some((cfg, profile)) =
+        open_config_and_context(&app, &process_name, resolved_context.as_ref()).await
     else {
         // open_config_and_context already shows its own error/pill on
         // failure — no separate emit_pipeline_failed here (matches its
@@ -715,6 +741,7 @@ async fn run_pipeline_with_delivery(
     );
 
     if *cancel_rx.borrow() {
+        telemetry.cancelled();
         state::leave_processing_if_owned(&state, generation);
         return;
     }
@@ -739,6 +766,7 @@ async fn run_pipeline_with_delivery(
     // inference error) never blocks a dictation; the speech gate falls back to
     // the RMS threshold only in that case.
     let vad_span = diagnostics::start_span(trace_guard.trace_id(), "vad_gate", Some("vad"), None);
+    telemetry.start_stage(Stage::Vad);
     let vad_samples = captured_audio.samples_16k.clone();
     let vad_handle = tokio::task::spawn_blocking(move || {
         crate::media::vad::analyze_speech_with_sensitivity(
@@ -762,6 +790,7 @@ async fn run_pipeline_with_delivery(
         },
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (awaiting VAD gate)");
+            telemetry.cancelled();
             state::leave_processing_if_owned(&state, generation);
             return;
         }
@@ -774,6 +803,8 @@ async fn run_pipeline_with_delivery(
         active_gain,
         vad_result.as_ref(),
     ) {
+        telemetry.input_health("vad_rejected");
+        telemetry.failed(FailureCategory::VadRejected, true);
         state::note_sensitivity_rejection(&state);
         state::leave_processing_if_owned(&state, generation);
         return;
@@ -781,10 +812,17 @@ async fn run_pipeline_with_delivery(
     if let Some(span) = vad_span {
         let _ = diagnostics::finish_span(&span, OperationOutcome::Success);
     }
+    telemetry.input_health(if vad_result.is_some() {
+        "vad_passed"
+    } else {
+        "vad_internal_failure"
+    });
+    telemetry.complete_stage(None);
 
     // Stage already emitted right after entering "processing" above (see
     // comment there) — this Instant is purely for the timing log below.
     let stage_transcribe = std::time::Instant::now();
+    telemetry.start_stage(Stage::Transcription);
     let transcription_span =
         if cfg.dual_transcription_enabled && transcription_model_chain(&cfg).len() > 1 {
             diagnostics::start_parallel_span(
@@ -803,7 +841,7 @@ async fn run_pipeline_with_delivery(
             )
         };
     let transcribe_race = tokio::select! {
-        r = run_transcription(&app, &captured_audio, &cfg, generation) => Some(r),
+        r = run_transcription(&app, &captured_audio, &cfg, generation, &telemetry) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (during transcription)");
             None
@@ -813,15 +851,21 @@ async fn run_pipeline_with_delivery(
     // it again; existing upload owners keep their Bytes handles valid.
     captured_audio.clear_wav_cache();
     let Some(transcribe_outcome) = transcribe_race else {
+        telemetry.cancelled();
         state::leave_processing_if_owned(&state, generation);
         return;
     };
     let Some((raw_unorm, api_used, alternate)) = transcribe_outcome else {
+        telemetry.failed(FailureCategory::ProviderUnavailable, false);
         if state::leave_processing_if_owned(&state, generation) {
             emit_pipeline_failed(&app);
         }
         return;
     };
+    telemetry.complete_stage(Some(&api_used));
+    if alternate.is_some() {
+        telemetry.feature("dual_transcription");
+    }
 
     let raw = normalize_transcription_math_artifacts(&raw_unorm);
     let raw_chars_before_strip = raw.chars().count();
@@ -897,6 +941,7 @@ async fn run_pipeline_with_delivery(
     // (A trailing hallucinated sentence has already been trimmed above; this
     // catches the case where the whole transcription is still one.)
     if !has_spoken_content(&raw) || is_transcription_hallucination(&raw) {
+        telemetry.failed(FailureCategory::EmptyResponse, true);
         log::warn!(
             "pipeline: transcription had no spoken content or matched a hallucination pattern, dropping silently raw=\"{}\"",
             preview_text(&raw, 60)
@@ -908,6 +953,7 @@ async fn run_pipeline_with_delivery(
     }
 
     if *cancel_rx.borrow() {
+        telemetry.cancelled();
         state::leave_processing_if_owned(&state, generation);
         return;
     }
@@ -919,6 +965,7 @@ async fn run_pipeline_with_delivery(
         .map(clipboard_phrase::cleanup_instruction);
 
     let stage_cleanup = std::time::Instant::now();
+    telemetry.start_stage(Stage::Cleanup);
     let cleanup_span = diagnostics::start_span(
         trace_guard.trace_id(),
         "cleanup_and_snippets",
@@ -938,26 +985,30 @@ async fn run_pipeline_with_delivery(
         cfg.cleanup_intensity == "none" && alternate.is_some(),
     );
     if cleanup_will_run_llm {
+        telemetry.feature("cleanup");
         emit_pill_stage(&app, "cleaning");
     }
     let cleanup_race = tokio::select! {
-        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, None, context_id, clipboard_instruction.as_deref(), generation) => Some(r),
+        r = run_cleanup_and_snippets(&app, &raw_for_cleanup, alternate.as_ref(), &cfg, &profile, None, context_id, clipboard_instruction.as_deref(), generation, &telemetry) => Some(r),
         _ = wait_for_cancel(&mut cancel_rx) => {
             log::info!("pipeline: cancelled gen={generation} (during cleanup)");
             None
         }
     };
     let Some(cleanup_outcome) = cleanup_race else {
+        telemetry.cancelled();
         state::leave_processing_if_owned(&state, generation);
         return;
     };
     let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used)) = cleanup_outcome
     else {
+        telemetry.failed(FailureCategory::Internal, false);
         if state::leave_processing_if_owned(&state, generation) {
             emit_pipeline_failed(&app);
         }
         return;
     };
+    telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
     log::debug!(
         "pipeline: cleanup/snippets ok final_chars={} final_preview=\"{}\" dict_entries={}",
@@ -991,6 +1042,7 @@ async fn run_pipeline_with_delivery(
     // generation; abandon without inserting anything.
     emit_pill_stage(&app, "pasting");
     if !state::enter_finalizing(&state, generation) {
+        telemetry.cancelled();
         return;
     }
 
@@ -1004,6 +1056,7 @@ async fn run_pipeline_with_delivery(
         &app,
         &state,
         PipelineCompletionContext {
+            telemetry: Some(&telemetry),
             raw: &raw,
             final_text_before_dict: &final_text,
             clipboard_plan: clipboard_plan.as_ref(),
@@ -1162,6 +1215,21 @@ pub async fn retry_transcription_impl(
     // applies to the next fresh take; a missing or expired retry must not
     // change microphone sensitivity.
     state::note_sensitivity_retry(state);
+    let analytics = app
+        .try_state::<crate::analytics::Analytics>()
+        .map(|a| a.inner().clone());
+    let run_id = analytics.as_ref().map(|a| {
+        let id = a.new_run_id();
+        a.dictation_started(&id, false, false);
+        a.retry_attempted(&id, 1, "unknown");
+        id
+    });
+    if let Ok(mut st) = lock_state(state) {
+        st.analytics_run_id = run_id.clone();
+    }
+    let telemetry = PipelineTelemetry::new(analytics, run_id);
+    telemetry.recording_finished(capture.audio.duration_ms);
+    telemetry.context(capture.context.id != db::EVERYWHERE_CONTEXT_ID, false);
     capture.target = capture.target.refreshed();
     if let Ok(mut st) = lock_state(state) {
         st.target = capture.target.clone();
@@ -1191,12 +1259,14 @@ pub async fn retry_transcription_impl(
     emit_pill_context(app, &capture.context.label);
 
     emit_pill_stage(app, "transcribing");
+    telemetry.start_stage(Stage::Transcription);
     let Some((raw_unorm, api_used, alternate)) =
-        run_transcription(app, &capture.audio, &cfg, 0).await
+        run_transcription(app, &capture.audio, &cfg, 0, &telemetry).await
     else {
         hide_pill(app);
         anyhow::bail!("Retry transcription failed");
     };
+    telemetry.complete_stage(Some(&api_used));
     let raw = normalize_transcription_math_artifacts(&raw_unorm);
     let raw = if alternate
         .as_ref()
@@ -1208,6 +1278,7 @@ pub async fn retry_transcription_impl(
     };
     let raw = crate::system::text::collapse_degenerate_word_runs(&raw);
     if !has_spoken_content(&raw) || is_transcription_hallucination(&raw) {
+        telemetry.failed(FailureCategory::EmptyResponse, true);
         log::warn!(
             "pipeline: retry transcription had no spoken content or matched a hallucination pattern, dropping raw=\"{}\"",
             preview_text(&raw, 60)
@@ -1227,6 +1298,7 @@ pub async fn retry_transcription_impl(
     }
     let (raw_for_cleanup, clipboard_plan, clipboard_warning) =
         prepare_clipboard_phrase(&cfg, &raw).await;
+    telemetry.start_stage(Stage::Cleanup);
     let clipboard_instruction = clipboard_plan
         .as_ref()
         .map(clipboard_phrase::cleanup_instruction);
@@ -1241,12 +1313,14 @@ pub async fn retry_transcription_impl(
             capture.context.id,
             clipboard_instruction.as_deref(),
             0,
+            &telemetry,
         )
         .await
     else {
         hide_pill(app);
         anyhow::bail!("Retry cleanup failed");
     };
+    telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
 
     emit_pill_stage(app, "pasting");
@@ -1254,6 +1328,7 @@ pub async fn retry_transcription_impl(
         app,
         state,
         PipelineCompletionContext {
+            telemetry: Some(&telemetry),
             raw: &raw,
             final_text_before_dict: &final_text,
             clipboard_plan: clipboard_plan.as_ref(),
