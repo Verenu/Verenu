@@ -3,7 +3,7 @@
 //! Both platforms expose the same public contract consumed by `main.rs` and
 //! `commands`:
 //!   `start(on_press, on_release, on_handless, on_cancel, on_escape, on_copy_last)`,
-//!   `update_keys`, `map_code_to_vk`, `is_hotkey_available`,
+//!   `update_keys`, `map_code_to_vk`, `validate_hotkey`, `is_hotkey_available`,
 //!   `reset_chord_state`, `set_handless_active`,
 //!   `begin_synthetic_paste_suppression`, `is_win_key_down`,
 //!   `force_release_win_key`.
@@ -218,6 +218,9 @@ mod noop {
         Ok(())
     }
     pub fn is_hotkey_available(_keys: &[String]) -> Result<bool, String> {
+        Err("Global shortcuts are unavailable on this platform".into())
+    }
+    pub fn validate_hotkey(_keys: &[String]) -> Result<bool, String> {
         Err("Global shortcuts are unavailable on this platform".into())
     }
     pub fn update_keys(_keys: &[u32]) -> Result<(), String> {

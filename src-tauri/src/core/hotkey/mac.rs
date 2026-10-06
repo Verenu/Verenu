@@ -182,6 +182,15 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
     probe_hotkey_availability(&manager, hk)
 }
 
+/// Validate Carbon's shortcut shape without registering it with the OS. Dev
+/// sessions do not own host shortcuts, but still reject unsupported chords.
+pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
+    let ids = super::mapped_codes(keys)?;
+    build_hotkey_from(&ids).map(|_| true).ok_or_else(|| {
+        "Use modifiers plus one regular key, or a single function key on macOS".into()
+    })
+}
+
 fn probe_hotkey_availability(
     manager: &GlobalHotKeyManager,
     hk: HotKey,

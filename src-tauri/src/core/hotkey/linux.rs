@@ -445,10 +445,22 @@ fn shortcut_configuration_for(keys: &[u32]) -> Option<(Option<String>, Vec<Strin
     Some((Some(trigger.clone()), vec![trigger.replace('+', " + ")]))
 }
 
-pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+fn shortcut_triggers(keys: &[String]) -> Result<Vec<String>, String> {
     let ids = super::mapped_codes(keys)?;
     let (_, triggers) = shortcut_configuration_for(&ids)
         .ok_or("Use modifiers plus one regular key, a function key, or a modifier-only combination on Linux")?;
+    Ok(triggers)
+}
+
+/// Validate Linux shortcut shape without consulting the compositor. Browser
+/// dev sessions disable global hotkeys, so they can check supported bindings
+/// while running under Xvfb or another headless fixture.
+pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
+    shortcut_triggers(keys).map(|_| true)
+}
+
+pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+    let triggers = shortcut_triggers(keys)?;
     Ok(conflicts::free(
         &conflicts::bindings("dictation")?,
         &triggers,
@@ -1507,6 +1519,15 @@ mod tests {
         .is_none());
         assert!(super::shortcut_configuration_for(&[105]).is_some());
         assert!(super::shortcut_configuration_for(&[200]).is_none());
+    }
+
+    #[test]
+    fn dev_session_validation_checks_chord_shape_without_compositor_access() {
+        let chord = ["ControlLeft", "AltLeft", "ShiftLeft", "MetaLeft", "KeyK"].map(str::to_string);
+        assert!(super::validate_hotkey(&chord).unwrap());
+
+        let two_regular_keys = ["KeyA", "KeyB"].map(str::to_string);
+        assert!(super::validate_hotkey(&two_regular_keys).is_err());
     }
     use super::{
         escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
