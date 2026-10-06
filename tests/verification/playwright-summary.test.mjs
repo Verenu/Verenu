@@ -69,6 +69,44 @@ test('static titles redact URLs, credential-shaped strings, and email addresses'
   assert.equal(summary.tests[0].title, 'calls [url] with [redacted] and [redacted]');
 });
 
+test('failed dropdown cases expose only allowlisted geometry and assertion lines', () => {
+  const report = {
+    suites: [{
+      file: 'tests/browser/settings-dropdowns.spec.mjs',
+      specs: [{
+        title: 'menus stay in the viewport',
+        line: 34,
+        tests: [{
+          projectName: 'phone',
+          status: 'unexpected',
+          results: [{
+            status: 'failed',
+            errors: [{
+              message: 'private assertion value\nMENU_GEOMETRY:{"menuId":"transcription-mode-menu","check":"right-panel","bounds":{"x":8,"y":12,"width":374,"height":240,"privateText":"do-not-share"},"content":{"x":16,"y":24,"width":358,"height":700},"viewport":{"width":390,"height":844},"privateText":"do-not-share"}',
+              location: { file: '/runner/work/app/tests/browser/settings-dropdowns.spec.mjs', line: 80, column: 5 },
+            }],
+          }],
+        }],
+      }],
+    }],
+  };
+  const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+
+  assert.deepEqual(summary.tests, [{
+    project: 'phone', file: 'tests/browser/settings-dropdowns.spec.mjs', line: 34,
+    title: 'menus stay in the viewport', status: 'failed', retryCount: 0,
+    assertionLine: 80,
+    menuGeometry: {
+      check: 'right-panel', menuId: 'transcription-mode-menu',
+      bounds: { x: 8, y: 12, width: 374, height: 240 },
+      content: { x: 16, y: 24, width: 358, height: 700 },
+      viewport: { width: 390, height: 844 },
+    },
+  }]);
+  assert.equal(JSON.stringify(summary).includes('private'), false);
+  assert.equal(JSON.stringify(summary).includes('do-not-share'), false);
+});
+
 test('successful test results do not erase a failed browser process', () => {
   const summary = summarizePlaywrightReport({ suites: [{ specs: [spec()] }] }, {
     processStatus: 'failed', exitCode: 1, processReason: 'Process ended with SIGABRT', projectRoot: '/repo',
