@@ -689,9 +689,11 @@ fn eval_hyprland(snippet: &str) -> Result<(), String> {
 /// only shells out to `hyprctl` on transitions.
 fn refresh_escape_listening() {
     refresh_space_listening();
-    let wanted = CHORD_ACTIVE.load(Ordering::SeqCst)
+    let available = CANCEL_KEY.lock().map(|key| !key.is_empty()).unwrap_or(false)
+        && CANCEL_PORTAL_ID.lock().map(|id| id.is_some()).unwrap_or(false);
+    let wanted = available && (CHORD_ACTIVE.load(Ordering::SeqCst)
         || HANDLESS.load(Ordering::SeqCst)
-        || PROCESSING.load(Ordering::SeqCst) != 0;
+        || PROCESSING.load(Ordering::SeqCst) != 0);
     if wanted == ESCAPE_ARMED.load(Ordering::SeqCst) {
         return;
     }
@@ -726,13 +728,13 @@ fn refresh_space_listening() {
         .lock()
         .map(|key| key.clone())
         .unwrap_or_default();
-    let wanted = CHORD_ACTIVE.load(Ordering::SeqCst)
+    let id = HANDSFREE_PORTAL_ID.lock().ok().and_then(|id| id.clone());
+    let wanted = !key.is_empty() && id.is_some() && CHORD_ACTIVE.load(Ordering::SeqCst)
         && !HANDLESS.load(Ordering::SeqCst)
         && !(configured_keys(&EFFECTIVE_KEYS).contains(&200) && key.eq_ignore_ascii_case("Space"));
     if wanted == SPACE_ARMED.load(Ordering::SeqCst) {
         return;
     }
-    let id = HANDSFREE_PORTAL_ID.lock().ok().and_then(|id| id.clone());
     if wanted && key.is_empty() {
         return;
     }
@@ -758,32 +760,34 @@ fn register_temporary_controls() {
         .lock()
         .map(|key| key.clone())
         .unwrap_or_default();
-    for (name, key, id, description) in [
+    for (name, key, id, armed, description) in [
         (
             "escape",
             cancel_key.as_str(),
             &CANCEL_PORTAL_ID,
+            &ESCAPE_ARMED,
             "Verenu cancel dictation (while active)",
         ),
         (
             "space",
             handsfree_key.as_str(),
             &HANDSFREE_PORTAL_ID,
+            &SPACE_ARMED,
             "Verenu switch to hands-free (while holding dictation)",
         ),
     ] {
-        if key.is_empty() {
-            continue;
-        }
-        if let Some(id) = id.lock().ok().and_then(|id| id.clone()) {
-            let snippet = format!(
+        let id = id.lock().ok().and_then(|id| id.clone());
+        let snippet = match id.filter(|_| !key.is_empty()) {
+            Some(id) => format!(
                 "{}; {}",
                 shortcuts::temporary_binding(name, key, Some(&id), description),
                 shortcuts::temporary_binding(name, key, None, "")
-            );
-            if let Err(error) = eval_hyprland(&snippet) {
-                log::warn!("linux hotkey: temporary control registration failed: {error}");
-            }
+            ),
+            None => shortcuts::temporary_binding(name, key, None, ""),
+        };
+        match eval_hyprland(&snippet) {
+            Ok(()) => armed.store(false, Ordering::SeqCst),
+            Err(error) => log::warn!("linux hotkey: temporary control registration failed: {error}"),
         }
     }
 }
@@ -1103,37 +1107,27 @@ async fn run_portal_session(
     }
     // These controls ignore held modifiers, so reserve the key across every
     // modifier mask and submap before enabling it during dictation.
-    for (id, requested, alternatives, key_slot) in [
+    for (id, requested, key_slot) in [
         (
             "cancel",
             "Escape",
-            &["F8", "F9", "F10", "F11", "F12"][..],
             &CANCEL_KEY,
         ),
         (
             "handsfree",
             "Space",
-            &["F9", "F10", "F11", "F12", "F8"][..],
             &HANDSFREE_KEY,
         ),
     ] {
-        let already_chosen = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
-        let choices = alternatives
-            .iter()
-            .copied()
-            .filter(|key| id != "handsfree" || !key.eq_ignore_ascii_case(&already_chosen))
-            .collect::<Vec<_>>();
         let active = conflicts::bindings(id)
             .ok()
-            .and_then(|bindings| conflicts::choose(&bindings, requested, &choices, true));
+            .and_then(|bindings| conflicts::control_key(&bindings, requested));
         if let Ok(mut key) = key_slot.lock() {
             *key = active.clone().unwrap_or_default();
         }
         conflicts::status(id, requested.into(), active, vec![]);
     }
     // Config reloads remove runtime handles. Re-arm against this session.
-    ESCAPE_ARMED.store(false, Ordering::SeqCst);
-    SPACE_ARMED.store(false, Ordering::SeqCst);
     register_temporary_controls();
     refresh_escape_listening();
     // Keep the portal edge classifier as a fallback for normal chord events.
@@ -1223,6 +1217,7 @@ async fn run_portal_session(
                         _ => log::debug!("linux hotkey: ignored duplicate portal activation"),
                     }
                 } else if id == PORTAL_CANCEL_ID {
+                    if CANCEL_KEY.lock().map(|key| key.is_empty()).unwrap_or(true) { continue; }
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
                 } else if id == PORTAL_CHORD_CANCEL_ID {
@@ -1235,6 +1230,7 @@ async fn run_portal_session(
                 } else if id == PORTAL_COPY_ID {
                     if let Some(cb) = COPY.get() { cb(); }
                 } else if id == PORTAL_HANDSFREE_ID {
+                    if HANDSFREE_KEY.lock().map(|key| key.is_empty()).unwrap_or(true) { continue; }
                     notify_handless();
                 }
             },
@@ -1264,7 +1260,11 @@ fn release_disconnected_hold() {
 fn registration_failure(failure: portal::Failure) {
     log::error!("linux hotkey: {}: {}", failure.stage, failure.reason);
     CHORD_ACTIVE.store(false, Ordering::SeqCst);
+    for slot in [&CANCEL_KEY, &HANDSFREE_KEY] {
+        if let Ok(mut key) = slot.lock() { key.clear(); }
+    }
     refresh_escape_listening();
+    register_temporary_controls();
     if let Ok(mut id) = CANCEL_PORTAL_ID.lock() {
         *id = None;
     }
@@ -1355,13 +1355,7 @@ fn shortcuts_need_rebind() -> bool {
                         false,
                     )
                     .is_some(),
-                    _ => conflicts::choose(
-                        &bindings,
-                        &status.requested,
-                        &["F8", "F9", "F10", "F11", "F12"],
-                        true,
-                    )
-                    .is_some(),
+                    _ => false,
                 };
             };
             !conflicts::free(&bindings, &active_triggers, ignore_mods)

@@ -1,4 +1,5 @@
 import type { UpdateInfo } from '../../stores';
+import { updateActionLabel } from '../../updateActions';
 import { normalizeExe, type InstalledApp } from '../../appMappings';
 
 export interface Entry {
@@ -140,12 +141,6 @@ export function fmtDate(iso: string) {
   } catch { return iso.slice(0, 10); }
 }
 
-function downloadActionLabel(update: UpdateInfo): string {
-  return update.assetName.toLowerCase().endsWith('.dmg')
-    ? 'Download DMG'
-    : 'Download Installer';
-}
-
 export function installActionLabel(update: UpdateInfo): string {
-  return update.installMode === 'download' ? downloadActionLabel(update) : 'Install & Restart';
+  return updateActionLabel(update);
 }

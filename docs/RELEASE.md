@@ -46,6 +46,25 @@ The manual GitHub Actions workflow [`../.github/workflows/build-installers.yml`]
 - Linux x86_64 AppImage (built on Ubuntu 22.04 for conservative glibc compatibility)
 - Arch Linux x86_64 pacman package (beta, built from the same AppImage for Omarchy/Hyprland)
 
+Linux nightly releases include both the AppImage and the Arch package. Arch package
+versions replace the app version's prerelease hyphen with an underscore because
+`pkgver` forbids hyphens. The updater converts that name back for comparison.
+Both files must be present before publication and included in `SHA256SUMS.txt`.
+
+The Linux updater detects ownership of the running executable and `APPIMAGE`.
+The official `verenu` pacman package updates through `pkexec pacman -U` after a
+verified download and SQLite backup. Polkit and a running desktop authentication
+agent are required. Pacman's local signature policy, locks, and dependency checks
+remain active. Verenu never runs a system update or removes a pacman lock.
+AUR packages with other names remain under their package manager's control.
+
+Portable AppImages update in their current folder with an atomic replacement and
+retain `<image>.previous` for manual rollback. The folder must be writable and
+support hard links. Restart Verenu after either installation succeeds. Download,
+checksum, backup, or authorization failures keep the running app open and allow
+another attempt. Releases without a GitHub SHA256 digest or a matching checksum
+entry cannot be installed automatically. Other Linux installs offer a download.
+
 The release folder should contain:
 
 - `Verenu_<version>_x64-setup.exe`

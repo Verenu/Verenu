@@ -564,6 +564,7 @@ local verenu_handsfree = hl.dsp.exec_cmd("{handsfree_command}")
 local verenu_release_armed = false
 local verenu_release_generation = 0
 local verenu_press_generation = 0
+local verenu_mouse_companion_pending = false
 local verenu_short_hold = false
 local verenu_quick_tap_pending = false
 local verenu_quick_tap_generation = 0
@@ -593,6 +594,14 @@ local verenu_press = function()
   verenu_combo = false
   verenu_press_generation = verenu_press_generation + 1
   local press_generation = verenu_press_generation
+  -- Mouse firmware can append F13 to a modifier-only shortcut. Accept that
+  -- companion only at the initial press; a later F13 is another shortcut.
+  verenu_mouse_companion_pending = true
+  hl.timer(function()
+    if press_generation == verenu_press_generation then
+      verenu_mouse_companion_pending = false
+    end
+  end, { timeout = 50, type = "oneshot" })
   if verenu_quick_tap_pending then
     -- The second physical press can arrive before the first release helper
     -- finishes its single-instance handoff. Decide the gesture here, where
@@ -619,6 +628,9 @@ hl.on("input.keyboard.key", function(keycode, _, state)
     return
   end
   if state == 1 then
+    if keycode == 191 and verenu_mouse_companion_pending then
+      return
+    end
     if not verenu_combo and not verenu_ignored_keycodes[keycode] then
       verenu_combo = true
       hl.dispatch(verenu_cancel)

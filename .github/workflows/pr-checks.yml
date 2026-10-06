@@ -228,11 +228,14 @@ jobs:
       - name: Prepare report directory
         run: mkdir -p tests/reports
 
+      - name: Check privacy-safe browser failure summaries
+        run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
+
       - name: Run unified fast profile
         run: npm test -- --strict --json-report tests/reports/fast-profile.json --junit-report tests/reports/fast-profile.junit.xml
 
       - name: Install real-session fixture tools
-        run: sudo apt-get install -y espeak-ng ffmpeg xvfb dbus-x11 lua5.4
+        run: sudo apt-get install -y espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring lua5.4
 
       - name: Verify Linux window identity and generated compositor gestures
         run: |
@@ -240,7 +243,30 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
 
       - name: Exercise an isolated Rust-backed browser session
-        run: dbus-run-session -- xvfb-run -a npm run test:session:owned -- --report tests/reports/real-session.json
+        run: |
+          test_home="$(mktemp -d "${RUNNER_TEMP}/verenu-session-home.XXXXXX")"
+          test_runtime="$(mktemp -d "${RUNNER_TEMP}/verenu-session-runtime.XXXXXX")"
+          chmod 700 "$test_home" "$test_runtime"
+          trap 'find "$test_home" "$test_runtime" -depth -delete' EXIT
+          runner_home="$HOME"
+          cargo_home="${CARGO_HOME:-$runner_home/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$runner_home/.rustup}"
+          browser_path="${PLAYWRIGHT_BROWSERS_PATH:-$runner_home/.cache/ms-playwright}"
+          dbus-run-session -- env \
+            HOME="$test_home" \
+            XDG_RUNTIME_DIR="$test_runtime" \
+            CARGO_HOME="$cargo_home" \
+            RUSTUP_HOME="$rustup_home" \
+            PLAYWRIGHT_BROWSERS_PATH="$browser_path" \
+            xvfb-run -a bash -euo pipefail -c '
+              passphrase="$(openssl rand -hex 32)"
+              if ! printf "%s\n" "$passphrase" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>"$HOME/gnome-keyring-start.log"; then
+                cat "$HOME/gnome-keyring-start.log"
+                exit 1
+              fi
+              unset passphrase
+              npm run test:session:owned -- --report tests/reports/real-session.json
+            '
 
       - name: Upload fast-profile reports
         if: always()
