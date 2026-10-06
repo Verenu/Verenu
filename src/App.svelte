@@ -347,28 +347,26 @@
     // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        const [[done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey], savedThemes] = await readSettingsWithRetry(async () => {
-          // Saved themes are device-local and optional; a failed read must not block
-          // startup. Started inside the retry so a cold-start miss is read again.
-          const savedThemesRead = invoke<unknown>('get_setting', { key: 'custom_themes' }).catch(() => null);
-          const values = await Promise.all([
-            invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
-            invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
-            invoke<string | null>('get_setting', { key: 'accent_color' }),
-            invoke<unknown>('get_setting', { key: 'custom_theme' }),
-            invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }),
-            invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
-            invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
-            invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
-            invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
-            invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
-            invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
-            invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
-          ]);
-          return [values, await savedThemesRead] as const;
-        });
+        // Saved themes are optional, but transient startup failures should retry too.
+        const savedThemesRead = readSettingsWithRetry(() =>
+          invoke<unknown>('get_setting', { key: 'custom_themes' }),
+        ).catch(() => null);
+        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
+          invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
+          invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
+          invoke<string | null>('get_setting', { key: 'accent_color' }),
+          invoke<unknown>('get_setting', { key: 'custom_theme' }),
+          invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }),
+          invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
+          invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
+          invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
+          invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
+          invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
+          invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
+          invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
+        ]));
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
-        appStore.savedThemes = normalizeSavedThemes(savedThemes);
+        appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
         // An open theme editor is previewing through these fields; keep its draft.
         if (!themeEditor.open) {
           if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
