@@ -5,6 +5,7 @@
 //! PCM bytes have been flushed, and load clamps to the shorter of the two.
 
 use super::gates::{MIN_RECORDING_MS, MIN_RECORDING_RMS};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::pill::{show_cancelled_pill, show_interrupted_pill};
 use super::state::{lock_state, CancelledCapture, CaptureOrigin, SharedState};
 #[cfg(any(target_os = "windows", target_os = "macos"))]

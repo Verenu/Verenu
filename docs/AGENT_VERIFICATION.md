@@ -55,6 +55,21 @@ satisfy that category. Supplied artifact hashes are checked. Agents must still
 inspect images and describe observations accurately; a report cannot prove that
 someone looked at a file.
 
+Native evidence must include `platform` (`linux`, `darwin`, `win32`, or `android`)
+and a `scope` array naming the capabilities actually exercised. A task can add
+`native: [{"platform":"linux","scope":"shortcuts"}]` requirements. The gate
+also derives capability requirements from hotkey, injection, permission, audio,
+and window-integration source paths. Focused-text evidence cannot satisfy
+shortcut activation or clipboard restoration. Manual native records are kept
+alongside the automatic fixture evidence. Skipped or flaky acceptance outcomes
+remain incomplete even when another record passes.
+
+Workflow edits require `npm run test:ci`, which checks release and merge gates
+and runs checksum-verified actionlint. Android edits require `npm run test:android`
+with an Android SDK, NDK, JDK, and Rust Android target. This builds a real debug
+APK and runs the JVM regression tests. It does not establish packaged inference
+runtimes or device behavior.
+
 ## Owned sessions
 
 ```bash
@@ -70,6 +85,15 @@ only its own processes. Default runs use public synthetic settings without
 installed customization. `--live` uses an isolated installed-configuration
 snapshot and native credentials. That snapshot and all artifacts remain private.
 
+Every `tests/dev-session/*.test.mjs` file runs sequentially. Structured reports
+name every executed case and identify missing files. The optional live corpus is
+the only permitted skip in a deterministic session. Browser verification requires
+both desktop and phone projects and rejects any skipped case. Use
+`npm run test:session:owned -- --update-snapshots` only to deliberately regenerate
+visual baselines, inspect the images, and then rerun without that flag. CI never
+updates baselines. The renderer registry also rejects unregistered smoke or
+integration scripts; manual-only exclusions need a recorded reason.
+
 The live corpus checks plain speech, punctuation, correction, vocabulary,
 snippets, and longer speech against new history IDs, exact stored output, and
 matching events. Existing deterministic Rust pipeline fixtures cover provider
@@ -83,6 +107,10 @@ Never publish raw traces/access files. CI uploads structured reports by default.
 The owned-session summary records only project, repository-relative spec path,
 line, static test title, outcome, and retry count for each Playwright case. It
 omits raw browser errors and reporter attachments.
+
+Owned Node regression failures include the static test title, repository-relative
+test file, safe error type/code, and assertion source line when available. They
+omit assertion values, error messages, console output, and private session paths.
 
 Frozen smoke tests remain unchanged. A process-local adapter redirects their
 fixed localhost URLs and screenshots to owned servers/directories. It changes

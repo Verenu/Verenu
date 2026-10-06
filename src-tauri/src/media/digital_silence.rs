@@ -68,12 +68,14 @@ impl DigitalSilenceDetector {
         self.muted
     }
 
+    #[cfg(any(test, windows))]
     pub fn is_digital_silent_sample(sample: f32) -> bool {
         sample.abs() <= DIGITAL_SILENCE_EPS
     }
 
     /// Push a block of PCM samples observed at `now`. Returns a debounced
     /// transition when the mute state has been stable long enough.
+    #[cfg(any(test, windows))]
     pub fn push_samples(&mut self, samples: &[f32], now: Instant) -> Option<SilenceTransition> {
         if samples.is_empty() {
             self.prune(now);

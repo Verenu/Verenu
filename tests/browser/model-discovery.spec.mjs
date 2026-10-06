@@ -1,15 +1,16 @@
 import { test, expect } from './fixtures.mjs';
 
 test('capability discoveries survive reload without changing selected models', async ({ page, session, cachedCatalogs }) => {
-  // Complete the existing first-open settings migration before recording the
-  // baseline. Discovery must preserve established selections, not null legacy settings.
+  // Complete first-open migration before recording established selections.
+  // Legacy single-provider settings may store a bare ID while priority settings
+  // store provider/ID; both must identify the same model.
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.models"]').click();
   await expect.poll(async () => {
     const stored = await session.invoke('get_all_settings');
-    return !!stored.cleanup_default_model && !!stored.transcription_default_model &&
-      stored.cleanup_model === stored.cleanup_default_model &&
-      stored.transcription_model === stored.transcription_default_model;
+    const sameModel = (task) => stored[`${task}_model`] === stored[`${task}_default_model`] ||
+      `${stored[`${task}_provider`]}/${stored[`${task}_model`]}` === stored[`${task}_default_model`];
+    return !!stored.cleanup_default_model && !!stored.transcription_default_model && sameModel('cleanup') && sameModel('transcription');
   }).toBe(true);
   const settings = await session.invoke('get_all_settings');
   const providers = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];

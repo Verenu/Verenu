@@ -5,6 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from '../../scripts/verification/playwright-summary.mjs';
 
+test('expected failures, empty results and successful retries are not clean passes', () => {
+  for (const results of [[], [{ status: 'failed' }], [{ status: 'failed' }, { status: 'passed' }]]) {
+    assert.equal(summarizePlaywrightReport({ suites: [{ specs: [spec({ results })] }] }).status, 'failed');
+  }
+});
+
 function spec({ title = 'saves the setting', file = 'tests/browser/settings.spec.mjs', line = 17, status = 'expected', results = [{ status: 'passed' }], projectName = 'desktop' } = {}) {
   return {
     title,
@@ -143,6 +149,23 @@ test('missing reports and reports with no test cases fail closed even if the pro
   assert.equal(missing.reason, 'Structured Playwright report is missing or invalid.');
   assert.equal(empty.status, 'failed');
   assert.equal(empty.reason, 'Playwright report contains no test cases.');
+});
+
+test('all-skipped and partially skipped browser suites cannot verify a task', () => {
+  for (const specs of [[spec({ status: 'skipped', results: [] })], [spec(), spec({ status: 'skipped', results: [] })]]) {
+    const summary = summarizePlaywrightReport({ suites: [{ specs }] });
+    assert.equal(summary.status, 'incomplete');
+    assert.ok(playwrightSummaryChecks(summary).some(row => row.status === 'incomplete'));
+  }
+});
+
+test('each required viewport project must appear in the executed report', () => {
+  const report = { suites: [{ specs: [spec()] }] };
+  const summary = summarizePlaywrightReport(report, { expectedProjects: ['desktop', 'phone'] });
+  assert.equal(summary.status, 'incomplete');
+  assert.deepEqual(summary.missingProjects, ['phone']);
+  report.suites[0].specs.push(spec({ projectName: 'phone' }));
+  assert.equal(summarizePlaywrightReport(report, { expectedProjects: ['desktop', 'phone'] }).status, 'passed');
 });
 
 test('report reader identifies missing and malformed JSON without returning raw contents', async () => {
