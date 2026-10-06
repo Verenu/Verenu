@@ -5,10 +5,11 @@
 //! PCM bytes have been flushed, and load clamps to the shorter of the two.
 
 use super::gates::{MIN_RECORDING_MS, MIN_RECORDING_RMS};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::pill::{show_cancelled_pill, show_interrupted_pill};
-use super::state::{lock_state, CancelledCapture, CaptureOrigin, SharedState};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::state::CANCEL_RESUME_WINDOW;
+use super::state::{lock_state, CancelledCapture, CaptureOrigin, SharedState};
 use super::{state, CapturedAudio};
 use crate::core::context::ResolvedContextIdentity;
 use crate::core::window_geometry::WindowTarget;
@@ -240,11 +241,6 @@ pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
             pending = bytes.last().copied();
         }
     }
-    if let Some(first) = pending {
-        // The published sample count is authoritative; an incomplete final
-        // PCM sample is intentionally discarded.
-        let _ = first;
-    }
     if samples.is_empty() {
         return None;
     }
@@ -322,12 +318,15 @@ pub fn discard_durable() {
     delete_all(&failover_dir());
 }
 
-fn samples_to_pcm(samples: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(samples.len() * 2);
-    for &s in samples {
-        out.extend_from_slice(&f32_to_i16(s).to_le_bytes());
+fn write_pcm(writer: &mut impl Write, samples: &[f32]) -> std::io::Result<()> {
+    let mut pcm = [0u8; TARGET_RATE as usize * 2];
+    for chunk in samples.chunks(TARGET_RATE as usize) {
+        for (sample, bytes) in chunk.iter().zip(pcm.as_chunks_mut::<2>().0) {
+            bytes.copy_from_slice(&f32_to_i16(*sample).to_le_bytes());
+        }
+        writer.write_all(&pcm[..chunk.len() * 2])?;
     }
-    out
+    Ok(())
 }
 
 #[cfg(test)]
@@ -367,10 +366,7 @@ fn write_slot_with_context(
             .write(true)
             .truncate(true)
             .open(&tmp)?;
-        for chunk in samples_16k.chunks(TARGET_RATE as usize) {
-            let pcm = samples_to_pcm(chunk);
-            f.write_all(&pcm)?;
-        }
+        write_pcm(&mut f, samples_16k)?;
         f.sync_all()?;
     }
     replace_file(&tmp, &dest)?;
@@ -495,17 +491,17 @@ pub fn restore_choice(root: &Path, now_unix: i64) -> Option<LoadedTake> {
     None
 }
 
-fn loaded_to_capture(take: LoadedTake) -> Option<CancelledCapture> {
+fn loaded_to_capture(take: LoadedTake) -> CancelledCapture {
     let duration_ms = take.duration_ms();
     let origin = take.origin();
     let started_at_unix = take.meta.started_at_unix;
-    let id = take.meta.id.clone();
+    let id = take.meta.id;
     let created_at_rfc3339 = Utc
         .timestamp_opt(started_at_unix, 0)
         .single()
         .unwrap_or_else(Utc::now)
         .to_rfc3339_opts(SecondsFormat::Secs, true);
-    Some(CancelledCapture {
+    CancelledCapture {
         audio: CapturedAudio::from_samples(take.samples_16k, TARGET_RATE, duration_ms),
         captured_at: Instant::now(),
         id,
@@ -530,7 +526,7 @@ fn loaded_to_capture(take: LoadedTake) -> Option<CancelledCapture> {
                 label: "Recovered context".to_string(),
             })
             .unwrap_or_else(ResolvedContextIdentity::everywhere),
-    })
+    }
 }
 
 /// Load a surviving take into RAM. Does not show the pill (the watchdog does).
@@ -540,10 +536,7 @@ pub fn restore_into_state(state: &SharedState) {
     };
     let origin = take.origin();
     let samples = take.usable_samples();
-    let Some(capture) = loaded_to_capture(take) else {
-        log::warn!("failover: restore encode failed samples={samples}");
-        return;
-    };
+    let capture = loaded_to_capture(take);
     match lock_state(state) {
         Ok(mut st) => {
             if !st.lifecycle.is_idle() {
@@ -761,8 +754,7 @@ impl LiveWriter {
         };
         if let Some(prepend) = prepend_16k {
             if !prepend.is_empty() {
-                let pcm = samples_to_pcm(prepend);
-                file.write_all(&pcm)?;
+                write_pcm(&mut file, prepend)?;
                 file.flush()?;
                 file.sync_data()?;
                 meta.sample_count = prepend.len() as u64;
@@ -797,8 +789,8 @@ impl LiveWriter {
             return;
         }
         if !self.pending.is_empty() {
-            let pcm = samples_to_pcm(&self.pending);
-            if let Err(e) = self.file.write_all(&pcm).and_then(|_| self.file.flush()) {
+            if let Err(e) = write_pcm(&mut self.file, &self.pending).and_then(|_| self.file.flush())
+            {
                 log::warn!("failover: live pcm write failed: {e}");
                 self.mark_storage_full(&e);
                 self.failed = true;
@@ -1139,6 +1131,41 @@ mod tests {
     }
 
     #[test]
+    fn pcm_writer_preserves_encoding_across_chunk_boundaries() {
+        let values = [
+            -2.0,
+            -1.0,
+            -0.5,
+            0.0,
+            0.5,
+            1.0,
+            2.0,
+            f32::NAN,
+            f32::INFINITY,
+        ];
+        let samples: Vec<f32> = values
+            .into_iter()
+            .cycle()
+            .take(TARGET_RATE as usize + 7)
+            .collect();
+        let mut bytes = Vec::new();
+        write_pcm(&mut bytes, &samples).unwrap();
+        assert_eq!(bytes.len(), samples.len() * 2);
+        let expected = [-32767i16, -32767, -16383, 0, 16383, 32767, 32767, 0, 0];
+        for (expected, encoded) in expected.into_iter().cycle().zip(bytes.as_chunks::<2>().0) {
+            assert_eq!(*encoded, expected.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn pcm_writer_propagates_partial_write_failure() {
+        let mut bytes = [0u8; 3];
+        let error = write_pcm(&mut std::io::Cursor::new(&mut bytes[..]), &[1.0, -1.0]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+        assert_eq!(&bytes[..2], &i16::MAX.to_le_bytes());
+    }
+
+    #[test]
     fn async_recovery_queue_full_returns_without_blocking() {
         let (tx, _rx) = std::sync::mpsc::sync_channel(1);
         tx.send(WriterMessage::Samples(vec![0.1])).unwrap();
@@ -1232,7 +1259,7 @@ mod tests {
         .unwrap();
         let loaded = restore_choice(&root, now_unix()).unwrap();
         assert_eq!(loaded.meta.context_id, Some(42));
-        let capture = loaded_to_capture(loaded).unwrap();
+        let capture = loaded_to_capture(loaded);
         assert_eq!(capture.context.id, 42);
         delete_all(&root);
     }
@@ -1250,9 +1277,8 @@ mod tests {
         )
         .unwrap();
         let pcm_path = slot_dir(&root, false).join(AUDIO_FILE);
-        let extra = samples_to_pcm(&loud_ms(200));
         let mut f = OpenOptions::new().append(true).open(&pcm_path).unwrap();
-        f.write_all(&extra).unwrap();
+        write_pcm(&mut f, &loud_ms(200)).unwrap();
         f.sync_all().unwrap();
         drop(f);
         let loaded = load_slot(&root, false).unwrap();
