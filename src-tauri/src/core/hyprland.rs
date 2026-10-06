@@ -6,6 +6,8 @@
 //! recording start/retry and insertion, never while audio callbacks run.
 
 #[cfg(target_os = "linux")]
+use serde::de::DeserializeOwned;
+#[cfg(target_os = "linux")]
 use serde::Deserialize;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -103,7 +105,7 @@ impl HyprMonitor {
 }
 
 #[cfg(target_os = "linux")]
-fn hyprctl_json(args: &[&str]) -> Option<serde_json::Value> {
+fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     // The command is synchronous but used on a non-audio path. Do not include
     // output in diagnostics: titles/classes can be private.
     let output = std::process::Command::new("hyprctl")
@@ -118,7 +120,7 @@ fn hyprctl_json(args: &[&str]) -> Option<serde_json::Value> {
 
 #[cfg(target_os = "linux")]
 fn monitors() -> Option<Vec<HyprMonitor>> {
-    serde_json::from_value(hyprctl_json(&["-j", "monitors"])?).ok()
+    hyprctl_json(&["-j", "monitors"])
 }
 
 #[cfg(target_os = "linux")]
@@ -135,22 +137,20 @@ pub(crate) fn logical_monitor_for_point(x: f64, y: f64) -> Option<LogicalMonitor
 #[cfg(target_os = "linux")]
 pub(crate) fn session_available() -> bool {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-        && hyprctl_json(&["-j", "version"]).is_some()
+        && hyprctl_json::<serde_json::Value>(&["-j", "version"]).is_some()
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn active_window() -> Option<ActiveWindow> {
-    serde_json::from_value(hyprctl_json(&["-j", "activewindow"])?).ok()
+    hyprctl_json(&["-j", "activewindow"])
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
-    let windows = hyprctl_json(&["-j", "clients"])?;
+    let windows: Vec<serde_json::Value> = hyprctl_json(&["-j", "clients"])?;
     windows
-        .as_array()?
-        .iter()
+        .into_iter()
         .find(|window| window.get("address").and_then(|v| v.as_str()) == Some(address))
-        .cloned()
         .and_then(|window| serde_json::from_value(window).ok())
 }
 
@@ -158,30 +158,37 @@ pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
 /// to resolve a captured target's app after focus has moved elsewhere.
 #[cfg(target_os = "linux")]
 pub(crate) fn window_by_pid(pid: u32) -> Option<ActiveWindow> {
-    let windows = hyprctl_json(&["-j", "clients"])?;
+    let windows: Vec<serde_json::Value> = hyprctl_json(&["-j", "clients"])?;
     windows
-        .as_array()?
-        .iter()
+        .into_iter()
         .filter(|window| window.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(pid)))
         .min_by_key(|window| window.get("focusHistoryID").and_then(|v| v.as_i64()).unwrap_or(i64::MAX))
-        .cloned()
         .and_then(|window| serde_json::from_value(window).ok())
+}
+
+#[cfg(target_os = "linux")]
+fn dispatch(expression: &str, unavailable: &str, failed: &str) -> Result<(), String> {
+    let status = std::process::Command::new("hyprctl")
+        .args(["dispatch", expression])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|err| format!("{unavailable}: {err}"))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| failed.to_string())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn focus(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");
     let expression = format!("hl.dsp.focus({{ window = '{selector}' }})");
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|err| format!("Hyprland IPC is unavailable: {err}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not focus the original target window".to_string())
+    dispatch(
+        &expression,
+        "Hyprland IPC is unavailable",
+        "Hyprland could not focus the original target window",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -218,15 +225,11 @@ pub(crate) fn dispatch_paste_for_target(class_name: &str, tags: &[String]) -> Re
         let expression = format!(
             "hl.dsp.send_key_state({{ mods = '{mods}', key = '{key}', state = '{state}' }})"
         );
-        let status = std::process::Command::new("hyprctl")
-            .args(["dispatch", &expression])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| format!("Hyprland paste IPC unavailable: {e}"))?;
-        if !status.success() {
-            return Err("Hyprland could not dispatch paste to the original target".to_string());
-        }
+        dispatch(
+            &expression,
+            "Hyprland paste IPC unavailable",
+            "Hyprland could not dispatch paste to the original target",
+        )?;
         if state == "down" {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -240,16 +243,11 @@ pub(crate) fn move_window(address: &str, x: i32, y: i32) -> Result<(), String> {
     let expression = format!(
         "hl.dsp.window.move({{ x = {x}, y = {y}, relative = false, window = '{selector}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland move IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not position the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland move IPC unavailable",
+        "Hyprland could not position the dictation pill",
+    )
 }
 
 /// Raises a floating window without focusing it. Wayland does not guarantee
@@ -264,16 +262,11 @@ pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<()
     let expression = format!(
         "hl.dsp.window.resize({{ x = {width}, y = {height}, relative = false, window = '{selector}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland resize IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not size the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland resize IPC unavailable",
+        "Hyprland could not size the dictation pill",
+    )
 }
 
 /// Lets the pointer reach a window that a user rule marked `no_focus`.
@@ -293,16 +286,11 @@ pub(crate) fn set_pointer_input(address: &str, interactive: bool) -> Result<(), 
     let expression = format!(
         "hl.dsp.window.set_prop({{ window = '{selector}', prop = 'no_focus', value = '{no_focus}' }})"
     );
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland property IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not enable pointer input for the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland property IPC unavailable",
+        "Hyprland could not enable pointer input for the dictation pill",
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -310,21 +298,16 @@ pub(crate) fn raise_window(address: &str) -> Result<(), String> {
     let selector = format!("address:{address}");
     let expression =
         format!("hl.dsp.window.alter_zorder({{ mode = 'top', window = '{selector}' }})");
-    let status = std::process::Command::new("hyprctl")
-        .args(["dispatch", &expression])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("Hyprland z-order IPC unavailable: {e}"))?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "Hyprland could not raise the dictation pill".to_string())
+    dispatch(
+        &expression,
+        "Hyprland z-order IPC unavailable",
+        "Hyprland could not raise the dictation pill",
+    )
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn pill_window() -> Option<ActiveWindow> {
-    let clients = hyprctl_json(&["-j", "clients"])?;
+    let clients: serde_json::Value = hyprctl_json(&["-j", "clients"])?;
     owned_pill_window(&clients, std::process::id())
 }
 
