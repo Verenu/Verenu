@@ -369,9 +369,9 @@ mod pressure_tests {
 pub fn measure() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        return crate::system::linux_proc::process_tree_memory_bytes(std::process::id())
+        crate::system::linux_proc::process_tree_memory_bytes(std::process::id())
             .unwrap_or(0)
-            / (1024 * 1024);
+            / (1024 * 1024)
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

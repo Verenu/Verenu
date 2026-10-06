@@ -783,14 +783,15 @@
     }
   }
 
-  /* Dropdowns are left-aligned with their triggers on phones. The shared
-     desktop rule anchors menus by their right edge, which makes a menu opened
-     from a left-aligned mobile control extend off-screen. */
-  :global(.app[data-compact-nav='true']) .settings-body :global(.ui-dropdown-menu),
-  :global(.app[data-compact-nav='true']) .settings-body :global(.mic-menu) {
-    left: 0;
-    right: auto;
-    max-width: calc(100vw - (2 * var(--page-pad-x)));
+  /* Keep menus inside their settings panel on narrow windows. Anchoring a
+     wider menu to the trigger's right edge can make it overlap the sidebar. */
+  @container settings-panel (max-width: 440px) {
+    .settings-body :global(.ui-dropdown-menu),
+    .settings-body :global(.mic-menu) {
+      left: 0;
+      right: auto;
+      max-width: 100cqw;
+    }
   }
 
   .settings-body :global(.label) { font-size: 13px; font-weight: 500; color: var(--ink-strong); }

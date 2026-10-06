@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { requirements, evaluate, incompleteUnlessFailed } from '../../scripts/verification/policy.mjs';
+import { requirements, nativeRequirements, evaluate, incompleteUnlessFailed } from '../../scripts/verification/policy.mjs';
 const identity = { fingerprint: 'current', worktree: '/owned' };
 const passed = { category: 'session', status: 'passed', ...identity };
 test('backend setting writes require Rust and real session checks', () => {
@@ -36,4 +36,32 @@ test('incomplete outcomes never downgrade a failed verification', () => {
   assert.equal(incompleteUnlessFailed('failed'), 'failed');
   assert.equal(incompleteUnlessFailed('verified'), 'incomplete');
   assert.equal(incompleteUnlessFailed('incomplete'), 'incomplete');
+});
+
+test('CI, HTML, native pill and Android edits select their relevant checks', () => {
+  for (const [file, expected] of [
+    ['.github/workflows/pr-checks.yml', ['ci', 'unit']],
+    ['pill.html', ['renderer', 'session', 'inspection', 'native']],
+    ['src-tauri/src/pipeline/pill.rs', ['rust', 'pipeline', 'native']],
+    ['src-tauri/android/kotlin/com/verenu/app/VerenuBridge.kt', ['android']],
+    ['tests/browser/session.spec.mjs', ['session']],
+  ]) for (const category of expected) assert.ok(requirements([file]).includes(category), `${file}: ${category}`);
+});
+
+test('native evidence cannot substitute another platform or capability', () => {
+  const native = nativeRequirements(['src-tauri/src/core/injection/linux.rs']);
+  assert.deepEqual(native, ['insertion', 'clipboard', 'focus'].map(scope => ({ platform: 'linux', scope })));
+  const row = { ...passed, category: 'native-integration', platform: 'linux', scope: ['focused-text'] };
+  assert.equal(evaluate(['native-integration'], [row], identity, [], native).status, 'incomplete');
+  assert.equal(evaluate(['native-integration'], [{ ...row, platform: 'darwin', scope: ['insertion', 'clipboard', 'focus'] }], identity, [], native).status, 'incomplete');
+  assert.equal(evaluate(['native-integration'], [{ ...row, scope: ['insertion', 'clipboard', 'focus'] }], identity, [], native).status, 'verified');
+  assert.equal(evaluate(['native-integration'], [{ ...passed, category: 'native-integration' }], identity).status, 'incomplete');
+  assert.throws(() => nativeRequirements([], [{ platform: 'unknown', scope: 'clipboard' }]));
+});
+
+test('flaky or skipped acceptance cannot be erased by a later passing record', () => {
+  const row = { ...passed, category: 'acceptance', criterion: 'saved', observed: 'Saved', artifacts: [{ path: '/evidence' }] };
+  for (const invalid of [{ ...row, flaky: true }, { ...row, status: 'skipped' }]) {
+    assert.equal(evaluate([], [invalid, row], identity, [{ id: 'saved', expected: 'Saved' }]).status, 'incomplete');
+  }
 });
