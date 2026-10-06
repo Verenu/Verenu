@@ -607,6 +607,9 @@ async fn run_primary_transcription_chain(
     cfg: &store::PipelineConfig,
     gen: u64,
 ) -> anyhow::Result<(String, String, String)> {
+    let analytics_run_id = app
+        .try_state::<SharedState>()
+        .and_then(|state| super::state::analytics_run_id(state.inner()));
     let mut last_err: Option<anyhow::Error> = None;
     let mut offline = crate::system::connectivity::recently_confirmed_offline();
     for (provider_index, (provider_id, model)) in
@@ -618,12 +621,9 @@ async fn run_primary_transcription_chain(
             continue;
         }
         if provider_index > 0 {
-            if let (Some(state), Some(analytics)) = (
-                app.try_state::<SharedState>(),
-                app.try_state::<crate::analytics::Analytics>(),
-            ) {
-                if let Some(run_id) = super::state::analytics_run_id(state.inner()) {
-                    analytics.fallback_used(&run_id, "transcription");
+            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                if let Some(run_id) = &analytics_run_id {
+                    analytics.fallback_used(run_id, "transcription");
                 }
             }
         }
