@@ -10,6 +10,8 @@ pub enum InstallOutcome {
     // Linux returns after replacement; Windows exits and macOS opens a DMG.
     #[cfg(target_os = "linux")]
     Installed,
+    #[cfg(target_os = "android")]
+    InstallerOpened,
     DownloadOpened,
 }
 
@@ -103,7 +105,12 @@ pub async fn install_update(
             .await
     }
 
-    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "android")]
+    {
+        crate::android::updater::install(&app, &download_url, selected_update_channel(&app)?).await
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux", target_os = "android")))]
     {
         let _ = (&app, &download_url);
         Err("In-app update installation is unavailable on this platform. Download the latest Verenu release and install it with your usual package manager.".into())

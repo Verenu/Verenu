@@ -54,6 +54,17 @@ describe('update actions', () => {
     expect(state.updateInstalled).toBe(false);
     expect(state.updateProgress).toBe('');
   });
+  it('Android installer handoff never claims success and allows cancellation retry', async () => {
+    state.updateInfo!.assetName = 'Verenu_0.21.0_android_arm64-v8a.apk';
+    expect(updateActionLabel(state.updateInfo!)).toBe('Update Verenu');
+    invoke.mockResolvedValue('installerOpened');
+    await installAvailableUpdate();
+    expect(state.updateInstalled).toBe(false);
+    expect(state.updateInstalling).toBe(false);
+    expect(state.updateProgress).toBe('Approve the update in the Android installer.');
+    await installAvailableUpdate();
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
   it('uses the native outcome when an installable offer became a manual download', async () => {
     invoke.mockResolvedValue('downloadOpened');
 

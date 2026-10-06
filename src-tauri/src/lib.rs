@@ -228,6 +228,7 @@ pub fn run() {
     {
         builder = builder.plugin(crate::android::permissions_plugin::init());
         builder = builder.plugin(crate::android::security_plugin::init());
+        builder = builder.plugin(crate::android::updater::init());
         // Android WebView can report a desktop UA and full physical-pixel
         // viewport. Set an immutable document-start marker so the frontend
         // knows the target before any platform-dependent module is evaluated.
