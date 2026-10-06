@@ -30,6 +30,9 @@ export type ProviderSection = {
 };
 
 export type AllSettingsPayload = {
+  advanced_model_ui?: boolean | null;
+  cleanup_enabled?: boolean | null;
+  transcription_language?: string | null;
   custom_providers?: import('../../customProviders.svelte').CustomProvider[];
   transcription_model?: string | null;
   cleanup_model?: string | null;
