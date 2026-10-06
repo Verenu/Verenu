@@ -25,13 +25,12 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
     if target.id == 0 {
         return None;
     }
-    let executable = target.process_name()?
-        .trim()
-        .to_lowercase();
+    let executable = target.process_name()?.trim().to_lowercase();
     if executable.is_empty() || executable.starts_with("verenu") {
         return None;
     }
-    let window_title = target.window_title()
+    let window_title = target
+        .window_title()
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty())?;
     // The shared cache is empty until its first background scan finishes;
@@ -51,8 +50,8 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
             .map(|app| app.name.clone())
     };
     #[cfg(target_os = "linux")]
-    let app_name = find_installed_name()
-        .or_else(|| crate::system::icons::linux_app_display_name(&executable));
+    let app_name =
+        find_installed_name().or_else(|| crate::system::icons::linux_app_display_name(&executable));
     #[cfg(not(target_os = "linux"))]
     let app_name = find_installed_name();
     let app_name = app_name.unwrap_or_else(|| fallback_app_name(&executable));
@@ -69,7 +68,11 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
 /// the last segment of a reverse-DNS Linux app id (`com.t3tools.t3code`).
 fn fallback_app_name(executable: &str) -> String {
     let base = executable.trim_end_matches(".exe").trim_end_matches(".app");
-    base.rsplit('.').next().filter(|s| !s.is_empty()).unwrap_or(base).to_string()
+    base.rsplit('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(base)
+        .to_string()
 }
 
 /// Hotkey entry point: capture, hand the snapshot to the UI, then show it.
@@ -102,8 +105,7 @@ pub fn take_pending_sub_app_capture() -> Option<SubAppCapture> {
 
 #[tauri::command]
 pub async fn get_sub_apps(app: AppHandle) -> Result<Vec<db::ContextSubApp>, String> {
-    let db = db_state(&app);
-    run_blocking("get_sub_apps", move || db::query_sub_apps(&db).map_err(|e| e.to_string())).await
+    run_db(&app, "get_sub_apps", db::query_sub_apps).await
 }
 
 #[tauri::command]
@@ -116,11 +118,10 @@ pub async fn create_sub_app(
     title_pattern: String,
     match_mode: String,
 ) -> Result<db::ContextSubApp, String> {
-    let db = db_state(&app);
-    run_blocking("create_sub_app", move || {
-        let match_mode = db::TitleMatchMode::parse(&match_mode).map_err(|e| e.to_string())?;
+    run_db(&app, "create_sub_app", move |db| {
+        let match_mode = db::TitleMatchMode::parse(&match_mode).map_err(anyhow::Error::msg)?;
         db::create_sub_app(
-            &db,
+            db,
             db::NewSubApp {
                 executable: &executable,
                 app_name: app_name.as_deref(),
@@ -130,7 +131,6 @@ pub async fn create_sub_app(
                 match_mode,
             },
         )
-        .map_err(|e| e.to_string())
     })
     .await
 }
@@ -142,15 +142,13 @@ pub async fn assign_sub_app(
     id: i64,
     context_id: Option<i64>,
 ) -> Result<db::ContextSubApp, String> {
-    let db = db_state(&app);
-    run_blocking("assign_sub_app", move || {
-        db::assign_sub_app(&db, id, context_id).map_err(|e| e.to_string())
+    run_db(&app, "assign_sub_app", move |db| {
+        db::assign_sub_app(db, id, context_id)
     })
     .await
 }
 
 #[tauri::command]
 pub async fn delete_sub_app(app: AppHandle, id: i64) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("delete_sub_app", move || db::delete_sub_app(&db, id).map_err(|e| e.to_string())).await
+    run_db(&app, "delete_sub_app", move |db| db::delete_sub_app(db, id)).await
 }

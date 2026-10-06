@@ -177,15 +177,13 @@ pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(),
 /// Debug/diagnostics: change-log size and per-peer cursor positions.
 #[tauri::command]
 pub async fn sync_get_diagnostics(app: AppHandle) -> Result<serde_json::Value, String> {
-    let db = app.state::<crate::DbHandle>().inner().clone();
-    super::run_blocking("sync_get_diagnostics", move || {
+    super::run_db(&app, "sync_get_diagnostics", move |db| {
         let conn = db
             .lock()
-            .map_err(|_| "database lock poisoned".to_string())?;
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         let log_size: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sync_log", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        let peers = sync_store::list_peers(&conn).map_err(|e| e.to_string())?;
+            .query_row("SELECT COUNT(*) FROM sync_log", [], |r| r.get(0))?;
+        let peers = sync_store::list_peers(&conn)?;
         Ok(serde_json::json!({
             "log_entries": log_size,
             "peers": peers.into_iter().map(|p| serde_json::json!({
