@@ -22,11 +22,19 @@ export function runReviewProcess(cmd, args, {
     let checking = false;
     let killTimer;
     const signal = (name) => {
+      if (!Number.isInteger(child.pid) || child.pid <= 0) return;
       try {
         if (grouped) process.kill(-child.pid, name);
         else child.kill(name);
       } catch (err) {
-        if (err.code !== "ESRCH") child.kill(name);
+        if (err.code === "ESRCH") return;
+        try {
+          child.kill(name);
+        } catch {
+          // Keep the escalation and job deadline active if the OS refuses a
+          // signal. Do not expose process details or throw from a timer.
+          console.error("AI review process signal failed; job deadline remains active.");
+        }
       }
     };
     const stop = () => {
@@ -48,6 +56,10 @@ export function runReviewProcess(cmd, args, {
           providerFailureReason = reason;
           stop();
         }
+      } catch {
+        // The reader already handles missing/unreadable logs. Preserve the
+        // process deadline even if an unexpected diagnostic error escapes it.
+        console.error("AI review diagnostic polling failed; process deadline remains active.");
       } finally {
         checking = false;
       }
