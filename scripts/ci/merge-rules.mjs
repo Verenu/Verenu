@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { requiredCiRulesetPayload } from './ruleset-payload.mjs';
 
-const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'Review dependency changes', 'review'];
+// Run --apply only after the aggregate check is available on master.
+const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'CI required', 'Review dependency changes', 'review'];
 const gh = args => JSON.parse(execFileSync('gh', args, { encoding: 'utf8', timeout: 30_000 }));
 const repository = gh(['repo', 'view', '--json', 'nameWithOwner']).nameWithOwner;
 const endpoint = `repos/${repository}/rulesets`;
@@ -10,15 +12,7 @@ const list = gh(['api', endpoint]);
 const existing = list.find(row => row.name === name);
 if (process.argv.includes('--apply')) {
   const current = existing ? gh(['api', `${endpoint}/${existing.id}`]) : null;
-  const payload = {
-    name, target: 'branch', enforcement: 'active',
-    conditions: { ref_name: { include: ['refs/heads/master'], exclude: [] } },
-    bypass_actors: current?.bypass_actors || [{ actor_type: 'OrganizationAdmin', actor_id: null, bypass_mode: 'always' }],
-    rules: [{ type: 'required_status_checks', parameters: {
-      strict_required_status_checks_policy: true,
-      required_status_checks: contexts.map(context => ({ context, integration_id: 15368 })),
-    } }],
-  };
+  const payload = requiredCiRulesetPayload(current, contexts);
   // Keep a local rollback copy without changing the broader repository rules.
   fs.mkdirSync('test-results', { recursive: true });
   fs.writeFileSync('test-results/merge-rules-before.json', JSON.stringify(current, null, 2), { mode: 0o600 });
