@@ -6,8 +6,10 @@ import {
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODEL,
   failureCategory,
+  failureExitCode,
   fallbackReason,
   formatProgressSummary,
+  mergeReviewFindings,
   normalizeReviewModel,
   reviewOutcome,
   selectReviewModels,
@@ -94,7 +96,8 @@ test("quota, rate-limit, and model-unavailable failures are fallback eligible", 
 
   for (const [result, reason] of cases) {
     assert.equal(fallbackReason(result), reason);
-    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
+    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), Boolean(result.providerFailureReason));
+    assert.equal(shouldFallback({ ...result, providerFailureReason: reason }, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
   }
 });
 
@@ -114,6 +117,55 @@ test("unrelated failures, preview failures, and successful reviews do not fallba
 test("clean reviews pass and reviews with findings fail", () => {
   assert.deepEqual(reviewOutcome([]), { count: 0, hasFindings: false, exitCode: 0 });
   assert.deepEqual(reviewOutcome([{ message: "bug" }]), { count: 1, hasFindings: true, exitCode: 1 });
+});
+
+test("provider exhaustion and bounded timeouts stay nonblocking without claiming review completion", () => {
+  for (const reason of ["quota", "rate_limit", "model_unavailable"]) {
+    const result = { code: 1, providerFailureReason: reason };
+    assert.equal(failureExitCode(result), 0);
+    assert.match(formatProgressSummary({ stage: "failed", reason }), /not a completed review/);
+  }
+  const timeout = { code: 1, timedOut: true };
+  assert.equal(failureCategory(timeout), "review_timeout");
+  assert.equal(failureExitCode(timeout), 0);
+  assert.equal(shouldFallback(timeout, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), true);
+  assert.equal(shouldFallback(timeout, DEFAULT_FALLBACK_MODEL, null), false);
+  const switching = formatProgressSummary({ stage: "switching", model: DEFAULT_MODEL, fallbackModel: DEFAULT_FALLBACK_MODEL, reason: failureCategory(timeout) });
+  assert.match(switching, /timed out, switching/);
+  assert.doesNotMatch(switching, /quota/);
+  assert.equal(failureExitCode({ code: 1, timedOut: true, previewFailed: true }), 1);
+  assert.equal(failureExitCode({ code: 1, stderr: "invalid API key" }), 1);
+  assert.equal(failureExitCode({ code: 1, stderr: "unknown error" }), 1);
+});
+
+test("review content mentioning quotas cannot make unrelated failures nonblocking", () => {
+  for (const message of ["handle HTTP 429", "quota counter", "model unavailable"]) {
+    const result = {
+      code: 1,
+      stdout: JSON.stringify({ status: "completed_with_errors", comments: [{ content: message }] }),
+      stderr: "Some files failed due to an unrelated error",
+    };
+    assert.equal(failureCategory(result), "review_failed");
+    assert.equal(failureExitCode(result), 1);
+    assert.equal(shouldFallback(result, DEFAULT_MODEL, DEFAULT_FALLBACK_MODEL), false);
+    assert.doesNotMatch(formatProgressSummary({ stage: "failed", reason: failureCategory(result) }), /nonblocking/);
+  }
+  assert.equal(failureExitCode({ code: 1, stderr: "quota exceeded", providerFailureReason: "untrusted category" }), 1);
+});
+
+test("partial findings remain blocking even with trusted provider exhaustion", () => {
+  const findings = [{ file: "example.mjs", line: 3, severity: "error", message: "Actionable bug" }];
+  for (const reason of ["quota", "rate_limit", "model_unavailable"]) {
+    const result = { code: 1, providerFailureReason: reason };
+    assert.equal(failureExitCode(result, findings), 1);
+    assert.equal(failureExitCode(result, []), 0);
+  }
+  assert.equal(failureExitCode({ code: 1, timedOut: true }, findings), 1);
+  // A clean alternate model cannot discard findings already obtained.
+  const retained = mergeReviewFindings(findings, []);
+  assert.deepEqual(retained, findings);
+  assert.equal(reviewOutcome(retained).exitCode, 1);
+  assert.deepEqual(mergeReviewFindings(findings, structuredClone(findings)), findings);
 });
 
 test("progress summaries expose the expected review stages without provider details", () => {
