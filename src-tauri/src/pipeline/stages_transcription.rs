@@ -323,6 +323,7 @@ pub(super) async fn run_transcription(
     audio: &CapturedAudio,
     cfg: &store::PipelineConfig,
     gen: u64,
+    telemetry: &PipelineTelemetry,
 ) -> Option<(String, String, Option<TranscriptCandidate>)> {
     log::debug!(
         "pipeline: transcription stage start gen={} provider={} model={} language={} wav_bytes={} pcm_samples={}",
@@ -338,7 +339,7 @@ pub(super) async fn run_transcription(
     let (raw, provider_id, model, alternate_result) = match if dual_enabled {
         run_dual_transcription_candidates(app, audio, cfg, gen).await
     } else {
-        run_primary_transcription_chain(app, audio, cfg, gen)
+        run_primary_transcription_chain(app, audio, cfg, gen, telemetry)
             .await
             .map(|(raw, provider, model)| (raw, provider, model, None))
     } {
@@ -606,10 +607,8 @@ async fn run_primary_transcription_chain(
     audio: &CapturedAudio,
     cfg: &store::PipelineConfig,
     gen: u64,
+    telemetry: &PipelineTelemetry,
 ) -> anyhow::Result<(String, String, String)> {
-    let analytics_run_id = app
-        .try_state::<SharedState>()
-        .and_then(|state| super::state::analytics_run_id(state.inner()));
     let mut last_err: Option<anyhow::Error> = None;
     let mut offline = crate::system::connectivity::recently_confirmed_offline();
     for (provider_index, (provider_id, model)) in
@@ -621,11 +620,7 @@ async fn run_primary_transcription_chain(
             continue;
         }
         if provider_index > 0 {
-            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
-                if let Some(run_id) = &analytics_run_id {
-                    analytics.fallback_used(run_id, "transcription");
-                }
-            }
+            telemetry.fallback("transcription");
         }
         let key = cfg.key_for(&provider_id).to_owned();
         let language = cfg.transcription_language.clone();
