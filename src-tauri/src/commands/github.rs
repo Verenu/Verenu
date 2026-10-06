@@ -87,7 +87,7 @@ fn cached_failure_snapshot(
 ) -> CommitSnapshot {
     let timezone_note = match (cache.timezone_id.as_deref(), current_timezone_id) {
         (Some(cached), Some(current)) if cached != current => {
-            " The time zone changed since this fetch; the original daily buckets are retained."
+            " The saved time-zone identity does not match the current setting; the original daily buckets are retained."
         }
         (None, _) | (_, None) => {
             " The time zone identity is missing or unavailable; the original daily buckets are retained."
@@ -430,7 +430,7 @@ mod cache_tests {
         assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
         assert_eq!(stale.daily[0].commits, 4);
         let warning = stale.warning.unwrap();
-        assert!(warning.contains("time zone changed"));
+        assert!(warning.contains("time-zone identity does not match"));
         assert!(warning.contains("original daily buckets are retained"));
     }
 
@@ -483,6 +483,29 @@ mod cache_tests {
         assert_eq!(stale.daily[0].commits, 4);
         let warning = stale.warning.unwrap();
         assert!(warning.contains("identity is missing or unavailable"));
+        assert!(warning.contains("original daily buckets are retained"));
+    }
+
+    #[test]
+    fn older_un_namespaced_timezone_identity_is_stale_with_an_identity_warning() {
+        let legacy = cache("octocat", 0, Some("America/Los_Angeles"));
+        let today = chrono::Local::now().date_naive();
+        assert!(!cache_is_fresh(
+            &legacy,
+            "octocat",
+            today,
+            0,
+            Some("iana:America/Los_Angeles"),
+            200
+        ));
+        let stale = cached_failure_snapshot(
+            legacy,
+            "GitHub is unavailable.",
+            0,
+            Some("iana:America/Los_Angeles"),
+        );
+        let warning = stale.warning.unwrap();
+        assert!(warning.contains("time-zone identity does not match"));
         assert!(warning.contains("original daily buckets are retained"));
     }
 
