@@ -1265,24 +1265,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /** Release arrived while the recording was still starting; stop once it is up. */
-    private var stopAfterStart = false
-    private var holdStartedDictation = false
+    private val holdRelease = VerenuHoldRelease()
 
     override fun onPillHoldStart() {
-        stopAfterStart = false
-        holdStartedDictation = overlayState == VerenuOverlayView.State.IDLE
-        if (holdStartedDictation) startDictation()
+        if (holdRelease.holdStart(overlayState == VerenuOverlayView.State.IDLE)) startDictation()
     }
 
     override fun onPillHoldEnd() {
-        if (!holdStartedDictation) return
-        holdStartedDictation = false
-        when (overlayState) {
-            VerenuOverlayView.State.RECORDING -> stopDictation()
-            VerenuOverlayView.State.IDLE -> stopAfterStart = true
-            else -> Unit
-        }
+        if (holdRelease.holdEnd(overlayState == VerenuOverlayView.State.RECORDING)) stopDictation()
     }
 
     override fun onPillCancel() = requestCancel()
@@ -1703,12 +1693,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     private fun startDictation() {
-        stopAfterStart = false
+        // A start is already pending (e.g. cold backend): its outcome decides.
+        if (!holdRelease.beginStart()) return
         val pkg = foregroundPackage
         val editable = hasEditableFocus
         val setText = supportsSetText
         val handler = requester
         if (handler == null) {
+            holdRelease.startFinished(recording = false)
             showOverlayError("Could not start recording", ErrorAction.RETRY_START)
             return
         }
@@ -1720,6 +1712,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             val backendUp = ensureBackendRunning(waitMs = BACKEND_START_WAIT_MS)
             if (!backendUp) {
                 mainHandler.post {
+                    holdRelease.startFinished(recording = false)
                     showOverlayError("Verenu is still starting — try again", ErrorAction.RETRY_START)
                 }
                 return@post
@@ -1731,6 +1724,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             // afterward.
             if (!startDictationService()) {
                 mainHandler.post {
+                    holdRelease.startFinished(recording = false)
                     showOverlayError("Could not start the microphone", ErrorAction.RETRY_START)
                 }
                 return@post
@@ -1752,12 +1746,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                         resp.optJSONObject("analyticsSettings"),
                     )
                     setOverlayState(VerenuOverlayView.State.RECORDING)
-                    if (stopAfterStart) {
-                        stopAfterStart = false
-                        stopDictation()
-                    }
+                    if (holdRelease.startFinished(recording = true)) stopDictation()
                 } else {
-                    stopAfterStart = false
+                    holdRelease.startFinished(recording = false)
                     // Do not leave a foreground notification behind when the
                     // backend rejected the recording request.
                     stopDictationService()
