@@ -104,6 +104,7 @@ try {
 } catch (error) {
   report.status = error.verificationStatus === 'incomplete' ? 'incomplete' : 'failed'; report.reason = error.message;
   if (error.startupFailure) report.startupFailure = error.startupFailure;
+  if (error.identityMismatch) report.identityMismatch = error.identityMismatch;
 } finally {
   if (session) {
     try { await session.stop(); }

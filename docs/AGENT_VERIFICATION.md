@@ -108,6 +108,10 @@ The owned-session summary records only project, repository-relative spec path,
 line, static test title, outcome, and retry count for each Playwright case. It
 omits raw browser errors and reporter attachments.
 
+Owned Node regression failures include the static test title, repository-relative
+test file, safe error type/code, and assertion source line when available. They
+omit assertion values, error messages, console output, and private session paths.
+
 Frozen smoke tests remain unchanged. A process-local adapter redirects their
 fixed localhost URLs and screenshots to owned servers/directories. It changes
 no assertions, responses, or app behavior. `--fresh-server` is a compatibility
