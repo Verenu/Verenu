@@ -17,6 +17,21 @@ test('backend identity comparison names stale source fields without exposing wor
   assert.equal(JSON.stringify(mismatch).includes('D:\\a\\'), false);
 });
 
+test('backend identity mismatch can include repo-relative digests without source contents', () => {
+  const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
+  const sourceChanges = {
+    count: 1,
+    files: [{ path: 'src/generated.rs', before: null, after: { state: 'present', mode: '33188', type: 'file', sha256: 'c'.repeat(64) } }],
+    truncated: false,
+  };
+  const mismatch = sessionIdentityMismatch(runner, {
+    ...runner, fingerprint: 'b'.repeat(64),
+  }, sourceChanges);
+  assert.deepEqual(mismatch.sourceChanges, sourceChanges);
+  assert.equal(JSON.stringify(mismatch).includes('D:\\a\\'), false);
+  assert.equal(JSON.stringify(mismatch).includes('source contents'), false);
+});
+
 test('startup diagnostics expose safe child exit details without log contents', () => {
   const diagnostics = sessionStartupDiagnostics({
     launcherPid: 42,

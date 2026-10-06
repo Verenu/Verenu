@@ -598,6 +598,12 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
     {
         return Ok(false);
     }
+    if crate::is_dev_session() {
+        // Dev sessions explicitly disable host shortcut integration. Validate
+        // the platform's supported chord shape without requiring Hyprland,
+        // Carbon, or RegisterHotKey to be available in the test environment.
+        return crate::core::hotkey::validate_hotkey(&keys);
+    }
     crate::core::hotkey::is_hotkey_available(&keys)
 }
 

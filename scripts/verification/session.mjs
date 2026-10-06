@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { root, sourceIdentity } from './identity.mjs';
+import { root, sourceFileChanges, sourceSnapshot } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
 export function ownedSessionStartupState(manifest, launcherPid) {
@@ -29,7 +29,7 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
-export function sessionIdentityMismatch(expected, actual) {
+export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
   const fields = [];
   if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
   if (expected?.worktree !== actual?.worktree) fields.push('worktree');
@@ -38,6 +38,7 @@ export function sessionIdentityMismatch(expected, actual) {
     fields,
     runner: { commit: expected?.commit ?? null, fingerprint: expected?.fingerprint ?? null },
     backend: { commit: actual?.commit ?? null, fingerprint: actual?.fingerprint ?? null },
+    ...(sourceChanges ? { sourceChanges } : {}),
   };
 }
 
@@ -48,6 +49,7 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   if (typeof directory !== 'string' || directory.length === 0) {
     throw new TypeError('startOwnedSession requires a directory path');
   }
+  const sourceAtStart = sourceSnapshot();
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
@@ -96,8 +98,13 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const response = await fetch(new URL('/__verenu_dev/session', access.localAccessUrl), { headers: { Authorization: `Bearer ${access.token}` }, signal: AbortSignal.timeout(5000) });
           if (!response.ok) throw new Error(`Session metadata request returned HTTP ${response.status}`);
           const metadata = await response.json();
-          const identity = sourceIdentity();
-          const identityMismatch = sessionIdentityMismatch(identity, metadata);
+          const currentSource = sourceSnapshot();
+          const identity = currentSource.identity;
+          const identityMismatch = sessionIdentityMismatch(
+            identity,
+            metadata,
+            sourceFileChanges(sourceAtStart.files, currentSource.files),
+          );
           if (identityMismatch) {
             const error = new Error(`Rust backend source identity mismatch (${identityMismatch.fields.join(', ')})`);
             error.identityMismatch = identityMismatch;
