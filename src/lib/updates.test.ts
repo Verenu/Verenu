@@ -47,6 +47,25 @@ it('does not publish an update after disposal or a channel change', async () => 
   await Promise.resolve();
   expect(state.updateInfo).toBe(null);
 });
+it('does not publish a fetched update if installation starts during settings reads', async () => {
+  const previousUpdate = { version: '0.20.0' };
+  state.updateInfo = previousUpdate;
+  let resolveSettingReads!: (value: string | null) => void;
+  const settingReads = new Promise<string | null>((resolve) => { resolveSettingReads = resolve; });
+  invoke.mockImplementation(async (command: string) => {
+    if (command === 'check_for_update') return { version: '0.21.0' };
+    if (command === 'get_setting') return settingReads;
+    return null;
+  });
+
+  stop = startAutomaticUpdateChecks();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+  state.updateInstalling = true;
+  resolveSettingReads(null);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(state.updateInfo).toBe(previousUpdate);
+});
 it('does not check while installing or awaiting restart', () => {
   state.updateInstalling = true;
   stop = startAutomaticUpdateChecks();
