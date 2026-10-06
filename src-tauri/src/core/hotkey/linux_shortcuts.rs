@@ -102,6 +102,7 @@ pub(super) fn temporary_binding(
 ) -> String {
     let handle = format!("_verenu_{name}_binding");
     let portal_id = format!("_verenu_{name}_portal_id");
+    let binding_key = format!("_verenu_{name}_key");
     // Hyprland 0.56's handle:unbind() removes every binding on the same
     // trigger. An expired handle can then crash its Lua accessor. Keep our
     // handle alive and disable it instead; a config reload clears it safely.
@@ -110,7 +111,7 @@ pub(super) fn temporary_binding(
     );
     match id {
         Some(id) => format!(
-            "{disable}; if not {handle} or {portal_id} ~= {id} then {handle} = hl.bind({key}, hl.dsp.global({id}), {{ description = {description}, ignore_mods = true, submap_universal = true }}); {portal_id} = {id} end; {handle}:set_enabled(true)",
+            "{disable}; if not {handle} or {portal_id} ~= {id} or {binding_key} ~= {key} then {handle} = hl.bind({key}, hl.dsp.global({id}), {{ description = {description}, ignore_mods = true, submap_universal = true }}); {portal_id} = {id}; {binding_key} = {key} end; {handle}:set_enabled(true)",
             key = lua_string(key), id = lua_string(id), description = lua_string(description)
         ),
         None => disable,
@@ -120,6 +121,30 @@ pub(super) fn temporary_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a Lua interpreter; executes generated control lifecycle"]
+    fn generated_lua_controls_replace_changed_keys_and_disable_unavailable_handles() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut fixture = include_str!("../../../../tests/fixtures/hyprland-temporary-controls.lua").to_string();
+        for (marker, key, id) in [
+            ("INITIAL_CONTROL", "F8", Some("app:cancel")),
+            ("CHANGED_CONTROL", "ESCAPE", Some("app:cancel")),
+            ("UNAVAILABLE_CONTROL", "", None),
+            ("RESTORED_CONTROL", "ESCAPE", Some("app:cancel")),
+            ("RECONNECTED_CONTROL", "ESCAPE", Some("new:cancel")),
+            ("DISCONNECTED_CONTROL", "", None),
+        ] {
+            fixture = fixture.replace(&format!("-- {marker}"), &temporary_binding("escape", key, id, "Verenu cancel dictation"));
+        }
+        let mut child = Command::new("lua").arg("-").stdin(Stdio::piped())
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+            .expect("Lua interpreter is required for this fixture");
+        child.stdin.take().unwrap().write_all(fixture.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
 
     #[test]
     fn copy_registration_is_idempotent_and_preserves_personal_bindings() {
