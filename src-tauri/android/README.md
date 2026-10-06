@@ -8,6 +8,7 @@ documented in `docs/ANDROID.md` — this directory is ONLY what the OS requires:
 | --- | --- |
 | `kotlin/com/verenu/app/VerenuAccessibilityService.kt` | IME/focus detection, overlay lifecycle, insertion, Keystore sync |
 | `kotlin/com/verenu/app/VerenuOverlayView.kt` | Native dictation pill (desktop pill visual parity, touch-sized) |
+| `kotlin/com/verenu/app/VerenuPillPlacement.kt` | Pill position names, snap-on-drop rules (mirrors `ANDROID_PILL_POSITIONS`; unit-tested) |
 | `kotlin/com/verenu/app/VerenuDictationService.kt` | Microphone-type foreground-service holder (Rust/cpal captures) |
 | `kotlin/com/verenu/app/VerenuBridge.kt` | Authed loopback client for `src-tauri/src/android/bridge.rs` |
 | `kotlin/com/verenu/app/VerenuKeystore.kt` | `EncryptedSharedPreferences` (Android Keystore) credential store |
