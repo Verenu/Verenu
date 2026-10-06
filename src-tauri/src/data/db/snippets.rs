@@ -27,6 +27,27 @@ fn snippet_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snippet> {
     })
 }
 
+fn normalize_snippet(
+    trigger: &str,
+    expansion: &str,
+    instructions: &str,
+) -> Result<(String, String, String)> {
+    let trigger = require_nonempty_trimmed("Trigger", trigger)?;
+    validate_char_limit("Trigger", &trigger, SNIPPET_TRIGGER_CHAR_LIMIT)?;
+    let expansion = normalize_multiline(expansion);
+    if expansion.is_empty() {
+        anyhow::bail!("Expansion cannot be empty");
+    }
+    validate_char_limit("Expansion", &expansion, SNIPPET_EXPANSION_CHAR_LIMIT)?;
+    let instructions = normalize_multiline(instructions);
+    validate_char_limit(
+        "Cleanup instructions",
+        &instructions,
+        SNIPPET_INSTRUCTIONS_CHAR_LIMIT,
+    )?;
+    Ok((trigger, expansion, instructions))
+}
+
 #[cfg(test)]
 pub fn insert_snippet(db: &Db, trigger: &str, expansion: &str, instructions: &str) -> Result<()> {
     insert_snippet_returning(db, trigger, expansion, instructions, None)?;
@@ -63,36 +84,21 @@ pub fn insert_snippet_returning_conn(
     instructions: &str,
     context_id: Option<i64>,
 ) -> Result<CreatedRecordMeta> {
-    let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
-    validate_char_limit("Trigger", &normalized_trigger, SNIPPET_TRIGGER_CHAR_LIMIT)?;
-    let normalized_expansion = normalize_multiline(expansion);
-    if normalized_expansion.is_empty() {
-        return Err(anyhow::anyhow!("Expansion cannot be empty"));
-    }
-    validate_char_limit(
-        "Expansion",
-        &normalized_expansion,
-        SNIPPET_EXPANSION_CHAR_LIMIT,
-    )?;
-    let normalized_instructions = normalize_multiline(instructions);
-    validate_char_limit(
-        "Cleanup instructions",
-        &normalized_instructions,
-        SNIPPET_INSTRUCTIONS_CHAR_LIMIT,
-    )?;
+    let (normalized_trigger, normalized_expansion, normalized_instructions) =
+        normalize_snippet(trigger, expansion, instructions)?;
 
     let everywhere_id = ensure_everywhere_context_conn(conn)?;
     let target_context = context_id.filter(|id| *id != everywhere_id);
 
     if let Some(target_context) = target_context {
-        let existing: Option<i64> = conn
+        let existing: Option<(i64, String, String, String)> = conn
             .query_row(
-                "SELECT id FROM snippets WHERE trigger = ?1",
+                "SELECT id, expansion, instructions, created_at FROM snippets WHERE trigger = ?1",
                 params![normalized_trigger],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        if let Some(id) = existing {
+        if let Some((id, expansion, instructions, created_at)) = existing {
             let already_in_context: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM snippet_contexts WHERE context_id = ?1 AND snippet_id = ?2)",
                 params![target_context, id],
@@ -101,27 +107,12 @@ pub fn insert_snippet_returning_conn(
             if already_in_context {
                 anyhow::bail!("\"{normalized_trigger}\" is already in this context");
             }
-            let existing_payload: (String, String) = conn.query_row(
-                "SELECT expansion, instructions FROM snippets WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            if existing_payload
-                != (
-                    normalized_expansion.clone(),
-                    normalized_instructions.clone(),
-                )
-            {
+            if expansion != normalized_expansion || instructions != normalized_instructions {
                 anyhow::bail!("\"{normalized_trigger}\" already exists with different content");
             }
             conn.execute(
                 "INSERT OR IGNORE INTO snippet_contexts (context_id, snippet_id) VALUES (?1, ?2)",
                 params![target_context, id],
-            )?;
-            let created_at = conn.query_row(
-                "SELECT created_at FROM snippets WHERE id=?1",
-                params![id],
-                |r| r.get(0),
             )?;
             return Ok(CreatedRecordMeta { id, created_at });
         }
@@ -156,23 +147,8 @@ pub fn update_snippet(
     expansion: &str,
     instructions: &str,
 ) -> Result<()> {
-    let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
-    validate_char_limit("Trigger", &normalized_trigger, SNIPPET_TRIGGER_CHAR_LIMIT)?;
-    let normalized_expansion = normalize_multiline(expansion);
-    if normalized_expansion.is_empty() {
-        return Err(anyhow::anyhow!("Expansion cannot be empty"));
-    }
-    validate_char_limit(
-        "Expansion",
-        &normalized_expansion,
-        SNIPPET_EXPANSION_CHAR_LIMIT,
-    )?;
-    let normalized_instructions = normalize_multiline(instructions);
-    validate_char_limit(
-        "Cleanup instructions",
-        &normalized_instructions,
-        SNIPPET_INSTRUCTIONS_CHAR_LIMIT,
-    )?;
+    let (normalized_trigger, normalized_expansion, normalized_instructions) =
+        normalize_snippet(trigger, expansion, instructions)?;
 
     let conn = lock_conn(db)?;
     let changed = conn.execute(
@@ -205,38 +181,28 @@ pub fn delete_snippet(db: &Db, id: i64) -> Result<()> {
 
 pub fn query_snippets(db: &Db) -> Result<Vec<Snippet>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, trigger, expansion, instructions, use_count, created_at \
          FROM snippets ORDER BY created_at DESC",
     )?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(Snippet {
-                id: r.get(0)?,
-                trigger: r.get(1)?,
-                expansion: r.get(2)?,
-                instructions: r.get(3)?,
-                use_count: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?
+        .query_map([], snippet_from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
 pub fn query_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippet>> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare(
+    query_all(
+        &conn,
         "SELECT s.id, s.trigger, s.expansion, s.instructions, s.use_count, s.created_at
          FROM snippets s
          INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
          WHERE sc.context_id = ?1
          ORDER BY s.created_at DESC",
-    )?;
-    let rows = stmt
-        .query_map(params![context_id], snippet_from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+        params![context_id],
+        snippet_from_row,
+    )
 }
 
 /// Removes a snippet from Everywhere and assigns the existing row to a

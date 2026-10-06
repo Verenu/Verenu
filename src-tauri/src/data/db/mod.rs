@@ -41,6 +41,18 @@ fn lock_conn(db: &Db) -> Result<MutexGuard<'_, Connection>> {
         .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))
 }
 
+fn query_all<T>(
+    conn: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+    map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>> {
+    conn.prepare(sql)?
+        .query_map(parameters, map)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 /// Metadata returned after inserting a row: the new id and its `created_at`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreatedRecordMeta {

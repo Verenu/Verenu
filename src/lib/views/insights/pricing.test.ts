@@ -44,6 +44,20 @@ const snapshot: PricingSnapshot = {
 };
 
 describe('Insights pricing', () => {
+  it('preserves first-match priority for duplicate and competing qualified IDs', () => {
+    const rates = [' Other/Example ', ' GOOGLE/EXAMPLE ', 'vendor/example', 'google/example']
+      .map((model_id, i) => ({ model_id, prompt_usd_per_token: (i + 1) / 1e6, completion_usd_per_token: 0 }));
+    const priced = (model: string, task: 'cleanup' | 'transcription' = 'cleanup') =>
+      estimateCost([usage(model, task, 4_000_000)], { fetched_at: 1, rates }).rows[0].cost;
+    expect(priced(' vendor/EXAMPLE ')).toBe(2);
+    expect(priced('google/example')).toBe(2);
+    expect(priced('missing/example')).toBe(2);
+    expect(estimateCost([{ ...usage('example', 'cleanup', 4_000_000), provider: 'groq' }],
+      { fetched_at: 1, rates }).rows[0].cost).toBe(1);
+    expect(priced('google/example', 'transcription')).toBeNull();
+    expect(priced('missing')).toBeNull();
+  });
+
   it('uses the OpenRouter rate for a fully qualified cleanup model id', () => {
     const summary = estimateCost([{
       model: 'qwen/qwen3.8-27b',

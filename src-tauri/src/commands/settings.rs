@@ -56,251 +56,82 @@ pub struct SettingSpec {
     exportable: bool,
 }
 
-const fn setting_spec(
-    key: &'static str,
-    kind: SettingKind,
-    readable: bool,
-    exportable: bool,
-) -> SettingSpec {
-    SettingSpec {
-        key,
-        kind,
-        readable,
-        exportable,
-    }
+// The table is the allowlist; every listed key is readable.
+macro_rules! setting_specs {
+    ($($key:ident: $kind:ident = $exportable:literal),* $(,)?) => {
+        const SETTING_SPECS: &[SettingSpec] = &[$(
+            SettingSpec { key: store::$key, kind: SettingKind::$kind, readable: true, exportable: $exportable },
+        )*];
+    };
 }
 
-const SETTING_SPECS: &[SettingSpec] = &[
-    setting_spec(
-        store::CUSTOM_PROVIDERS,
-        SettingKind::CustomProviders,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::TRANSCRIPTION_PROVIDER,
-        SettingKind::Provider,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::TRANSCRIPTION_LANGUAGE,
-        SettingKind::TranscriptionLanguage,
-        true,
-        true,
-    ),
-    setting_spec(store::CLEANUP_PROVIDER, SettingKind::Provider, true, true),
-    setting_spec(store::MODEL_SELECTION_MODE, SettingKind::ModelSelectionMode, true, true),
-    setting_spec(
-        store::TRANSCRIPTION_MODEL,
-        SettingKind::StringOrNull,
-        true,
-        true,
-    ),
-    setting_spec(store::CLEANUP_MODEL, SettingKind::StringOrNull, true, true),
-    setting_spec(
-        store::TRANSCRIPTION_MODELS_BY_PROVIDER,
-        SettingKind::ModelMap,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::CLEANUP_MODELS_BY_PROVIDER,
-        SettingKind::ModelMap,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::TRANSCRIPTION_DEFAULT_MODEL,
-        SettingKind::StringOrNull,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::CLEANUP_DEFAULT_MODEL,
-        SettingKind::StringOrNull,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::TRANSCRIPTION_FALLBACK_MODELS,
-        SettingKind::StringArray,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::DUAL_TRANSCRIPTION_ENABLED,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::CLEANUP_FALLBACK_MODELS,
-        SettingKind::StringArray,
-        true,
-        true,
-    ),
-    setting_spec(store::CLEANUP_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(store::CLEANUP_CACHE_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(store::HOTKEY, SettingKind::Hotkey, true, true),
-    // Not exported: modifier names differ between Windows/Linux and macOS.
-    setting_spec(
-        store::SUB_APP_CAPTURE_HOTKEY,
-        SettingKind::SubAppChord,
-        true,
-        false,
-    ),
-    setting_spec(
-        store::MICROPHONE_DEVICE,
-        SettingKind::StringOrNull,
-        true,
-        false,
-    ),
-    setting_spec(store::DEFAULT_TONE, SettingKind::DefaultTone, true, true),
-    setting_spec(
-        store::CLEANUP_INTENSITY,
-        SettingKind::CleanupIntensity,
-        true,
-        true,
-    ),
-    setting_spec(store::APP_MAPPINGS, SettingKind::AppMappings, true, true),
-    setting_spec(store::NOISE_REDUCTION, SettingKind::Bool, true, true),
-    setting_spec(store::MUTE_AUDIO, SettingKind::Bool, true, true),
-    setting_spec(
-        store::MIC_MUTE_BUTTON_DICTATION,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(store::EXCLUSIVE_MIC, SettingKind::Bool, true, true),
-    setting_spec(
-        store::PAUSE_MEDIA_DURING_DICTATION,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(store::MIC_GAIN, SettingKind::MicGain, true, false),
-    setting_spec(store::PLAY_START_STOP_SOUNDS, SettingKind::Bool, true, true),
-    setting_spec(
-        store::SOUND_EFFECTS_VOLUME,
-        SettingKind::SoundEffectsVolume,
-        true,
-        true,
-    ),
-    setting_spec(store::SETUP_COMPLETE, SettingKind::Bool, true, false),
-    setting_spec(store::SETUP_PROGRESS, SettingKind::SetupProgress, true, false),
-    setting_spec(store::AUTO_LEARN_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(store::AUTO_LEARN_EVENT_MODE, SettingKind::Bool, true, true),
-    setting_spec(store::CONTEXTUAL_CAPS, SettingKind::Bool, true, true),
-    setting_spec(store::AUTO_SPACING, SettingKind::Bool, true, true),
-    setting_spec(store::CONTEXTUAL_FORMATTING, SettingKind::Bool, true, true),
-    setting_spec(
-        store::APPEARANCE_MODE,
-        SettingKind::AppearanceMode,
-        true,
-        true,
-    ),
-    setting_spec(store::ACCENT_COLOR, SettingKind::AccentColor, true, true),
-    setting_spec(store::CUSTOM_THEME, SettingKind::CustomTheme, true, true),
-    setting_spec(store::CUSTOM_THEMES, SettingKind::CustomThemes, true, true),
-    setting_spec(
-        store::ANDROID_PILL_POSITION,
-        SettingKind::AndroidPillPosition,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::ANDROID_PILL_DOCK_POSITION,
-        SettingKind::AndroidPillDockPosition,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::ANDROID_PILL_COVER_KEYBOARD_MIC,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(store::ANDROID_PILL_HIDE_OFFLINE, SettingKind::Bool, true, true),
-    setting_spec(store::FORCE_SETUP_ON_LAUNCH, SettingKind::Bool, true, false),
-    setting_spec(store::RUIN_ACCESSIBILITY, SettingKind::Bool, true, false),
-    setting_spec(store::DEV_MODE_ON_STARTUP, SettingKind::Bool, true, true),
-    setting_spec(store::ADVANCED_MODEL_UI, SettingKind::Bool, true, true),
-    setting_spec(
-        store::CLEANUP_PROMPT_OVERRIDE,
-        SettingKind::CleanupPromptOverride,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::STYLE_PROMPT_INSTRUCTIONS,
-        SettingKind::StylePromptInstructions,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::UPDATE_DISMISSED_VERSION,
-        SettingKind::StringOrNull,
-        true,
-        false,
-    ),
-    setting_spec(
-        store::UPDATE_NOTIFIED_VERSION,
-        SettingKind::StringOrNull,
-        true,
-        false,
-    ),
-    setting_spec(store::BETA_UPDATES_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(store::ANALYTICS_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(
-        store::VERENU_SERVICE_CHECKS_ENABLED,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::HISTORY_RETENTION,
-        SettingKind::HistoryRetention,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::LOCAL_MODEL_MEMORY_POLICY,
-        SettingKind::LocalModelMemoryPolicy,
-        true,
-        true,
-    ),
-    setting_spec(store::AUTOSTART_ENABLED, SettingKind::Bool, true, true),
-    setting_spec(store::CAPS_LOCK_UPPERCASE, SettingKind::Bool, true, true),
-    setting_spec(
-        store::CLIPBOARD_PHRASE_ENABLED,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::CLIPBOARD_PHRASE,
-        SettingKind::ClipboardPhrase,
-        true,
-        true,
-    ),
-    setting_spec(
-        store::LEGACY_FEATURES_ENABLED,
-        SettingKind::Bool,
-        true,
-        true,
-    ),
-    setting_spec(store::SYNC_ENABLED, SettingKind::Bool, true, false),
-    // Readable so the picker can hydrate it, never exportable: it is derived
-    // cache state, and shipping it in a settings export would carry one
-    // machine's stale provider view onto another.
-    setting_spec(
-        store::PROVIDER_MODEL_CACHE,
-        SettingKind::ProviderModelCache,
-        true,
-        false,
-    ),
-];
+setting_specs! {
+    CUSTOM_PROVIDERS: CustomProviders = true,
+    TRANSCRIPTION_PROVIDER: Provider = true,
+    TRANSCRIPTION_LANGUAGE: TranscriptionLanguage = true,
+    CLEANUP_PROVIDER: Provider = true,
+    MODEL_SELECTION_MODE: ModelSelectionMode = true,
+    TRANSCRIPTION_MODEL: StringOrNull = true,
+    CLEANUP_MODEL: StringOrNull = true,
+    TRANSCRIPTION_MODELS_BY_PROVIDER: ModelMap = true,
+    CLEANUP_MODELS_BY_PROVIDER: ModelMap = true,
+    TRANSCRIPTION_DEFAULT_MODEL: StringOrNull = true,
+    CLEANUP_DEFAULT_MODEL: StringOrNull = true,
+    TRANSCRIPTION_FALLBACK_MODELS: StringArray = true,
+    DUAL_TRANSCRIPTION_ENABLED: Bool = true,
+    CLEANUP_FALLBACK_MODELS: StringArray = true,
+    CLEANUP_ENABLED: Bool = true,
+    CLEANUP_CACHE_ENABLED: Bool = true,
+    HOTKEY: Hotkey = true,
+    SUB_APP_CAPTURE_HOTKEY: SubAppChord = false,
+    MICROPHONE_DEVICE: StringOrNull = false,
+    DEFAULT_TONE: DefaultTone = true,
+    CLEANUP_INTENSITY: CleanupIntensity = true,
+    APP_MAPPINGS: AppMappings = true,
+    NOISE_REDUCTION: Bool = true,
+    MUTE_AUDIO: Bool = true,
+    MIC_MUTE_BUTTON_DICTATION: Bool = true,
+    EXCLUSIVE_MIC: Bool = true,
+    PAUSE_MEDIA_DURING_DICTATION: Bool = true,
+    MIC_GAIN: MicGain = false,
+    PLAY_START_STOP_SOUNDS: Bool = true,
+    SOUND_EFFECTS_VOLUME: SoundEffectsVolume = true,
+    SETUP_COMPLETE: Bool = false,
+    SETUP_PROGRESS: SetupProgress = false,
+    AUTO_LEARN_ENABLED: Bool = true,
+    AUTO_LEARN_EVENT_MODE: Bool = true,
+    CONTEXTUAL_CAPS: Bool = true,
+    AUTO_SPACING: Bool = true,
+    CONTEXTUAL_FORMATTING: Bool = true,
+    APPEARANCE_MODE: AppearanceMode = true,
+    ACCENT_COLOR: AccentColor = true,
+    CUSTOM_THEME: CustomTheme = true,
+    CUSTOM_THEMES: CustomThemes = true,
+    ANDROID_PILL_POSITION: AndroidPillPosition = true,
+    ANDROID_PILL_DOCK_POSITION: AndroidPillDockPosition = true,
+    ANDROID_PILL_COVER_KEYBOARD_MIC: Bool = true,
+    ANDROID_PILL_HIDE_OFFLINE: Bool = true,
+    FORCE_SETUP_ON_LAUNCH: Bool = false,
+    RUIN_ACCESSIBILITY: Bool = false,
+    DEV_MODE_ON_STARTUP: Bool = true,
+    ADVANCED_MODEL_UI: Bool = true,
+    CLEANUP_PROMPT_OVERRIDE: CleanupPromptOverride = true,
+    STYLE_PROMPT_INSTRUCTIONS: StylePromptInstructions = true,
+    UPDATE_DISMISSED_VERSION: StringOrNull = false,
+    UPDATE_NOTIFIED_VERSION: StringOrNull = false,
+    BETA_UPDATES_ENABLED: Bool = true,
+    ANALYTICS_ENABLED: Bool = true,
+    VERENU_SERVICE_CHECKS_ENABLED: Bool = true,
+    HISTORY_RETENTION: HistoryRetention = true,
+    LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
+    AUTOSTART_ENABLED: Bool = true,
+    CAPS_LOCK_UPPERCASE: Bool = true,
+    CLIPBOARD_PHRASE_ENABLED: Bool = true,
+    CLIPBOARD_PHRASE: ClipboardPhrase = true,
+    LEGACY_FEATURES_ENABLED: Bool = true,
+    SYNC_ENABLED: Bool = false,
+    PROVIDER_MODEL_CACHE: ProviderModelCache = false,
+}
 
 fn spec_for(key: &str) -> Option<&'static SettingSpec> {
     SETTING_SPECS.iter().find(|spec| spec.key == key)
@@ -946,6 +777,8 @@ pub struct AllSettings {
     pub setup_progress: Option<serde_json::Value>,
     pub autostart_enabled: Option<bool>,
     pub auto_learn_enabled: Option<bool>,
+    pub analytics_enabled: Option<bool>,
+    pub force_setup_on_launch: Option<bool>,
     pub contextual_caps_enabled: Option<bool>,
     pub auto_spacing_enabled: Option<bool>,
     pub contextual_formatting_enabled: Option<bool>,
@@ -974,6 +807,93 @@ pub struct AllSettings {
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
 }
 
+// The struct above is the IPC contract (tests/OnePyFone.py parses it); this
+// table keeps each field's store key and reader together.
+macro_rules! all_settings {
+    ($($field:ident = $reader:ident($key:path)),* $(,)?) => {
+        fn read_all_settings(s: &store::SettingsSnapshot) -> AllSettings {
+            AllSettings { $($field: snapshot_value!(s, $reader, $key),)* }
+        }
+    };
+}
+
+macro_rules! snapshot_value {
+    ($s:ident, bool_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_bool) };
+    ($s:ident, str_val, $key:path) => { $s.get($key).and_then(|v| v.as_str().map(String::from)) };
+    ($s:ident, f64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_f64) };
+    ($s:ident, json_val, $key:path) => { $s.get_cloned($key) };
+    ($s:ident, str_array_val, $key:path) => {
+        $s.get($key).and_then(|v| v.as_array().map(|arr| {
+            arr.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+        }))
+    };
+    ($s:ident, custom, $key:path) => { crate::api::custom::parse_stored($s.get($key)) };
+}
+
+all_settings! {
+    clipboard_phrase = str_val(store::CLIPBOARD_PHRASE),
+    clipboard_phrase_enabled = bool_val(store::CLIPBOARD_PHRASE_ENABLED),
+    legacy_features_enabled = bool_val(store::LEGACY_FEATURES_ENABLED),
+    sync_enabled = bool_val(store::SYNC_ENABLED),
+    sync_peer_addresses = json_val(store::SYNC_PEER_ADDRESSES),
+    ruin_accessibility = bool_val(store::RUIN_ACCESSIBILITY),
+    dev_mode_on_startup = bool_val(store::DEV_MODE_ON_STARTUP),
+    transcription_provider = str_val(store::TRANSCRIPTION_PROVIDER),
+    transcription_model = str_val(store::TRANSCRIPTION_MODEL),
+    transcription_language = str_val(store::TRANSCRIPTION_LANGUAGE),
+    cleanup_provider = str_val(store::CLEANUP_PROVIDER),
+    cleanup_model = str_val(store::CLEANUP_MODEL),
+    transcription_models_by_provider = json_val(store::TRANSCRIPTION_MODELS_BY_PROVIDER),
+    cleanup_models_by_provider = json_val(store::CLEANUP_MODELS_BY_PROVIDER),
+    transcription_default_model = str_val(store::TRANSCRIPTION_DEFAULT_MODEL),
+    cleanup_default_model = str_val(store::CLEANUP_DEFAULT_MODEL),
+    transcription_fallback_models = str_array_val(store::TRANSCRIPTION_FALLBACK_MODELS),
+    dual_transcription_enabled = bool_val(store::DUAL_TRANSCRIPTION_ENABLED),
+    model_selection_mode = str_val(store::MODEL_SELECTION_MODE),
+    cleanup_fallback_models = str_array_val(store::CLEANUP_FALLBACK_MODELS),
+    advanced_model_ui = bool_val(store::ADVANCED_MODEL_UI),
+    cleanup_enabled = bool_val(store::CLEANUP_ENABLED),
+    cleanup_cache_enabled = bool_val(store::CLEANUP_CACHE_ENABLED),
+    noise_reduction = bool_val(store::NOISE_REDUCTION),
+    mute_audio = bool_val(store::MUTE_AUDIO),
+    mic_mute_button_dictation = bool_val(store::MIC_MUTE_BUTTON_DICTATION),
+    exclusive_mic = bool_val(store::EXCLUSIVE_MIC),
+    pause_media_during_dictation = bool_val(store::PAUSE_MEDIA_DURING_DICTATION),
+    play_start_stop_sounds = bool_val(store::PLAY_START_STOP_SOUNDS),
+    sound_effects_volume = f64_val(store::SOUND_EFFECTS_VOLUME),
+    setup_progress = json_val(store::SETUP_PROGRESS),
+    autostart_enabled = bool_val(store::AUTOSTART_ENABLED),
+    auto_learn_enabled = bool_val(store::AUTO_LEARN_ENABLED),
+    analytics_enabled = bool_val(store::ANALYTICS_ENABLED),
+    force_setup_on_launch = bool_val(store::FORCE_SETUP_ON_LAUNCH),
+    contextual_caps_enabled = bool_val(store::CONTEXTUAL_CAPS),
+    auto_spacing_enabled = bool_val(store::AUTO_SPACING),
+    contextual_formatting_enabled = bool_val(store::CONTEXTUAL_FORMATTING),
+    caps_lock_uppercase_enabled = bool_val(store::CAPS_LOCK_UPPERCASE),
+    mic_gain = f64_val(store::MIC_GAIN),
+    history_retention = str_val(store::HISTORY_RETENTION),
+    local_model_memory_policy = str_val(store::LOCAL_MODEL_MEMORY_POLICY),
+    microphone_device = str_val(store::MICROPHONE_DEVICE),
+    update_dismissed_version = str_val(store::UPDATE_DISMISSED_VERSION),
+    update_notified_version = str_val(store::UPDATE_NOTIFIED_VERSION),
+    beta_updates_enabled = bool_val(store::BETA_UPDATES_ENABLED),
+    verenu_service_checks_enabled = bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
+    hotkey = str_array_val(store::HOTKEY),
+    sub_app_capture_hotkey = str_val(store::SUB_APP_CAPTURE_HOTKEY),
+    appearance_mode = str_val(store::APPEARANCE_MODE),
+    accent_color = str_val(store::ACCENT_COLOR),
+    custom_theme = json_val(store::CUSTOM_THEME),
+    custom_themes = json_val(store::CUSTOM_THEMES),
+    android_pill_position = str_val(store::ANDROID_PILL_POSITION),
+    android_pill_dock_position = str_val(store::ANDROID_PILL_DOCK_POSITION),
+    android_pill_cover_keyboard_mic = bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
+    android_pill_hide_offline = bool_val(store::ANDROID_PILL_HIDE_OFFLINE),
+    cleanup_prompt_override = str_val(store::CLEANUP_PROMPT_OVERRIDE),
+    style_prompt_instructions = json_val(store::STYLE_PROMPT_INSTRUCTIONS),
+    provider_model_cache = json_val(store::PROVIDER_MODEL_CACHE),
+    custom_providers = custom(store::CUSTOM_PROVIDERS),
+}
+
 #[derive(serde::Serialize)]
 pub struct CleanupCacheStatus {
     pub entry_count: i64,
@@ -983,87 +903,38 @@ pub struct CleanupCacheStatus {
 
 #[tauri::command]
 pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
-    let s = store::settings_snapshot(&app)?;
-    let bool_val = |key: &str| s.get(key).and_then(|v| v.as_bool());
-    let str_val = |key: &str| s.get(key).and_then(|v| v.as_str().map(String::from));
-    let f64_val = |key: &str| s.get(key).and_then(|v| v.as_f64());
-    let json_val = |key: &str| s.get_cloned(key);
-    let str_array_val = |key: &str| {
-        s.get(key).and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-        })
-    };
-    Ok(AllSettings {
-        clipboard_phrase: str_val(store::CLIPBOARD_PHRASE),
-        clipboard_phrase_enabled: bool_val(store::CLIPBOARD_PHRASE_ENABLED),
-        legacy_features_enabled: bool_val(store::LEGACY_FEATURES_ENABLED),
-        sync_enabled: bool_val(store::SYNC_ENABLED),
-        sync_peer_addresses: json_val(store::SYNC_PEER_ADDRESSES),
-        ruin_accessibility: bool_val(store::RUIN_ACCESSIBILITY),
-        dev_mode_on_startup: bool_val(store::DEV_MODE_ON_STARTUP),
-        transcription_provider: str_val(store::TRANSCRIPTION_PROVIDER),
-        transcription_model: str_val(store::TRANSCRIPTION_MODEL),
-        transcription_language: str_val(store::TRANSCRIPTION_LANGUAGE),
-        cleanup_provider: str_val(store::CLEANUP_PROVIDER),
-        cleanup_model: str_val(store::CLEANUP_MODEL),
-        transcription_models_by_provider: json_val(store::TRANSCRIPTION_MODELS_BY_PROVIDER),
-        cleanup_models_by_provider: json_val(store::CLEANUP_MODELS_BY_PROVIDER),
-        transcription_default_model: str_val(store::TRANSCRIPTION_DEFAULT_MODEL),
-        cleanup_default_model: str_val(store::CLEANUP_DEFAULT_MODEL),
-        transcription_fallback_models: str_array_val(store::TRANSCRIPTION_FALLBACK_MODELS),
-        dual_transcription_enabled: bool_val(store::DUAL_TRANSCRIPTION_ENABLED),
-        model_selection_mode: str_val(store::MODEL_SELECTION_MODE),
-        cleanup_fallback_models: str_array_val(store::CLEANUP_FALLBACK_MODELS),
-        advanced_model_ui: bool_val(store::ADVANCED_MODEL_UI),
-        cleanup_enabled: bool_val(store::CLEANUP_ENABLED),
-        cleanup_cache_enabled: bool_val(store::CLEANUP_CACHE_ENABLED),
-        noise_reduction: bool_val(store::NOISE_REDUCTION),
-        mute_audio: bool_val(store::MUTE_AUDIO),
-        mic_mute_button_dictation: bool_val(store::MIC_MUTE_BUTTON_DICTATION),
-        exclusive_mic: bool_val(store::EXCLUSIVE_MIC),
-        pause_media_during_dictation: bool_val(store::PAUSE_MEDIA_DURING_DICTATION),
-        play_start_stop_sounds: bool_val(store::PLAY_START_STOP_SOUNDS),
-        sound_effects_volume: f64_val(store::SOUND_EFFECTS_VOLUME),
-        setup_progress: json_val(store::SETUP_PROGRESS),
-        autostart_enabled: bool_val(store::AUTOSTART_ENABLED),
-        auto_learn_enabled: bool_val(store::AUTO_LEARN_ENABLED),
-        contextual_caps_enabled: bool_val(store::CONTEXTUAL_CAPS),
-        auto_spacing_enabled: bool_val(store::AUTO_SPACING),
-        contextual_formatting_enabled: bool_val(store::CONTEXTUAL_FORMATTING),
-        caps_lock_uppercase_enabled: bool_val(store::CAPS_LOCK_UPPERCASE),
-        mic_gain: f64_val(store::MIC_GAIN),
-        history_retention: str_val(store::HISTORY_RETENTION),
-        local_model_memory_policy: str_val(store::LOCAL_MODEL_MEMORY_POLICY),
-        microphone_device: str_val(store::MICROPHONE_DEVICE),
-        update_dismissed_version: str_val(store::UPDATE_DISMISSED_VERSION),
-        update_notified_version: str_val(store::UPDATE_NOTIFIED_VERSION),
-        beta_updates_enabled: bool_val(store::BETA_UPDATES_ENABLED),
-        verenu_service_checks_enabled: bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
-        hotkey: s.get(store::HOTKEY).and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-        }),
-        appearance_mode: str_val(store::APPEARANCE_MODE),
-        accent_color: str_val(store::ACCENT_COLOR),
-        sub_app_capture_hotkey: str_val(store::SUB_APP_CAPTURE_HOTKEY),
-        custom_theme: json_val(store::CUSTOM_THEME),
-        custom_themes: json_val(store::CUSTOM_THEMES),
-        android_pill_position: str_val(store::ANDROID_PILL_POSITION),
-        android_pill_dock_position: str_val(store::ANDROID_PILL_DOCK_POSITION),
-        android_pill_cover_keyboard_mic: bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),
-        android_pill_hide_offline: bool_val(store::ANDROID_PILL_HIDE_OFFLINE),
-        cleanup_prompt_override: str_val(store::CLEANUP_PROMPT_OVERRIDE),
-        style_prompt_instructions: json_val(store::STYLE_PROMPT_INSTRUCTIONS),
-        provider_model_cache: json_val(store::PROVIDER_MODEL_CACHE),
-        custom_providers: crate::api::custom::parse_stored(s.get(store::CUSTOM_PROVIDERS)),
-    })
+    Ok(read_all_settings(&store::settings_snapshot(&app)?))
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_nullable_typed_fields_and_additive_flags() {
+        let snapshot = store::SettingsSnapshot::from_pairs([
+            (store::ANALYTICS_ENABLED.into(), json!(false)),
+            (store::FORCE_SETUP_ON_LAUNCH.into(), json!(true)),
+            (store::CLEANUP_ENABLED.into(), json!("invalid")),
+            (store::MIC_GAIN.into(), json!(3.5)),
+            (store::HOTKEY.into(), json!(["Ctrl", 42, "Super"])),
+            (store::TRANSCRIPTION_MODELS_BY_PROVIDER.into(), json!({"groq": ["speech"]})),
+            (store::SETUP_PROGRESS.into(), json!({"step": 4, "provider": "groq"})),
+            (store::ANDROID_PILL_DOCK_POSITION.into(), json!("bottom")),
+        ]);
+        let output = serde_json::to_value(read_all_settings(&snapshot)).unwrap();
+        assert_eq!(output["analytics_enabled"], false);
+        assert_eq!(output["force_setup_on_launch"], true);
+        assert_eq!(output["cleanup_enabled"], serde_json::Value::Null);
+        assert_eq!(output["mic_gain"], 3.5);
+        assert_eq!(output["hotkey"], json!(["Ctrl", "Super"]));
+        assert_eq!(output["transcription_models_by_provider"], json!({"groq": ["speech"]}));
+        assert_eq!(output["setup_progress"], json!({"step": 4, "provider": "groq"}));
+        assert_eq!(output["android_pill_dock_position"], "bottom");
+        assert_eq!(output["custom_providers"], json!([]));
+        assert_eq!(output["transcription_provider"], serde_json::Value::Null);
+    }
 }
 
 #[cfg(test)]

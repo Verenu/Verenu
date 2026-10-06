@@ -515,8 +515,8 @@ async fn run_dual_transcription_candidates(
     }
 
     successes.sort_by_key(|(index, _, _, _)| *index);
-    let Some((_, primary_text, primary_provider, primary_model)) = successes.first().cloned()
-    else {
+    let mut successes = successes.into_iter();
+    let Some((_, primary_text, primary_provider, primary_model)) = successes.next() else {
         // Preserve the underlying provider error when one exists, so a
         // connectivity outage can be detected upstream instead of being
         // flattened into a generic "nothing transcribed".
@@ -526,8 +526,8 @@ async fn run_dual_transcription_candidates(
         anyhow::bail!("Nothing transcribed - please try speaking more clearly");
     };
     let alternate = successes
-        .get(1)
-        .map(|(_, text, provider, model)| (text.clone(), provider.clone(), model.clone()));
+        .next()
+        .map(|(_, text, provider, model)| (text, provider, model));
     Ok((primary_text, primary_provider, primary_model, alternate))
 }
 
@@ -544,21 +544,17 @@ fn spawn_transcription_candidate(
 ) {
     let app = app.clone();
     let audio = audio.clone();
-    let cfg = cfg.clone();
+    let key = cfg.key_for(&candidate.0).to_owned();
+    let language = cfg.transcription_language.clone();
+    let customs = cfg.custom_providers.clone();
     in_flight.spawn(async move {
         let (provider, model) = candidate;
-        let key = cfg.key_for(&provider).to_owned();
-        let language = cfg.transcription_language.clone();
         let request = transcribe_any(
             &app,
             &audio,
             &provider,
-            &cfg.custom_providers,
-            if key.is_empty() {
-                None
-            } else {
-                Some(key.as_str())
-            },
+            &customs,
+            if key.is_empty() { None } else { Some(key.as_str()) },
             &language,
             &model,
             gen,
@@ -622,19 +618,14 @@ async fn run_primary_transcription_chain(
         if provider_index > 0 {
             telemetry.fallback("transcription");
         }
-        let key = cfg.key_for(&provider_id).to_owned();
-        let language = cfg.transcription_language.clone();
+        let key = cfg.key_for(&provider_id);
         match transcribe_any(
             app,
             audio,
             &provider_id,
             &cfg.custom_providers,
-            if key.is_empty() {
-                None
-            } else {
-                Some(key.as_str())
-            },
-            &language,
+            if key.is_empty() { None } else { Some(key) },
+            &cfg.transcription_language,
             &model,
             gen,
         )

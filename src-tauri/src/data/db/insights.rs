@@ -176,10 +176,11 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         cleanup_lifetime,
     ) = {
         let conn = lock_conn(db)?;
-        let range = range_bounds(&conn, days, context_id)?;
+        let history_started_on = history_started_on_conn(&conn, context_id)?;
+        let range = range_bounds(days, history_started_on.as_deref())?;
         let previous = previous_range(days);
         let totals = query_totals(&conn, &range, previous.as_ref(), context_id)?;
-        let lifetime_range = range_bounds(&conn, 0, context_id)?;
+        let lifetime_range = range_bounds(0, history_started_on.as_deref())?;
         // The selected window is always a suffix of the lifetime window. One
         // grouped query therefore supplies both series, including the idle
         // prefix needed when a new install has less than `days` of history.
@@ -192,32 +193,6 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         // the streak calculation. Derive the compact heatmap from it instead
         // of issuing a second overlapping 365-day aggregation query.
         let streak_daily = compact_streak_daily(&lifetime_streak_daily);
-        // Scoped too, so the heatmap can still tell "before this context
-        // existed" apart from "a day you didn't use it".
-        let context_uuid: Option<String> = context_id
-            .map(|id| {
-                conn.query_row(
-                    "SELECT uuid FROM contexts WHERE id = ?1",
-                    params![id],
-                    |r| r.get(0),
-                )
-                .optional()
-            })
-            .transpose()?
-            .flatten();
-        let history_started_on: Option<String> = match (context_id, context_uuid.as_deref()) {
-            (Some(_), Some(uuid)) => conn.query_row(
-                "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
-                params![uuid],
-                |r| r.get(0),
-            )?,
-            (Some(_), None) => None,
-            (None, _) => {
-                conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
-                    r.get(0)
-                })?
-            }
-        };
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
         let (words, raw_words, clean_words, changed_words) =
@@ -396,42 +371,30 @@ fn parse_api_usage(api_used: &str) -> ApiUsageParts {
     }
 }
 
+fn history_started_on_conn(conn: &Connection, context_id: Option<i64>) -> Result<Option<String>> {
+    let sql = if context_id.is_some() {
+        "SELECT MIN(day) FROM transcription_context_daily_stats
+         WHERE context_uuid = (SELECT uuid FROM contexts WHERE id = ?1)"
+    } else {
+        "SELECT MIN(day) FROM transcription_daily_stats WHERE ?1 IS NULL"
+    };
+    conn.prepare_cached(sql)?
+        .query_row(params![context_id], |row| row.get(0))
+        .map_err(Into::into)
+}
+
 /// Local calendar-day bounds plus UTC-naive timestamp bounds. `created_at` is
 /// stored as a UTC-naive value, so the timestamp predicates below can seek on
 /// the ordinary `created_at` index without applying a function to the column.
-fn range_bounds(conn: &Connection, days: i64, context_id: Option<i64>) -> Result<DateRange> {
+fn range_bounds(days: i64, history_started_on: Option<&str>) -> Result<DateRange> {
     let today = Local::now().date_naive();
     let start_day = if days > 0 {
         today - Duration::days((days - 1).max(0))
     } else {
-        if context_id.is_none() {
-            conn.query_row("SELECT MIN(day) FROM transcription_daily_stats", [], |r| {
-                r.get::<_, Option<String>>(0)
-            })?
-            .map(|day| NaiveDate::parse_from_str(&day, "%Y-%m-%d"))
+        history_started_on
+            .map(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d"))
             .transpose()?
             .unwrap_or(today)
-        } else {
-            let context_uuid: Option<String> = conn
-                .query_row(
-                    "SELECT uuid FROM contexts WHERE id = ?1",
-                    params![context_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(context_uuid) = context_uuid {
-                conn.query_row(
-                    "SELECT MIN(day) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
-                    params![context_uuid],
-                    |r| r.get::<_, Option<String>>(0),
-                )?
-                .map(|day| NaiveDate::parse_from_str(&day, "%Y-%m-%d"))
-                .transpose()?
-                .unwrap_or(today)
-            } else {
-                today
-            }
-        }
     };
     Ok(make_date_range(start_day, today))
 }
@@ -490,62 +453,17 @@ fn query_totals(
     previous: Option<&DateRange>,
     context_id: Option<i64>,
 ) -> Result<InsightsTotals> {
-    if context_id.is_none() {
-        // The daily table is the source of truth for unscoped totals once raw
-        // transcript text has aged out of retention.
-        let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
-        let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
-        let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
-            "SELECT
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
-               COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
-             FROM transcription_daily_stats",
-            params![
-                range.start_day.format("%Y-%m-%d").to_string(),
-                range.end_day.format("%Y-%m-%d").to_string(),
-                previous_start,
-                previous_end
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-        )?;
-        let total_words: i64 = conn.query_row(
-            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
-            [],
-            |r| r.get(0),
-        )?;
-        return Ok(InsightsTotals {
-            total_words,
-            total_transcriptions,
-            total_speaking_ms,
-            avg_words_per_transcription: if total_transcriptions > 0 {
-                (words_in_range as f64 / total_transcriptions as f64).round() as i64
-            } else {
-                0
-            },
-            avg_wpm: if wpm_count > 0 {
-                wpm_sum / wpm_count as f64
-            } else {
-                0.0
-            },
-            best_wpm: best_wpm as i64,
-            words_in_range,
-            words_prev_range,
-        });
-    }
-    let Some(context_uuid): Option<String> = conn
-        .query_row(
-            "SELECT uuid FROM contexts WHERE id = ?1",
-            params![context_id],
-            |r| r.get(0),
-        )
-        .optional()?
-    else {
+    let context_uuid: Option<String> = match context_id {
+        Some(id) => conn
+            .query_row(
+                "SELECT uuid FROM contexts WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    if context_id.is_some() && context_uuid.is_none() {
         return Ok(InsightsTotals {
             total_words: 0,
             avg_words_per_transcription: 0,
@@ -556,28 +474,67 @@ fn query_totals(
             words_in_range: 0,
             words_prev_range: 0,
         });
+    }
+
+    // Durable daily summaries preserve totals after raw history retention.
+    let source = if context_id.is_none() {
+        "transcription_daily_stats WHERE ?5 IS NULL"
+    } else {
+        "transcription_context_daily_stats WHERE context_uuid = ?5"
     };
     let previous_start = previous.map(|r| r.start_day.format("%Y-%m-%d").to_string());
     let previous_end = previous.map(|r| r.end_day.format("%Y-%m-%d").to_string());
-    let (total_transcriptions, words_in_range, total_speaking_ms, wpm_sum, wpm_count, best_wpm, words_prev_range): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
-        "SELECT
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
-           COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
-         FROM transcription_context_daily_stats
-        WHERE context_uuid = ?5",
-        params![range.start_day.to_string(), range.end_day.to_string(), previous_start, previous_end, context_uuid],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    let sql = format!("SELECT
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_transcriptions ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN total_words ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN speaking_ms ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_sum ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN day >= ?1 AND day <= ?2 THEN wpm_count ELSE 0 END), 0),
+       COALESCE(MAX(CASE WHEN day >= ?1 AND day <= ?2 THEN best_wpm ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN ?3 IS NOT NULL AND day >= ?3 AND day <= ?4 THEN total_words ELSE 0 END), 0)
+     FROM {source}");
+    let (
+        total_transcriptions,
+        words_in_range,
+        total_speaking_ms,
+        wpm_sum,
+        wpm_count,
+        best_wpm,
+        words_prev_range,
+    ): (i64, i64, i64, f64, i64, f64, i64) = conn.query_row(
+        &sql,
+        params![
+            range.start_day.format("%Y-%m-%d").to_string(),
+            range.end_day.format("%Y-%m-%d").to_string(),
+            previous_start,
+            previous_end,
+            context_uuid
+        ],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        },
     )?;
-    let total_words: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(total_words), 0) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
-        params![context_uuid],
-        |r| r.get(0),
-    )?;
+    let total_words: i64 = if context_id.is_none() {
+        conn.query_row(
+            "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
+                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
+            [],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COALESCE(SUM(total_words), 0) FROM transcription_context_daily_stats WHERE context_uuid = ?1",
+            params![context_uuid], |r| r.get(0),
+        )?
+    };
     Ok(InsightsTotals {
         total_words,
         total_transcriptions,
@@ -771,38 +728,13 @@ fn query_providers(
          GROUP BY a.model, a.provider, a.task
          ORDER BY COUNT(*) DESC, a.model ASC",
     )?;
-    let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
-        Ok(InsightsProviderUsage {
-            model: r.get(0)?,
-            provider: r.get(1)?,
-            task: r.get(2)?,
-            calls: r.get(3)?,
-            audio_ms: r.get(4)?,
-            input_chars: r.get(5)?,
-            output_chars: r.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![range.start, range.end, context_id],
+        provider_usage_from_row,
+    )?;
     let mut by_key: HashMap<(String, String, String), InsightsProviderUsage> = HashMap::new();
     for row in rows {
-        let value = row?;
-        let key = (
-            value.model.clone(),
-            value.provider.clone(),
-            value.task.clone(),
-        );
-        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
-            model: value.model.clone(),
-            provider: value.provider.clone(),
-            task: value.task.clone(),
-            calls: 0,
-            audio_ms: 0,
-            input_chars: 0,
-            output_chars: 0,
-        });
-        entry.calls += value.calls;
-        entry.audio_ms += value.audio_ms;
-        entry.input_chars += value.input_chars;
-        entry.output_chars += value.output_chars;
+        merge_provider_usage(&mut by_key, row?);
     }
     let mut compacted = conn.prepare(
         "SELECT model, provider, task, SUM(calls), SUM(audio_ms), SUM(input_chars), SUM(output_chars)
@@ -818,42 +750,46 @@ fn query_providers(
             range.end_day.to_string(),
             context_id
         ],
-        |r| {
-            Ok(InsightsProviderUsage {
-                model: r.get(0)?,
-                provider: r.get(1)?,
-                task: r.get(2)?,
-                calls: r.get(3)?,
-                audio_ms: r.get(4)?,
-                input_chars: r.get(5)?,
-                output_chars: r.get(6)?,
-            })
-        },
+        provider_usage_from_row,
     )?;
     for row in rows {
-        let value = row?;
-        let key = (
-            value.model.clone(),
-            value.provider.clone(),
-            value.task.clone(),
-        );
-        let entry = by_key.entry(key).or_insert_with(|| InsightsProviderUsage {
-            model: value.model.clone(),
-            provider: value.provider.clone(),
-            task: value.task.clone(),
-            calls: 0,
-            audio_ms: 0,
-            input_chars: 0,
-            output_chars: 0,
-        });
-        entry.calls += value.calls;
-        entry.audio_ms += value.audio_ms;
-        entry.input_chars += value.input_chars;
-        entry.output_chars += value.output_chars;
+        merge_provider_usage(&mut by_key, row?);
     }
     let mut usage: Vec<_> = by_key.into_values().collect();
     usage.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.model.cmp(&b.model)));
     Ok(usage)
+}
+
+fn provider_usage_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<InsightsProviderUsage> {
+    Ok(InsightsProviderUsage {
+        model: r.get(0)?,
+        provider: r.get(1)?,
+        task: r.get(2)?,
+        calls: r.get(3)?,
+        audio_ms: r.get(4)?,
+        input_chars: r.get(5)?,
+        output_chars: r.get(6)?,
+    })
+}
+
+fn merge_provider_usage(
+    by_key: &mut HashMap<(String, String, String), InsightsProviderUsage>,
+    value: InsightsProviderUsage,
+) {
+    let key = (
+        value.model.clone(),
+        value.provider.clone(),
+        value.task.clone(),
+    );
+    by_key
+        .entry(key)
+        .and_modify(|entry| {
+            entry.calls += value.calls;
+            entry.audio_ms += value.audio_ms;
+            entry.input_chars += value.input_chars;
+            entry.output_chars += value.output_chars;
+        })
+        .or_insert(value);
 }
 
 fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<CleanupLifetime> {
@@ -899,6 +835,7 @@ fn query_text_metrics(
     let mut rows = stmt.query(params![range.start, range.end, context_id])?;
     let mut counts: HashMap<String, i64> = HashMap::new();
     let mut longest: Option<String> = None;
+    let mut longest_len = 0;
     let mut length_sum = 0u64;
     let mut length_count = 0u64;
     let mut raw_words = 0i64;
@@ -925,8 +862,9 @@ fn query_text_metrics(
             if char_len < MIN_WORD_CHARS || is_stopword(&normalized) {
                 continue;
             }
-            if char_len > longest.as_ref().map_or(0, |w| w.chars().count()) {
+            if char_len > longest_len {
                 longest = Some(normalized.clone());
+                longest_len = char_len;
             }
             *counts.entry(normalized).or_insert(0) += 1;
             length_sum += char_len as u64;
@@ -939,8 +877,14 @@ fn query_text_metrics(
         .into_iter()
         .map(|(word, count)| InsightsWordCount { word, count })
         .collect();
-    top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word)));
+    let compare = |a: &InsightsWordCount, b: &InsightsWordCount| {
+        b.count.cmp(&a.count).then_with(|| a.word.cmp(&b.word))
+    };
+    if top.len() > TOP_WORDS_LIMIT {
+        top.select_nth_unstable_by(TOP_WORDS_LIMIT, compare);
+    }
     top.truncate(TOP_WORDS_LIMIT);
+    top.sort_by(compare);
     Ok((
         InsightsWords {
             top,
@@ -974,18 +918,38 @@ fn count_changed_words(raw: &str, clean: &str) -> i64 {
         .filter(|word| !word.is_empty())
         .collect();
 
-    let mut previous: Vec<usize> = (0..=clean_words.len()).collect();
-    for (raw_index, raw_word) in raw_words.iter().enumerate() {
-        let mut current = vec![raw_index + 1; clean_words.len() + 1];
-        for (clean_index, clean_word) in clean_words.iter().enumerate() {
-            let substitution = previous[clean_index] + usize::from(raw_word != clean_word);
-            let insertion = current[clean_index] + 1;
-            let deletion = previous[clean_index + 1] + 1;
-            current[clean_index + 1] = substitution.min(insertion).min(deletion);
-        }
-        previous = current;
+    // Equal prefixes and suffixes do not affect Levenshtein distance. Most
+    // cleanup edits change only a small part of the transcript.
+    let prefix = raw_words.iter().zip(&clean_words)
+        .take_while(|(a, b)| a == b).count();
+    let raw_words = &raw_words[prefix..];
+    let clean_words = &clean_words[prefix..];
+    let suffix = raw_words.iter().rev().zip(clean_words.iter().rev())
+        .take_while(|(a, b)| a == b).count();
+    let raw_words = &raw_words[..raw_words.len() - suffix];
+    let clean_words = &clean_words[..clean_words.len() - suffix];
+    let (longer, shorter) = if raw_words.len() >= clean_words.len() {
+        (raw_words, clean_words)
+    } else {
+        (clean_words, raw_words)
+    };
+    if shorter.is_empty() {
+        return longer.len() as i64;
     }
-    previous[clean_words.len()] as i64
+
+    let mut distances: Vec<usize> = (0..=shorter.len()).collect();
+    for (row, word) in longer.iter().enumerate() {
+        let mut diagonal = distances[0];
+        distances[0] = row + 1;
+        for (column, other) in shorter.iter().enumerate() {
+            let above = distances[column + 1];
+            distances[column + 1] = (diagonal + usize::from(word != other))
+                .min(distances[column] + 1)
+                .min(above + 1);
+            diagonal = above;
+        }
+    }
+    distances[shorter.len()] as i64
 }
 
 /// Lowercases and strips punctuation, keeping only alphanumeric characters.
@@ -1458,7 +1422,8 @@ mod tests {
             ["re-enter reenter café café foo !!!"],
         )
         .expect("insert");
-        let range = range_bounds(&conn, 0, None).expect("range");
+        let history_started_on = history_started_on_conn(&conn, None).expect("history start");
+        let range = range_bounds(0, history_started_on.as_deref()).expect("range");
         let (words, raw, clean, changed) =
             query_text_metrics(&conn, &range, None).expect("metrics");
         assert_eq!((raw, clean), (1, 5));
@@ -1503,6 +1468,22 @@ mod tests {
                 .any(|w| w.word == "i" || w.word == "a" || w.word == "um"),
             "sub-3-char and stopword tokens must be excluded"
         );
+    }
+
+    #[test]
+    fn top_words_limit_preserves_frequency_and_alphabetical_ties() {
+        let db = test_db();
+        let text = "zebra zebra zebra kiwi kiwi kiwi mango mango apple banana cherry coconut date fig grape lemon orange peach pear plum";
+        insert_transcription_returning(&db, text, text, 0, 1000, "test", None, None)
+            .expect("insert");
+        let insights = query_insights(&db, 7, None).expect("insights");
+        let top: Vec<_> = insights.words.top.iter().map(|entry| (entry.word.as_str(), entry.count)).collect();
+        assert_eq!(top, vec![
+            ("kiwi", 3), ("zebra", 3), ("mango", 2), ("apple", 1),
+            ("banana", 1), ("cherry", 1), ("coconut", 1), ("date", 1),
+            ("fig", 1), ("grape", 1), ("lemon", 1), ("orange", 1),
+        ]);
+        assert_eq!(insights.words.unique_words, 15);
     }
 
     #[test]
@@ -1723,6 +1704,38 @@ mod tests {
         assert_eq!(count_changed_words("send the report", "send report"), 1);
         assert_eq!(count_changed_words("send report", "send the report"), 1);
         assert_eq!(count_changed_words("send report", "send summary"), 1);
+    }
+
+    #[test]
+    fn changed_word_count_matches_full_matrix_for_repeated_words() {
+        // Exhaustive short sequences catch prefix/suffix overlap and edits
+        // where matching repeated words gives several possible alignments.
+        let mut sequences = vec![Vec::<&str>::new()];
+        for length in 1..=4 {
+            for bits in 0..(1 << length) {
+                sequences.push((0..length).map(|bit| if bits & (1 << bit) == 0 { "alpha" } else { "beta" }).collect());
+            }
+        }
+        for raw in &sequences {
+            for clean in &sequences {
+                let mut matrix = vec![vec![0; clean.len() + 1]; raw.len() + 1];
+                for (row, values) in matrix.iter_mut().enumerate() {
+                    values[0] = row;
+                }
+                for (column, value) in matrix[0].iter_mut().enumerate() {
+                    *value = column;
+                }
+                for row in 1..=raw.len() {
+                    for column in 1..=clean.len() {
+                        matrix[row][column] = (matrix[row - 1][column - 1] + usize::from(raw[row - 1] != clean[column - 1]))
+                            .min(matrix[row - 1][column] + 1)
+                            .min(matrix[row][column - 1] + 1);
+                    }
+                }
+                assert_eq!(count_changed_words(&raw.join(" "), &clean.join(" ")), matrix[raw.len()][clean.len()] as i64);
+            }
+        }
+        assert_eq!(count_changed_words("café, !!! 世界", "CAFÉ 世界!"), 0);
     }
 
     #[test]

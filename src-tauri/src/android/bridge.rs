@@ -269,17 +269,6 @@ pub(crate) struct BridgeState {
     pub package_hint: Mutex<String>,
 }
 
-impl BridgeState {
-    pub fn for_tests() -> Self {
-        BridgeState {
-            token: "test-token".to_string(),
-            app: None,
-            focus: Mutex::new(FocusReport::default()),
-            package_hint: Mutex::new(String::new()),
-        }
-    }
-}
-
 /// Mint a 256-bit hex token. `rand` 0.8 is already a dependency (sync).
 pub(crate) fn mint_token() -> String {
     use rand::RngCore;
@@ -1545,10 +1534,8 @@ mod tests {
     #[tokio::test]
     async fn bridge_rejects_unauthenticated_requests() {
         let (addr, token) = spawn_test_server().await;
-        let raw = format!(
-            "GET /v1/state HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n"
-        );
-        let (status, body) = roundtrip(addr, &raw).await;
+        let raw = "GET /v1/state HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n";
+        let (status, body) = roundtrip(addr, raw).await;
         assert_eq!(status, 401);
         assert_eq!(body["ok"], false);
         let _ = token;

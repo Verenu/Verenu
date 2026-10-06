@@ -266,6 +266,19 @@ const barAge: number[] = Array.from(
   (_, i) => Math.abs(i - HALF_SPAN) * AGE_STEP_MS
 );
 
+// Envelope cadence is fixed; these coefficients never depend on the batch.
+const dtSec = ENVELOPE_WINDOW_MS / 1000;
+const kNoiseUp = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_RISE_TAU_MS);
+const kNoiseDown = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_FALL_TAU_MS);
+const kNoiseDev = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_DEV_TAU_MS);
+const kGateOpen = 1 - Math.exp(-ENVELOPE_WINDOW_MS / GATE_OPEN_TAU_MS);
+const kGateClose = 1 - Math.exp(-ENVELOPE_WINDOW_MS / GATE_CLOSE_TAU_MS);
+const kCarrier = 1 - Math.exp(-ENVELOPE_WINDOW_MS / CARRIER_TAU_MS);
+const kIdle = 1 - Math.exp(-ENVELOPE_WINDOW_MS / IDLE_TAU_MS);
+const kRefUp = 1 - Math.exp(-ENVELOPE_WINDOW_MS / REF_RISE_TAU_MS);
+const kRefDown = 1 - Math.exp(-ENVELOPE_WINDOW_MS / REF_FALL_TAU_MS);
+const aD = alphaFor(DERIV_CUTOFF_HZ, dtSec);
+
 export interface PillVisualizer {
   /** Feed one `audio-envelope` batch: peaks at a fixed ENVELOPE_WINDOW_MS cadence. */
   pushEnvelope(samples: ArrayLike<number>): void;
@@ -299,7 +312,6 @@ export function createPillVisualizer(): PillVisualizer {
 
   const barLevel = new Float32Array(BARS);
   const barVel = new Float32Array(BARS);
-  let heights: number[] = Array(BARS).fill(BAR_MIN_H);
 
   const writeHeadMs = () => written * ENVELOPE_WINDOW_MS;
 
@@ -320,15 +332,6 @@ export function createPillVisualizer(): PillVisualizer {
 
   return {
     pushEnvelope(samples: ArrayLike<number>) {
-      const dtSec = ENVELOPE_WINDOW_MS / 1000;
-      const kNoiseUp = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_RISE_TAU_MS);
-      const kNoiseDown = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_FALL_TAU_MS);
-      const kNoiseDev = 1 - Math.exp(-ENVELOPE_WINDOW_MS / NOISE_DEV_TAU_MS);
-      const kGateOpen = 1 - Math.exp(-ENVELOPE_WINDOW_MS / GATE_OPEN_TAU_MS);
-      const kGateClose = 1 - Math.exp(-ENVELOPE_WINDOW_MS / GATE_CLOSE_TAU_MS);
-      const kCarrier = 1 - Math.exp(-ENVELOPE_WINDOW_MS / CARRIER_TAU_MS);
-      const kIdle = 1 - Math.exp(-ENVELOPE_WINDOW_MS / IDLE_TAU_MS);
-
       for (let i = 0; i < samples.length; i++) {
         const db = toDb(samples[i]);
 
@@ -377,15 +380,13 @@ export function createPillVisualizer(): PillVisualizer {
             refSeeded = true;
             justSeeded = true;
           } else {
-            const tau = db > refDb ? REF_RISE_TAU_MS : REF_FALL_TAU_MS;
-            refDb += (db - refDb) * (1 - Math.exp(-ENVELOPE_WINDOW_MS / tau));
+            refDb += (db - refDb) * (db > refDb ? kRefUp : kRefDown);
           }
         }
 
         // One-euro: cutoff tracks how fast the signal is really moving, so
         // wobble is filtered hard and transients are not.
         const rawDeriv = (level - smoothed) / dtSec;
-        const aD = alphaFor(DERIV_CUTOFF_HZ, dtSec);
         smoothedDeriv += aD * (rawDeriv - smoothedDeriv);
         const beta = smoothedDeriv >= 0 ? BETA_UP : BETA_DOWN;
         const cutoff = MIN_CUTOFF_HZ + beta * Math.abs(smoothedDeriv);
@@ -444,7 +445,8 @@ export function createPillVisualizer(): PillVisualizer {
       const dts = dt / 1000;
       const decay = Math.exp(-SPRING_OMEGA * dts);
       const next: number[] = new Array(BARS);
-      for (let i = 0; i < BARS; i++) {
+      // Mirrored pairs have identical ages, tapers, and spring histories.
+      for (let i = 0; i < BARS / 2; i++) {
         const target = sampleAt(readHeadMs - barAge[i]) * barTaper[i];
         const y0 = barLevel[i] - target;
         const b = barVel[i] + SPRING_OMEGA * y0;
@@ -458,9 +460,9 @@ export function createPillVisualizer(): PillVisualizer {
         // and snapping it quantized a 13px range into 13 steps, so quiet speech
         // climbed the row in visible stairs.
         next[i] = BAR_MIN_H + level * (BAR_MAX_H - BAR_MIN_H);
+        next[BARS - 1 - i] = next[i];
       }
-      heights = next;
-      return heights;
+      return next;
     },
 
     reset() {
@@ -483,7 +485,6 @@ export function createPillVisualizer(): PillVisualizer {
       lastFrameAt = 0;
       barLevel.fill(0);
       barVel.fill(0);
-      heights = Array(BARS).fill(BAR_MIN_H);
     },
   };
 }
