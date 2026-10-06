@@ -169,7 +169,7 @@
       <span class="legend-item"><span class="legend-line commits" class:partial={!github.complete} aria-hidden="true"></span>Commits</span>
       <details class="scale-details">
         <summary class="ui-focus-ring" aria-label="Chart scale details" title="Chart scale details">ⓘ</summary>
-        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, commits 0–{fmtNumber(commitMax)}. GitHub covers the last 90 days across all contexts.</p>
+        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, commits 0–{fmtNumber(commitMax)}. GitHub covers public commits on repository default branches from the last 90 days.</p>
       </details>
     </div>
   {/if}

@@ -141,8 +141,9 @@ On Windows and macOS, installing an update opens the published GitHub asset so t
 Insights can optionally compare dictated words with public GitHub commits. This
 is off until you enter a GitHub username. Verenu sends that username and a date
 range to GitHub's public user and commit-search APIs without credentials. No
-dictated text or local Context information is sent. Private repositories are
-excluded. The username and up to 90 days of daily counts are stored locally;
+dictated text or local Context information is sent. Search covers public
+commits on each repository's default branch; private repositories are excluded.
+The username and up to 90 days of daily counts are stored locally;
 commit messages and repository names are neither stored nor returned to the UI.
 Counts refresh automatically every 15 minutes while the app is running, and
 cached counts remain available when GitHub cannot be reached. Search is limited
