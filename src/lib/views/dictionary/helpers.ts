@@ -18,19 +18,7 @@ export const sortLabels: { key: SortKey; label: string }[] = [
   { key: 'most_corrected', label: 'Most corrected' },
 ];
 
-export function fmtDate(iso: string): string {
-  try {
-    const MS_PER_DAY = 86_400_000;
-    const d = new Date(/[Z+]/.test(iso) ? iso : iso + 'Z');
-    const diffDays = Math.floor((Date.now() - d.getTime()) / MS_PER_DAY);
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  } catch {
-    return iso.slice(0, 10);
-  }
-}
+export { fmtDate, countCodePoints } from '../sharedListHelpers';
 
 export function confidenceLabel(tier?: string | null): string {
   if (tier === 'high') return 'High confidence';
@@ -39,8 +27,6 @@ export function confidenceLabel(tier?: string | null): string {
   if (tier === 'manual') return 'Manual';
   return 'Unknown confidence';
 }
-
-export const countCodePoints = (value: string): number => [...value].length;
 
 export function requireCreatedRecordMeta(value: unknown): CreatedRecordMeta {
   if (typeof value !== 'object' || value === null) {
