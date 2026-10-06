@@ -4,11 +4,7 @@ use super::*;
 
 #[tauri::command]
 pub async fn get_contexts(app: AppHandle) -> Result<Vec<db::Context>, String> {
-    let db = db_state(&app);
-    run_blocking("get_contexts", move || {
-        db::query_contexts(&db).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_contexts", db::query_contexts).await
 }
 
 #[tauri::command]
@@ -23,10 +19,9 @@ pub async fn create_context(
     contextual_formatting_disabled: bool,
     paste_in_chunks: Option<bool>,
 ) -> Result<db::Context, String> {
-    let db = db_state(&app);
-    run_blocking("create_context", move || {
+    run_db(&app, "create_context", move |db| {
         db::insert_context_with_delivery(
-            &db,
+            db,
             &name,
             icon.as_deref(),
             tone.as_deref(),
@@ -35,27 +30,20 @@ pub async fn create_context(
             contextual_formatting_disabled,
             paste_in_chunks.unwrap_or(false),
         )
-        .map_err(|e| e.to_string())
     })
     .await
 }
 
 #[tauri::command]
 pub async fn duplicate_context(app: AppHandle, context_id: i64) -> Result<db::Context, String> {
-    let db = db_state(&app);
-    run_blocking("duplicate_context", move || {
-        db::duplicate_context(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "duplicate_context", move |db| db::duplicate_context(db, context_id))
+        .await
 }
 
 #[tauri::command]
 pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("update_context", move || {
-        db::update_context(&db, context_id, &name).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "update_context", move |db| db::update_context(db, context_id, &name))
+        .await
 }
 
 #[tauri::command]
@@ -70,10 +58,9 @@ pub async fn update_context_settings(
     contextual_formatting_disabled: bool,
     paste_in_chunks: Option<bool>,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("update_context_settings", move || {
+    run_db(&app, "update_context_settings", move |db| {
         db::update_context_settings_with_delivery(
-            &db,
+            db,
             context_id,
             icon.as_deref(),
             tone.as_deref(),
@@ -82,7 +69,6 @@ pub async fn update_context_settings(
             contextual_formatting_disabled,
             paste_in_chunks,
         )
-        .map_err(|e| e.to_string())
     })
     .await
 }
@@ -93,11 +79,8 @@ pub async fn update_context_color(
     context_id: i64,
     color: Option<String>,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("update_context_color", move || {
-        db::update_context_color(&db, context_id, color.as_deref()).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "update_context_color", move |db| db::update_context_color(db, context_id, color.as_deref()))
+        .await
 }
 
 #[tauri::command]
@@ -105,11 +88,8 @@ pub async fn get_context_stats(
     app: AppHandle,
     context_id: i64,
 ) -> Result<db::ContextStats, String> {
-    let db = db_state(&app);
-    run_blocking("get_context_stats", move || {
-        db::query_context_stats(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_context_stats", move |db| db::query_context_stats(db, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -118,20 +98,14 @@ pub async fn set_context_pinned(
     context_id: i64,
     pinned: bool,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("set_context_pinned", move || {
-        db::set_context_pinned(&db, context_id, pinned).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "set_context_pinned", move |db| db::set_context_pinned(db, context_id, pinned))
+        .await
 }
 
 #[tauri::command]
 pub async fn delete_context(app: AppHandle, context_id: i64) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("delete_context", move || {
-        db::delete_context(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "delete_context", move |db| db::delete_context(db, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -139,14 +113,13 @@ pub async fn get_context_targets(
     app: AppHandle,
     context_id: Option<i64>,
 ) -> Result<Vec<db::ContextTarget>, String> {
-    let db = db_state(&app);
-    run_blocking("get_context_targets", move || {
+    run_db(&app, "get_context_targets", move |db| {
         let (installed_apps, refreshed) =
             crate::system::apps::list_installed_apps_cached_with_status();
         if refreshed {
-            db::reconcile_context_targets(&db, &installed_apps).map_err(|e| e.to_string())?;
+            db::reconcile_context_targets(db, &installed_apps)?;
         }
-        db::query_context_targets(&db, context_id).map_err(|e| e.to_string())
+        db::query_context_targets(db, context_id)
     })
     .await
 }
@@ -159,16 +132,14 @@ pub async fn assign_context_target(
     app_name: Option<String>,
     developer: Option<String>,
 ) -> Result<db::ContextTarget, String> {
-    let db = db_state(&app);
-    run_blocking("assign_context_target", move || {
+    run_db(&app, "assign_context_target", move |db| {
         db::assign_context_target_with_metadata(
-            &db,
+            db,
             context_id,
             &executable,
             app_name.as_deref(),
             developer.as_deref(),
         )
-        .map_err(|e| e.to_string())
     })
     .await
 }
@@ -179,11 +150,8 @@ pub async fn remove_context_target(
     context_id: i64,
     executable: String,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("remove_context_target", move || {
-        db::remove_context_target(&db, context_id, &executable).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "remove_context_target", move |db| db::remove_context_target(db, context_id, &executable))
+        .await
 }
 
 #[tauri::command]
@@ -191,11 +159,8 @@ pub async fn get_context_websites(
     app: AppHandle,
     context_id: Option<i64>,
 ) -> Result<Vec<db::ContextWebsiteTarget>, String> {
-    let db = db_state(&app);
-    run_blocking("get_context_websites", move || {
-        db::query_context_website_targets(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_context_websites", move |db| db::query_context_website_targets(db, context_id))
+        .await
 }
 
 /// DNS-only existence check — resolving the hostname is enough to confirm the
@@ -227,11 +192,8 @@ pub async fn assign_context_website(
     context_id: i64,
     domain: String,
 ) -> Result<db::ContextWebsiteTarget, String> {
-    let db = db_state(&app);
-    run_blocking("assign_context_website", move || {
-        db::assign_context_website(&db, context_id, &domain).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "assign_context_website", move |db| db::assign_context_website(db, context_id, &domain))
+        .await
 }
 
 #[tauri::command]
@@ -240,11 +202,8 @@ pub async fn remove_context_website(
     context_id: i64,
     domain: String,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("remove_context_website", move || {
-        db::remove_context_website(&db, context_id, &domain).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "remove_context_website", move |db| db::remove_context_website(db, context_id, &domain))
+        .await
 }
 
 #[tauri::command]
@@ -252,11 +211,8 @@ pub async fn get_context_dictionary(
     app: AppHandle,
     context_id: i64,
 ) -> Result<Vec<db::DictionaryEntry>, String> {
-    let db = db_state(&app);
-    run_blocking("get_context_dictionary", move || {
-        db::query_dictionary_for_context(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_context_dictionary", move |db| db::query_dictionary_for_context(db, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -264,11 +220,8 @@ pub async fn get_context_snippets(
     app: AppHandle,
     context_id: i64,
 ) -> Result<Vec<db::Snippet>, String> {
-    let db = db_state(&app);
-    run_blocking("get_context_snippets", move || {
-        db::query_snippets_for_context(&db, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_context_snippets", move |db| db::query_snippets_for_context(db, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -276,11 +229,8 @@ pub async fn get_dictionary_entry_contexts(
     app: AppHandle,
     term: String,
 ) -> Result<Vec<db::ContextAssignment>, String> {
-    let db = db_state(&app);
-    run_blocking("get_dictionary_entry_contexts", move || {
-        db::query_dictionary_entry_contexts(&db, &term).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_dictionary_entry_contexts", move |db| db::query_dictionary_entry_contexts(db, &term))
+        .await
 }
 
 #[tauri::command]
@@ -288,11 +238,8 @@ pub async fn get_snippet_entry_contexts(
     app: AppHandle,
     trigger: String,
 ) -> Result<Vec<db::ContextAssignment>, String> {
-    let db = db_state(&app);
-    run_blocking("get_snippet_entry_contexts", move || {
-        db::query_snippet_entry_contexts(&db, &trigger).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "get_snippet_entry_contexts", move |db| db::query_snippet_entry_contexts(db, &trigger))
+        .await
 }
 
 #[tauri::command]
@@ -301,11 +248,8 @@ pub async fn move_dictionary_entry_by_term_to_context(
     term: String,
     context_id: i64,
 ) -> Result<db::DictionaryEntry, String> {
-    let db = db_state(&app);
-    run_blocking("move_dictionary_entry_by_term_to_context", move || {
-        db::move_dictionary_entry_by_term_to_context(&db, &term, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "move_dictionary_entry_by_term_to_context", move |db| db::move_dictionary_entry_by_term_to_context(db, &term, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -314,11 +258,8 @@ pub async fn move_snippet_entry_to_context(
     trigger: String,
     context_id: i64,
 ) -> Result<db::Snippet, String> {
-    let db = db_state(&app);
-    run_blocking("move_snippet_entry_to_context", move || {
-        db::move_snippet_entry_to_context(&db, &trigger, context_id).map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "move_snippet_entry_to_context", move |db| db::move_snippet_entry_to_context(db, &trigger, context_id))
+        .await
 }
 
 #[tauri::command]
@@ -328,12 +269,8 @@ pub async fn set_dictionary_context_assignment(
     dictionary_id: i64,
     assigned: bool,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("set_dictionary_context_assignment", move || {
-        db::set_dictionary_context_assignment(&db, context_id, dictionary_id, assigned)
-            .map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "set_dictionary_context_assignment", move |db| db::set_dictionary_context_assignment(db, context_id, dictionary_id, assigned))
+        .await
 }
 
 #[tauri::command]
@@ -343,10 +280,6 @@ pub async fn set_snippet_context_assignment(
     snippet_id: i64,
     assigned: bool,
 ) -> Result<(), String> {
-    let db = db_state(&app);
-    run_blocking("set_snippet_context_assignment", move || {
-        db::set_snippet_context_assignment(&db, context_id, snippet_id, assigned)
-            .map_err(|e| e.to_string())
-    })
-    .await
+    run_db(&app, "set_snippet_context_assignment", move |db| db::set_snippet_context_assignment(db, context_id, snippet_id, assigned))
+        .await
 }
