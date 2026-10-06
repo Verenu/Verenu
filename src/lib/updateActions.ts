@@ -8,6 +8,8 @@ export interface UpdateProgress {
   total: number | null;
 }
 
+type InstallOutcome = 'installed' | 'downloadOpened';
+
 export function progressLabel(progress: UpdateProgress): string {
   switch (progress.phase) {
     case 'resolving': return 'Checking release…';
@@ -52,12 +54,14 @@ export async function installAvailableUpdate(): Promise<void> {
     stop = await listen<UpdateProgress>('verenu:update-progress', ({ payload }) => {
       appStore.updateProgress = progressLabel(payload);
     });
-    await invoke('install_update', { downloadUrl: update.downloadUrl });
-    if (update.installMode === 'install' && isLinuxInstaller(update)) {
+    const outcome = await invoke<InstallOutcome>('install_update', { downloadUrl: update.downloadUrl });
+    if (outcome === 'installed') {
       appStore.updateInstalled = true;
       appStore.updateProgress = 'Update installed. Restart Verenu to finish.';
-    } else {
+    } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
+    } else {
+      throw new Error('The updater returned an unexpected result. Check for updates and try again.');
     }
   } catch (error) {
     appStore.updateProgress = '';

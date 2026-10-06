@@ -184,7 +184,7 @@ pub async fn install(
     app: &AppHandle,
     url: &str,
     channel: crate::api::updater::UpdateChannel,
-) -> Result<(), String> {
+) -> Result<crate::commands::InstallOutcome, String> {
     progress(app, "resolving", 0, None);
     let mode = tokio::task::spawn_blocking(installation)
         .await
@@ -193,7 +193,7 @@ pub async fn install(
         use tauri_plugin_shell::ShellExt;
         #[allow(deprecated)]
         app.shell().open(url, None).map_err(|e| e.to_string())?;
-        return Ok(());
+        return Ok(crate::commands::InstallOutcome::DownloadOpened);
     }
     let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
         .await
@@ -219,7 +219,7 @@ pub async fn install(
     progress(app, "backing-up", 0, None);
     let db = app.state::<crate::DbHandle>().inner().clone();
     let app = app.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
         // The backup is mandatory. A failed backup never proceeds to install.
         let conn = db
             .lock()
@@ -258,7 +258,8 @@ pub async fn install(
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    Ok(crate::commands::InstallOutcome::Installed)
 }
 
 fn validate_arch_package(path: &Path) -> Result<(), String> {

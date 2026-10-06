@@ -12,7 +12,7 @@ describe('update actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(state, { updateInfo: { version: '0.21.0', assetName: 'verenu-0.21.0-1-x86_64.pkg.tar.zst', downloadUrl: 'https://example.invalid/update', installMode: 'install' }, updateInstalling: false, updateInstalled: false, updateProgress: '', updateInstallError: '' });
-    invoke.mockResolvedValue(undefined);
+    invoke.mockResolvedValue('installed');
   });
   it('labels Linux installation and download actions accurately', () => {
     expect(updateActionLabel(state.updateInfo!)).toBe('Update Verenu');
@@ -20,13 +20,13 @@ describe('update actions', () => {
     expect(updateActionLabel({ ...state.updateInfo!, assetName: 'Verenu_0.21.0_x64-setup.exe' })).toBe('Install & Restart');
   });
   it('shares one install attempt between Home and About and requires restart afterward', async () => {
-    let resolve!: () => void;
-    invoke.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    let resolve!: (outcome: 'installed') => void;
+    invoke.mockReturnValue(new Promise<'installed'>((done) => { resolve = done; }));
     const first = installAvailableUpdate();
     await installAvailableUpdate();
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(state.updateInstalling).toBe(true);
-    resolve();
+    resolve('installed');
     await first;
     expect(state.updateInstalling).toBe(false);
     expect(state.updateInstalled).toBe(true);
@@ -49,7 +49,16 @@ describe('update actions', () => {
   });
   it('opening a download does not claim installation', async () => {
     state.updateInfo!.installMode = 'download';
+    invoke.mockResolvedValue('downloadOpened');
     await installAvailableUpdate();
+    expect(state.updateInstalled).toBe(false);
+    expect(state.updateProgress).toBe('');
+  });
+  it('uses the native outcome when an installable offer became a manual download', async () => {
+    invoke.mockResolvedValue('downloadOpened');
+
+    await installAvailableUpdate();
+
     expect(state.updateInstalled).toBe(false);
     expect(state.updateProgress).toBe('');
   });

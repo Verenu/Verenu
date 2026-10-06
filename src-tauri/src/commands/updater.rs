@@ -4,6 +4,13 @@ use super::*;
 #[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_shell::ShellExt;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallOutcome {
+    Installed,
+    DownloadOpened,
+}
+
 // ---------- updates ----------
 
 #[tauri::command]
@@ -56,7 +63,7 @@ fn update_channel(preference: Option<bool>, version: &str) -> crate::api::update
 }
 
 #[tauri::command]
-pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), String> {
+pub async fn install_update(app: AppHandle, download_url: String) -> Result<InstallOutcome, String> {
     static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _attempt = INSTALL_LOCK.try_lock().map_err(|_| {
         "An update is already in progress. Wait for it to finish before trying again.".to_owned()
@@ -82,7 +89,7 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
         app.shell()
             .open(download_url, None)
             .map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(InstallOutcome::DownloadOpened)
     }
 
     #[cfg(target_os = "linux")]
@@ -110,7 +117,7 @@ pub async fn install_update(app: AppHandle, download_url: String) -> Result<(), 
             app.shell()
                 .open(download_url, None)
                 .map_err(|e| e.to_string())?;
-            return Ok(());
+            return Ok(InstallOutcome::DownloadOpened);
         }
 
         let db = app.state::<DbHandle>().inner().clone();
@@ -458,7 +465,20 @@ pub fn backup_sqlite_database(
 
 #[cfg(test)]
 mod tests {
-    use super::is_silent_nsis_setup_url;
+    use super::{is_silent_nsis_setup_url, InstallOutcome};
+
+    #[test]
+    fn install_outcomes_serialize_as_frontend_contract_values() {
+        assert_eq!(
+            serde_json::to_value(InstallOutcome::Installed).unwrap(),
+            "installed"
+        );
+        assert_eq!(
+            serde_json::to_value(InstallOutcome::DownloadOpened).unwrap(),
+            "downloadOpened"
+        );
+    }
+
     #[test]
     fn explicit_beta_opt_out_returns_to_stable_on_a_beta_install() {
         use crate::api::updater::UpdateChannel::{Beta, Stable};

@@ -42,7 +42,12 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
   } catch (error) {
     console.warn('Update state lookup failed:', error);
   }
-  if (!active() || channel !== appStore.betaUpdatesEnabled) return;
+  if (
+    !active()
+    || channel !== appStore.betaUpdatesEnabled
+    || appStore.updateInstalling
+    || appStore.updateInstalled
+  ) return;
 
   if (dismissedVersion === update.version) return;
 
