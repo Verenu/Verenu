@@ -465,7 +465,7 @@ pub const VERENU_SERVICE_CHECKS_ENABLED: &str = "verenu_service_checks_enabled";
 pub const HISTORY_RETENTION: &str = "history_retention";
 pub const GITHUB_USERNAME: &str = "github_username";
 // Derived local counts, deliberately excluded from IPC settings and exports.
-pub const GITHUB_COMMIT_CACHE: &str = "github_commit_cache";
+pub(crate) const GITHUB_COMMIT_CACHE: &str = "github_commit_cache";
 pub const AUTOSTART_ENABLED: &str = "autostart_enabled";
 pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
 pub const DEFAULT_CLIPBOARD_PHRASE: &str = "paste clipboard here";
