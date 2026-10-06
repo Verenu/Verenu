@@ -771,7 +771,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 // Centre whatever state is showing on the key's row: the idle disc
                 // is the key's size, the other states are shorter or taller.
                 val viewHeight = overlay?.height?.takeIf { it > 0 } ?: (size + 2 * pad)
-                params.gravity = Gravity.TOP or Gravity.END
+                params.gravity = Gravity.TOP or Gravity.RIGHT
                 params.x = (screenWidth - right - pad).coerceAtLeast(0)
                 params.y = (cover.centerY() - viewHeight / 2).coerceAtLeast(imeTopEdge - pad).coerceAtLeast(0)
             }
@@ -789,11 +789,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val right = (imeBounds?.right ?: screenWidth).coerceIn(left, screenWidth)
                 when (pillPosition) {
                     "keyboard-left" -> {
-                        params.gravity = Gravity.BOTTOM or Gravity.START
+                        params.gravity = Gravity.BOTTOM or Gravity.LEFT
                         params.x = left + margin
                     }
                     "keyboard-right" -> {
-                        params.gravity = Gravity.BOTTOM or Gravity.END
+                        params.gravity = Gravity.BOTTOM or Gravity.RIGHT
                         params.x = screenWidth - right + margin
                     }
                     else -> {
@@ -824,14 +824,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     placeOnScreen(params, "screen-top")
                 }
             }
-            "screen-top-left" -> edgePlacement(params, Gravity.TOP or Gravity.START, margin, top)
+            "screen-top-left" -> edgePlacement(params, Gravity.TOP or Gravity.LEFT, margin, top)
             "screen-top" -> edgePlacement(params, Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, top)
-            "screen-top-right" -> edgePlacement(params, Gravity.TOP or Gravity.END, margin, top)
-            "screen-left" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.START, margin, 0)
+            "screen-top-right" -> edgePlacement(params, Gravity.TOP or Gravity.RIGHT, margin, top)
+            "screen-left" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.LEFT, margin, 0)
             "screen-middle" -> edgePlacement(params, Gravity.CENTER, 0, 0)
-            "screen-right" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.END, margin, 0)
-            "screen-bottom-left" -> edgePlacement(params, Gravity.BOTTOM or Gravity.START, margin, bottom)
-            "screen-bottom-right" -> edgePlacement(params, Gravity.BOTTOM or Gravity.END, margin, bottom)
+            "screen-right" -> edgePlacement(params, Gravity.CENTER_VERTICAL or Gravity.RIGHT, margin, 0)
+            "screen-bottom-left" -> edgePlacement(params, Gravity.BOTTOM or Gravity.LEFT, margin, bottom)
+            "screen-bottom-right" -> edgePlacement(params, Gravity.BOTTOM or Gravity.RIGHT, margin, bottom)
             else -> edgePlacement(params, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, bottom)
         }
     }
@@ -1281,7 +1281,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (!dragging) return
         val view = overlay ?: return
         val params = overlayParams ?: return
-        params.gravity = Gravity.TOP or Gravity.START
+        params.gravity = Gravity.TOP or Gravity.LEFT
         params.x = rawX - view.width / 2
         params.y = rawY - view.height / 2
         applyLayout(view, params)
@@ -1373,8 +1373,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val screenHeight = realScreenHeightPx()
         val width = view.width
         val height = view.height
-        val fromX = params.x
-        val fromY = params.y
+        // A hold released without moving never went through onPillDragMove, so the
+        // params may still be gravity-relative: resolve where the view really is.
+        val fromX = absoluteLeft(params, width, screenWidth)
+        val fromY = absoluteTop(params, height, screenHeight)
         val target = WindowManager.LayoutParams()
         target.copyFrom(params)
         dragging = false
@@ -1387,7 +1389,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             duration = 160
             addUpdateListener {
                 val f = it.animatedValue as Float
-                params.gravity = Gravity.TOP or Gravity.START
+                params.gravity = Gravity.TOP or Gravity.LEFT
                 params.x = (fromX + (toX - fromX) * f).toInt()
                 params.y = (fromY + (toY - fromY) * f).toInt()
                 applyLayout(view, params)

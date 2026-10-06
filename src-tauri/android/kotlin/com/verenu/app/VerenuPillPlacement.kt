@@ -103,7 +103,12 @@ internal object VerenuPillPlacement {
         val left = ctx.keyboardLeft
         val top = ctx.keyboardTop
         val right = ctx.keyboardRight
-        if (left != null && top != null && right != null && y >= top - ctx.keyboardReach) {
+        // "On the keyboard" is both above its top edge by a little and across its
+        // width: a floating, split or one-handed keyboard leaves screen to either side.
+        if (left != null && top != null && right != null &&
+            y >= top - ctx.keyboardReach &&
+            x >= left - ctx.keyboardReach && x <= right + ctx.keyboardReach
+        ) {
             return Snap(TARGET_POSITION, keyboardCell(x, left, right))
         }
         // Dragged well clear of the keyboard: the user means a place on the screen.
