@@ -6,7 +6,7 @@ use super::gemini_types::GeminiResp;
 use super::prompts::{gemini_generation_config, get_transcription_prompt};
 use super::{Target, TranscriptionAdapter, Wire};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct WhisperFormFields {
     model: String,
     response_format: String,
@@ -150,11 +150,6 @@ async fn transcribe_whisper(
     language: &str,
     gen: u64,
 ) -> Result<String> {
-    #[derive(serde::Deserialize)]
-    struct WhisperResponse {
-        text: String,
-    }
-
     let language_label = crate::data::store::transcription_language_label(language);
     let prompt = get_transcription_prompt(provider_id, model, language_label);
     let fields = build_whisper_form_fields(model, language, &prompt);
@@ -168,7 +163,7 @@ async fn transcribe_whisper(
         wav.len(),
         fields.prompt.chars().count()
     );
-    let form = build_whisper_form(wav, &fields)?;
+    let form = build_whisper_form(wav, fields)?;
 
     let request_started = std::time::Instant::now();
     let resp = wire
@@ -188,51 +183,11 @@ async fn transcribe_whisper(
         request_started.elapsed().as_millis()
     );
 
-    let resp = match super::ensure_provider_success(resp, model, Some((provider_label, model)))
-        .await
-    {
-        Ok(resp) => resp,
-        Err(super::ProviderHttpError::Quota(e)) => return Err(e),
-        Err(super::ProviderHttpError::Auth {
-            error,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "transcription: whisper unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(error);
-        }
-        Err(super::ProviderHttpError::NonSuccess {
-            source,
-            status,
-            request_id,
-            preview,
-        }) => {
-            log::warn!(
-                "transcription: whisper non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
-                gen,
-                provider_label,
-                model,
-                status,
-                request_id,
-                preview
-            );
-            return Err(anyhow::Error::new(source).context(format!(
-                "Transcription API error provider={} model={} status={} request_id={} body_preview={}",
-                provider_label, model, status, request_id, preview
-            )));
-        }
-    };
+    let resp =
+        ensure_transcription_response(resp, provider_label, model, gen, "transcription: whisper")
+            .await?;
 
-    let body: WhisperResponse = wire.json(resp).await?;
+    let body: TextResponse = wire.json(resp).await?;
     log::debug!(
         "transcription: whisper parsed gen={} chars={}",
         gen,
@@ -696,6 +651,16 @@ async fn checked_transcription_response(
         status,
         request_id
     );
+    ensure_transcription_response(resp, provider_label, model, gen, "transcription:").await
+}
+
+async fn ensure_transcription_response(
+    resp: reqwest::Response,
+    provider_label: &str,
+    model: &str,
+    gen: u64,
+    trace: &str,
+) -> Result<reqwest::Response> {
     match super::ensure_provider_success(resp, model, Some((provider_label, model))).await {
         Ok(resp) => Ok(resp),
         Err(super::ProviderHttpError::Quota(e)) => Err(e),
@@ -706,7 +671,7 @@ async fn checked_transcription_response(
             preview,
         }) => {
             log::warn!(
-                "transcription: unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
+                "{trace} unauthorized gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
                 gen,
                 provider_label,
                 model,
@@ -723,7 +688,7 @@ async fn checked_transcription_response(
             preview,
         }) => {
             log::warn!(
-                "transcription: non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
+                "{trace} non_success gen={} provider={} model={} status={} request_id={} body_preview=\"{}\"",
                 gen,
                 provider_label,
                 model,
@@ -802,10 +767,10 @@ async fn transcribe_openrouter(
 
 /// xAI requires `file` to be the last multipart field.
 fn build_xai_form(wav: Bytes, model: &str, language: &str) -> Result<multipart::Form> {
-    let part =
-        multipart::Part::stream_with_length(reqwest::Body::from(wav.clone()), wav.len() as u64)
-            .file_name("audio.wav")
-            .mime_str("audio/wav")?;
+    let wav_len = wav.len() as u64;
+    let part = multipart::Part::stream_with_length(reqwest::Body::from(wav), wav_len)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")?;
     Ok(multipart::Form::new()
         .text("model", model.to_owned())
         .text("language", language.to_owned())
@@ -852,17 +817,17 @@ fn build_whisper_form_fields(model: &str, language: &str, prompt: &str) -> Whisp
     }
 }
 
-fn build_whisper_form(wav: Bytes, fields: &WhisperFormFields) -> Result<multipart::Form> {
-    let part =
-        multipart::Part::stream_with_length(reqwest::Body::from(wav.clone()), wav.len() as u64)
-            .file_name("audio.wav")
-            .mime_str("audio/wav")?;
+fn build_whisper_form(wav: Bytes, fields: WhisperFormFields) -> Result<multipart::Form> {
+    let wav_len = wav.len() as u64;
+    let part = multipart::Part::stream_with_length(reqwest::Body::from(wav), wav_len)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")?;
     Ok(multipart::Form::new()
         .part("file", part)
-        .text("model", fields.model.clone())
-        .text("response_format", fields.response_format.clone())
-        .text("language", fields.language.clone())
-        .text("prompt", fields.prompt.clone()))
+        .text("model", fields.model)
+        .text("response_format", fields.response_format)
+        .text("language", fields.language)
+        .text("prompt", fields.prompt))
 }
 
 fn build_gemini_transcription_request(
