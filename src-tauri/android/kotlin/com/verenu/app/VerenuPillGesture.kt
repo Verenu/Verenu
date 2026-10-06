@@ -52,8 +52,9 @@ class VerenuPillGesture {
     }
 
     /** Finger lifted or the touch was cancelled. Both end a hold and a drag. */
-    fun up(): List<Event> {
+    fun up(cancelled: Boolean = false): List<Event> {
         pressed = false
+        if (cancelled) suppressClick = false
         val out = ArrayList<Event>(2)
         if (holding) { holding = false; out += Event.HOLD_END }
         if (dragging) { dragging = false; out += Event.DRAG_END }
