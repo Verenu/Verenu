@@ -30,6 +30,16 @@ class RunnerTests(unittest.TestCase):
         with patch.object(runner, 'run_process', return_value=(0, 'VERENU_LIVE_SKIP: no credential\ntest result: ok', 0.1, False)):
             self.assertEqual(runner.execute(selected, 'http://localhost:1').status, 'skipped')
 
+    def test_registry_rejects_an_unregistered_browser_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'integration').mkdir()
+            (root / 'integration' / 'playwright-test-forgotten.cjs').write_text('// synthetic test', encoding='utf-8')
+            with patch.object(runner, 'TESTS_DIR', root):
+                result = runner.RegistryCheck().run()
+            self.assertEqual(result.status, 'failed')
+            self.assertIn('Unregistered automated tests: integration/playwright-test-forgotten.cjs', result.observed)
+
     def test_zero_skip_count_in_node_summary_is_not_a_skip(self):
         selected = runner.entry('summary.output', 'unit', 'Summary output', command=['unused'])
         output = 'ℹ tests 10\nℹ pass 10\nℹ fail 0\nℹ skipped 0\n'

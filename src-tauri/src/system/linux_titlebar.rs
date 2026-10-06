@@ -241,6 +241,7 @@ pub fn metrics(window: &WebviewWindow) -> Result<TitleBarMetrics, String> {
 /// Applies Verenu's resolved foreground and hover colors to the native control
 /// cluster. The header itself stays transparent because the WebView now paints
 /// the sidebar and paper surfaces beneath it.
+#[allow(clippy::too_many_arguments)] // Matches the shared native-titlebar IPC contract.
 pub fn apply_theme(
     window: &WebviewWindow,
     dark: bool,
