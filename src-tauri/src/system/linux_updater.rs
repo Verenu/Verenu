@@ -1,7 +1,7 @@
 //! Linux installation ownership, verified staging, and native update operations.
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager};
@@ -110,7 +110,6 @@ impl StagingDirectory {
         Ok(Self(path))
     }
 }
-use std::os::unix::fs::DirBuilderExt;
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -281,14 +280,32 @@ fn apply_arch_package(path: &Path) -> Result<(), String> {
     // Absolute program paths and separate arguments avoid shell interpolation.
     // Do not disable package signatures, dependency checks, or database locks.
     // -U never refreshes sync databases or performs a partial system upgrade.
-    let output = Command::new(PKEXEC).arg("--disable-internal-agent").arg(PACMAN)
-        .args(["-U", "--noconfirm", "--"]).arg(path)
-        .env("LC_ALL", "C").stdin(Stdio::null()).output()
+    let output = Command::new(PKEXEC)
+        .args(pkexec_pacman_args(path))
+        .stdin(Stdio::null())
+        .output()
         .map_err(|e| format!("Could not start administrator authorization: {e}. Install polkit and a desktop authentication agent, or update with your package manager."))?;
     package_result(
         output.status.code(),
         &String::from_utf8_lossy(&output.stderr),
     )
+}
+
+fn pkexec_pacman_args(path: &Path) -> Vec<std::ffi::OsString> {
+    let mut args = [
+        "--disable-internal-agent",
+        "/usr/bin/env",
+        "LC_ALL=C",
+        PACMAN,
+        "-U",
+        "--noconfirm",
+        "--",
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect::<Vec<_>>();
+    args.push(path.as_os_str().to_owned());
+    args
 }
 
 fn package_result(code: Option<i32>, stderr: &str) -> Result<(), String> {
@@ -322,6 +339,16 @@ fn validate_appimage(path: &Path) -> Result<(), String> {
 }
 
 fn replace_appimage(image: &Path, installer: &Path) -> Result<(), String> {
+    replace_appimage_with_directory_sync(image, installer, |parent| {
+        std::fs::File::open(parent).and_then(|file| file.sync_all())
+    })
+}
+
+fn replace_appimage_with_directory_sync(
+    image: &Path,
+    installer: &Path,
+    sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     validate_appimage(installer)?;
     let parent = image
         .parent()
@@ -378,7 +405,9 @@ fn replace_appimage(image: &Path, installer: &Path) -> Result<(), String> {
         .map_err(|e| format!("Could not retain the previous AppImage: {e}"))?;
     // Same-filesystem rename is atomic. Every earlier error leaves the old image intact.
     std::fs::rename(&next, image).map_err(|e| format!("Could not replace the AppImage: {e}"))?;
-    std::fs::File::open(parent).and_then(|file| file.sync_all()).map_err(|e| format!("The AppImage was replaced but its directory could not be synced: {e}. Reopen Verenu to check the installed version."))?;
+    if let Err(error) = sync_directory(parent) {
+        log::warn!("AppImage replacement committed, but its directory sync failed: {error}");
+    }
     Ok(())
 }
 
@@ -479,6 +508,53 @@ mod tests {
                 .contains(expected));
         }
         assert!(package_result(None, "").is_err());
+    }
+
+    #[test]
+    fn pacman_runs_with_c_locale_after_pkexec_clears_environment() {
+        let args = pkexec_pacman_args(Path::new("/var/tmp/verenu package.pkg.tar.zst"));
+        let args: Vec<_> = args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--disable-internal-agent",
+                "/usr/bin/env",
+                "LC_ALL=C",
+                PACMAN,
+                "-U",
+                "--noconfirm",
+                "--",
+                "/var/tmp/verenu package.pkg.tar.zst",
+            ]
+        );
+    }
+
+    #[test]
+    fn appimage_replacement_succeeds_if_directory_sync_is_unsupported() {
+        let dir = StagingDirectory::new(&std::env::temp_dir()).unwrap();
+        let image = fixture(&dir.0, "Verenu.AppImage", b"old");
+        let downloaded = fixture(&dir.0, "download.AppImage", b"new");
+        let original = std::fs::read(&image).unwrap();
+
+        replace_appimage_with_directory_sync(&image, &downloaded, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "directory sync unsupported",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(&image).unwrap(),
+            std::fs::read(&downloaded).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(dir.0.join("Verenu.AppImage.previous")).unwrap(),
+            original
+        );
     }
 
     #[test]

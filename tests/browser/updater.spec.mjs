@@ -12,10 +12,13 @@ test('About update check uses real backend and reports failures honestly', async
   });
   await page.screenshot({ path: path.join(directory, `updater-after-${test.info().project.name}.png`) });
   await row.getByRole('button', { name: 'Check for Updates', exact: true }).click();
-  await expect(row.getByRole('button', { name: 'Checking…', exact: true })).toHaveCount(0, { timeout: 30_000 });
+  const checking = row.getByRole('button', { name: 'Checking…', exact: true });
+  await expect(checking).toBeVisible({ timeout: 10_000 });
+  await expect(checking).toHaveCount(0, { timeout: 30_000 });
+  const status = row.locator('[role="status"]');
+  await expect(status).toHaveText(/\S/, { timeout: 30_000 });
   // Public release availability varies; each result must be visible and actionable.
-  await expect(row).toContainText(/latest version|is available|Could not|unavailable|compatible|check.*update/i);
-  await expect(row.locator('[role="status"]')).toBeVisible();
+  await expect(status).toContainText(/latest version|is available|Could not check|unavailable|compatible/i, { timeout: 30_000 });
   await page.screenshot({ path: path.join(directory, `updater-result-${test.info().project.name}.png`) });
   await page.reload();
   await page.locator('[data-debug-id="nav.settings"]').click();
