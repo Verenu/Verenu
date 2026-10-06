@@ -932,6 +932,8 @@ mod github_setting_tests {
         assert!(is_readable_setting_key(store::GITHUB_USERNAME));
         assert!(!is_exportable_setting_key(store::GITHUB_USERNAME));
         assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::GITHUB_USERNAME));
+        assert!(!is_readable_setting_key(store::GITHUB_COMMIT_CACHE));
+        assert!(!is_exportable_setting_key(store::GITHUB_COMMIT_CACHE));
     }
 }
 
