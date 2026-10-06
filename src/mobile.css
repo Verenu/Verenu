@@ -143,6 +143,75 @@
   color: var(--ink-mute);
 }
 
+/* ------------------------------------------------- settings rows (stacked) */
+
+/*
+ * A foldable's inner screen (~830dp) leaves the settings panel just over the
+ * 440px container breakpoint Settings.svelte stacks at, so rows flipped back to
+ * the desktop pattern: label on the left, every control marooned on the right.
+ * Touch rows always stack: text gets the full measure, the control sits under
+ * it on the left, and only a switch (one line, thumb-sized) stays beside its
+ * label. The column keeps a reading measure on wide windows instead of
+ * stretching label and control across the whole screen.
+ */
+.app[data-android='true'] .settings-body .setting-row {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+  padding: 16px 0;
+}
+
+.app[data-android='true'] .settings-body .setting-row > :last-child {
+  justify-self: start;
+  margin-left: 0;
+}
+
+.app[data-android='true'] .settings-body .setting-row:has(> .toggle:last-child) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+}
+
+.app[data-android='true'] .settings-body .setting-row:has(> .toggle:last-child) > .toggle {
+  justify-self: end;
+}
+
+.app[data-android='true'] .settings-body .desc {
+  max-width: none;
+}
+
+.app[data-android='true'] .settings-body :is(.notification-test-controls, .simulation-actions, .actions, .update-controls) {
+  justify-content: flex-start;
+}
+
+.app[data-android='true'] .settings-body :is(.ui-dropdown-menu, .mic-menu) {
+  left: 0;
+  right: auto;
+  max-width: 100cqw;
+}
+
+.app[data-android='true']:not([data-width-class='compact']) .settings-body .panel-inner {
+  max-width: 640px;
+  margin-inline: 0;
+}
+
+/* Rows that predate .setting-row (the Advanced Models switch) read at the same
+   size as their neighbours. */
+.app[data-android='true'] .settings-body .advanced-toggle-row {
+  padding: 14px 0;
+}
+
+.app[data-android='true'] .settings-body .adv-label {
+  font-size: 15px;
+  color: var(--ink-strong);
+}
+
+.app[data-android='true'] .settings-body .adv-desc {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ---------------------------------------------------------------- sheets */
 
 /*
@@ -151,6 +220,30 @@
  * scrolls, and actions that always stay in view. The page itself shrinks when
  * the keyboard opens (MainActivity), so the sheet rides on top of the keyboard.
  */
+/* The bottom bar is z-index 70 and desktop dialogs sit at 51, so on a phone the
+   bar painted over a sheet's action buttons. Dialogs rise above the bar (the
+   full-screen model picker, 90, stays on top of them). */
+:root:has(.app[data-android='true']) :is(.ui-modal-backdrop, .modal-backdrop, .modal-overlay, .context-modal-backdrop) {
+  z-index: 84;
+}
+
+:root:has(.app[data-android='true']) :is(.ui-modal-card, .modal-card, .snippet-modal-card, .context-modal) {
+  z-index: 85;
+}
+
+/* Menus portalled to the document root from inside a dialog (the context
+   editor's Tone/Cleanup and app search) must stay above the dialog's layer. */
+:root:has(.app[data-android='true']) :is(.field-menu-fixed, .modal-app-matches) {
+  z-index: 88;
+}
+
+/* Dialogs that render inside a page (About, Privacy, Sync...) live in that
+   page's stacking context, so no z-index of their own can clear the bar. While
+   one is open the bar steps under the page and its dim, like any modal. */
+.app[data-android='true']:has(:is(.ui-modal-card, .modal-card, .snippet-modal-card)) .mobile-nav {
+  z-index: 40;
+}
+
 :root:has(.app[data-android='true']) :is(.ui-modal-card, .modal-card, .snippet-modal-card) {
   display: flex;
   flex-direction: column;
@@ -189,12 +282,18 @@
   padding-bottom: 12px;
 }
 
-:root:has(.app[data-android='true']) .ui-modal-actions {
+:root:has(.app[data-android='true']) :is(.ui-modal-actions, .footer-actions, .pair-actions) {
+  display: flex;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
-:root:has(.app[data-android='true']) .ui-modal-actions > button {
-  flex: 1 1 auto;
+/* Sheet actions share the row at full touch height, primary action last. */
+:root:has(.app[data-android='true']) :is(.ui-modal-actions, .footer-actions, .pair-actions) > button {
+  flex: 1 1 140px;
+  min-height: 48px;
+  font-size: 15px;
+  border-radius: 14px;
 }
 
 /* The snippet dialog is a centred flex card; seat it on the bottom edge. */
@@ -549,10 +648,82 @@
   font-size: 14px;
 }
 
+/* ------------------------------------------------------- insights filters */
+
+/* The scope filters line up with the title instead of hanging below it, and on
+   a phone they split the row into two equal, full-size touch targets. */
+.app[data-android='true'] .content-inner > .head {
+  align-items: center;
+  gap: 14px 16px;
+}
+
+.app[data-android='true'] .head-filters .range-picker {
+  margin-top: 0;
+}
+
+.app[data-android='true'] .head-filters .ui-dropdown-trigger {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.app[data-android='true'][data-width-class='compact'] .content-inner > .head {
+  align-items: stretch;
+}
+
+.app[data-android='true'][data-width-class='compact'] .head-filters {
+  width: 100%;
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+
+.app[data-android='true'][data-width-class='compact'] .head-filters > * {
+  flex: 1 1 0;
+  max-width: none;
+}
+
 /* -------------------------------------------------- context group editor */
 
+/* Edit, Add app and Add website share one wrapping row under the title,
+   instead of stacking as two full-width rows that push the list down. */
+.app[data-android='true'] .context-header {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.app[data-android='true'] .context-header > div {
+  display: contents;
+}
+
+.app[data-android='true'] .context-header :is(h2, p) {
+  flex: 0 0 100%;
+}
+
+.app[data-android='true'] .context-header p {
+  margin-bottom: 6px;
+}
+
 .app[data-android='true'] .context-edit-btn {
-  margin-top: 12px;
+  margin-top: 0;
+}
+
+/* Tone and Cleanup sit tight under the icon picker; give them air. */
+:root:has(.app[data-android='true']) .context-modal .field-row {
+  margin-top: 16px;
+  gap: 12px;
+}
+
+:root:has(.app[data-android='true']) .context-modal .field-col {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+:root:has(.app[data-android='true']) .context-modal .field-col .field-label {
+  display: block;
+  margin: 0 0 6px 2px;
 }
 
 .app[data-android='true'] .context-delete-btn {
@@ -565,7 +736,7 @@
    layout, becomes a flex item that shoves the other buttons across the row. */
 :root:has(.app[data-android='true']) .app-picker {
   position: fixed;
-  z-index: 80;
+  z-index: 88;
   top: auto;
   right: 12px;
   bottom: 12px;
@@ -597,6 +768,17 @@
 
 :root:has(.app[data-android='true']) .modal-card.context-modal::before {
   display: none;
+}
+
+/* Unfolded and tablet windows: a centred card, not an 830dp-wide form. */
+:root:has(.app[data-android='true']:not([data-width-class='compact'])) .modal-card.context-modal {
+  inset: 50% auto auto 50%;
+  width: min(600px, calc(100% - 48px));
+  height: auto;
+  max-height: min(90dvh, 880px);
+  translate: -50% -50%;
+  border: 1px solid var(--line);
+  border-radius: 24px;
 }
 
 :root:has(.app[data-android='true']) .context-modal .ui-modal-head {
@@ -934,4 +1116,112 @@
   min-height: 44px;
   font-size: 15px;
   border-radius: 12px;
+}
+
+/* --------------------------------------------------- cleanup prompt editor */
+
+/*
+ * A 800x580 desktop dialog with a 30px close button and a header that packs
+ * title, status, Reset and Audit & save into one row. On a phone it is a full
+ * screen editor: title and actions stacked, touch-size controls, the prompt
+ * filling the rest. Unfolded windows keep a large centred card.
+ */
+:root:has(.app[data-android='true']) .prompt-modal-wrap {
+  z-index: 86;
+}
+
+:root:has(.app[data-android='true']:not([data-width-class='compact'])) .prompt-modal-card {
+  width: min(720px, calc(100vw - 48px));
+  height: min(88dvh, 780px);
+  border-radius: 24px;
+}
+
+:root:has(.app[data-android='true'][data-width-class='compact']) .prompt-modal-wrap {
+  display: block;
+}
+
+:root:has(.app[data-android='true'][data-width-class='compact']) .prompt-modal-card {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root:has(.app[data-android='true']) .prompt-modal-close {
+  top: 10px;
+  right: 10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+
+:root:has(.app[data-android='true']) .prompt-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 14px 64px 12px 20px;
+}
+
+:root:has(.app[data-android='true']) .prompt-head-info {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+:root:has(.app[data-android='true']) .prompt-head-provider {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+:root:has(.app[data-android='true']) .prompt-head-model {
+  white-space: normal;
+  font-size: 13px;
+}
+
+:root:has(.app[data-android='true']) .prompt-head-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+:root:has(.app[data-android='true']) :is(.prompt-btn, .prompt-btn-ghost) {
+  min-height: 44px;
+  padding-inline: 16px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+:root:has(.app[data-android='true']) .status-chip {
+  min-height: 32px;
+  padding-inline: 12px;
+  font-size: 12px;
+}
+
+:root:has(.app[data-android='true']) .prompt-textarea {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ------------------------------------------------------------------ setup */
+
+/* The primary action is the thumb's destination: on a phone it takes the width
+   the Back/Skip links leave, at full touch height, above the gesture bar. */
+:root:has(.app[data-android='true'][data-width-class='compact']) .setup-actionbar {
+  gap: 12px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+:root:has(.app[data-android='true'][data-width-class='compact']) .setup-actionbar .actionbar-right {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+:root:has(.app[data-android='true'][data-width-class='compact']) .setup-actionbar .actionbar-right .btn-primary {
+  flex: 1 1 auto;
+  min-height: 52px;
+  font-size: 16px;
+  border-radius: 14px;
 }
