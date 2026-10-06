@@ -461,7 +461,13 @@
   .page-sub { color: var(--ink-mute); font-size: 12.5px; margin: 0 0 22px; }
 
   /* Flat stats */
-  .stat-stack { display: flex; flex-direction: column; gap: 22px; }
+  .stat-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    position: sticky;
+    top: calc(var(--page-pad-y) + var(--native-chrome-below-clearance, 0px));
+  }
 
   @media (max-width: 1060px) {
     .home-grid {
