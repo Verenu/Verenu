@@ -75,6 +75,15 @@ fn db_state(app: &AppHandle) -> DbHandle {
     app.state::<DbHandle>().inner().clone()
 }
 
+async fn run_db<T, F>(app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&DbHandle) -> anyhow::Result<T> + Send + 'static,
+{
+    let db = db_state(app);
+    run_blocking(label, move || f(&db).map_err(|error| error.to_string())).await
+}
+
 pub use analytics::*;
 pub use android::*;
 pub use contexts::*;
