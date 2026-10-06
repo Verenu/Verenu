@@ -307,6 +307,11 @@ fn apply_pill_hit_testing(pill: &WebviewWindow, interactive: bool) {
 /// is not realized yet is skipped: every reveal re-applies it after `show()`.
 #[cfg(target_os = "linux")]
 fn apply_linux_pill_input(pill: &WebviewWindow) {
+    apply_linux_pill_input_for_window(pill, None);
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_pill_input_for_window(pill: &WebviewWindow, address: Option<String>) {
     let target = pill.clone();
     pill.run_on_main_thread(move || {
         // Read at execution time. A queued hands-free update must not reopen
@@ -316,7 +321,7 @@ fn apply_linux_pill_input(pill: &WebviewWindow) {
             .ok()
             .and_then(|input| input.rect.filter(|_| input.interactive));
         crate::system::linux_webview::set_input_region(&target, rect);
-        schedule_linux_pointer_sync();
+        schedule_linux_pointer_sync(address);
     })
     .ok();
 }
@@ -330,20 +335,22 @@ static LINUX_POINTER_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Coalesce resize reports and re-read policy after looking up the window so
 /// a delayed hands-free update cannot remain applied after recording starts.
 #[cfg(target_os = "linux")]
-fn schedule_linux_pointer_sync() {
+fn schedule_linux_pointer_sync(mut address: Option<String>) {
     LINUX_POINTER_SYNC_GENERATION.fetch_add(1, Ordering::SeqCst);
     if LINUX_POINTER_SYNC_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
-    tauri::async_runtime::spawn_blocking(|| loop {
+    tauri::async_runtime::spawn_blocking(move || loop {
         let generation = LINUX_POINTER_SYNC_GENERATION.load(Ordering::SeqCst);
-        if let Some(window) = crate::core::hyprland::pill_window() {
+        if let Some(address) = address.take().or_else(|| {
+            crate::core::hyprland::pill_window().map(|window| window.address)
+        }) {
             let interactive = LINUX_PILL_INPUT
                 .lock()
                 .map(|input| input.interactive && input.rect.is_some())
                 .unwrap_or(false);
             if let Err(error) =
-                crate::core::hyprland::set_pointer_input(&window.address, interactive)
+                crate::core::hyprland::set_pointer_input(&address, interactive)
             {
                 log::warn!("{error}");
             }
@@ -724,7 +731,7 @@ fn place_linux_pill(app: &AppHandle, wait_for_map: bool) {
         log::warn!("Failed to raise Linux dictation pill: {error}");
     }
     if let Some(pill) = app.get_webview_window("pill") {
-        apply_linux_pill_input(&pill);
+        apply_linux_pill_input_for_window(&pill, Some(window.address));
     }
 }
 

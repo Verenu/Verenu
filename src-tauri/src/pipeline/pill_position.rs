@@ -111,11 +111,9 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     width_points: f64,
     height_points: f64,
 ) -> Option<PillPlacement> {
-    let monitor = target_point
-        .and_then(|point| crate::core::hyprland::logical_monitor_for_point(point.x, point.y))
-        // A NaN cannot match a monitor rectangle, so this cleanly selects the
-        // compositor's focused/first fallback when no target point exists.
-        .or_else(|| crate::core::hyprland::logical_monitor_for_point(f64::NAN, f64::NAN))?;
+    // A NaN selects the focused/first fallback in the same monitors snapshot.
+    let point = target_point.unwrap_or(DesktopPoint { x: f64::NAN, y: f64::NAN });
+    let monitor = crate::core::hyprland::logical_monitor_for_point(point.x, point.y)?;
     Some(placement_for_linux_monitor(
         monitor,
         width_points,
