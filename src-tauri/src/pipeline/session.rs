@@ -725,18 +725,19 @@ pub fn spawn_level_emitter(
         // The pill is the only consumer of the envelope, so this never goes out
         // globally even when the level does -- no other window needs 100
         // floats a second.
-        let emit_envelope = |batch: Vec<f32>| {
+        let emit_envelope = |batch: &[f32]| {
             if batch.is_empty() {
                 return;
             }
             // The native Android pill reads the same envelope over its bridge.
             #[cfg(target_os = "android")]
-            crate::android::bridge::note_audio_envelope(&batch);
+            crate::android::bridge::note_audio_envelope(batch);
             if let Some(pill) = app.get_webview_window("pill") {
                 pill.emit("audio-envelope", batch).ok();
             }
         };
 
+        let mut envelope_batch = Vec::with_capacity(8);
         loop {
             if !active.load(Ordering::Relaxed) {
                 break;
@@ -748,12 +749,13 @@ pub fn spawn_level_emitter(
             // when the main activity is dead. One atomic store per tick.
             crate::android::bridge::note_audio_level(level_val);
             emit_level(level_val, raw_level_val);
-            emit_envelope(envelope.drain());
+            envelope.drain_into(&mut envelope_batch);
+            emit_envelope(&envelope_batch);
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         // Emit final reset to ensure level goes to 0 regardless of timing
-        emit_envelope(envelope.drain());
+        emit_envelope(&envelope.drain());
         crate::android::bridge::note_audio_level(0.0);
         emit_level(0.0, 0.0);
     });

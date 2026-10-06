@@ -322,11 +322,16 @@ impl EnvelopeTap {
     }
 
     /// Drains everything captured since the last call, oldest first.
-    pub fn drain(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(8);
+    pub fn drain_into(&self, out: &mut Vec<f32>) {
+        out.clear();
         while let Some(v) = self.queue.pop() {
             out.push(v);
         }
+    }
+
+    pub fn drain(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(8);
+        self.drain_into(&mut out);
         out
     }
 }
@@ -610,7 +615,11 @@ impl RecordingSession {
                 // for every short dictation.
                 let mut samples_16k = Vec::<f32>::new();
                 let mut batch = Vec::<f32>::with_capacity(2048);
-                let mut processed_batch = Vec::<f32>::with_capacity(2048);
+                let mut processed_batch = if noise_reduction {
+                    Vec::<f32>::with_capacity(2048)
+                } else {
+                    Vec::new()
+                };
                 let mut raw_sum_sq = 0.0f64;
                 let mut raw_sample_count = 0u64;
                 let mut termination = RecordingTermination::Complete;
@@ -640,24 +649,25 @@ impl RecordingSession {
                     }
 
                     if !batch.is_empty() && termination == RecordingTermination::Complete {
-                        processed_batch.clear();
-                        if let Some(d) = denoiser.as_mut() {
+                        let processed: &[f32] = if let Some(d) = denoiser.as_mut() {
+                            processed_batch.clear();
                             d.push(&batch, &mut processed_batch);
+                            &processed_batch
                         } else {
-                            processed_batch.extend_from_slice(&batch);
-                        }
+                            &batch
+                        };
                         // Pill envelope must stay on the device sample rate.
                         // 0.18.1 pushed native-rate peaks (~100 bins/sec at
                         // 10ms). After streaming resample landed, this loop
                         // fed 16 kHz samples into a tap still configured for
                         // 48 kHz, so each bin took ~30ms and the visualizer
                         // looked slow and dead compared to the release build.
-                        for &sample in &processed_batch {
+                        for &sample in processed {
                             worker_envelope.push_sample(sample, processed_display_gain);
                         }
                         let before_len = samples_16k.len();
                         let duration_limit =
-                            resampler.push(&processed_batch, &mut samples_16k, max_output_samples);
+                            resampler.push(processed, &mut samples_16k, max_output_samples);
                         update_live_speech(&samples_16k[before_len..]);
                         if duration_limit {
                             termination = RecordingTermination::DurationLimit;
@@ -1063,6 +1073,25 @@ mod tests {
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
     #[test]
+    fn envelope_drain_into_reuses_storage_and_preserves_order() {
+        let tap = super::EnvelopeTap::new();
+        tap.set_sample_rate(100);
+        let mut batch = Vec::with_capacity(8);
+        let storage = batch.as_ptr();
+
+        tap.push_sample(0.2, 1.0);
+        tap.push_sample(0.5, 1.0);
+        tap.drain_into(&mut batch);
+        assert_eq!(batch, [0.2, 0.5]);
+        assert_eq!(batch.as_ptr(), storage);
+
+        tap.push_sample(0.7, 1.0);
+        tap.drain_into(&mut batch);
+        assert_eq!(batch, [0.7]);
+        assert_eq!(batch.as_ptr(), storage);
+    }
+
+    #[test]
     fn failed_stream_setup_stops_and_joins_processing_worker() {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_stop = stop.clone();
@@ -1198,7 +1227,11 @@ mod tests {
         assert!((first - 1.0).abs() < 1e-6);
         assert!(second.abs() < 1e-6);
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
-        assert!((f32::from_bits(raw_level.load(Ordering::Relaxed)) - 0.7071).abs() < 0.001);
+        assert!(
+            (f32::from_bits(raw_level.load(Ordering::Relaxed)) - std::f32::consts::FRAC_1_SQRT_2)
+                .abs()
+                < 0.001
+        );
     }
 
     #[test]
