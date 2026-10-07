@@ -8,12 +8,13 @@ export const githubState = $state({
   username: '', snapshot: null as GithubSnapshot | null, loading: false, ready: false, error: '',
 });
 let generation = 0;
-let inFlight: Promise<void> | null = null;
+let inFlight: { generation: number; promise: Promise<void> } | null = null;
 
 export function refreshGithub(refresh = false): Promise<void> {
-  if (inFlight) return inFlight;
   const token = generation;
-  inFlight = (async () => {
+  if (inFlight?.generation === token) return inFlight.promise;
+  const request = { generation: token, promise: Promise.resolve() };
+  request.promise = (async () => {
     try {
       const username = await invoke<string | null>('get_setting', { key: 'github_username' }) ?? '';
       if (token !== generation) return;
@@ -32,23 +33,37 @@ export function refreshGithub(refresh = false): Promise<void> {
     } finally {
       if (token === generation) { githubState.loading = false; githubState.ready = true; }
     }
-  })().finally(() => { inFlight = null; });
-  return inFlight;
+  })().finally(() => { if (inFlight === request) inFlight = null; });
+  inFlight = request;
+  return request.promise;
 }
 
 export async function setGithubUsername(username: string): Promise<void> {
-  if (username && username === githubState.username) {
-    await refreshGithub();
-    return;
+  if (username && username.toLowerCase() === githubState.username.toLowerCase()) return;
+
+  // Detach previous-account requests immediately. A slow native fetch must not
+  // hold up disconnect or a new account's first refresh.
+  const saveGeneration = ++generation;
+  githubState.loading = false;
+  try {
+    await saveSetting('github_username', username);
+  } catch (error) {
+    if (generation === saveGeneration) {
+      generation++;
+      githubState.loading = false;
+      void refreshGithub();
+    }
+    throw error;
   }
-  await saveSetting('github_username', username);
+  if (generation !== saveGeneration) return;
+
+  // A poll may have started while the settings IPC was saving. Invalidate it
+  // before publishing the newly saved owner.
   generation++;
   githubState.username = username;
   githubState.snapshot = null;
   githubState.error = '';
   githubState.loading = false;
-  // Let the previous request finish without restoring the old account.
-  if (inFlight) await inFlight;
   if (username) await refreshGithub();
 }
 

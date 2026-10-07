@@ -17,7 +17,7 @@ pub use prompts::*;
 const CLEANUP_PROMPT_OVERRIDE_CHAR_LIMIT: usize = 20_000;
 
 fn github_identity_changed(current: Option<&str>, next: &str) -> bool {
-    !current.unwrap_or_default().eq_ignore_ascii_case(next)
+    current.is_none_or(|current| !current.eq_ignore_ascii_case(next))
 }
 
 fn save_github_username(
@@ -986,6 +986,28 @@ mod github_setting_tests {
         );
 
         save_github_username(&settings, json!("")).unwrap();
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(serde_json::Value::Null)
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn explicit_disconnect_materializes_empty_username_when_none_was_saved() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_empty_username_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        assert_eq!(settings.get(store::GITHUB_USERNAME), None);
+
+        save_github_username(&settings, json!("")).unwrap();
+
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("")));
         assert_eq!(
             settings.get(store::GITHUB_COMMIT_CACHE),
             Some(serde_json::Value::Null)
