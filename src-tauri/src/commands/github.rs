@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::github::CommitSnapshot;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const CACHE_SECONDS: i64 = 15 * 60;
 const REFRESH_COOLDOWN_SECONDS: i64 = 60;
@@ -11,6 +12,17 @@ struct RefreshAttempt {
     attempted_at: i64,
     timezone_id: Option<String>,
     utc_offset: i32,
+    generation: u64,
+}
+
+static REFRESH_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn advance_refresh_generation(generation: &AtomicU64) {
+    generation.fetch_add(1, Ordering::AcqRel);
+}
+
+pub(crate) fn invalidate_github_refresh_owner() {
+    advance_refresh_generation(&REFRESH_GENERATION);
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -95,8 +107,11 @@ fn refresh_attempt_is_throttled(
     manual_refresh: bool,
     timezone_id: Option<&str>,
     utc_offset: i32,
+    generation: u64,
 ) -> Option<i64> {
-    let last_attempt = last_attempt.filter(|last| last.username.eq_ignore_ascii_case(username))?;
+    let last_attempt = last_attempt.filter(|last| {
+        last.username.eq_ignore_ascii_case(username) && last.generation == generation
+    })?;
     let same_timezone_context =
         last_attempt.timezone_id.as_deref() == timezone_id && last_attempt.utc_offset == utc_offset;
     let cooldown = if manual_refresh || !same_timezone_context {
@@ -287,6 +302,7 @@ pub async fn get_github_commits(
     if !crate::api::github::valid_username(&username) {
         return Err("Enter a valid GitHub username.".to_owned());
     }
+    let refresh_generation = REFRESH_GENERATION.load(Ordering::Acquire);
     let local_now = chrono::Local::now();
     let today = local_now.date_naive();
     let current_offset = local_now.offset().local_minus_utc();
@@ -316,6 +332,7 @@ pub async fn get_github_commits(
         manual_refresh,
         timezone_id.as_deref(),
         current_offset,
+        refresh_generation,
     ) {
         let message = if cooldown == CACHE_SECONDS {
             "Automatic refresh is paused for up to 15 minutes after the last attempt."
@@ -329,6 +346,7 @@ pub async fn get_github_commits(
             attempted_at: now,
             timezone_id: timezone_id.clone(),
             utc_offset: current_offset,
+            generation: refresh_generation,
         });
         match tokio::time::timeout(
             std::time::Duration::from_secs(60),
@@ -355,19 +373,23 @@ pub async fn get_github_commits(
             };
             let value =
                 serde_json::to_value(cache).map_err(|_| "Could not cache GitHub counts.")?;
-            run_blocking("cache_github_commits", move || {
-                settings
-                    .save_value_if_owner_matches(
-                        store::GITHUB_USERNAME,
-                        &serde_json::json!(username),
-                        store::GITHUB_COMMIT_CACHE,
-                        value,
-                    )
-                    .map(|_| ())
+            let committed = run_blocking("cache_github_commits", move || {
+                settings.save_value_if_owner_matches_when(
+                    store::GITHUB_USERNAME,
+                    &serde_json::json!(username),
+                    store::GITHUB_COMMIT_CACHE,
+                    value,
+                    || REFRESH_GENERATION.load(Ordering::Acquire) == refresh_generation,
+                )
             })
             .await?;
-            Ok(Some(snapshot))
+            if committed && REFRESH_GENERATION.load(Ordering::Acquire) == refresh_generation {
+                Ok(Some(snapshot))
+            } else {
+                Ok(None)
+            }
         }
+        Err(_error) if REFRESH_GENERATION.load(Ordering::Acquire) != refresh_generation => Ok(None),
         Err(error) => match cached {
             Some(cache) => {
                 let current_offset = chrono::Local::now().offset().local_minus_utc();
@@ -420,6 +442,7 @@ mod cache_tests {
             attempted_at: 100,
             timezone_id: Some("iana:America/Los_Angeles".to_owned()),
             utc_offset: -28_800,
+            generation: 0,
         };
         for now in [160, 999] {
             assert_eq!(
@@ -429,7 +452,8 @@ mod cache_tests {
                     now,
                     false,
                     Some("iana:America/Los_Angeles"),
-                    -28_800
+                    -28_800,
+                    0
                 ),
                 Some(CACHE_SECONDS),
                 "known-zone retries remain throttled at {now}"
@@ -442,7 +466,8 @@ mod cache_tests {
                 1_000,
                 false,
                 Some("iana:America/Los_Angeles"),
-                -28_800
+                -28_800,
+                0
             ),
             None,
             "known-zone automatic refresh is allowed at 15 minutes"
@@ -453,11 +478,11 @@ mod cache_tests {
             ..known
         };
         assert_eq!(
-            refresh_attempt_is_throttled(Some(&unknown), "octocat", 999, false, None, -28_800),
+            refresh_attempt_is_throttled(Some(&unknown), "octocat", 999, false, None, -28_800, 0),
             Some(CACHE_SECONDS)
         );
         assert_eq!(
-            refresh_attempt_is_throttled(Some(&unknown), "octocat", 1_000, false, None, -28_800),
+            refresh_attempt_is_throttled(Some(&unknown), "octocat", 1_000, false, None, -28_800, 0),
             None
         );
     }
@@ -469,6 +494,7 @@ mod cache_tests {
             attempted_at: 100,
             timezone_id: Some("unix-tz-sha256:new-york".to_owned()),
             utc_offset: -18_000,
+            generation: 0,
         };
         assert_eq!(
             refresh_attempt_is_throttled(
@@ -477,7 +503,8 @@ mod cache_tests {
                 159,
                 true,
                 Some("unix-tz-sha256:new-york"),
-                -18_000
+                -18_000,
+                0
             ),
             Some(REFRESH_COOLDOWN_SECONDS)
         );
@@ -488,7 +515,8 @@ mod cache_tests {
                 160,
                 true,
                 Some("unix-tz-sha256:new-york"),
-                -18_000
+                -18_000,
+                0
             ),
             None
         );
@@ -499,7 +527,8 @@ mod cache_tests {
                 159,
                 false,
                 Some("unix-tz-sha256:lima"),
-                -18_000
+                -18_000,
+                0
             ),
             Some(REFRESH_COOLDOWN_SECONDS),
             "a zone identity change keeps the short cooldown"
@@ -511,7 +540,8 @@ mod cache_tests {
                 160,
                 false,
                 Some("unix-tz-sha256:lima"),
-                -18_000
+                -18_000,
+                0
             ),
             None
         );
@@ -522,16 +552,116 @@ mod cache_tests {
                 160,
                 false,
                 Some("unix-tz-sha256:new-york"),
-                -25_200
+                -25_200,
+                0
             ),
             None,
             "an offset change keeps the short cooldown"
         );
         assert_eq!(
-            refresh_attempt_is_throttled(Some(&last), "other-user", 101, false, None, -18_000),
+            refresh_attempt_is_throttled(Some(&last), "other-user", 101, false, None, -18_000, 0),
             None,
             "a new account is independent of the previous account's attempt"
         );
+    }
+
+    #[test]
+    fn reconnect_same_account_bypasses_cooldown_and_rejects_old_cache_write() {
+        use crate::data::store::SettingsHandle;
+        use serde_json::{json, Value};
+
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_reconnect_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = SettingsHandle::empty_for_test(path.clone());
+        let timezone_id = Some("iana:America/Los_Angeles".to_owned());
+        settings
+            .save_values([
+                (store::GITHUB_USERNAME, json!("octocat")),
+                (store::GITHUB_COMMIT_CACHE, json!({"daily": ["old"]})),
+            ])
+            .unwrap();
+
+        let generation = AtomicU64::new(0);
+        let old_attempt = RefreshAttempt {
+            username: "octocat".to_owned(),
+            attempted_at: 100,
+            timezone_id: timezone_id.clone(),
+            utc_offset: -28_800,
+            generation: generation.load(Ordering::Acquire),
+        };
+
+        advance_refresh_generation(&generation);
+        settings
+            .save_values([
+                (store::GITHUB_USERNAME, json!("")),
+                (store::GITHUB_COMMIT_CACHE, Value::Null),
+            ])
+            .unwrap();
+        advance_refresh_generation(&generation);
+        settings
+            .save_values([
+                (store::GITHUB_USERNAME, json!("octocat")),
+                (store::GITHUB_COMMIT_CACHE, Value::Null),
+            ])
+            .unwrap();
+        let current_generation = generation.load(Ordering::Acquire);
+
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&old_attempt),
+                "octocat",
+                160,
+                false,
+                timezone_id.as_deref(),
+                -28_800,
+                current_generation
+            ),
+            None,
+            "reconnecting the same account allows its first refresh immediately"
+        );
+
+        let saved = settings
+            .save_value_if_owner_matches_when(
+                store::GITHUB_USERNAME,
+                &json!("octocat"),
+                store::GITHUB_COMMIT_CACHE,
+                json!({"daily": ["late"]}),
+                || generation.load(Ordering::Acquire) == old_attempt.generation,
+            )
+            .unwrap();
+        assert!(
+            !saved,
+            "a response from the pre-disconnect request is discarded"
+        );
+        assert_eq!(settings.get(store::GITHUB_COMMIT_CACHE), Some(Value::Null));
+
+        let retry = RefreshAttempt {
+            username: "octocat".to_owned(),
+            attempted_at: 160,
+            timezone_id,
+            utc_offset: -28_800,
+            generation: current_generation,
+        };
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&retry),
+                "octocat",
+                220,
+                false,
+                Some("iana:America/Los_Angeles"),
+                -28_800,
+                current_generation
+            ),
+            Some(CACHE_SECONDS),
+            "a failed post-reconnect automatic attempt uses the 15-minute cooldown"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

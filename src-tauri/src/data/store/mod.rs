@@ -74,6 +74,14 @@ pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_coun
 }
 
 impl SettingsHandle {
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(path: PathBuf) -> Self {
+        Self {
+            path: Arc::new(path),
+            values: Arc::new(RwLock::new(Arc::new(Map::new()))),
+        }
+    }
+
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
         if !crate::is_dev_session() {
@@ -182,11 +190,27 @@ impl SettingsHandle {
         key: &str,
         value: Value,
     ) -> Result<bool, String> {
+        self.save_value_if_owner_matches_when(owner_key, owner, key, value, || true)
+    }
+
+    /// Commit an asynchronous refresh only if its owner and request context
+    /// are still current while holding the settings write lock.
+    pub fn save_value_if_owner_matches_when<F>(
+        &self,
+        owner_key: &str,
+        owner: &Value,
+        key: &str,
+        value: Value,
+        should_commit: F,
+    ) -> Result<bool, String>
+    where
+        F: FnOnce() -> bool,
+    {
         let mut settings = self
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
-        if settings.get(owner_key) != Some(owner) {
+        if !should_commit() || settings.get(owner_key) != Some(owner) {
             return Ok(false);
         }
         let mut next = (**settings).clone();
