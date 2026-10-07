@@ -282,15 +282,47 @@ mod suggestion_tests {
         }
     }
 }
-// Serialize refreshes across remounts and simultaneous IPC callers.
-static REFRESH: tokio::sync::Mutex<Option<RefreshAttempt>> = tokio::sync::Mutex::const_new(None);
+// Serialize attempt bookkeeping, but never hold this lock while GitHub responds.
+static REFRESH_ATTEMPT: tokio::sync::Mutex<Option<RefreshAttempt>> =
+    tokio::sync::Mutex::const_new(None);
+
+async fn run_refresh_attempt<Fut>(
+    attempts: &tokio::sync::Mutex<Option<RefreshAttempt>>,
+    context: RefreshAttempt,
+    manual_refresh: bool,
+    fetch: Fut,
+) -> Result<CommitSnapshot, String>
+where
+    Fut: std::future::Future<Output = Result<CommitSnapshot, String>>,
+{
+    {
+        let mut attempt = attempts.lock().await;
+        if let Some(cooldown) = refresh_attempt_is_throttled(
+            attempt.as_ref(),
+            &context.username,
+            context.attempted_at,
+            manual_refresh,
+            context.timezone_id.as_deref(),
+            context.utc_offset,
+            context.generation,
+        ) {
+            return Err(if cooldown == CACHE_SECONDS {
+                "Automatic refresh is paused for up to 15 minutes after the last attempt."
+                    .to_owned()
+            } else {
+                "Please wait a minute before refreshing GitHub again.".to_owned()
+            });
+        }
+        *attempt = Some(context);
+    }
+    fetch.await
+}
 
 #[tauri::command]
 pub async fn get_github_commits(
     app: AppHandle,
     refresh: Option<bool>,
 ) -> Result<Option<CommitSnapshot>, String> {
-    let mut attempt = REFRESH.lock().await;
     let settings = store::settings_handle(&app)?;
     let username = settings
         .get(store::GITHUB_USERNAME)
@@ -325,39 +357,29 @@ pub async fn get_github_commits(
         }
     }
     let timezone_before_fetch = current_timezone_id();
-    let result = if let Some(cooldown) = refresh_attempt_is_throttled(
-        attempt.as_ref(),
-        &username,
-        now,
-        manual_refresh,
-        timezone_id.as_deref(),
-        current_offset,
-        refresh_generation,
-    ) {
-        let message = if cooldown == CACHE_SECONDS {
-            "Automatic refresh is paused for up to 15 minutes after the last attempt."
-        } else {
-            "Please wait a minute before refreshing GitHub again."
-        };
-        Err(message.to_owned())
-    } else {
-        *attempt = Some(RefreshAttempt {
+    let result = run_refresh_attempt(
+        &REFRESH_ATTEMPT,
+        RefreshAttempt {
             username: username.clone(),
             attempted_at: now,
             timezone_id: timezone_id.clone(),
             utc_offset: current_offset,
             generation: refresh_generation,
-        });
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            crate::api::github::fetch_commits(&username),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err("GitHub took too long to respond. Try again later.".to_owned()),
-        }
-    };
+        },
+        manual_refresh,
+        async {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                crate::api::github::fetch_commits(&username),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("GitHub took too long to respond. Try again later.".to_owned()),
+            }
+        },
+    )
+    .await;
     match result {
         Ok(snapshot) => {
             // A disconnect or username change during the request must not restore its cache.
@@ -563,6 +585,78 @@ mod cache_tests {
             None,
             "a new account is independent of the previous account's attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn new_owner_can_refresh_while_an_obsolete_fetch_is_pending() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let attempts = Arc::new(tokio::sync::Mutex::new(None));
+        let old_attempts = attempts.clone();
+        let (started, wait_until_started) = tokio::sync::oneshot::channel();
+        let old_request = tokio::spawn(async move {
+            run_refresh_attempt(
+                &old_attempts,
+                RefreshAttempt {
+                    username: "octocat".to_owned(),
+                    attempted_at: 100,
+                    timezone_id: Some("iana:America/Los_Angeles".to_owned()),
+                    utc_offset: -28_800,
+                    generation: 0,
+                },
+                false,
+                async move {
+                    started.send(()).unwrap();
+                    std::future::pending::<Result<CommitSnapshot, String>>().await
+                },
+            )
+            .await
+        });
+        wait_until_started.await.unwrap();
+
+        let duplicate_fetch_started = AtomicBool::new(false);
+        let duplicate = run_refresh_attempt(
+            &attempts,
+            RefreshAttempt {
+                username: "octocat".to_owned(),
+                attempted_at: 101,
+                timezone_id: Some("iana:America/Los_Angeles".to_owned()),
+                utc_offset: -28_800,
+                generation: 0,
+            },
+            false,
+            async {
+                duplicate_fetch_started.store(true, Ordering::Relaxed);
+                Ok(snapshot("octocat", -28_800))
+            },
+        )
+        .await;
+        assert!(duplicate.is_err());
+        assert!(!duplicate_fetch_started.load(Ordering::Relaxed));
+
+        let new_snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_refresh_attempt(
+                &attempts,
+                RefreshAttempt {
+                    username: "new-account".to_owned(),
+                    attempted_at: 101,
+                    timezone_id: Some("iana:America/Los_Angeles".to_owned()),
+                    utc_offset: -28_800,
+                    generation: 1,
+                },
+                false,
+                async { Ok(snapshot("new-account", -28_800)) },
+            ),
+        )
+        .await
+        .expect("new account admission should not wait for the old fetch")
+        .unwrap();
+        assert_eq!(new_snapshot.username, "new-account");
+
+        old_request.abort();
+        let _ = old_request.await;
     }
 
     #[test]
