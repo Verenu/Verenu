@@ -124,6 +124,7 @@ type SettingsValueMap = {
   clipboard_phrase_enabled: boolean;
   clipboard_phrase: string;
   history_retention: HistoryRetention;
+  github_username: string;
   local_model_memory_policy: LocalModelMemoryPolicy;
   microphone_device: string | null;
   update_dismissed_version: string | null;

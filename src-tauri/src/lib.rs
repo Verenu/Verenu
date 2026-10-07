@@ -781,6 +781,8 @@ pub fn run() {
             commands::get_stats,
             commands::get_insights,
             commands::get_insights_pricing,
+            commands::get_github_commits,
+            commands::get_github_username_suggestion,
             commands::count_old_transcriptions,
             commands::get_cleanup_cache_status,
             commands::clear_cleanup_cache,

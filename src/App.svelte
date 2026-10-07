@@ -18,6 +18,7 @@
   import { getVersion, invoke, isTauriRuntime, listen } from './lib/tauri';
   import { startAutomaticUpdateChecks } from './lib/updates';
   import { startPolling } from './lib/polling';
+  import { startGithubRefresh } from './lib/githubStore.svelte';
   import { startLocalSttListeners } from './lib/localSttStore.svelte';
   import { startLocalLlmListeners } from './lib/localLlmStore.svelte';
   import { startDownloadManagerListeners } from './lib/downloadManager.svelte';
@@ -281,6 +282,7 @@
   }
 
   onMount(() => {
+    const stopGithubRefresh = startGithubRefresh();
     let mounted = true;
     let cleanupFn: (() => void) | undefined;
     let stopNotificationClickListener: (() => void) | undefined;
@@ -572,6 +574,7 @@
     }
 
     return () => {
+      stopGithubRefresh();
       mounted = false;
       stopInsets();
       if (cleanupFn) cleanupFn();

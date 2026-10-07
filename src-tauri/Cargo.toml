@@ -64,6 +64,7 @@ anyhow      = "1"
 unicode-segmentation = "1.12"
 log         = "0.4"
 chrono      = { version = "0.4", features = ["serde"] }
+iana-time-zone = "0.1"
 crossbeam-queue = "0.3"
 flate2      = "1"
 sha2        = "0.10"

@@ -20,6 +20,7 @@
     keys: lazyComponent(() => import('../components/settings/ApiKeysSection.svelte')),
     models: lazyComponent(() => import('../components/settings/ModelsSection.svelte')),
     privacy: lazyComponent(() => import('../components/settings/PrivacySection.svelte')),
+    integrations: lazyComponent(() => import('../components/settings/IntegrationsSection.svelte')),
     sync: lazyComponent(() => import('../components/settings/SyncSection.svelte')),
     advanced: lazyComponent(() => import('../components/settings/AudioSection.svelte')),
     permissions: lazyComponent(() => import('../components/settings/PermissionsSection.svelte')),

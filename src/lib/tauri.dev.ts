@@ -952,6 +952,9 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     }
     case 'get_insights_pricing':
       return { fetched_at: 0, rates: [] } as T;
+    case 'get_github_commits':
+    case 'get_github_username_suggestion':
+      return null as T;
     case 'get_memory_mb':
       return 0 as T;
     case 'local_models_supported_on_this_platform':

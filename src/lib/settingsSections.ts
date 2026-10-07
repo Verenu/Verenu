@@ -8,6 +8,7 @@ export type SettingsSectionId =
   | 'keys'
   | 'models'
   | 'privacy'
+  | 'integrations'
   | 'sync'
   | 'advanced'
   | 'permissions'
@@ -48,6 +49,7 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'keys',        label: 'Providers',    icon: 'key',     group: 'Settings' },
   { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },
   { id: 'privacy',     label: 'Privacy',      icon: 'lock',    group: 'Settings' },
+  { id: 'integrations', label: 'Integrations', icon: 'layers', group: 'Settings' },
   { id: 'sync',        label: 'Sync',         icon: 'devices', group: 'Settings', syncOnly: true },
   { id: 'advanced',    label: 'Audio',        icon: 'mic',     group: 'Settings' },
   { id: 'permissions', label: 'Permissions',  icon: 'shield',  group: 'Settings', macOnly: true },

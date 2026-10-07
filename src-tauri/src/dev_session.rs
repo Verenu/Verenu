@@ -403,6 +403,8 @@ fn allowed(command: &str) -> bool {
             | "get_stats"
             | "get_insights"
             | "get_insights_pricing"
+            | "get_github_commits"
+            | "get_github_username_suggestion"
             | "count_old_transcriptions"
             | "get_cleanup_cache_status"
             | "clear_cleanup_cache"

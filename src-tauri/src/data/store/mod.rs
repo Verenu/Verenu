@@ -74,6 +74,14 @@ pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_coun
 }
 
 impl SettingsHandle {
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(path: PathBuf) -> Self {
+        Self {
+            path: Arc::new(path),
+            values: Arc::new(RwLock::new(Arc::new(Map::new()))),
+        }
+    }
+
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
         if !crate::is_dev_session() {
@@ -169,6 +177,45 @@ impl SettingsHandle {
         for (key, value) in pending {
             next.insert(key, value);
         }
+        write_settings_file(&self.path, &next)?;
+        *settings = Arc::new(next);
+        Ok(true)
+    }
+
+    /// Commit an asynchronous refresh only if its owner setting is unchanged.
+    #[cfg(test)]
+    pub fn save_value_if_owner_matches(
+        &self,
+        owner_key: &str,
+        owner: &Value,
+        key: &str,
+        value: Value,
+    ) -> Result<bool, String> {
+        self.save_value_if_owner_matches_when(owner_key, owner, key, value, || true)
+    }
+
+    /// Commit an asynchronous refresh only if its owner and request context
+    /// are still current while holding the settings write lock.
+    pub fn save_value_if_owner_matches_when<F>(
+        &self,
+        owner_key: &str,
+        owner: &Value,
+        key: &str,
+        value: Value,
+        should_commit: F,
+    ) -> Result<bool, String>
+    where
+        F: FnOnce() -> bool,
+    {
+        let mut settings = self
+            .values
+            .write()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        if !should_commit() || settings.get(owner_key) != Some(owner) {
+            return Ok(false);
+        }
+        let mut next = (**settings).clone();
+        next.insert(key.to_owned(), value);
         write_settings_file(&self.path, &next)?;
         *settings = Arc::new(next);
         Ok(true)
@@ -441,6 +488,9 @@ pub const UPDATE_NOTIFIED_VERSION: &str = "update_notified_version";
 pub const BETA_UPDATES_ENABLED: &str = "beta_updates_enabled";
 pub const VERENU_SERVICE_CHECKS_ENABLED: &str = "verenu_service_checks_enabled";
 pub const HISTORY_RETENTION: &str = "history_retention";
+pub const GITHUB_USERNAME: &str = "github_username";
+// Derived local counts, deliberately excluded from IPC settings and exports.
+pub(crate) const GITHUB_COMMIT_CACHE: &str = "github_commit_cache";
 pub const AUTOSTART_ENABLED: &str = "autostart_enabled";
 pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
 pub const DEFAULT_CLIPBOARD_PHRASE: &str = "paste clipboard here";
