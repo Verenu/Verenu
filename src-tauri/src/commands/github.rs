@@ -149,7 +149,8 @@ fn refresh_attempt_is_throttled(
     } else {
         CACHE_SECONDS
     };
-    (now.saturating_sub(last_attempt.attempted_at) < cooldown).then_some(cooldown)
+    let elapsed = now.checked_sub(last_attempt.attempted_at)?;
+    (0..cooldown).contains(&elapsed).then_some(cooldown)
 }
 
 fn cached_failure_snapshot(
@@ -625,6 +626,79 @@ mod cache_tests {
             refresh_attempt_is_throttled(Some(&last), "other-user", 101, false, None, -18_000, 0),
             None,
             "a new account is independent of the previous account's attempt"
+        );
+    }
+
+    #[test]
+    fn clock_rollback_expires_old_attempt_then_throttles_from_the_new_attempt() {
+        let old_attempt = RefreshAttempt {
+            username: "octocat".to_owned(),
+            attempted_at: 100,
+            timezone_id: Some("iana:America/Los_Angeles".to_owned()),
+            utc_offset: -28_800,
+            generation: 0,
+        };
+
+        for manual_refresh in [false, true] {
+            assert_eq!(
+                refresh_attempt_is_throttled(
+                    Some(&old_attempt),
+                    "octocat",
+                    99,
+                    manual_refresh,
+                    Some("iana:America/Los_Angeles"),
+                    -28_800,
+                    0
+                ),
+                None,
+                "a future timestamp after clock rollback is treated as expired"
+            );
+        }
+
+        let retried_at_rollback = RefreshAttempt {
+            attempted_at: 99,
+            ..old_attempt.clone()
+        };
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&retried_at_rollback),
+                "octocat",
+                100,
+                true,
+                Some("iana:America/Los_Angeles"),
+                -28_800,
+                0
+            ),
+            Some(REFRESH_COOLDOWN_SECONDS)
+        );
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&retried_at_rollback),
+                "octocat",
+                100,
+                false,
+                Some("iana:America/Los_Angeles"),
+                -28_800,
+                0
+            ),
+            Some(CACHE_SECONDS)
+        );
+
+        let overflowed_attempt = RefreshAttempt {
+            attempted_at: i64::MAX,
+            ..old_attempt
+        };
+        assert_eq!(
+            refresh_attempt_is_throttled(
+                Some(&overflowed_attempt),
+                "octocat",
+                i64::MIN,
+                false,
+                Some("iana:America/Los_Angeles"),
+                -28_800,
+                0
+            ),
+            None
         );
     }
 
