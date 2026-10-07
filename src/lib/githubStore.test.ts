@@ -38,6 +38,27 @@ describe('GitHub background refresh', () => {
     expect(githubState.snapshot).toEqual(snapshot);
   });
 
+  it('retries a failed same-account connection without resaving or clearing cache', async () => {
+    username = 'fixture-user';
+    mocks.invoke.mockImplementation(async command => {
+      if (command === 'get_setting') return username;
+      throw new Error('GitHub is unavailable');
+    });
+    await refreshGithub();
+    expect(githubState.error).not.toBe('');
+
+    mocks.invoke.mockImplementation(async command => command === 'get_setting' ? username : snapshot);
+    const requestsBeforeRetry = mocks.invoke.mock.calls.filter(([command]) => command === 'get_github_commits').length;
+    await setGithubUsername('FIXTURE-USER');
+
+    const requests = mocks.invoke.mock.calls.filter(([command]) => command === 'get_github_commits');
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(requestsBeforeRetry + 1);
+    expect(requests[requests.length - 1]?.[1]).toEqual({ refresh: true });
+    expect(githubState.snapshot).toEqual(snapshot);
+    expect(githubState.error).toBe('');
+  });
+
   it('refreshes automatically across views and on returning to the app', async () => {
     vi.useFakeTimers();
     const doc = Object.assign(new EventTarget(), { hidden: false });
