@@ -9,8 +9,10 @@ export const githubState = $state({
 });
 let generation = 0;
 let inFlight: { generation: number; promise: Promise<void> } | null = null;
+let pendingSaveGeneration: number | null = null;
 
 export function refreshGithub(refresh = false): Promise<void> {
+  if (pendingSaveGeneration !== null) return Promise.resolve();
   const token = generation;
   if (inFlight?.generation === token) return inFlight.promise;
   const request = { generation: token, promise: Promise.resolve() };
@@ -39,16 +41,19 @@ export function refreshGithub(refresh = false): Promise<void> {
 }
 
 export async function setGithubUsername(username: string): Promise<void> {
-  if (username && username.toLowerCase() === githubState.username.toLowerCase()) return;
+  const isSameAccount = username && username.toLowerCase() === githubState.username.toLowerCase();
+  if (pendingSaveGeneration === null && isSameAccount) return;
 
   // Detach previous-account requests immediately. A slow native fetch must not
   // hold up disconnect or a new account's first refresh.
   const saveGeneration = ++generation;
+  pendingSaveGeneration = saveGeneration;
   githubState.loading = false;
   try {
     await saveSetting('github_username', username);
   } catch (error) {
-    if (generation === saveGeneration) {
+    if (generation === saveGeneration && pendingSaveGeneration === saveGeneration) {
+      pendingSaveGeneration = null;
       generation++;
       githubState.loading = false;
       void refreshGithub();
@@ -57,8 +62,9 @@ export async function setGithubUsername(username: string): Promise<void> {
   }
   if (generation !== saveGeneration) return;
 
-  // A poll may have started while the settings IPC was saving. Invalidate it
-  // before publishing the newly saved owner.
+  // Polling is held during persistence so it cannot consume the new account's
+  // first native refresh attempt.
+  pendingSaveGeneration = null;
   generation++;
   githubState.username = username;
   githubState.snapshot = null;
