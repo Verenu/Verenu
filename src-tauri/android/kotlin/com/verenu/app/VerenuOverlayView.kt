@@ -66,6 +66,9 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     interface Listener {
         fun onPillTap()
+        /** The idle pill was held still: start dictating until [onPillHoldEnd]. */
+        fun onPillHoldStart() {}
+        fun onPillHoldEnd() {}
         fun onPillCancel()
         fun onPillRetry()
         /** Start a fresh dictation from the cancelled notice. */
@@ -111,18 +114,25 @@ class VerenuOverlayView @JvmOverloads constructor(
     private var compact = false
     private var coverSize = 0
     private var entered = false
-    private var dragging = false
-    private var suppressClick = false
     private var downRawX = 0f
     private var downRawY = 0f
+    private var lastRawX = 0
+    private var lastRawY = 0
+    private val gesture = VerenuPillGesture()
     private val longPress = Runnable {
-        // Recording too: a dictation can outlive the keyboard, and that is when
-        // the pill needs moving. Tapping still stops it; only a hold drags.
-        if (state == State.IDLE || state == State.RECORDING) {
-            dragging = true
-            suppressClick = true
-            pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            listener?.onPillDragStart()
+        val event = gesture.longPress(state == State.IDLE, state == State.RECORDING)
+        if (event == VerenuPillGesture.Event.NONE) return@Runnable
+        pill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        dispatch(event)
+    }
+
+    private fun dispatch(event: VerenuPillGesture.Event, rawX: Int = 0, rawY: Int = 0) {
+        when (event) {
+            VerenuPillGesture.Event.HOLD_START -> listener?.onPillHoldStart()
+            VerenuPillGesture.Event.HOLD_END -> listener?.onPillHoldEnd()
+            VerenuPillGesture.Event.DRAG_START -> listener?.onPillDragStart()
+            VerenuPillGesture.Event.DRAG_END -> listener?.onPillDragEnd(rawX, rawY)
+            VerenuPillGesture.Event.NONE -> Unit
         }
     }
 
@@ -154,32 +164,38 @@ class VerenuOverlayView @JvmOverloads constructor(
         pill.isFocusable = false
         pill.setOnClickListener {
             // A drag ends with the finger lifting over the pill; that is not a tap.
-            if (suppressClick) suppressClick = false else listener?.onPillTap()
+            if (!gesture.consumeClickSuppression()) listener?.onPillTap()
         }
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         pill.setOnTouchListener { view, event ->
+            val rawX = event.rawX.toInt()
+            val rawY = event.rawY.toInt()
+            lastRawX = rawX
+            lastRawY = rawY
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    suppressClick = false
+                    gesture.down()
                     downRawX = event.rawX
                     downRawY = event.rawY
                     postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                     view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(80).start()
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (dragging) {
-                        listener?.onPillDragMove(event.rawX.toInt(), event.rawY.toInt())
+                    if (gesture.dragging) {
+                        listener?.onPillDragMove(rawX, rawY)
                     } else if (hypot(event.rawX - downRawX, event.rawY - downRawY) > touchSlop) {
                         removeCallbacks(longPress)
+                        // A quick drag from the idle pill moves it (hold = dictate).
+                        val started = gesture.movedPastSlop(state == State.IDLE)
+                        dispatch(started)
+                        if (started != VerenuPillGesture.Event.NONE) listener?.onPillDragMove(rawX, rawY)
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     removeCallbacks(longPress)
                     view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
-                    if (dragging) {
-                        dragging = false
-                        listener?.onPillDragEnd(event.rawX.toInt(), event.rawY.toInt())
-                    }
+                    gesture.up(cancelled = event.actionMasked == MotionEvent.ACTION_CANCEL)
+                        .forEach { dispatch(it, rawX, rawY) }
                 }
             }
             false
@@ -335,6 +351,8 @@ class VerenuOverlayView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(longPress)
+        gesture.up(cancelled = true).forEach { dispatch(it, lastRawX, lastRawY) }
         widthAnimator?.cancel()
         bgAnimator?.cancel()
         wave?.stop()
