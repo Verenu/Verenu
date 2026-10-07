@@ -42,7 +42,10 @@ export function refreshGithub(refresh = false): Promise<void> {
 
 export async function setGithubUsername(username: string): Promise<void> {
   const isSameAccount = username && username.toLowerCase() === githubState.username.toLowerCase();
-  if (pendingSaveGeneration === null && isSameAccount) return;
+  if (pendingSaveGeneration === null && isSameAccount) {
+    if (githubState.error) await refreshGithub(true);
+    return;
+  }
 
   // Detach previous-account requests immediately. A slow native fetch must not
   // hold up disconnect or a new account's first refresh.
