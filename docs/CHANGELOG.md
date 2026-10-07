@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Android: hold the idle pill to dictate and release to stop, in addition to tapping. Dragging the pill still works: start moving right away, or hold the recording pill.
 - Added the Android updater scaffold using the existing automatic checks: ABI-specific APK selection, SHA256-verified private downloads, package/signing-key/version-code checks, and Android installer approval from the app. APK names follow `Verenu_<version>_android_<abi>.apk`. Android offers no update until compatible release assets exist; nightly APK publishing remains deferred.
 
 - Android Settings, Contexts, Insights, dialogs, and setup now use layouts sized for phones and foldable screens.
