@@ -183,6 +183,7 @@ impl SettingsHandle {
     }
 
     /// Commit an asynchronous refresh only if its owner setting is unchanged.
+    #[cfg(test)]
     pub fn save_value_if_owner_matches(
         &self,
         owner_key: &str,
