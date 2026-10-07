@@ -13,6 +13,49 @@ fn unique_tmp_path() -> PathBuf {
 }
 
 #[test]
+fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
+    let path = unique_tmp_path();
+    let handle = SettingsHandle {
+        path: Arc::new(path.clone()),
+        values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
+    };
+    handle
+        .save_value(GITHUB_USERNAME, json!("octocat"))
+        .unwrap();
+    assert!(handle
+        .save_value_if_owner_matches(
+            GITHUB_USERNAME,
+            &json!("octocat"),
+            GITHUB_COMMIT_CACHE,
+            json!({"daily": []})
+        )
+        .unwrap());
+    assert_eq!(
+        read_settings_file(&path).unwrap()[GITHUB_COMMIT_CACHE],
+        json!({"daily": []})
+    );
+    handle
+        .save_values([
+            (GITHUB_USERNAME, json!("")),
+            (GITHUB_COMMIT_CACHE, Value::Null),
+        ])
+        .unwrap();
+    assert!(!handle
+        .save_value_if_owner_matches(
+            GITHUB_USERNAME,
+            &json!("octocat"),
+            GITHUB_COMMIT_CACHE,
+            json!({"daily": [1]})
+        )
+        .unwrap());
+    assert_eq!(
+        read_settings_file(&path).unwrap()[GITHUB_COMMIT_CACHE],
+        Value::Null
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn migrate_legacy_settings_prefers_production_copy() {
     let root = std::env::temp_dir().join(format!(
         "verenu_settings_migrate_{}",
