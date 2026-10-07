@@ -38,7 +38,9 @@ fn save_github_username(
             (store::GITHUB_COMMIT_CACHE, serde_json::Value::Null),
         ])
     } else {
-        settings.save_value(store::GITHUB_USERNAME, value)
+        // GitHub logins are case-insensitive. Keep the stored spelling stable
+        // so an in-flight response still matches its exact settings owner.
+        Ok(())
     }
 }
 
@@ -977,13 +979,62 @@ mod github_setting_tests {
             .unwrap();
 
         save_github_username(&settings, json!("OCTOCAT")).unwrap();
-        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("OCTOCAT")));
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("octocat")));
         assert_eq!(
             settings.get(store::GITHUB_COMMIT_CACHE),
             Some(json!({"counts": [3]}))
         );
 
         save_github_username(&settings, json!("")).unwrap();
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(serde_json::Value::Null)
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn case_only_save_keeps_in_flight_cache_owner_valid_without_existing_cache() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_inflight_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings
+            .save_value(store::GITHUB_USERNAME, json!("octocat"))
+            .unwrap();
+
+        save_github_username(&settings, json!("OCTOCAT")).unwrap();
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("octocat")));
+        assert_eq!(settings.get(store::GITHUB_COMMIT_CACHE), None);
+
+        assert!(settings
+            .save_value_if_owner_matches_when(
+                store::GITHUB_USERNAME,
+                &json!("octocat"),
+                store::GITHUB_COMMIT_CACHE,
+                json!({"counts": [1]}),
+                || true,
+            )
+            .unwrap());
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(json!({"counts": [1]}))
+        );
+
+        save_github_username(&settings, json!("other-account")).unwrap();
+        assert!(!settings
+            .save_value_if_owner_matches_when(
+                store::GITHUB_USERNAME,
+                &json!("octocat"),
+                store::GITHUB_COMMIT_CACHE,
+                json!({"counts": [2]}),
+                || true,
+            )
+            .unwrap());
         assert_eq!(
             settings.get(store::GITHUB_COMMIT_CACHE),
             Some(serde_json::Value::Null)
