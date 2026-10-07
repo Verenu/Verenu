@@ -7,8 +7,9 @@ vi.mock('./settings', () => ({ saveSetting: mocks.save }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe('GitHub background refresh', () => {
@@ -116,5 +117,62 @@ describe('GitHub background refresh', () => {
 
     expect(githubState.username).toBe('new-account');
     expect(githubState.snapshot).toEqual(newSnapshot);
+  });
+
+  it('coalesces polls until a username save is acknowledged, then fetches once', async () => {
+    username = 'fixture-user';
+    githubState.username = 'fixture-user';
+    const saveAcknowledgement = deferred<void>();
+    const newSnapshot = { ...snapshot, username: 'new-account', fetched_at: 2 };
+    const fetchedOwners: string[] = [];
+    mocks.save.mockImplementation(async (_key, value) => {
+      username = value;
+      await saveAcknowledgement.promise;
+    });
+    mocks.invoke.mockImplementation(async command => {
+      if (command === 'get_setting') return username;
+      fetchedOwners.push(username);
+      return newSnapshot;
+    });
+
+    const saving = setGithubUsername('new-account');
+    await vi.waitFor(() => expect(username).toBe('new-account'));
+    await refreshGithub();
+    expect(fetchedOwners).toEqual([]);
+
+    saveAcknowledgement.resolve(undefined);
+    await saving;
+    expect(fetchedOwners).toEqual(['new-account']);
+    expect(githubState.snapshot).toEqual(newSnapshot);
+    expect(githubState.error).toBe('');
+    expect(githubState.loading).toBe(false);
+  });
+
+  it('releases the poll guard and reconciles after a username save fails', async () => {
+    username = 'fixture-user';
+    githubState.username = 'fixture-user';
+    const saveAcknowledgement = deferred<void>();
+    const fetchedOwners: string[] = [];
+    mocks.save.mockImplementation(async () => {
+      await saveAcknowledgement.promise;
+      throw new Error('Could not save username');
+    });
+    mocks.invoke.mockImplementation(async command => {
+      if (command === 'get_setting') return username;
+      fetchedOwners.push(username);
+      return snapshot;
+    });
+
+    const saving = setGithubUsername('new-account');
+    const rejected = expect(saving).rejects.toThrow('Could not save username');
+    await refreshGithub();
+    expect(fetchedOwners).toEqual([]);
+
+    saveAcknowledgement.resolve(undefined);
+    await rejected;
+    await vi.waitFor(() => expect(fetchedOwners).toEqual(['fixture-user']));
+    expect(githubState.username).toBe('fixture-user');
+    expect(githubState.snapshot).toEqual(snapshot);
+    expect(githubState.loading).toBe(false);
   });
 });
