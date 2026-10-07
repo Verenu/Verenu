@@ -16,6 +16,10 @@ struct RefreshAttempt {
 }
 
 static REFRESH_GENERATION: AtomicU64 = AtomicU64::new(0);
+static REFRESH_GENERATION_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| {
+        tokio::sync::watch::channel(REFRESH_GENERATION.load(Ordering::Acquire)).0
+    });
 
 fn advance_refresh_generation(generation: &AtomicU64) {
     generation.fetch_add(1, Ordering::AcqRel);
@@ -23,6 +27,32 @@ fn advance_refresh_generation(generation: &AtomicU64) {
 
 pub(crate) fn invalidate_github_refresh_owner() {
     advance_refresh_generation(&REFRESH_GENERATION);
+    REFRESH_GENERATION_CHANGES.send_replace(REFRESH_GENERATION.load(Ordering::Acquire));
+}
+
+async fn cancel_on_generation_change<Fut, T>(
+    expected_generation: u64,
+    mut changes: tokio::sync::watch::Receiver<u64>,
+    fetch: Fut,
+) -> Result<T, String>
+where
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let changed = async move {
+        loop {
+            if *changes.borrow_and_update() != expected_generation {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = changed => Err("GitHub refresh was superseded.".to_owned()),
+        result = fetch => result,
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -356,6 +386,7 @@ pub async fn get_github_commits(
             return Ok(Some(cache.snapshot.clone()));
         }
     }
+    let refresh_cancellation = REFRESH_GENERATION_CHANGES.subscribe();
     let timezone_before_fetch = current_timezone_id();
     let result = run_refresh_attempt(
         &REFRESH_ATTEMPT,
@@ -367,7 +398,7 @@ pub async fn get_github_commits(
             generation: refresh_generation,
         },
         manual_refresh,
-        async {
+        cancel_on_generation_change(refresh_generation, refresh_cancellation, async {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(60),
                 crate::api::github::fetch_commits(&username),
@@ -377,7 +408,7 @@ pub async fn get_github_commits(
                 Ok(result) => result,
                 Err(_) => Err("GitHub took too long to respond. Try again later.".to_owned()),
             }
-        },
+        }),
     )
     .await;
     match result {
@@ -431,6 +462,16 @@ pub async fn get_github_commits(
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    struct FetchDropped(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for FetchDropped {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
 
     fn cache(username: &str, offset: i32, timezone_id: Option<&str>) -> CachedCommitSnapshot {
         CachedCommitSnapshot {
@@ -588,13 +629,18 @@ mod cache_tests {
     }
 
     #[tokio::test]
-    async fn new_owner_can_refresh_while_an_obsolete_fetch_is_pending() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+    async fn owner_change_cancels_old_pages_and_admits_replacement_immediately() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
 
         let attempts = Arc::new(tokio::sync::Mutex::new(None));
         let old_attempts = attempts.clone();
+        let old_pages = Arc::new(AtomicUsize::new(0));
+        let old_pages_for_fetch = old_pages.clone();
         let (started, wait_until_started) = tokio::sync::oneshot::channel();
+        let (dropped, wait_until_dropped) = tokio::sync::oneshot::channel();
+        let (allow_next_page, wait_for_next_page) = tokio::sync::oneshot::channel::<()>();
+        let (changed_tx, changed_rx) = tokio::sync::watch::channel(0);
         let old_request = tokio::spawn(async move {
             run_refresh_attempt(
                 &old_attempts,
@@ -606,10 +652,14 @@ mod cache_tests {
                     generation: 0,
                 },
                 false,
-                async move {
+                cancel_on_generation_change(0, changed_rx, async move {
+                    let _dropped = FetchDropped(Some(dropped));
+                    old_pages_for_fetch.fetch_add(1, Ordering::Relaxed);
                     started.send(()).unwrap();
-                    std::future::pending::<Result<CommitSnapshot, String>>().await
-                },
+                    let _ = wait_for_next_page.await;
+                    old_pages_for_fetch.fetch_add(1, Ordering::Relaxed);
+                    Ok(snapshot("octocat", -28_800))
+                }),
             )
             .await
         });
@@ -635,6 +685,20 @@ mod cache_tests {
         assert!(duplicate.is_err());
         assert!(!duplicate_fetch_started.load(Ordering::Relaxed));
 
+        changed_tx.send_replace(1);
+        let old_result = tokio::time::timeout(std::time::Duration::from_secs(1), old_request)
+            .await
+            .expect("account change cancels the old request promptly")
+            .expect("old request task completes");
+        assert!(old_result.is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait_until_dropped)
+            .await
+            .expect("cancellation drops the pending page future")
+            .expect("drop notification is sent");
+        assert_eq!(old_pages.load(Ordering::Relaxed), 1);
+        drop(allow_next_page);
+
+        let replacement_cancellation = changed_tx.subscribe();
         let new_snapshot = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             run_refresh_attempt(
@@ -647,16 +711,32 @@ mod cache_tests {
                     generation: 1,
                 },
                 false,
-                async { Ok(snapshot("new-account", -28_800)) },
+                cancel_on_generation_change(1, replacement_cancellation, async {
+                    Ok(snapshot("new-account", -28_800))
+                }),
             ),
         )
         .await
         .expect("new account admission should not wait for the old fetch")
         .unwrap();
         assert_eq!(new_snapshot.username, "new-account");
+    }
 
-        old_request.abort();
-        let _ = old_request.await;
+    #[tokio::test]
+    async fn generation_change_before_subscription_cancels_before_fetch_starts() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (changed_tx, changed_rx) = tokio::sync::watch::channel(0);
+        changed_tx.send_replace(1);
+        let fetch_started = AtomicBool::new(false);
+        let result = cancel_on_generation_change(0, changed_rx, async {
+            fetch_started.store(true, Ordering::Relaxed);
+            Ok(snapshot("octocat", -28_800))
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!fetch_started.load(Ordering::Relaxed));
     }
 
     #[test]
