@@ -16,6 +16,34 @@ pub use prompts::*;
 
 const CLEANUP_PROMPT_OVERRIDE_CHAR_LIMIT: usize = 20_000;
 
+fn github_identity_changed(current: Option<&str>, next: &str) -> bool {
+    current.is_none_or(|current| !current.eq_ignore_ascii_case(next))
+}
+
+fn save_github_username(
+    settings: &store::SettingsHandle,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let current = settings
+        .get(store::GITHUB_USERNAME)
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let changed =
+        github_identity_changed(current.as_deref(), value.as_str().unwrap_or_default());
+    if changed {
+        // Invalidate in-flight responses and the prior account's cooldown
+        // before publishing the new owner in settings.
+        crate::commands::github::invalidate_github_refresh_owner();
+        settings.save_values([
+            (store::GITHUB_USERNAME, value),
+            (store::GITHUB_COMMIT_CACHE, serde_json::Value::Null),
+        ])
+    } else {
+        // GitHub logins are case-insensitive. Keep the stored spelling stable
+        // so an in-flight response still matches its exact settings owner.
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum SettingKind {
     Provider,
@@ -25,6 +53,7 @@ enum SettingKind {
     DefaultTone,
     CleanupIntensity,
     HistoryRetention,
+    GithubUsername,
     LocalModelMemoryPolicy,
     ModelSelectionMode,
     ModelMap,
@@ -123,6 +152,7 @@ setting_specs! {
     ANALYTICS_ENABLED: Bool = true,
     VERENU_SERVICE_CHECKS_ENABLED: Bool = true,
     HISTORY_RETENTION: HistoryRetention = true,
+    GITHUB_USERNAME: GithubUsername = false,
     LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
     AUTOSTART_ENABLED: Bool = true,
     CAPS_LOCK_UPPERCASE: Bool = true,
@@ -295,6 +325,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::HistoryRetention => value
             .as_str()
             .is_some_and(store::is_supported_history_retention),
+        SettingKind::GithubUsername => value
+            .as_str()
+            .is_some_and(|value| value.is_empty() || crate::api::github::valid_username(value)),
         SettingKind::LocalModelMemoryPolicy => value
             .as_str()
             .is_some_and(store::is_supported_local_model_memory_policy),
@@ -646,7 +679,9 @@ pub async fn save_setting(
                 store::STORAGE_FULL_ERROR
             ));
         }
-        if key_clone == store::CONTEXTUAL_FORMATTING {
+        if key_clone == store::GITHUB_USERNAME {
+            save_github_username(&settings, value)
+        } else if key_clone == store::CONTEXTUAL_FORMATTING {
             settings.save_values([
                 (store::CONTEXTUAL_FORMATTING, value.clone()),
                 (store::CONTEXTUAL_CAPS, value.clone()),
@@ -785,6 +820,7 @@ pub struct AllSettings {
     pub caps_lock_uppercase_enabled: Option<bool>,
     pub mic_gain: Option<f64>,
     pub history_retention: Option<String>,
+    pub github_username: Option<String>,
     pub local_model_memory_policy: Option<String>,
     pub microphone_device: Option<String>,
     pub update_dismissed_version: Option<String>,
@@ -872,6 +908,7 @@ all_settings! {
     caps_lock_uppercase_enabled = bool_val(store::CAPS_LOCK_UPPERCASE),
     mic_gain = f64_val(store::MIC_GAIN),
     history_retention = str_val(store::HISTORY_RETENTION),
+    github_username = str_val(store::GITHUB_USERNAME),
     local_model_memory_policy = str_val(store::LOCAL_MODEL_MEMORY_POLICY),
     microphone_device = str_val(store::MICROPHONE_DEVICE),
     update_dismissed_version = str_val(store::UPDATE_DISMISSED_VERSION),
@@ -904,6 +941,128 @@ pub struct CleanupCacheStatus {
 #[tauri::command]
 pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
     Ok(read_all_settings(&store::settings_snapshot(&app)?))
+}
+
+#[cfg(test)]
+mod github_setting_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn github_username_is_readable_but_not_exported_or_synced() {
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("octocat")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("a repo:private")).is_err());
+        assert!(validate_setting(store::GITHUB_COMMIT_CACHE, &json!({})).is_err());
+        assert!(is_readable_setting_key(store::GITHUB_USERNAME));
+        assert!(!is_exportable_setting_key(store::GITHUB_USERNAME));
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::GITHUB_USERNAME));
+        assert!(!is_readable_setting_key(store::GITHUB_COMMIT_CACHE));
+        assert!(!is_exportable_setting_key(store::GITHUB_COMMIT_CACHE));
+    }
+
+    #[test]
+    fn same_account_save_preserves_cache_and_disconnect_clears_it() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_username_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings
+            .save_values([
+                (store::GITHUB_USERNAME, json!("octocat")),
+                (store::GITHUB_COMMIT_CACHE, json!({"counts": [3]})),
+            ])
+            .unwrap();
+
+        save_github_username(&settings, json!("OCTOCAT")).unwrap();
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("octocat")));
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(json!({"counts": [3]}))
+        );
+
+        save_github_username(&settings, json!("")).unwrap();
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(serde_json::Value::Null)
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn explicit_disconnect_materializes_empty_username_when_none_was_saved() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_empty_username_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        assert_eq!(settings.get(store::GITHUB_USERNAME), None);
+
+        save_github_username(&settings, json!("")).unwrap();
+
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("")));
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(serde_json::Value::Null)
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn case_only_save_keeps_in_flight_cache_owner_valid_without_existing_cache() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_github_inflight_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings
+            .save_value(store::GITHUB_USERNAME, json!("octocat"))
+            .unwrap();
+
+        save_github_username(&settings, json!("OCTOCAT")).unwrap();
+        assert_eq!(settings.get(store::GITHUB_USERNAME), Some(json!("octocat")));
+        assert_eq!(settings.get(store::GITHUB_COMMIT_CACHE), None);
+
+        assert!(settings
+            .save_value_if_owner_matches_when(
+                store::GITHUB_USERNAME,
+                &json!("octocat"),
+                store::GITHUB_COMMIT_CACHE,
+                json!({"counts": [1]}),
+                || true,
+            )
+            .unwrap());
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(json!({"counts": [1]}))
+        );
+
+        save_github_username(&settings, json!("other-account")).unwrap();
+        assert!(!settings
+            .save_value_if_owner_matches_when(
+                store::GITHUB_USERNAME,
+                &json!("octocat"),
+                store::GITHUB_COMMIT_CACHE,
+                json!({"counts": [2]}),
+                || true,
+            )
+            .unwrap());
+        assert_eq!(
+            settings.get(store::GITHUB_COMMIT_CACHE),
+            Some(serde_json::Value::Null)
+        );
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]

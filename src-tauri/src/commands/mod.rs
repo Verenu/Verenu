@@ -23,6 +23,7 @@ mod android;
 mod contexts;
 mod sub_apps;
 mod history;
+mod github;
 mod library;
 mod local_llm;
 mod local_stt;
@@ -89,6 +90,7 @@ pub use android::*;
 pub use contexts::*;
 pub use sub_apps::*;
 pub use history::*;
+pub use github::*;
 pub use library::*;
 pub use local_llm::*;
 pub use local_stt::*;
@@ -149,6 +151,16 @@ mod tests {
     fn validate_setting_rejects_unknown_keys() {
         let err = validate_setting("not_a_setting", &json!(true)).expect_err("unknown key");
         assert!(err.contains("Invalid or unsupported setting"));
+    }
+
+    #[test]
+    fn github_settings_validate_username_and_keep_cache_private() {
+        use crate::data::store;
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("octocat")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("")).is_ok());
+        assert!(validate_setting(store::GITHUB_USERNAME, &json!("a repo:private")).is_err());
+        assert!(validate_setting(store::GITHUB_COMMIT_CACHE, &json!({})).is_err());
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::GITHUB_USERNAME));
     }
 
     #[test]
