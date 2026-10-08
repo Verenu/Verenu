@@ -34,6 +34,21 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
     await page.reload();
 
     const notice = page.locator('.readiness-notice');
+    await expect(page.getByRole('heading', { name: /^Hold .* to dictate/ })).toBeVisible();
+    await expect(notice).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`home-unassigned-context-${compactViewport ? 'phone' : 'desktop'}.png`) });
+    await session.invoke('assign_context_website', { contextId: context.id, domain: 'readiness.example' });
+    await page.evaluate(() => window.dispatchEvent(new Event('verenu:context-saved')));
+    await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');
+    await session.invoke('remove_context_website', { contextId: context.id, domain: 'readiness.example' });
+    await page.evaluate(async () => {
+      const { emit } = await import('/src/lib/tauri.ts');
+      await emit('verenu:sync-data-changed', { tables: ['context_website_targets'] });
+    });
+    await expect(notice).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /^Hold .* to dictate/ })).toBeVisible();
+    await session.invoke('assign_context_website', { contextId: context.id, domain: 'readiness.example' });
+    await page.evaluate(() => window.dispatchEvent(new Event('verenu:context-saved')));
     await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');
     await page.screenshot({ path: testInfo.outputPath(`home-cleanup-override-before-delete-${compactViewport ? 'phone' : 'desktop'}.png`) });
 
@@ -52,6 +67,7 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
     await expect.poll(async () => (await session.invoke('get_contexts')).some(row => row.id === context.id)).toBe(false);
     await expect(notice).toHaveCount(0);
     if (compactViewport && originalViewport) await page.setViewportSize(originalViewport);
+    await expect(page.getByRole('heading', { name: /^Hold .* to dictate/ })).toBeVisible();
     await expect(notice).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath(`home-cleanup-override-after-delete-${compactViewport ? 'phone' : 'desktop'}.png`) });
   } finally {

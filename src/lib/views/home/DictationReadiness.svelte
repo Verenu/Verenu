@@ -5,7 +5,7 @@
   import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
   import { openSetupSettings } from '../../settingsNavigation';
   import type { AppMapping } from '../../appMappings';
-  import type { Context } from '../../stores';
+  import type { Context, ContextTarget, ContextWebsiteTarget, ContextSubApp } from '../../stores';
   import { listenForHomeReadinessSyncChanges } from './readinessSync';
 
   let { onchange }: { onchange: (incomplete: boolean) => void } = $props();
@@ -28,11 +28,14 @@
     try {
       const setting = <T,>(key: string) => invoke<T | null>('get_setting', { key });
       const [
-        contexts, appMappings, speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
+        contexts, targets, websites, subApps, appMappings, speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
         speechFallbacks, cleanupFallbacks, enabled, intensity, dualTranscriptionEnabled, keys, customProviders,
         speechModels, cleanupModels, engine,
       ] = await Promise.all([
-        invoke<Pick<Context, 'cleanup_intensity'>[]>('get_contexts'),
+        invoke<Pick<Context, 'id' | 'is_everywhere' | 'cleanup_intensity'>[]>('get_contexts'),
+        invoke<ContextTarget[]>('get_context_targets', { contextId: null }),
+        invoke<ContextWebsiteTarget[]>('get_context_websites', { contextId: null }),
+        invoke<ContextSubApp[]>('get_sub_apps'),
         setting<AppMapping[]>('app_mappings'),
         setting<string>('transcription_default_model'),
         setting<string>('cleanup_default_model'),
@@ -59,7 +62,7 @@
         cleanupFallbacks: cleanupFallbacks ?? [],
         cleanupEnabled: enabled ?? true,
         cleanupIntensity: intensity,
-        cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? []),
+        cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? [], [...(targets ?? []), ...(websites ?? []), ...(subApps ?? [])]),
         dualTranscriptionEnabled: dualTranscriptionEnabled ?? false,
         isOnline,
         keys,
