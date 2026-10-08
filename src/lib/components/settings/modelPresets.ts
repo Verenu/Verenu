@@ -87,6 +87,10 @@ export type PresetOptions = {
   localModels?: LocalSttModelInfo[];
   installedLocal?: { transcription: string[]; cleanup: string[] };
   localCleanupReady?: boolean;
+  /** Offer a speech-only local choice for the setup wizard. */
+  includeTranscriptionOnly?: boolean;
+  /** Keep the wizard's local provider choice on local models even when cloud keys exist. */
+  localOnly?: boolean;
   cache?: ModelCatalogCache;
   performance?: ModelPerformance[];
   customProviders?: CustomProvider[];
@@ -344,6 +348,12 @@ function cleanupModelFor(provider: UiProviderId | undefined, tier: 'standard' | 
 // ── Public: build the preset list ─────────────────────────────────────────
 
 export function buildPresets(status: KeyStatus, hardware: Hardware, localSupported: boolean, options: PresetOptions = {}): Preset[] {
+  if (options.localOnly) {
+    if (!localSupported) return [addKeyPreset()];
+    const local = buildLocalOnlyPresets(hardware, options);
+    if (!options.includeTranscriptionOnly || local.some(preset => preset.id === 'local-transcription-only')) return local;
+    return [transcriptionOnlyPreset(hardware), ...local];
+  }
   if (hasCloudKey(status) || options.customProviders?.some(provider => provider.supports_transcription && (!provider.requires_key || status[provider.id]))) {
     return [
       ...buildCloudPresets(status, localSupported ? options : { ...options, installedLocal: undefined }),

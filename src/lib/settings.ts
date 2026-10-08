@@ -190,8 +190,21 @@ export function booleanSettingHandler(
   };
 }
 
+const readinessSettingKeys = new Set<WritableSettingKey>([
+  'transcription_default_model', 'cleanup_default_model',
+  'transcription_provider', 'cleanup_provider',
+  'transcription_model', 'cleanup_model',
+  'transcription_fallback_models', 'cleanup_fallback_models',
+  'cleanup_enabled', 'cleanup_intensity', 'custom_providers',
+]);
+
 export function saveSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
-  return invoke('save_setting', { key, value }).catch((error) => {
+  return invoke('save_setting', { key, value }).then((result) => {
+    if (typeof window !== 'undefined' && readinessSettingKeys.has(key)) {
+      window.dispatchEvent(new CustomEvent('verenu:setting-saved', { detail: { key } }));
+    }
+    return result;
+  }).catch((error) => {
     const classified = classifyIpcError(error);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(SETTINGS_SAVE_ERROR_EVENT, {

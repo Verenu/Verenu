@@ -3,9 +3,12 @@
   import { isAndroid, isMac, isLinux } from '../../platform';
   import { hotkeyLabels } from '../../hotkey.svelte';
   import LogoMark from '../../components/layout/LogoMark.svelte';
+  import ShortcutRecovery from '../../components/ShortcutRecovery.svelte';
+  import { desktopShortcut } from '../../shortcutStatus.svelte';
 
   const platformTagline = isAndroid ? 'Android' : isMac ? 'macOS' : isLinux ? 'Linux' : 'Windows';
   const keyLabels = $derived(hotkeyLabels());
+  const shortcutUnavailable = $derived(!isAndroid && desktopShortcut('dictation')?.active === null);
 
   let introReady = $state(false);
   onMount(() => {
@@ -35,10 +38,12 @@
         <div>
           {#if isAndroid}
             <strong>Tap the Verenu pill</strong>
+          {:else if shortcutUnavailable}
+            <strong>Configure a recording shortcut</strong>
           {:else}
             <strong>Hold {#each keyLabels as k, i}{#if i > 0}<span class="how-plus">+</span>{/if}<kbd>{k}</kbd>{/each}</strong>
           {/if}
-          <p>{isAndroid ? 'The pill appears above your keyboard when you focus a text field.' : 'Start recording. A floating pill shows your audio level.'}</p>
+          <p>{isAndroid ? 'The pill appears above your keyboard when you focus a text field.' : shortcutUnavailable ? 'Use the shortcut setup action below before recording.' : 'Start recording. A floating pill shows your audio level.'}</p>
         </div>
       </div>
       <div class="how-step">
@@ -58,7 +63,8 @@
     </div>
   </div>
 
-  <p class="intro-note" class:ready={introReady}>Takes about 2 minutes · You can change anything later</p>
+  <ShortcutRecovery />
+  {#if !shortcutUnavailable}<p class="intro-note" class:ready={introReady}>Takes about 2 minutes · You can change anything later</p>{/if}
 </div>
 
 <style>
