@@ -17,9 +17,12 @@
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
   import { listenForSyncCompletion } from '../syncStore.svelte';
   import { desktopShortcut, type ShortcutStatus } from '../shortcutStatus.svelte';
+  import ShortcutRecovery from '../components/ShortcutRecovery.svelte';
+  import DictationReadiness from './home/DictationReadiness.svelte';
   import type { InstalledApp } from '../appMappings';
 
   let hotkey = defaultHotkey;
+  let setupIncomplete = true;
   let dictationShortcut: ShortcutStatus | undefined;
   $: keyLabels = hotkey.filter(Boolean).map(formatKeyLabel);
   $: shortcutUnavailable = dictationShortcut?.active === null;
@@ -359,11 +362,10 @@
       <h1 class="page-h">Welcome back</h1>
       <p class="page-sub">{greeting}</p>
 
-      <HomeHero {keyLabels} {shortcutUnavailable} android={isAndroid} />
+      <HomeHero {keyLabels} {setupIncomplete} {shortcutUnavailable} android={isAndroid} />
 
-      {#if !isAndroid && shortcutUnavailable && dictationShortcut?.note}
-        <GlobalMessageBanner message={dictationShortcut.note} />
-      {/if}
+      <ShortcutRecovery />
+      <DictationReadiness onchange={(incomplete) => { setupIncomplete = incomplete; }} />
 
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
@@ -398,6 +400,7 @@
         {resumingCancelled}
         {copiedId}
         {keyLabels}
+        {setupIncomplete}
         {shortcutUnavailable}
         android={isAndroid}
         {search}
