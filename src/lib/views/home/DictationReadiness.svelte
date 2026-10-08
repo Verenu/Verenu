@@ -2,8 +2,10 @@
   import { onMount } from 'svelte';
   import { invoke, listen, type LocalSttModelInfo, type LocalLlmModelInfo, type LocalLlmRuntimeInfo } from '../../tauri';
   import { appStore } from '../../stores';
-  import { dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
+  import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
   import { openSetupSettings } from '../../settingsNavigation';
+  import type { AppMapping } from '../../appMappings';
+  import type { Context } from '../../stores';
 
   let { onchange }: { onchange: (incomplete: boolean) => void } = $props();
   let issues = $state<ReadinessIssue[]>([]);
@@ -25,10 +27,12 @@
     try {
       const setting = <T,>(key: string) => invoke<T | null>('get_setting', { key });
       const [
-        speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
+        contexts, appMappings, speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
         speechFallbacks, cleanupFallbacks, enabled, intensity, dualTranscriptionEnabled, keys, customProviders,
         speechModels, cleanupModels, engine,
       ] = await Promise.all([
+        invoke<Pick<Context, 'cleanup_intensity'>[]>('get_contexts'),
+        setting<AppMapping[]>('app_mappings'),
         setting<string>('transcription_default_model'),
         setting<string>('cleanup_default_model'),
         setting<string>('transcription_provider'),
@@ -54,6 +58,7 @@
         cleanupFallbacks: cleanupFallbacks ?? [],
         cleanupEnabled: enabled ?? true,
         cleanupIntensity: intensity,
+        cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? []),
         dualTranscriptionEnabled: dualTranscriptionEnabled ?? false,
         keys,
         customProviders: customProviders ?? [],
@@ -84,7 +89,7 @@
   onMount(() => {
     mounted = true;
     void refresh();
-    const browserEvents = ['focus', 'verenu:api-key-saved', 'verenu:api-key-deleted', 'verenu:setting-saved'];
+    const browserEvents = ['focus', 'verenu:api-key-saved', 'verenu:api-key-deleted', 'verenu:setting-saved', 'verenu:context-saved'];
     const update = () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {

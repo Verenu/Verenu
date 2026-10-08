@@ -29,6 +29,7 @@ export type ReadinessInput = {
   cleanupFallbacks?: string[];
   cleanupEnabled: boolean;
   cleanupIntensity?: string | null;
+  cleanupIntensityOverrideMayBeUsed?: boolean;
   dualTranscriptionEnabled?: boolean;
   keys: Record<string, boolean>;
   speechModels: { id: string; is_downloaded: boolean }[];
@@ -86,9 +87,21 @@ export function readinessModel(
   return modelId(source as typeof groqDefault.provider, groqDefault.model);
 }
 
-export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'dualTranscriptionEnabled'>): boolean {
+export function hasCleanupIntensityOverride(
+  contexts: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
+  appMappings: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
+): boolean {
+  return [...contexts, ...appMappings].some(({ cleanup_intensity }) => {
+    const intensity = cleanup_intensity?.trim().toLowerCase();
+    return Boolean(intensity) && intensity !== 'none';
+  });
+}
+
+export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed' | 'dualTranscriptionEnabled'>): boolean {
   const intensity = input.cleanupIntensity ?? 'medium';
-  return input.cleanupEnabled && (intensity !== 'none' || input.dualTranscriptionEnabled === true);
+  return input.cleanupEnabled && (
+    intensity !== 'none' || input.cleanupIntensityOverrideMayBeUsed === true || input.dualTranscriptionEnabled === true
+  );
 }
 
 type CandidateResult = { ready: true } | { ready: false; message: string; section: 'keys' | 'models' };
@@ -209,15 +222,19 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
 
     const label = task === 'transcription' ? 'Speech recognition' : 'Optional cleanup';
     const problems = [...new Set(results.filter((result): result is Extract<CandidateResult, { ready: false }> => !result.ready).map(result => result.message))];
-    const section = results.some(result => !result.ready && result.section === 'keys') ? 'keys' : 'models';
+    const section = results.some(result => result.ready === false && result.section === 'keys') ? 'keys' : 'models';
     const fusionMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
       input.cleanupIntensity === 'none' && input.dualTranscriptionEnabled === true;
+    const overrideMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
+      input.cleanupIntensity === 'none' && input.cleanupIntensityOverrideMayBeUsed === true;
     const detail = problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' ');
     issues.push({
       task,
-      message: fusionMayNeedCleanup
-        ? 'Transcript comparison may use cleanup when both speech results are available. ' + detail
-        : detail,
+      message: overrideMayNeedCleanup
+        ? 'A Context or app mapping may use cleanup. ' + detail
+        : fusionMayNeedCleanup
+          ? 'Transcript comparison may use cleanup when both speech results are available. ' + detail
+          : detail,
       section,
       action: section === 'keys' ? 'Add API key' : 'Choose models',
     });
