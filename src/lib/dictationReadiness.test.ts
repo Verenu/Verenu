@@ -58,6 +58,24 @@ describe('dictation configuration readiness', () => {
     })).toEqual([]);
   });
 
+  it('does not classify a ready custom endpoint as cloud speech for offline warnings', () => {
+    const custom = {
+      id: 'custom:33333333-3333-4333-8333-333333333333',
+      name: 'Local endpoint',
+      requires_key: false,
+      supports_transcription: true,
+      supports_cleanup: false,
+    };
+    const input = {
+      ...cloud,
+      transcriptionModel: custom.id + '/speech-model',
+      cleanupEnabled: false,
+      customProviders: [custom],
+    };
+    expect(dictationReadiness(input)).toEqual([]);
+    expect(hasCloudSpeechCandidate(input)).toBe(false);
+  });
+
   it('requires a custom provider key only when configured and reports unsupported tasks', () => {
     const custom = {
       id: 'custom:22222222-2222-4222-8222-222222222222',

@@ -171,8 +171,26 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await assertSafe(setup);
     await setup.close();
 
+    const setupLocalWithCloudKey = await open({
+      setup_complete: false,
+      force_setup_on_launch: true,
+      __provider_connected: { groq: true },
+    }, { 'parakeet-v3': { downloaded: true } }, { 'qwen2.5-3b-instruct': { downloaded: true } }, true);
+    await expect(setupLocalWithCloudKey.getByRole('button', { name: 'Get Started' })).toBeVisible();
+    await setupLocalWithCloudKey.getByRole('button', { name: 'Get Started' }).click();
+    await setupLocalWithCloudKey.getByRole('button', { name: 'Next', exact: true }).click();
+    await setupLocalWithCloudKey.locator('.provider-card:has-text("On this device")').click();
+    await setupLocalWithCloudKey.getByRole('button', { name: 'Next', exact: true }).click();
+    await setupLocalWithCloudKey.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(setupLocalWithCloudKey.getByRole('button', { name: 'Use local Balanced', exact: true }))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect(setupLocalWithCloudKey.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
+    await screenshot(setupLocalWithCloudKey, 'local-balanced-preselection');
+    await assertSafe(setupLocalWithCloudKey);
+    await setupLocalWithCloudKey.close();
+
     assert.deepEqual(errors, []);
-    console.log('PASS - home readiness, configured fallback readiness, shortcut recovery, wizard state preservation, and local transcription-only choice; no downloads or provider calls');
+    console.log('PASS - home readiness, configured fallback readiness, shortcut recovery, wizard state preservation, local-only preselection, and transcription-only choice; no downloads or provider calls');
   } finally {
     await browser.close();
   }
