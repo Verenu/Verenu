@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
+import { cleanupMayBeUsed, dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
 
 const cloud: ReadinessInput = {
   transcriptionModel: 'groq/whisper-large-v3-turbo',
@@ -15,13 +15,48 @@ const downloadedSpeech = [{ id: 'parakeet-v3', is_downloaded: true }];
 const downloadedCleanup = [{ id: 'qwen2.5-3b-instruct', is_downloaded: true }];
 
 describe('dictation configuration readiness', () => {
-  it('resolves qualified, legacy, and current cloud provider defaults', () => {
-    expect(readinessModel('transcription', null, null, 'local')).toBe('local/parakeet-v3');
-    expect(readinessModel('cleanup', null, 'qwen/qwen3.8-27b', 'groq')).toBe('groq/qwen/qwen3.8-27b');
-    expect(readinessModel('transcription', 'openai/gpt-4o-transcribe', null, 'groq')).toBe('openai/gpt-4o-transcribe');
-    expect(readinessModel('transcription', null, 'local/parakeet-v3', 'groq')).toBe('local/parakeet-v3');
-    expect(readinessModel('transcription', null, null, 'openrouter')).toBe('openrouter/openai/whisper-large-v3');
-    expect(readinessModel('cleanup', null, null, 'xai')).toBe('xai/grok-4-fast-non-reasoning');
+  it('resolves backend provider defaults when both model settings are invalid', () => {
+    const backendDefaults = [
+      ['transcription', 'groq', 'groq/whisper-large-v3-turbo'],
+      ['transcription', 'openai', 'openai/gpt-4o-transcribe'],
+      ['transcription', 'google', 'google/gemini-3.5-transcribe'],
+      ['transcription', 'assemblyai', 'assemblyai/universal-3-5-pro'],
+      ['transcription', 'openrouter', 'openrouter/openai/whisper-large-v3'],
+      ['transcription', 'xai', 'xai/grok-voice-transcribe-2.0'],
+      ['transcription', 'local', 'local/parakeet-v3'],
+      ['cleanup', 'groq', 'groq/qwen/qwen3.8-27b'],
+      ['cleanup', 'openai', 'openai/gpt-4o-mini'],
+      ['cleanup', 'google', 'google/gemini-3.5-flash-lite'],
+      ['cleanup', 'assemblyai', 'assemblyai/qwen/qwen3.8-27b'],
+      ['cleanup', 'openrouter', 'openrouter/openai/gpt-4o-mini'],
+      ['cleanup', 'xai', 'xai/grok-4-fast-non-reasoning'],
+      ['cleanup', 'local', 'local/gemma-4-e2b'],
+    ] as const;
+    for (const [task, provider, expected] of backendDefaults) {
+      expect(readinessModel(task, null, 'invalid/model', provider)).toBe(expected);
+    }
+  });
+
+  it('uses a valid new model first, then a valid legacy model without prefixing malformed IDs', () => {
+    expect(readinessModel('transcription', ' OpenAI/gpt-4o-transcribe ', 'groq/whisper-large-v3-turbo', 'groq'))
+      .toBe('openai/gpt-4o-transcribe');
+    expect(readinessModel('transcription', 'not-a-model-id', 'Groq/whisper-large-v3-turbo', 'openai'))
+      .toBe('groq/whisper-large-v3-turbo');
+    expect(readinessModel('transcription', 'not-a-model-id', 'whisper-large-v3-turbo', 'openai'))
+      .toBe('openai/gpt-4o-transcribe');
+    expect(readinessModel('transcription', 'not-a-model-id', '  ', 'openai'))
+      .toBe('openai/gpt-4o-transcribe');
+    expect(readinessModel('cleanup', 'not-a-model-id', null, 'openai'))
+      .toBe('groq/qwen/qwen3.8-27b');
+
+    const invalidNewWithGroqLegacy = dictationReadiness({
+      ...cloud,
+      transcriptionModel: readinessModel('transcription', 'not-a-model-id', 'groq/whisper-large-v3-turbo', 'openai'),
+      cleanupEnabled: false,
+      keys: { openai: true },
+    }).find(issue => issue.task === 'transcription');
+    expect(invalidNewWithGroqLegacy).toMatchObject({ section: 'keys' });
+    expect(invalidNewWithGroqLegacy?.message).toContain('groq');
   });
 
   it('warns when selected cloud speech and cleanup providers have no saved keys', () => {
@@ -134,6 +169,44 @@ describe('dictation configuration readiness', () => {
     expect(dictationReadiness({ ...cloud, keys: { groq: true }, cleanupEnabled: false })).toEqual([]);
   });
 
+  it('checks cleanup for potential transcript fusion only when dual transcription can use it', () => {
+    expect(cleanupMayBeUsed({ cleanupEnabled: false, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
+    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: false })).toBe(false);
+    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(true);
+    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: null, dualTranscriptionEnabled: false })).toBe(true);
+
+    const offWithoutFusion = dictationReadiness({
+      ...cloud,
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: false,
+      cleanupEnabled: true,
+      keys: { groq: true },
+    });
+    expect(offWithoutFusion.some(issue => issue.task === 'cleanup')).toBe(false);
+
+    const fusionMissingKey = dictationReadiness({
+      ...cloud,
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      cleanupEnabled: true,
+      cleanupModel: 'openai/gpt-4o-mini',
+      keys: { groq: true },
+    }).find(issue => issue.task === 'cleanup');
+    expect(fusionMissingKey).toMatchObject({ section: 'keys' });
+    expect(fusionMissingKey?.message).toContain('Transcript comparison may use cleanup');
+
+    const fusionMissingModelWithReadyFallback = dictationReadiness({
+      ...cloud,
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      cleanupEnabled: true,
+      cleanupModel: 'local/qwen2.5-3b-instruct',
+      cleanupFallbacks: ['groq/qwen/qwen3.8-27b'],
+      keys: { groq: true },
+    });
+    expect(fusionMissingModelWithReadyFallback.some(issue => issue.task === 'cleanup')).toBe(false);
+  });
+
   it('offers model setup for missing local speech without requiring a key', () => {
     const issues = dictationReadiness({ ...cloud, transcriptionModel: 'local/parakeet-v3', cleanupEnabled: false });
     expect(issues).toMatchObject([{ task: 'transcription', section: 'models' }]);
@@ -241,8 +314,8 @@ describe('dictation configuration readiness', () => {
     expect(migratedFallback).toEqual([]);
   });
 
-  it('keeps invalid IDs unchanged and handles a legacy model name through its provider', () => {
-    const legacyGoogleModel = readinessModel('cleanup', 'gemini-2.5-pro', null, 'google');
+  it('uses a valid qualified legacy model after an unqualified new model', () => {
+    const legacyGoogleModel = readinessModel('cleanup', 'gemini-2.5-pro', 'google/gemini-2.5-pro', 'google');
     expect(legacyGoogleModel).toBe('google/gemini-2.5-pro');
     expect(dictationReadiness({
       ...cloud,
