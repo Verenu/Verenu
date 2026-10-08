@@ -2,6 +2,8 @@ import {
   ALL_PROVIDER_IDS,
   migrateDeprecatedGoogleModel,
   migrateDeprecatedGroqCleanupModel,
+  modelId,
+  splitModelId,
 } from './components/settings/models';
 import { isCustomProviderId } from './customProviders.svelte';
 
@@ -26,6 +28,8 @@ export type ReadinessInput = {
   transcriptionFallbacks?: string[];
   cleanupFallbacks?: string[];
   cleanupEnabled: boolean;
+  cleanupIntensity?: string | null;
+  dualTranscriptionEnabled?: boolean;
   keys: Record<string, boolean>;
   speechModels: { id: string; is_downloaded: boolean }[];
   cleanupModels: { id: string; is_downloaded: boolean }[];
@@ -36,31 +40,55 @@ export type ReadinessInput = {
 const CLOUD_PROVIDERS = new Set(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai']);
 
 const DEFAULT_MODELS: Record<string, Partial<Record<ReadinessIssue['task'], string>>> = {
-  local: { transcription: 'local/parakeet-v3', cleanup: 'local/qwen2.5-3b-instruct' },
+  // Keep these aligned with default_*_model_for in src-tauri/src/data/store/config.rs.
+  local: { transcription: 'local/parakeet-v3', cleanup: 'local/gemma-4-e2b' },
   groq: { transcription: 'groq/whisper-large-v3-turbo', cleanup: 'groq/qwen/qwen3.8-27b' },
   openai: { transcription: 'openai/gpt-4o-transcribe', cleanup: 'openai/gpt-4o-mini' },
   google: { transcription: 'google/gemini-3.5-transcribe', cleanup: 'google/gemini-3.5-flash-lite' },
-  assemblyai: { transcription: 'assemblyai/universal-3-5-pro', cleanup: 'groq/qwen/qwen3.8-27b' },
+  assemblyai: { transcription: 'assemblyai/universal-3-5-pro', cleanup: 'assemblyai/qwen/qwen3.8-27b' },
   openrouter: { transcription: 'openrouter/openai/whisper-large-v3', cleanup: 'openrouter/openai/gpt-4o-mini' },
   xai: { transcription: 'xai/grok-voice-transcribe-2.0', cleanup: 'xai/grok-4-fast-non-reasoning' },
 };
 
-// Resolve old unqualified model settings without querying any provider.
+function parseConfiguredModel(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  const slash = value.indexOf('/');
+  if (slash <= 0) return null;
+  const provider = value.slice(0, slash).trim().toLowerCase();
+  const model = value.slice(slash + 1).trim();
+  const parsed = splitModelId(`${provider}/${model}`);
+  return parsed ? modelId(parsed.provider, parsed.model) : null;
+}
+
+// Mirror load_pipeline_config: parse the new setting, then the legacy setting,
+// then use the selected provider's default. The backend supplies a Groq legacy
+// default when the legacy key is absent, before it reaches the provider default.
 export function readinessModel(
   task: ReadinessIssue['task'],
   selected: string | null,
   legacy: string | null,
   provider: string | null,
 ): string {
-  const configured = selected?.trim() || legacy?.trim();
-  if (configured) {
-    const slash = configured.indexOf('/');
-    const namespace = slash < 0 ? '' : configured.slice(0, slash);
-    if (namespace && (CLOUD_PROVIDERS.has(namespace) || namespace === 'local' || namespace.startsWith('custom:'))) return configured;
-    return (provider || 'groq') + '/' + configured;
-  }
-  const source = provider || 'groq';
-  return DEFAULT_MODELS[source]?.[task] ?? source + '/';
+  const selectedModel = parseConfiguredModel(selected);
+  if (selectedModel) return selectedModel;
+
+  const legacyValue = legacy === null || legacy === '' ? DEFAULT_MODELS.groq[task]! : legacy;
+  const legacyModel = parseConfiguredModel(legacyValue);
+  if (legacyModel) return legacyModel;
+
+  const source = provider?.trim().toLowerCase() || 'groq';
+  const providerDefault = DEFAULT_MODELS[source]?.[task];
+  if (providerDefault) return providerDefault;
+
+  // Rust's default_*_model_for uses the Groq model name for unknown providers,
+  // while keeping the selected provider as the outer namespace.
+  const groqDefault = splitModelId(DEFAULT_MODELS.groq[task]!)!;
+  return modelId(source as typeof groqDefault.provider, groqDefault.model);
+}
+
+export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'dualTranscriptionEnabled'>): boolean {
+  const intensity = input.cleanupIntensity ?? 'medium';
+  return input.cleanupEnabled && (intensity !== 'none' || input.dualTranscriptionEnabled === true);
 }
 
 type CandidateResult = { ready: true } | { ready: false; message: string; section: 'keys' | 'models' };
@@ -174,7 +202,7 @@ function migrateCandidate(value: string): string {
 export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
   const issues: ReadinessIssue[] = [];
   for (const task of ['transcription', 'cleanup'] as const) {
-    if (task === 'cleanup' && !input.cleanupEnabled) continue;
+    if (task === 'cleanup' && !cleanupMayBeUsed(input)) continue;
     const candidates = candidatesFor(task, input);
     const results = (candidates.length ? candidates : ['']).map(model => evaluateModel(task, model, input));
     if (results.some(result => result.ready)) continue;
@@ -182,9 +210,14 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
     const label = task === 'transcription' ? 'Speech recognition' : 'Optional cleanup';
     const problems = [...new Set(results.filter((result): result is Extract<CandidateResult, { ready: false }> => !result.ready).map(result => result.message))];
     const section = results.some(result => !result.ready && result.section === 'keys') ? 'keys' : 'models';
+    const fusionMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
+      input.cleanupIntensity === 'none' && input.dualTranscriptionEnabled === true;
+    const detail = problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' ');
     issues.push({
       task,
-      message: problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' '),
+      message: fusionMayNeedCleanup
+        ? 'Transcript comparison may use cleanup when both speech results are available. ' + detail
+        : detail,
       section,
       action: section === 'keys' ? 'Add API key' : 'Choose models',
     });
