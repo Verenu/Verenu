@@ -44,7 +44,11 @@
   // model; Settings → Models still offers one. Local stays for the local path.
   const localSupported = $derived(platformLocalSupported && provider === 'local');
 
-  const presets = $derived(buildPresets(apiKeyStatus, hardware, localSupported));
+  const presetOptions = $derived({
+    includeTranscriptionOnly: provider === 'local',
+    localOnly: provider === 'local',
+  });
+  const presets = $derived(buildPresets(apiKeyStatus, hardware, localSupported, presetOptions));
 
   const installedLocal = $derived({
     transcription: localSttStore.models.filter((m) => m.is_downloaded).map((m) => m.id),
@@ -79,8 +83,14 @@
   // nothing is pre-selected and the provider defaults stand.
   let userPicked = $state(false);
   $effect(() => {
+    const currentPreset = preset;
+    const available = presets.filter((p) => p.kind === 'preset');
+    if (currentPreset && !available.some((p) => p.id === currentPreset.id)) {
+      preset = null;
+      userPicked = false;
+    }
     if (userPicked) return;
-    const list = presets.filter((p) => p.kind === 'preset' && p.id !== 'local-transcription-only' && !needsDownload(p));
+    const list = available.filter((p) => p.id !== 'local-transcription-only' && !needsDownload(p));
     if (list.length === 0) return;
     if (preset) return;
     preset = list.find((p) => p.id.endsWith('-balanced')) ?? list[0];
@@ -144,7 +154,7 @@
       onCancelPreset={cancel}
       onDeletePreset={remove}
       showCustomNote={false}
-      options={{ includeTranscriptionOnly: provider === 'local', localOnly: provider === 'local' }}
+      options={presetOptions}
     />
   </div>
 
