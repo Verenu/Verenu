@@ -27,6 +27,7 @@
     apiKeyStatus,
     preset = $bindable(),
     onOpenApiKeys,
+    onChooseCloudProvider,
   }: {
     /** The provider chosen earlier. Local presets only appear when it is 'local'. */
     provider: ProviderId;
@@ -34,15 +35,15 @@
     /** The chosen preset. Written to settings by Setup's finish(), not here. */
     preset: Preset | null;
     onOpenApiKeys: () => void;
+    onChooseCloudProvider: (localSupport: 'unsupported' | 'unknown') => void;
   } = $props();
 
-  // Same "assume capable" default as the Models tab — never flash a degraded
-  // preset list while the real hardware read is in flight.
+  // Keep local choices hidden until the platform probe confirms support.
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
-  let platformLocalSupported = $state(true);
+  let platformLocalSupport = $state<'checking' | 'supported' | 'unsupported' | 'unknown'>('checking');
   // Someone who picked a cloud provider didn't ask for a multi-gigabyte local
   // model; Settings → Models still offers one. Local stays for the local path.
-  const localSupported = $derived(platformLocalSupported && provider === 'local');
+  const localSupported = $derived(platformLocalSupport === 'supported' && provider === 'local');
 
   const presetOptions = $derived({
     includeTranscriptionOnly: provider === 'local',
@@ -126,49 +127,76 @@
     }
   }
 
+  async function checkPlatformLocalSupport() {
+    platformLocalSupport = 'checking';
+    try {
+      const supported = await invoke<boolean>('local_models_supported_on_this_platform');
+      platformLocalSupport = supported === true ? 'supported' : supported === false ? 'unsupported' : 'unknown';
+    } catch {
+      platformLocalSupport = 'unknown';
+    }
+  }
+
   onMount(() => {
     refreshLocalModels().catch(() => {});
     refreshLocalState().catch(() => {});
     refreshLocalLlmModels().catch(() => {});
     refreshLocalLlmState().catch(() => {});
-    // Only an explicit false hides local presets — an older backend or a
-    // transient error must not strip the offline option for everyone else.
-    invoke<boolean>('local_models_supported_on_this_platform')
-      .then((supported) => { if (supported === false) platformLocalSupported = false; })
-      .catch(() => {});
+    void checkPlatformLocalSupport();
     getHardware().then((hw) => { hardware = hw; }).catch(() => {});
   });
 </script>
 
 <div class="step models-step">
-  <div class="models-picker">
-    <ModelPresetPicker
-      {apiKeyStatus}
-      {hardware}
-      {localSupported}
-      {activeConfig}
-      {installedLocal}
-      {downloadingLocal}
-      onApplyPreset={choose}
-      onOpenApiKeys={onOpenApiKeys}
-      onCancelPreset={cancel}
-      onDeletePreset={remove}
-      showCustomNote={false}
-      options={presetOptions}
-    />
-  </div>
+  {#if provider === 'local' && platformLocalSupport === 'checking'}
+    <p class="models-note" role="status">Checking whether on-device models are available…</p>
+  {:else if provider === 'local' && platformLocalSupport === 'unsupported'}
+    <div class="local-support-recovery" data-support="unsupported" role="note">
+      <p>On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider to continue.</p>
+      <button class="btn-primary" type="button" onclick={() => onChooseCloudProvider('unsupported')}>Choose a cloud provider</button>
+    </div>
+  {:else if provider === 'local' && platformLocalSupport === 'unknown'}
+    <div class="local-support-recovery" data-support="unknown" role="group" aria-label="On-device model availability">
+      <p role="alert">Could not confirm whether on-device models are available. Retry the check or choose a cloud provider.</p>
+      <div class="local-support-actions">
+        <button class="btn-ghost btn-compact" type="button" onclick={checkPlatformLocalSupport}>Retry check</button>
+        <button class="btn-primary" type="button" onclick={() => onChooseCloudProvider('unknown')}>Choose a cloud provider</button>
+      </div>
+    </div>
+  {:else}
+    <div class="models-picker">
+      <ModelPresetPicker
+        {apiKeyStatus}
+        {hardware}
+        {localSupported}
+        {activeConfig}
+        {installedLocal}
+        {downloadingLocal}
+        onApplyPreset={choose}
+        onOpenApiKeys={onOpenApiKeys}
+        onCancelPreset={cancel}
+        onDeletePreset={remove}
+        showCustomNote={false}
+        options={presetOptions}
+      />
+    </div>
 
-  <p class="models-note">
-    {#if downloading}
-      Downloading in the background — keep going. Dictation starts working once it finishes.
-    {:else}
-      {provider === 'local' ? 'Speech only needs no cleanup model or engine. Cleanup bundles are optional and include additional downloads.' : 'Change this anytime in Settings → Models, where you can also pick individual models.'}
-    {/if}
-  </p>
+    <p class="models-note">
+      {#if downloading}
+        Downloading in the background — keep going. Dictation starts working once it finishes.
+      {:else}
+        {provider === 'local' ? 'Speech only needs no cleanup model or engine. Cleanup bundles are optional and include additional downloads.' : 'Change this anytime in Settings → Models, where you can also pick individual models.'}
+      {/if}
+    </p>
+  {/if}
 </div>
 
 <style>
   .models-step { gap: 12px; }
+
+  .local-support-recovery { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+  .local-support-recovery p { margin: 0; font-size: 13px; color: var(--ink-mute); line-height: 1.5; }
+  .local-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
   /* PresetCard's narrow layout is keyed to the settings panel container, which
      doesn't exist here — name the container so the cards still fold on small

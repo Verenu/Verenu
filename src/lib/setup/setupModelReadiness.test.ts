@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PresetTarget } from '../components/settings/modelPresets';
-import { setupModelReadiness, type SetupModelInventory } from './setupModelReadiness';
+import { setupCleanupEnabled, setupModelReadiness, type SetupModelInventory } from './setupModelReadiness';
 
 const inventory: SetupModelInventory = {
   speechModels: [],
@@ -89,6 +89,24 @@ describe('setup model readiness', () => {
       ...modelsInstalled,
       cleanupRuntime: { installed: true, is_downloading: false },
     })).toMatchObject({ ready: true, pending: false, message: '' });
+  });
+
+  it('ignores optional cleanup requirements when Writing Style is Off', () => {
+    const speechInstalled: SetupModelInventory = {
+      ...inventory,
+      speechModels: [{ id: 'parakeet-v3', is_downloaded: true, is_downloading: false }],
+    };
+    const off = setupCleanupEnabled('none', localWithCleanup);
+    const on = setupCleanupEnabled('medium', localWithCleanup);
+
+    expect(off).toBe(false);
+    expect(setupModelReadiness(localWithCleanup, speechInstalled, off)).toEqual({ ready: true, pending: false, message: '' });
+    expect(on).toBe(true);
+    expect(setupModelReadiness(localWithCleanup, speechInstalled, on)).toMatchObject({
+      ready: false,
+      pending: false,
+      message: expect.stringContaining('cleanup model and cleanup engine'),
+    });
   });
 
   it('distinguishes a pending download from other missing local requirements', () => {

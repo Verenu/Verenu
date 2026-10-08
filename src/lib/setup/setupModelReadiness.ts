@@ -1,5 +1,6 @@
 import type { LocalLlmModelInfo, LocalLlmRuntimeInfo, LocalLlmState, LocalSttModelInfo, LocalTranscriptionState } from '../tauri';
 import type { PresetTarget, RequiredLocalModel } from '../components/settings/modelPresets';
+import type { CleanupIntensity } from '../settings';
 
 export type SetupModelInventory = {
   speechModels: Pick<LocalSttModelInfo, 'id' | 'is_downloaded' | 'is_downloading'>[];
@@ -33,14 +34,22 @@ function joined(items: string[]): string {
   return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
 }
 
+export function setupCleanupEnabled(
+  intensity: CleanupIntensity,
+  target: PresetTarget | null | undefined,
+): boolean {
+  return intensity !== 'none' && (target ? target.cleanupEnabled : true);
+}
+
 export function setupModelReadiness(
   target: PresetTarget | null | undefined,
   inventory: SetupModelInventory,
+  cleanupEnabled = target?.cleanupEnabled === true,
 ): SetupModelReadiness {
   const required = (target?.requiredLocalModels ?? [])
-    .filter(model => model.task !== 'cleanup' || target?.cleanupEnabled);
+    .filter(model => model.task !== 'cleanup' || cleanupEnabled);
   const missingModels = required.filter(model => !modelInstalled(model, inventory));
-  const cleanupEngineMissing = target?.cleanupEnabled === true
+  const cleanupEngineMissing = cleanupEnabled
     && required.some(model => model.task === 'cleanup')
     && !inventory.cleanupRuntime.installed;
   if (missingModels.length === 0 && !cleanupEngineMissing) return { ready: true, pending: false, message: '' };

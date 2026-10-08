@@ -20,7 +20,7 @@
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
-  import { setupModelReadiness } from '../setup/setupModelReadiness';
+  import { setupCleanupEnabled, setupModelReadiness } from '../setup/setupModelReadiness';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -98,6 +98,7 @@
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
+  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, modelPreset?.target));
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
   let doneModelReadiness = $derived(setupModelReadiness(modelPreset?.target, {
@@ -106,7 +107,7 @@
     transcriptionState: localSttStore.state,
     cleanupState: localLlmStore.state,
     cleanupRuntime: localLlmStore.runtime,
-  }));
+  }, effectiveCleanupEnabled));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
@@ -316,6 +317,18 @@
     void animateTo(target, target < step ? 'back' : 'forward');
   }
 
+  function chooseCloudProviderFromModels(localSupport: 'unsupported' | 'unknown') {
+    modelPreset = null;
+    provider = 'groq';
+    localAiSupported = false;
+    if (localSupport === 'unsupported') {
+      localAiUnsupportedReason = 'On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider such as Groq, OpenAI, or Google.';
+    } else {
+      localAiUnsupportedReason = 'Could not confirm whether on-device models are available. Choose a cloud provider to continue.';
+    }
+    jumpToStep(providerStep);
+  }
+
   async function saveKey() {
     if (provider === 'local') return;
     const trimmed = apiKeyDraft.trim();
@@ -445,7 +458,7 @@
     // (see should_run_cleanup_llm), so keep the Settings toggle agreeing with
     // what the wizard was actually told. A preset with no cleanup model (e.g.
     // "Transcription only") also forces it off.
-    const cleanupEnabled = cleanupIntensity !== 'none' && (target ? target.cleanupEnabled : true);
+    const cleanupEnabled = effectiveCleanupEnabled;
     // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
 
@@ -702,7 +715,13 @@
     {:else if isAndroid && step === permissionStep}
       <AndroidPermissionsStep bind:allCoreGranted />
     {:else if step === modelsStep}
-      <ModelsStep {provider} apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
+      <ModelsStep
+        {provider}
+        apiKeyStatus={providerKeyStatus}
+        bind:preset={modelPreset}
+        onOpenApiKeys={() => jumpToStep(apiKeyStep)}
+        onChooseCloudProvider={chooseCloudProviderFromModels}
+      />
     {:else if step === writingStyleStep}
       <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone />
     {:else if step === languageStep}
