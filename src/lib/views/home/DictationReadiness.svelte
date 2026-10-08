@@ -6,6 +6,7 @@
   import { openSetupSettings } from '../../settingsNavigation';
   import type { AppMapping } from '../../appMappings';
   import type { Context } from '../../stores';
+  import { listenForHomeReadinessSyncChanges } from './readinessSync';
 
   let { onchange }: { onchange: (incomplete: boolean) => void } = $props();
   let issues = $state<ReadinessIssue[]>([]);
@@ -114,6 +115,10 @@
         else stop();
       });
     }
+    unlisteners.push(listenForHomeReadinessSyncChanges(
+      (eventName, handler) => listen<{ tables?: string[] }>(eventName, handler),
+      update,
+    ));
     return () => {
       mounted = false;
       sequence++;
