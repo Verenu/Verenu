@@ -56,6 +56,7 @@ data class BridgeStateSnapshot(
     val hidePillOffline: Boolean = true,
     val appearanceMode: String = "system",
     val audioMuteRequested: Boolean = false,
+    val syncMutingEnabled: Boolean = false,
 )
 
 class VerenuBridge(appContext: Context) {
@@ -170,6 +171,7 @@ class VerenuBridge(appContext: Context) {
             hidePillOffline = json.optBoolean("hidePillOffline", true),
             appearanceMode = json.optString("appearanceMode", "system"),
             audioMuteRequested = json.optBoolean("audioMuteRequested", false),
+            syncMutingEnabled = json.optBoolean("syncMutingEnabled", false),
             overlay = BridgeOverlay(
                 state = overlay?.optString("state", "hidden") ?: "hidden",
                 visible = overlay?.optBoolean("visible", false) ?: false,
