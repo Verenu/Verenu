@@ -1,6 +1,8 @@
 <script lang="ts">
   import { formatSyncError as formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
+  import Toggle from '../Toggle.svelte';
+  import { SyncMutingSetting } from '../../syncMutingSetting.svelte';
   import {
     syncStore,
     refreshSyncStatus,
@@ -29,6 +31,8 @@
   let deviceName = $state('');
   let nameSaved = $state('');
   let nameBusy = $state(false);
+
+  const syncMuting = new SyncMutingSetting();
 
   // Per-row action state.
   let pairingUuid = $state('');
@@ -123,6 +127,7 @@
       deviceName = thisDeviceName();
       nameSaved = deviceName;
     });
+    void syncMuting.load();
     const clock = setInterval(() => (now = Date.now()), 30_000);
     return () => {
       clearInterval(clock);
@@ -477,6 +482,31 @@
       </span>
     </div>
   {/if}
+</div>
+
+<h3 class="settings-subhead">Muting</h3>
+<div class="setting-row" data-setting-target="sync-muting">
+  <div>
+    <div class="label">Synchronous muting</div>
+    <div class="desc">
+      When a paired device records, mute this device. When you record, mute paired devices with this on. Works over LAN or saved Tailscale connections. Your own dictation mute setting stays separate.
+    </div>
+    {#if syncMuting.loadFailed}
+      <div class="field-error sync-muting-error" role="alert">
+        <span>Could not load this setting.</span>
+        <button type="button" class="btn-ghost btn-compact" onclick={() => syncMuting.load()}>Retry</button>
+      </div>
+    {:else if syncMuting.saveFailed}
+      <div class="field-error" role="alert">Could not save this setting. Try again.</div>
+    {/if}
+  </div>
+  <Toggle
+    checked={syncMuting.enabled}
+    onchange={(value) => syncMuting.setEnabled(value)}
+    disabled={syncMuting.disabled}
+    label="Synchronous muting"
+    bind:error={syncMuting.flashError}
+  />
 </div>
 
 <!-- Paired devices -->
@@ -1307,6 +1337,12 @@
   }
   .connection-editor .field-error {
     margin-top: 0;
+  }
+  .sync-muting-error {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   .copy-action {
