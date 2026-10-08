@@ -170,7 +170,11 @@ describe('dictation configuration readiness', () => {
   });
 
   it('checks cleanup for potential transcript fusion only when dual transcription can use it', () => {
-    const singleTranscription = { transcriptionModel: cloud.transcriptionModel, transcriptionFallbacks: [] };
+    const singleTranscription = {
+      ...cloud,
+      transcriptionFallbacks: [],
+      keys: { groq: true, openai: true },
+    };
     const distinctTranscriptionFallback = { transcriptionFallbacks: ['openai/gpt-4o-transcribe'] };
     expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: false, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
     expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: false })).toBe(false);
@@ -179,6 +183,74 @@ describe('dictation configuration readiness', () => {
     expect(cleanupMayBeUsed({ ...singleTranscription, transcriptionModel: 'groq/llama-3.1-8b-instant', transcriptionFallbacks: ['groq/qwen/qwen3.8-27b'], cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
     expect(cleanupMayBeUsed({ ...singleTranscription, ...distinctTranscriptionFallback, cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(true);
     expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: true, cleanupIntensity: null, dualTranscriptionEnabled: false })).toBe(true);
+
+    const localSpeechWithUnkeyedCloudFallback = dictationReadiness({
+      ...cloud,
+      transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
+      speechModels: downloadedSpeech,
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      keys: {},
+    });
+    expect(localSpeechWithUnkeyedCloudFallback).toEqual([]);
+
+    const missingLocalAndUnkeyedCloud = dictationReadiness({
+      ...cloud,
+      transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      keys: {},
+    });
+    expect(missingLocalAndUnkeyedCloud.map(issue => issue.task)).toEqual(['transcription']);
+
+    const unsupportedCustomSpeechFallback = dictationReadiness({
+      ...cloud,
+      transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['custom:33333333-3333-4333-8333-333333333333/speech-model'],
+      speechModels: downloadedSpeech,
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      keys: {},
+      customProviders: [{
+        id: 'custom:33333333-3333-4333-8333-333333333333',
+        name: 'Cleanup endpoint',
+        requires_key: false,
+        supports_transcription: false,
+        supports_cleanup: true,
+      }],
+    });
+    expect(unsupportedCustomSpeechFallback).toEqual([]);
+
+    const twoReadySpeechModels = dictationReadiness({
+      ...cloud,
+      transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
+      speechModels: downloadedSpeech,
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+      keys: { openai: true },
+    });
+    expect(twoReadySpeechModels).toMatchObject([{
+      task: 'cleanup',
+      message: expect.stringContaining('Transcript comparison may use cleanup'),
+    }]);
+
+    const migratedDuplicateCandidates = {
+      ...singleTranscription,
+      transcriptionModel: 'google/gemini-2.5-pro',
+      transcriptionFallbacks: ['google/gemini-3.5-flash-lite'],
+      keys: { google: true },
+      cleanupEnabled: true,
+      cleanupIntensity: 'none',
+      dualTranscriptionEnabled: true,
+    };
+    expect(cleanupMayBeUsed(migratedDuplicateCandidates)).toBe(false);
 
     const offWithoutFusion = dictationReadiness({
       ...cloud,
@@ -195,8 +267,8 @@ describe('dictation configuration readiness', () => {
       transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
       dualTranscriptionEnabled: true,
       cleanupEnabled: true,
-      cleanupModel: 'openai/gpt-4o-mini',
-      keys: { groq: true },
+      cleanupModel: 'xai/grok-4-fast-non-reasoning',
+      keys: { groq: true, openai: true },
     }).find(issue => issue.task === 'cleanup');
     expect(fusionMissingKey).toMatchObject({ section: 'keys' });
     expect(fusionMissingKey?.message).toContain('Transcript comparison may use cleanup');
@@ -226,6 +298,8 @@ describe('dictation configuration readiness', () => {
       ...cloud,
       cleanupModel: 'local/missing-cleanup-model',
       cleanupIntensity: 'none',
+      transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
+      dualTranscriptionEnabled: true,
       cleanupEnabled: true,
       keys: { groq: true },
     };

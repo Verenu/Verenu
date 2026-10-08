@@ -97,7 +97,11 @@ export function hasCleanupIntensityOverride(
   });
 }
 
-type DualTranscriptionInput = Pick<ReadinessInput, 'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks'>;
+type ModelCandidateInput = Pick<ReadinessInput,
+  'keys' | 'speechModels' | 'cleanupModels' | 'cleanupEngineInstalled' | 'customProviders'>;
+
+type DualTranscriptionInput = Pick<ReadinessInput,
+  'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks'> & ModelCandidateInput;
 
 function normalizedTranscriptionModelChain(input: DualTranscriptionInput): string[] {
   const models = [input.transcriptionModel, ...(input.transcriptionFallbacks ?? [])]
@@ -108,10 +112,14 @@ function normalizedTranscriptionModelChain(input: DualTranscriptionInput): strin
 }
 
 function dualTranscriptionMayNeedCleanup(input: DualTranscriptionInput): boolean {
-  return input.dualTranscriptionEnabled === true && normalizedTranscriptionModelChain(input).length > 1;
+  if (input.dualTranscriptionEnabled !== true) return false;
+  return normalizedTranscriptionModelChain(input)
+    .filter(model => evaluateModel('transcription', model, input).ready)
+    .length > 1;
 }
 
-export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed'> & DualTranscriptionInput): boolean {
+export function cleanupMayBeUsed(input: Pick<ReadinessInput,
+  'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed'> & DualTranscriptionInput): boolean {
   const intensity = input.cleanupIntensity ?? 'medium';
   return input.cleanupEnabled && (
     intensity !== 'none' || input.cleanupIntensityOverrideMayBeUsed === true || dualTranscriptionMayNeedCleanup(input)
@@ -120,7 +128,7 @@ export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 
 
 type CandidateResult = { ready: true } | { ready: false; message: string; section: 'keys' | 'models' };
 
-function evaluateModel(task: ReadinessIssue['task'], value: string, input: ReadinessInput): CandidateResult {
+function evaluateModel(task: ReadinessIssue['task'], value: string, input: ModelCandidateInput): CandidateResult {
   const slash = value.indexOf('/');
   const provider = value.slice(0, slash);
   const id = value.slice(slash + 1).trim();
