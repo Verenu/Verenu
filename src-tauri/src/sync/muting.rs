@@ -4,6 +4,7 @@ use super::*;
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const LEASE_TIMEOUT: Duration = Duration::from_secs(4);
 const BUSY_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_TRANSPORT_RETRY_EXPONENT: u32 = 3;
 const STATE_CHECK: Duration = Duration::from_millis(100);
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
@@ -105,6 +106,38 @@ fn mute_ack_busy(message: &Message) -> bool {
             busy: true
         }
     )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MuteAckDisposition {
+    Enabled,
+    Busy,
+    Declined,
+    RetryTransport,
+}
+
+fn classify_mute_ack<E>(
+    ack: &std::result::Result<std::result::Result<Message, E>, tokio::time::error::Elapsed>,
+) -> MuteAckDisposition {
+    match ack {
+        Ok(Ok(message)) if mute_ack_enables(message) => MuteAckDisposition::Enabled,
+        Ok(Ok(message)) if mute_ack_busy(message) => MuteAckDisposition::Busy,
+        Ok(Ok(Message::DictationMuteAck {
+            enabled: false,
+            busy: false,
+        })) => MuteAckDisposition::Declined,
+        _ => MuteAckDisposition::RetryTransport,
+    }
+}
+
+/// Retry transport failures with a capped exponential backoff. This gives an
+/// older peer time to finish without ACK support while still recovering from
+/// a transient close during the current recording.
+fn transport_retry_delay(consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures
+        .saturating_sub(1)
+        .min(MAX_TRANSPORT_RETRY_EXPONENT);
+    Duration::from_secs(1u64 << exponent)
 }
 
 async fn wait_for_busy_retry(is_active: impl Fn() -> bool, retry_delay: Duration) -> bool {
@@ -239,6 +272,7 @@ impl SyncManager {
         };
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
         let mut rejected_routes = std::collections::HashSet::new();
+        let mut transport_failures = 0u32;
         loop {
             // Use the same saved-route and LAN fallback candidates as content sync.
             // A TLS pin mismatch rejects that address, not the remaining candidates.
@@ -319,15 +353,16 @@ impl SyncManager {
             ) {
                 return Ok(());
             }
-            send_message(
+            if send_message(
                 &mut tls,
                 &Message::DictationMute {
                     device_uuid: self.device_uuid(),
                 },
             )
-            .await?;
-            let ack = tokio::time::timeout(CONNECT_TIMEOUT, read_message(&mut tls)).await;
-            if matches!(ack.as_ref(), Ok(Ok(message)) if mute_ack_busy(message)) {
+            .await
+            .is_err()
+            {
+                transport_failures = transport_failures.saturating_add(1);
                 if wait_for_busy_retry(
                     || {
                         sender_is_authorized(
@@ -335,7 +370,7 @@ impl SyncManager {
                             || trusted(&self.inner, uuid, &peer.cert_fp),
                         )
                     },
-                    BUSY_RETRY_DELAY,
+                    transport_retry_delay(transport_failures),
                 )
                 .await
                 {
@@ -343,18 +378,64 @@ impl SyncManager {
                 }
                 return Ok(());
             }
-            if !matches!(ack.as_ref(), Ok(Ok(message)) if mute_ack_enables(message)) {
-                // An explicit opt-out or an older/unsupported peer that
-                // closes without a mute ACK both decline this recording. A
-                // busy ACK uses a bounded retry window above.
-                wait_for_recording_to_end(|| {
-                    sender_is_authorized(
-                        || enabled(&self.inner.app) && same_recording(&self.inner.app, &active),
-                        || trusted(&self.inner, uuid, &peer.cert_fp),
+            let ack = tokio::time::timeout(CONNECT_TIMEOUT, read_message(&mut tls)).await;
+            match classify_mute_ack(&ack) {
+                MuteAckDisposition::Enabled => {
+                    // The sender transitions to the lease heartbeat loop.
+                }
+                MuteAckDisposition::Busy => {
+                    transport_failures = 0;
+                    if wait_for_busy_retry(
+                        || {
+                            sender_is_authorized(
+                                || {
+                                    enabled(&self.inner.app)
+                                        && same_recording(&self.inner.app, &active)
+                                },
+                                || trusted(&self.inner, uuid, &peer.cert_fp),
+                            )
+                        },
+                        BUSY_RETRY_DELAY,
                     )
-                })
-                .await;
-                return Ok(());
+                    .await
+                    {
+                        continue;
+                    }
+                    return Ok(());
+                }
+                MuteAckDisposition::Declined => {
+                    // Only an explicit negative ACK represents the peer's
+                    // current opt-out. Older peers and transport failures
+                    // still get bounded retries for this recording.
+                    wait_for_recording_to_end(|| {
+                        sender_is_authorized(
+                            || enabled(&self.inner.app) && same_recording(&self.inner.app, &active),
+                            || trusted(&self.inner, uuid, &peer.cert_fp),
+                        )
+                    })
+                    .await;
+                    return Ok(());
+                }
+                MuteAckDisposition::RetryTransport => {
+                    transport_failures = transport_failures.saturating_add(1);
+                    if wait_for_busy_retry(
+                        || {
+                            sender_is_authorized(
+                                || {
+                                    enabled(&self.inner.app)
+                                        && same_recording(&self.inner.app, &active)
+                                },
+                                || trusted(&self.inner, uuid, &peer.cert_fp),
+                            )
+                        },
+                        transport_retry_delay(transport_failures),
+                    )
+                    .await
+                    {
+                        continue;
+                    }
+                    return Ok(());
+                }
             }
             let mut next_heartbeat = Instant::now();
             loop {
@@ -653,6 +734,93 @@ mod tests {
         assert!(mute_ack_busy(&busy));
         assert!(!mute_ack_busy(&opted_out));
         assert!(!mute_ack_busy(&legacy));
+    }
+
+    #[test]
+    fn only_an_explicit_negative_ack_declines_the_current_recording() {
+        let closed: std::result::Result<
+            std::result::Result<Message, &'static str>,
+            tokio::time::error::Elapsed,
+        > = Ok(Err("connection closed"));
+        let declined: std::result::Result<
+            std::result::Result<Message, &'static str>,
+            tokio::time::error::Elapsed,
+        > = Ok(Ok(Message::DictationMuteAck {
+            enabled: false,
+            busy: false,
+        }));
+        let legacy_declined: std::result::Result<
+            std::result::Result<Message, &'static str>,
+            tokio::time::error::Elapsed,
+        > = Ok(Ok(serde_json::from_str(
+            r#"{"type":"dictation_mute_ack","enabled":false}"#,
+        )
+        .unwrap()));
+
+        assert_eq!(
+            classify_mute_ack(&closed),
+            MuteAckDisposition::RetryTransport
+        );
+        assert_eq!(classify_mute_ack(&declined), MuteAckDisposition::Declined);
+        // Older ACKs default `busy` to false and remain an explicit decline.
+        assert_eq!(
+            classify_mute_ack(&legacy_declined),
+            MuteAckDisposition::Declined
+        );
+    }
+
+    #[test]
+    fn transport_retry_backoff_is_exponential_and_capped_for_legacy_peers() {
+        assert_eq!(
+            (1..=7).map(transport_retry_delay).collect::<Vec<_>>(),
+            [
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+                Duration::from_secs(8),
+                Duration::from_secs(8),
+                Duration::from_secs(8),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_failure_retries_the_same_recording_until_acknowledged() {
+        let active = Arc::new(AtomicBool::new(true));
+        let mut attempts = [
+            Ok(Err("transient close")),
+            Ok(Ok(Message::DictationMuteAck {
+                enabled: true,
+                busy: false,
+            })),
+        ]
+        .into_iter();
+        let mut attempt_count = 0;
+        let accepted = loop {
+            let ack = attempts.next().expect("retry should make another attempt");
+            attempt_count += 1;
+            match classify_mute_ack(&ack) {
+                MuteAckDisposition::Enabled => break true,
+                MuteAckDisposition::RetryTransport => {
+                    assert!(
+                        wait_for_busy_retry(
+                            || active.load(Ordering::Relaxed),
+                            Duration::from_millis(1),
+                        )
+                        .await,
+                        "transport retry must remain eligible for the active recording"
+                    );
+                }
+                MuteAckDisposition::Busy => unreachable!("fixture has no busy ACK"),
+                MuteAckDisposition::Declined => {
+                    panic!("a transport failure must not be treated as explicit opt-out")
+                }
+            }
+        };
+
+        assert!(accepted);
+        assert_eq!(attempt_count, 2);
     }
 
     #[tokio::test]

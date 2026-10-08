@@ -478,6 +478,7 @@ fn state_payload(state: &BridgeState) -> Value {
         .as_ref()
         .map(analytics_enabled_value)
         .unwrap_or(true);
+    let sync_muting_enabled = sync_muting_enabled_value(settings.as_ref());
     let pill_position = settings
         .as_ref()
         .and_then(|settings| {
@@ -522,6 +523,7 @@ fn state_payload(state: &BridgeState) -> Value {
         "lifecycle": lifecycle,
         "dictationActive": dictation_active,
         "audioMuteRequested": crate::system::volume::android_mute_requested(),
+        "syncMutingEnabled": sync_muting_enabled,
         "pillStage": last_pill_stage(),
         "audioLevel": last_audio_level(),
         "audioEnvelope": take_audio_envelope(),
@@ -546,6 +548,16 @@ fn state_payload(state: &BridgeState) -> Value {
             .clone(),
         "pendingInsertion": pending,
     })
+}
+
+fn sync_muting_enabled_value(settings: Option<&crate::data::store::SettingsSnapshot>) -> bool {
+    let enabled = |key| {
+        settings
+            .and_then(|snapshot| snapshot.get(key))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    enabled(crate::data::store::SYNC_ENABLED) && enabled(crate::data::store::SYNC_MUTING_ENABLED)
 }
 
 /// A deliberately small settings summary for pseudonymous product analytics.
@@ -1381,6 +1393,22 @@ mod tests {
             json!(false),
         )]);
         assert!(!analytics_enabled_value(&disabled));
+    }
+
+    #[test]
+    fn android_fast_mute_poll_requires_sync_and_device_local_opt_in() {
+        use crate::data::store;
+        let settings = |sync, muting| {
+            SettingsSnapshot::from_pairs([
+                (store::SYNC_ENABLED.to_string(), json!(sync)),
+                (store::SYNC_MUTING_ENABLED.to_string(), json!(muting)),
+            ])
+        };
+
+        assert!(!sync_muting_enabled_value(None));
+        assert!(!sync_muting_enabled_value(Some(&settings(true, false))));
+        assert!(!sync_muting_enabled_value(Some(&settings(false, true))));
+        assert!(sync_muting_enabled_value(Some(&settings(true, true))));
     }
 
     /// Spin a test server (no AppHandle) on an ephemeral port for
