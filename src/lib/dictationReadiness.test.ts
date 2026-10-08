@@ -170,10 +170,15 @@ describe('dictation configuration readiness', () => {
   });
 
   it('checks cleanup for potential transcript fusion only when dual transcription can use it', () => {
-    expect(cleanupMayBeUsed({ cleanupEnabled: false, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
-    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: false })).toBe(false);
-    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(true);
-    expect(cleanupMayBeUsed({ cleanupEnabled: true, cleanupIntensity: null, dualTranscriptionEnabled: false })).toBe(true);
+    const singleTranscription = { transcriptionModel: cloud.transcriptionModel, transcriptionFallbacks: [] };
+    const distinctTranscriptionFallback = { transcriptionFallbacks: ['openai/gpt-4o-transcribe'] };
+    expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: false, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
+    expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: false })).toBe(false);
+    expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
+    expect(cleanupMayBeUsed({ ...singleTranscription, transcriptionFallbacks: [' GROQ/ whisper-large-v3-turbo '], cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
+    expect(cleanupMayBeUsed({ ...singleTranscription, transcriptionModel: 'groq/llama-3.1-8b-instant', transcriptionFallbacks: ['groq/qwen/qwen3.8-27b'], cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(false);
+    expect(cleanupMayBeUsed({ ...singleTranscription, ...distinctTranscriptionFallback, cleanupEnabled: true, cleanupIntensity: 'none', dualTranscriptionEnabled: true })).toBe(true);
+    expect(cleanupMayBeUsed({ ...singleTranscription, cleanupEnabled: true, cleanupIntensity: null, dualTranscriptionEnabled: false })).toBe(true);
 
     const offWithoutFusion = dictationReadiness({
       ...cloud,
@@ -187,6 +192,7 @@ describe('dictation configuration readiness', () => {
     const fusionMissingKey = dictationReadiness({
       ...cloud,
       cleanupIntensity: 'none',
+      transcriptionFallbacks: ['openai/gpt-4o-transcribe'],
       dualTranscriptionEnabled: true,
       cleanupEnabled: true,
       cleanupModel: 'openai/gpt-4o-mini',

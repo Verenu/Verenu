@@ -97,10 +97,24 @@ export function hasCleanupIntensityOverride(
   });
 }
 
-export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed' | 'dualTranscriptionEnabled'>): boolean {
+type DualTranscriptionInput = Pick<ReadinessInput, 'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks'>;
+
+function normalizedTranscriptionModelChain(input: DualTranscriptionInput): string[] {
+  const models = [input.transcriptionModel, ...(input.transcriptionFallbacks ?? [])]
+    .map(migrateCandidate)
+    .map(parseConfiguredModel)
+    .filter((model): model is string => model !== null);
+  return [...new Set(models)];
+}
+
+function dualTranscriptionMayNeedCleanup(input: DualTranscriptionInput): boolean {
+  return input.dualTranscriptionEnabled === true && normalizedTranscriptionModelChain(input).length > 1;
+}
+
+export function cleanupMayBeUsed(input: Pick<ReadinessInput, 'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed'> & DualTranscriptionInput): boolean {
   const intensity = input.cleanupIntensity ?? 'medium';
   return input.cleanupEnabled && (
-    intensity !== 'none' || input.cleanupIntensityOverrideMayBeUsed === true || input.dualTranscriptionEnabled === true
+    intensity !== 'none' || input.cleanupIntensityOverrideMayBeUsed === true || dualTranscriptionMayNeedCleanup(input)
   );
 }
 
@@ -224,7 +238,7 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
     const problems = [...new Set(results.filter((result): result is Extract<CandidateResult, { ready: false }> => !result.ready).map(result => result.message))];
     const section = results.some(result => result.ready === false && result.section === 'keys') ? 'keys' : 'models';
     const fusionMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
-      input.cleanupIntensity === 'none' && input.dualTranscriptionEnabled === true;
+      input.cleanupIntensity === 'none' && dualTranscriptionMayNeedCleanup(input);
     const overrideMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
       input.cleanupIntensity === 'none' && input.cleanupIntensityOverrideMayBeUsed === true;
     const detail = problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' ');
