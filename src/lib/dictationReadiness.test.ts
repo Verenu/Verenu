@@ -309,12 +309,12 @@ describe('dictation configuration readiness', () => {
   });
 
   it('checks cleanup when a Context or legacy app mapping overrides the global Off intensity', () => {
-    expect(hasCleanupIntensityOverride([{ cleanup_intensity: 'light' }])).toBe(true);
+    expect(hasCleanupIntensityOverride([{ id: 1, is_everywhere: true, cleanup_intensity: 'light' }])).toBe(true);
     expect(hasCleanupIntensityOverride([], [{ cleanup_intensity: 'high' }])).toBe(true);
     expect(hasCleanupIntensityOverride([
-      { cleanup_intensity: 'none' },
-      { cleanup_intensity: null },
-      {},
+      { id: 1, is_everywhere: true, cleanup_intensity: 'none' },
+      { id: 2, is_everywhere: false, cleanup_intensity: null },
+      { id: 3, is_everywhere: false },
     ], [{ cleanup_intensity: '  NONE ' }])).toBe(false);
 
     const input: ReadinessInput = {
@@ -335,6 +335,20 @@ describe('dictation configuration readiness', () => {
       { task: 'cleanup', section: 'models', action: 'Choose models' },
     ]);
     expect(dictationReadiness(overridden)[0]?.message).toContain('A Context or app mapping may use cleanup.');
+  });
+
+  it('ignores unreachable Context overrides until an app, website, or sub-app is assigned', () => {
+    const contexts = [{ id: 2, is_everywhere: false, cleanup_intensity: 'light' }];
+    expect(hasCleanupIntensityOverride(contexts)).toBe(false);
+    expect(hasCleanupIntensityOverride(contexts, [], [{ context_id: null }, { context_id: 3 }])).toBe(false);
+    for (const assignment of [
+      { context_id: 2, executable: 'fixture-app' },
+      { context_id: 2, domain: 'fixture.example' },
+      { context_id: 2, title_pattern: 'Fixture' },
+    ]) {
+      expect(hasCleanupIntensityOverride(contexts, [], [assignment])).toBe(true);
+    }
+    expect(hasCleanupIntensityOverride(contexts, [], [])).toBe(false);
   });
 
   it('offers model setup for missing local speech without requiring a key', () => {

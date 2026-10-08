@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PresetTarget } from '../components/settings/modelPresets';
-import { setupCleanupEnabled, setupModelReadiness, type SetupModelInventory } from './setupModelReadiness';
+import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness, type SetupModelInventory } from './setupModelReadiness';
 
 const inventory: SetupModelInventory = {
   speechModels: [],
@@ -31,6 +31,34 @@ const localWithCleanup: PresetTarget = {
 };
 
 describe('setup model readiness', () => {
+  it('validates the defaults saved by Finish when Android skips the preset step', () => {
+    const defaults = setupDefaultModels('local');
+    expect(setupModelReadiness(null, inventory, true, defaults)).toMatchObject({
+      ready: false,
+      message: expect.stringContaining('speech model, cleanup model, and cleanup engine'),
+    });
+    const speechInstalled = {
+      ...inventory,
+      speechModels: [{ id: 'parakeet-v3', is_downloaded: true, is_downloading: false }],
+    };
+    expect(setupModelReadiness(null, speechInstalled, false, defaults).ready).toBe(true);
+    expect(setupModelReadiness(null, speechInstalled, true, defaults)).toMatchObject({
+      ready: false, message: expect.stringContaining('cleanup model and cleanup engine'),
+    });
+    expect(setupModelReadiness(null, {
+      ...speechInstalled,
+      cleanupModels: [{ id: 'qwen2.5-3b-instruct', is_downloaded: true, is_downloading: false }],
+      cleanupRuntime: { installed: true, is_downloading: false },
+    }, true, defaults).ready).toBe(true);
+    expect(setupModelReadiness(null, {
+      ...inventory,
+      transcriptionState: { is_downloading: true, downloading_model_id: 'parakeet-v3' },
+    }, false, defaults)).toMatchObject({ ready: false, pending: true });
+    for (const provider of ['groq', 'openai', 'google']) {
+      expect(setupModelReadiness(null, inventory, true, setupDefaultModels(provider)).ready).toBe(true);
+    }
+  });
+
   it('requires speech for a local transcription-only preset without requiring optional cleanup', () => {
     expect(setupModelReadiness(transcriptionOnly, inventory)).toMatchObject({
       ready: false,

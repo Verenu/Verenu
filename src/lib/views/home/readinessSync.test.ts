@@ -6,7 +6,7 @@ import {
 } from './readinessSync';
 
 describe('Home readiness sync updates', () => {
-  it('refreshes only for synced settings or Contexts and unregisters on disposal', async () => {
+  it('refreshes for synced settings, Contexts, or assignments and unregisters on disposal', async () => {
     let eventName = '';
     let receive: ((event: ReadinessSyncEvent) => void) | undefined;
     const unlisten = vi.fn();
@@ -25,12 +25,15 @@ describe('Home readiness sync updates', () => {
 
     receive?.({ payload: { tables: ['settings'] } });
     receive?.({ payload: { tables: ['contexts'] } });
-    expect(refresh).toHaveBeenCalledTimes(2);
+    for (const table of ['context_targets', 'context_website_targets', 'context_sub_apps']) {
+      receive?.({ payload: { tables: [table] } });
+    }
+    expect(refresh).toHaveBeenCalledTimes(5);
 
     stop();
     receive?.({ payload: { tables: ['settings'] } });
     expect(unlisten).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(5);
   });
 
   it('unregisters when the component is disposed before async registration finishes', async () => {

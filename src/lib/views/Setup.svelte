@@ -8,8 +8,8 @@
   import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
-  import { localSttStore } from '../localSttStore.svelte';
-  import { localLlmStore } from '../localLlmStore.svelte';
+  import { localSttStore, refreshLocalModels, refreshLocalState } from '../localSttStore.svelte';
+  import { localLlmStore, refreshLocalLlmModels, refreshLocalLlmState, refreshLocalLlmRuntimeInfo } from '../localLlmStore.svelte';
   import {
     providers,
     cleanupCards,
@@ -20,7 +20,7 @@
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
-  import { setupCleanupEnabled, setupModelReadiness } from '../setup/setupModelReadiness';
+  import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness } from '../setup/setupModelReadiness';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -99,6 +99,7 @@
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
   let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, modelPreset?.target));
+  let defaultModels = $derived(setupDefaultModels(provider));
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
   let doneModelReadiness = $derived(setupModelReadiness(modelPreset?.target, {
@@ -107,13 +108,20 @@
     transcriptionState: localSttStore.state,
     cleanupState: localLlmStore.state,
     cleanupRuntime: localLlmStore.runtime,
-  }, effectiveCleanupEnabled));
+  }, effectiveCleanupEnabled, defaultModels));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
   onMount(async () => {
     sendSetupEvent('setup_started');
     void loadHotkey();
+    // Android skips Models, including when resuming directly at Done.
+    if (isAndroid) {
+      await Promise.all([
+        refreshLocalModels(), refreshLocalState(),
+        refreshLocalLlmModels(), refreshLocalLlmState(), refreshLocalLlmRuntimeInfo(),
+      ]);
+    }
     if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
       // Browser-dev runs can exercise the Android-shaped wizard at a narrow
       // viewport, but have no native capability probe. Keep the local option
@@ -432,20 +440,8 @@
     if (finishing) return;
     finishing = true;
     const target = modelPreset?.target ?? null;
-    const providerDefaultTranscription = provider === 'local'
-      ? 'local/parakeet-v3'
-      : provider === 'openai'
-        ? 'openai/gpt-4o-transcribe'
-        : provider === 'google'
-          ? 'google/gemini-3.5-transcribe'
-          : 'groq/whisper-large-v3-turbo';
-    const providerDefaultCleanup = provider === 'local'
-      ? 'local/qwen2.5-3b-instruct'
-      : provider === 'openai'
-        ? 'openai/gpt-4o-mini'
-      : provider === 'google'
-        ? 'google/gemini-3.5-flash-lite'
-          : 'groq/qwen/qwen3.8-27b';
+    const providerDefaultTranscription = defaultModels.transcriptionDefaultModel;
+    const providerDefaultCleanup = defaultModels.cleanupDefaultModel;
 
     // The Models step is the more specific answer, so its target wins over the
     // provider-derived defaults whenever one was chosen.

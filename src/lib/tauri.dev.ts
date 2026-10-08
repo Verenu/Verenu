@@ -755,6 +755,8 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       writeDevDictionaryCorrections(nextCorrections);
       return undefined as T;
     }
+    case 'get_sub_apps':
+      return readDevList('verenu:dev-context-sub-apps') as T;
     case 'get_context_targets': {
       const rawContextId = args?.contextId ?? args?.context_id;
       const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
