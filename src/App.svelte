@@ -618,7 +618,9 @@
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
   {#if appStore.setupComplete === false}
-    <DeferredView view={setup} />
+    <div inert={appStore.settingsOpen} style:visibility={appStore.settingsOpen ? 'hidden' : 'visible'}>
+      <DeferredView view={setup} />
+    </div>
   {/if}
   <div class="body" inert={appStore.setupComplete === false}>
     <div class="rail">

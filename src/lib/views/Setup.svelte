@@ -95,6 +95,8 @@
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
+  let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
+  let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
@@ -145,6 +147,22 @@
       await resumeSavedProgress(parseSetupProgress(savedProgress, providers.map((p) => p.id)), keyStatus);
     } catch {}
     progressLoaded = true;
+  });
+
+  onMount(() => {
+    let mounted = true;
+    const refreshKeys = () => {
+      void invoke<Record<ProviderId, boolean>>('get_api_key_status').then(status => {
+        if (mounted) providerKeyStatus = { ...providerKeyStatus, ...status, local: true };
+      }).catch(() => {});
+    };
+    window.addEventListener('verenu:api-key-saved', refreshKeys);
+    window.addEventListener('verenu:api-key-deleted', refreshKeys);
+    return () => {
+      mounted = false;
+      window.removeEventListener('verenu:api-key-saved', refreshKeys);
+      window.removeEventListener('verenu:api-key-deleted', refreshKeys);
+    };
   });
 
   /**
@@ -497,7 +515,7 @@
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
-    if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: 'Pick the balance you want. Each option sets the transcription and cleanup models for you.' };
+    if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: provider === 'local' ? 'Choose speech recognition only, or add optional cleanup models.' : 'Pick the balance you want. Each option sets transcription and optional cleanup models for you.' };
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
@@ -530,7 +548,7 @@
 
   let actionBar = $derived.by((): ActionBarConfig => {
     if (step === 0) return bar({ rightLabel: 'Get Started', rightLg: true, onRight: goNext });
-    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
+    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Finish setup', rightLg: true, rightDisabled: finishing, onRight: finish });
     if (step === analyticsStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
@@ -690,7 +708,7 @@
         {toneName}
         {languageLabel}
         {usesHeadphones}
-        hasKey={keySaved}
+        hasKey={doneHasKey}
         presetName={modelPreset?.name ?? ''}
       />
     {/if}

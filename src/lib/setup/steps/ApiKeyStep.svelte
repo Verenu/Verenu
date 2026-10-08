@@ -165,7 +165,7 @@
       <div class="local-intro">
         <span class="local-kicker">Private by design</span>
         <h3>No account, subscription, or API key</h3>
-        <p>Your audio and transcript stay on this device. Download the speech model now, then choose how much local cleanup you want on the next page.</p>
+        <p>Your audio and transcript stay on this device. Download speech recognition now or later. On the next page, choose transcription only or add optional cleanup.</p>
       </div>
 
       <div class="local-model-card" class:is-ready={localModel?.is_downloaded}>

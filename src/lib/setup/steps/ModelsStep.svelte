@@ -80,7 +80,7 @@
   let userPicked = $state(false);
   $effect(() => {
     if (userPicked) return;
-    const list = presets.filter((p) => p.kind === 'preset' && !needsDownload(p));
+    const list = presets.filter((p) => p.kind === 'preset' && p.id !== 'local-transcription-only' && !needsDownload(p));
     if (list.length === 0) return;
     if (preset) return;
     preset = list.find((p) => p.id.endsWith('-balanced')) ?? list[0];
@@ -144,6 +144,7 @@
       onCancelPreset={cancel}
       onDeletePreset={remove}
       showCustomNote={false}
+      options={{ includeTranscriptionOnly: provider === 'local', localOnly: provider === 'local' }}
     />
   </div>
 
@@ -151,7 +152,7 @@
     {#if downloading}
       Downloading in the background — keep going. Dictation starts working once it finishes.
     {:else}
-      Change this anytime in Settings → Models, where you can also pick individual models.
+      {provider === 'local' ? 'Speech only needs no cleanup model or engine. Cleanup bundles are optional and include additional downloads.' : 'Change this anytime in Settings → Models, where you can also pick individual models.'}
     {/if}
   </p>
 </div>

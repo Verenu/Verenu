@@ -3,6 +3,9 @@
   import { hotkeyLabels } from '../../hotkey.svelte';
   import { isAndroid } from '../../platform';
   import { reducedMotionEnabled } from '../../motion';
+  import ShortcutRecovery from '../../components/ShortcutRecovery.svelte';
+  import { desktopShortcut } from '../../shortcutStatus.svelte';
+  import { openSetupSettings } from '../../settingsNavigation';
 
   let {
     providerName,
@@ -23,6 +26,7 @@
   } = $props();
 
   const keyLabels = $derived(hotkeyLabels());
+  const shortcutUnavailable = $derived(!isAndroid && desktopShortcut('dictation')?.active === null);
   const cleanupOff = $derived(cleanupName === 'Off');
   const isLocal = $derived(providerName === 'On this device' || providerName === 'Local');
 
@@ -51,7 +55,7 @@
   );
 </script>
 
-<div class="step done-step">
+<div class="step done-step" class:needs-setup={!hasKey || shortcutUnavailable}>
   <div class="done-check-wrap">
     <svg class="done-check" width="64" height="64" viewBox="0 0 64 64" fill="none">
       <circle cx="32" cy="32" r="28" stroke="var(--accent-soft)" stroke-width="6"/>
@@ -73,11 +77,16 @@
       />
     </svg>
   </div>
-  <h2 class="done-title">You're all set.</h2>
-  <p class="done-sub">{isAndroid ? 'Verenu is ready. Open any text field and use the pill above your keyboard.' : 'Verenu is ready in your system tray. Use the same three-step rhythm anywhere you can type.'}</p>
+  <h2 class="done-title">{!hasKey || shortcutUnavailable ? 'Your choices are saved when you finish.' : "You're all set."}</h2>
+  <p class="done-sub">{!hasKey || shortcutUnavailable
+    ? 'You can finish setup now. Add the missing requirement before dictating.'
+    : isAndroid
+      ? 'Verenu is ready. Open any text field and use the pill above your keyboard.'
+      : 'Verenu is ready in your system tray. Use the same three-step rhythm anywhere you can type.'}</p>
+  <ShortcutRecovery />
 
   {#if !hasKey}
-    <div class="done-warning">No API key set — add one in Settings → Providers before dictating.</div>
+    <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('keys')}>Add API key</button></div>
   {/if}
 
   <div class="done-quickstart" aria-label="How to dictate">
@@ -85,6 +94,8 @@
       <span class="quick-number">1</span>
       {#if isAndroid}
         <span><strong>Focus</strong><small>Open a text field</small></span>
+      {:else if shortcutUnavailable}
+        <span><strong>Check shortcut</strong><small>Open General settings</small></span>
       {:else}
         <span><strong>Hold</strong><small>{#each keyLabels as k, i}{#if i > 0}<span class="done-plus"> + </span>{/if}<kbd>{k}</kbd>{/each}</small></span>
       {/if}
@@ -130,6 +141,7 @@
   .done-title { font-family: var(--sans); font-size: 22px; font-weight: 600; color: var(--ink-strong); margin: 0; }
 
   .done-sub { font-size: 13px; color: var(--ink-mute); margin: 0; line-height: 1.5; }
+  .done-step :global(.shortcut-recovery) { width: 100%; box-sizing: border-box; margin-bottom: 0; text-align: left; }
 
   .done-plus { color: var(--ink-faint); padding: 0 3px; }
 
@@ -216,6 +228,8 @@
 
   @media (max-height: 660px) {
     .done-step { gap: 9px; }
+    .needs-setup .done-check-wrap { display: none; }
+    .needs-setup .done-quickstart { display: none; }
     .done-check { width: 44px; height: 44px; }
     .summary-group { padding-block: 6px; }
   }

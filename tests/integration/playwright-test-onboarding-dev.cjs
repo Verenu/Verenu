@@ -7,11 +7,13 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const errors = [];
+  await page.route('**/*', route => new URL(route.request().url()).origin === new URL(TARGET_URL).origin ? route.continue() : route.abort());
 
   await seedDevState(page, {
     settings: {
       force_setup_on_launch: true,
       setup_complete: false,
+      verenu_service_checks_enabled: false,
       appearance_mode: 'system',
       transcription_language: 'en',
     },
@@ -141,7 +143,7 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     if ((await page.locator('.summary-group').count()) !== 4) errors.push('Done summary should show provider, writing, language, and audio separately');
     if ((await page.locator('.done-quickstart .quick-step').count()) !== 3) errors.push('Done page should teach hold, speak, and release');
 
-    await page.getByRole('button', { name: 'Start dictating' }).click();
+    await page.getByRole('button', { name: 'Finish setup' }).click();
     await page.locator('h1.page-h:has-text("Welcome back")').waitFor({ state: 'visible', timeout: TIMEOUT });
 
     const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('verenu:dev-settings') || '{}'));
