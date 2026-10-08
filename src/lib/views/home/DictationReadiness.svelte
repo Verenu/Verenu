@@ -26,7 +26,7 @@
       const setting = <T,>(key: string) => invoke<T | null>('get_setting', { key });
       const [
         speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
-        speechFallbacks, cleanupFallbacks, enabled, intensity, keys, customProviders,
+        speechFallbacks, cleanupFallbacks, enabled, intensity, dualTranscriptionEnabled, keys, customProviders,
         speechModels, cleanupModels, engine,
       ] = await Promise.all([
         setting<string>('transcription_default_model'),
@@ -39,6 +39,7 @@
         setting<string[]>('cleanup_fallback_models'),
         setting<boolean>('cleanup_enabled'),
         setting<string>('cleanup_intensity'),
+        setting<boolean>('dual_transcription_enabled'),
         invoke<Record<string, boolean>>('get_api_key_status'),
         setting<ReadinessCustomProvider[]>('custom_providers'),
         invoke<LocalSttModelInfo[]>('list_local_stt_models'),
@@ -51,7 +52,9 @@
         cleanupModel: readinessModel('cleanup', cleanup, legacyCleanup, cleanupProvider),
         transcriptionFallbacks: speechFallbacks ?? [],
         cleanupFallbacks: cleanupFallbacks ?? [],
-        cleanupEnabled: (enabled ?? true) && intensity !== 'none',
+        cleanupEnabled: enabled ?? true,
+        cleanupIntensity: intensity,
+        dualTranscriptionEnabled: dualTranscriptionEnabled ?? false,
         keys,
         customProviders: customProviders ?? [],
         speechModels,
