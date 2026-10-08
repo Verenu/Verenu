@@ -128,6 +128,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private var worker: HandlerThread? = null
     private var poller: Handler? = null
+    private val audioMute by lazy { VerenuAudioMute(this) }
+    @Volatile private var audioMuteActive = false
     private var requestWorker: HandlerThread? = null
     private var requester: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -228,6 +230,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        audioMute.update(false)
         stopConnectivityWatch()
         mainHandler.removeCallbacks(imeVisibilityCheck)
         poller?.removeCallbacksAndMessages(null)
@@ -2004,6 +2007,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         syncDeviceLockState()
         try {
             val snapshot = bridge.getState()
+            audioMuteActive = snapshot?.audioMuteRequested ?: false
+            audioMute.update(audioMuteActive)
             val up = snapshot != null
             if (up && !backendWasUp) {
                 // Rust restarted (or just started): its credential cache is
@@ -2019,6 +2024,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 ensureBackendRunning(waitMs = 0L)
             }
         } catch (e: Exception) {
+            audioMuteActive = false
+            audioMute.update(false)
             Log.w(TAG, "bridge poll failed", e)
         }
         // Transient pills auto-hide like the desktop (10s), and only when
@@ -2035,6 +2042,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         schedulePoll(
             when {
                 overlayState == VerenuOverlayView.State.RECORDING -> POLL_RECORDING_MS
+                audioMuteActive -> POLL_VISIBLE_MS
                 overlayAttached -> POLL_VISIBLE_MS
                 else -> POLL_IDLE_MS
             },

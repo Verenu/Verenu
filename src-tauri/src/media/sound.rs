@@ -50,7 +50,121 @@ pub const START_CUE_HANDSFREE_DELAY_MS: u64 = 220;
 /// handsfree double-tap never sounds and the cue can be held back cleanly.
 static START_CUE_GEN: AtomicU64 = AtomicU64::new(0);
 static SOUND_TX: OnceLock<mpsc::Sender<SoundCommand>> = OnceLock::new();
-static VOLUME_SESSION: AtomicU64 = AtomicU64::new(0);
+#[derive(Default)]
+struct MuteOwners {
+    shutting_down: bool,
+    local_generation: u64,
+    local: bool,
+    remote: std::collections::HashSet<u64>,
+}
+
+impl MuteOwners {
+    fn muted(&self) -> bool {
+        self.local || !self.remote.is_empty()
+    }
+
+    fn acquire_local(&mut self, active: bool, generation: u64) {
+        if !self.shutting_down && active && self.local_generation == generation {
+            self.local = true;
+        }
+    }
+}
+
+static MUTE_OWNERS: std::sync::LazyLock<std::sync::Mutex<MuteOwners>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(MuteOwners::default()));
+
+fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) {
+    let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+    let before = owners.muted();
+    update(&mut owners);
+    match (before, owners.muted()) {
+        (false, true) => crate::system::volume::mute(),
+        (true, false) => crate::system::volume::unmute(),
+        _ => {}
+    }
+}
+
+fn release_mute_owners_on_exit(owners: &mut MuteOwners, restore_audio: impl FnOnce()) {
+    owners.shutting_down = true;
+    owners.local = false;
+    owners.remote.clear();
+    owners.local_generation = owners.local_generation.wrapping_add(1);
+    restore_audio();
+}
+
+#[cfg(test)]
+mod mute_tests {
+    use super::MuteOwners;
+    use std::cell::Cell;
+
+    #[test]
+    fn ending_one_dictation_preserves_other_mute_owners() {
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        owners.remote.extend([1, 2]);
+        owners.local = false;
+        assert!(owners.muted());
+        owners.remote.remove(&1);
+        assert!(owners.muted());
+        owners.remote.remove(&2);
+        assert!(!owners.muted());
+        owners.local = true;
+        owners.remote.insert(3);
+        owners.remote.remove(&3);
+        assert!(
+            owners.muted(),
+            "remote stop cannot release local dictation mute"
+        );
+    }
+
+    #[test]
+    fn immediate_local_mute_acquires_the_same_owner_as_the_delayed_path() {
+        let mut owners = MuteOwners {
+            local_generation: 1,
+            ..Default::default()
+        };
+        owners.acquire_local(true, 1);
+        assert!(owners.local);
+        assert!(owners.muted());
+    }
+
+    #[test]
+    fn exit_retries_os_restore_even_when_no_mute_owner_remains() {
+        let mut owners = MuteOwners::default();
+        let restore_calls = Cell::new(0);
+
+        super::release_mute_owners_on_exit(&mut owners, || {
+            restore_calls.set(restore_calls.get() + 1);
+        });
+
+        assert_eq!(restore_calls.get(), 1);
+        assert!(owners.shutting_down);
+        assert!(!owners.muted());
+        owners.acquire_local(true, owners.local_generation);
+        assert!(!owners.local);
+    }
+}
+
+/// Connection-scoped remote ownership is independent of local dictation.
+pub fn set_remote_mute(owner: u64, muted: bool) {
+    update_mute_owners(|owners| {
+        if muted {
+            if !owners.shutting_down {
+                owners.remote.insert(owner);
+            }
+        } else {
+            owners.remote.remove(&owner);
+        }
+    });
+}
+
+/// Restore audio before the runtime exits; late network workers cannot remute.
+pub fn release_all_mutes_on_exit() {
+    let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+    release_mute_owners_on_exit(&mut owners, crate::system::volume::unmute);
+}
 static SOUND_EFFECTS_VOLUME: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 
 type AfterPlay = Box<dyn FnOnce() + Send + 'static>;
@@ -159,26 +273,32 @@ pub fn cancel_pending_start() {
 /// Mute only if the same volume session is still current after the call
 /// returns. If an unmute raced in between, immediately undo the stale mute.
 pub fn coordinated_mute(active: Arc<std::sync::atomic::AtomicBool>) {
-    let session_id = VOLUME_SESSION
-        .fetch_add(1, Ordering::SeqCst)
-        .wrapping_add(1);
+    let generation = {
+        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        owners.local_generation = owners.local_generation.wrapping_add(1);
+        owners.local_generation
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        if !active.load(Ordering::Relaxed) || VOLUME_SESSION.load(Ordering::SeqCst) != session_id {
-            return;
-        }
-
-        crate::system::volume::mute();
-
-        if !active.load(Ordering::Relaxed) || VOLUME_SESSION.load(Ordering::SeqCst) != session_id {
-            crate::system::volume::unmute();
-        }
+        update_mute_owners(|owners| {
+            owners.acquire_local(active.load(Ordering::Relaxed), generation)
+        });
     });
 }
 
 /// Invalidate any pending coordinated mute before unmuting the system.
 pub fn coordinated_unmute() {
-    VOLUME_SESSION.fetch_add(1, Ordering::SeqCst);
-    tauri::async_runtime::spawn_blocking(crate::system::volume::unmute);
+    let generation = {
+        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        owners.local_generation = owners.local_generation.wrapping_add(1);
+        owners.local_generation
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        update_mute_owners(|owners| {
+            if owners.local_generation == generation {
+                owners.local = false;
+            }
+        });
+    });
 }
 
 fn sound_tx() -> &'static mpsc::Sender<SoundCommand> {
