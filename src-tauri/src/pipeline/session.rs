@@ -340,6 +340,9 @@ pub fn start_recording_session_ex_with_context(
             if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
                 manager.set_recording_active(true);
             }
+            if let Some(manager) = app.try_state::<crate::sync::SyncManager>() {
+                manager.monitor_muting();
+            }
             if options.show_recording_pill {
                 // Queued before show_pill (not after): show_pill's
                 // cross-monitor move animates and defers its own pill-state
@@ -384,7 +387,7 @@ pub fn start_recording_session_ex_with_context(
                     crate::media::sound::play_start_delayed(delay_ms);
                 }
             } else if mute_audio {
-                tauri::async_runtime::spawn_blocking(crate::system::volume::mute);
+                crate::media::sound::coordinated_mute(start_cue_active);
             }
             Ok(())
         }
