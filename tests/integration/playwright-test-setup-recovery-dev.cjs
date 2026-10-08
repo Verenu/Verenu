@@ -30,7 +30,8 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     }
   }
   async function open(settings = {}, localSttModels = {}, localLlmModels = {}, runtimeInstalled = false, localStates = {}) {
-    const page = await browser.newPage({ viewport: { width: 900, height: 600 }, reducedMotion: 'reduce' });
+    const page = await browser.newPage({ viewport: localStates.android ? { width: 390, height: 844 } : { width: 900, height: 600 }, reducedMotion: 'reduce' });
+    if (localStates.android) await page.addInitScript(() => { window.__VERENU_ANDROID__ = true; });
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(TARGET_URL).origin ? route.continue() : route.abort());
     await seedDevState(page, {
@@ -115,6 +116,30 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
   }
 
   try {
+    for (const installed of [false, true]) {
+      const androidDefaults = await open({
+        setup_complete: false, force_setup_on_launch: true,
+        setup_progress: { step: 8, provider: 'local' },
+        transcription_provider: 'local', cleanup_intensity: 'medium',
+      }, installed ? { 'parakeet-v3': { downloaded: true } } : {},
+      installed ? { 'qwen2.5-3b-instruct': { downloaded: true } } : {}, installed, { android: true });
+      await expect(androidDefaults.locator('.done-step')).toBeVisible();
+      await expect(androidDefaults.getByRole('button', { name: 'Finish setup', exact: true })).toBeVisible();
+      if (installed) {
+        await expect(androidDefaults.locator('.done-step')).toContainText("You're all set.");
+        await expect(androidDefaults.locator('.done-step .download-status')).toHaveCount(0);
+      } else {
+        await expect(androidDefaults.locator('.done-step')).toContainText('speech model, cleanup model, and cleanup engine');
+        await expect(androidDefaults.locator('.done-step')).not.toContainText("You're all set.");
+      }
+      await androidDefaults.evaluate(async () => {
+        await Promise.all(document.getAnimations().filter(animation => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map(animation => animation.finished.catch(() => {})));
+      });
+      await screenshot(androidDefaults, `android-defaults-${installed ? 'installed' : 'missing'}`, false);
+      await assertSafe(androidDefaults);
+      await androidDefaults.close();
+    }
+
     const missing = await open();
     await expect(missing.getByText('Speech recognition needs an API key for groq.')).toBeVisible();
     await expect(missing.getByRole('heading', { name: 'Finish dictation setup' })).toBeVisible();

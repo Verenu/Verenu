@@ -89,10 +89,13 @@ export function readinessModel(
 }
 
 export function hasCleanupIntensityOverride(
-  contexts: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
+  contexts: ReadonlyArray<{ id: number; is_everywhere: boolean; cleanup_intensity?: string | null }> = [],
   appMappings: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
+  assignments: ReadonlyArray<{ context_id: number | null }> = [],
 ): boolean {
-  return [...contexts, ...appMappings].some(({ cleanup_intensity }) => {
+  const reachable = new Set(assignments.map(assignment => assignment.context_id));
+  const activeContexts = contexts.filter(context => context.is_everywhere || reachable.has(context.id));
+  return [...activeContexts, ...appMappings].some(({ cleanup_intensity }) => {
     const intensity = cleanup_intensity?.trim().toLowerCase();
     return Boolean(intensity) && intensity !== 'none';
   });

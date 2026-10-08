@@ -7,7 +7,7 @@ export type ReadinessSyncListener = (
   handler: (event: ReadinessSyncEvent) => void,
 ) => Promise<() => void>;
 
-const READINESS_TABLES = new Set(['settings', 'contexts']);
+const READINESS_TABLES = new Set(['settings', 'contexts', 'context_targets', 'context_website_targets', 'context_sub_apps']);
 
 export function affectsHomeReadiness(tables?: readonly string[]): boolean {
   return tables?.some((table) => READINESS_TABLES.has(table)) ?? false;

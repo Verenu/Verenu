@@ -2,6 +2,16 @@ import type { LocalLlmModelInfo, LocalLlmRuntimeInfo, LocalLlmState, LocalSttMod
 import type { PresetTarget, RequiredLocalModel } from '../components/settings/modelPresets';
 import type { CleanupIntensity } from '../settings';
 
+export function setupDefaultModels(provider: string) {
+  return provider === 'local'
+    ? { transcriptionDefaultModel: 'local/parakeet-v3', cleanupDefaultModel: 'local/qwen2.5-3b-instruct' }
+    : provider === 'openai'
+      ? { transcriptionDefaultModel: 'openai/gpt-4o-transcribe', cleanupDefaultModel: 'openai/gpt-4o-mini' }
+      : provider === 'google'
+        ? { transcriptionDefaultModel: 'google/gemini-3.5-transcribe', cleanupDefaultModel: 'google/gemini-3.5-flash-lite' }
+        : { transcriptionDefaultModel: 'groq/whisper-large-v3-turbo', cleanupDefaultModel: 'groq/qwen/qwen3.8-27b' };
+}
+
 export type SetupModelInventory = {
   speechModels: Pick<LocalSttModelInfo, 'id' | 'is_downloaded' | 'is_downloading'>[];
   cleanupModels: Pick<LocalLlmModelInfo, 'id' | 'is_downloaded' | 'is_downloading'>[];
@@ -45,8 +55,13 @@ export function setupModelReadiness(
   target: PresetTarget | null | undefined,
   inventory: SetupModelInventory,
   cleanupEnabled = target?.cleanupEnabled === true,
+  defaults?: ReturnType<typeof setupDefaultModels>,
 ): SetupModelReadiness {
-  const required = (target?.requiredLocalModels ?? [])
+  const defaultRequirements: RequiredLocalModel[] = [];
+  for (const [task, model] of [['transcription', defaults?.transcriptionDefaultModel], ['cleanup', defaults?.cleanupDefaultModel]] as const) {
+    if (model?.startsWith('local/')) defaultRequirements.push({ task, id: model.slice(6), sizeMb: 0 });
+  }
+  const required = (target?.requiredLocalModels ?? defaultRequirements)
     .filter(model => model.task !== 'cleanup' || cleanupEnabled);
   const missingModels = required.filter(model => !modelInstalled(model, inventory));
   const cleanupEngineMissing = cleanupEnabled
