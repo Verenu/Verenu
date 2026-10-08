@@ -23,7 +23,7 @@
     cloudSpeechConfigured && !offlineSpeechReady && !appStore.isOnline,
   );
 
-  async function refresh() {
+  async function refresh(isOnline = appStore.isOnline) {
     const current = ++sequence;
     try {
       const setting = <T,>(key: string) => invoke<T | null>('get_setting', { key });
@@ -61,6 +61,7 @@
         cleanupIntensity: intensity,
         cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? []),
         dualTranscriptionEnabled: dualTranscriptionEnabled ?? false,
+        isOnline,
         keys,
         customProviders: customProviders ?? [],
         speechModels,
@@ -81,7 +82,8 @@
   // Home remains mounted behind Settings. Refresh after it closes and after a
   // setting, credential, imported backup, or local model changes.
   $effect(() => {
-    if (!appStore.settingsOpen && mounted) void refresh();
+    const isOnline = appStore.isOnline;
+    if (!appStore.settingsOpen && mounted) void refresh(isOnline);
   });
   $effect(() => {
     onchange(checking || failed || issues.length > 0 || connectionWarning);
@@ -135,7 +137,7 @@
       <p>Checking dictation setup...</p>
     {:else if failed}
       <p>Could not check dictation setup on this device.</p>
-      <button class="btn-ghost btn-compact" onclick={refresh}>Check setup again</button>
+      <button class="btn-ghost btn-compact" onclick={() => refresh()}>Check setup again</button>
       <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open model settings</button>
     {:else}
       {#each issues as issue}
