@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanupMayBeUsed, dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
+import { cleanupMayBeUsed, dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
 
 const cloud: ReadinessInput = {
   transcriptionModel: 'groq/whisper-large-v3-turbo',
@@ -205,6 +205,33 @@ describe('dictation configuration readiness', () => {
       keys: { groq: true },
     });
     expect(fusionMissingModelWithReadyFallback.some(issue => issue.task === 'cleanup')).toBe(false);
+  });
+
+  it('checks cleanup when a Context or legacy app mapping overrides the global Off intensity', () => {
+    expect(hasCleanupIntensityOverride([{ cleanup_intensity: 'light' }])).toBe(true);
+    expect(hasCleanupIntensityOverride([], [{ cleanup_intensity: 'high' }])).toBe(true);
+    expect(hasCleanupIntensityOverride([
+      { cleanup_intensity: 'none' },
+      { cleanup_intensity: null },
+      {},
+    ], [{ cleanup_intensity: '  NONE ' }])).toBe(false);
+
+    const input: ReadinessInput = {
+      ...cloud,
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'none',
+      cleanupEnabled: true,
+      keys: { groq: true },
+    };
+    expect(cleanupMayBeUsed(input)).toBe(false);
+    expect(dictationReadiness(input).some(issue => issue.task === 'cleanup')).toBe(false);
+
+    const overridden = { ...input, cleanupIntensityOverrideMayBeUsed: true };
+    expect(cleanupMayBeUsed(overridden)).toBe(true);
+    expect(dictationReadiness(overridden)).toMatchObject([
+      { task: 'cleanup', section: 'models', action: 'Choose models' },
+    ]);
+    expect(dictationReadiness(overridden)[0]?.message).toContain('A Context or app mapping may use cleanup.');
   });
 
   it('offers model setup for missing local speech without requiring a key', () => {

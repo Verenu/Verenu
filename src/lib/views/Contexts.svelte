@@ -722,6 +722,7 @@
       contextsStore.websites = contextsStore.websites.filter((item) => item.context_id !== target.id);
       if (contextsStore.selectedId === target.id) contextsStore.selectedId = EVERYWHERE_ID;
       modal = null;
+      window.dispatchEvent(new Event('verenu:context-saved'));
     } catch (error) {
       contextError = classifyIpcError(error).message;
       deleteArmed = false;
@@ -932,6 +933,7 @@
         }
       }
       modal = null;
+      window.dispatchEvent(new Event('verenu:context-saved'));
     } catch (error) {
       if (createdContextId !== null) {
         contextsStore.selectedId = createdContextId;
