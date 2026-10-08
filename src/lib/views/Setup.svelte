@@ -8,6 +8,8 @@
   import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
+  import { localSttStore } from '../localSttStore.svelte';
+  import { localLlmStore } from '../localLlmStore.svelte';
   import {
     providers,
     cleanupCards,
@@ -18,6 +20,7 @@
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
+  import { setupModelReadiness } from '../setup/setupModelReadiness';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -97,6 +100,13 @@
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
+  let doneModelReadiness = $derived(setupModelReadiness(modelPreset?.target, {
+    speechModels: localSttStore.models,
+    cleanupModels: localLlmStore.models,
+    transcriptionState: localSttStore.state,
+    cleanupState: localLlmStore.state,
+    cleanupRuntime: localLlmStore.runtime,
+  }));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
@@ -709,6 +719,8 @@
         {languageLabel}
         {usesHeadphones}
         hasKey={doneHasKey}
+        modelsReady={doneModelReadiness.ready}
+        modelReadinessMessage={doneModelReadiness.message}
         presetName={modelPreset?.name ?? ''}
       />
     {/if}

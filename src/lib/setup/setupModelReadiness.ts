@@ -1,0 +1,68 @@
+import type { LocalLlmModelInfo, LocalLlmRuntimeInfo, LocalLlmState, LocalSttModelInfo, LocalTranscriptionState } from '../tauri';
+import type { PresetTarget, RequiredLocalModel } from '../components/settings/modelPresets';
+
+export type SetupModelInventory = {
+  speechModels: Pick<LocalSttModelInfo, 'id' | 'is_downloaded' | 'is_downloading'>[];
+  cleanupModels: Pick<LocalLlmModelInfo, 'id' | 'is_downloaded' | 'is_downloading'>[];
+  transcriptionState: Pick<LocalTranscriptionState, 'is_downloading' | 'downloading_model_id'>;
+  cleanupState: Pick<LocalLlmState, 'is_downloading' | 'downloading_model_id'>;
+  cleanupRuntime: Pick<LocalLlmRuntimeInfo, 'installed' | 'is_downloading'>;
+};
+
+export type SetupModelReadiness = {
+  ready: boolean;
+  pending: boolean;
+  message: string;
+};
+
+function modelInstalled(model: RequiredLocalModel, inventory: SetupModelInventory): boolean {
+  const models = model.task === 'transcription' ? inventory.speechModels : inventory.cleanupModels;
+  return models.some(candidate => candidate.id === model.id && candidate.is_downloaded);
+}
+
+function modelDownloading(model: RequiredLocalModel, inventory: SetupModelInventory): boolean {
+  const models = model.task === 'transcription' ? inventory.speechModels : inventory.cleanupModels;
+  const state = model.task === 'transcription' ? inventory.transcriptionState : inventory.cleanupState;
+  return models.some(candidate => candidate.id === model.id && candidate.is_downloading)
+    || (state.is_downloading && state.downloading_model_id === model.id);
+}
+
+function joined(items: string[]): string {
+  if (items.length < 2) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+export function setupModelReadiness(
+  target: PresetTarget | null | undefined,
+  inventory: SetupModelInventory,
+): SetupModelReadiness {
+  const required = (target?.requiredLocalModels ?? [])
+    .filter(model => model.task !== 'cleanup' || target?.cleanupEnabled);
+  const missingModels = required.filter(model => !modelInstalled(model, inventory));
+  const cleanupEngineMissing = target?.cleanupEnabled === true
+    && required.some(model => model.task === 'cleanup')
+    && !inventory.cleanupRuntime.installed;
+  if (missingModels.length === 0 && !cleanupEngineMissing) return { ready: true, pending: false, message: '' };
+
+  const pendingModels = missingModels.filter(model => modelDownloading(model, inventory));
+  const unavailableModels = missingModels.filter(model => !modelDownloading(model, inventory));
+  const cleanupEnginePending = cleanupEngineMissing && inventory.cleanupRuntime.is_downloading;
+  const pendingLabels = [
+    ...(pendingModels.some(model => model.task === 'transcription') ? ['speech model'] : []),
+    ...(pendingModels.some(model => model.task === 'cleanup') ? ['cleanup model'] : []),
+    ...(cleanupEnginePending ? ['cleanup engine'] : []),
+  ];
+  const unavailableLabels = [
+    ...(unavailableModels.some(model => model.task === 'transcription') ? ['speech model'] : []),
+    ...(unavailableModels.some(model => model.task === 'cleanup') ? ['cleanup model'] : []),
+    ...(cleanupEngineMissing && !cleanupEnginePending ? ['cleanup engine'] : []),
+  ];
+  const pending = pendingLabels.length > 0;
+  const message = unavailableLabels.length === 0
+    ? `Your selected on-device ${joined(pendingLabels)} ${pendingLabels.length === 1 ? 'is' : 'are'} still downloading. Dictation will work when ${pendingLabels.length === 1 ? 'it finishes' : 'they finish'}.`
+    : pendingLabels.length === 0
+      ? `Your selected on-device ${joined(unavailableLabels)} ${unavailableLabels.length === 1 ? "isn't" : "aren't"} installed yet.`
+      : `Your selected on-device ${joined(pendingLabels)} ${pendingLabels.length === 1 ? 'is' : 'are'} still downloading, and ${joined(unavailableLabels)} ${unavailableLabels.length === 1 ? "isn't" : "aren't"} installed yet. Finish the download and install any remaining requirements before dictating.`;
+  return { ready: false, pending, message };
+}
