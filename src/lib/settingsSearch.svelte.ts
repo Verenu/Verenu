@@ -92,6 +92,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'sync-this-device', section: 'sync', label: 'This device', description: 'Rename this device and manage its sync identity', target: 'sync-this-device', keywords: ['device name', 'lan'] },
   { id: 'sync-paired', section: 'sync', label: 'Paired devices', description: 'View, sync, or remove paired devices', target: 'sync-paired', keywords: ['lan', 'remove', 'sync now'] },
   { id: 'sync-nearby', section: 'sync', label: 'Nearby devices', description: 'Find and pair another Verenu device', target: 'sync-nearby', keywords: ['lan', 'pair', 'network'] },
+  { id: 'sync-muting', section: 'sync', label: 'Synchronous muting', description: 'Mute paired devices during dictation', target: 'sync-muting', keywords: ['mute', 'mute paired devices', 'dictation', 'audio', 'tailscale', 'lan'] },
 
   { id: 'about-version', section: 'about', label: 'Version', description: 'View the installed Verenu version', target: 'about-version', keywords: ['release', 'build'] },
   { id: 'about-license', section: 'about', label: 'License', description: 'View the Verenu software license', target: 'about-license', keywords: ['mit', 'open source'] },

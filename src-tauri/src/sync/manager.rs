@@ -27,6 +27,9 @@ use crate::commands::validate_setting;
 use crate::data::store::{self, SettingsHandle};
 use crate::DbHandle;
 
+#[path = "muting.rs"]
+mod muting;
+
 use super::engine::{self, SyncHost};
 use super::identity::{self, DeviceIdentity};
 use super::pairing::{self, IdentityExchange};
@@ -38,6 +41,8 @@ const SERVICE_TYPE: &str = "_verenu._tcp.local.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 pub(crate) const MAX_INCOMING_CONNECTIONS: usize = 8;
+/// Bound long-lived leases separately so they cannot starve sync or pairing.
+pub(crate) const MAX_ACTIVE_MUTE_LEASES: usize = 64;
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
@@ -141,6 +146,7 @@ pub(crate) struct Inner {
     pub pairing_in_progress: AtomicBool,
     pub pairing_generation: AtomicU64,
     pub sessions: Mutex<HashSet<String>>,
+    pub mute_sessions: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub discovered: Mutex<HashMap<String, DiscoveredDevice>>,
     pub status: Mutex<HashMap<String, PeerStatus>>,
     pub backoff: Mutex<HashMap<String, Backoff>>,
@@ -152,6 +158,7 @@ pub(crate) struct Inner {
     pub available: AtomicBool,
     pub listener_failed: AtomicBool,
     pub incoming_slots: Arc<Semaphore>,
+    pub mute_lease_slots: Arc<Semaphore>,
 }
 
 pub(crate) enum PendingPairing {
@@ -365,6 +372,7 @@ impl SyncManager {
             pairing_in_progress: AtomicBool::new(false),
             pairing_generation: AtomicU64::new(0),
             sessions: Mutex::new(HashSet::new()),
+            mute_sessions: Mutex::new(HashMap::new()),
             discovered: Mutex::new(HashMap::new()),
             status: Mutex::new(HashMap::new()),
             backoff: Mutex::new(HashMap::new()),
@@ -376,6 +384,7 @@ impl SyncManager {
             available: AtomicBool::new(false),
             listener_failed: AtomicBool::new(false),
             incoming_slots: Arc::new(Semaphore::new(MAX_INCOMING_CONNECTIONS)),
+            mute_lease_slots: Arc::new(Semaphore::new(MAX_ACTIVE_MUTE_LEASES)),
         });
         let manager = SyncManager { inner };
 
@@ -1505,6 +1514,7 @@ impl SyncManager {
     }
 
     async fn monitor_tick(&self) {
+        self.monitor_muting();
         let paired = conn_peers(&self.inner.db);
         if paired.is_empty() {
             return;
@@ -2039,6 +2049,9 @@ async fn handle_connection(
         _ => return,
     };
     match first {
+        Message::DictationMute { device_uuid } => {
+            muting::receive(inner, tls, device_uuid, peer_fp, permit).await;
+        }
         Message::PairRequest {
             device_uuid,
             device_name,

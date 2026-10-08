@@ -13,7 +13,87 @@ use windows::Win32::System::Com::{
 };
 
 #[cfg(windows)]
-static IS_MUTED: Mutex<bool> = Mutex::new(false);
+static MUTED_ENDPOINT: Mutex<WindowsMuteState> = Mutex::new(WindowsMuteState::new());
+
+#[cfg(any(windows, test))]
+const MAX_PENDING_WINDOWS_RESTORES: usize = 8;
+
+/// Tracks the endpoint for the current mute owner separately from endpoints
+/// whose restoration failed. A stale endpoint must not block muting a new one.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct WindowsMuteState {
+    active_endpoint: Option<String>,
+    pending_restores: Vec<String>,
+}
+
+#[cfg(any(windows, test))]
+impl WindowsMuteState {
+    const fn new() -> Self {
+        Self {
+            active_endpoint: None,
+            pending_restores: Vec::new(),
+        }
+    }
+
+    fn begin(
+        &mut self,
+        snapshot_and_mute: impl FnOnce() -> Result<Option<String>, String>,
+        mut restore: impl FnMut(&str) -> Result<(), String>,
+    ) -> Vec<String> {
+        if self.active_endpoint.is_some() {
+            return Vec::new();
+        }
+
+        let mut failures = self.retry_pending(&mut restore);
+        match snapshot_and_mute() {
+            Ok(endpoint) => self.active_endpoint = endpoint,
+            Err(err) => failures.push(err),
+        }
+        failures
+    }
+
+    fn end(&mut self, mut restore: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
+        let mut failures = self.retry_pending(&mut restore);
+        if let Some(endpoint) = self.active_endpoint.take() {
+            if let Err(err) = restore(&endpoint) {
+                self.defer_restore(endpoint);
+                failures.push(err);
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+
+    fn retry_pending(
+        &mut self,
+        restore: &mut impl FnMut(&str) -> Result<(), String>,
+    ) -> Vec<String> {
+        let pending = std::mem::take(&mut self.pending_restores);
+        let mut failures = Vec::new();
+        for endpoint in pending {
+            if let Err(err) = restore(&endpoint) {
+                self.defer_restore(endpoint);
+                failures.push(err);
+            }
+        }
+        failures
+    }
+
+    fn defer_restore(&mut self, endpoint: String) {
+        if self.pending_restores.contains(&endpoint) {
+            return;
+        }
+        if self.pending_restores.len() == MAX_PENDING_WINDOWS_RESTORES {
+            self.pending_restores.remove(0);
+            log::warn!("Dropping oldest deferred Windows audio restore after reaching the bounded retry limit");
+        }
+        self.pending_restores.push(endpoint);
+    }
+}
 
 #[cfg(target_os = "macos")]
 static RESTORE_STATE: Mutex<MacRestoreState> = Mutex::new(MacRestoreState::Idle);
@@ -53,19 +133,46 @@ enum HogState {
 }
 
 #[cfg(windows)]
-unsafe fn get_volume_interface() -> Result<IAudioEndpointVolume, windows::core::Error> {
-    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-    device.Activate(CLSCTX_ALL, None)
+fn snapshot_and_mute_windows() -> Result<Option<String>, String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| e.to_string())?;
+        let volume: IAudioEndpointVolume = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| e.to_string())?;
+        if volume.GetMute().map_err(|e| e.to_string())?.as_bool() {
+            return Ok(None);
+        }
+        let id = device.GetId().map_err(|e| e.to_string())?;
+        let endpoint = id.to_string().map_err(|e| e.to_string());
+        windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
+        let endpoint = endpoint?;
+        volume
+            .SetMute(true, std::ptr::null())
+            .map_err(|e| e.to_string())?;
+        Ok(Some(endpoint))
+    }
 }
 
 #[cfg(windows)]
-fn set_system_muted(muted: bool) -> Result<(), String> {
-    let volume = unsafe { get_volume_interface() }
-        .map_err(|e| format!("Failed to obtain audio endpoint volume: {e}"))?;
-    unsafe { volume.SetMute(muted, std::ptr::null()) }
-        .map_err(|e| format!("Failed to set system mute: {e}"))
+fn restore_windows_endpoint(endpoint: &str) -> Result<(), String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        let id = windows::core::HSTRING::from(endpoint);
+        let device = enumerator.GetDevice(&id).map_err(|e| e.to_string())?;
+        let volume: IAudioEndpointVolume = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| e.to_string())?;
+        volume
+            .SetMute(false, std::ptr::null())
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -452,7 +559,12 @@ mod macos {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android"
+)))]
 fn set_system_muted(_muted: bool) -> Result<(), String> {
     Ok(())
 }
@@ -485,8 +597,7 @@ mod linux {
         inspect.lines().find_map(|line| {
             let rest = line.trim().strip_prefix("id ")?;
             let id = rest.split(',').next()?.trim();
-            (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
-                .then(|| id.to_string())
+            (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then(|| id.to_string())
         })
     }
 
@@ -523,7 +634,7 @@ static LINUX_MUTED_SINK: Mutex<Option<linux::Sink>> = Mutex::new(None);
 
 #[cfg(windows)]
 pub fn mute() {
-    let mut muted = match IS_MUTED.lock() {
+    let mut muted = match MUTED_ENDPOINT.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
             log::warn!("System mute state lock was poisoned; recovering");
@@ -531,19 +642,14 @@ pub fn mute() {
         }
     };
 
-    if *muted {
-        return;
+    for err in muted.begin(snapshot_and_mute_windows, restore_windows_endpoint) {
+        log::warn!("Failed to apply Windows audio mute state: {err}");
     }
-    if let Err(err) = set_system_muted(true) {
-        log::warn!("Failed to mute system audio: {err}");
-        return;
-    }
-    *muted = true;
 }
 
 #[cfg(windows)]
 pub fn unmute() {
-    let mut muted = match IS_MUTED.lock() {
+    let mut muted = match MUTED_ENDPOINT.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
             log::warn!("System mute state lock was poisoned; recovering");
@@ -551,14 +657,9 @@ pub fn unmute() {
         }
     };
 
-    if !*muted {
-        return;
+    if let Err(err) = muted.end(restore_windows_endpoint) {
+        log::warn!("Failed to unmute system audio; restoration will be retried: {err}");
     }
-    if let Err(err) = set_system_muted(false) {
-        log::warn!("Failed to unmute system audio: {err}");
-        return;
-    }
-    *muted = false;
 }
 
 #[cfg(target_os = "macos")]
@@ -759,25 +860,57 @@ mod linux_tests {
     #[test]
     fn wpctl_inspect_header_yields_node_id() {
         assert_eq!(
-            super::linux::parse_wpctl_id("id 34, type PipeWire:Interface:Node\n  alsa.card = \"0\""),
+            super::linux::parse_wpctl_id(
+                "id 34, type PipeWire:Interface:Node\n  alsa.card = \"0\""
+            ),
             Some("34".to_string())
         );
         assert_eq!(
-            super::linux::parse_wpctl_id("diagnostic banner\n  id 52, type PipeWire:Interface:Node"),
+            super::linux::parse_wpctl_id(
+                "diagnostic banner\n  id 52, type PipeWire:Interface:Node"
+            ),
             Some("52".to_string())
         );
         assert_eq!(super::linux::parse_wpctl_id("Object not found"), None);
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android"
+)))]
 pub fn mute() {
     let _ = set_system_muted(true);
 }
 
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android"
+)))]
 pub fn unmute() {
     let _ = set_system_muted(false);
+}
+
+// Kotlin applies this desired state to media audio through the existing bridge.
+static ANDROID_MUTE_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn android_mute_requested() -> bool {
+    ANDROID_MUTE_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(target_os = "android")]
+pub fn mute() {
+    ANDROID_MUTE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(target_os = "android")]
+pub fn unmute() {
+    ANDROID_MUTE_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Exclusive microphone access is macOS-only; no-op everywhere else.
@@ -791,3 +924,121 @@ pub fn hog_mic(_session_id: u64) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn release_mic(_session_id: u64) {}
+
+#[cfg(test)]
+mod windows_mute_state_tests {
+    use super::WindowsMuteState;
+    use std::cell::Cell;
+
+    #[test]
+    fn failed_restore_does_not_block_a_later_default_endpoint_mute() {
+        let mut state = WindowsMuteState::new();
+        let mut restore_attempts = Vec::new();
+
+        state.begin(
+            || Ok(Some("removed-endpoint".to_string())),
+            |endpoint| {
+                restore_attempts.push(endpoint.to_string());
+                Ok(())
+            },
+        );
+        assert_eq!(state.active_endpoint.as_deref(), Some("removed-endpoint"));
+
+        let restore_result = state.end(|endpoint| {
+            restore_attempts.push(endpoint.to_string());
+            Err("endpoint disappeared".to_string())
+        });
+        assert!(restore_result.is_err());
+        assert_eq!(state.active_endpoint, None);
+        assert_eq!(state.pending_restores, ["removed-endpoint"]);
+
+        let new_endpoint_muted = Cell::new(false);
+        state.begin(
+            || {
+                new_endpoint_muted.set(true);
+                Ok(Some("current-endpoint".to_string()))
+            },
+            |endpoint| {
+                restore_attempts.push(endpoint.to_string());
+                if endpoint == "removed-endpoint" {
+                    Err("endpoint is still unavailable".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(new_endpoint_muted.get());
+        assert_eq!(state.active_endpoint.as_deref(), Some("current-endpoint"));
+        assert_eq!(state.pending_restores, ["removed-endpoint"]);
+
+        state
+            .end(|endpoint| {
+                restore_attempts.push(endpoint.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(state.active_endpoint, None);
+
+        state.begin(
+            || Ok(None),
+            |endpoint| {
+                restore_attempts.push(endpoint.to_string());
+                Ok(())
+            },
+        );
+        assert!(state.pending_restores.is_empty());
+        assert_eq!(state.active_endpoint, None);
+        assert!(
+            restore_attempts
+                .iter()
+                .filter(|id| *id == "removed-endpoint")
+                .count()
+                >= 3
+        );
+    }
+
+    #[test]
+    fn deferred_windows_restores_are_deduplicated_and_bounded() {
+        let mut state = WindowsMuteState::new();
+        for index in 0..12 {
+            state.defer_restore(format!("endpoint-{index}"));
+        }
+        state.defer_restore("endpoint-11".to_string());
+
+        assert_eq!(
+            state.pending_restores.len(),
+            super::MAX_PENDING_WINDOWS_RESTORES
+        );
+        assert_eq!(
+            state.pending_restores.last().map(String::as_str),
+            Some("endpoint-11")
+        );
+        let mut sorted = state.pending_restores.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), state.pending_restores.len());
+    }
+
+    #[test]
+    fn unmute_retries_pending_restore_without_an_active_endpoint() {
+        let mut state = WindowsMuteState::new();
+        state.begin(|| Ok(Some("temporarily-missing".to_string())), |_| Ok(()));
+        assert!(state
+            .end(|_| Err("endpoint unavailable".to_string()))
+            .is_err());
+        assert_eq!(state.active_endpoint, None);
+        assert_eq!(state.pending_restores, ["temporarily-missing"]);
+
+        let mut restored = None;
+        state
+            .end(|endpoint| {
+                restored = Some(endpoint.to_string());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(restored.as_deref(), Some("temporarily-missing"));
+        assert!(state.pending_restores.is_empty());
+        assert_eq!(state.active_endpoint, None);
+    }
+}

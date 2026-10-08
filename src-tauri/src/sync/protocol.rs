@@ -165,6 +165,19 @@ pub struct OpsBatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
+    /// Ephemeral mute lease on a separate pinned TLS connection. Never persisted.
+    DictationMute {
+        device_uuid: String,
+    },
+    DictationMuteAck {
+        enabled: bool,
+        /// The receiver is opted in but its bounded active-lease pool is full.
+        /// Older peers omit this field and are treated as a non-retryable decline.
+        #[serde(default)]
+        busy: bool,
+    },
+    DictationMuteHeartbeat,
+    DictationMuteEnd,
     Hello(Hello),
     HelloAck(Hello),
     Meta {
