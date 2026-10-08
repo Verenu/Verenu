@@ -31,6 +31,7 @@ export type ReadinessInput = {
   cleanupIntensity?: string | null;
   cleanupIntensityOverrideMayBeUsed?: boolean;
   dualTranscriptionEnabled?: boolean;
+  isOnline?: boolean;
   keys: Record<string, boolean>;
   speechModels: { id: string; is_downloaded: boolean }[];
   cleanupModels: { id: string; is_downloaded: boolean }[];
@@ -101,7 +102,7 @@ type ModelCandidateInput = Pick<ReadinessInput,
   'keys' | 'speechModels' | 'cleanupModels' | 'cleanupEngineInstalled' | 'customProviders'>;
 
 type DualTranscriptionInput = Pick<ReadinessInput,
-  'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks'> & ModelCandidateInput;
+  'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks' | 'isOnline'> & ModelCandidateInput;
 
 function normalizedTranscriptionModelChain(input: DualTranscriptionInput): string[] {
   const models = [input.transcriptionModel, ...(input.transcriptionFallbacks ?? [])]
@@ -114,6 +115,8 @@ function normalizedTranscriptionModelChain(input: DualTranscriptionInput): strin
 function dualTranscriptionMayNeedCleanup(input: DualTranscriptionInput): boolean {
   if (input.dualTranscriptionEnabled !== true) return false;
   return normalizedTranscriptionModelChain(input)
+    // Match candidate_available_offline: local and custom endpoints remain eligible.
+    .filter(model => input.isOnline !== false || model.startsWith('local/') || isCustomProviderId(model.slice(0, model.indexOf('/'))))
     .filter(model => evaluateModel('transcription', model, input).ready)
     .length > 1;
 }

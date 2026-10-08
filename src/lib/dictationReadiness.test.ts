@@ -15,6 +15,29 @@ const downloadedSpeech = [{ id: 'parakeet-v3', is_downloaded: true }];
 const downloadedCleanup = [{ id: 'qwen2.5-3b-instruct', is_downloaded: true }];
 
 describe('dictation configuration readiness', () => {
+  it('excludes built-in cloud speech from offline fusion but restores it online', () => {
+    const input: ReadinessInput = {
+      ...cloud, transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['groq/whisper-large-v3-turbo'],
+      speechModels: downloadedSpeech, keys: { groq: true },
+      dualTranscriptionEnabled: true, cleanupIntensity: 'none', isOnline: false,
+    };
+    expect(cleanupMayBeUsed(input)).toBe(false);
+    expect(dictationReadiness(input)).toEqual([]);
+    expect(cleanupMayBeUsed({ ...input, isOnline: true })).toBe(true);
+    expect(dictationReadiness({ ...input, isOnline: true }).some(issue => issue.task === 'cleanup')).toBe(true);
+    expect(cleanupMayBeUsed({ ...input, cleanupIntensityOverrideMayBeUsed: true })).toBe(true);
+  });
+
+  it('preserves custom speech endpoints in offline fusion', () => {
+    const custom = { id: 'custom:11111111-1111-4111-8111-111111111111', name: 'LAN endpoint', requires_key: false, supports_transcription: true, supports_cleanup: false };
+    expect(cleanupMayBeUsed({
+      ...cloud, transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: [`${custom.id}/speech`], speechModels: downloadedSpeech,
+      customProviders: [custom], dualTranscriptionEnabled: true, cleanupIntensity: 'none', isOnline: false,
+    })).toBe(true);
+  });
+
   it('resolves backend provider defaults when both model settings are invalid', () => {
     const backendDefaults = [
       ['transcription', 'groq', 'groq/whisper-large-v3-turbo'],

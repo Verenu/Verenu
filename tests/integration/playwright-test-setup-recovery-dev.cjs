@@ -137,6 +137,27 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await assertSafe(readyCloud);
     await readyCloud.close();
 
+    const offlineFusion = await open({
+      cleanup_enabled: true, cleanup_intensity: 'none', dual_transcription_enabled: true,
+      transcription_default_model: 'local/parakeet-v3',
+      transcription_fallback_models: ['groq/whisper-large-v3-turbo'],
+      cleanup_default_model: 'local/readiness-missing-cleanup', cleanup_fallback_models: [],
+      __provider_connected: { groq: true },
+    }, { 'parakeet-v3': { downloaded: true } });
+    await expect(offlineFusion.locator('.readiness-notice')).toContainText('readiness-missing-cleanup');
+    await offlineFusion.evaluate(async () => {
+      const { appStore } = await import('/src/lib/stores.ts'); appStore.isOnline = false;
+    });
+    await expect(offlineFusion.locator('.readiness-notice')).toHaveCount(0);
+    await offlineFusion.setViewportSize({ width: 390, height: 844 });
+    await expect(offlineFusion.locator('.readiness-notice')).toHaveCount(0);
+    await offlineFusion.evaluate(async () => {
+      const { appStore } = await import('/src/lib/stores.ts'); appStore.isOnline = true;
+    });
+    await expect(offlineFusion.locator('.readiness-notice')).toContainText('readiness-missing-cleanup');
+    await assertSafe(offlineFusion);
+    await offlineFusion.close();
+
     const readyLocal = await open({
       cleanup_enabled: false,
       cleanup_intensity: 'none',
