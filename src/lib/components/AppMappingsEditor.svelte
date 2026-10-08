@@ -65,6 +65,7 @@
     try {
       await invoke('save_app_mappings', { mappings });
       mappingError = '';
+      window.dispatchEvent(new CustomEvent('verenu:setting-saved', { detail: { key: 'app_mappings' } }));
       return true;
     } catch (err) {
       console.error('save_app_mappings failed:', err);
