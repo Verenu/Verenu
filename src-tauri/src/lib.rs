@@ -924,6 +924,7 @@ pub fn run() {
             // loaded would orphan llama-server.exe, leaving it running
             // indefinitely and holding the loaded model's RAM/VRAM.
             if let tauri::RunEvent::Exit = _event {
+                crate::media::sound::release_all_mutes_on_exit();
                 log::info!("app exiting; unloading local models");
                 crate::pipeline::failover::flush_on_exit(_app);
                 crate::system::shutdown_local_models(_app);

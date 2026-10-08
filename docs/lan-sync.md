@@ -30,6 +30,31 @@ retain an unresolved marker for later repair.
 
 ## Transfer and merge behavior
 
+### Synchronous muting
+
+Turn on **Settings > Sync > Synchronous muting** on each device that should
+participate. The preference defaults to off and stays local. During recording,
+Verenu asks reachable paired devices with this enabled to mute their output.
+This includes LAN discovery and saved Tailscale routes. The recording device's
+own audio remains controlled by its separate dictation mute setting.
+
+Mute requests use separate connections authenticated with the pairing certificate
+pins. They never enter the content change log or replay after reconnecting.
+Stopping, cancelling, opting out, or removing a peer releases its mute. If a
+connection stalls, its lease expires after four seconds without a heartbeat.
+Overlapping recordings retain independent mute ownership until all have ended.
+Already muted output stays muted, and restoration targets the original output
+device on desktop. Normal app exit also restores audio. An abrupt process kill
+on the receiving desktop cannot run restoration.
+
+On Android, the accessibility service applies temporary media volume changes
+through the existing bridge. Calls, alarms, and ringtone volume stay unchanged.
+The service preserves only the prior media volume it changed and respects
+volume changes made while muted. After a service or process restart, it restores
+that saved level when media volume is still zero. Keep Verenu and its
+accessibility service running; Android can suspend background apps. Bridge
+polling adds a short delay to applying and releasing mute.
+
 The SQLite change log tracks stable row UUIDs and last-writer-wins stamps.
 Both directions have separate persistent cursors. New or stale peers receive
 paginated snapshots, followed by incremental changes on later sessions.
