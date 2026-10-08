@@ -2,6 +2,68 @@ import { test as base, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
 import { sourceIdentity } from '../../scripts/verification/identity.mjs';
 export const test = base.extend({
+  readySpeech: async ({ page, session }, use) => {
+    const previous = await session.invoke('get_all_settings');
+    const provider = {
+      id: 'custom:12345678-1234-1234-8234-123456789012',
+      name: 'Readiness test endpoint',
+      protocol: 'openai',
+      base_url: 'http://127.0.0.1:1/v1',
+      requires_key: false,
+      supports_transcription: true,
+      supports_cleanup: false,
+      auth_header: null,
+      extra_headers: {},
+      body_overrides: null,
+      transcription_models: ['synthetic-speech'],
+      cleanup_models: [],
+    };
+    try {
+      await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
+      await session.invoke('save_setting', { key: 'transcription_default_model', value: `${provider.id}/synthetic-speech` });
+      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
+      await page.reload();
+      await use();
+    } finally {
+      await session.invoke('save_setting', { key: 'custom_providers', value: previous.custom_providers ?? [] });
+      await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? null });
+      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models ?? [] });
+      await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous.cleanup_enabled ?? true });
+      await page.reload();
+    }
+  },
+  incompleteSpeech: async ({ page, session }, use) => {
+    const previous = await session.invoke('get_all_settings');
+    const provider = {
+      id: 'custom:12345678-1234-1234-8234-123456789013',
+      name: 'Cleanup-only test endpoint',
+      protocol: 'openai',
+      base_url: 'http://127.0.0.1:1/v1',
+      requires_key: false,
+      supports_transcription: false,
+      supports_cleanup: true,
+      auth_header: null,
+      extra_headers: {},
+      body_overrides: null,
+      transcription_models: [],
+      cleanup_models: ['synthetic-cleanup'],
+    };
+    try {
+      await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
+      await session.invoke('save_setting', { key: 'transcription_default_model', value: `${provider.id}/unsupported-speech` });
+      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
+      await page.reload();
+      await use();
+    } finally {
+      await session.invoke('save_setting', { key: 'custom_providers', value: previous.custom_providers ?? [] });
+      await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? null });
+      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models ?? [] });
+      await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous.cleanup_enabled ?? true });
+      await page.reload();
+    }
+  },
   cachedCatalogs: async ({ session }, use) => {
     const original = await session.invoke('get_setting', { key: 'provider_model_cache' });
     const now = Date.now();
