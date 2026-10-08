@@ -133,6 +133,6 @@ export function hasReadyLocalSpeech(input: ReadinessInput): boolean {
 export function hasCloudSpeechCandidate(input: ReadinessInput): boolean {
   return candidatesFor('transcription', input).some(model => {
     const provider = model.slice(0, model.indexOf('/'));
-    return CLOUD_PROVIDERS.has(provider) || input.customProviders?.some(item => item.id === provider && item.supports_transcription) === true;
+    return CLOUD_PROVIDERS.has(provider);
   });
 }
