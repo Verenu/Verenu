@@ -1,3 +1,10 @@
+import {
+  ALL_PROVIDER_IDS,
+  migrateDeprecatedGoogleModel,
+  migrateDeprecatedGroqCleanupModel,
+} from './components/settings/models';
+import { isCustomProviderId } from './customProviders.svelte';
+
 export type ReadinessIssue = {
   task: 'transcription' | 'cleanup';
   message: string;
@@ -143,7 +150,25 @@ function supportsBuiltinCleanupModel(provider: string, rawModel: string): boolea
 function candidatesFor(task: ReadinessIssue['task'], input: ReadinessInput): string[] {
   const primary = task === 'transcription' ? input.transcriptionModel : input.cleanupModel;
   const fallbacks = task === 'transcription' ? input.transcriptionFallbacks : input.cleanupFallbacks;
-  return [...new Set([primary, ...(fallbacks ?? [])].map(model => model.trim()).filter(Boolean))];
+  return [...new Set([primary, ...(fallbacks ?? [])].map(migrateCandidate).filter(Boolean))];
+}
+
+// Settings and the Rust pipeline both migrate these deprecated ids while
+// loading configuration. Readiness reads persisted values directly, so it
+// applies the same shared model migrations before deciding whether a chain is
+// usable. Unqualified or otherwise invalid IDs stay unchanged, matching the
+// backend parser's behavior.
+function migrateCandidate(value: string): string {
+  const normalized = value.trim();
+  const slash = normalized.indexOf('/');
+  if (slash <= 0) return normalized;
+
+  const provider = normalized.slice(0, slash).trim().toLowerCase();
+  const model = normalized.slice(slash + 1).trim();
+  if (!model || (!ALL_PROVIDER_IDS.some(id => id === provider) && !isCustomProviderId(provider))) return normalized;
+  if (provider === 'google') return `${provider}/${migrateDeprecatedGoogleModel(model)}`;
+  if (provider === 'groq') return `${provider}/${migrateDeprecatedGroqCleanupModel(model)}`;
+  return `${provider}/${model}`;
 }
 
 export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {

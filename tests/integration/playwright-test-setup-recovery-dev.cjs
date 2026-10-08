@@ -23,14 +23,20 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const errors = [];
-  async function screenshot(page, name) {
-    if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, `${name}.png`), fullPage: true });
+  async function screenshot(page, name, fullPage = true) {
+    if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, `${name}.png`), fullPage });
   }
-  async function open(settings = {}, localSttModels = {}, localLlmModels = {}, runtimeInstalled = false) {
+  async function open(settings = {}, localSttModels = {}, localLlmModels = {}, runtimeInstalled = false, localStates = {}) {
     const page = await browser.newPage({ viewport: { width: 900, height: 600 }, reducedMotion: 'reduce' });
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(TARGET_URL).origin ? route.continue() : route.abort());
-    await seedDevState(page, { settings: { ...base, ...settings }, localSttModels, localLlmModels });
+    await seedDevState(page, {
+      settings: { ...base, ...settings },
+      localSttModels,
+      localLlmModels,
+      localSttState: localStates.transcription ?? null,
+      localLlmState: localStates.cleanup ?? null,
+    });
     await page.addInitScript(installed => localStorage.setItem('verenu:dev-local-llm-runtime', JSON.stringify({ installed, is_downloading: false })), runtimeInstalled);
     await page.goto(TARGET_URL, { waitUntil: 'networkidle' });
     await guard(page);
@@ -48,6 +54,9 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
         }
         return start(command);
       };
+      const { localModelDownloads } = await import('/src/lib/components/settings/localModelDownloads.ts');
+      localModelDownloads.transcription.download = async () => false;
+      localModelDownloads.cleanup.download = async () => false;
     });
   }
   async function publish(page, status) {
@@ -63,6 +72,34 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
       return frontendIpcActivity.snapshot().map(item => item.command);
     });
     assert(!commands.some(command => /^download_|validate_api_key|start_.*recording|transcribe|check_provider_status/.test(command)), 'No model download, provider validation, recording, or provider-status command should run');
+  }
+
+  async function completeLocalSetup({
+    localSttModels = {},
+    localSttState = { current_model_id: null, is_loaded: false, is_loading: false, is_downloading: false, downloading_model_id: null },
+    presetName = 'Transcription only',
+    chooseMissingSpeech = false,
+  } = {}) {
+    const page = await open({ setup_complete: false, force_setup_on_launch: true }, localSttModels, {}, false, { transcription: localSttState });
+    await page.getByRole('button', { name: 'Get Started' }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.locator('.provider-card:has-text("On this device")').click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    const selectedPreset = page.locator('.models-picker .preset-row').filter({ hasText: presetName });
+    await expect(selectedPreset).toBeVisible();
+    if (chooseMissingSpeech) {
+      await selectedPreset.getByRole('button', { name: /^Download/ }).click();
+    } else {
+      await selectedPreset.getByRole('button', { name: `Use local ${presetName}`, exact: true }).click();
+    }
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(page.locator('.setup-overlay .done-step')).toBeVisible();
+    return page;
   }
 
   try {
@@ -189,8 +226,88 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await assertSafe(setupLocalWithCloudKey);
     await setupLocalWithCloudKey.close();
 
+    const pendingLocalDone = await completeLocalSetup({
+      localSttModels: { 'parakeet-v3': { downloaded: false, partial_size: 512 } },
+      localSttState: {
+        current_model_id: null, is_loaded: false, is_loading: false,
+        is_downloading: true, downloading_model_id: 'parakeet-v3',
+      },
+      chooseMissingSpeech: true,
+    });
+    await expect(pendingLocalDone.getByRole('heading', { name: 'Your choices are saved when you finish.' })).toBeVisible();
+    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('speech model is still downloading');
+    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('Open Models settings');
+    await expect(pendingLocalDone.getByRole('button', { name: 'Finish setup', exact: true })).toBeEnabled();
+    await expect(pendingLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
+    await screenshot(pendingLocalDone, 'setup-done-local-pending');
+    await pendingLocalDone.setViewportSize({ width: 390, height: 844 });
+    await screenshot(pendingLocalDone, 'setup-done-local-pending-phone', false);
+    await pendingLocalDone.setViewportSize({ width: 900, height: 600 });
+    await assertSafe(pendingLocalDone);
+
+    await pendingLocalDone.getByRole('button', { name: 'Open Models settings', exact: true }).click();
+    await expect(pendingLocalDone.locator('.settings-page')).toBeVisible();
+    await expect(pendingLocalDone.getByRole('button', { name: 'Back to setup', exact: true })).toBeVisible();
+    await pendingLocalDone.getByRole('button', { name: 'Back to setup', exact: true }).click();
+    await expect(pendingLocalDone.locator('.settings-page')).toHaveCount(0);
+    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('speech model is still downloading');
+
+    await pendingLocalDone.evaluate(async () => {
+      const { invoke } = await import('/src/lib/tauri.ts');
+      await invoke('cancel_local_stt_model_download', { modelId: 'parakeet-v3' });
+    });
+    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText("speech model isn't installed yet");
+    await assertSafe(pendingLocalDone);
+
+    await pendingLocalDone.evaluate(async () => {
+      localStorage.setItem('verenu:dev-local-stt-models', JSON.stringify({ 'parakeet-v3': { downloaded: true, partial_size: 0 } }));
+      localStorage.setItem('verenu:dev-local-stt-state', JSON.stringify({
+        current_model_id: null, is_loaded: false, is_loading: false,
+        is_downloading: false, downloading_model_id: null,
+      }));
+      const { emit } = await import('/src/lib/tauri.ts');
+      await emit('local-stt-model-download-complete', { model_id: 'parakeet-v3', error: null });
+    });
+    await expect(pendingLocalDone.locator('.done-model-warning')).toHaveCount(0);
+    await expect(pendingLocalDone.getByRole('heading', { name: "You're all set." })).toBeVisible();
+    await screenshot(pendingLocalDone, 'setup-done-local-installed');
+    await pendingLocalDone.setViewportSize({ width: 390, height: 844 });
+    await screenshot(pendingLocalDone, 'setup-done-local-installed-phone', false);
+    await pendingLocalDone.setViewportSize({ width: 900, height: 600 });
+    await assertSafe(pendingLocalDone);
+    await pendingLocalDone.close();
+
+    const missingLocalDone = await completeLocalSetup({
+      localSttModels: { 'parakeet-v3': { downloaded: false, partial_size: 0 } },
+      chooseMissingSpeech: true,
+    });
+    await expect(missingLocalDone.locator('.done-model-warning')).toContainText("speech model isn't installed yet");
+    await expect(missingLocalDone.locator('.done-model-warning')).toContainText('Open Models settings');
+    await expect(missingLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
+    await assertSafe(missingLocalDone);
+    await missingLocalDone.close();
+
+    const installedLocalDone = await completeLocalSetup({
+      localSttModels: { 'parakeet-v3': { downloaded: true, partial_size: 0 } },
+    });
+    await expect(installedLocalDone.locator('.done-model-warning')).toHaveCount(0);
+    await expect(installedLocalDone.getByRole('heading', { name: "You're all set." })).toBeVisible();
+    await expect(installedLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
+    await assertSafe(installedLocalDone);
+    await installedLocalDone.close();
+
+    const missingCleanupLocalDone = await completeLocalSetup({
+      presetName: 'Fastest',
+      chooseMissingSpeech: true,
+    });
+    await expect(missingCleanupLocalDone.locator('.done-model-warning')).toContainText('cleanup model');
+    await expect(missingCleanupLocalDone.locator('.done-model-warning')).toContainText('cleanup engine');
+    await expect(missingCleanupLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
+    await assertSafe(missingCleanupLocalDone);
+    await missingCleanupLocalDone.close();
+
     assert.deepEqual(errors, []);
-    console.log('PASS - home readiness, configured fallback readiness, shortcut recovery, wizard state preservation, local-only preselection, and transcription-only choice; no downloads or provider calls');
+    console.log('PASS - home readiness, configured fallback readiness, shortcut recovery, wizard state preservation, local-only preselection, transcription-only choice, and Done model readiness across pending, cancelled, missing, installed, and cleanup-enabled local states; no model-download, provider, or recording IPC');
   } finally {
     await browser.close();
   }
