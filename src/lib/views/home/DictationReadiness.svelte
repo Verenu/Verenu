@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke, listen, type LocalSttModelInfo, type LocalLlmModelInfo, type LocalLlmRuntimeInfo } from '../../tauri';
   import { appStore } from '../../stores';
-  import { dictationReadiness, hasCloudSpeechCandidate, hasReadyLocalSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
+  import { dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
   import { openSetupSettings } from '../../settingsNavigation';
 
   let { onchange }: { onchange: (incomplete: boolean) => void } = $props();
@@ -10,14 +10,14 @@
   let checking = $state(true);
   let failed = $state(false);
   let cloudSpeechConfigured = $state(false);
-  let localSpeechReady = $state(false);
+  let offlineSpeechReady = $state(false);
   let sequence = 0;
   let mounted = false;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   const connectionWarning = $derived(
     !checking && !failed && !issues.some(issue => issue.task === 'transcription') &&
-    cloudSpeechConfigured && !localSpeechReady && !appStore.isOnline,
+    cloudSpeechConfigured && !offlineSpeechReady && !appStore.isOnline,
   );
 
   async function refresh() {
@@ -60,7 +60,7 @@
       };
       issues = dictationReadiness(input);
       cloudSpeechConfigured = hasCloudSpeechCandidate(input);
-      localSpeechReady = hasReadyLocalSpeech(input);
+      offlineSpeechReady = hasReadyOfflineSpeech(input);
       failed = false;
     } catch {
       if (!mounted || current !== sequence) return;
@@ -133,7 +133,7 @@
       {/each}
       {#if connectionWarning}
         <div class="readiness-row">
-          <p>Cloud speech recognition needs a connection. Reconnect or choose installed local speech.</p>
+          <p>Cloud speech recognition needs a connection. Reconnect or choose installed local speech or a ready custom endpoint.</p>
           <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open model settings</button>
         </div>
       {/if}

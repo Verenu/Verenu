@@ -93,10 +93,51 @@ function evaluateModel(task: ReadinessIssue['task'], value: string, input: Readi
   if (!CLOUD_PROVIDERS.has(provider)) {
     return { ready: false, message: label + ' needs a supported model.', section: 'models' };
   }
+  if (task === 'cleanup' && !supportsBuiltinCleanupModel(provider, id)) {
+    return { ready: false, message: label + ' model ' + id + ' is not supported for cleanup.', section: 'models' };
+  }
   if (!input.keys[provider]) {
     return { ready: false, message: label + ' needs an API key for ' + provider + '.', section: 'keys' };
   }
   return { ready: true };
+}
+
+function supportsBuiltinCleanupModel(provider: string, rawModel: string): boolean {
+  const model = rawModel.trim().toLowerCase();
+  if (provider === 'assemblyai') return false;
+  if (provider === 'local') return true;
+  if (provider === 'google') {
+    if (model.includes('gemini-3')) {
+      return model.includes('gemini-3.5-flash-lite') || model.includes('gemini-3.5-flash');
+    }
+    return model.includes('gemini-2.5-flash') && !model.includes('gemini-2.5-pro');
+  }
+
+  if (['groq', 'openai', 'openrouter', 'xai'].includes(provider)) {
+    if (model.includes('gpt-oss')) return false;
+    if (provider === 'groq') {
+      return !model.startsWith('qwen/qwen3') || model.startsWith('qwen/qwen3.6-') || model.startsWith('qwen/qwen3.8-');
+    }
+    if (provider === 'openrouter') {
+      const separator = model.lastIndexOf('/');
+      const bare = separator < 0 ? model : model.slice(separator + 1);
+      const openAiOSeries = /^o\d/.test(bare);
+      return !(
+        model.endsWith(':thinking') || bare.includes('-thinking') || bare.includes('reasoner') ||
+        bare.includes('-r1') || openAiOSeries ||
+        (bare.startsWith('gpt-5') && !bare.startsWith('gpt-5.1'))
+      );
+    }
+    if (provider === 'xai') {
+      if (model.includes('non-reasoning')) return true;
+      return !(
+        model.includes('reasoning') || model.startsWith('grok-4') || model.startsWith('grok-3-mini')
+      );
+    }
+    return !model.startsWith('o') && !(model.startsWith('gpt-5') && !model.startsWith('gpt-5.1'));
+  }
+
+  return false;
 }
 
 function candidatesFor(task: ReadinessIssue['task'], input: ReadinessInput): string[] {
@@ -126,8 +167,12 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
   return issues;
 }
 
-export function hasReadyLocalSpeech(input: ReadinessInput): boolean {
-  return candidatesFor('transcription', input).some(model => model.startsWith('local/') && evaluateModel('transcription', model, input).ready);
+export function hasReadyOfflineSpeech(input: ReadinessInput): boolean {
+  return candidatesFor('transcription', input).some(model => {
+    const provider = model.slice(0, model.indexOf('/'));
+    const offlineCapable = provider === 'local' || input.customProviders?.some(custom => custom.id === provider) === true;
+    return offlineCapable && evaluateModel('transcription', model, input).ready;
+  });
 }
 
 export function hasCloudSpeechCandidate(input: ReadinessInput): boolean {
