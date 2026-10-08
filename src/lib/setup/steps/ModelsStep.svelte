@@ -18,6 +18,7 @@
   import {
     localLlmStore,
     refreshLocalLlmModels,
+    refreshLocalLlmRuntimeInfo,
     refreshLocalLlmState,
   } from '../../localLlmStore.svelte';
   import { localModelDownloads } from '../../components/settings/localModelDownloads';
@@ -146,6 +147,7 @@
     refreshLocalState().catch(() => {});
     refreshLocalLlmModels().catch(() => {});
     refreshLocalLlmState().catch(() => {});
+    refreshLocalLlmRuntimeInfo().catch(() => {});
     void checkPlatformLocalSupport();
     getHardware().then((hw) => { hardware = hw; }).catch(() => {});
   });

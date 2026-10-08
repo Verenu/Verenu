@@ -78,9 +78,15 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     await page.locator('.modal-card .btn-primary:has-text("Add term")').click();
     const dictionaryRow = page.locator('.dict-row:has-text("Verenu")');
     await dictionaryRow.waitFor({ state: 'visible', timeout: TIMEOUT });
-    if (await dictionaryRow.getAttribute('aria-pressed') !== 'true') {
-      await dictionaryRow.click();
-    }
+    await dictionaryModal.waitFor({ state: 'hidden', timeout: TIMEOUT });
+    // The asynchronous save selects the new row; reset after that update so
+    // this test exercises a deterministic row-selection transition.
+    await page.keyboard.press('Escape');
+    const dictionaryRowHandle = await dictionaryRow.elementHandle();
+    if (!dictionaryRowHandle) throw new Error('New dictionary row disappeared before selection');
+    await page.waitForFunction((row) => row.getAttribute('aria-pressed') === 'false', dictionaryRowHandle, { timeout: TIMEOUT });
+    await dictionaryRow.click();
+    await page.waitForFunction((row) => row.getAttribute('aria-pressed') === 'true', dictionaryRowHandle, { timeout: TIMEOUT });
     const dictionaryInspector = page.locator('.insp-often');
     await dictionaryInspector.waitFor({ state: 'visible', timeout: TIMEOUT });
     const dictInspector = (await dictionaryInspector.textContent()) || '';
