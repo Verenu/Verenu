@@ -1,7 +1,8 @@
 import { test, expect } from './fixtures.mjs';
 
 test('deleting the last sidebar cleanup override refreshes Home readiness', async ({ page, session, readySpeech }, testInfo) => {
-  test.skip((page.viewportSize()?.width ?? 0) < 700, 'The compact phone navigation has no sidebar context menu.');
+  const originalViewport = page.viewportSize();
+  const compactViewport = (originalViewport?.width ?? 0) < 700;
 
   const previous = await session.invoke('get_all_settings');
   const cleanupSettings = {
@@ -34,7 +35,15 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
 
     const notice = page.locator('.readiness-notice');
     await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');
-    await page.screenshot({ path: testInfo.outputPath('home-cleanup-override-before-delete.png') });
+    await page.screenshot({ path: testInfo.outputPath(`home-cleanup-override-before-delete-${compactViewport ? 'phone' : 'desktop'}.png`) });
+
+    // The phone layout has no sidebar context menu. Keep the real phone state
+    // asserted, resize only to perform the same Rust-backed deletion, then
+    // return to phone and verify the cleared readiness state there as well.
+    if (compactViewport && originalViewport) {
+      await page.setViewportSize({ width: 1320, height: originalViewport.height });
+      await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');
+    }
 
     await page.getByRole('button', { name: `More actions for ${name}`, exact: true }).click();
     await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
@@ -42,7 +51,9 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
 
     await expect.poll(async () => (await session.invoke('get_contexts')).some(row => row.id === context.id)).toBe(false);
     await expect(notice).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath('home-cleanup-override-after-delete.png') });
+    if (compactViewport && originalViewport) await page.setViewportSize(originalViewport);
+    await expect(notice).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`home-cleanup-override-after-delete-${compactViewport ? 'phone' : 'desktop'}.png`) });
   } finally {
     if (context && (await session.invoke('get_contexts')).some(row => row.id === context.id)) {
       await session.invoke('delete_context', { contextId: context.id });
@@ -51,6 +62,7 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
       const value = previous[key] ?? cleanupRestoreDefaults[key];
       await session.invoke('save_setting', { key, value });
     }
+    if (compactViewport && originalViewport) await page.setViewportSize(originalViewport);
     await page.reload();
   }
 });

@@ -21,6 +21,7 @@
     refreshLocalLlmState,
   } from '../../localLlmStore.svelte';
   import { localModelDownloads } from '../../components/settings/localModelDownloads';
+  import { reconcilePresetSelection } from '../presetSelection';
 
   let {
     provider,
@@ -86,9 +87,12 @@
   $effect(() => {
     const currentPreset = preset;
     const available = presets.filter((p) => p.kind === 'preset');
-    if (currentPreset && !available.some((p) => p.id === currentPreset.id)) {
-      preset = null;
-      userPicked = false;
+    if (currentPreset) {
+      const reconciled = reconcilePresetSelection(currentPreset, available);
+      if (reconciled !== currentPreset) {
+        preset = reconciled;
+        if (!reconciled) userPicked = false;
+      }
     }
     if (userPicked) return;
     const list = available.filter((p) => p.id !== 'local-transcription-only' && !needsDownload(p));
