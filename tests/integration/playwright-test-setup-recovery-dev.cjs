@@ -79,12 +79,15 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 
   async function completeLocalSetup({
     localSttModels = {},
+    localLlmModels = {},
     localSttState = { current_model_id: null, is_loaded: false, is_loading: false, is_downloading: false, downloading_model_id: null },
+    runtimeInstalled = false,
     presetName = 'Transcription only',
     chooseMissingSpeech = false,
+    requireInstalledPreset = false,
     cleanupChoice = null,
   } = {}) {
-    const page = await open({ setup_complete: false, force_setup_on_launch: true }, localSttModels, {}, false, { transcription: localSttState });
+    const page = await open({ setup_complete: false, force_setup_on_launch: true }, localSttModels, localLlmModels, runtimeInstalled, { transcription: localSttState });
     await page.getByRole('button', { name: 'Get Started' }).click();
     await page.getByRole('button', { name: 'Next', exact: true }).click();
     await page.locator('.provider-card:has-text("On this device")').click();
@@ -92,7 +95,9 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     const selectedPreset = page.locator('.models-picker .preset-row').filter({ hasText: presetName });
     await expect(selectedPreset).toBeVisible();
-    if (chooseMissingSpeech || await selectedPreset.getByRole('button', { name: /^Download/ }).count()) {
+    if (requireInstalledPreset) {
+      await selectedPreset.getByRole('button', { name: `Use local ${presetName}`, exact: true }).click();
+    } else if (chooseMissingSpeech || await selectedPreset.getByRole('button', { name: /^Download/ }).count()) {
       await selectedPreset.getByRole('button', { name: /^Download/ }).click();
     } else {
       await selectedPreset.getByRole('button', { name: `Use local ${presetName}`, exact: true }).click();
@@ -383,6 +388,25 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await screenshot(cleanupOffDone, 'setup-done-local-cleanup-off-short', false);
     await assertSafe(cleanupOffDone);
     await cleanupOffDone.close();
+
+    const installedLocalCleanupDone = await completeLocalSetup({
+      presetName: 'Balanced',
+      localSttModels: { 'parakeet-v3': { downloaded: true, partial_size: 0 } },
+      localLlmModels: { 'qwen2.5-3b-instruct': { downloaded: true, partial_size: 0 } },
+      runtimeInstalled: true,
+      requireInstalledPreset: true,
+      cleanupChoice: 'Medium',
+    });
+    await installedLocalCleanupDone.locator('.tryit-callout').waitFor({ state: 'hidden' });
+    await installedLocalCleanupDone.waitForFunction(() => document.getAnimations().every(animation =>
+      animation.playState !== 'running' || animation.effect?.getComputedTiming().iterations === Infinity));
+    await screenshot(installedLocalCleanupDone, 'installed-cleanup-desktop');
+    await installedLocalCleanupDone.setViewportSize({ width: 390, height: 844 });
+    await screenshot(installedLocalCleanupDone, 'installed-cleanup-phone');
+    await expect(installedLocalCleanupDone.locator('.done-model-warning')).toHaveCount(0);
+    await expect(installedLocalCleanupDone.getByRole('heading', { name: "You're all set." })).toBeVisible();
+    await assertSafe(installedLocalCleanupDone);
+    await installedLocalCleanupDone.close();
 
     const cleanupOnDone = await completeLocalSetup({
       presetName: 'Balanced',
