@@ -186,7 +186,7 @@ describe('dictation configuration readiness', () => {
     for (const [provider, model] of [
       ['openai', 'o3'],
       ['groq', 'qwen/qwen3-32b'],
-      ['google', 'gemini-2.5-pro'],
+      ['google', 'gemini-3.7-pro'],
       ['openrouter', 'openai/o3-mini'],
       ['xai', 'grok-4-fast-reasoning'],
       ['assemblyai', 'universal-2'],
@@ -221,6 +221,43 @@ describe('dictation configuration readiness', () => {
       keys: { groq: true, openai: true },
     });
     expect(fallback.some(issue => issue.task === 'cleanup')).toBe(false);
+  });
+
+  it('applies the backend model migrations to qualified primary and fallback candidates', () => {
+    const migratedPrimary = dictationReadiness({
+      ...cloud,
+      cleanupModel: 'google/gemini-2.5-pro',
+      cleanupFallbacks: ['google/gemini-3.7-flash'],
+      keys: { groq: true, google: true },
+    });
+    expect(migratedPrimary).toEqual([]);
+
+    const migratedFallback = dictationReadiness({
+      ...cloud,
+      cleanupModel: 'openai/o3',
+      cleanupFallbacks: ['groq/openai/gpt-oss-120b'],
+      keys: { groq: true, openai: true },
+    });
+    expect(migratedFallback).toEqual([]);
+  });
+
+  it('keeps invalid IDs unchanged and handles a legacy model name through its provider', () => {
+    const legacyGoogleModel = readinessModel('cleanup', 'gemini-2.5-pro', null, 'google');
+    expect(legacyGoogleModel).toBe('google/gemini-2.5-pro');
+    expect(dictationReadiness({
+      ...cloud,
+      cleanupModel: legacyGoogleModel,
+      keys: { groq: true, google: true },
+    })).toEqual([]);
+
+    const invalid = dictationReadiness({
+      ...cloud,
+      cleanupModel: 'openai/o3',
+      cleanupFallbacks: ['google/gemini-4-unknown'],
+      keys: { groq: true, openai: true, google: true },
+    }).find(issue => issue.task === 'cleanup');
+    expect(invalid?.section).toBe('models');
+    expect(invalid?.message).toContain('gemini-4-unknown');
   });
 
   it('does not check an unsupported cleanup selection when optional cleanup is off', () => {

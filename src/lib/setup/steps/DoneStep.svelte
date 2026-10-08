@@ -14,6 +14,8 @@
     languageLabel,
     usesHeadphones,
     hasKey,
+    modelsReady,
+    modelReadinessMessage,
     presetName,
   }: {
     providerName: string;
@@ -23,6 +25,8 @@
     languageLabel: string;
     usesHeadphones: boolean;
     hasKey: boolean;
+    modelsReady: boolean;
+    modelReadinessMessage: string;
   } = $props();
 
   const keyLabels = $derived(hotkeyLabels());
@@ -55,7 +59,7 @@
   );
 </script>
 
-<div class="step done-step" class:needs-setup={!hasKey || shortcutUnavailable}>
+<div class="step done-step" class:needs-setup={!hasKey || !modelsReady || shortcutUnavailable}>
   <div class="done-check-wrap">
     <svg class="done-check" width="64" height="64" viewBox="0 0 64 64" fill="none">
       <circle cx="32" cy="32" r="28" stroke="var(--accent-soft)" stroke-width="6"/>
@@ -77,8 +81,8 @@
       />
     </svg>
   </div>
-  <h2 class="done-title">{!hasKey || shortcutUnavailable ? 'Your choices are saved when you finish.' : "You're all set."}</h2>
-  <p class="done-sub">{!hasKey || shortcutUnavailable
+  <h2 class="done-title">{!hasKey || !modelsReady || shortcutUnavailable ? 'Your choices are saved when you finish.' : "You're all set."}</h2>
+  <p class="done-sub">{!hasKey || !modelsReady || shortcutUnavailable
     ? 'You can finish setup now. Add the missing requirement before dictating.'
     : isAndroid
       ? 'Verenu is ready. Open any text field and use the pill above your keyboard.'
@@ -87,6 +91,9 @@
 
   {#if !hasKey}
     <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('keys')}>Add API key</button></div>
+  {/if}
+  {#if !modelsReady}
+    <div class="done-warning done-model-warning" role="status">{modelReadinessMessage} <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open Models settings</button></div>
   {/if}
 
   <div class="done-quickstart" aria-label="How to dictate">
@@ -154,6 +161,7 @@
     font-size: 12.5px;
     line-height: 1.45;
   }
+  .done-model-warning { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; }
 
   .done-quickstart {
     display: grid;
