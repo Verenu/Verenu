@@ -54,6 +54,14 @@ describe('settings search', () => {
     });
   });
 
+  it('finds synchronous muting by its name and routes it to sync', () => {
+    expect(searchSettings('synchronous muting', ['sync'])[0]).toMatchObject({
+      label: 'Synchronous muting',
+      section: 'sync',
+      target: 'sync-muting',
+    });
+  });
+
   it('finds the Android pill settings only on Android', () => {
     expect(searchSettings('pill', visibleSections, 24, true).map((entry) => entry.id)).toEqual(
       expect.arrayContaining(['general-pill-position', 'general-cover-keyboard-mic']),

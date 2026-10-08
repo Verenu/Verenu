@@ -1969,6 +1969,7 @@ fn syncable_settings_exclude_device_local_keys() {
         crate::data::store::LOCAL_MODEL_MEMORY_POLICY,
         crate::data::store::HISTORY_RETENTION,
         crate::data::store::SYNC_PEER_ADDRESSES,
+        crate::data::store::SYNC_MUTING_ENABLED,
         crate::data::store::TRANSCRIPTION_PROVIDER,
         crate::data::store::CLEANUP_PROVIDER,
         crate::data::store::TRANSCRIPTION_MODEL,

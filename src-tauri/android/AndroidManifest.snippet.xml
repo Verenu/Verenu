@@ -9,6 +9,8 @@
     - RECORD_AUDIO: dictation capture (cpal/AAudio in Rust). Runtime prompt.
     - INTERNET: cloud transcription/cleanup providers + loopback bridge
       sockets (any socket, including 127.0.0.1, needs this; install-time).
+    - MODIFY_AUDIO_SETTINGS: temporarily lower and restore media volume while
+      a paired device is dictating. Normal install-time permission.
     - ACCESS_NETWORK_STATE: offline detection for the persistent offline UI.
     - FOREGROUND_SERVICE / FOREGROUND_SERVICE_MICROPHONE: dictation holder
       service (microphone type). Both install-time; the microphone TYPE also
@@ -24,6 +26,7 @@
   <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
   <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />

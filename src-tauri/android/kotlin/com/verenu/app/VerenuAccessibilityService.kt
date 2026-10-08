@@ -95,6 +95,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         const val TAG = "VerenuA11y"
         const val POLL_VISIBLE_MS = 250L
         const val POLL_IDLE_MS = 2000L
+        const val POLL_MUTING_MS = 100L
         const val INSERT_RETRY_MS = 2000L
         const val PENDING_MAX_AGE_MS = 60_000L
         const val TRANSIENT_AUTO_HIDE_MS = 10_000L
@@ -108,6 +109,18 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         const val INSERT_ATTEMPT_MS = 350L
         const val INSERT_WAIT_FOR_FIELD_MS = 6_000L
         const val INSERT_GIVE_UP_MS = 12_000L
+
+        internal fun nextPollDelayMs(
+            recording: Boolean,
+            audioMuteActive: Boolean,
+            overlayAttached: Boolean,
+            syncMutingEnabled: Boolean,
+        ): Long = when {
+            recording -> POLL_RECORDING_MS
+            audioMuteActive || overlayAttached -> POLL_VISIBLE_MS
+            syncMutingEnabled -> POLL_MUTING_MS
+            else -> POLL_IDLE_MS
+        }
 
         /** Used by future Settings UI to deep-link recovery correctly. */
         fun isServiceEnabled(context: Context): Boolean {
@@ -128,6 +141,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private var worker: HandlerThread? = null
     private var poller: Handler? = null
+    private val audioMute by lazy { VerenuAudioMute(this) }
+    @Volatile private var audioMuteActive = false
     private var requestWorker: HandlerThread? = null
     private var requester: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -228,6 +243,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        audioMute.update(false)
         stopConnectivityWatch()
         mainHandler.removeCallbacks(imeVisibilityCheck)
         poller?.removeCallbacksAndMessages(null)
@@ -2002,8 +2018,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun poll() {
         syncDeviceLockState()
+        var syncMutingEnabled = false
         try {
             val snapshot = bridge.getState()
+            syncMutingEnabled = snapshot?.syncMutingEnabled == true
+            audioMuteActive = snapshot?.audioMuteRequested ?: false
+            audioMute.update(audioMuteActive)
             val up = snapshot != null
             if (up && !backendWasUp) {
                 // Rust restarted (or just started): its credential cache is
@@ -2019,6 +2039,8 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 ensureBackendRunning(waitMs = 0L)
             }
         } catch (e: Exception) {
+            audioMuteActive = false
+            audioMute.update(false)
             Log.w(TAG, "bridge poll failed", e)
         }
         // Transient pills auto-hide like the desktop (10s), and only when
@@ -2033,11 +2055,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             hideOverlay()
         }
         schedulePoll(
-            when {
-                overlayState == VerenuOverlayView.State.RECORDING -> POLL_RECORDING_MS
-                overlayAttached -> POLL_VISIBLE_MS
-                else -> POLL_IDLE_MS
-            },
+            nextPollDelayMs(
+                recording = overlayState == VerenuOverlayView.State.RECORDING,
+                audioMuteActive = audioMuteActive,
+                overlayAttached = overlayAttached,
+                syncMutingEnabled = syncMutingEnabled,
+            ),
         )
     }
 

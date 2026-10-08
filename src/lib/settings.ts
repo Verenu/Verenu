@@ -153,6 +153,7 @@ type SettingsValueMap = {
   provider_model_cache: Record<string, unknown>;
   legacy_features_enabled: boolean;
   sync_enabled: boolean;
+  sync_muting_enabled: boolean;
   /** Per-peer Tailscale routes, written only by SyncManager's validated command. */
   sync_peer_addresses: Record<string, string> | null;
 };
