@@ -160,6 +160,7 @@ setting_specs! {
     CLIPBOARD_PHRASE: ClipboardPhrase = true,
     LEGACY_FEATURES_ENABLED: Bool = true,
     SYNC_ENABLED: Bool = false,
+    SYNC_MUTING_ENABLED: Bool = false,
     PROVIDER_MODEL_CACHE: ProviderModelCache = false,
 }
 
@@ -783,6 +784,7 @@ pub struct AllSettings {
     pub clipboard_phrase_enabled: Option<bool>,
     pub legacy_features_enabled: Option<bool>,
     pub sync_enabled: Option<bool>,
+    pub sync_muting_enabled: Option<bool>,
     pub sync_peer_addresses: Option<serde_json::Value>,
     pub ruin_accessibility: Option<bool>,
     pub dev_mode_on_startup: Option<bool>,
@@ -871,6 +873,7 @@ all_settings! {
     clipboard_phrase_enabled = bool_val(store::CLIPBOARD_PHRASE_ENABLED),
     legacy_features_enabled = bool_val(store::LEGACY_FEATURES_ENABLED),
     sync_enabled = bool_val(store::SYNC_ENABLED),
+    sync_muting_enabled = bool_val(store::SYNC_MUTING_ENABLED),
     sync_peer_addresses = json_val(store::SYNC_PEER_ADDRESSES),
     ruin_accessibility = bool_val(store::RUIN_ACCESSIBILITY),
     dev_mode_on_startup = bool_val(store::DEV_MODE_ON_STARTUP),

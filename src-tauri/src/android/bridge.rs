@@ -521,6 +521,7 @@ fn state_payload(state: &BridgeState) -> Value {
     json!({
         "lifecycle": lifecycle,
         "dictationActive": dictation_active,
+        "audioMuteRequested": crate::system::volume::android_mute_requested(),
         "pillStage": last_pill_stage(),
         "audioLevel": last_audio_level(),
         "audioEnvelope": take_audio_envelope(),
