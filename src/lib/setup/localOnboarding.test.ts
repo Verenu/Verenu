@@ -42,8 +42,21 @@ describe('local onboarding presets', () => {
     expect(presets.filter(preset => preset.id === 'local-transcription-only')).toHaveLength(1);
   });
 
-  it('does not offer local inference when the platform does not support it', () => {
-    expect(buildPresets(noKeys, hardware, false, onboardingOptions).map(preset => preset.kind)).toEqual(['add-key']);
+  it('offers only the cloud-key recovery on a platform without local model support', () => {
+    const presets = buildPresets(noKeys, hardware, false, onboardingOptions);
+    expect(presets).toHaveLength(1);
+    expect(presets[0]).toMatchObject({
+      id: 'add-key',
+      kind: 'add-key',
+      offline: false,
+      target: null,
+    });
+  });
+
+  it('keeps cloud presets available when local models are unsupported', () => {
+    const presets = buildPresets({ ...noKeys, groq: true }, hardware, false);
+    expect(presets.filter(preset => preset.offline)).toHaveLength(0);
+    expect(presets.some(preset => preset.kind === 'preset' && !preset.offline)).toBe(true);
   });
 
   it('does not add the speech-only option to the normal Settings picker', () => {

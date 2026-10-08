@@ -18,13 +18,16 @@ const failure = {
   note: 'No available shortcut. Change the desktop binding or choose another shortcut.',
 };
 const screenshotDir = process.env.SCREENSHOT_DIR;
+const screenshotNames = new Set((process.env.SCREENSHOT_NAMES || '').split(',').map(name => name.trim()).filter(Boolean));
 if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
   const errors = [];
   async function screenshot(page, name, fullPage = true) {
-    if (screenshotDir) await page.screenshot({ path: path.join(screenshotDir, `${name}.png`), fullPage });
+    if (screenshotDir && (!screenshotNames.size || screenshotNames.has(name))) {
+      await page.screenshot({ path: path.join(screenshotDir, `${name}.png`), fullPage });
+    }
   }
   async function open(settings = {}, localSttModels = {}, localLlmModels = {}, runtimeInstalled = false, localStates = {}) {
     const page = await browser.newPage({ viewport: { width: 900, height: 600 }, reducedMotion: 'reduce' });
@@ -79,6 +82,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     localSttState = { current_model_id: null, is_loaded: false, is_loading: false, is_downloading: false, downloading_model_id: null },
     presetName = 'Transcription only',
     chooseMissingSpeech = false,
+    cleanupChoice = null,
   } = {}) {
     const page = await open({ setup_complete: false, force_setup_on_launch: true }, localSttModels, {}, false, { transcription: localSttState });
     await page.getByRole('button', { name: 'Get Started' }).click();
@@ -88,12 +92,15 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     const selectedPreset = page.locator('.models-picker .preset-row').filter({ hasText: presetName });
     await expect(selectedPreset).toBeVisible();
-    if (chooseMissingSpeech) {
+    if (chooseMissingSpeech || await selectedPreset.getByRole('button', { name: /^Download/ }).count()) {
       await selectedPreset.getByRole('button', { name: /^Download/ }).click();
     } else {
       await selectedPreset.getByRole('button', { name: `Use local ${presetName}`, exact: true }).click();
     }
     await page.getByRole('button', { name: 'Next', exact: true }).click();
+    if (cleanupChoice) {
+      await page.locator('button.pick-card', { has: page.locator('.card-name', { hasText: cleanupChoice }) }).click();
+    }
     await page.getByRole('button', { name: 'Next', exact: true }).click();
     await page.getByRole('button', { name: 'Next', exact: true }).click();
     await page.getByRole('button', { name: 'Next', exact: true }).click();
@@ -226,6 +233,73 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await assertSafe(setupLocalWithCloudKey);
     await setupLocalWithCloudKey.close();
 
+    const unsupportedLocalResume = await open({
+      setup_complete: false,
+      force_setup_on_launch: true,
+      transcription_provider: 'local',
+      setup_progress: { step: 4, provider: 'local' },
+      __local_models_supported: false,
+    });
+    const unsupportedRecovery = unsupportedLocalResume.locator('.local-support-recovery[data-support="unsupported"]');
+    await expect(unsupportedRecovery).toBeVisible();
+    await expect(unsupportedRecovery).toContainText('Intel Macs');
+    await expect(unsupportedLocalResume.getByRole('button', { name: 'Open API keys' })).toHaveCount(0);
+    await expect(unsupportedLocalResume.getByRole('button', { name: 'Choose a setup', exact: true })).toBeDisabled();
+    await screenshot(unsupportedLocalResume, 'setup-local-unsupported-desktop', false);
+    await unsupportedLocalResume.setViewportSize({ width: 900, height: 500 });
+    await screenshot(unsupportedLocalResume, 'setup-local-unsupported-short', false);
+    await unsupportedRecovery.getByRole('button', { name: 'Choose a cloud provider' }).click();
+    await expect(unsupportedLocalResume.getByRole('heading', { name: 'Choose your AI provider' })).toBeVisible();
+    await expect(unsupportedLocalResume.locator('.provider-card:has-text("On this device")')).toHaveCount(0);
+    await expect(unsupportedLocalResume.locator('.provider-step .availability-note')).toContainText('Intel Macs');
+    await expect(unsupportedLocalResume.locator('.provider-card:has-text("Groq")')).toHaveAttribute('aria-pressed', 'true');
+    await unsupportedLocalResume.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(unsupportedLocalResume.getByText('Do you already have a Groq API key?')).toBeVisible();
+    await unsupportedLocalResume.getByRole('button', { name: "I'll add it later", exact: true }).click();
+    await expect(unsupportedLocalResume.locator('.models-picker .preset-row')).toContainText('Add an API key');
+    await unsupportedLocalResume.getByRole('button', { name: 'Open API keys', exact: true }).click();
+    await expect(unsupportedLocalResume.getByText('Do you already have a Groq API key?')).toBeVisible();
+    await expect(unsupportedLocalResume.locator('.local-setup')).toHaveCount(0);
+    await assertSafe(unsupportedLocalResume);
+    await unsupportedLocalResume.close();
+
+    const unknownLocalResume = await open({
+      setup_complete: false,
+      force_setup_on_launch: true,
+      transcription_provider: 'local',
+      setup_progress: { step: 4, provider: 'local' },
+      __local_models_supported: 'error',
+    });
+    const unknownRecovery = unknownLocalResume.locator('.local-support-recovery[data-support="unknown"]');
+    await expect(unknownRecovery).toBeVisible();
+    await expect(unknownRecovery).toContainText('Could not confirm');
+    await expect(unknownRecovery).not.toContainText('Intel');
+    await expect(unknownLocalResume.getByRole('button', { name: 'Open API keys' })).toHaveCount(0);
+    await unknownLocalResume.evaluate(() => {
+      const settings = JSON.parse(localStorage.getItem('verenu:dev-settings') || '{}');
+      localStorage.setItem('verenu:dev-settings', JSON.stringify({ ...settings, __local_models_supported: true }));
+    });
+    await unknownRecovery.getByRole('button', { name: 'Retry check' }).click();
+    await expect(unknownLocalResume.locator('.models-picker .preset-row').filter({ hasText: 'Transcription only' })).toBeVisible();
+    await assertSafe(unknownLocalResume);
+    await unknownLocalResume.close();
+
+    const unknownCloudChoice = await open({
+      setup_complete: false,
+      force_setup_on_launch: true,
+      transcription_provider: 'local',
+      setup_progress: { step: 4, provider: 'local' },
+      __local_models_supported: 'error',
+    });
+    await expect(unknownCloudChoice.locator('.local-support-recovery[data-support="unknown"]')).toBeVisible();
+    await unknownCloudChoice.getByRole('button', { name: 'Choose a cloud provider' }).click();
+    await expect(unknownCloudChoice.getByRole('heading', { name: 'Choose your AI provider' })).toBeVisible();
+    await expect(unknownCloudChoice.locator('.provider-card:has-text("On this device")')).toHaveCount(0);
+    await expect(unknownCloudChoice.locator('.provider-step .availability-note')).toContainText('Could not confirm');
+    await expect(unknownCloudChoice.locator('.provider-step .availability-note')).not.toContainText('Intel');
+    await assertSafe(unknownCloudChoice);
+    await unknownCloudChoice.close();
+
     const pendingLocalDone = await completeLocalSetup({
       localSttModels: { 'parakeet-v3': { downloaded: false, partial_size: 512 } },
       localSttState: {
@@ -296,6 +370,31 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await assertSafe(installedLocalDone);
     await installedLocalDone.close();
 
+    const cleanupOffDone = await completeLocalSetup({
+      presetName: 'Balanced',
+      localSttModels: { 'parakeet-v3': { downloaded: true, partial_size: 0 } },
+      cleanupChoice: 'Off',
+    });
+    await expect(cleanupOffDone.getByRole('heading', { name: "You're all set." })).toBeVisible();
+    await expect(cleanupOffDone.locator('.done-model-warning')).toHaveCount(0);
+    await expect(cleanupOffDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
+    await screenshot(cleanupOffDone, 'setup-done-local-cleanup-off-desktop', false);
+    await cleanupOffDone.setViewportSize({ width: 900, height: 500 });
+    await screenshot(cleanupOffDone, 'setup-done-local-cleanup-off-short', false);
+    await assertSafe(cleanupOffDone);
+    await cleanupOffDone.close();
+
+    const cleanupOnDone = await completeLocalSetup({
+      presetName: 'Balanced',
+      localSttModels: { 'parakeet-v3': { downloaded: true, partial_size: 0 } },
+      cleanupChoice: 'Medium',
+    });
+    await expect(cleanupOnDone.locator('.done-model-warning')).toContainText('cleanup model');
+    await expect(cleanupOnDone.locator('.done-model-warning')).toContainText('cleanup engine');
+    await expect(cleanupOnDone.locator('.done-model-warning')).not.toContainText('speech model');
+    await assertSafe(cleanupOnDone);
+    await cleanupOnDone.close();
+
     const missingCleanupLocalDone = await completeLocalSetup({
       presetName: 'Fastest',
       chooseMissingSpeech: true,
@@ -307,7 +406,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await missingCleanupLocalDone.close();
 
     assert.deepEqual(errors, []);
-    console.log('PASS - home readiness, configured fallback readiness, shortcut recovery, wizard state preservation, local-only preselection, transcription-only choice, and Done model readiness across pending, cancelled, missing, installed, and cleanup-enabled local states; no model-download, provider, or recording IPC');
+    console.log('PASS - home readiness, shortcut recovery, wizard resume, local and cloud preset selection, unsupported and unknown local-platform recovery, and Done model readiness with cleanup Off and enabled; no model-download, provider, or recording IPC');
   } finally {
     await browser.close();
   }
