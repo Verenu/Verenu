@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dictationReadiness, hasCloudSpeechCandidate, hasReadyLocalSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
+import { dictationReadiness, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
 
 const cloud: ReadinessInput = {
   transcriptionModel: 'groq/whisper-large-v3-turbo',
@@ -58,7 +58,7 @@ describe('dictation configuration readiness', () => {
     })).toEqual([]);
   });
 
-  it('does not classify a ready custom endpoint as cloud speech for offline warnings', () => {
+  it('treats only ready offline-capable candidates as a way around a cloud speech warning', () => {
     const custom = {
       id: 'custom:33333333-3333-4333-8333-333333333333',
       name: 'Local endpoint',
@@ -66,14 +66,43 @@ describe('dictation configuration readiness', () => {
       supports_transcription: true,
       supports_cleanup: false,
     };
-    const input = {
+    const customPrimary = {
       ...cloud,
       transcriptionModel: custom.id + '/speech-model',
+      transcriptionFallbacks: ['groq/whisper-large-v3-turbo'],
       cleanupEnabled: false,
       customProviders: [custom],
     };
-    expect(dictationReadiness(input)).toEqual([]);
-    expect(hasCloudSpeechCandidate(input)).toBe(false);
+    expect(dictationReadiness(customPrimary)).toEqual([]);
+    expect(hasCloudSpeechCandidate(customPrimary)).toBe(true);
+    expect(hasReadyOfflineSpeech(customPrimary)).toBe(true);
+
+    const customFallback = {
+      ...customPrimary,
+      transcriptionModel: 'groq/whisper-large-v3-turbo',
+      transcriptionFallbacks: [custom.id + '/speech-model'],
+      keys: { groq: true },
+    };
+    expect(dictationReadiness(customFallback)).toEqual([]);
+    expect(hasCloudSpeechCandidate(customFallback)).toBe(true);
+    expect(hasReadyOfflineSpeech(customFallback)).toBe(true);
+
+    expect(hasReadyOfflineSpeech({
+      ...customPrimary,
+      customProviders: [{ ...custom, requires_key: true }],
+    })).toBe(false);
+    expect(hasCloudSpeechCandidate({
+      ...customPrimary,
+      customProviders: [{ ...custom, requires_key: true }],
+    })).toBe(true);
+    expect(hasReadyOfflineSpeech({
+      ...customPrimary,
+      customProviders: [{ ...custom, supports_transcription: false }],
+    })).toBe(false);
+    expect(hasReadyOfflineSpeech({
+      ...customPrimary,
+      transcriptionModel: 'custom:44444444-4444-4444-8444-444444444444/speech-model',
+    })).toBe(false);
   });
 
   it('requires a custom provider key only when configured and reports unsupported tasks', () => {
@@ -132,7 +161,7 @@ describe('dictation configuration readiness', () => {
       cleanupEnabled: false,
     };
     expect(dictationReadiness(input)).toEqual([]);
-    expect(hasReadyLocalSpeech(input)).toBe(true);
+    expect(hasReadyOfflineSpeech(input)).toBe(true);
     expect(hasCloudSpeechCandidate(input)).toBe(true);
   });
 
@@ -150,7 +179,58 @@ describe('dictation configuration readiness', () => {
   it('does not count a local fallback until its model and cleanup engine are installed', () => {
     const input = { ...cloud, transcriptionFallbacks: ['local/parakeet-v3'] };
     expect(dictationReadiness(input).find(issue => issue.task === 'transcription')).toMatchObject({ section: 'keys' });
-    expect(hasReadyLocalSpeech(input)).toBe(false);
+    expect(hasReadyOfflineSpeech(input)).toBe(false);
+  });
+
+  it('rejects built-in cleanup models the backend skips and accepts a ready fallback', () => {
+    for (const [provider, model] of [
+      ['openai', 'o3'],
+      ['groq', 'qwen/qwen3-32b'],
+      ['google', 'gemini-2.5-pro'],
+      ['openrouter', 'openai/o3-mini'],
+      ['xai', 'grok-4-fast-reasoning'],
+      ['assemblyai', 'universal-2'],
+    ]) {
+      const input = {
+        ...cloud,
+        cleanupModel: `${provider}/${model}`,
+        keys: { groq: true, [provider]: true },
+      };
+      expect(dictationReadiness(input).find(issue => issue.task === 'cleanup')).toMatchObject({ section: 'models' });
+    }
+
+    for (const [provider, model] of [
+      ['openai', 'gpt-4o-mini'],
+      ['openai', 'gpt-5.1'],
+      ['groq', 'qwen/qwen3.8-27b'],
+      ['google', 'gemini-3.5-flash'],
+      ['openrouter', 'meta-llama/llama-3.3-70b-instruct'],
+      ['xai', 'grok-4-fast-non-reasoning'],
+    ]) {
+      expect(dictationReadiness({
+        ...cloud,
+        cleanupModel: `${provider}/${model}`,
+        keys: { groq: true, [provider]: true },
+      }).some(issue => issue.task === 'cleanup')).toBe(false);
+    }
+
+    const fallback = dictationReadiness({
+      ...cloud,
+      cleanupModel: 'openai/o3',
+      cleanupFallbacks: ['openai/gpt-4o-mini'],
+      keys: { groq: true, openai: true },
+    });
+    expect(fallback.some(issue => issue.task === 'cleanup')).toBe(false);
+  });
+
+  it('does not check an unsupported cleanup selection when optional cleanup is off', () => {
+    const issues = dictationReadiness({
+      ...cloud,
+      cleanupModel: 'assemblyai/universal-2',
+      cleanupEnabled: false,
+      keys: { groq: true },
+    });
+    expect(issues.some(issue => issue.task === 'cleanup')).toBe(false);
   });
 
   it('routes malformed or unsupported selections to model settings', () => {
