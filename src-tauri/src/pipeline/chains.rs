@@ -50,6 +50,28 @@ mod offline_tests {
         assert_eq!(balanced[0].0, "openai");
         assert_eq!(balanced.last().unwrap().0, "local");
     }
+
+    #[test]
+    fn selected_apple_cleanup_precedes_cloud_recovery_in_every_mode() {
+        let chain = vec![
+            (store::APPLE_INTELLIGENCE.into(), "system".into()),
+            (store::OPENAI.into(), "gpt-4o-mini".into()),
+            (store::LOCAL.into(), "gemma-4-e2b".into()),
+        ];
+        for mode in ["manual", "fastest", "balanced", "quality"] {
+            assert_eq!(
+                prioritize_model_chain(chain.clone(), "cleanup", mode, &[]),
+                chain,
+                "Apple must remain primary in {mode} mode"
+            );
+        }
+        let cloud_primary = vec![chain[1].clone(), chain[0].clone(), chain[2].clone()];
+        assert_eq!(
+            prioritize_model_chain(cloud_primary.clone(), "cleanup", "balanced", &[]),
+            cloud_primary,
+            "Existing cloud-primary ranking must remain unchanged"
+        );
+    }
 }
 
 pub(super) fn transcription_model_chain(cfg: &store::PipelineConfig) -> Vec<(String, String)> {
@@ -101,7 +123,7 @@ pub(super) fn runtime_model_chain(
 }
 
 fn prioritize_model_chain(
-    chain: Vec<(String, String)>,
+    mut chain: Vec<(String, String)>,
     task: &str,
     mode: &str,
     samples: &[crate::model_performance::ModelPerformance],
@@ -109,6 +131,17 @@ fn prioritize_model_chain(
     if mode == "manual" {
         return chain;
     }
+    // Choosing on-device cleanup must not send text to a cloud recovery model
+    // merely because automatic ranking is enabled. Rank its fallbacks only.
+    let selected_apple = if task == "cleanup"
+        && chain
+            .first()
+            .is_some_and(|(provider, _)| provider == store::APPLE_INTELLIGENCE)
+    {
+        Some(chain.remove(0))
+    } else {
+        None
+    };
     let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain.into_iter().partition(|(provider, _)| {
         provider != store::LOCAL && provider != store::APPLE_INTELLIGENCE
     });
@@ -121,7 +154,7 @@ fn prioritize_model_chain(
     crate::model_performance::prioritize(&mut cloud[fixed..], task, samples);
     crate::model_performance::prioritize(&mut local, task, samples);
     cloud.extend(local);
-    cloud
+    selected_apple.into_iter().chain(cloud).collect()
 }
 
 fn transcription_chain_root(
