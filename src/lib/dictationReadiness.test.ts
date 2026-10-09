@@ -15,6 +15,14 @@ const downloadedSpeech = [{ id: 'parakeet-v3', is_downloaded: true }];
 const downloadedCleanup = [{ id: 'qwen2.5-3b-instruct', is_downloaded: true }];
 
 describe('dictation configuration readiness', () => {
+  it('Basic needs no cleanup provider or dual fusion while AI context overrides still do', () => {
+    const input = { ...cloud, keys: { groq: true }, cleanupIntensity: 'rules', dualTranscriptionEnabled: true,
+      transcriptionFallbacks: ['local/parakeet-v3'], speechModels: downloadedSpeech };
+    expect(cleanupMayBeUsed(input)).toBe(false);
+    expect(dictationReadiness(input)).toEqual([]);
+    expect(hasCleanupIntensityOverride([{ id: 1, is_everywhere: true, cleanup_intensity: 'rules' }])).toBe(false);
+    expect(cleanupMayBeUsed({ ...input, cleanupIntensityOverrideMayBeUsed: true })).toBe(true);
+  });
   it('excludes built-in cloud speech from offline fusion but restores it online', () => {
     const input: ReadinessInput = {
       ...cloud, transcriptionModel: 'local/parakeet-v3',

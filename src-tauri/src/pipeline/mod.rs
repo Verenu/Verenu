@@ -15,6 +15,7 @@ use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Utc};
 pub(crate) mod cache;
 mod chains;
 mod clipboard_phrase;
+mod text_rules;
 pub(crate) mod failover;
 mod finalize;
 #[cfg(any(test, debug_assertions))]
@@ -1009,6 +1010,11 @@ async fn run_pipeline_with_delivery(
         return;
     };
     telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
+    if final_text.trim().is_empty() {
+        telemetry.failed(FailureCategory::EmptyResponse, true);
+        if state::leave_processing_if_owned(&state, generation) { hide_pill(&app); }
+        return;
+    }
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
     log::debug!(
         "pipeline: cleanup/snippets ok final_chars={} final_preview=\"{}\" dict_entries={}",
@@ -1321,6 +1327,11 @@ pub async fn retry_transcription_impl(
         anyhow::bail!("Retry cleanup failed");
     };
     telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
+    if final_text.trim().is_empty() {
+        telemetry.failed(FailureCategory::EmptyResponse, true);
+        hide_pill(app);
+        anyhow::bail!("No spoken content remained after cleanup");
+    }
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
 
     emit_pill_stage(app, "pasting");

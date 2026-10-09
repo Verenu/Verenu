@@ -108,7 +108,7 @@
     transcriptionState: localSttStore.state,
     cleanupState: localLlmStore.state,
     cleanupRuntime: localLlmStore.runtime,
-  }, effectiveCleanupEnabled, defaultModels));
+  }, effectiveCleanupEnabled && cleanupIntensity !== 'rules', defaultModels));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
@@ -535,7 +535,7 @@
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
     if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: provider === 'local' ? 'Choose speech recognition only, or add optional cleanup models.' : 'Pick the balance you want. Each option sets transcription and optional cleanup models for you.' };
-    if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
+    if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup applies to every dictation; tone applies only to AI cleanup.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
     if (s === onboardingTryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
@@ -730,7 +730,7 @@
       <DoneStep
         providerName={providerDisplayName}
         cleanupName={effectiveCleanupName}
-        {toneName}
+        toneName={cleanupIntensity === 'rules' ? 'No AI tone' : toneName}
         {languageLabel}
         {usesHeadphones}
         hasKey={doneHasKey}

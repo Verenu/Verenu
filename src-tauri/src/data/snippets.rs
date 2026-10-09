@@ -337,6 +337,39 @@ pub fn expand_snippets_from(text: &str, snippets: &mut [db::Snippet], db: &Db) -
     result
 }
 
+/// Resolve triggers against untouched speech, then edit only spoken spans.
+/// Payloads are expansion barriers so a rollback cannot erase saved content.
+pub(crate) fn expand_snippets_with_spoken_transform(
+    text: &str,
+    snippets: &mut [db::Snippet],
+    db: &Db,
+    count_usage: bool,
+    transform: impl Fn(&str) -> String,
+) -> String {
+    let prepared = prepare_snippets(snippets);
+    let selected = collect_trigger_matches(text, &prepared);
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut counts: HashMap<i64, i64> = HashMap::new();
+    for m in selected {
+        out.push_str(&transform(&text[cursor..m.start]));
+        let snippet = &mut snippets[m.snippet_idx];
+        out.push_str(&snippet.expansion);
+        if count_usage {
+            snippet.use_count += 1;
+            *counts.entry(snippet.id).or_default() += 1;
+        }
+        cursor = m.end;
+    }
+    out.push_str(&transform(&text[cursor..]));
+    if !counts.is_empty() {
+        let mut counts = counts.into_iter().collect::<Vec<_>>();
+        counts.sort_by_key(|(id, _)| *id);
+        let _ = db::increment_snippet_use_counts(db, &counts);
+    }
+    out
+}
+
 /// Apply mechanical final-output constraints from matched snippet instructions.
 /// These are intentionally narrow: they only cover hard formatting rules that
 /// should be guaranteed even if the cleanup model misses the prompt override.

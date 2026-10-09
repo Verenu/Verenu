@@ -95,6 +95,7 @@ macro_rules! setting_specs {
 }
 
 setting_specs! {
+    VOICE_COMMANDS_ENABLED: Bool = true,
     CUSTOM_PROVIDERS: CustomProviders = true,
     TRANSCRIPTION_PROVIDER: Provider = true,
     TRANSCRIPTION_LANGUAGE: TranscriptionLanguage = true,
@@ -803,6 +804,7 @@ pub struct AllSettings {
     pub cleanup_fallback_models: Option<Vec<String>>,
     pub advanced_model_ui: Option<bool>,
     pub cleanup_enabled: Option<bool>,
+    pub voice_commands_enabled: Option<bool>,
     pub cleanup_cache_enabled: Option<bool>,
     pub noise_reduction: Option<bool>,
     pub mute_audio: Option<bool>,
@@ -892,6 +894,7 @@ all_settings! {
     cleanup_fallback_models = str_array_val(store::CLEANUP_FALLBACK_MODELS),
     advanced_model_ui = bool_val(store::ADVANCED_MODEL_UI),
     cleanup_enabled = bool_val(store::CLEANUP_ENABLED),
+    voice_commands_enabled = bool_val(store::VOICE_COMMANDS_ENABLED),
     cleanup_cache_enabled = bool_val(store::CLEANUP_CACHE_ENABLED),
     noise_reduction = bool_val(store::NOISE_REDUCTION),
     mute_audio = bool_val(store::MUTE_AUDIO),

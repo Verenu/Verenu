@@ -250,6 +250,7 @@ pub(super) fn should_run_cleanup_llm(
     needs_transcript_fusion: bool,
 ) -> bool {
     cleanup_enabled
+        && cleanup_intensity != "rules"
         && has_cleanup_key
         && no_pure_expansion
         && (cleanup_intensity != "none" || needs_transcript_fusion)

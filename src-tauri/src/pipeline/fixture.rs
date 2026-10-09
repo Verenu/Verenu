@@ -167,6 +167,9 @@ pub async fn run_pipeline_fixture(
         )
         .await?;
     let apply_caps_lock_upper = request.config.caps_lock_uppercase_enabled && request.caps_lock_on;
+    if final_text_before_dictionary.trim().is_empty() {
+        anyhow::bail!("No spoken content remained after cleanup");
+    }
     let (injected_text, _applied_dict_ids) =
         dictionary::apply_substitutions_from(&final_text_before_dictionary, &dict_entries);
     let injected_text = if apply_caps_lock_upper {

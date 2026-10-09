@@ -8,6 +8,7 @@
   import { openCleanupPromptEditor } from '../stores.svelte';
   import { splitModelId } from '../components/settings/models';
   import { formatIpcError } from '../errors';
+  import Toggle from '../components/Toggle.svelte';
   import { MOTION_MS, MOTION_PX, STYLE_TAB_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from '../motion';
 
   const [send, receive] = crossfade({
@@ -21,6 +22,20 @@
   let intensity = $state('medium');
   let tone = $state('casual');
   let editorError = $state('');
+  let voiceCommands = $state(false);
+  let commandsSaving = $state(false);
+  let commandsError = $state('');
+  const toneInactive = $derived(intensity === 'none' || intensity === 'rules');
+
+  async function selectCommands(enabled: boolean) {
+    commandsSaving = true;
+    commandsError = '';
+    try {
+      await invoke('save_setting', { key: 'voice_commands_enabled', value: enabled });
+      voiceCommands = enabled;
+    } catch (error) { commandsError = formatIpcError(error, 'Could not save voice commands'); }
+    finally { commandsSaving = false; }
+  }
 
   async function editStyle(id: string, event: MouseEvent, isTone = false) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -45,6 +60,7 @@
     { id: 'light', name: 'Light', desc: 'Remove non-semantic speech artifacts and fix basics. Keep wording, order, and detail.', sample: "I was thinking we should probably leave a bit earlier because there's going to be traffic, I think." },
     { id: 'medium', name: 'Medium', desc: 'Improve flow and remove redundancy with light restructuring. Preserve every distinct detail.', sample: "I think we should leave a bit earlier. There's going to be traffic." },
     { id: 'high', name: 'Strong', desc: 'Rewrite concisely and directly. Preserve facts, constraints, qualifiers, and emphasis.', sample: 'Leave early. There will be traffic.' },
+    { id: 'rules', name: 'Basic', desc: 'On-device removal of English fillers and accidental repeats. Keeps punctuation. No AI tone or instructions. Needs English selected in Settings.', sample: 'I think we can deploy the app.' },
   ];
 
   const personalCards = [
@@ -55,12 +71,14 @@
 
   onMount(async () => {
     try {
-      const [savedTone, savedIntensity] = await Promise.all([
+      const [savedTone, savedIntensity, savedCommands] = await Promise.all([
         invoke<string | null>('get_setting', { key: 'default_tone' }),
         invoke<string | null>('get_setting', { key: 'cleanup_intensity' }),
+        invoke<boolean | null>('get_setting', { key: 'voice_commands_enabled' }),
       ]);
       if (savedTone) tone = savedTone as string;
       if (savedIntensity) intensity = savedIntensity as string;
+      voiceCommands = savedCommands ?? false;
     } catch {
       // Dev mode without Tauri.
     }
@@ -135,6 +153,21 @@
     </div>
   {/if}
 
+  <section class="commands-section">
+    <div class="commands-heading">
+      <h2 class="commands-title">Voice commands</h2>
+      <Toggle checked={voiceCommands} onchange={selectCommands} disabled={commandsSaving} label="Voice commands" />
+    </div>
+    <p class="style-intro">Global and opt-in. <span>Needs cleanup on, an intensity other than Off, and English selected in Settings. Auto and other languages are left unchanged.</span></p>
+    <details>
+      <summary>Supported phrases and literal text</summary>
+      <p>Say comma, semicolon, full stop, question mark, exclamation mark or exclamation point. Use add, insert or put before period, colon, dash or hyphen; a trailing period also works. New or next line and paragraph add line breaks. At sign and at the rate create a one-word mention.</p>
+      <p>Scratch that or strike that removes the latest fragment in this dictation. Remove, delete, undo or cancel that needs punctuation around it. Commands never delete existing text in another app or cross a snippet or clipboard payload. Quoted text and code stay literal. Discussion of unquoted commands can still be ambiguous.</p>
+    </details>
+    {#if commandsError}<p role="alert">{commandsError}</p>{/if}
+  </section>
+  {#if toneInactive}<p class="style-intro">Tone and custom AI instructions do not apply with Basic or Off. Saved choices remain available for AI cleanup.</p>{/if}
+
   {#if appStore.legacyFeaturesEnabled}
     <div class="tabs" role="tablist" tabindex="-1" bind:this={tablistEl} onkeydown={handleTablistKeydown}>
       {#each tabs as t}
@@ -186,7 +219,7 @@
                   <span class="desc">{c.desc}</span>
                   <span class="style-sample">"{c.sample}"</span>
                 </button>
-                {#if c.id !== 'none'}
+                {#if c.id !== 'none' && c.id !== 'rules'}
                   <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
                   </button>
@@ -196,7 +229,7 @@
             </div>
           {:else if tab === 'personal'}
             <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
-            <div class="style-grid">
+            <div class="style-grid" inert={toneInactive} class:tab-content-disabled={toneInactive}>
               {#each personalCards as c}
                 <div class="style-card-wrap">
                 <button
@@ -239,7 +272,7 @@
               <span class="desc">{c.desc}</span>
               <span class="style-sample">"{c.sample}"</span>
             </button>
-            {#if c.id !== 'none'}
+            {#if c.id !== 'none' && c.id !== 'rules'}
               <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
               </button>
@@ -254,7 +287,7 @@
       <section class="style-section">
         <h2 class="style-section-h">Personal Tone</h2>
         <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
-        <div class="style-grid">
+        <div class="style-grid" inert={toneInactive} class:tab-content-disabled={toneInactive}>
           {#each personalCards as c}
                 <div class="style-card-wrap">
             <button
@@ -279,6 +312,10 @@
 </div>
 
 <style>
+  .commands-section { margin-block: 16px; }
+  .commands-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .commands-section details { color: var(--ink-mute); font-size: 12px; line-height: 1.5; }
+  .commands-section summary { cursor: pointer; }
   .style-card-wrap { position: relative; display: flex; }
   .style-card-wrap .style-card-title { padding-right: 30px; }
   .style-edit { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
@@ -362,7 +399,10 @@
     margin: 0;
   }
 
-  .style-section-h {
+  /* commands-title shares the section-heading treatment without using the
+     style-section-h class, which the legacy tabbed layout must not render. */
+  .style-section-h,
+  .commands-title {
     font-family: var(--sans);
     font-size: 14px;
     font-weight: 500;

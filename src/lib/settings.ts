@@ -16,7 +16,7 @@ export type ProviderId =
   | 'local';
 export type ProviderModelMap = Record<ProviderId, string[]>;
 export type ToneId = 'casual' | 'formal' | 'very_casual';
-export type CleanupIntensity = 'none' | 'light' | 'medium' | 'high';
+export type CleanupIntensity = 'none' | 'rules' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 
@@ -96,6 +96,7 @@ type SettingsValueMap = {
   analytics_enabled: boolean;
   cleanup_fallback_models: string[];
   cleanup_enabled: boolean;
+  voice_commands_enabled: boolean;
   cleanup_cache_enabled: boolean;
   default_tone: ToneId;
   cleanup_intensity: CleanupIntensity;

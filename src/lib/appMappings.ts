@@ -19,6 +19,7 @@ export const profileOptions = [
 
 export const cleanupIntensityOptions = [
   { id: 'none', label: 'Off' },
+  { id: 'rules', label: 'Basic' },
   { id: 'light', label: 'Light' },
   { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'Strong' },
