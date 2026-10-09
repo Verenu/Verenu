@@ -14,7 +14,7 @@ const failedStates = new Set(['failed', 'timedOut', 'interrupted']);
 export function safeBrowserSourceFile(file) {
   return typeof file === 'string'
     && /^tests\/browser\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.spec\.mjs$/.test(file)
-    && !/(?:sk[-_]|gh[pousr]_|github_pat_)/i.test(file)
+    && !/(?:^|\/)(?:sk[-_]|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{8,}(?=\/|\.spec\.mjs$)/i.test(file)
     ? file : null;
 }
 

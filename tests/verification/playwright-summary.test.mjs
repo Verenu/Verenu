@@ -275,7 +275,8 @@ test('timeout and interrupted attempts retain fixed summaries without copying si
 test('unsafe spec paths never reach summary, checks, or failure diagnostic locations', () => {
   for (const directory of [
     'https://private.example.test/?token=SYNTHETIC_TOKEN',
-    'sk-proj-SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789',
+    'sk-proj-SYNTHETIC_123456789', 'sk_SYNTHETIC_123456789',
+    'ghp_SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789',
     'person@example.test', '\u001b[31mSYNTHETIC_CONTROL\u202e',
     'SYNTHETIC_QUERY?token=secret', 'SYNTHETIC_FRAGMENT#secret',
   ]) {
@@ -311,4 +312,35 @@ test('safe nested and absolute source paths retain normalized locations', () => 
   })] }] }, { projectRoot: '/repo' });
   assert.equal(summary.tests[0].file, file);
   assert.deepEqual(summary.tests[0].diagnostics[0].location, { file, line: 9, column: 3 });
+});
+
+test('ordinary sk suffixes retain source and assertion diagnostics', () => {
+  for (const file of [
+    'tests/browser/task-flow.spec.mjs', 'tests/browser/mask-entry.spec.mjs',
+    'tests/browser/risk-review.spec.mjs', 'tests/browser/task-workflow-long/settings.spec.mjs',
+    'tests/browser/sk-ui.spec.mjs',
+  ]) {
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', errors: [{ message: 'Error: expect(locator).toBeVisible() failed',
+        location: { file: `/repo/${file}`, line: 9, column: 3 } }],
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    assert.equal(summary.tests[0].file, file);
+    assert.deepEqual(summary.tests[0].diagnostics[0].location, { file, line: 9, column: 3 });
+    assert.deepEqual(summarizePlaywrightFailures(report)[0].diagnostics[0].location,
+      { file, line: 9, column: 3 });
+  }
+});
+
+test('credential-shaped spec filenames cannot expose source locations', () => {
+  for (const name of ['sk-proj-SYNTHETIC_123456789', 'sk_SYNTHETIC_123456789', 'ghp_SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789']) {
+    const file = `tests/browser/nested/${name}.spec.mjs`;
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', error: { message: 'PRIVATE_ERROR', location: { file, line: 9 } },
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    assert.equal(summary.tests[0].file, null);
+    assert.equal(Object.hasOwn(summary.tests[0].diagnostics[0], 'location'), false);
+    assert.equal(JSON.stringify({ summary, failures: summarizePlaywrightFailures(report) }).includes('SYNTHETIC_'), false);
+  }
 });
