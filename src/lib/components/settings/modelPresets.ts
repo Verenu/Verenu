@@ -104,8 +104,11 @@ export function modelLabel(id: string): string {
 }
 
 export function supportsLocalLanguage(id: string, options: PresetOptions): boolean {
+  const model = options.localModels?.find(model => model.id === id);
+  // An auxiliary download cannot transcribe, regardless of language.
+  if (id === 'fluid-english-booster' || model?.engine_type === 'ctc_booster') return false;
   if (!options.language || options.language === 'auto') return true;
-  const languages = options.localModels?.find(model => model.id === id)?.supported_languages;
+  const languages = model?.supported_languages;
   // Whisper, Parakeet Ultra and Apple Speech report a wildcard instead of
   // language names. The frontend map holds the dropdown subset for Whisper and
   // Ultra; Apple Speech has no entry on purpose (its languages are whatever

@@ -203,6 +203,11 @@ describe('local speech models', () => {
   it('never lists the auxiliary booster as a speech model', () => {
     const rows = curatedRows(ctx({ localModels: [{ id: 'fluid-english-booster', is_downloaded: true, size_mb: 98 }] }));
     expect(rows.some((r) => r.id === 'fluid-english-booster')).toBe(false);
+    for (const language of [undefined, 'auto', 'en']) {
+      expect(supportsLocalLanguage('fluid-english-booster', { language })).toBe(false);
+      const localModels = [{ id: 'another-booster', engine_type: 'ctc_booster', supported_languages: ['English'] }] as never;
+      expect(supportsLocalLanguage('another-booster', { language, localModels })).toBe(false);
+    }
   });
 
   it('explains an unsupported default and names the fallback', () => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '../../tauri';
-import { buildPresets, getHardware, matchActivePreset, type Hardware, type ModelPerformance } from './modelPresets';
+import { buildPresets, getHardware, installedLocalFallbacks, matchActivePreset, supportsLocalLanguage, type Hardware, type ModelPerformance } from './modelPresets';
 import type { ModelCatalogCache } from '../../modelCatalogStore.svelte';
 
 vi.mock('../../platform', () => ({ isAndroid: true }));
@@ -12,6 +12,19 @@ const noKeys = { groq: false, openai: false, google: false, assemblyai: false, o
 const phone: Hardware = { totalRamMb: 4096, freeRamMb: 2048, gpus: [], unknown: false, isAndroid: true };
 
 beforeEach(() => invokeMock.mockReset());
+
+it('never selects an installed auxiliary booster for speech fallbacks', () => {
+  const localModels = [
+    { id: 'fluid-english-booster', engine_type: 'ctc_booster', is_downloaded: true, supported_languages: ['English'] },
+    { id: 'apple-speech', engine_type: 'apple_speech', is_downloaded: true, supported_languages: ['System languages'] },
+  ] as never;
+  for (const language of [undefined, 'auto', 'en']) {
+    const options = { language, localModels, installedLocal: { transcription: ['fluid-english-booster', 'apple-speech'], cleanup: [] } };
+    expect(installedLocalFallbacks('transcription', options)).toEqual(['local/apple-speech']);
+    expect(supportsLocalLanguage('fluid-english-booster', options)).toBe(false);
+    expect(installedLocalFallbacks('transcription', { ...options, installedLocal: { transcription: ['fluid-english-booster'], cleanup: [] } })).toEqual([]);
+  }
+});
 
 describe('hardware capability fallback', () => {
   it('keeps phone-sized presets when the native hardware command fails', async () => {
