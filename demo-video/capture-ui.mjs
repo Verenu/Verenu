@@ -68,6 +68,7 @@ const history = [
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome-stable' });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'light' });
 page.on('pageerror', (e) => console.error('pageerror', e.message));
+page.on('console', (m) => { if (m.text().startsWith('[demo-stats]')) console.log(m.text()); });
 
 await page.addInitScript(({ seed, history }) => {
   if (!sessionStorage.getItem('verenu-demo-seeded')) {
@@ -75,10 +76,11 @@ await page.addInitScript(({ seed, history }) => {
     for (const [key, value] of Object.entries(seed)) localStorage.setItem(key, JSON.stringify(value));
     sessionStorage.setItem('verenu-demo-seeded', '1');
   }
-  // History and stats are not stored by the preview backend, so answer them here.
+  // History is not stored by the preview backend, so answer it here. Home's
+  // stats are derived inside devInvoke from the same record Insights shows
+  // (see the route patch below), so the two screens always agree.
   globalThis.__verenuDemoInvoke = (command) => {
     if (command === 'get_recent') return history;
-    if (command === 'get_stats') return { total_words: 279134, avg_wpm: 148, day_streak: 5 };
     if (command === 'get_memory_mb') return 74;
     return undefined;
   };
@@ -90,48 +92,61 @@ await page.route(/\/src\/lib\/tauri\.dev\.ts(\?.*)?$/, async (route) => {
   const body = await response.text();
   const patched = body.replace(
     /(export\s+async\s+function\s+devInvoke\s*\([^)]*\)\s*\{)/,
-    '$1\n  { const demo = globalThis.__verenuDemoInvoke?.(command, args); if (demo !== undefined) return demo; }',
+    '$1\n  { const demo = globalThis.__verenuDemoInvoke?.(command, args); if (demo !== undefined) return demo; }'
+    // Home's get_stats mirrors the backend's query_stats: lifetime words,
+    // lifetime average WPM, and the current consecutive-day streak. Derive all
+    // three from the preview backend's own all-contexts Insights record, the
+    // single source of truth for the demo's synthetic stats.
+    + "\n  if (command === 'get_stats') { const i = devInsights(30, null); const stats = { total_words: i.totals.total_words, avg_wpm: i.totals.avg_wpm, day_streak: i.streak.current_days }; console.info('[demo-stats]', JSON.stringify(stats)); return stats; }",
   );
   if (patched === body) throw new Error('Could not hook devInvoke in tauri.dev.ts');
   await route.fulfill({ response, body: patched });
 });
 
 const settle = (ms = 900) => page.waitForTimeout(ms);
-const shot = async (name) => {
+// Pages load lazily, and a busy machine can take seconds. Wait for content
+// unique to each page and for every "Loading…" placeholder to clear, then let
+// entrance motion finish. A fixed delay alone captured placeholders.
+const shot = async (name, ready) => {
+  await ready.first().waitFor({ state: 'visible', timeout: 30_000 });
+  await page.waitForFunction(() => ![...document.querySelectorAll('main *, [role="main"] *')]
+    .some((el) => el.childElementCount === 0 && /^Loading/.test(el.textContent.trim()) && el.offsetParent !== null),
+  null, { timeout: 30_000 });
   await settle();
   await page.screenshot({ path: join(outDir, `${name}.png`) });
   console.log('captured', name);
 };
 const nav = (name) => page.getByRole('button', { name, exact: true }).first().click();
+const text = (value) => page.getByText(value, { exact: true });
 
 await page.clock.install({ time: now });
 await page.goto(baseUrl);
 await settle(2500);
-await shot('home');
+await shot('home', text('day streak'));
 
 await nav('Insights');
-await shot('insights');
+await shot('insights', page.getByText(/words all-time$/));
 
 await nav('Team chat');
-await shot('context-team-chat');
+await shot('context-team-chat', text('app.slack.com'));
 
 await nav('Development');
-await shot('context-development');
+await shot('context-development', text('Kubernetes'));
 
 await nav('Email');
-await shot('context-email');
+await shot('context-email', text('mail.google.com'));
 
 await nav('Style');
-await shot('style');
+await shot('style', text('Personal Tone'));
 
 await nav('Settings');
 await nav('Models');
-await shot('settings-models');
+await shot('settings-models', text('Local AI'));
 
 await nav('Providers');
-await shot('settings-providers');
+await shot('settings-providers', page.getByRole('heading', { name: 'Providers' }));
 
 await nav('Privacy');
-await shot('settings-privacy');
+await shot('settings-privacy', text('Transcription history'));
 
 await browser.close();
