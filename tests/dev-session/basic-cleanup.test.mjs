@@ -53,6 +53,15 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       [true, 'Hello new line new line tomorrow', 'Hello\n\nTomorrow'],
       [true, 'Hello new paragraph new paragraph tomorrow', 'Hello\n\n\n\nTomorrow'],
       [false, 'Scratch that scratch that', 'Scratch that'],
+      [true, 'Keep this put a colon change this scratch that tomorrow', 'Keep this: Tomorrow'],
+      [false, 'Keep this put a colon change this scratch that tomorrow', 'Keep this put a colon change this scratch that tomorrow'],
+      [false, 'Duran Duran', 'Duran Duran'],
+      [true, 'Bora Bora', 'Bora Bora'],
+      [false, 'NASA NASA', 'NASA NASA'],
+      [true, 'I I I think so', 'I think so'],
+      [false, 'send send it', 'send it'],
+      [true, 'New York New York', 'New York New York'],
+      [true, 'colon payload discard scratch that tomorrow', 'Keep this: scratch that Tomorrow'],
       [true, 'greeting discard scratch that tomorrow', 'um scratch that new line Tomorrow'],
       [true, 'Keep it semicolon change this scratch that greeting', 'Keep it; um scratch that new line'],
       [true, 'um please (um) use new line', 'Please use New Line'],
@@ -69,6 +78,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       [true, '`Keep this semicolon change this scratch that`', '`Keep this semicolon change this scratch that`'],
     ]) {
       if (raw.startsWith('greeting')) snippets.push(await invoke('create_snippet', { trigger: 'greeting', expansion: 'um scratch that new line', instructions: '', contextId: context.id }));
+      if (raw.startsWith('colon payload')) snippets.push(await invoke('create_snippet', { trigger: 'colon payload', expansion: 'Keep this: scratch that', instructions: '', contextId: context.id }));
       if (raw.startsWith('um please')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'New Line', mistake: 'new line', contextId: context.id }));
       if (raw.startsWith('use question')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'QuestionMark', mistake: 'question mark, new paragraph', contextId: context.id }));
       if (raw.startsWith('I use app')) snippets.push(await invoke('create_snippet', { trigger: 'app name', expansion: 'Verenu', instructions: '', contextId: context.id }));
@@ -96,7 +106,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 21);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 30);
   } finally {
     try {
       for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });

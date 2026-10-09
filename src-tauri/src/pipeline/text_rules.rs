@@ -13,6 +13,7 @@ struct Word {
     text: String,
     key: String,
     after: String,
+    may_destutter: bool,
 }
 
 fn word_char(c: char) -> bool {
@@ -31,6 +32,7 @@ fn tokenize(text: &str) -> (String, Vec<Word>) {
                     text: String::new(),
                     key: String::new(),
                     after: String::new(),
+                    may_destutter: false,
                 });
             }
             let word = words.last_mut().unwrap();
@@ -45,6 +47,12 @@ fn tokenize(text: &str) -> (String, Vec<Word>) {
                 leading.push_str(g);
             }
         }
+    }
+    // Preserve original casing even if removing a filler later capitalizes a
+    // lowercase word. Cased names/acronyms are ambiguous; English "I" is the
+    // explicit pronoun exception for a common stutter.
+    for word in &mut words {
+        word.may_destutter = word.text == word.key || word.text == "I";
     }
     (leading, words)
 }
@@ -246,11 +254,21 @@ fn basic(text: &str, sentence_initial: bool) -> String {
     i = 0;
     while i < words.len() {
         let mut removed = false;
+        let mut sentence_case = words[i].key.clone();
+        capitalize(&mut sentence_case);
         for n in (1..=3).rev() {
             if i + 2 * n > words.len() {
                 continue;
             }
-            if words[i..i + n].iter().any(number) {
+            if words[i..i + n].iter().any(number)
+                || words[i..i + 2 * n].iter().enumerate().any(|(j, word)| {
+                    // Ordinary sentence capitalization can differ only on the
+                    // first word; a cased repeated copy remains protected.
+                    !word.may_destutter && !(i == 0 && j == 0 && sentence_initial
+                        && word.text == sentence_case
+                        && words[i + n].text == words[i + n].key)
+                })
+            {
                 continue;
             }
             if n == 1
@@ -295,11 +313,11 @@ fn phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
 
 fn rollback(out: &mut String, needs_separator: bool) {
     let trimmed =
-        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | ',' | ';'));
+        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | ',' | ';' | ':'));
     let keep = trimmed
         .char_indices()
         .rev()
-        .find(|(_, c)| matches!(c, '.' | '!' | '?' | ';' | '\n' | '\r'))
+        .find(|(_, c)| matches!(c, '.' | '!' | '?' | ';' | ':' | '\n' | '\r'))
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or_else(|| out.len() - out.trim_start_matches([' ', '\t']).len());
     out.truncate(keep);
@@ -552,6 +570,37 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rollback_preserves_colon_clause_and_payload_boundaries() {
+        for (input, expected) in [
+            ("Keep this put a colon change this scratch that tomorrow", "Keep this: Tomorrow"),
+            ("Keep this: change this scratch that tomorrow", "Keep this: Tomorrow"),
+            ("Keep this put a colon scratch that tomorrow", "Tomorrow"),
+            ("before [[VERENU_CLIPBOARD_7D3A_00]] Keep this put a colon change this scratch that tomorrow", "before [[VERENU_CLIPBOARD_7D3A_00]] Keep this: Tomorrow"),
+            ("\"Keep this put a colon change this scratch that\"", "\"Keep this put a colon change this scratch that\""),
+            ("`Keep this put a colon change this scratch that`", "`Keep this put a colon change this scratch that`"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        let literal = "Keep this put a colon change this scratch that tomorrow";
+        assert_eq!(process(literal, true, false, &[]), literal);
+    }
+    #[test]
+    fn basic_preserves_cased_repetition_without_losing_lowercase_stutters() {
+        for input in ["Duran Duran", "Bora Bora", "NASA NASA", "NASA nasa", "US US", "New York New York", "iPhone iPhone"] {
+            assert_eq!(process(input, true, false, &[]), input);
+            assert_eq!(process(input, true, true, &[]), input);
+        }
+        for (input, expected) in [
+            ("I I I think so", "I think so"),
+            ("send send it", "send it"),
+            ("Send send it", "Send it"),
+            ("um send send it", "Send it"),
+            ("Then we can we can deploy", "Then we can deploy"),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
     #[test]
     fn basic_preserves_each_repeated_voice_command() {
         for (input, expected) in [
