@@ -116,6 +116,47 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
   }
 
   try {
+    const retainedLocal = await open({
+      setup_complete: false, force_setup_on_launch: true,
+      setup_progress: { step: 4, provider: 'local' },
+    }, { 'parakeet-v3': { downloaded: true } }, { 'qwen2.5-3b-instruct': { downloaded: true } }, true);
+    await retainedLocal.getByRole('button', { name: 'Use local Transcription only', exact: true }).click();
+    await retainedLocal.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(retainedLocal.locator('.writing-style-step')).toBeVisible();
+    await retainedLocal.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(retainedLocal.getByRole('button', { name: 'Use local Transcription only', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(retainedLocal.getByRole('button', { name: 'Use local Balanced', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await assertSafe(retainedLocal);
+    await retainedLocal.close();
+
+    const recoveredLocal = await completeLocalSetup({
+      localSttModels: { 'parakeet-v3': { downloaded: true } }, presetName: 'Balanced', chooseMissingSpeech: true,
+    });
+    await expect(recoveredLocal.locator('.done-model-warning')).toContainText('cleanup model');
+    await recoveredLocal.getByRole('button', { name: 'Review models', exact: true }).click();
+    await expect(recoveredLocal.locator('.models-picker')).toBeVisible();
+    await expect(recoveredLocal.locator('.settings-page')).toHaveCount(0);
+    await recoveredLocal.getByRole('button', { name: 'Use local Transcription only', exact: true }).click();
+    for (let index = 0; index < 5; index++) await recoveredLocal.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(recoveredLocal.locator('.done-model-warning')).toHaveCount(0);
+    await expect(recoveredLocal.locator('.done-summary')).toContainText('Transcription only');
+    for (const [name, viewport] of [['desktop', { width: 900, height: 700 }], ['phone', { width: 390, height: 844 }]]) {
+      await recoveredLocal.setViewportSize(viewport);
+      await recoveredLocal.evaluate(async () => {
+        await Promise.all(document.getAnimations().filter(animation => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map(animation => animation.finished.catch(() => {})));
+      });
+      await screenshot(recoveredLocal, `recovery-after-${name}`, false);
+    }
+    await recoveredLocal.getByRole('button', { name: 'Finish setup', exact: true }).click();
+    await expect(recoveredLocal.locator('.setup-overlay')).toHaveCount(0);
+    const recoveredSettings = await recoveredLocal.evaluate(async () => {
+      const { invoke } = await import('/src/lib/tauri.ts');
+      return Promise.all(['transcription_default_model', 'cleanup_enabled'].map(key => invoke('get_setting', { key })));
+    });
+    assert.deepEqual(recoveredSettings, ['local/parakeet-v3', false]);
+    await assertSafe(recoveredLocal);
+    await recoveredLocal.close();
+
     for (const installed of [false, true]) {
       const androidDefaults = await open({
         setup_complete: false, force_setup_on_launch: true,
@@ -136,6 +177,11 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
         await Promise.all(document.getAnimations().filter(animation => Number.isFinite(animation.effect?.getComputedTiming().endTime)).map(animation => animation.finished.catch(() => {})));
       });
       await screenshot(androidDefaults, `android-defaults-${installed ? 'installed' : 'missing'}`, false);
+      if (!installed) {
+        await androidDefaults.getByRole('button', { name: 'Review models', exact: true }).click();
+        await expect(androidDefaults.locator('.provider-step')).toBeVisible();
+        await expect(androidDefaults.locator('.settings-page')).toHaveCount(0);
+      }
       await assertSafe(androidDefaults);
       await androidDefaults.close();
     }
@@ -361,7 +407,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     });
     await expect(pendingLocalDone.getByRole('heading', { name: 'Your choices are saved when you finish.' })).toBeVisible();
     await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('speech model is still downloading');
-    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('Open Models settings');
+    await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('Review models');
     await expect(pendingLocalDone.getByRole('button', { name: 'Finish setup', exact: true })).toBeEnabled();
     await expect(pendingLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
     await screenshot(pendingLocalDone, 'setup-done-local-pending');
@@ -370,10 +416,12 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     await pendingLocalDone.setViewportSize({ width: 900, height: 600 });
     await assertSafe(pendingLocalDone);
 
-    await pendingLocalDone.getByRole('button', { name: 'Open Models settings', exact: true }).click();
-    await expect(pendingLocalDone.locator('.settings-page')).toBeVisible();
-    await expect(pendingLocalDone.getByRole('button', { name: 'Back to setup', exact: true })).toBeVisible();
-    await pendingLocalDone.getByRole('button', { name: 'Back to setup', exact: true }).click();
+    await pendingLocalDone.getByRole('button', { name: 'Review models', exact: true }).click();
+    await expect(pendingLocalDone.locator('.models-picker')).toBeVisible();
+    await expect(pendingLocalDone.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
+    for (let index = 0; index < 5; index++) {
+      await pendingLocalDone.getByRole('button', { name: 'Next', exact: true }).click();
+    }
     await expect(pendingLocalDone.locator('.settings-page')).toHaveCount(0);
     await expect(pendingLocalDone.locator('.done-model-warning')).toContainText('speech model is still downloading');
 
@@ -407,7 +455,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
       chooseMissingSpeech: true,
     });
     await expect(missingLocalDone.locator('.done-model-warning')).toContainText("speech model isn't installed yet");
-    await expect(missingLocalDone.locator('.done-model-warning')).toContainText('Open Models settings');
+    await expect(missingLocalDone.locator('.done-model-warning')).toContainText('Review models');
     await expect(missingLocalDone.locator('.done-warning').filter({ hasText: 'No API key set' })).toHaveCount(0);
     await assertSafe(missingLocalDone);
     await missingLocalDone.close();
