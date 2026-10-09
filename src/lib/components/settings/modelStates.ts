@@ -1,5 +1,5 @@
 import type { ProviderId } from '../../settings';
-import { appleIntelligence, type AppleIntelligenceAvailability } from '../../appleIntelligence.svelte';
+import { appleIntelligence, appleIntelligenceSupported, type AppleIntelligenceAvailability } from '../../appleIntelligence.svelte';
 import { customProviderStore, customProvider, isCustomProviderId } from '../../customProviders.svelte';
 import {
   isTrustworthy,
@@ -94,6 +94,14 @@ export type PickerContext = {
   appleIntelligence?: AppleIntelligenceAvailability;
 };
 
+/**
+ * Apple Intelligence is offered only on a supported Mac. Hidden rather than
+ * disabled elsewhere, so a stored or pinned Apple choice never lists as usable.
+ */
+export function appleIntelligenceVisible(ctx: Pick<PickerContext, 'appleIntelligence'>): boolean {
+  return appleIntelligenceSupported(ctx.appleIntelligence ?? appleIntelligence.status);
+}
+
 /** Providers whose absence from a list means something. Local has no list. */
 const LISTED_PROVIDERS = CLOUD_PROVIDERS;
 const GOOGLE_DEDICATED_TRANSCRIBER = 'gemini-3.5-transcribe';
@@ -170,6 +178,7 @@ export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[]
     .flatMap(p => (ctx.task === 'transcription' ? p.transcription_models : p.cleanup_models)
       .map(id => ({ provider: p.id, id, label: id, tasks: [ctx.task], tags: [] })));
   return [...catalogFor(ctx.task), ...customEntries]
+    .filter((entry) => entry.provider !== 'apple-intelligence' || appleIntelligenceVisible(ctx))
     .map((entry) => (entry.provider === 'local' ? localRow(entry, ctx) : cloudRow(entry, ctx)))
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }

@@ -17,6 +17,7 @@
     curatedRows,
     discoveredRows,
     unverifiedRows,
+    appleIntelligenceVisible,
     rowForSelection,
     type LocalControls,
     type ModelRow,
@@ -84,8 +85,14 @@
   // logos). On a phone, open on the provider of the current choice instead: a
   // fraction of the DOM to build, lay out and animate when the dialog opens.
   let providerFilter = $state<ProviderId | 'all'>(
-    // Read once on purpose: the filter is the user's from then on.
-    isAndroid ? (untrack(() => splitModelId(defaultModel)?.provider) ?? 'all') : 'all',
+    // Read once on purpose: the filter is the user's from then on. Apple has no
+    // rows on phones, so a stored Apple choice must not open an empty tab.
+    isAndroid
+      ? untrack(() => {
+          const provider = splitModelId(defaultModel)?.provider;
+          return provider && provider !== 'apple-intelligence' ? provider : 'all';
+        })
+      : 'all',
   );
 
   // Row and dialog motion is dropped or simplified on Android: dozens of
@@ -131,7 +138,7 @@
     return () => window.removeEventListener('resize', updatePanelLeft);
   });
 
-  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local', ...(task === 'cleanup' ? ['apple-intelligence' as const] : []),
+  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local', ...(task === 'cleanup' && appleIntelligenceVisible(context) ? ['apple-intelligence' as const] : []),
     ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
   const current = $derived(rowForSelection(defaultModel, context));
