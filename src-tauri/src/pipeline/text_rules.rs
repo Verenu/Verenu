@@ -216,10 +216,11 @@ fn basic(text: &str, sentence_initial: bool) -> String {
             && end < words.len()
             && cues > 0
             && (cues > 1 || words[end - 1].after.contains(','))
-            && !matches!(
-                words[end].key.split(['\'', '’']).next().unwrap_or(""),
-                "i" | "we" | "you" | "he" | "she" | "it" | "they"
-            )
+            // Only phrase introducers can anchor a replacement. A repeated
+            // content word can instead begin a new clause ("tea is gone").
+            && matches!(words[end].key.as_str(), "a" | "an" | "the" | "to" | "from" | "at" | "in" | "on" | "with" | "for")
+            && !words[end..].iter().take(4).any(|word| matches!(word.key.as_str(),
+                "is" | "are" | "was" | "were" | "has" | "have" | "had" | "will" | "would" | "can" | "could" | "should" | "must" | "does" | "do" | "did"))
         {
             let anchor = (i.saturating_sub(4)..i).rev().find(|&a| {
                 words[a].key == words[end].key
@@ -574,6 +575,9 @@ mod tests {
             "I said yes to the plan, no to the budget.",
             "Is it at 5? No, at 6.",
             "Go to Ahmedabad, sorry, no, Delhi",
+            "I ordered tea, no, tea is unavailable.",
+            "I ordered the tea, no, the tea is unavailable.",
+            "I chose coffee, I mean, coffee tastes better.",
             "yes\r\nyes",
             "yes\n\nyes",
             "mm-hmm uh-huh",
