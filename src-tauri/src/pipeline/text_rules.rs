@@ -90,21 +90,57 @@ fn number(w: &Word) -> bool {
         )
 }
 
+fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
+    let mut removed = false;
+    loop {
+        let left = before.trim_end_matches([' ', '\t']);
+        let right = after.trim_start_matches([' ', '\t']);
+        let pair = left.chars().next_back().zip(right.chars().next());
+        if !matches!(pair, Some(('(', ')') | ('[', ']') | ('{', '}'))) {
+            return removed;
+        }
+        let left_end = left.len() - 1;
+        let remaining = right[1..].to_owned();
+        before.truncate(left_end);
+        *after = remaining;
+        removed = true;
+    }
+}
+
 fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize) {
-    let after = words[i + n - 1].after.clone();
+    let mut after = words[i + n - 1].after.clone();
     let ends_sentence = terminal(&after);
     let capitalize_next = i == 0 || ends_sentence || terminal(&words[i - 1].after);
+    let before = if i == 0 {
+        &mut *leading
+    } else {
+        &mut words[i - 1].after
+    };
+    let removed_pair = remove_empty_delimiters(before, &mut after);
+    if removed_pair && i > 0 && before.is_empty() && inline_space(&after) && i + n < words.len() {
+        words[i - 1].after = " ".into();
+    }
     if i == 0 {
-        // Drop only filler punctuation; structural line breaks still matter.
-        leading.push_str(
-            &after
-                .chars()
-                .filter(|c| matches!(c, '\n' | '\r'))
-                .collect::<String>(),
-        );
+        // Keep delimiters that enclose retained words; remove an empty pair
+        // only when the discarded pause was its entire contents.
+        if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
+            leading.push_str(&after);
+        } else {
+            leading.push_str(
+                &after
+                    .chars()
+                    .filter(|c| matches!(c, '\n' | '\r'))
+                    .collect::<String>(),
+            );
+        }
     } else {
         let before = &mut words[i - 1].after;
-        if ends_sentence && !terminal(before) {
+        if after.contains([')', ']', '}']) {
+            *before = before.trim_end_matches([' ', '\t']).to_owned()
+                + after.trim_start_matches([' ', '\t']);
+        } else if ends_sentence && before.contains(['(', '[', '{']) {
+            before.push_str(&after);
+        } else if ends_sentence && !terminal(before) {
             *before = after;
         } else if n == 2 && before.contains(',') && after.contains(',') {
             *before = " ".into();
@@ -398,6 +434,26 @@ pub(super) fn explicit_english(language: &str) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case("en"))
 }
 
+fn matching_term_len(text: &str, term: &str) -> Option<usize> {
+    if term.is_empty() {
+        return None;
+    }
+    let mut chars = text.char_indices();
+    let mut end = 0;
+    for wanted in term.chars() {
+        let (index, actual) = chars.next()?;
+        if !wanted.to_lowercase().eq(actual.to_lowercase()) {
+            return None;
+        }
+        end = index + actual.len_utf8();
+    }
+    text[end..]
+        .chars()
+        .next()
+        .is_none_or(|c| !word_char(c))
+        .then_some(end)
+}
+
 /// Apply edits separately on each spoken span. Unclosed quotes/code protect
 /// the rest of the transcript rather than risking destructive interpretation.
 pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[&str]) -> String {
@@ -427,16 +483,8 @@ pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[
         } else {
             terms
                 .iter()
-                .filter(|term| {
-                    !term.is_empty()
-                        && rest.starts_with(**term)
-                        && (i == 0 || !text[..i].chars().next_back().is_some_and(word_char))
-                        && rest[term.len()..]
-                            .chars()
-                            .next()
-                            .is_none_or(|c| !word_char(c))
-                })
-                .map(|term| term.len())
+                .filter(|_| i == 0 || !text[..i].chars().next_back().is_some_and(word_char))
+                .filter_map(|term| matching_term_len(rest, term))
                 .max()
         };
         if let Some(len) = protected_len {
@@ -583,5 +631,31 @@ mod tests {
         );
         let normalized = process("um send send it new line tomorrow", true, true, &[]);
         assert_eq!(process(&normalized, true, true, &[]), normalized);
+    }
+
+    #[test]
+    fn filler_removal_keeps_delimiters_balanced() {
+        for (input, expected) in [
+            ("Please (um) continue", "Please continue"),
+            ("Please [um] continue", "Please continue"),
+            ("Please (um continue)", "Please (continue)"),
+            ("(Please um) continue", "(Please) continue"),
+            ("(um) hello", "Hello"),
+            ("(um)", ""),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn vocabulary_commands_are_protected_across_case_and_unicode_lengths() {
+        for input in ["new line tomorrow", "NEW LINE tomorrow", "New Line tomorrow"] {
+            assert_eq!(process(input, true, true, &["New Line"]), input);
+        }
+        assert_eq!(process("um ÉR ÉR works", true, true, &["ér ér"]), "ÉR ÉR works");
+        assert_eq!(process("k k works", true, true, &["K K"]), "k k works");
+        assert_eq!(process("new line tomorrow", false, true, &["new"]), "new line tomorrow");
+        assert_eq!(process("renew line", false, true, &["New Line"]), "renew line");
+        assert_eq!(process("um", true, true, &["u"]), "");
     }
 }
