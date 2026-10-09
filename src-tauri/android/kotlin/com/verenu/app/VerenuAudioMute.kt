@@ -2,12 +2,25 @@ package com.verenu.app
 
 import android.content.Context
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 /** Temporarily quiet media without changing ring, call, or alarm audio. */
 class VerenuAudioMute(context: Context) {
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    private val handler = Handler(Looper.getMainLooper())
+    private var requested = false
+    private val observeVolume = object : Runnable {
+        override fun run() {
+            synchronized(this@VerenuAudioMute) {
+                if (!requested) return
+                applyMute(true)
+                handler.postDelayed(this, 100L)
+            }
+        }
+    }
     private val mediaMute = VerenuMediaMute(
         isMuted = { audio.isStreamMute(AudioManager.STREAM_MUSIC) },
         readVolume = { audio.getStreamVolume(AudioManager.STREAM_MUSIC) },
@@ -31,6 +44,13 @@ class VerenuAudioMute(context: Context) {
 
     @Synchronized
     fun update(muted: Boolean) {
+        requested = muted
+        handler.removeCallbacks(observeVolume)
+        applyMute(muted)
+        if (muted) handler.postDelayed(observeVolume, 100L)
+    }
+
+    private fun applyMute(muted: Boolean) {
         try {
             mediaMute.update(muted)
         } catch (error: RuntimeException) {

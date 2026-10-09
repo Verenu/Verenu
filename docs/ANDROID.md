@@ -192,6 +192,37 @@ x86_64 for emulators.
 
 ## Testing on an emulator
 
+The audio-mute regression fixture uses a disposable emulator, a synthetic
+440 Hz media tone, and the native WebView's production IPC. It rejects physical
+devices. Build the app, run `android:sync`, then build and install the test APK:
+
+```bash
+cd src-tauri/gen/android
+./gradlew :app:assembleUniversalDebugAndroidTest -x rustBuildUniversalDebug
+adb -s <isolated-emulator> install app/build/outputs/apk/androidTest/universal/debug/app-universal-debug-androidTest.apk
+adb -s <isolated-emulator> shell am instrument -w com.verenu.app.test/com.verenu.app.MuteLifecycleInstrumentation
+```
+
+Approve the standard microphone dialog on that emulator. The fixture requires
+no provider credentials, accessibility grant, DND access, or keyboard change.
+It covers preference off/on, cancellation, normal stop, the microphone
+permission-loss callback, and a user volume override. JVM tests cover durable
+recovery after process restart. Actual permission revocation and Samsung audio
+routing still require separate platform checks.
+
+Mute requests go directly from Rust's shared audio owners to the Application,
+independent of accessibility polling. Only media volume changes; calls, alarms,
+and ring volume remain untouched. The existing `MODIFY_AUDIO_SETTINGS` normal
+permission is sufficient on supported routes. Android audio focus does not
+guarantee silence from every player, so this path does not request focus.
+See [AudioManager](https://developer.android.com/reference/android/media/AudioManager)
+and [audio focus](https://developer.android.com/media/optimize/audio-focus).
+The Application checks for volume overrides every 100 ms while muted and
+discards its restore value when it observes one. Android's public volume API
+cannot distinguish choosing zero again from the zero Verenu already applied;
+changes entirely between observations are also not observable. Abrupt process
+death recovers the saved level on next launch if media remains at zero.
+
 An x86_64 API 34+ AVD is enough for the full dictation path:
 
 ```bash
