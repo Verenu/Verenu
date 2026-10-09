@@ -1,0 +1,163 @@
+use super::*;
+
+#[tokio::test(flavor = "current_thread")]
+async fn apple_cleanup_uses_own_identity_without_key_or_implicit_fallback() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "apple-intelligence/system".into();
+    // A configured cloud candidate makes the chain ready on Linux. The first
+    // Apple adapter is independently exercised with a deterministic fixture.
+    config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
+    assert_eq!(config.key_for(store::APPLE_INTELLIGENCE), "");
+    assert!(!config.provider_has_auth(store::APPLE_INTELLIGENCE));
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("please send the note tomorrow"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "apple-intelligence",
+        "system",
+        Some("Please send the note tomorrow."),
+        None,
+        None,
+    );
+    let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+    assert_eq!(
+        result.final_text_before_dictionary,
+        "Please send the note tomorrow."
+    );
+    assert!(result
+        .api_used
+        .contains("cleanup=apple-intelligence/system"));
+    assert_eq!(
+        fixture_hit_count("cleanup", "apple-intelligence", "system"),
+        1
+    );
+    assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 0);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apple_cleanup_refusal_retry_stays_on_apple_and_preserves_speech() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "apple-intelligence/system".into();
+    config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("please send the note tomorrow"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "apple-intelligence",
+        "system",
+        Some("As an AI, I cannot help with that."),
+        None,
+        None,
+    );
+    let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+    assert_eq!(
+        result.final_text_before_dictionary,
+        "please send the note tomorrow"
+    );
+    assert_eq!(
+        fixture_hit_count("cleanup", "apple-intelligence", "system"),
+        2
+    );
+    assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 0);
+    assert_eq!(result.history_entry.clean_text, result.injected_text);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apple_cleanup_failure_uses_only_explicit_recovery_candidate() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "apple-intelligence/system".into();
+    config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("please send the note tomorrow"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "apple-intelligence",
+        "system",
+        None,
+        Some("provider"),
+        Some("Apple Intelligence model is not ready"),
+    );
+    fixture(
+        "cleanup",
+        "openai",
+        "gpt-4o-mini",
+        Some("Please send the note tomorrow."),
+        None,
+        None,
+    );
+    let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+    assert_eq!(
+        result.final_text_before_dictionary,
+        "Please send the note tomorrow."
+    );
+    assert_eq!(
+        fixture_hit_count("cleanup", "apple-intelligence", "system"),
+        1
+    );
+    assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 1);
+    reset();
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test(flavor = "current_thread")]
+async fn unavailable_apple_only_chain_preserves_dictation_and_saved_selection() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "apple-intelligence/system".into();
+    config.cleanup_fallback_models.clear();
+    assert_eq!(
+        store::parse_model_id(&config.cleanup_default_model)
+            .unwrap()
+            .0,
+        store::APPLE_INTELLIGENCE
+    );
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("please send the note tomorrow"),
+        None,
+        None,
+    );
+    let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+    assert_eq!(
+        result.final_text_before_dictionary,
+        "please send the note tomorrow"
+    );
+    assert_eq!(
+        fixture_hit_count("cleanup", "apple-intelligence", "system"),
+        0
+    );
+    reset();
+}

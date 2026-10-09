@@ -12,6 +12,7 @@ export type ProviderId =
   | 'assemblyai'
   | 'openrouter'
   | 'xai'
+  | 'apple-intelligence'
   | `custom:${string}`
   | 'local';
 export type ProviderModelMap = Record<ProviderId, string[]>;

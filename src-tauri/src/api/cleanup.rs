@@ -176,6 +176,15 @@ pub async fn cleanup_with_alternate_and_evidence(
             }
         };
         match provider.cleanup_adapter() {
+            CleanupAdapter::AppleIntelligence => {
+                super::apple_intelligence::cleanup(
+                    model,
+                    &prompt,
+                    &format_transcript_input(text, alternate_transcript),
+                    max_output_tokens,
+                )
+                .await
+            }
             CleanupAdapter::OpenAiChat { url } => {
                 openai_compat(
                     text,
@@ -679,6 +688,7 @@ pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str
         ProviderId::OpenRouter => openai_compat_model_supports_no_reasoning("OpenRouter", model),
         ProviderId::Xai => openai_compat_model_supports_no_reasoning("xAI", model),
         ProviderId::Local => true,
+        ProviderId::AppleIntelligence => model == super::apple_intelligence::MODEL,
         // AssemblyAI is transcription-only and has no cleanup endpoint.
         ProviderId::AssemblyAi => false,
     }

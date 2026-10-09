@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount } from 'svelte';
   import { invoke, listen, type LocalSttModelInfo, type LocalLlmModelInfo, type LocalLlmRuntimeInfo } from '../../tauri';
   import { appStore } from '../../stores';
@@ -31,6 +32,7 @@
         contexts, targets, websites, subApps, appMappings, speech, cleanup, speechProvider, cleanupProvider, legacySpeech, legacyCleanup,
         speechFallbacks, cleanupFallbacks, enabled, intensity, dualTranscriptionEnabled, keys, customProviders,
         speechModels, cleanupModels, engine,
+        appleIntelligence,
       ] = await Promise.all([
         invoke<Pick<Context, 'id' | 'is_everywhere' | 'cleanup_intensity'>[]>('get_contexts'),
         invoke<ContextTarget[]>('get_context_targets', { contextId: null }),
@@ -53,6 +55,7 @@
         invoke<LocalSttModelInfo[]>('list_local_stt_models'),
         invoke<LocalLlmModelInfo[]>('list_local_llm_models'),
         invoke<LocalLlmRuntimeInfo>('get_local_llm_runtime_info'),
+        refreshAppleIntelligence(),
       ]);
       if (!mounted || current !== sequence) return;
       const input: ReadinessInput = {
@@ -70,6 +73,7 @@
         speechModels,
         cleanupModels,
         cleanupEngineInstalled: engine.installed,
+        appleIntelligence,
       };
       issues = dictationReadiness(input);
       cloudSpeechConfigured = hasCloudSpeechCandidate(input);

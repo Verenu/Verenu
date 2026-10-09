@@ -1,4 +1,5 @@
 import type { ProviderId } from '../../settings';
+import { appleIntelligence, type AppleIntelligenceAvailability } from '../../appleIntelligence.svelte';
 import { customProviderStore, customProvider, isCustomProviderId } from '../../customProviders.svelte';
 import {
   isTrustworthy,
@@ -90,6 +91,7 @@ export type PickerContext = {
   cache: ModelCatalogCache;
   localModels: LocalModelInfo[];
   hardware: Hardware;
+  appleIntelligence?: AppleIntelligenceAvailability;
 };
 
 /** Providers whose absence from a list means something. Local has no list. */
@@ -124,6 +126,11 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
 }
 
 function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
+  if (entry.provider === 'apple-intelligence') {
+    const status = ctx.appleIntelligence ?? appleIntelligence.status;
+    if (ctx.task !== 'cleanup' || entry.id !== 'system') return row(entry, 'unavailable', 'Cleanup only');
+    return row(entry, status.available ? 'ready' : 'needs-setup', status.message);
+  }
   if (!ctx.apiKeyStatus[entry.provider] && customProvider(entry.provider)?.requires_key !== false) {
     return row(entry, 'needs-setup', 'No API key', 'add-key');
   }
@@ -251,6 +258,9 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     note: 'Custom model',
     remedy: 'none',
   };
+  if (parsed.provider === 'apple-intelligence') {
+    return { ...base, state: 'unavailable', note: 'Unsupported Apple Intelligence model' };
+  }
   if (isCustomProviderId(parsed.provider)) {
     const p = customProvider(parsed.provider);
     if (!p || !(ctx.task === 'transcription' ? p.supports_transcription : p.supports_cleanup))
