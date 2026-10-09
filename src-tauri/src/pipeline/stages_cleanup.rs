@@ -515,8 +515,9 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     }
 
     // Fast path: an exact snippet trigger can skip the LLM unless a later
-    // cleanup instruction needs the expanded text to reach the model.
-    let pure_expansion = if snippet_instructions.is_empty() {
+    // cleanup instruction needs the expanded text to reach the model. Basic
+    // ignores those instructions, so they must not disable exact expansion.
+    let pure_expansion = if cfg.cleanup_intensity == "rules" || snippet_instructions.is_empty() {
         snippets::try_pure_snippet_expand_from(raw, &db_snippets, db_handle)
     } else {
         None

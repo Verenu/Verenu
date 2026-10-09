@@ -53,12 +53,15 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       [true, 'use question mark and new paragraph', 'use QuestionMark and new paragraph'],
       [true, 'I use app name um every day', 'I use Verenu every day'],
       [true, 'I use sentence name um every day', 'I use Verenu. Every day'],
+      [false, 'I ordered tea, no, tea is unavailable.', 'I ordered tea, no, tea is unavailable.'],
+      [true, 'signoff.', 'Thanks!'],
     ]) {
       if (raw.startsWith('greeting')) snippets.push(await invoke('create_snippet', { trigger: 'greeting', expansion: 'um scratch that new line', instructions: '', contextId: context.id }));
       if (raw.startsWith('um please')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'New Line', mistake: 'new line', contextId: context.id }));
       if (raw.startsWith('use question')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'QuestionMark', mistake: 'question mark, new paragraph', contextId: context.id }));
       if (raw.startsWith('I use app')) snippets.push(await invoke('create_snippet', { trigger: 'app name', expansion: 'Verenu', instructions: '', contextId: context.id }));
       if (raw.startsWith('I use sentence')) snippets.push(await invoke('create_snippet', { trigger: 'sentence name', expansion: 'Verenu.', instructions: '', contextId: context.id }));
+      if (raw === 'signoff.') snippets.push(await invoke('create_snippet', { trigger: 'signoff', expansion: 'Thanks!', instructions: 'all capitals', contextId: context.id }));
       speech = raw;
       await invoke('save_setting', { key: 'voice_commands_enabled', value: commands });
       const before = new Set((await invoke('get_recent')).map(row => row.id));
@@ -71,7 +74,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 7);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 9);
   } finally {
     try {
       for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });
