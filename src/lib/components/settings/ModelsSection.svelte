@@ -376,8 +376,9 @@
   let advancedModelUi = $state(false);
   let localModelMemoryPolicy = $state<LocalModelMemoryPolicy>('unload_after_5m');
   let localModelMemoryDropdownOpen = $state(false);
-  // Local on-device STT/LLM inference is gated off entirely on Intel Mac
-  // builds — see system::platform::is_macos_intel on the backend for why.
+  // Most local on-device STT/LLM inference is gated off on Intel Mac builds —
+  // see system::platform::is_macos_intel on the backend for why. Apple Speech
+  // and whisper.cpp transcription stay offered (see localModelOffered).
   // Defaults to true (never assume unsupported) until the one-time check
   // resolves, since almost every user is on a supported platform.
   let localModelsSupported = $state(true);

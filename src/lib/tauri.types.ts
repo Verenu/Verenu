@@ -13,8 +13,13 @@ type LocalSttEngineType =
   | 'sense_voice'
   | 'giga_am'
   | 'canary'
-  | 'cohere';
+  | 'cohere'
+  | 'whisper'
+  | 'apple_speech'
+  | 'fluid_audio'
+  | 'ctc_booster';
 export type LocalSttModelInfo = {
+  install_kind?: 'system_managed' | 'download';
   id: string;
   name: string;
   description: string;
