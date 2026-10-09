@@ -38,6 +38,20 @@ pub enum LoadedLocalSttEngine {
 mod tests {
     use super::*;
     #[test]
+    fn local_audio_validation_preserves_recorder_duration_limit() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut samples = vec![0.0; crate::media::audio::MAX_RECORDING_SAMPLES];
+        assert!(validate_audio(&samples, 16_000, &cancel).is_ok());
+        samples.push(0.0);
+        assert!(validate_audio(&samples, 16_000, &cancel).is_err());
+        samples.pop();
+        samples[0] = f32::NAN;
+        assert!(validate_audio(&samples, 16_000, &cancel).is_err());
+        assert!(validate_audio(&[0.0], 44_100, &cancel).is_err());
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+        assert!(validate_audio(&[0.0], 16_000, &cancel).is_err());
+    }
+    #[test]
     #[ignore = "requires explicitly downloaded GGML model and public synthetic 16 kHz WAV"]
     fn whisper_native_logs_do_not_expose_public_fixture() {
         // Run in a separate process to capture native stdout/stderr as well as
@@ -111,6 +125,27 @@ mod tests {
     }
 }
 
+fn validate_audio(
+    samples: &[f32],
+    sample_rate: u32,
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        sample_rate == 16_000,
+        "local transcription requires 16 kHz mono PCM"
+    );
+    anyhow::ensure!(
+        samples.len() <= crate::media::audio::MAX_RECORDING_SAMPLES
+            && samples.iter().all(|s| s.is_finite()),
+        "invalid local speech audio"
+    );
+    anyhow::ensure!(
+        !cancellation.load(std::sync::atomic::Ordering::Acquire),
+        "local transcription cancelled"
+    );
+    Ok(())
+}
+
 impl LoadedLocalSttEngine {
     pub fn transcribe(
         &mut self,
@@ -124,17 +159,7 @@ impl LoadedLocalSttEngine {
         let _ = cancellation;
         #[cfg(target_os = "android")]
         let _ = vocabulary;
-        if sample_rate != 16_000 {
-            anyhow::bail!("local transcription requires 16 kHz mono PCM")
-        }
-        anyhow::ensure!(
-            samples.len() <= 16_000 * 600 && samples.iter().all(|s| s.is_finite()),
-            "invalid local speech audio"
-        );
-        anyhow::ensure!(
-            !cancellation.load(std::sync::atomic::Ordering::Acquire),
-            "local transcription cancelled"
-        );
+        validate_audio(samples, sample_rate, cancellation)?;
         let options = TranscribeOptions {
             language: if language.trim().is_empty() {
                 None
