@@ -4,17 +4,15 @@ use super::vocabulary::Vocabulary;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{BufRead, BufReader, Write},
-    os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
 };
 
 pub struct FluidEngine {
     child: Child,
     input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    output: ChildStdout,
     root: PathBuf,
     booster_integrity: super::integrity_cache::IntegrityCache,
 }
@@ -67,7 +65,7 @@ impl FluidEngine {
             .stderr(Stdio::null())
             .spawn()?;
         let input = child.stdin.take().unwrap();
-        let output = BufReader::new(child.stdout.take().unwrap());
+        let output = child.stdout.take().unwrap();
         let mut engine = Self {
             child,
             input,
@@ -87,41 +85,31 @@ impl FluidEngine {
         request: &serde_json::Value,
         cancellation: &AtomicBool,
     ) -> anyhow::Result<Response> {
-        serde_json::to_writer(&mut self.input, request)?;
-        self.input.write_all(b"\n")?;
-        self.input.flush()?;
         let started = std::time::Instant::now();
-        loop {
-            if cancellation.load(Ordering::Acquire) || started.elapsed().as_secs() >= 120 {
+        let mut payload = serde_json::to_vec(request)?;
+        payload.push(b'\n');
+        let line = match super::fluid_io::exchange(
+            &mut self.input,
+            &mut self.output,
+            &payload,
+            cancellation,
+            started,
+            std::time::Duration::from_secs(120),
+        ) {
+            Ok(line) => line,
+            Err(error) => {
                 self.child.kill().ok();
                 self.child.wait().ok();
-                anyhow::bail!("FluidAudio operation cancelled or timed out");
+                return Err(error);
             }
-            let mut poll = libc::pollfd {
-                fd: self.output.get_ref().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ready = unsafe { libc::poll(&mut poll, 1, 50) };
-            if ready < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            if ready == 0 {
-                continue;
-            }
-            let mut line = String::new();
-            anyhow::ensure!(
-                self.output.read_line(&mut line)? > 0,
-                "FluidAudio helper stopped"
-            );
-            let response: Response = serde_json::from_str(&line)
-                .map_err(|_| anyhow::anyhow!("invalid FluidAudio response"))?;
-            anyhow::ensure!(
-                response.error.is_none(),
-                "FluidAudio could not load or transcribe the installed model"
-            );
-            return Ok(response);
-        }
+        };
+        let response: Response = serde_json::from_slice(&line)
+            .map_err(|_| anyhow::anyhow!("invalid FluidAudio response"))?;
+        anyhow::ensure!(
+            response.error.is_none(),
+            "FluidAudio could not load or transcribe the installed model"
+        );
+        Ok(response)
     }
 
     pub fn transcribe(
