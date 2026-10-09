@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { root } from './identity.mjs';
+import { safeBrowserSourceFile, safeFailureAttempts } from './playwright-diagnostics.mjs';
 
 const menuIds = new Set(['history-retention-menu', 'transcription-mode-menu']);
 const geometryChecks = new Set([
@@ -33,7 +34,7 @@ function relativeRepoFile(file, projectRoot) {
   const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(base, normalized);
   const relative = path.relative(rootPath, resolved);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-  return relative.split(path.sep).join('/');
+  return safeBrowserSourceFile(relative.split(path.sep).join('/'));
 }
 
 export function safeText(value, limit = 240) {
@@ -52,7 +53,7 @@ export function safeText(value, limit = 240) {
 function safeMenuGeometry(errors = []) {
   if (!Array.isArray(errors)) return null;
   for (const error of errors) {
-    if (typeof error.message !== 'string' || error.message.length > 2048) continue;
+    if (typeof error?.message !== 'string' || error.message.length > 2048) continue;
     const match = error.message.match(/MENU_GEOMETRY:(\{[^\r\n]+\})/);
     if (!match) continue;
     try {
@@ -111,7 +112,7 @@ function browserTestStatus(value) {
 function collectTests(report, projectRoot) {
   const tests = [];
 
-  function walk(suite, parentTitles = [], inheritedFile = null) {
+  function walk(suite, parentTitles = [], inheritedFile = null, pointer = '') {
     if (!isRecord(suite)) return;
     const suiteFile = typeof suite.file === 'string' ? suite.file : inheritedFile;
     const suiteTitle = safeText(suite.title);
@@ -119,16 +120,16 @@ function collectTests(report, projectRoot) {
     const titles = suiteTitle && !isFileTitle ? [...parentTitles, suiteTitle] : parentTitles;
 
     if (Array.isArray(suite.specs)) {
-      for (const spec of suite.specs) {
+      for (const [specIndex, spec] of suite.specs.entries()) {
         if (!isRecord(spec) || !Array.isArray(spec.tests)) continue;
         const file = relativeRepoFile(spec.file ?? suiteFile, projectRoot);
         const line = Number.isInteger(spec.line) && spec.line > 0 ? spec.line : null;
         const leaf = safeText(spec.title);
         const title = [...titles, leaf].filter(Boolean).join(' › ').slice(0, 400) || 'Untitled Playwright test';
-        for (const test of spec.tests) {
+        for (const [testIndex, test] of spec.tests.entries()) {
           if (!isRecord(test)) continue;
           const results = Array.isArray(test.results) ? test.results : [];
-          const lastResult = results.at(-1);
+          const lastResult = results.filter(result => ['failed', 'timedOut', 'interrupted'].includes(result?.status)).at(-1) ?? results.at(-1);
           const row = {
             project: safeText(test.projectName, 80) || 'unknown',
             file,
@@ -143,17 +144,19 @@ function collectTests(report, projectRoot) {
           if (menuGeometry) row.menuGeometry = menuGeometry;
           const assertionLine = safeAssertionLine(lastResult?.errors, spec.file ?? suiteFile);
           if (assertionLine) row.assertionLine = assertionLine;
+          const diagnostics = safeFailureAttempts(test, file, `${pointer}/specs/${specIndex}/tests/${testIndex}`);
+          if (diagnostics.length) row.diagnostics = diagnostics;
           tests.push(row);
         }
       }
     }
 
     if (Array.isArray(suite.suites)) {
-      for (const child of suite.suites) walk(child, titles, suiteFile);
+      for (const [index, child] of suite.suites.entries()) walk(child, titles, suiteFile, `${pointer}/suites/${index}`);
     }
   }
 
-  for (const suite of report.suites) walk(suite);
+  for (const [index, suite] of report.suites.entries()) walk(suite, [], null, `/suites/${index}`);
   return tests;
 }
 
@@ -229,6 +232,7 @@ export function playwrightSummaryChecks(summary) {
       line: test.line,
       title: test.title,
       retryCount: test.retryCount,
+      ...(test.diagnostics ? { diagnostics: test.diagnostics } : {}),
     });
   }
   return checks;

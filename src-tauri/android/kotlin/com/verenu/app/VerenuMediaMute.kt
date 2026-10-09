@@ -20,7 +20,14 @@ internal class VerenuMediaMute(
     fun update(muted: Boolean) {
         if (muted) {
             if (userOverrideUntilUnmuted) return
-            if (previousVolume != null) return
+            if (previousVolume != null) {
+                if (readVolume() != 0) {
+                    clearOwnedVolumeOrThrow()
+                    previousVolume = null
+                    userOverrideUntilUnmuted = true
+                }
+                return
+            }
 
             val savedVolume = persistence.readOwnedVolume()
             if (savedVolume != null) {

@@ -4,8 +4,15 @@ import android.app.Application
 import android.util.Log
 
 class VerenuApplication : Application() {
+  private val audioMute by lazy { VerenuAudioMute(this) }
+
+  // Called by Rust's shared mute-owner lifecycle, including in-app dictation.
+  // The Application survives Activity and accessibility-service teardown.
+  fun updateMediaMute(muted: Boolean) = audioMute.update(muted)
+
   override fun onCreate() {
     super.onCreate()
+    updateMediaMute(false)
 
     val projectToken = configuredValue(
       BuildConfig.POSTHOG_PROJECT_TOKEN,
