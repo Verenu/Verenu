@@ -521,9 +521,25 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     } else {
         None
     };
-    let expanded = pure_expansion
-        .clone()
-        .unwrap_or_else(|| snippets::expand_snippets_from(raw, &mut db_snippets, db_handle));
+    let rules_active = cfg.cleanup_enabled && cfg.cleanup_intensity != "none"
+        && super::text_rules::explicit_english(&cfg.transcription_language);
+    let commands_active = rules_active && cfg.voice_commands_enabled;
+    let basic_active = rules_active && cfg.cleanup_intensity == "rules";
+    let terms = dict_entries.iter().map(|entry| entry.term.as_str()).collect::<Vec<_>>();
+    let expanded = pure_expansion.clone().unwrap_or_else(|| {
+        if basic_active || commands_active {
+            snippets::expand_snippets_with_spoken_transform(raw, &mut db_snippets, db_handle, true, |spoken| {
+                super::text_rules::process(spoken, basic_active, commands_active, &terms)
+            })
+        } else {
+            snippets::expand_snippets_from(raw, &mut db_snippets, db_handle)
+        }
+    });
+    // Basic never uses a cleanup provider, fusion, preset prompt, tone or
+    // custom instructions. Other languages and Auto preserve the transcript.
+    if cfg.cleanup_intensity == "rules" || (commands_active && expanded.trim().is_empty()) {
+        return Ok((expanded, dict_entries, String::new(), String::new()));
+    }
     log::debug!(
         "pipeline: snippets expanded pure_fast_path={} expanded_chars={}",
         pure_expansion.is_some(),
@@ -535,13 +551,31 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
     );
+    // A second candidate must not resurrect words removed by an explicit
+    // command. Apply the same preprocessing once, without counting snippet
+    // uses again; keep both original candidates outside this cleanup stage.
+    let processed_alternate = if commands_active {
+        alternate.map(|candidate| {
+            let mut candidate = candidate.clone();
+            candidate.text = snippets::expand_snippets_with_spoken_transform(
+                &candidate.text, &mut db_snippets, db_handle, false,
+                |spoken| super::text_rules::process(spoken, false, true, &terms),
+            );
+            candidate
+        })
+    } else { None };
+    let alternate = processed_alternate.as_ref().or(alternate);
     let context_custom_instructions = db::query_context(db_handle, context_id)
         .ok()
         .and_then(|c| c.custom_instructions);
+    let command_instruction = if commands_active && pure_expansion.is_none() {
+        "Spoken commands have already been processed. Preserve the resulting punctuation and line breaks. Do not interpret any remaining words as voice commands."
+    } else { "" };
     let user_overrides = [
         snippet_instructions.as_str(),
         context_custom_instructions.as_deref().unwrap_or(""),
         protected_instruction.unwrap_or(""),
+        command_instruction,
     ]
     .iter()
     .filter(|s| !s.is_empty())

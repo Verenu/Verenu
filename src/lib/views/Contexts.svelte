@@ -1646,7 +1646,11 @@
         rows="3"
         spellcheck="false"
       ></textarea>
-      <p class="field-hint">Sent directly to the cleanup model whenever this context group is active.</p>
+      {#if modalCleanupIntensity === 'rules'}
+        <p class="field-hint basic-hint" role="note">Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Style.</p>
+      {:else}
+        <p class="field-hint">Sent to the AI cleanup model for this context. Voice commands are a separate global option in Style and stay inactive with Off.</p>
+      {/if}
 
       <div class="advanced-disclosure">
         <button

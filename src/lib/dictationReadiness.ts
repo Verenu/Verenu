@@ -97,7 +97,7 @@ export function hasCleanupIntensityOverride(
   const activeContexts = contexts.filter(context => context.is_everywhere || reachable.has(context.id));
   return [...activeContexts, ...appMappings].some(({ cleanup_intensity }) => {
     const intensity = cleanup_intensity?.trim().toLowerCase();
-    return Boolean(intensity) && intensity !== 'none';
+    return Boolean(intensity) && intensity !== 'none' && intensity !== 'rules';
   });
 }
 
@@ -128,7 +128,8 @@ export function cleanupMayBeUsed(input: Pick<ReadinessInput,
   'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed'> & DualTranscriptionInput): boolean {
   const intensity = input.cleanupIntensity ?? 'medium';
   return input.cleanupEnabled && (
-    intensity !== 'none' || input.cleanupIntensityOverrideMayBeUsed === true || dualTranscriptionMayNeedCleanup(input)
+    (intensity !== 'none' && intensity !== 'rules') || input.cleanupIntensityOverrideMayBeUsed === true
+      || (intensity === 'none' && dualTranscriptionMayNeedCleanup(input))
   );
 }
 
