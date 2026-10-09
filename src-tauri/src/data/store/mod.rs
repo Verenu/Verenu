@@ -103,6 +103,23 @@ impl SettingsHandle {
         Ok(SettingsSnapshot { values })
     }
 
+    /// Keep settings stable throughout an operation that uses their identity
+    /// or policy. Callers needing SQLite must acquire its lock first.
+    pub(crate) fn with_snapshot<T>(
+        &self,
+        read: impl FnOnce(&SettingsSnapshot) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let values = self
+            .values
+            .read()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        let result = read(&SettingsSnapshot {
+            values: values.clone(),
+        });
+        drop(values);
+        result
+    }
+
     pub fn get(&self, key: &str) -> Option<Value> {
         match self.values.read() {
             Ok(values) => values.get(key).cloned(),
@@ -180,6 +197,67 @@ impl SettingsHandle {
         write_settings_file(&self.path, &next)?;
         *settings = Arc::new(next);
         Ok(true)
+    }
+
+    /// Persist before committing another store, then publish to runtime readers.
+    /// A returned commit error restores the previous file without publishing.
+    /// This is error recovery, not crash/power-loss atomicity across stores.
+    pub(crate) fn save_values_with_commit<I, K, T>(
+        &self,
+        values: I,
+        prepare: impl FnOnce(&SettingsSnapshot) -> Result<(), String>,
+        commit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<(bool, T), String>
+    where
+        I: IntoIterator<Item = (K, Value)>,
+        K: Into<String>,
+    {
+        let pending: Vec<(String, Value)> = values
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect();
+        let mut settings = self
+            .values
+            .write()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        prepare(&SettingsSnapshot {
+            values: settings.clone(),
+        })?;
+        if pending
+            .iter()
+            .all(|(key, value)| settings.get(key) == Some(value))
+        {
+            return commit().map(|result| (false, result));
+        }
+
+        let mut next = (**settings).clone();
+        for (key, value) in pending {
+            next.insert(key, value);
+        }
+        // Keep the exact disk bytes, which need not match a runtime snapshot
+        // after a caller used set() without save(). Also preserve file absence.
+        let previous = match std::fs::read(&*self.path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Failed to read settings before commit: {e}")),
+        };
+        write_settings_file(&self.path, &next)?;
+        let result = match commit() {
+            Ok(result) => result,
+            Err(error) => {
+                let restored = match previous {
+                    Some(bytes) => write_settings_bytes(&self.path, &bytes),
+                    None => std::fs::remove_file(&*self.path)
+                        .map_err(|e| format!("Failed to remove uncommitted settings: {e}")),
+                };
+                if let Err(rollback) = restored {
+                    return Err(format!("{error}; settings rollback failed: {rollback}"));
+                }
+                return Err(error);
+            }
+        };
+        *settings = Arc::new(next);
+        Ok((true, result))
     }
 
     /// Commit an asynchronous refresh only if its owner setting is unchanged.
@@ -334,12 +412,16 @@ fn backup_corrupt_settings(path: &Path) {
 }
 
 fn write_settings_file(path: &Path, values: &Map<String, Value>) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(values)
+        .map_err(|e| format!("Failed to serialize settings.json: {e}"))?;
+    write_settings_bytes(path, &json)
+}
+
+fn write_settings_bytes(path: &Path, json: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| settings_write_error("Failed to create settings directory", &e))?;
     }
-    let json = serde_json::to_string_pretty(values)
-        .map_err(|e| format!("Failed to serialize settings.json: {e}"))?;
     // The temporary name is shared by every SettingsHandle for this file.
     // Serialize the complete write-and-rename sequence so separate handles
     // cannot overwrite or remove one another's settings.json.tmp.

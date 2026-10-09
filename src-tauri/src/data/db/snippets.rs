@@ -63,8 +63,11 @@ pub fn insert_snippet_returning(
 ) -> Result<CreatedRecordMeta> {
     // Insert and read last_insert_rowid under a single lock to prevent another
     // thread's insert racing between the two acquisitions and returning the wrong id.
-    let conn = lock_conn(db)?;
-    insert_snippet_returning_conn(&conn, trigger, expansion, instructions, context_id)
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let created = insert_snippet_returning_conn(&tx, trigger, expansion, instructions, context_id)?;
+    tx.commit()?;
+    Ok(created)
 }
 
 /// Same as `insert_snippet_returning` but takes an already-locked connection,
