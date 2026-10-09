@@ -5,6 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+mod backup_file;
+
 // Stats are included in the backup for informational reference only; they derive
 // from transcription history which is not backed up and cannot be restored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
@@ -272,7 +274,8 @@ pub async fn export_data(
             "verenu-backup-{}.json",
             now.format("%Y%m%d-%H%M%S")
         ));
-        std::fs::write(&path, json).map_err(|e| format!("Failed to write backup file: {e}"))?;
+        backup_file::write_backup(&path, json.as_bytes())
+            .map_err(|e| format!("Failed to write backup file: {e}"))?;
 
         let path_label = path
             .file_name()
@@ -291,17 +294,7 @@ pub async fn import_data(
     json: String,
 ) -> Result<ImportSummary, String> {
     let db = db.inner().clone();
-    run_blocking("import_data", move || {
-        let payload: ExportPayload = serde_json::from_str(&json)
-            .map_err(|e| format!("Invalid backup file: {e}"))?;
-
-        if payload.version != "1" && payload.version != "2" {
-            return Err(format!(
-                "Unsupported backup version '{}'. Versions '1' and '2' are supported.",
-                payload.version
-            ));
-        }
-
+    run_blocking("import_data", move || with_import_payload(&json, |payload| {
         let settings = store::settings_handle(&app)?;
         let mut settings_applied = 0usize;
         let mut settings_skipped = 0usize;
@@ -461,9 +454,28 @@ pub async fn import_data(
             sub_apps_imported: library_stats.sub_apps_imported,
             sub_apps_dropped: library_stats.sub_apps_dropped,
         })
-    })
+    }))
     .await
 }
+
+// Keep every restore side effect behind complete decoding and version checks.
+fn with_import_payload<T>(
+    json: &str,
+    apply: impl FnOnce(ExportPayload) -> Result<T, String>,
+) -> Result<T, String> {
+    let payload: ExportPayload = serde_json::from_str(json)
+        .map_err(|e| format!("Invalid backup file: {e}"))?;
+    if payload.version != "1" && payload.version != "2" {
+        return Err(format!(
+            "Unsupported backup version '{}'. Versions '1' and '2' are supported.",
+            payload.version
+        ));
+    }
+    apply(payload)
+}
+
+#[cfg(test)]
+mod import_safety_tests;
 
 // ---------------------------------------------------------------------------
 // Context-aware library backup helpers
