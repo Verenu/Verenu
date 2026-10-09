@@ -22,7 +22,7 @@
 use crate::android::{
     self, AndroidPermission, AndroidPermissionSnapshot, InsertionStrategy, OverlayState,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Opt-in debug APK fixture entry point. Uses the real production pipeline,
 /// returns through its normal events/history, and never inserts into another app.
@@ -355,6 +355,14 @@ pub async fn android_on_permission_revoked(
     app: AppHandle,
     permission: AndroidPermission,
 ) -> Result<(), String> {
+    let cancellation = if matches!(permission, AndroidPermission::Microphone) {
+        // Cancel through the shared lifecycle so the local audio owner is
+        // released before reporting permission recovery to the frontend.
+        crate::commands::stop_recording(app.clone(), app.state::<crate::pipeline::SharedState>())
+            .await
+    } else {
+        Ok(())
+    };
     if matches!(
         permission,
         AndroidPermission::Microphone | AndroidPermission::AccessibilityService
@@ -365,7 +373,7 @@ pub async fn android_on_permission_revoked(
         "verenu:android-permission-revoked",
         serde_json::json!({ "permission": permission }),
     );
-    Ok(())
+    cancellation
 }
 
 #[cfg(test)]
