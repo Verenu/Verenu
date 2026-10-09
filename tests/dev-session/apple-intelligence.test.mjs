@@ -18,10 +18,12 @@ async function invoke(command, args = {}) {
   return response.json();
 }
 
-test('Apple cleanup uses native availability, preserves selection and completes the production audio pipeline without implicit cloud cleanup', { timeout: 180_000 }, async () => {
+test('Apple cleanup uses native availability, preserves selection and completes the production audio pipeline without implicit cloud cleanup', { timeout: 180_000 }, async (t) => {
   const status = await invoke('get_apple_intelligence_availability');
-  assert.equal(typeof status.message, 'string');
-  assert.equal(status.available, status.state === 'available');
+  await t.test('Apple availability state is consistent', () => {
+    assert.equal(typeof status.message, 'string');
+    assert.equal(status.available, status.state === 'available');
+  });
   const calls = [];
   // Speech is a public synthetic HTTP fixture; Apple cleanup, when available,
   // is real FoundationModels inference through the production pipeline.
@@ -47,34 +49,44 @@ test('Apple cleanup uses native availability, preserves selection and completes 
       cleanup_default_model: 'apple-intelligence/system', cleanup_fallback_models: [], dual_transcription_enabled: false,
       cleanup_enabled: true, cleanup_cache_enabled: false,
     })) await invoke('save_setting', { key, value });
-    assert.equal(await invoke('get_setting', { key: 'cleanup_default_model' }), 'apple-intelligence/system');
-    assert.equal((await invoke('get_api_key_status'))['apple-intelligence'] === true, false);
+    await t.test('Apple selection persists without a credential', async () => {
+      assert.equal(await invoke('get_setting', { key: 'cleanup_default_model' }), 'apple-intelligence/system');
+      assert.equal((await invoke('get_api_key_status'))['apple-intelligence'] === true, false);
+    });
     context = await invoke('create_context', { name: 'Public Apple cleanup test', tone: 'casual', cleanupIntensity: 'light', contextualFormattingDisabled: true });
     const fixture = await request('/fixtures/plain.wav');
     assert.equal(fixture.status, 200);
     const before = new Set((await invoke('get_recent')).map(row => row.id));
     const cursor = (await (await request('/events?after=0')).json()).cursor;
     const response = await request(`/audio?context=${context.id}&process=synthetic-apple`, { method: 'POST', body: await fixture.arrayBuffer() });
-    assert.equal(response.status, 200);
+    await t.test('Production audio request succeeds', () => assert.equal(response.status, 200));
     const result = await response.json();
-    assert.equal(result.pipeline, 'production');
-    assert.equal(result.text.toLowerCase().replace(/[.!?]/g, ''), 'please send the note tomorrow');
+    await t.test('Production output matches the public speech fixture', () => {
+      assert.equal(result.pipeline, 'production');
+      assert.equal(result.text.toLowerCase().replace(/[.!?]/g, ''), 'please send the note tomorrow');
+    });
     const rows = (await invoke('get_recent')).filter(row => !before.has(row.id));
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].clean_text, result.text);
-    // RecentEntry intentionally omits provider metadata. Inspect only this
-    // owned session's matching persisted row; never the installed database.
-    const database = new DatabaseSync(path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), 'data', 'verenu.db'), { readOnly: true });
-    try {
-      const history = database.prepare('SELECT clean_text, api_used FROM transcriptions WHERE id = ?').get(rows[0].id);
-      assert.equal(history.clean_text, result.text);
-      assert.equal(history.api_used.includes('cleanup=apple-intelligence/system'), status.available);
-      assert.equal(history.api_used.split(';')[0], `${provider.id}/synthetic-speech/transcription`);
-    } finally { database.close(); }
-    assert.deepEqual(calls, ['/v1/audio/transcriptions']);
+    await t.test('One exact new history row retains speech and cleanup attribution', () => {
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].clean_text, result.text);
+      // RecentEntry intentionally omits provider metadata. Inspect only this
+      // owned session's matching persisted row; never the installed database.
+      const database = new DatabaseSync(path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), 'data', 'verenu.db'), { readOnly: true });
+      try {
+        const history = database.prepare('SELECT clean_text, api_used FROM transcriptions WHERE id = ?').get(rows[0].id);
+        assert.equal(history.clean_text, result.text);
+        assert.equal(history.api_used.includes('cleanup=apple-intelligence/system'), status.available);
+        assert.equal(history.api_used.split(';')[0], `${provider.id}/synthetic-speech/transcription`);
+      } finally { database.close(); }
+    });
+    await t.test('HTTP calls contain speech only and no cloud cleanup', () => {
+      assert.deepEqual(calls, ['/v1/audio/transcriptions']);
+    });
     const events = (await (await request(`/events?after=${cursor}`)).json()).events;
-    assert.equal(events.some(event => event.event === 'verenu:transcribed' && event.payload === result.text), true);
-    assert.equal(await invoke('get_setting', { key: 'cleanup_default_model' }), 'apple-intelligence/system');
+    await t.test('Completion event matches output and Apple remains selected', async () => {
+      assert.equal(events.some(event => event.event === 'verenu:transcribed' && event.payload === result.text), true);
+      assert.equal(await invoke('get_setting', { key: 'cleanup_default_model' }), 'apple-intelligence/system');
+    });
   } finally {
     try {
       if (context) await invoke('delete_context', { contextId: context.id });
