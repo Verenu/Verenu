@@ -26,6 +26,15 @@ struct Response {
 
 impl FluidEngine {
     pub fn load(path: &Path, model: &str) -> anyhow::Result<Self> {
+        Self::load_with_cancellation(path, model, &AtomicBool::new(false))
+    }
+
+    pub fn load_with_cancellation(
+        path: &Path,
+        model: &str,
+        cancellation: &AtomicBool,
+    ) -> anyhow::Result<Self> {
+        crate::api::model_download::ensure_not_cancelled(cancellation)?;
         anyhow::ensure!(
             super::fluid_supported(),
             "FluidAudio requires macOS 14 or later on Apple Silicon"
@@ -68,7 +77,7 @@ impl FluidEngine {
         };
         engine.request(
             &serde_json::json!({"operation":"load", "path":path, "model":model}),
-            &AtomicBool::new(false),
+            cancellation,
         )?;
         Ok(engine)
     }
