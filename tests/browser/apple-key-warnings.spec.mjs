@@ -1,0 +1,41 @@
+import { test, expect } from './fixtures.mjs';
+
+test('Apple cleanup defaults and fallbacks stay keyless while keyed endpoints retain warnings', async ({ page, session }) => {
+  const previous = await session.invoke('get_all_settings');
+  const provider = {
+    id: 'custom:12345678-1234-4234-8234-123456789019', name: 'Synthetic keyed endpoint',
+    protocol: 'openai', base_url: 'http://127.0.0.1:1/v1', requires_key: true,
+    supports_transcription: false, supports_cleanup: true, auth_header: null,
+    extra_headers: {}, body_overrides: null, transcription_models: [], cleanup_models: ['synthetic-cleanup'],
+  };
+  const keys = ['custom_providers', 'advanced_model_ui', 'cleanup_default_model', 'cleanup_fallback_models'];
+  try {
+    await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
+    await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
+    for (const [defaultModel, fallbacks] of [
+      ['apple-intelligence/system', []],
+      [`${provider.id}/synthetic-cleanup`, ['apple-intelligence/system']],
+    ]) {
+      await session.invoke('save_setting', { key: 'cleanup_default_model', value: defaultModel });
+      await session.invoke('save_setting', { key: 'cleanup_fallback_models', value: fallbacks });
+      await page.reload();
+      await page.locator('[data-debug-id="nav.settings"]').click();
+      await page.locator('[data-debug-id="settings.models"]').click();
+      const tile = page.locator('[data-setting-target="models-cleanup"]');
+      await expect(tile).toBeVisible();
+      await expect(tile).toContainText('Apple Intelligence');
+      const warnings = tile.locator('.warn-banner').filter({ hasText: 'Missing API keys for:' });
+      if (fallbacks.length) {
+        await expect(warnings).toHaveText('Missing API keys for: Synthetic keyed endpoint');
+      } else {
+        await expect(warnings).toHaveCount(0);
+      }
+      expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).toBe(defaultModel);
+      expect((await session.invoke('get_api_key_status'))['apple-intelligence'] === true).toBe(false);
+    }
+  } finally {
+    for (const key of keys) {
+      await session.invoke('save_setting', { key, value: previous[key] ?? (key === 'custom_providers' || key === 'cleanup_fallback_models' ? [] : key === 'advanced_model_ui' ? false : null) });
+    }
+  }
+});
