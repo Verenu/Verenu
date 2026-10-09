@@ -112,6 +112,11 @@ locations, and JSON pointers to trace attachments in the private `playwright.jso
 report. Assertion values, selectors, call logs, stack traces, attachment paths and
 bodies are never copied. Unknown errors get a generic withheld-details summary.
 Failed-attempt diagnostics survive a passing retry; retries still fail the gate.
+Source paths must be canonical `tests/browser/` spec paths with ASCII letters,
+digits, underscores and hyphens in directory/spec names. Credential prefixes,
+URL/query/fragment syntax, controls and Unicode formatting characters are rejected.
+Rejected paths become `null` in summaries and `unknown` in failure reports, with
+no diagnostic location. The failure outcome and safe error summary remain intact.
 
 Trace references are metadata only, not downloadable CI artifacts. The shared
 regression action uploads only `tests/reports/` and deletes its isolated session

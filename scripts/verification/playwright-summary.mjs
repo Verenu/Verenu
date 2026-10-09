@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { root } from './identity.mjs';
-import { safeFailureAttempts } from './playwright-diagnostics.mjs';
+import { safeBrowserSourceFile, safeFailureAttempts } from './playwright-diagnostics.mjs';
 
 const menuIds = new Set(['history-retention-menu', 'transcription-mode-menu']);
 const geometryChecks = new Set([
@@ -34,7 +34,7 @@ function relativeRepoFile(file, projectRoot) {
   const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(base, normalized);
   const relative = path.relative(rootPath, resolved);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-  return relative.split(path.sep).join('/');
+  return safeBrowserSourceFile(relative.split(path.sep).join('/'));
 }
 
 export function safeText(value, limit = 240) {
