@@ -2,18 +2,56 @@ use super::*;
 
 #[tauri::command]
 pub async fn save_api_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
+    let settings = store::settings_handle(&app)?;
+    let expected = custom_endpoint(&settings.snapshot()?, &provider);
     run_blocking("save_api_key", move || {
-        crate::data::credentials::save(&app, &provider, &key)
+        with_custom_endpoint(&settings, &provider, expected.as_ref(), || {
+            crate::data::credentials::save(&app, &provider, &key)
+        })
     })
     .await
 }
 
 #[tauri::command]
 pub async fn delete_api_key(app: AppHandle, provider: String) -> Result<(), String> {
+    let settings = store::settings_handle(&app)?;
+    let expected = custom_endpoint(&settings.snapshot()?, &provider);
     run_blocking("delete_api_key", move || {
-        crate::data::credentials::delete_saved(&app, &provider)
+        with_custom_endpoint(&settings, &provider, expected.as_ref(), || {
+            crate::data::credentials::delete_saved(&app, &provider)
+        })
     })
     .await
+}
+
+pub(super) fn custom_endpoint(
+    settings: &store::SettingsSnapshot,
+    provider: &str,
+) -> Option<crate::api::custom::CustomProvider> {
+    crate::api::custom::parse_stored(settings.get(store::CUSTOM_PROVIDERS))
+        .into_iter()
+        .find(|p| p.id == provider)
+}
+
+pub(super) fn with_custom_endpoint<T>(
+    settings: &store::SettingsHandle,
+    provider: &str,
+    expected: Option<&crate::api::custom::CustomProvider>,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if !crate::api::custom::is_custom_id(provider) {
+        return action();
+    }
+    settings.with_snapshot(|current| {
+        let current = custom_endpoint(current, provider);
+        if !expected.zip(current.as_ref()).is_some_and(|(old, now)| {
+            old.base_url == now.base_url && old.protocol == now.protocol && old.auth_header == now.auth_header
+        }) {
+            return Err("This provider endpoint changed or was removed. Save the key again for the current endpoint.".into());
+        }
+        // Keep the settings read guard until the native write/delete finishes.
+        action()
+    })
 }
 
 #[tauri::command]

@@ -303,7 +303,7 @@ pub async fn import_data(
                 &db,
                 payload,
                 &installed_apps,
-                |providers| clear_changed_custom_provider_keys(&app, providers),
+                |previous, providers| clear_changed_custom_provider_keys(&app, previous, providers),
                 |effects| {
                     if effects.runtime_icons {
                         crate::apply_runtime_icons(&app, None);
@@ -313,7 +313,7 @@ pub async fn import_data(
                         crate::system::windows_titlebar::refresh_for_app(&app);
                     }
                     if let Some(days) = effects.history_prune_days {
-                        match db::prune_transcriptions_older_than(&db, days) {
+                        match db::prune_transcriptions_for_retention(&db, &settings, days) {
                             Ok(deleted) if deleted > 0 => {
                                 log::info!("import_data: pruned {deleted} transcriptions older than {days} days");
                                 let _ = app.emit("verenu:history-pruned", ());
@@ -345,10 +345,14 @@ fn import_payload(
     db: &crate::DbHandle,
     payload: ExportPayload,
     installed_apps: &[crate::system::apps::InstalledApp],
-    clear_provider_keys: impl FnOnce(&[crate::api::custom::CustomProvider]) -> Result<(), String>,
+    clear_provider_keys: impl FnOnce(
+        &store::SettingsSnapshot,
+        &[crate::api::custom::CustomProvider],
+    ) -> Result<(), String>,
     completed: impl FnOnce(ImportEffects),
 ) -> Result<ImportSummary, String> {
     let mut pending_settings = Vec::new();
+    let mut restored_providers = None;
     let mut settings_applied = 0usize;
     let mut settings_skipped = 0usize;
     let mut runtime_icon_setting_applied = false;
@@ -362,13 +366,6 @@ fn import_payload(
         );
     }
     if let Some(obj) = payload.settings.as_object() {
-        // A backup may reuse a UUID with a different destination. Never
-        // carry its previous host credential into that restored endpoint.
-        if let Some(value) = obj.get(store::CUSTOM_PROVIDERS) {
-            if let Ok(providers) = crate::api::custom::normalize_list(value) {
-                clear_provider_keys(&providers)?;
-            }
-        }
         for (key, value) in obj {
             if !is_exportable_setting_key(key) {
                 settings_skipped += 1;
@@ -377,8 +374,11 @@ fn import_payload(
             match validate_setting(key, value) {
                 Ok(()) => {
                     let value_to_save = if key == store::CUSTOM_PROVIDERS {
-                        serde_json::to_value(crate::api::custom::normalize_list(value)?)
-                            .map_err(|_| "Could not encode restored providers.".to_string())?
+                        let providers = crate::api::custom::normalize_list(value)?;
+                        let encoded = serde_json::to_value(&providers)
+                            .map_err(|_| "Could not encode restored providers.".to_string())?;
+                        restored_providers = Some(providers);
+                        encoded
                     } else {
                         value.clone()
                     };
@@ -439,8 +439,18 @@ fn import_payload(
         // Rows remain uncommitted if settings persistence fails. On a
         // returned commit error, restore disk settings before returning;
         // runtime settings remain unpublished throughout both steps.
-        settings
-            .save_values_with_commit(pending_settings, || tx.commit().map_err(|e| e.to_string()))?;
+        settings.save_values_with_commit(
+            pending_settings,
+            |previous| {
+                // Compare, delete, persist and publish under one settings
+                // write lock, excluding concurrent endpoint-bound key writes.
+                if let Some(providers) = restored_providers {
+                    clear_provider_keys(previous, &providers)?;
+                }
+                Ok(())
+            },
+            || tx.commit().map_err(|e| e.to_string()),
+        )?;
     }
 
     completed(ImportEffects {
