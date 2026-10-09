@@ -40,7 +40,7 @@
   // Accessibility + Microphone; Android: microphone, accessibility service,
   // battery exemption, notifications). Windows has none.
   const hasOsPermissionStep = isMac || isAndroid;
-  // Android is cloud-only and has no system-audio muting, so it skips the
+  // Android has no preset picker or system-audio muting, so it skips the
   // Models and Audio steps (their step numbers are -1 and never match).
   const onboardingTotalSteps = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const analyticsStep = 1;
@@ -737,6 +737,8 @@
         modelsReady={doneModelReadiness.ready}
         modelReadinessMessage={doneModelReadiness.message}
         presetName={modelPreset?.name ?? ''}
+        onReviewModels={() => jumpToStep(modelsStep >= 0 ? modelsStep : providerStep)}
+        modelRecoveryDisabled={animating}
       />
     {/if}
   </div>

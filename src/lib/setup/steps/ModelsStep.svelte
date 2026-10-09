@@ -86,6 +86,7 @@
   // nothing is pre-selected and the provider defaults stand.
   let userPicked = $state(false);
   $effect(() => {
+    if (provider === 'local' && platformLocalSupport === 'checking') return;
     const currentPreset = preset;
     const available = presets.filter((p) => p.kind === 'preset');
     if (currentPreset) {
