@@ -895,7 +895,7 @@ pub fn unmute() {
     let _ = set_system_muted(false);
 }
 
-// Kotlin applies this desired state to media audio through the existing bridge.
+// The bridge mirrors this state for the pill; the Application applies it directly.
 static ANDROID_MUTE_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -906,11 +906,40 @@ pub(crate) fn android_mute_requested() -> bool {
 #[cfg(target_os = "android")]
 pub fn mute() {
     ANDROID_MUTE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    update_android_media_mute(true);
 }
 
 #[cfg(target_os = "android")]
 pub fn unmute() {
     ANDROID_MUTE_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    update_android_media_mute(false);
+}
+
+#[cfg(target_os = "android")]
+fn update_android_media_mute(muted: bool) {
+    use jni::objects::{JObject, JValue};
+
+    let result = (|| -> jni::errors::Result<()> {
+        let context = ndk_context::android_context();
+        // ndk-context owns a process-lifetime Application global reference.
+        let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast())? };
+        let mut env = vm.attach_current_thread()?;
+        let application = unsafe { JObject::from_raw(context.context().cast()) };
+        let result = env.call_method(
+            &application,
+            "updateMediaMute",
+            "(Z)V",
+            &[JValue::Bool(muted.into())],
+        );
+        // Never leave a pending Java exception on a Rust worker thread.
+        if env.exception_check()? {
+            env.exception_clear()?;
+        }
+        result.map(|_| ())
+    })();
+    if let Err(error) = result {
+        log::warn!("Could not update Android media mute: {error}");
+    }
 }
 
 /// Exclusive microphone access is macOS-only; no-op everywhere else.
