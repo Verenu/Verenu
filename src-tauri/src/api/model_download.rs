@@ -13,6 +13,21 @@ pub struct DownloadProgress {
     pub progress: f32,
 }
 
+impl DownloadProgress {
+    pub(crate) fn new(model_id: &str, downloaded_bytes: u64, total_bytes: Option<u64>) -> Self {
+        let progress = total_bytes
+            .filter(|total| *total > 0)
+            .map(|total| (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0))
+            .unwrap_or(0.0);
+        Self {
+            model_id: model_id.to_string(),
+            downloaded_bytes,
+            total_bytes,
+            progress,
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ModelEvent {
     pub model_id: String,
@@ -32,18 +47,9 @@ pub fn emit_download_progress(
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
 ) {
-    let progress = total_bytes
-        .filter(|total| *total > 0)
-        .map(|total| (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0))
-        .unwrap_or(0.0);
     let _ = app.emit(
         event,
-        DownloadProgress {
-            model_id: model_id.to_string(),
-            downloaded_bytes,
-            total_bytes,
-            progress,
-        },
+        DownloadProgress::new(model_id, downloaded_bytes, total_bytes),
     );
 }
 

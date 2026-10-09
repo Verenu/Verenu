@@ -67,6 +67,7 @@ pub async fn benchmark_local_models(
             Arc::clone(&samples),
             rate,
             "en".into(),
+            Default::default(),
         )
         .await
         .map_err(|_| "Local speech test could not finish")?;

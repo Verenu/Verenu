@@ -11,8 +11,16 @@ export type LanguageSupportScope = 'all' | TranscriptionLanguageCode[];
  * `supported_languages` display strings — that field uses human-readable
  * names and can include languages that aren't dropdown options at all (e.g.
  * Maltese, Cantonese); this map only needs the ones that ARE.
+ *
+ * `apple-speech` is intentionally absent: macOS decides which locales are
+ * available, so it resolves to 'all' here and is checked at dictation time.
  */
 const LOCAL_MODEL_LANGUAGES: Record<string, LanguageSupportScope> = {
+  'fluid-parakeet-110m': ['en'],
+  'fluid-parakeet-ja': ['ja'],
+  'fluid-parakeet-ultra': ['bg', 'hr', 'cs', 'da', 'nl', 'en', 'et', 'fi', 'fr', 'de', 'el', 'hu', 'it', 'lv', 'lt', 'pl', 'pt', 'ro', 'sk', 'sl', 'es', 'sv', 'ru', 'uk'],
+  'whisper-small': 'all',
+  'whisper-large-v3-turbo': 'all',
   'parakeet-v3': [
     'bg', 'hr', 'cs', 'da', 'nl', 'en', 'et', 'fi', 'fr', 'de', 'el', 'hu', 'it', 'lv', 'lt',
     'pl', 'pt', 'ro', 'sk', 'sl', 'es', 'sv', 'ru', 'uk',

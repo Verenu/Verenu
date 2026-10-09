@@ -1,4 +1,8 @@
+#[path = "build_support/speech.rs"]
+mod speech;
+
 fn main() {
+    speech::build();
     println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT");
     println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT_FILE");
     if let Ok(fingerprint_file) = std::env::var("VERENU_BUILD_FINGERPRINT_FILE") {
