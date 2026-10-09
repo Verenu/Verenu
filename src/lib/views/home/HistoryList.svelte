@@ -24,6 +24,7 @@
   export let keyLabels: string[];
   export let android = false;
   export let shortcutUnavailable = false;
+  export let setupIncomplete = false;
   export let search = '';
   export let apps: string[] = [];
   export let installedApps: InstalledApp[] = [];
@@ -446,8 +447,8 @@
         {#if android}
           <p class="empty-sub">Open a text field and tap the Verenu pill above your keyboard to start dictating.</p>
         {:else}
-          {#if shortcutUnavailable}
-            <p class="empty-sub">Your dictation shortcut is unavailable. Check Settings > General.</p>
+          {#if shortcutUnavailable || setupIncomplete}
+            <p class="empty-sub">Use the setup actions above before your first dictation.</p>
           {:else}
             <p class="empty-sub">Hold {#each keyLabels as label}<kbd>{label}</kbd>{' '}{/each}to start your first dictation.</p>
           {/if}

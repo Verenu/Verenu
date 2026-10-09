@@ -175,6 +175,7 @@ def entry(
 JS_TESTS: List[TestEntry] = [
     entry("ui.app-mount", "ui", "App mount and DOM structure", script="smoke/test.cjs", timeout_s=45, retries=1, needs_server=True, expected="The app mounts with visible primary navigation", regression_area="application startup"),
     entry("ui.onboarding-layout", "ui", "Onboarding layout contracts", script="integration/playwright-test-onboarding-layout-dev.cjs", timeout_s=120, needs_server=True, expected="Onboarding remains usable at supported window sizes", regression_area="onboarding layout"),
+    entry("ui.setup-recovery", "ui", "Setup readiness and shortcut recovery", script="integration/playwright-test-setup-recovery-dev.cjs", timeout_s=120, needs_server=True, expected="Setup recovery, local-only selection, and readiness guidance remain actionable", regression_area="setup readiness and recovery"),
     entry("ui.navigation", "ui", "Navigation and interaction", script="smoke/playwright-test-ui.cjs", timeout_s=30, needs_server=True, expected="Primary navigation and settings interactions work", regression_area="navigation and settings"),
     entry("ui.element-contracts", "ui", "Element contract assertions", script="smoke/playwright-test-fixes.cjs", timeout_s=15, needs_server=True, expected="Stable UI selectors and labels remain present", regression_area="shared UI contracts"),
     entry("ui.app-mappings", "ui", "App mappings flow", script="smoke/test-app.cjs", timeout_s=90, retries=1, needs_server=True, expected="A mapping can be created through the UI", regression_area="app mappings"),

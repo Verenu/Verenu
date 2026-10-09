@@ -755,6 +755,8 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       writeDevDictionaryCorrections(nextCorrections);
       return undefined as T;
     }
+    case 'get_sub_apps':
+      return readDevList('verenu:dev-context-sub-apps') as T;
     case 'get_context_targets': {
       const rawContextId = args?.contextId ?? args?.context_id;
       const contextId = rawContextId === null || rawContextId === undefined ? null : Number(rawContextId);
@@ -957,8 +959,11 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return null as T;
     case 'get_memory_mb':
       return 0 as T;
-    case 'local_models_supported_on_this_platform':
-      return true as T;
+    case 'local_models_supported_on_this_platform': {
+      const configured = getDevSetting('__local_models_supported');
+      if (configured === 'error') throw new Error('Local model capability check failed');
+      return configured === false ? false as T : true as T;
+    }
     case 'count_old_transcriptions':
       return 0 as T;
     case 'get_api_key_status':

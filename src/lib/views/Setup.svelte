@@ -8,6 +8,8 @@
   import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
   import { loadHotkey } from '../hotkey.svelte';
+  import { localSttStore, refreshLocalModels, refreshLocalState } from '../localSttStore.svelte';
+  import { localLlmStore, refreshLocalLlmModels, refreshLocalLlmState, refreshLocalLlmRuntimeInfo } from '../localLlmStore.svelte';
   import {
     providers,
     cleanupCards,
@@ -18,6 +20,7 @@
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
+  import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness } from '../setup/setupModelReadiness';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -37,7 +40,7 @@
   // Accessibility + Microphone; Android: microphone, accessibility service,
   // battery exemption, notifications). Windows has none.
   const hasOsPermissionStep = isMac || isAndroid;
-  // Android is cloud-only and has no system-audio muting, so it skips the
+  // Android has no preset picker or system-audio muting, so it skips the
   // Models and Audio steps (their step numbers are -1 and never match).
   const onboardingTotalSteps = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const analyticsStep = 1;
@@ -95,12 +98,30 @@
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
+  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, modelPreset?.target));
+  let defaultModels = $derived(setupDefaultModels(provider));
+  let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
+  let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
+  let doneModelReadiness = $derived(setupModelReadiness(modelPreset?.target, {
+    speechModels: localSttStore.models,
+    cleanupModels: localLlmStore.models,
+    transcriptionState: localSttStore.state,
+    cleanupState: localLlmStore.state,
+    cleanupRuntime: localLlmStore.runtime,
+  }, effectiveCleanupEnabled, defaultModels));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
   onMount(async () => {
     sendSetupEvent('setup_started');
     void loadHotkey();
+    // Android skips Models, including when resuming directly at Done.
+    if (isAndroid) {
+      await Promise.all([
+        refreshLocalModels(), refreshLocalState(),
+        refreshLocalLlmModels(), refreshLocalLlmState(), refreshLocalLlmRuntimeInfo(),
+      ]);
+    }
     if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
       // Browser-dev runs can exercise the Android-shaped wizard at a narrow
       // viewport, but have no native capability probe. Keep the local option
@@ -145,6 +166,22 @@
       await resumeSavedProgress(parseSetupProgress(savedProgress, providers.map((p) => p.id)), keyStatus);
     } catch {}
     progressLoaded = true;
+  });
+
+  onMount(() => {
+    let mounted = true;
+    const refreshKeys = () => {
+      void invoke<Record<ProviderId, boolean>>('get_api_key_status').then(status => {
+        if (mounted) providerKeyStatus = { ...providerKeyStatus, ...status, local: true };
+      }).catch(() => {});
+    };
+    window.addEventListener('verenu:api-key-saved', refreshKeys);
+    window.addEventListener('verenu:api-key-deleted', refreshKeys);
+    return () => {
+      mounted = false;
+      window.removeEventListener('verenu:api-key-saved', refreshKeys);
+      window.removeEventListener('verenu:api-key-deleted', refreshKeys);
+    };
   });
 
   /**
@@ -288,6 +325,18 @@
     void animateTo(target, target < step ? 'back' : 'forward');
   }
 
+  function chooseCloudProviderFromModels(localSupport: 'unsupported' | 'unknown') {
+    modelPreset = null;
+    provider = 'groq';
+    localAiSupported = false;
+    if (localSupport === 'unsupported') {
+      localAiUnsupportedReason = 'On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider such as Groq, OpenAI, or Google.';
+    } else {
+      localAiUnsupportedReason = 'Could not confirm whether on-device models are available. Choose a cloud provider to continue.';
+    }
+    jumpToStep(providerStep);
+  }
+
   async function saveKey() {
     if (provider === 'local') return;
     const trimmed = apiKeyDraft.trim();
@@ -391,20 +440,8 @@
     if (finishing) return;
     finishing = true;
     const target = modelPreset?.target ?? null;
-    const providerDefaultTranscription = provider === 'local'
-      ? 'local/parakeet-v3'
-      : provider === 'openai'
-        ? 'openai/gpt-4o-transcribe'
-        : provider === 'google'
-          ? 'google/gemini-3.5-transcribe'
-          : 'groq/whisper-large-v3-turbo';
-    const providerDefaultCleanup = provider === 'local'
-      ? 'local/qwen2.5-3b-instruct'
-      : provider === 'openai'
-        ? 'openai/gpt-4o-mini'
-      : provider === 'google'
-        ? 'google/gemini-3.5-flash-lite'
-          : 'groq/qwen/qwen3.8-27b';
+    const providerDefaultTranscription = defaultModels.transcriptionDefaultModel;
+    const providerDefaultCleanup = defaultModels.cleanupDefaultModel;
 
     // The Models step is the more specific answer, so its target wins over the
     // provider-derived defaults whenever one was chosen.
@@ -417,7 +454,7 @@
     // (see should_run_cleanup_llm), so keep the Settings toggle agreeing with
     // what the wizard was actually told. A preset with no cleanup model (e.g.
     // "Transcription only") also forces it off.
-    const cleanupEnabled = cleanupIntensity !== 'none' && (target ? target.cleanupEnabled : true);
+    const cleanupEnabled = effectiveCleanupEnabled;
     // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
 
@@ -497,7 +534,7 @@
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
-    if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: 'Pick the balance you want. Each option sets the transcription and cleanup models for you.' };
+    if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: provider === 'local' ? 'Choose speech recognition only, or add optional cleanup models.' : 'Pick the balance you want. Each option sets transcription and optional cleanup models for you.' };
     if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
@@ -530,7 +567,7 @@
 
   let actionBar = $derived.by((): ActionBarConfig => {
     if (step === 0) return bar({ rightLabel: 'Get Started', rightLg: true, onRight: goNext });
-    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Start dictating', rightLg: true, rightDisabled: finishing, onRight: finish });
+    if (step === onboardingDoneStep) return bar({ rightLabel: finishing ? 'Saving…' : 'Finish setup', rightLg: true, rightDisabled: finishing, onRight: finish });
     if (step === analyticsStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
@@ -674,7 +711,13 @@
     {:else if isAndroid && step === permissionStep}
       <AndroidPermissionsStep bind:allCoreGranted />
     {:else if step === modelsStep}
-      <ModelsStep {provider} apiKeyStatus={providerKeyStatus} bind:preset={modelPreset} onOpenApiKeys={() => jumpToStep(apiKeyStep)} />
+      <ModelsStep
+        {provider}
+        apiKeyStatus={providerKeyStatus}
+        bind:preset={modelPreset}
+        onOpenApiKeys={() => jumpToStep(apiKeyStep)}
+        onChooseCloudProvider={chooseCloudProviderFromModels}
+      />
     {:else if step === writingStyleStep}
       <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone />
     {:else if step === languageStep}
@@ -690,8 +733,12 @@
         {toneName}
         {languageLabel}
         {usesHeadphones}
-        hasKey={keySaved}
+        hasKey={doneHasKey}
+        modelsReady={doneModelReadiness.ready}
+        modelReadinessMessage={doneModelReadiness.message}
         presetName={modelPreset?.name ?? ''}
+        onReviewModels={() => jumpToStep(modelsStep >= 0 ? modelsStep : providerStep)}
+        modelRecoveryDisabled={animating}
       />
     {/if}
   </div>

@@ -547,6 +547,7 @@
       contextsStore.targets = contextsStore.targets.filter((t) => t.context_id !== context.id);
       contextsStore.websites = contextsStore.websites.filter((w) => w.context_id !== context.id);
       if (contextsStore.selectedId === context.id) contextsStore.selectedId = EVERYWHERE_ID;
+      window.dispatchEvent(new Event('verenu:context-saved'));
     } catch (error) {
       contextError = classifyIpcError(error).message;
     } finally {
