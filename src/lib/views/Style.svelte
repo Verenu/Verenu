@@ -8,7 +8,6 @@
   import { openCleanupPromptEditor } from '../stores.svelte';
   import { splitModelId } from '../components/settings/models';
   import { formatIpcError } from '../errors';
-  import Toggle from '../components/Toggle.svelte';
   import { MOTION_MS, MOTION_PX, STYLE_TAB_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from '../motion';
 
   const [send, receive] = crossfade({
@@ -22,20 +21,7 @@
   let intensity = $state('medium');
   let tone = $state('casual');
   let editorError = $state('');
-  let voiceCommands = $state(false);
-  let commandsSaving = $state(false);
-  let commandsError = $state('');
   const toneInactive = $derived(intensity === 'none' || intensity === 'rules');
-
-  async function selectCommands(enabled: boolean) {
-    commandsSaving = true;
-    commandsError = '';
-    try {
-      await invoke('save_setting', { key: 'voice_commands_enabled', value: enabled });
-      voiceCommands = enabled;
-    } catch (error) { commandsError = formatIpcError(error, 'Could not save voice commands'); }
-    finally { commandsSaving = false; }
-  }
 
   async function editStyle(id: string, event: MouseEvent, isTone = false) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -71,14 +57,12 @@
 
   onMount(async () => {
     try {
-      const [savedTone, savedIntensity, savedCommands] = await Promise.all([
+      const [savedTone, savedIntensity] = await Promise.all([
         invoke<string | null>('get_setting', { key: 'default_tone' }),
         invoke<string | null>('get_setting', { key: 'cleanup_intensity' }),
-        invoke<boolean | null>('get_setting', { key: 'voice_commands_enabled' }),
       ]);
       if (savedTone) tone = savedTone as string;
       if (savedIntensity) intensity = savedIntensity as string;
-      voiceCommands = savedCommands ?? false;
     } catch {
       // Dev mode without Tauri.
     }
@@ -153,19 +137,6 @@
     </div>
   {/if}
 
-  <section class="commands-section">
-    <div class="commands-heading">
-      <h2 class="commands-title">Voice commands</h2>
-      <Toggle checked={voiceCommands} onchange={selectCommands} disabled={commandsSaving} label="Voice commands" />
-    </div>
-    <p class="style-intro">Global and opt-in. <span>Needs cleanup on, an intensity other than Off, and English selected in Settings. Auto and other languages are left unchanged.</span></p>
-    <details>
-      <summary>Supported phrases and literal text</summary>
-      <p>Say comma, semicolon, full stop, question mark, exclamation mark or exclamation point. Use add, insert or put before period, colon, dash or hyphen; a trailing period also works. New or next line and paragraph add line breaks. At sign and at the rate create a one-word mention.</p>
-      <p>Scratch that or strike that removes the latest fragment in this dictation. Remove, delete, undo or cancel that needs punctuation around it. Commands never delete existing text in another app or cross a snippet or clipboard payload. Quoted text and code stay literal. Discussion of unquoted commands can still be ambiguous.</p>
-    </details>
-    {#if commandsError}<p role="alert">{commandsError}</p>{/if}
-  </section>
   {#if toneInactive}<p class="style-intro">Tone and custom AI instructions do not apply with Basic or Off. Saved choices remain available for AI cleanup.</p>{/if}
 
   {#if appStore.legacyFeaturesEnabled}
@@ -312,13 +283,6 @@
 </div>
 
 <style>
-  .commands-section { margin-block: 16px 24px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-md, 10px); }
-  .commands-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .commands-section .style-intro { margin: 4px 0 10px; line-height: 1.5; }
-  .commands-section details { color: var(--ink-soft); font-size: 12px; line-height: 1.55; max-width: 540px; }
-  .commands-section details p { margin: 8px 0 0; }
-  .commands-section summary { cursor: pointer; color: var(--ink-soft); }
-  @media (max-width: 480px) { .commands-section { padding: 12px; } }
   .style-card-wrap { position: relative; display: flex; }
   .style-card-wrap .style-card-title { padding-right: 30px; }
   .style-edit { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
@@ -402,10 +366,7 @@
     margin: 0;
   }
 
-  /* commands-title shares the section-heading treatment without using the
-     style-section-h class, which the legacy tabbed layout must not render. */
-  .style-section-h,
-  .commands-title {
+  .style-section-h {
     font-family: var(--sans);
     font-size: 14px;
     font-weight: 500;

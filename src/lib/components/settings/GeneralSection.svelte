@@ -3,8 +3,8 @@
   import { onDestroy, onMount } from 'svelte';
   import { listenForSyncCompletion } from '../../syncStore.svelte';
   import { emit, invoke, listen } from '../../tauri';
-  import { fly, fade } from 'svelte/transition';
-  import { expoOut } from 'svelte/easing';
+  import { fly, fade, slide } from 'svelte/transition';
+  import { expoOut, cubicOut } from 'svelte/easing';
   import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
@@ -251,6 +251,7 @@
     results.forEach((r, i) => {
       if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
     });
+    await loadVoiceCommands();
   }
 
   function handleWindowClick(e: MouseEvent) {
@@ -395,6 +396,34 @@
 
   function handleLegacyModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmLegacyOn) confirmLegacyOn = false;
+  }
+
+  let voiceCommands = $state(false);
+  let voiceCommandsSaving = $state(false);
+  let voiceCommandsError = $state(false);
+  let voiceCommandsMessage = $state('');
+  let voiceCommandsDetailsOpen = $state(false);
+
+  async function loadVoiceCommands() {
+    try {
+      voiceCommands = (await invoke<boolean | null>('get_setting', { key: 'voice_commands_enabled' })) ?? false;
+    } catch (err) {
+      console.error('load voice_commands_enabled failed:', err);
+    }
+  }
+
+  async function handleVoiceCommands(value: boolean) {
+    voiceCommandsSaving = true;
+    voiceCommandsMessage = '';
+    try {
+      await saveSetting('voice_commands_enabled', value);
+      voiceCommands = value;
+    } catch (err) {
+      voiceCommandsError = true;
+      voiceCommandsMessage = formatIpcError(err, 'Could not save voice commands');
+    } finally {
+      voiceCommandsSaving = false;
+    }
   }
 
   let cleanupError = $state(false);
@@ -853,13 +882,44 @@
 {/if}
 <h3 class="settings-subhead">Text processing</h3>
 <div class="setting-row" data-setting-target="general-cleanup">
-  <div><div class="label">Cleanup</div><div class="desc">Runs an LLM-powered cleanup pass after transcription for tone and formatting.</div></div>
+  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Basic works on-device with English rules; other levels use an AI model for tone and formatting. Choose the level in Style.</div></div>
   <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
 </div>
 <div class="setting-row" data-setting-target="general-spacing">
   <div><div class="label">Smart spacing &amp; capitalization</div><div class="desc">Adjusts capitalization and spacing around inserted text when the cursor context is clear.</div></div>
   <Toggle checked={contextualFormatting} onchange={handleContextualFormatting} label="Smart spacing and capitalization" bind:error={contextualFormattingError} />
 </div>
+<div class="setting-row voice-commands-row" data-setting-target="general-voice-commands">
+  <div>
+    <div class="label">Voice commands</div>
+    <div class="desc">Say punctuation, line breaks, or “scratch that” while dictating and Verenu applies them instead of typing the words. Off by default.</div>
+    <button
+      type="button"
+      class="voice-commands-more ui-focus-ring"
+      aria-expanded={voiceCommandsDetailsOpen}
+      aria-controls={voiceCommandsDetailsOpen ? 'voice-commands-details' : undefined}
+      onclick={() => (voiceCommandsDetailsOpen = !voiceCommandsDetailsOpen)}
+    >
+      <span>What you can say</span>
+      <svg class="ui-chevron" class:open={voiceCommandsDetailsOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </div>
+  <Toggle checked={voiceCommands} onchange={handleVoiceCommands} disabled={voiceCommandsSaving} label="Voice commands" bind:error={voiceCommandsError} />
+</div>
+{#if voiceCommandsDetailsOpen}
+  <div id="voice-commands-details" class="voice-commands-details" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+    <dl>
+      <dt>Punctuation</dt><dd>“comma”, “semicolon”, “full stop”, “question mark”, “exclamation mark” or “exclamation point”. For period, colon, dash or hyphen, say add, insert or put first: “put a colon”. A period at the very end also works.</dd>
+      <dt>Line breaks</dt><dd>“new line”, “next line”, “new paragraph” or “next paragraph”.</dd>
+      <dt>Mentions</dt><dd>“at sign” or “at the rate” followed by one word, such as “at sign maria”, becomes @maria.</dd>
+      <dt>Take back</dt><dd>“scratch that” or “strike that” removes the latest fragment of this dictation. “Remove that”, “delete that”, “undo that” or “cancel that” does the same only when set off by punctuation.</dd>
+    </dl>
+    <p class="voice-commands-limits">Limits: only English works, and Spoken Language must be set to English, not Auto. Cleanup must be on and not set to Off in Style. Commands only act on what you are dictating now and never edit text already in another app. Snippet and clipboard text, quoted text, and code stay literal. If you talk about a command without quoting it, it may still run.</p>
+  </div>
+{/if}
+{#if voiceCommandsMessage}
+  <p class="settings-error" role="alert">{voiceCommandsMessage}</p>
+{/if}
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-caps-lock">
     <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
@@ -979,6 +1039,25 @@
   .keybind-btn.saving { opacity: 0.9; }
   .keybind-btn.success { background: color-mix(in srgb, var(--accent) 82%, white 18%); color: var(--on-accent); transform: scale(1.03); }
   .keybind-btn.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-line); animation: none; }
+  .voice-commands-more {
+    display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 2px 4px; margin-left: -4px;
+    background: transparent; border: 0; border-radius: var(--r-sm); color: var(--accent-ink);
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    transition: background var(--ui-duration-fast) var(--ui-ease-out);
+  }
+  .voice-commands-more:hover { background: var(--control-hover); }
+  .voice-commands-details {
+    margin: -4px 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--paper) 55%, var(--bg-elev)); font-size: 12px; line-height: 1.55; color: var(--ink-soft);
+  }
+  .voice-commands-details dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
+  .voice-commands-details dt { color: var(--ink); font-weight: 500; }
+  .voice-commands-details dd { margin: 0; }
+  .voice-commands-limits { margin: 10px 0 0; color: var(--ink-mute); }
+  @media (max-width: 520px) {
+    .voice-commands-details dl { grid-template-columns: 1fr; gap: 0; }
+    .voice-commands-details dd { margin-bottom: 8px; }
+  }
   .settings-error {
     margin: -2px 0 12px;
     color: var(--danger);
