@@ -6,8 +6,11 @@
   import { isAndroid, isMac } from '../../platform';
   import { classifyIpcError, formatIpcError, type ErrorKind } from '../../errors';
   import { hotkeyCodes, hotkeyLabels, hotkeyWatchCodes, matchesHotkey } from '../../hotkey.svelte';
+  import ShortcutRecovery from '../../components/ShortcutRecovery.svelte';
+  import { desktopShortcut } from '../../shortcutStatus.svelte';
 
   const keyLabels = $derived(hotkeyLabels());
+  const shortcutUnavailable = $derived(!isAndroid && desktopShortcut('dictation')?.active === null);
   const watchCodes = $derived(hotkeyWatchCodes());
 
   let sampleText = $state('');
@@ -166,10 +169,13 @@
 </script>
 
 <div class="step">
+  <ShortcutRecovery />
   <div class="tryit-callout">
     {#if isAndroid}
       <strong>Focus the field</strong>
       <p><strong>1.</strong> Focus this field &nbsp; <strong>2.</strong> Tap the Verenu pill above your keyboard &nbsp; <strong>3.</strong> Tap Stop when you finish</p>
+    {:else if shortcutUnavailable}
+      <p>Configure the desktop shortcut, or skip this test and finish setup.</p>
     {:else}
       {#each keyLabels as k, i}
         {#if i > 0}<span>+</span>{/if}<kbd>{k}</kbd>
@@ -186,7 +192,7 @@
     class:filled={status === 'success'}
     bind:value={sampleText}
     bind:this={textareaEl}
-    placeholder={isAndroid ? 'Tap here first, then use the Verenu pill above your keyboard...' : 'Click here first, then hold the hotkey and speak...'}
+    placeholder={isAndroid ? 'Tap here first, then use the Verenu pill above your keyboard...' : shortcutUnavailable ? 'Shortcut recording is unavailable on this desktop.' : 'Click here first, then hold the hotkey and speak...'}
     rows="3"
   ></textarea>
 

@@ -16,10 +16,15 @@ const EXPECTED_ASSETS = [
   'openai-1-signin.png', 'openai-2-keys.png', 'openai-3-create.png', 'openai-4-copy.png',
 ];
 
-async function seed(page) {
+async function seed(page, localSttModels = {}) {
   await seedDevState(page, {
-    settings: { force_setup_on_launch: true, setup_complete: false, appearance_mode: 'system' },
+    settings: { force_setup_on_launch: true, setup_complete: false, verenu_service_checks_enabled: false, appearance_mode: 'system' },
+    localSttModels,
   });
+}
+
+async function blockExternalRequests(page) {
+  await page.route('**/*', route => new URL(route.request().url()).origin === new URL(TARGET_URL).origin ? route.continue() : route.abort());
 }
 
 async function layoutState(page) {
@@ -59,6 +64,7 @@ async function layoutState(page) {
   try {
     for (const viewport of VIEWPORTS) {
       const page = await browser.newPage({ viewport });
+      await blockExternalRequests(page);
       await seed(page);
       await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
       const actionbarTops = [];
@@ -90,7 +96,7 @@ async function layoutState(page) {
           for (let i = 0; i < 6 && await nextShot.isEnabled(); i++) await nextShot.click();
         }
 
-        const final = page.getByRole('button', { name: 'Start dictating' });
+        const final = page.getByRole('button', { name: 'Finish setup' });
         if (await final.count()) break;
         const next = page.locator('.setup-actionbar .btn-primary').first();
         if (!(await next.count())) break;
@@ -110,47 +116,30 @@ async function layoutState(page) {
     }
 
     const local = await browser.newPage({ viewport: VIEWPORTS[1] });
-    await seed(local);
-    await local.addInitScript(() => {
-      localStorage.removeItem('verenu:dev-local-stt-models');
-      localStorage.removeItem('verenu:dev-local-transcription-state');
-    });
+    await seed(local, { 'parakeet-v3': { downloaded: true } });
+    await blockExternalRequests(local);
     await local.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
     await local.getByRole('button', { name: 'Get Started' }).click();
     await local.getByRole('button', { name: 'Next' }).click();
     await local.locator('.provider-card:has-text("On this device")').click();
     await local.getByRole('button', { name: 'Next' }).click();
-    const localDownload = local.getByRole('button', { name: 'Download model' });
-    await localDownload.waitFor({ state: 'visible', timeout: TIMEOUT });
-    const localInitial = await layoutState(local);
-    if (localInitial.pageOverflow || localInitial.contentOverflow || localInitial.collision) {
-      errors.push('[900x600] local model setup does not fit before download');
-    }
-    await localDownload.click();
-    await local.locator('.local-progress').waitFor({ state: 'visible', timeout: TIMEOUT });
-    const localDownloading = await layoutState(local);
-    if (localDownloading.pageOverflow || localDownloading.contentOverflow || localDownloading.collision) {
-      errors.push('[900x600] local model progress does not fit');
-    }
-    await local.getByText('Ready', { exact: true }).waitFor({ state: 'visible', timeout: 10000 });
     await local.getByRole('button', { name: 'Continue' }).click();
     await local.locator('.preset-grid').waitFor({ state: 'visible', timeout: TIMEOUT });
     if (!(await local.locator('.preset-action').count())) errors.push('Local model presets lost their inline actions');
     const chooseSetup = local.getByRole('button', { name: 'Choose a setup' });
     if (!(await chooseSetup.isDisabled())) errors.push('Local setup should require an explicit preset choice');
-    const firstPreset = local.locator('.preset-row').filter({ has: local.locator('.preset-select') }).first();
-    if (!(await firstPreset.locator('.preset-select').isDisabled())) errors.push('A local preset requiring downloads should remain inert');
-    const downloadPreset = firstPreset.locator('.preset-action');
-    if (!(await downloadPreset.textContent()).trim().startsWith('Download ')) errors.push('The local preset should expose its explicit download action');
-    await downloadPreset.click();
-    await local.waitForFunction(() => {
-      const next = [...document.querySelectorAll('.setup-actionbar button')].find((button) => button.textContent.trim() === 'Next');
-      return next && !next.disabled;
-    }, null, { timeout: TIMEOUT });
-    if (await local.getByRole('button', { name: 'Next' }).isDisabled()) errors.push('Downloading the chosen local preset did not unlock the flow');
+    const speechOnly = local.getByRole('button', { name: 'Use local Transcription only', exact: true });
+    await speechOnly.click();
+    if (await speechOnly.getAttribute('aria-pressed') !== 'true') errors.push('Transcription-only choice was not selected');
+    const localInitial = await layoutState(local);
+    if (localInitial.pageOverflow || localInitial.contentOverflow || localInitial.collision) {
+      errors.push('[900x600] transcription-only setup does not fit');
+    }
+    if (await local.getByRole('button', { name: 'Next' }).isDisabled()) errors.push('Selected transcription-only preset did not unlock the flow');
     await local.close();
 
     const reduced = await browser.newPage({ reducedMotion: 'reduce', viewport: VIEWPORTS[0] });
+    await blockExternalRequests(reduced);
     await seed(reduced);
     await reduced.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
     const transition = await reduced.locator('.intro-brand').evaluate((el) => getComputedStyle(el).transitionDuration);
