@@ -88,10 +88,19 @@ impl FluidEngine {
         let started = std::time::Instant::now();
         let mut payload = serde_json::to_vec(request)?;
         payload.push(b'\n');
+        self.request_payload(&payload, cancellation, started)
+    }
+
+    fn request_payload(
+        &mut self,
+        payload: &[u8],
+        cancellation: &AtomicBool,
+        started: std::time::Instant,
+    ) -> anyhow::Result<Response> {
         let line = match super::fluid_io::exchange(
             &mut self.input,
             &mut self.output,
-            &payload,
+            payload,
             cancellation,
             started,
             std::time::Duration::from_secs(120),
@@ -130,10 +139,12 @@ impl FluidEngine {
                 )
                 .is_ok()
         });
-        let response = self.request(&serde_json::json!({
-            "operation":"transcribe", "samples":samples, "language":language,
-            "vocabulary":vocabulary.terms(), "boosterPath":booster.map(|m| m.final_path(&self.root))
-        }), cancellation)?;
+        let started = std::time::Instant::now();
+        let booster_path = booster.map(|m| m.final_path(&self.root));
+        let payload = super::fluid_protocol::transcription_payload(
+            samples, language, vocabulary.terms(), booster_path.as_deref(), cancellation,
+        )?;
+        let response = self.request_payload(&payload, cancellation, started)?;
         Ok(response.text.unwrap_or_default())
     }
 }
