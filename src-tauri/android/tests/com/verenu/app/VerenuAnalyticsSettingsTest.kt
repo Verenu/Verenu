@@ -5,6 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VerenuAnalyticsSettingsTest {
+    @Test fun preservesTenFeatureBreadthAndBoundsUntrustedCounts() {
+        for ((input, expected) in listOf(-10 to 0, 0 to 0, 9 to 9, 10 to 10, 500 to 10)) {
+            assertEquals(expected, safeAnalyticsSettings(JSONObject().put("feature_breadth", input))["feature_breadth"])
+        }
+        assertEquals(0, safeAnalyticsSettings(JSONObject().put("feature_breadth", "private dictated text"))["feature_breadth"])
+    }
+
     @Test fun preservesBasicAndExistingCleanupIntensities() {
         for (intensity in listOf("none", "rules", "light", "medium", "high")) {
             val safe = safeAnalyticsSettings(JSONObject().put("cleanup_intensity", intensity))

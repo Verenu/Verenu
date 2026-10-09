@@ -163,7 +163,8 @@ fn basic(text: &str, sentence_initial: bool) -> String {
         let filler = matches!(
             words[i].key.as_str(),
             "uh" | "uhh" | "uhm" | "um" | "umm" | "er" | "erm" | "hm" | "hmm" | "mm" | "mmm"
-        ) && !(words[i].key == "mm" && i > 0 && number(&words[i - 1]));
+        ) && !words[i].text.chars().all(|c| c.is_uppercase())
+            && !(words[i].key == "mm" && i > 0 && number(&words[i - 1]));
         let you_know = words[i].key == "you"
             && i + 1 < words.len()
             && words[i + 1].key == "know"
@@ -655,6 +656,20 @@ mod tests {
         );
         let normalized = process("um send send it new line tomorrow", true, true, &[]);
         assert_eq!(process(&normalized, true, true, &[]), normalized);
+    }
+
+    #[test]
+    fn filler_removal_preserves_uppercase_acronyms() {
+        for (input, expected) in [
+            ("Take me to the ER", "Take me to the ER"),
+            ("I studied at UM", "I studied at UM"),
+            ("UM offers courses", "UM offers courses"),
+            ("Um, take me to the ER", "Take me to the ER"),
+            ("I studied, um, at UM", "I studied, at UM"),
+            ("Er, please continue", "Please continue"),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
     }
 
     #[test]
