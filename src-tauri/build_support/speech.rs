@@ -1,3 +1,6 @@
+#[path = "speech_signing.rs"]
+mod speech_signing;
+
 pub fn build() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -24,6 +27,7 @@ fn build_fluid_helper() {
     println!("cargo:rerun-if-changed=native/macos/FluidSpeech/NOTICE");
     println!("cargo:rerun-if-changed=native/macos/FluidSpeech/LICENSE-FluidAudio");
     println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+    println!("cargo:rerun-if-changed=build_support/speech_signing.rs");
     let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output"));
     let scratch = output.join("fluid-speech");
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
@@ -48,9 +52,10 @@ fn build_fluid_helper() {
     let helper = scratch.join("release/VerenuFluidSpeech");
     // Sign before embedding so library validation and hardened runtime retain
     // the same team identity as the host. The helper has no eager host linkage.
-    let identity = std::env::var("APPLE_SIGNING_IDENTITY").unwrap_or_else(|_| "-".into());
+    let configured_identity = std::env::var("APPLE_SIGNING_IDENTITY").ok();
+    let identity = speech_signing::identity(configured_identity.as_deref());
     let signed = Command::new("codesign")
-        .args(["--force", "--sign", &identity, "--options", "runtime"])
+        .args(["--force", "--sign", identity, "--options", "runtime"])
         .arg(&helper)
         .status()
         .expect("sign FluidAudio helper");

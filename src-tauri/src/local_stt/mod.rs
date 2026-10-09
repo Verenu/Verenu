@@ -5,6 +5,8 @@ pub mod engine;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod fluid;
 mod fluid_download;
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+mod integrity_cache;
 pub mod manager;
 pub mod model;
 pub mod transcribe;
