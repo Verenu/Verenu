@@ -5,6 +5,7 @@
 long verenu_speech_os_major(void) { return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion; }
 
 static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NSSet<NSLocale *> *supported, BOOL (^eligible)(NSLocale *)) {
+    if ([requested isEqualToString:@"auto"]) requested = @"";
     NSString *identifier = [NSLocale canonicalLocaleIdentifierFromString:requested.length ? requested : current.localeIdentifier];
     NSDictionary *components = [NSLocale componentsFromLocaleIdentifier:identifier];
     NSString *language = components[NSLocaleLanguageCode];
