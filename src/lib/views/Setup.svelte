@@ -21,6 +21,8 @@
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
   import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness } from '../setup/setupModelReadiness';
+  import { appleIntelligence } from '../appleIntelligence.svelte';
+  import { appleCleanupReadiness, applyAppleCleanup, applyAppleCleanupDefaults } from '../setup/appleCleanup';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
   import AnalyticsStep from '../setup/steps/AnalyticsStep.svelte';
@@ -85,8 +87,14 @@
 
   let allCoreGranted = $state(false);
   let modelPreset = $state<Preset | null>(null);
+  // Explicit opt-in on the Models step. Applies only while cleanup itself is on:
+  // intensity Off keeps the original preset, so Apple is never written or required.
+  let appleCleanupChoice = $state(false);
 
   let cleanupIntensity = $state<CleanupIntensity>('medium');
+  const useAppleCleanup = $derived(appleCleanupChoice && cleanupIntensity !== 'none');
+  // The choice is kept even if the Mac stops being ready; finish() refuses it then.
+  const appleReadiness = $derived(appleCleanupReadiness(appleCleanupChoice, cleanupIntensity !== 'none', appleIntelligence.status));
   let tone = $state<ToneId>('casual');
   let language = $state<TranscriptionLanguageCode>('en');
   let usesHeadphones = $state(true);
@@ -98,12 +106,13 @@
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
-  let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
-  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, modelPreset?.target));
-  let defaultModels = $derived(setupDefaultModels(provider));
+  let defaultModels = $derived(applyAppleCleanupDefaults(setupDefaultModels(provider), useAppleCleanup));
+  let effectiveTarget = $derived(applyAppleCleanup(modelPreset?.target, useAppleCleanup));
+  let effectiveCleanupName = $derived(effectiveTarget && !effectiveTarget.cleanupEnabled ? 'Off' : cleanupName);
+  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, effectiveTarget));
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
-  let doneModelReadiness = $derived(setupModelReadiness(modelPreset?.target, {
+  let doneModelReadiness = $derived(setupModelReadiness(effectiveTarget, {
     speechModels: localSttStore.models,
     cleanupModels: localLlmStore.models,
     transcriptionState: localSttStore.state,
@@ -441,8 +450,12 @@
 
   async function finish() {
     if (finishing) return;
+    if (!appleReadiness.ready) {
+      saveError = appleReadiness.message;
+      return;
+    }
     finishing = true;
-    const target = modelPreset?.target ?? null;
+    const target = effectiveTarget;
     const providerDefaultTranscription = defaultModels.transcriptionDefaultModel;
     const providerDefaultCleanup = defaultModels.cleanupDefaultModel;
 
@@ -718,6 +731,8 @@
         {provider}
         apiKeyStatus={providerKeyStatus}
         bind:preset={modelPreset}
+        bind:appleCleanup={appleCleanupChoice}
+        cleanupRequested={cleanupIntensity !== 'none'}
         onOpenApiKeys={() => jumpToStep(apiKeyStep)}
         onChooseCloudProvider={chooseCloudProviderFromModels}
       />
@@ -737,8 +752,8 @@
         {languageLabel}
         {usesHeadphones}
         hasKey={doneHasKey}
-        modelsReady={doneModelReadiness.ready}
-        modelReadinessMessage={doneModelReadiness.message}
+        modelsReady={doneModelReadiness.ready && appleReadiness.ready}
+        modelReadinessMessage={appleReadiness.ready ? doneModelReadiness.message : appleReadiness.message}
         presetName={modelPreset?.name ?? ''}
         onReviewModels={() => jumpToStep(modelsStep >= 0 ? modelsStep : providerStep)}
         modelRecoveryDisabled={animating}
