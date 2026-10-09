@@ -6,6 +6,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added opt-in Apple Intelligence dictation cleanup on eligible Macs running macOS 26 or newer. It runs on device without an API key, reports system availability, and uses only configured recovery models when cleanup fails. Existing model selections remain unchanged.
 
+- Fixed the dictation pill's missing app icon and aligned Linux window identity with the installed desktop entry so panels can resolve Verenu's icon.
+- Added "Verino" to the built-in Verenu vocabulary corrections, including existing dictionaries.
+
 - Added opt-in synchronous muting in Settings > Sync. Recording temporarily mutes reachable paired devices that also opt in, including saved Tailscale connections. Audio restores after recording, cancellation, disabling the feature, or a lost connection. Android recovers the saved media level after a service or process restart when it remains at zero. The preference stays local to each device.
 
 - Added an optional public GitHub commit overlay to Insights. Connect a username in Settings > Integrations, with a suggestion from GitHub CLI or Git configuration when available. A green line compares daily commits on a separate scale, with scale details available on demand. Counts cover the last 90 days, refresh automatically every 15 minutes, cache locally, and show unavailable or partial coverage explicitly.

@@ -900,9 +900,9 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
     // carry no real-word collision risk the way a plausible English word
     // would. Varineu is also evidenced live: Cohere transcribed "named
     // Verenu" as "named Varineu" verbatim in both raw and cleaned text.
-    const KNOWN_VARIANTS: [&str; 15] = [
+    const KNOWN_VARIANTS: [&str; 16] = [
         "Varinu", "Verena", "Virinu", "Varino", "Varinew", "Varina", "Verminu", "Varinian",
-        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu",
+        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu", "Verino",
     ];
 
     let mut conn = lock_conn(db)?;
@@ -984,12 +984,24 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
                 "INSERT INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)",
                 params![everywhere_id, id],
             )?;
+            let mut available_variants = Vec::new();
+            for known in KNOWN_VARIANTS {
+                let conflicting: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM dictionary_corrections
+                     WHERE context_id = ?1 AND mistake = ?2)",
+                    params![everywhere_id, known],
+                    |row| row.get(0),
+                )?;
+                if !conflicting {
+                    available_variants.push(known);
+                }
+            }
             insert_correction_mappings_conn(
                 &tx,
                 everywhere_id,
                 id,
                 CorrectionMappingSeed {
-                    mistake: Some(&KNOWN_VARIANTS.join(", ")),
+                    mistake: Some(&available_variants.join(", ")),
                     auto_learned: false,
                     correction_count: 0,
                     confidence_tier: "manual",
