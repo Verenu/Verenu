@@ -2089,6 +2089,7 @@
   .char-counter.is-limit { color: var(--danger); }
   .custom-instructions-input { resize: vertical; font-size: 12.5px; max-height: 160px; }
   .field-hint { color: var(--ink-mute); font-size: 11px; margin: 3px 0 0; }
+  .basic-hint { max-width: 56ch; margin-top: 6px; color: var(--ink-soft); line-height: 1.5; }
   .advanced-disclosure { margin-top: 10px; }
   .advanced-trigger { align-items: center; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; display: flex; justify-content: space-between; padding: 7px 8px; text-align: left; transition: background-color 150ms ease, color 150ms ease; width: 100%; }
   .advanced-trigger:hover { background: var(--control-hover); color: var(--ink); }
