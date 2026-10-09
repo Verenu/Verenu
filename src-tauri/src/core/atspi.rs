@@ -689,39 +689,104 @@ mod tests {
         assert_eq!(focused.right_of_caret(), " three");
     }
 
-    fn wait_for_fixture<T>(timeout: Duration, mut discover: impl FnMut() -> Option<T>) -> Option<T> {
+    fn wait_for_fixture<T>(timeout: Duration, mut discover: impl FnMut(std::time::Instant) -> Option<T>) -> Option<T> {
         let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if let Some(found) = discover() {
-                return Some(found);
-            }
+        while std::time::Instant::now() < deadline {
+            let found = discover(deadline);
             if std::time::Instant::now() >= deadline {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            if found.is_some() {
+                return found;
+            }
+            std::thread::sleep(Duration::from_millis(50).min(deadline.saturating_duration_since(std::time::Instant::now())));
         }
+        None
+    }
+
+    struct DiscoveryChild(std::process::Child);
+
+    impl Drop for DiscoveryChild {
+        fn drop(&mut self) {
+            // Also reap on parsing errors or unwinding. No discovery thread is detached.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn wait_for_discovery_child(child: &mut DiscoveryChild, deadline: std::time::Instant) -> std::io::Result<bool> {
+        loop {
+            if std::time::Instant::now() >= deadline {
+                child.0.kill()?;
+                child.0.wait()?;
+                return Ok(false);
+            }
+            if let Some(status) = child.0.try_wait()? {
+                return Ok(status.success() && std::time::Instant::now() < deadline);
+            }
+            std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(std::time::Instant::now())));
+        }
+    }
+
+    fn discover_fixture_in_process(deadline: std::time::Instant) -> Option<ObjRef> {
+        use std::io::Read;
+        // Synchronous zbus setup/calls can block beyond their method timeout.
+        // Keep them in an owned process, cancellable at the same absolute deadline.
+        // Inherit the tester's process group so runner cancellation covers both.
+        let mut child = DiscoveryChild(std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "core::atspi::tests::formatting_fixture_discovery_worker", "--ignored", "--nocapture"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn().expect("start owned discovery process"));
+        if !wait_for_discovery_child(&mut child, deadline).expect("cancel/reap owned discovery process") {
+            return None;
+        }
+        let mut output = String::new();
+        child.0.stdout.take()?.read_to_string(&mut output).expect("read discovery result");
+        let encoded = output.lines().find_map(|line| line.strip_prefix("VERENU_FIXTURE_DISCOVERED:"))?;
+        let (bus, path): (String, String) = serde_json::from_str(encoded).expect("decode owned fixture identity");
+        Some(ObjRef { bus, path: OwnedObjectPath::try_from(path).expect("fixture object path") })
     }
 
     #[test]
     fn formatting_fixture_readiness_waits_and_times_out() {
         let mut attempts = 0;
-        assert_eq!(wait_for_fixture(Duration::from_secs(1), || {
+        assert_eq!(wait_for_fixture(Duration::from_secs(1), |_| {
             attempts += 1;
             (attempts == 3).then_some(42)
         }), Some(42));
         let started = std::time::Instant::now();
-        assert!(wait_for_fixture::<()>(Duration::from_millis(100), || None).is_none());
+        assert!(wait_for_fixture::<()>(Duration::from_millis(100), |_| None).is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
-    /// Opt-in verification against a disposable GTK entry, never a user's document.
+    #[test]
+    fn formatting_fixture_readiness_rejects_late_success() {
+        assert!(wait_for_fixture::<u32>(Duration::ZERO, |_| {
+            panic!("expired deadline must not start discovery");
+        }).is_none());
+        assert_eq!(wait_for_fixture(Duration::from_millis(10), |_| {
+            std::thread::sleep(Duration::from_millis(100));
+            Some(42)
+        }), None);
+    }
+
+    #[test]
+    fn formatting_fixture_readiness_cancels_and_reaps_blocked_discovery() {
+        let mut child = DiscoveryChild(std::process::Command::new("sleep")
+            .arg("60").spawn().unwrap());
+        let started = std::time::Instant::now();
+        assert!(!wait_for_discovery_child(&mut child, started + Duration::from_millis(20)).unwrap());
+        assert!(child.0.try_wait().unwrap().is_some(), "blocked discovery must be reaped");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     #[ignore]
-    fn atspi_live_formats_disposable_entry() {
-        let pid = std::env::var("VERENU_FORMAT_FIXTURE_PID")
-            .expect("start the disposable formatting fixture first")
-            .parse::<u32>().unwrap();
-        let obj = wait_for_fixture(Duration::from_secs(10), || with_connection(|conn| {
+    fn formatting_fixture_discovery_worker() {
+        let pid = std::env::var("VERENU_FORMAT_FIXTURE_PID").unwrap().parse::<u32>().unwrap();
+        let discovered = with_connection(|conn| {
             for app in app_roots_for_pid(conn, pid) {
                 for frame in children(conn, &app) {
                     if get_property::<String>(conn, &frame, ACCESSIBLE, "Name").as_deref()
@@ -734,7 +799,20 @@ mod tests {
                 }
             }
             None
-        })).unwrap_or_else(|| {
+        });
+        if let Some(obj) = discovered {
+            println!("VERENU_FIXTURE_DISCOVERED:{}", serde_json::to_string(&(obj.bus, obj.path.as_str())).unwrap());
+        }
+    }
+
+    /// Opt-in verification against a disposable GTK entry, never a user's document.
+    #[test]
+    #[ignore]
+    fn atspi_live_formats_disposable_entry() {
+        let pid = std::env::var("VERENU_FORMAT_FIXTURE_PID")
+            .expect("start the disposable formatting fixture first")
+            .parse::<u32>().unwrap();
+        let obj = wait_for_fixture(Duration::from_secs(10), discover_fixture_in_process).unwrap_or_else(|| {
             panic!("VERENU_FIXTURE_PREREQUISITE_UNAVAILABLE: expected PID/window/focused editable entry not discovered within 10 seconds");
         });
         for (index, (before, payload, expected)) in [
