@@ -8,8 +8,11 @@ import { join } from 'node:path';
 const [baseUrl = 'http://127.0.0.1:47613', outDir = 'ui-shots'] = process.argv.slice(2);
 mkdirSync(outDir, { recursive: true });
 
-// A fixed weekday morning keeps the greeting and history timestamps stable.
-const now = new Date('2026-10-06T10:42:00').getTime();
+// A fixed capture time keeps the greeting, history timestamps, and synthetic
+// Insights record stable. It is a Saturday because the Insights streak
+// calendar always runs through the Saturday of the last data week; capturing
+// on that Saturday makes its date range end on the same day as the chart.
+const now = new Date('2026-10-10T10:42:00').getTime();
 const ago = (minutes) => new Date(now - minutes * 60_000).toISOString();
 const icon = (text, background, foreground = '#ffffff') =>
   `custom-icon:${JSON.stringify({ text, background, foreground, kind: /\p{Extended_Pictographic}/u.test(text) ? 'emoji' : 'letters' })}`;
