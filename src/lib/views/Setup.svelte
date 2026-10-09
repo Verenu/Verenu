@@ -21,7 +21,7 @@
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
   import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness } from '../setup/setupModelReadiness';
-  import { appleIntelligence } from '../appleIntelligence.svelte';
+  import { appleIntelligence, refreshAppleIntelligence } from '../appleIntelligence.svelte';
   import { appleCleanupReadiness, applyAppleCleanup, applyAppleCleanupDefaults } from '../setup/appleCleanup';
   import SetupShell from '../setup/SetupShell.svelte';
   import IntroStep from '../setup/steps/IntroStep.svelte';
@@ -331,7 +331,8 @@
   }
 
   function jumpToStep(target: number) {
-    if (target === step) return;
+    // A save is in flight on the Done step; moving steps now would hide its progress.
+    if (target === step || finishing) return;
     void animateTo(target, target < step ? 'back' : 'forward');
   }
 
@@ -450,11 +451,21 @@
 
   async function finish() {
     if (finishing) return;
-    if (!appleReadiness.ready) {
-      saveError = appleReadiness.message;
+    // Set before the first await so a second click cannot start another save.
+    finishing = true;
+    saveError = '';
+    // The Models step read Apple availability when it opened, and the Mac can
+    // lose it while the wizard is open. Re-check before any write so a stale
+    // "ready" never saves an engine that cannot run. The shared refresh is
+    // de-duplicated and fails closed to 'unavailable'.
+    const readiness = useAppleCleanup
+      ? appleCleanupReadiness(appleCleanupChoice, cleanupIntensity !== 'none', await refreshAppleIntelligence())
+      : appleReadiness;
+    if (!readiness.ready) {
+      saveError = readiness.message;
+      finishing = false;
       return;
     }
-    finishing = true;
     const target = effectiveTarget;
     const providerDefaultTranscription = defaultModels.transcriptionDefaultModel;
     const providerDefaultCleanup = defaultModels.cleanupDefaultModel;
@@ -474,7 +485,6 @@
     // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
 
-    saveError = '';
     try {
       const settingsToSave: Array<() => Promise<unknown>> = [
         () => saveSetting('cleanup_intensity', cleanupIntensity),
@@ -756,7 +766,7 @@
         modelReadinessMessage={appleReadiness.ready ? doneModelReadiness.message : appleReadiness.message}
         presetName={modelPreset?.name ?? ''}
         onReviewModels={() => jumpToStep(modelsStep >= 0 ? modelsStep : providerStep)}
-        modelRecoveryDisabled={animating}
+        modelRecoveryDisabled={animating || finishing}
       />
     {/if}
   </div>
