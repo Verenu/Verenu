@@ -2025,6 +2025,45 @@ fn dictionary_entry_rejects_values_beyond_limit() {
 }
 
 #[test]
+fn snippet_insert_rolls_back_when_context_assignment_fails() {
+    let db = test_db();
+    let existing = insert_snippet_returning(&db, "existing", "Synthetic expansion", "", None)
+        .expect("seed preexisting snippet");
+    let before = serde_json::to_value(query_snippets(&db).unwrap()).unwrap();
+    let assignments_before: i64 = db
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM snippet_contexts", [], |row| row.get(0))
+        .unwrap();
+
+    let error = insert_snippet_returning(&db, "new", "Synthetic new expansion", "", Some(i64::MAX))
+        .expect_err("missing context must reject assignment");
+    assert_eq!(
+        error.downcast_ref::<rusqlite::Error>().unwrap().sqlite_error_code(),
+        Some(rusqlite::ErrorCode::ConstraintViolation)
+    );
+    assert_eq!(
+        serde_json::to_value(query_snippets(&db).unwrap()).unwrap(),
+        before
+    );
+    let conn = db.lock().unwrap();
+    assert!(conn.is_autocommit());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM snippet_contexts", [], |row| row.get::<_, i64>(0)).unwrap(),
+        assignments_before
+    );
+    assert_eq!(
+        conn.query_row("SELECT snippet_id FROM snippet_contexts WHERE snippet_id = ?1", [existing.id], |row| row.get::<_, i64>(0)).unwrap(),
+        existing.id
+    );
+    drop(conn);
+
+    let retry = insert_snippet_returning(&db, "new", "Synthetic new expansion", "", None)
+        .expect("same trigger remains available after rollback");
+    assert!(query_snippets(&db).unwrap().iter().any(|snippet| snippet.id == retry.id));
+}
+
+#[test]
 fn snippet_update_normalizes_expansion_whitespace() {
     let db = test_db();
     insert_snippet(&db, "sig", "Hi", "").expect("insert");

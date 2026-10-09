@@ -88,6 +88,7 @@ fn start_storage_maintenance(
                         .and_then(crate::data::store::history_retention_days)
                 });
             let db_for_work = db.clone();
+            let settings_for_work = settings.clone();
             let app_for_work = app.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 if let Err(err) = db::cleanup_cache_prune_expired(&db_for_work) {
@@ -103,7 +104,11 @@ fn start_storage_maintenance(
                     log::warn!("maintenance: pending-correction retention failed: {err}");
                 }
                 if let Some(days) = retention_days {
-                    match db::prune_transcriptions_older_than(&db_for_work, days) {
+                    match db::prune_transcriptions_for_retention(
+                        &db_for_work,
+                        &settings_for_work,
+                        days,
+                    ) {
                         Ok(deleted) if deleted > 0 => {
                             let _ = app_for_work.emit("verenu:history-pruned", ());
                         }
@@ -408,8 +413,9 @@ pub fn run() {
                 if let Some(days) = crate::data::store::history_retention_days(retention) {
                     let db = app.state::<DbHandle>().inner().clone();
                     let app_handle = app.handle().clone();
+                    let settings = settings.clone();
                     tauri::async_runtime::spawn_blocking(move || {
-                        match db::prune_transcriptions_older_than(&db, days) {
+                        match db::prune_transcriptions_for_retention(&db, &settings, days) {
                             Ok(deleted) if deleted > 0 => {
                                 let _ = app_handle.emit("verenu:history-pruned", ());
                             }
