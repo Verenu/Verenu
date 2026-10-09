@@ -55,6 +55,9 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       [true, 'I use sentence name um every day', 'I use Verenu. Every day'],
       [false, 'I ordered tea, no, tea is unavailable.', 'I ordered tea, no, tea is unavailable.'],
       [true, 'signoff.', 'Thanks!'],
+      [false, 'Take me to the ER', 'Take me to the ER'],
+      [true, 'I studied at UM', 'I studied at UM'],
+      [false, 'Um, take me to the ER', 'Take me to the ER'],
     ]) {
       if (raw.startsWith('greeting')) snippets.push(await invoke('create_snippet', { trigger: 'greeting', expansion: 'um scratch that new line', instructions: '', contextId: context.id }));
       if (raw.startsWith('um please')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'New Line', mistake: 'new line', contextId: context.id }));
@@ -74,7 +77,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 9);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 12);
   } finally {
     try {
       for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });

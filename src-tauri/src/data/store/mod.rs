@@ -53,6 +53,7 @@ impl SettingsSnapshot {
 pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_count: i64) -> i64 {
     let flags = [
         CLEANUP_ENABLED,
+        VOICE_COMMANDS_ENABLED,
         DUAL_TRANSCRIPTION_ENABLED,
         NOISE_REDUCTION,
         AUTO_LEARN_ENABLED,

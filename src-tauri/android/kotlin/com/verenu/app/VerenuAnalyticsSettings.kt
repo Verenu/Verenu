@@ -20,7 +20,7 @@ internal fun safeAnalyticsSettings(json: JSONObject?): Map<String, Any> {
     result["context_group_count"] = json.optInt("context_group_count", 0).coerceIn(0, 200)
   }
   if (json.has("feature_breadth")) {
-    result["feature_breadth"] = json.optInt("feature_breadth", 0).coerceIn(0, 9)
+    result["feature_breadth"] = json.optInt("feature_breadth", 0).coerceIn(0, 10)
   }
   booleans.forEach { if (json.opt(it) is Boolean) result[it] = json.optBoolean(it) }
   categories.forEach {
