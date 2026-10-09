@@ -162,6 +162,7 @@ pub type SharedState = Arc<Mutex<AppState>>;
 
 #[derive(Clone)]
 pub struct RetryCapture {
+    pub speech_vocabulary: crate::local_stt::vocabulary::Vocabulary,
     pub audio: CapturedAudio,
     pub captured_at: std::time::Instant,
     pub target: WindowTarget,
@@ -1108,6 +1109,7 @@ mod tests {
                 context: ResolvedContextIdentity::everywhere(),
             });
             st.retry_capture = Some(RetryCapture {
+                speech_vocabulary: Default::default(),
                 audio,
                 captured_at: std::time::Instant::now()
                     - RETRY_WINDOW

@@ -7,6 +7,8 @@ use super::*;
 /// All settings values needed by run_pipeline, loaded in one place.
 #[derive(Clone, Debug, Default)]
 pub struct PipelineConfig {
+    /// Ephemeral, captured Context hints. Never serialized to settings.
+    pub speech_vocabulary: crate::local_stt::vocabulary::Vocabulary,
     pub transcription_provider: String,
     pub transcription_language: String,
     pub cleanup_provider: String,
@@ -378,6 +380,7 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         .collect();
 
     PipelineConfig {
+        speech_vocabulary: Default::default(),
         transcription_provider,
         transcription_language: language_or_default(TRANSCRIPTION_LANGUAGE, "en"),
         cleanup_provider,
