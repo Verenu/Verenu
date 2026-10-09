@@ -39,7 +39,7 @@ export interface InsightsDay {
 
 export interface InsightsProviderUsage {
   model: string;
-  provider: 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai' | 'local';
+  provider: 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai' | 'local' | 'apple-intelligence';
   task: 'transcription' | 'cleanup';
   calls: number;
   audio_ms: number;
