@@ -57,7 +57,8 @@ struct Response: Encodable {
                     try await manager.loadModels(AsrModels.loadLocal(from: URL(fileURLWithPath: path), version: version))
                     response = Response(text: nil, error: nil, boosting: nil)
                 } else if request.operation == "transcribe" {
-                    guard let samples = request.samples, samples.count <= 16_000 * 600,
+                    // Match media/audio.rs MAX_RECORDING_SECONDS (15 minutes).
+                    guard let samples = request.samples, samples.count <= 16_000 * 900,
                           samples.allSatisfy({ $0.isFinite }) else { throw BridgeError.invalid }
                     var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
                     let result = try await manager.transcribe(samples, decoderState: &state,
