@@ -367,10 +367,17 @@
       in:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
       out:pageSwap={{ axis: 'y', distance: motionPx(SETTINGS_SWAP_PX), duration: motionMs(SETTINGS_SWAP_MS) }}
     >
+      {#if appStore.setupComplete === false}
+        <div class="setup-return-bar">
+          <button type="button" class="setup-return" onclick={close}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            Back to setup
+          </button>
+        </div>
+      {/if}
       <!-- The section rail lives in Sidebar.svelte, which morphs into it.
-           Closing is handled by the sidebar's "Back to app" button and Esc —
-           the old corner ✕ sat right under the window controls and was
-           redundant once settings became a page rather than a modal. -->
+           Normal app use closes Settings from the sidebar. Setup has a return
+           control above because the app body is inert while onboarding runs. -->
       {#if isAndroid}
         <nav class="m-list" aria-label="Settings sections">
           <h1 class="m-list-title">Settings</h1>
@@ -497,6 +504,29 @@
     border: 0;
     padding: 0;
   }
+
+  .setup-return-bar {
+    flex: 0 0 auto;
+    padding: 8px var(--page-pad-x) 0;
+  }
+
+  .setup-return {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    padding: 4px 7px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--ink-mute);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .setup-return:hover { background: var(--control-hover); color: var(--ink-strong); }
+  .setup-return:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /*
    * Geometry deliberately mirrors .content in App.svelte, and there is no card

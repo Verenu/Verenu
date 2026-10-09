@@ -15,7 +15,8 @@ async function publish(page, status) {
   }, status);
 }
 
-test('shortcut failure remains visible and recovery restores dictation guidance', async ({ page }) => {
+test('shortcut failure remains visible and ready recovery restores dictation guidance', async ({ page, readySpeech }) => {
+  await expect(page.getByRole('heading', { name: /Hold Ctrl.*Super.*to dictate/ })).toBeVisible();
   await publish(page, failure);
   await expect(page.getByRole('heading', { name: 'Dictation shortcut unavailable' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'An app id is required' })).toBeVisible();
@@ -39,4 +40,20 @@ test('shortcut failure remains visible and recovery restores dictation guidance'
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: /Hold Ctrl.*Super.*to dictate/ })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'An app id is required' })).toHaveCount(0);
+});
+
+test('shortcut recovery keeps setup guidance while speech is not ready', async ({ page, incompleteSpeech }) => {
+  await expect(page.getByRole('heading', { name: 'Finish dictation setup' })).toBeVisible();
+  await publish(page, failure);
+  await expect(page.getByRole('heading', { name: 'Dictation shortcut unavailable' })).toBeVisible();
+  await page.evaluate(async () => {
+    const { emit } = await import('/src/lib/tauri.ts');
+    await emit('open-flow:open-settings-section', 'general');
+  });
+  await expect(page.getByRole('button', { name: 'Change dictation hotkey' })).toBeVisible();
+  await publish(page, working);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: 'Finish dictation setup' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Hold Ctrl.*Super.*to dictate/ })).toHaveCount(0);
+  await expect(page.getByText('does not support speech recognition')).toBeVisible();
 });

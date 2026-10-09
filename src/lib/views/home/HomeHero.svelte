@@ -3,6 +3,7 @@
 
   export let keyLabels: string[];
   export let android = false;
+  export let setupIncomplete = false;
   export let shortcutUnavailable = false;
 
   // Svelte's legacy prop bridge can briefly supply the default value while
@@ -14,7 +15,11 @@
 <div class="hero-photo">
   <div class="hero-photo-content">
     <h2 class="hero-photo-title">
-      {#if showAndroid}
+      {#if !showAndroid && shortcutUnavailable}
+        Dictation shortcut unavailable
+      {:else if setupIncomplete}
+        Finish dictation setup
+      {:else if showAndroid}
         Tap the Verenu pill to dictate
       {:else if shortcutUnavailable}
         Dictation shortcut unavailable
@@ -23,7 +28,11 @@
       {/if}
     </h2>
     <p class="hero-photo-sub">
-      {#if showAndroid}
+      {#if !showAndroid && shortcutUnavailable}
+        Check the shortcut details below before dictating.
+      {:else if setupIncomplete}
+        Follow the setup actions below to configure speech recognition and optional cleanup.
+      {:else if showAndroid}
         Open a text field and use the pill above your keyboard.
       {:else if shortcutUnavailable}
         Open Settings > General for shortcut details.
