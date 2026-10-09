@@ -4,7 +4,7 @@
 
 long verenu_speech_os_major(void) { return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion; }
 
-static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NSSet<NSLocale *> *supported) {
+static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NSSet<NSLocale *> *supported, BOOL (^eligible)(NSLocale *)) {
     NSString *identifier = [NSLocale canonicalLocaleIdentifierFromString:requested.length ? requested : current.localeIdentifier];
     NSDictionary *components = [NSLocale componentsFromLocaleIdentifier:identifier];
     NSString *language = components[NSLocaleLanguageCode];
@@ -16,10 +16,11 @@ static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NS
     NSLocale *preferred = nil;
     for (NSLocale *locale in ordered) {
         NSString *candidate = [NSLocale canonicalLocaleIdentifierFromString:locale.localeIdentifier];
-        if ([candidate isEqualToString:identifier]) return locale;
         NSDictionary *parts = [NSLocale componentsFromLocaleIdentifier:candidate];
         if (![parts[NSLocaleLanguageCode] isEqualToString:language]) continue;
         if (script.length && ![parts[NSLocaleScriptCode] isEqualToString:script]) continue;
+        if (eligible && !eligible(locale)) continue;
+        if ([candidate isEqualToString:identifier]) return locale;
         if (!fallback) fallback = locale;
         if ([candidate isEqualToString:[NSLocale canonicalLocaleIdentifierFromString:current.localeIdentifier]]) preferred = locale;
     }
@@ -52,9 +53,15 @@ char *verenu_speech_transcribe(const float *samples, size_t count,
             *errorCode = 4; return NULL;
         }
         NSString *localeName = [NSString stringWithUTF8String:language];
-        NSLocale *locale = verenu_speech_locale(localeName, [NSLocale currentLocale], [SFSpeechRecognizer supportedLocales]);
+        NSMutableDictionary<NSString *, SFSpeechRecognizer *> *recognizers = [NSMutableDictionary dictionary];
+        NSLocale *locale = verenu_speech_locale(localeName, [NSLocale currentLocale], [SFSpeechRecognizer supportedLocales], ^BOOL(NSLocale *candidateLocale) {
+            SFSpeechRecognizer *candidate = [[SFSpeechRecognizer alloc] initWithLocale:candidateLocale];
+            if (!candidate.available || !candidate.supportsOnDeviceRecognition) return NO;
+            recognizers[candidateLocale.localeIdentifier] = candidate;
+            return YES;
+        });
         if (!locale) { *errorCode = 5; return NULL; }
-        SFSpeechRecognizer *recognizer = [[SFSpeechRecognizer alloc] initWithLocale:locale];
+        SFSpeechRecognizer *recognizer = recognizers[locale.localeIdentifier];
         if (!recognizer || !recognizer.available || !recognizer.supportsOnDeviceRecognition) {
             *errorCode = 5; return NULL;
         }
