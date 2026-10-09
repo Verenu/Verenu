@@ -55,11 +55,10 @@ pub async fn download(
         .find(|bundle| bundle.id == manifest.id)
         .ok_or_else(|| anyhow::anyhow!("unknown CoreML bundle"))?;
     let staging = manifest.extracting_path(root);
-    if staging.exists() {
-        tokio::fs::remove_dir_all(&staging).await?;
-    }
-    tokio::fs::create_dir_all(&staging).await?;
-    let total: u64 = bundle.files.iter().map(|file| file.size).sum();
+    let total = prepare_staging(&bundle, root, &staging, |root, total| {
+        crate::api::model_download::ensure_disk_space(root, 0, Some(total))
+    })
+    .await?;
     let mut completed = 0;
     let mut progress = ProgressThrottle::default();
     let client = reqwest::Client::new();
@@ -134,6 +133,26 @@ pub async fn download(
     Ok(())
 }
 
+async fn prepare_staging(
+    bundle: &Bundle,
+    root: &Path,
+    staging: &Path,
+    ensure_space: impl FnOnce(&Path, u64) -> anyhow::Result<()>,
+) -> anyhow::Result<u64> {
+    let total = bundle.files.iter().try_fold(0u64, |total, file| {
+        total
+            .checked_add(file.size)
+            .ok_or_else(|| anyhow::anyhow!("model bundle size overflow"))
+    })?;
+    tokio::fs::create_dir_all(root).await?;
+    ensure_space(root, total)?;
+    if staging.exists() {
+        tokio::fs::remove_dir_all(staging).await?;
+    }
+    tokio::fs::create_dir_all(staging).await?;
+    Ok(total)
+}
+
 // Keep the old directory until promotion succeeds. A failed replacement
 // restores it; only verified model artifacts replace an existing install.
 fn promote_verified(staging: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -168,6 +187,34 @@ fn promote_with_cleanup(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn insufficient_bundle_space_leaves_staging_untouched() {
+        let root = std::env::temp_dir().join(format!("verenu-fluid-space-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("model.extracting");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("existing"), b"retained").unwrap();
+        let bundle = super::Bundle {
+            id: "synthetic".into(),
+            repo: String::new(),
+            revision: String::new(),
+            files: vec![
+                super::Artifact { path: "synthetic".into(), sha256: String::new(), size: 40 },
+                super::Artifact { path: "second".into(), sha256: String::new(), size: 60 },
+            ],
+        };
+        let error = super::prepare_staging(&bundle, &root, &staging, |checked_root, total| {
+            assert_eq!(checked_root, root);
+            assert_eq!(total, 100);
+            anyhow::bail!("synthetic insufficient disk space")
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("insufficient disk space"));
+        assert_eq!(std::fs::read(staging.join("existing")).unwrap(), b"retained");
+        assert!(!staging.join("synthetic").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn successful_model_promotion_is_not_failed_by_backup_cleanup() {
         let root =
