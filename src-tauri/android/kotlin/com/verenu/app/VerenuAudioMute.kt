@@ -11,13 +11,11 @@ class VerenuAudioMute(context: Context) {
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val handler = Handler(Looper.getMainLooper())
-    private var requested = false
+    private val lifecycle = VerenuMediaMuteLifecycle(::applyMute)
     private val observeVolume = object : Runnable {
         override fun run() {
             synchronized(this@VerenuAudioMute) {
-                if (!requested) return
-                applyMute(true)
-                handler.postDelayed(this, 100L)
+                if (lifecycle.poll()) handler.postDelayed(this, lifecycle.pollDelayMs)
             }
         }
     }
@@ -44,19 +42,18 @@ class VerenuAudioMute(context: Context) {
 
     @Synchronized
     fun update(muted: Boolean) {
-        requested = muted
         handler.removeCallbacks(observeVolume)
-        applyMute(muted)
-        if (muted) handler.postDelayed(observeVolume, 100L)
+        if (lifecycle.update(muted)) handler.postDelayed(observeVolume, lifecycle.pollDelayMs)
     }
 
-    private fun applyMute(muted: Boolean) {
+    private fun applyMute(muted: Boolean): Boolean =
         try {
             mediaMute.update(muted)
+            true
         } catch (error: RuntimeException) {
             Log.w("VerenuAudioMute", "Could not update media volume", error)
+            false
         }
-    }
 
     private companion object {
         const val PREFERENCES = "verenu_media_mute"

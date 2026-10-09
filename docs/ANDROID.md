@@ -218,7 +218,9 @@ guarantee silence from every player, so this path does not request focus.
 See [AudioManager](https://developer.android.com/reference/android/media/AudioManager)
 and [audio focus](https://developer.android.com/media/optimize/audio-focus).
 The Application checks for volume overrides every 100 ms while muted and
-discards its restore value when it observes one. Android's public volume API
+discards its restore value when it observes one. A failed restore retries once
+per second until it succeeds; successful idle state stops polling.
+Android's public volume API
 cannot distinguish choosing zero again from the zero Verenu already applied;
 changes entirely between observations are also not observable. Abrupt process
 death recovers the saved level on next launch if media remains at zero.
