@@ -27,6 +27,8 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
   };
   const assertInput = async (state, enabled) => {
     const policy = await invoke('native_test_pill');
+    assert.equal(policy.appIcon.windowClass, 'Verenu', 'Linux window class must match the desktop entry');
+    assert.equal(policy.appIcon.matchesMain, true, 'Pill must have the same native app icon as the main window');
     assert.equal(policy.state, state);
     assert.equal(policy.interactive, enabled, `Incorrect native input policy for ${state}`);
     if (enabled) {
