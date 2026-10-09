@@ -4,6 +4,28 @@
 
 long verenu_speech_os_major(void) { return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion; }
 
+static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NSSet<NSLocale *> *supported) {
+    NSString *identifier = [NSLocale canonicalLocaleIdentifierFromString:requested.length ? requested : current.localeIdentifier];
+    NSDictionary *components = [NSLocale componentsFromLocaleIdentifier:identifier];
+    NSString *language = components[NSLocaleLanguageCode];
+    NSString *script = components[NSLocaleScriptCode];
+    NSArray<NSLocale *> *ordered = [supported.allObjects sortedArrayUsingComparator:^NSComparisonResult(NSLocale *a, NSLocale *b) {
+        return [a.localeIdentifier compare:b.localeIdentifier];
+    }];
+    NSLocale *fallback = nil;
+    NSLocale *preferred = nil;
+    for (NSLocale *locale in ordered) {
+        NSString *candidate = [NSLocale canonicalLocaleIdentifierFromString:locale.localeIdentifier];
+        if ([candidate isEqualToString:identifier]) return locale;
+        NSDictionary *parts = [NSLocale componentsFromLocaleIdentifier:candidate];
+        if (![parts[NSLocaleLanguageCode] isEqualToString:language]) continue;
+        if (script.length && ![parts[NSLocaleScriptCode] isEqualToString:script]) continue;
+        if (!fallback) fallback = locale;
+        if ([candidate isEqualToString:[NSLocale canonicalLocaleIdentifierFromString:current.localeIdentifier]]) preferred = locale;
+    }
+    return preferred ?: fallback;
+}
+
 // Owned by one Rust blocking worker. Callbacks only update request-local state.
 // Neither the transcript nor vocabulary is written to native diagnostics.
 char *verenu_speech_transcribe(const float *samples, size_t count,
@@ -30,7 +52,8 @@ char *verenu_speech_transcribe(const float *samples, size_t count,
             *errorCode = 4; return NULL;
         }
         NSString *localeName = [NSString stringWithUTF8String:language];
-        NSLocale *locale = localeName.length ? [NSLocale localeWithLocaleIdentifier:localeName] : [NSLocale currentLocale];
+        NSLocale *locale = verenu_speech_locale(localeName, [NSLocale currentLocale], [SFSpeechRecognizer supportedLocales]);
+        if (!locale) { *errorCode = 5; return NULL; }
         SFSpeechRecognizer *recognizer = [[SFSpeechRecognizer alloc] initWithLocale:locale];
         if (!recognizer || !recognizer.available || !recognizer.supportsOnDeviceRecognition) {
             *errorCode = 5; return NULL;
