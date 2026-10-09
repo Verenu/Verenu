@@ -97,8 +97,8 @@
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
-  let effectiveCleanupName = $derived(modelPreset?.target && !modelPreset.target.cleanupEnabled ? 'Off' : cleanupName);
   let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, modelPreset?.target));
+  let effectiveCleanupName = $derived(effectiveCleanupEnabled ? cleanupName : 'Off');
   let defaultModels = $derived(setupDefaultModels(provider));
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
@@ -453,7 +453,8 @@
     // Intensity 'none' and cleanup_enabled=false are ANDed by the pipeline
     // (see should_run_cleanup_llm), so keep the Settings toggle agreeing with
     // what the wizard was actually told. A preset with no cleanup model (e.g.
-    // "Transcription only") also forces it off.
+    // "Transcription only") turns AI cleanup off, but Basic ('rules') needs no
+    // model and stays on (see setupCleanupEnabled).
     const cleanupEnabled = effectiveCleanupEnabled;
     // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
