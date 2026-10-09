@@ -158,12 +158,10 @@ fn promote_with_cleanup(
         }
         return Err(error.into());
     }
-    if previous {
-        if cleanup(&backup).is_err() {
-            log::warn!(
-                "local-stt: verified CoreML install promoted; prior artifact cleanup failed"
-            );
-        }
+    if previous && cleanup(&backup).is_err() {
+        log::warn!(
+            "local-stt: verified CoreML install promoted; prior artifact cleanup failed"
+        );
     }
     Ok(())
 }
