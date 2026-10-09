@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, tick } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
   import { fly, slide } from 'svelte/transition';
@@ -80,6 +81,7 @@
     openrouter: false,
     xai: false,
     local: false,
+    'apple-intelligence': false,
   });
 
   let transcriptionModelsByProvider = $state<ProviderModelMap>(emptyProviderModelMap());
@@ -569,6 +571,7 @@
   }
 
   async function migrateAndLoad() {
+    void refreshAppleIntelligence();
     const [all, keyStatus] = await Promise.all([
       loadSettingsSnapshot(),
       invoke<Record<ProviderId, boolean>>('get_api_key_status'),

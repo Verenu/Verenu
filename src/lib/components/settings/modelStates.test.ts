@@ -61,6 +61,7 @@ const CAPABLE: Hardware = { totalRamMb: 32768, freeRamMb: 24576, gpus: [], unkno
 const TINY: Hardware = { totalRamMb: 4096, freeRamMb: 2048, gpus: [], unknown: false };
 
 const ALL_KEYS: Record<ProviderId, boolean> = {
+  'apple-intelligence': false,
   groq: true,
   openai: true,
   google: true,

@@ -49,13 +49,21 @@ pub const ASSEMBLYAI: &str = "assemblyai";
 pub const OPENROUTER: &str = "openrouter";
 pub const XAI: &str = "xai";
 pub(crate) const LOCAL: &str = "local";
+pub const APPLE_INTELLIGENCE: &str = "apple-intelligence";
 pub const GROQ_GPT_OSS_20B_MODEL: &str = "openai/gpt-oss-20b";
 pub const GROQ_QWEN_3_6_27B_MODEL: &str = "qwen/qwen3.6-27b";
 pub const GROQ_QWEN_3_8_27B_MODEL: &str = "qwen/qwen3.8-27b";
 pub const DEPRECATED_GROQ_LLAMA_8B_MODEL: &str = "llama-3.1-8b-instant";
 pub const DEPRECATED_GROQ_LLAMA_70B_MODEL: &str = "llama-3.3-70b-versatile";
-pub const PROVIDERS: [&str; 7] = [
-    GROQ, OPENAI, GOOGLE, ASSEMBLYAI, OPENROUTER, XAI, LOCAL,
+pub const PROVIDERS: [&str; 8] = [
+    GROQ,
+    OPENAI,
+    GOOGLE,
+    ASSEMBLYAI,
+    OPENROUTER,
+    XAI,
+    LOCAL,
+    APPLE_INTELLIGENCE,
 ];
 
 pub fn default_transcription_model_for(provider: &str) -> &'static str {
@@ -72,6 +80,7 @@ pub fn default_transcription_model_for(provider: &str) -> &'static str {
 
 pub fn default_cleanup_model_for(provider: &str) -> &'static str {
     match provider {
+        APPLE_INTELLIGENCE => crate::api::apple_intelligence::MODEL,
         LOCAL => "gemma-4-e2b",
         OPENAI => "gpt-4o-mini",
         GOOGLE => "gemini-3.5-flash-lite",
@@ -192,7 +201,7 @@ impl PipelineConfig {
             "assemblyai" => &self.key_assemblyai,
             "openrouter" => &self.key_openrouter,
             "xai" => &self.key_xai,
-            "local" => "",
+            "local" | APPLE_INTELLIGENCE => "",
             _ => &self.key_groq,
         }
     }

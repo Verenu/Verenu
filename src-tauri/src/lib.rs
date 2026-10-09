@@ -739,6 +739,7 @@ pub fn run() {
             commands::validate_api_key,
             commands::list_provider_models,
             commands::get_provider_model_catalog,
+            api::apple_intelligence::get_apple_intelligence_availability,
             commands::open_notifications_settings,
             commands::request_notification_permission,
             commands::check_keychain_access,

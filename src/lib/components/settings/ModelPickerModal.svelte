@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
   import { fade, fly, slide } from 'svelte/transition';
@@ -113,6 +114,7 @@
   let panelLeft = $state(0);
 
   onMount(() => {
+    if (task === 'cleanup') void refreshAppleIntelligence();
     const updatePanelLeft = () => {
       const panel = document.querySelector('.settings-page');
       if (panel) panelLeft = panel.getBoundingClientRect().left;
@@ -129,7 +131,7 @@
     return () => window.removeEventListener('resize', updatePanelLeft);
   });
 
-  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local',
+  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local', ...(task === 'cleanup' ? ['apple-intelligence' as const] : []),
     ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
   const current = $derived(rowForSelection(defaultModel, context));
@@ -142,6 +144,7 @@
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
     (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
   async function refreshModels() {
+    if (task === 'cleanup') await refreshAppleIntelligence();
     await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
   }
   const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
@@ -566,7 +569,7 @@
       </div>
     </div>
 
-    {#if advancedModelUi && customProvider !== 'local'}
+    {#if advancedModelUi && customProvider !== 'local' && customProvider !== 'apple-intelligence'}
       <footer class="picker-foot" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
         <div class="custom-row">
           <label class="custom-label" for="picker-custom-id">
@@ -932,6 +935,9 @@
   }
 
   .row-note {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -1158,6 +1164,9 @@
   @media (max-width: 640px) {
     .picker-body {
       grid-template-columns: 1fr;
+      /* The rail keeps its own height and the list takes the rest. Otherwise the
+         auto rows share the spare space and the chip row stretches to ~180px. */
+      grid-template-rows: auto minmax(0, 1fr);
     }
 
     .picker-rail {
@@ -1165,6 +1174,13 @@
       overflow-x: auto;
       border-right: none;
       border-bottom: 1px solid var(--line);
+    }
+
+    /* Chips keep their label width in the row; full width squeezed them into
+       tall, wrapped columns. */
+    .picker-rail .rail-item {
+      width: auto;
+      flex-shrink: 0;
     }
 
     .rail-count,
@@ -1189,6 +1205,26 @@
 
     .custom-input {
       min-width: 0;
+    }
+
+    /* A phone row has no room for the reason beside the id, so the reason takes
+       its own full-width line and wraps. The id stays secondary on the first line. */
+    .row-sub {
+      flex-wrap: wrap;
+      row-gap: 2px;
+    }
+
+    .row-sub > .row-note {
+      flex: 1 1 100%;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+    }
+
+    .row-sub > .row-note::before {
+      content: none;
     }
   }
 </style>
