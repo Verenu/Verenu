@@ -6,7 +6,7 @@ narration. See [STORYBOARD.md](STORYBOARD.md) for the shot list and timing.
 The rendered MP4 is not committed. To rebuild it from this checkout:
 
 ```bash
-demo-video/build.sh            # writes to ~/.cache/verenu-demo-video/<timestamp>/
+demo-video/build.sh            # writes to a unique ~/.cache/verenu-demo-video/job-*/
 ```
 
 Requirements: Node with this repo's dev dependencies, Google Chrome at
@@ -24,6 +24,9 @@ that.
 | `stage.html` | The composition. `demo.render(t)` draws any moment as a pure function of time. |
 | `render.mjs` | Serves the stage, steps through all 1,800 frames, and pipes them to ffmpeg with the music. `--stills t1,t2` writes preview PNGs instead. |
 | `build.sh` | Runs the above with a private Vite server and a per-job `TMPDIR`. |
+
+An explicit work directory is resolved from the caller's current directory.
+The renderer reads the end-card version from this checkout's `package.json`.
 
 ## Editing
 

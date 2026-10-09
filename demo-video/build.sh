@@ -4,11 +4,12 @@
 #   demo-video/build.sh [work-dir]
 #
 # Everything large (captures, music, the MP4) goes to the work directory,
-# outside Git. Default: ~/.cache/verenu-demo-video/<timestamp>.
+# outside Git. Default: a unique job under ~/.cache/verenu-demo-video/.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-work="${1:-$HOME/.cache/verenu-demo-video/$(date +%Y%m%d-%H%M%S)}"
+source "$repo/demo-video/work-dir.sh"
+work="$(prepare_demo_work_dir "${1:-}" "$HOME/.cache/verenu-demo-video")"
 mkdir -p "$work/tmp"
 export TMPDIR="$work/tmp" # this job only; keeps Chrome profiles off a shared /tmp
 
