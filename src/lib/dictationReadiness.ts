@@ -30,6 +30,8 @@ export type ReadinessInput = {
   cleanupEnabled: boolean;
   cleanupIntensity?: string | null;
   cleanupIntensityOverrideMayBeUsed?: boolean;
+  // A reachable Context or app mapping set to Off still reconciles dual speech results through cleanup under global Basic.
+  cleanupOffContextMayBeUsed?: boolean;
   dualTranscriptionEnabled?: boolean;
   isOnline?: boolean;
   keys: Record<string, boolean>;
@@ -88,17 +90,33 @@ export function readinessModel(
   return modelId(source as typeof groqDefault.provider, groqDefault.model);
 }
 
+function reachableCleanupIntensities(
+  contexts: ReadonlyArray<{ id: number; is_everywhere: boolean; cleanup_intensity?: string | null }>,
+  appMappings: ReadonlyArray<{ cleanup_intensity?: string | null }>,
+  assignments: ReadonlyArray<{ context_id: number | null }>,
+): string[] {
+  const reachable = new Set(assignments.map(assignment => assignment.context_id));
+  const activeContexts = contexts.filter(context => context.is_everywhere || reachable.has(context.id));
+  return [...activeContexts, ...appMappings]
+    .map(({ cleanup_intensity }) => cleanup_intensity?.trim().toLowerCase() ?? '')
+    .filter(Boolean);
+}
+
 export function hasCleanupIntensityOverride(
   contexts: ReadonlyArray<{ id: number; is_everywhere: boolean; cleanup_intensity?: string | null }> = [],
   appMappings: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
   assignments: ReadonlyArray<{ context_id: number | null }> = [],
 ): boolean {
-  const reachable = new Set(assignments.map(assignment => assignment.context_id));
-  const activeContexts = contexts.filter(context => context.is_everywhere || reachable.has(context.id));
-  return [...activeContexts, ...appMappings].some(({ cleanup_intensity }) => {
-    const intensity = cleanup_intensity?.trim().toLowerCase();
-    return Boolean(intensity) && intensity !== 'none' && intensity !== 'rules';
-  });
+  return reachableCleanupIntensities(contexts, appMappings, assignments)
+    .some(intensity => intensity !== 'none' && intensity !== 'rules');
+}
+
+export function hasReachableOffCleanupOverride(
+  contexts: ReadonlyArray<{ id: number; is_everywhere: boolean; cleanup_intensity?: string | null }> = [],
+  appMappings: ReadonlyArray<{ cleanup_intensity?: string | null }> = [],
+  assignments: ReadonlyArray<{ context_id: number | null }> = [],
+): boolean {
+  return reachableCleanupIntensities(contexts, appMappings, assignments).includes('none');
 }
 
 type ModelCandidateInput = Pick<ReadinessInput,
@@ -125,11 +143,11 @@ function dualTranscriptionMayNeedCleanup(input: DualTranscriptionInput): boolean
 }
 
 export function cleanupMayBeUsed(input: Pick<ReadinessInput,
-  'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed'> & DualTranscriptionInput): boolean {
+  'cleanupEnabled' | 'cleanupIntensity' | 'cleanupIntensityOverrideMayBeUsed' | 'cleanupOffContextMayBeUsed'> & DualTranscriptionInput): boolean {
   const intensity = input.cleanupIntensity ?? 'medium';
   return input.cleanupEnabled && (
     (intensity !== 'none' && intensity !== 'rules') || input.cleanupIntensityOverrideMayBeUsed === true
-      || (intensity === 'none' && dualTranscriptionMayNeedCleanup(input))
+      || ((intensity === 'none' || input.cleanupOffContextMayBeUsed === true) && dualTranscriptionMayNeedCleanup(input))
   );
 }
 
@@ -256,6 +274,9 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
       input.cleanupIntensity === 'none' && dualTranscriptionMayNeedCleanup(input);
     const overrideMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
       input.cleanupIntensity === 'none' && input.cleanupIntensityOverrideMayBeUsed === true;
+    // Global Basic is the only other state where a reachable Off Context adds dual-speech cleanup.
+    const offContextFusionMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
+      input.cleanupIntensity === 'rules' && input.cleanupOffContextMayBeUsed === true && dualTranscriptionMayNeedCleanup(input);
     const detail = problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' ');
     issues.push({
       task,
@@ -263,7 +284,9 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
         ? 'A Context or app mapping may use cleanup. ' + detail
         : fusionMayNeedCleanup
           ? 'Transcript comparison may use cleanup when both speech results are available. ' + detail
-          : detail,
+          : offContextFusionMayNeedCleanup
+            ? 'A Context set to Off may use cleanup to compare both speech results. ' + detail
+            : detail,
       section,
       action: section === 'keys' ? 'Add API key' : 'Choose models',
     });
