@@ -140,7 +140,7 @@ pub(super) fn validate_transcription_chain(
         .any(|(provider, model)| {
             if provider == store::LOCAL {
                 let is_downloaded = crate::local_stt::model::manifest_by_id(model)
-                    .map(|manifest| manifest.is_downloaded(&root))
+                    .map(|manifest| manifest.engine_type != crate::local_stt::model::LocalSttEngineType::CtcBooster && manifest.is_downloaded(&root))
                     .unwrap_or(false);
                 if !is_downloaded
                     && cfg.transcription_provider == store::LOCAL
