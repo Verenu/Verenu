@@ -1155,6 +1155,39 @@
     cursor: default;
   }
 
+  /* Landscape phones: the stacked header, search and refresh rows used to
+     leave about one model row visible. Give the list the height back. */
+  @media (max-height: 520px) {
+    .picker-card {
+      height: calc(100vh - 16px);
+    }
+
+    .picker-head {
+      padding: 10px 16px 6px;
+    }
+
+    .picker-title p {
+      display: none;
+    }
+
+    .picker-search-row {
+      padding: 2px 16px 8px;
+    }
+
+    .search-icon {
+      left: 26px;
+      bottom: 8px;
+    }
+
+    .catalog-refresh {
+      padding: 4px 16px;
+    }
+
+    .picker-foot {
+      padding: 8px 16px;
+    }
+  }
+
   @media (max-width: 640px) {
     .picker-body {
       grid-template-columns: 1fr;
