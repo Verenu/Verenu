@@ -1,0 +1,386 @@
+<!doctype html>
+<!--
+  Verenu 60-second demo: the composition. render.mjs loads this page, calls
+  window.demo.render(t) for every frame, and screenshots it. Every visual is a
+  pure function of t, so renders are repeatable. Timings live in S (below) and in
+  STORYBOARD.md; keep the two in sync.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Verenu demo stage</title>
+<link rel="stylesheet" href="/node_modules/@fontsource-variable/inter-tight/wght.css" />
+<link rel="stylesheet" href="/node_modules/@fontsource-variable/fraunces/standard.css" />
+<link rel="stylesheet" href="/node_modules/@fontsource-variable/jetbrains-mono/wght.css" />
+<style>
+  :root {
+    --ink: #f4f1ec;
+    --muted: #a9a39a;
+    --dim: #6f6a63;
+    --bg: #141312;
+    --panel: #1f1d1b;
+    --accent: #d97757;
+    --sans: 'Inter Tight Variable', 'Inter Tight', system-ui, sans-serif;
+    --serif: 'Fraunces Variable', 'Fraunces', Georgia, serif;
+    --mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+  body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background: radial-gradient(1200px 700px at 50% 30%, #23201d 0%, var(--bg) 70%); }
+  .layer { position: absolute; inset: 0; opacity: 0; will-change: opacity, transform; }
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+  /* Title + end card */
+  .mark { display: flex; align-items: flex-end; gap: 12px; height: 110px; }
+  .mark i { display: block; width: 20px; border-radius: 10px; background: var(--accent); transform-origin: bottom; }
+  .wordmark { font-family: var(--serif); font-size: 112px; font-weight: 500; letter-spacing: -0.02em; margin-top: 26px; }
+  .tagline { font-size: 46px; font-weight: 500; letter-spacing: -0.01em; margin-top: 18px; }
+  .subline { font-size: 26px; color: var(--muted); margin-top: 16px; }
+
+  /* Headline used by the product scenes */
+  .headline { position: absolute; left: 0; right: 0; top: 54px; text-align: center; }
+  .headline h2 { font-size: 50px; font-weight: 600; letter-spacing: -0.02em; }
+  .headline p { font-size: 24px; color: var(--muted); margin-top: 10px; }
+
+  /* App screenshot frame */
+  .frame { position: absolute; left: 320px; top: 214px; width: 1280px; height: 800px; border-radius: 18px;
+    overflow: hidden; background: #fafaf9; box-shadow: 0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08); }
+  .frame .zoom { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; transform-origin: 0 0; }
+  .frame img { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; }
+  .hl { position: absolute; border: 3px solid var(--accent); border-radius: 12px; opacity: 0;
+    box-shadow: 0 0 0 9999px rgba(20,19,18,0); }
+  .tag { position: absolute; right: 36px; bottom: 26px; font-size: 17px; color: var(--dim); font-family: var(--mono); }
+
+  /* Illustrated chat app (scene 2) */
+  .chat { position: absolute; left: 290px; top: 190px; width: 1340px; height: 620px; border-radius: 18px; overflow: hidden;
+    background: #fbfaf8; color: #1c1a18; display: grid; grid-template-columns: 260px 1fr;
+    box-shadow: 0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08); }
+  .chat aside { background: #efece7; padding: 26px 20px; font-size: 19px; color: #5f5a53; }
+  .chat aside b { display: block; color: #1c1a18; font-size: 21px; margin-bottom: 22px; }
+  .chat aside div { padding: 9px 12px; border-radius: 8px; margin-bottom: 4px; }
+  .chat aside .on { background: #e2ddd5; color: #1c1a18; }
+  .chat main { position: relative; padding: 30px 40px; }
+  .chat .room { font-size: 24px; font-weight: 600; padding-bottom: 18px; border-bottom: 1px solid #e6e1da; }
+  .msg { display: grid; grid-template-columns: 52px 1fr; gap: 14px; margin-top: 24px; font-size: 21px; line-height: 1.45; }
+  .msg .av { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; color: #fff; font-weight: 600; font-size: 19px; }
+  .msg .who { font-weight: 600; font-size: 19px; }
+  .msg .who span { color: #8d877f; font-weight: 400; margin-left: 8px; font-size: 16px; }
+  .composer { position: absolute; left: 40px; right: 40px; bottom: 30px; min-height: 66px; border: 1.5px solid #d9d3ca; border-radius: 14px;
+    padding: 18px 20px; font-size: 21px; line-height: 1.45; background: #fff; }
+  .composer .ph { color: #a29b92; }
+  .caret { display: inline-block; width: 2px; height: 26px; background: #1c1a18; vertical-align: -5px; margin-left: 1px; }
+  .illus { position: absolute; left: 290px; top: 822px; font-family: var(--mono); font-size: 16px; color: var(--dim); }
+
+  .keys { position: absolute; left: 0; right: 0; top: 880px; display: flex; justify-content: center; gap: 16px; }
+  .key { font-family: var(--mono); font-size: 26px; padding: 14px 24px; border-radius: 12px; background: #2a2724; color: var(--ink);
+    border: 1px solid #3a3632; box-shadow: 0 6px 0 #0d0c0b; }
+  .keys .label { align-self: center; font-size: 24px; color: var(--muted); margin-left: 8px; }
+  .speech { position: absolute; left: 360px; right: 360px; top: 975px; text-align: center; font-size: 27px; color: #d9d3ca; font-style: italic; }
+  .speech .said { color: var(--muted); font-style: normal; font-size: 18px; letter-spacing: .08em; text-transform: uppercase; margin-right: 12px; }
+  /* Pill frames are 3x captures of a 420x120 window; shown at 3x CSS size. */
+  #pill { position: absolute; left: 330px; top: 372px; width: 1260px; height: 360px; filter: drop-shadow(0 10px 22px rgba(0,0,0,.22)); }
+
+  /* Value cards (scene 7) */
+  .cards { position: absolute; left: 230px; right: 230px; top: 300px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  .card { background: var(--panel); border: 1px solid #2e2b28; border-radius: 22px; padding: 38px 42px; opacity: 0; }
+  .card h3 { font-size: 36px; font-weight: 600; letter-spacing: -0.01em; }
+  .card p { font-size: 23px; color: var(--muted); margin-top: 10px; line-height: 1.4; }
+  .card em { font-style: normal; color: var(--accent); }
+
+  .url { font-family: var(--mono); font-size: 30px; color: var(--ink); margin-top: 34px; padding: 14px 26px; border-radius: 14px; background: #221f1c; border: 1px solid #34302c; }
+  .foot { position: absolute; left: 0; right: 0; bottom: 34px; text-align: center; font-size: 17px; color: var(--dim); }
+  #black { position: absolute; inset: 0; background: #000; opacity: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- S1: title -->
+  <section class="layer center" id="s1">
+    <div class="mark" id="s1-mark"><i style="height:37%"></i><i style="height:67%"></i><i style="height:100%"></i><i style="height:58%"></i><i style="height:30%"></i></div>
+    <div class="wordmark" id="s1-word">Verenu</div>
+    <div class="tagline" id="s1-tag">Hold a hotkey. Talk. Release.</div>
+    <div class="subline" id="s1-sub">Free, open-source AI dictation for Windows, macOS, and Linux</div>
+  </section>
+
+  <!-- S2: dictation into an (illustrated) chat app with the real pill -->
+  <section class="layer" id="s2">
+    <div class="headline"><h2 id="s2-h">Dictate into any app</h2><p id="s2-p">Hold your hotkey and speak naturally.</p></div>
+    <div class="chat" id="s2-chat">
+      <aside><b>Northwind</b><div># general</div><div class="on"># launch-team</div><div># design</div><div>Alex Rivera</div></aside>
+      <main>
+        <div class="room"># launch-team</div>
+        <div class="msg"><div class="av" style="background:#2f6f8f">AR</div><div><div class="who">Alex Rivera <span>10:38 AM</span></div>Quick heads up: the client call is moving this week.</div></div>
+        <div class="msg" id="s2-sent" style="opacity:0"><div class="av" style="background:#c44632">SK</div><div><div class="who">Sam Kim <span>10:42 AM</span></div><span id="s2-sent-text"></span></div></div>
+        <div class="composer" id="s2-composer"><span class="ph" id="s2-ph">Message #launch-team</span><span id="s2-typed"></span><span class="caret" id="s2-caret"></span></div>
+      </main>
+    </div>
+    <div class="illus">Illustrated chat app · real Verenu pill</div>
+    <canvas id="pill" width="1260" height="360"></canvas>
+    <div class="keys" id="s2-keys"><span class="key" id="k1">Ctrl</span><span class="key" id="k2">Super</span><span class="label" id="s2-klabel">hold to talk</span></div>
+    <div class="speech" id="s2-speech"><span class="said">You say</span><span id="s2-words"></span></div>
+  </section>
+
+  <!-- S3-S6: real app screens -->
+  <section class="layer" id="app">
+    <div class="headline"><h2 id="app-h"></h2><p id="app-p"></p></div>
+    <div class="frame" id="frame">
+      <div class="zoom" id="zoom">
+        <div class="hl" id="hl1"></div><div class="hl" id="hl2"></div>
+      </div>
+    </div>
+    <div class="tag">Real Verenu UI · sample data</div>
+  </section>
+
+  <!-- S7: why Verenu -->
+  <section class="layer" id="s7">
+    <div class="headline"><h2>Yours, end to end</h2><p>Hold a hotkey, talk, release. The rest stays under your control.</p></div>
+    <div class="cards">
+      <div class="card" id="c1"><h3>Free and open source</h3><p>MIT licensed. <em>No subscriptions.</em></p></div>
+      <div class="card" id="c2"><h3>Local-first</h3><p>History, settings, and insights stay on your machine. API keys live in your OS credential store.</p></div>
+      <div class="card" id="c3"><h3>Your providers, or none</h3><p>Bring your own key for Groq, OpenAI, or Google, or run speech and cleanup <em>fully offline</em>.</p></div>
+      <div class="card" id="c4"><h3>Windows · macOS · Linux</h3><p>A native Tauri app, not Electron. Lightweight and fast.</p></div>
+    </div>
+  </section>
+
+  <!-- S8: end card -->
+  <section class="layer center" id="s8">
+    <div class="mark" id="s8-mark"><i style="height:37%"></i><i style="height:67%"></i><i style="height:100%"></i><i style="height:58%"></i><i style="height:30%"></i></div>
+    <div class="wordmark">Verenu</div>
+    <div class="subline">Free, open-source AI dictation</div>
+    <div class="url">github.com/Verenu/Verenu</div>
+    <div class="foot">App screens and pill captured from Verenu 0.20.0 (master) with sample data. The chat app is an illustration.</div>
+  </section>
+
+  <div id="black"></div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const seg = (t, a, b) => clamp((t - a) / (b - a));
+  const ease = (x) => 1 - Math.pow(1 - x, 3);           // easeOutCubic
+  const inOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const lerp = (a, b, x) => a + (b - a) * x;
+  // Fade in over [a, a+d], hold, fade out over [b-d, b].
+  const window_ = (t, a, b, d = 0.5) => Math.min(ease(seg(t, a, a + d)), 1 - inOut(seg(t, b - d, b)));
+  const show = (el, o, y = 0, s = 1) => {
+    el.style.opacity = o.toFixed(4);
+    el.style.transform = `translateY(${y.toFixed(2)}px) scale(${s.toFixed(4)})`;
+  };
+
+  // Scene boundaries (seconds). Bars are 2.4 s at 100 BPM; cuts land on bars.
+  const S = { title: [0, 4.8], dictate: [4.8, 16.8], style: [16.8, 24], contexts: [24, 33.6],
+              models: [33.6, 40.8], local: [40.8, 48], why: [48, 55.2], end: [55.2, 60] };
+
+  // Pill sequence timing (capture-pill.mjs): recording 0.5 s, processing 4.6 s,
+  // stages at 4.6/5.4/6.3 s, idle at 6.9 s. PILL_AT places its frame 0.
+  const PILL_AT = 5.0;
+  const PILL_FPS = 30;
+  const REC_END = PILL_AT + 4.6;
+  const PASTE_AT = PILL_AT + 6.4;
+
+  const spoken = 'um so the client call got moved to uh thursday at three… can you send the deck before then';
+  const cleaned = 'The client call moved to Thursday at 3 PM. Can you send the deck before then?';
+
+  const shots = {};
+  let pillFrames = [];
+  const pillCtx = $('pill').getContext('2d');
+
+  async function load(assets) {
+    const names = ['style', 'context-team-chat', 'context-development', 'settings-models', 'home', 'insights'];
+    await Promise.all(names.map(async (name) => {
+      // One decoded <img> per screen; scenes toggle opacity rather than
+      // swapping src, which decodes asynchronously and would lag a frame.
+      const img = new Image();
+      img.src = `${assets}/ui/${name}.png`;
+      await img.decode();
+      img.style.opacity = 0;
+      $('zoom').insertBefore(img, $('hl1'));
+      shots[name] = img;
+    }));
+    const count = Number(new URLSearchParams(location.search).get('pillFrames') || 228);
+    pillFrames = await Promise.all(Array.from({ length: count }, async (_, i) => {
+      const img = new Image();
+      img.src = `${assets}/pill-frames/pill_${String(i).padStart(4, '0')}.png`;
+      await img.decode();
+      return img;
+    }));
+    await document.fonts.ready;
+  }
+
+  // App-scene definitions: two shots crossfading, a slow push-in, highlights.
+  // Highlight rects are in the screenshot's CSS pixels (1440x900).
+  const appScenes = [
+    { range: S.style, h: 'Choose how much Verenu rewrites', p: 'Four cleanup levels and a personal tone, set globally or per context.',
+      a: 'style', zoom: [[0, 0.889, 0, 0], [1, 1.0, -130, -6]],
+      hl: [[17.9, 23.4, { x: 287, y: 168, w: 1076, h: 158 }], [20.6, 23.4, { x: 287, y: 457, w: 1076, h: 140 }]] },
+    { range: S.contexts, h: 'Contexts adapt to every app and website', p: 'Tone, cleanup, instructions, vocabulary, and snippets for each place you write.',
+      a: 'context-team-chat', b: 'context-development', swap: 28.8, zoom: [[0, 0.889, 0, 0], [1, 0.95, -40, -10]],
+      hl: [[25.0, 28.6, { x: 280, y: 122, w: 300, h: 38 }], [29.6, 33.2, { x: 280, y: 252, w: 1090, h: 214 }], [26.4, 28.6, { x: 8, y: 212, w: 204, h: 92 }]] },
+    { range: S.models, h: 'Your own API key, or fully offline', p: 'Cloud presets with your key, or local speech and cleanup that never leave your device.',
+      a: 'settings-models', zoom: [[0, 0.889, 0, 0], [1, 0.97, -110, 0]],
+      hl: [[34.6, 37.0, { x: 488, y: 104, w: 684, h: 150 }], [37.2, 40.4, { x: 488, y: 286, w: 684, h: 178 }]] },
+    { range: S.local, h: 'Your history and insights stay local', p: 'Search past dictations and see your pace, words, and streaks, computed on your machine.',
+      a: 'home', b: 'insights', swap: 44.4, zoom: [[0, 0.889, 0, 0], [1, 0.93, -30, -20]],
+      hl: [[41.6, 44.2, { x: 282, y: 250, w: 770, h: 390 }], [45.2, 47.6, { x: 282, y: 118, w: 1084, h: 150 }]] },
+  ];
+
+  function renderApp(t) {
+    const scene = appScenes.find((s) => t >= s.range[0] && t < s.range[1]);
+    const layer = $('app');
+    if (!scene) { layer.style.opacity = 0; return; }
+    const [a, b] = scene.range;
+    const first = scene === appScenes[0];
+    const last = scene === appScenes[appScenes.length - 1];
+    // Fade the whole layer only at the edges of the app block; between app
+    // scenes, the headline and frame content crossfade instead.
+    const layerIn = first ? ease(seg(t, a, a + 0.6)) : 1;
+    const layerOut = last ? 1 - inOut(seg(t, b - 0.5, b)) : 1;
+    layer.style.opacity = Math.min(layerIn, layerOut);
+    const local = seg(t, a, b);
+    const enter = ease(seg(t, a, a + 0.8));
+    $('frame').style.transform = `translateY(${lerp(first ? 60 : 0, 0, enter)}px)`;
+
+    const headIn = ease(seg(t, a + 0.1, a + 0.7));
+    const headOut = last ? 1 : 1 - inOut(seg(t, b - 0.35, b));
+    $('app-h').textContent = scene.h;
+    $('app-p').textContent = scene.p;
+    show($('app-h'), Math.min(headIn, headOut), lerp(18, 0, headIn));
+    show($('app-p'), Math.min(ease(seg(t, a + 0.3, a + 0.9)), headOut), lerp(14, 0, ease(seg(t, a + 0.3, a + 0.9))));
+
+    const A = shots[scene.a], B = scene.b ? shots[scene.b] : null;
+    for (const img of Object.values(shots)) if (img !== A && img !== B) img.style.opacity = 0;
+    const cross = scene.b ? inOut(seg(t, scene.swap - 0.2, scene.swap + 0.2)) : 0;
+    // Entering from the previous app scene: dip the screenshot briefly.
+    const dip = first ? 1 : Math.min(1, 0.15 + ease(seg(t, a, a + 0.45)) * 0.85);
+    const dipOut = last ? 1 : Math.max(0.15, 1 - inOut(seg(t, b - 0.3, b)) * 0.85);
+    A.style.opacity = (1 - cross) * Math.min(dip, dipOut);
+    if (B) B.style.opacity = cross * Math.min(dip, dipOut);
+
+    const [[, s0, x0, y0], [, s1, x1, y1]] = scene.zoom;
+    const z = inOut(local);
+    $('zoom').style.transform = `translate(${lerp(x0, x1, z)}px, ${lerp(y0, y1, z)}px) scale(${lerp(s0, s1, z)})`;
+
+    ['hl1', 'hl2'].forEach((id, i) => {
+      const spec = scene.hl[i];
+      const el = $(id);
+      if (!spec) { el.style.opacity = 0; return; }
+      const [h0, h1, r] = spec;
+      const o = window_(t, h0, h1, 0.35);
+      el.style.opacity = o;
+      el.style.left = `${r.x}px`; el.style.top = `${r.y}px`; el.style.width = `${r.w}px`; el.style.height = `${r.h}px`;
+      el.style.transform = `scale(${lerp(1.04, 1, ease(seg(t, h0, h0 + 0.35)))})`;
+    });
+    // Third highlight (sidebar) reuses hl2 after its main use when present.
+    if (scene.hl[2]) {
+      const [h0, h1, r] = scene.hl[2];
+      const o = window_(t, h0, h1, 0.35);
+      if (o > 0) {
+        const el = $('hl2');
+        el.style.opacity = o;
+        el.style.left = `${r.x}px`; el.style.top = `${r.y}px`; el.style.width = `${r.w}px`; el.style.height = `${r.h}px`;
+      }
+    }
+  }
+
+  function renderTitle(t) {
+    const [a, b] = S.title;
+    $('s1').style.opacity = 1 - inOut(seg(t, b - 0.5, b));
+    $('s1').style.transform = `scale(${lerp(1, 0.97, seg(t, b - 0.5, b))})`;
+    [...$('s1-mark').children].forEach((bar, i) => {
+      const p = ease(seg(t, 0.25 + i * 0.09, 0.85 + i * 0.09));
+      bar.style.transform = `scaleY(${p.toFixed(4)})`;
+      bar.style.opacity = p.toFixed(4);
+    });
+    const w = ease(seg(t, 0.9, 1.6)); show($('s1-word'), w, lerp(22, 0, w));
+    const g = ease(seg(t, 1.6, 2.3)); show($('s1-tag'), g, lerp(18, 0, g));
+    const s = ease(seg(t, 2.2, 2.9)); show($('s1-sub'), s, lerp(14, 0, s));
+  }
+
+  function renderDictate(t) {
+    const [a, b] = S.dictate;
+    const layer = $('s2');
+    layer.style.opacity = window_(t, a, b, 0.5);
+    const enter = ease(seg(t, a, a + 0.8));
+    $('s2-chat').style.transform = `translateY(${lerp(50, 0, enter)}px)`;
+
+    // Headline changes once the text lands.
+    const second = t >= PASTE_AT;
+    $('s2-h').textContent = second ? 'Clean text, right where you were typing' : 'Dictate into any app';
+    $('s2-p').textContent = second ? 'Filler words gone, punctuation fixed, pasted into the focused field.' : 'Hold your hotkey and speak naturally.';
+    const hIn = second ? ease(seg(t, PASTE_AT, PASTE_AT + 0.5)) : Math.min(ease(seg(t, a + 0.2, a + 0.8)), 1 - inOut(seg(t, PASTE_AT - 0.3, PASTE_AT)));
+    show($('s2-h'), hIn, lerp(14, 0, hIn));
+    show($('s2-p'), hIn, lerp(10, 0, hIn));
+
+    // Keys: pressed while recording.
+    const holding = t >= PILL_AT + 0.45 && t < REC_END;
+    const keysO = Math.min(ease(seg(t, PILL_AT - 0.2, PILL_AT + 0.3)), 1 - inOut(seg(t, REC_END + 0.6, REC_END + 1.0)));
+    $('s2-keys').style.opacity = keysO;
+    for (const id of ['k1', 'k2']) {
+      $(id).style.transform = holding ? 'translateY(5px)' : 'none';
+      $(id).style.boxShadow = holding ? '0 1px 0 #0d0c0b' : '0 6px 0 #0d0c0b';
+      $(id).style.borderColor = holding ? '#d97757' : '#3a3632';
+    }
+    $('s2-klabel').textContent = t < REC_END ? 'hold to talk' : 'release';
+
+    // Spoken words appear while recording, then fade.
+    const words = spoken.split(' ');
+    const shown = Math.floor(lerp(0, words.length, seg(t, PILL_AT + 0.8, REC_END - 0.2)));
+    $('s2-words').textContent = words.slice(0, shown).join(' ');
+    $('s2-speech').style.opacity = Math.min(ease(seg(t, PILL_AT + 0.6, PILL_AT + 1.0)), 1 - inOut(seg(t, PASTE_AT - 0.2, PASTE_AT + 0.3)));
+
+    // Paste lands all at once (Verenu pastes via the clipboard), then sends.
+    const pasted = t >= PASTE_AT;
+    const sendAt = PASTE_AT + 2.0;
+    const sent = t >= sendAt;
+    $('s2-ph').style.display = pasted && !sent ? 'none' : '';
+    $('s2-typed').textContent = pasted && !sent ? cleaned : '';
+    $('s2-composer').style.borderColor = pasted && !sent ? '#d97757' : '#d9d3ca';
+    $('s2-caret').style.opacity = Math.floor(t * 1.6) % 2 === 0 ? 1 : 0;
+    $('s2-sent-text').textContent = cleaned;
+    const sp = ease(seg(t, sendAt, sendAt + 0.4));
+    show($('s2-sent'), sp, lerp(12, 0, sp));
+
+    // Real pill frames.
+    const f = Math.floor((t - PILL_AT) * PILL_FPS);
+    pillCtx.clearRect(0, 0, 1260, 360);
+    if (f >= 0 && f < pillFrames.length) pillCtx.drawImage(pillFrames[f], 0, 0);
+  }
+
+  function renderWhy(t) {
+    const [a, b] = S.why;
+    $('s7').style.opacity = window_(t, a, b, 0.5);
+    ['c1', 'c2', 'c3', 'c4'].forEach((id, i) => {
+      const p = ease(seg(t, a + 0.5 + i * 0.45, a + 1.1 + i * 0.45));
+      show($(id), p, lerp(26, 0, p));
+    });
+  }
+
+  function renderEnd(t) {
+    const [a, b] = S.end;
+    $('s8').style.opacity = ease(seg(t, a, a + 0.7));
+    [...$('s8-mark').children].forEach((bar, i) => {
+      const p = ease(seg(t, a + 0.1 + i * 0.07, a + 0.6 + i * 0.07));
+      bar.style.transform = `scaleY(${p.toFixed(4)})`;
+    });
+    $('black').style.opacity = inOut(seg(t, b - 0.8, b));
+  }
+
+  function render(t) {
+    for (const id of ['s1', 's2', 's7', 's8']) $(id).style.opacity = 0;
+    if (t < S.title[1]) renderTitle(t);
+    if (t >= S.dictate[0] - 0.01 && t < S.dictate[1]) renderDictate(t);
+    renderApp(t);
+    if (t >= S.why[0] && t < S.why[1]) renderWhy(t);
+    if (t >= S.end[0]) renderEnd(t); else $('black').style.opacity = 0;
+  }
+
+  window.demo = { load, render, duration: 60 };
+})();
+</script>
+</body>
+</html>
