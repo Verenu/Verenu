@@ -106,7 +106,13 @@ export function modelLabel(id: string): string {
 export function supportsLocalLanguage(id: string, options: PresetOptions): boolean {
   if (!options.language || options.language === 'auto') return true;
   const languages = options.localModels?.find(model => model.id === id)?.supported_languages;
-  if (!languages) {
+  // Whisper, Parakeet Ultra and Apple Speech report a wildcard instead of
+  // language names. The frontend map holds the dropdown subset for Whisper and
+  // Ultra; Apple Speech has no entry on purpose (its languages are whatever
+  // macOS offers), so it falls through to 'all' and the real locale check
+  // runs when dictation starts.
+  const wildcard = languages?.some(language => /^(multilingual|system languages)$/i.test(language));
+  if (!languages || wildcard) {
     const support = getLanguageSupport('local', id);
     return support === 'all' || support.some(code => code === options.language);
   }

@@ -208,6 +208,11 @@ pub(super) async fn open_config_and_context(
     }
     let mapping = resolve_app_mapping(Some(&settings_store), process_name);
     let profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context);
+    if let Some(context) = context {
+        cfg.speech_vocabulary = crate::local_stt::vocabulary::Vocabulary::for_context(
+            app.state::<DbHandle>().inner(), context.id,
+        ).unwrap_or_default();
+    }
     log::debug!(
         "pipeline: app mapping resolved process={process_name} matched={} profile={profile} cleanup_intensity={} default_tone={}",
         mapping.as_ref().map(|m| m.exe.as_str()).unwrap_or("none"),
@@ -227,6 +232,7 @@ pub(super) async fn transcribe_any(
     language: &str,
     model: &str,
     gen: u64,
+    vocabulary: &crate::local_stt::vocabulary::Vocabulary,
 ) -> anyhow::Result<String> {
     let started = std::time::Instant::now();
     if provider_id == store::LOCAL {
@@ -250,6 +256,7 @@ pub(super) async fn transcribe_any(
             Arc::clone(&audio.samples_16k),
             audio.sample_rate,
             language.to_string(),
+            vocabulary.clone(),
         )
         .await;
         if already_warm {
@@ -547,6 +554,7 @@ fn spawn_transcription_candidate(
     let key = cfg.key_for(&candidate.0).to_owned();
     let language = cfg.transcription_language.clone();
     let customs = cfg.custom_providers.clone();
+    let vocabulary = cfg.speech_vocabulary.clone();
     in_flight.spawn(async move {
         let (provider, model) = candidate;
         let request = transcribe_any(
@@ -558,6 +566,7 @@ fn spawn_transcription_candidate(
             &language,
             &model,
             gen,
+            &vocabulary,
         );
         let result = if bounded {
             match tokio::time::timeout(
@@ -628,6 +637,7 @@ async fn run_primary_transcription_chain(
             &cfg.transcription_language,
             &model,
             gen,
+            &cfg.speech_vocabulary,
         )
         .await
         {

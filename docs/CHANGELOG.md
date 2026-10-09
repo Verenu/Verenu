@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added local Apple Speech on macOS with required on-device recognition, and CPU whisper.cpp Small and Large v3 Turbo on desktop. Whisper model downloads verify pinned SHA256 hashes. Apple Speech uses macOS permissions and language assets without a Verenu model download.
+- Added separate macOS 14 Apple Silicon FluidAudio Parakeet Ultra, 110M, and Japanese engines with explicit, revision-pinned model downloads, plus an optional English CTC vocabulary booster. Speech adapters use a bounded immutable vocabulary snapshot from the captured Context. Portable Whisper does not use WhisperKit or the Apple Neural Engine.
+
 - Added opt-in synchronous muting in Settings > Sync. Recording temporarily mutes reachable paired devices that also opt in, including saved Tailscale connections. Audio restores after recording, cancellation, disabling the feature, or a lost connection. Android recovers the saved media level after a service or process restart when it remains at zero. The preference stays local to each device.
 
 - Added an optional public GitHub commit overlay to Insights. Connect a username in Settings > Integrations, with a suggestion from GitHub CLI or Git configuration when available. A green line compares daily commits on a separate scale, with scale details available on demand. Counts cover the last 90 days, refresh automatically every 15 minutes, cache locally, and show unavailable or partial coverage explicitly.
