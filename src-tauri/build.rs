@@ -1,7 +1,10 @@
+#[path = "build_support/foundation_models.rs"]
+mod foundation_models;
 #[path = "build_support/speech.rs"]
 mod speech;
 
 fn main() {
+    foundation_models::build();
     speech::build();
     println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT");
     println!("cargo:rerun-if-env-changed=VERENU_BUILD_FINGERPRINT_FILE");

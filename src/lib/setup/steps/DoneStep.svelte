@@ -94,7 +94,7 @@
   <ShortcutRecovery />
 
   {#if !hasKey}
-    <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('keys')}>Add API key</button></div>
+    <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" disabled={modelRecoveryDisabled} onclick={() => openSetupSettings('keys')}>Add API key</button></div>
   {/if}
   {#if !modelsReady}
     <div class="done-warning done-model-warning" role="status">{modelReadinessMessage} <button class="btn-ghost btn-compact" disabled={modelRecoveryDisabled} onclick={onReviewModels}>Review models</button></div>

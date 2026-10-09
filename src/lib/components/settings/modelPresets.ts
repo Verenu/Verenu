@@ -329,7 +329,7 @@ function transcriptionOnlyPreset(hardware: Hardware): Preset {
 
 // ── Cloud provider selection ──────────────────────────────────────────────
 
-type KeyStatus = Record<ProviderId, boolean>;
+type KeyStatus = Record<Exclude<ProviderId, 'apple-intelligence'>, boolean>;
 
 const CLOUD_PROVIDERS: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];
 
