@@ -312,10 +312,13 @@
 </div>
 
 <style>
-  .commands-section { margin-block: 16px; }
+  .commands-section { margin-block: 16px 24px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-md, 10px); }
   .commands-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-  .commands-section details { color: var(--ink-mute); font-size: 12px; line-height: 1.5; }
-  .commands-section summary { cursor: pointer; }
+  .commands-section .style-intro { margin: 4px 0 10px; line-height: 1.5; }
+  .commands-section details { color: var(--ink-soft); font-size: 12px; line-height: 1.55; max-width: 540px; }
+  .commands-section details p { margin: 8px 0 0; }
+  .commands-section summary { cursor: pointer; color: var(--ink-soft); }
+  @media (max-width: 480px) { .commands-section { padding: 12px; } }
   .style-card-wrap { position: relative; display: flex; }
   .style-card-wrap .style-card-title { padding-right: 30px; }
   .style-edit { position: absolute; top: 7px; right: 7px; display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
