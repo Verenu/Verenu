@@ -8,6 +8,9 @@ int main(void) {
         assert([verenu_speech_locale(@"en", gb, supported, nil) isEqual:gb]);
         assert([verenu_speech_locale(@"en-US", gb, supported, nil) isEqual:us]);
         assert([verenu_speech_locale(@"", gb, supported, nil) isEqual:gb]);
+        assert([verenu_speech_locale(@"auto", gb, supported, nil) isEqual:gb]);
+        assert([verenu_speech_locale(@"auto", gb, supported, ^BOOL(NSLocale *locale) { return [locale isEqual:us]; }) isEqual:us]);
+        assert(verenu_speech_locale(@"auto", gb, supported, ^BOOL(NSLocale *locale) { return NO; }) == nil);
         assert(verenu_speech_locale(@"xx", gb, supported, nil) == nil);
         assert([verenu_speech_locale(@"en", gb, supported, ^BOOL(NSLocale *locale) { return [locale isEqual:us]; }) isEqual:us]);
         assert(verenu_speech_locale(@"en", gb, supported, ^BOOL(NSLocale *locale) { return NO; }) == nil);
