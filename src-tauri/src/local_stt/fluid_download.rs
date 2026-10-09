@@ -119,18 +119,45 @@ pub async fn download(
             Some(total),
         );
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        let validation_path = staging.clone();
-        let model_id = manifest.id.to_string();
-        tokio::task::spawn_blocking(move || {
-            super::fluid::FluidEngine::load(&validation_path, &model_id)
-        })
-        .await??;
-    }
-    tokio::fs::write(staging.join(".verenu-integrity"), bundle.revision).await?;
-    promote_verified(&staging, &manifest.final_path(root))?;
+    finish_validated_install(
+        &staging,
+        &manifest.final_path(root),
+        &bundle.revision,
+        &cancel,
+        async {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let validation_path = staging.clone();
+                let model_id = manifest.id.to_string();
+                let validation_cancel = cancel.clone();
+                tokio::task::spawn_blocking(move || {
+                    super::fluid::FluidEngine::load_with_cancellation(
+                        &validation_path,
+                        &model_id,
+                        &validation_cancel,
+                    )
+                })
+                .await??;
+            }
+            Ok(())
+        },
+    )
+    .await?;
     Ok(())
+}
+
+async fn finish_validated_install(
+    staging: &Path,
+    destination: &Path,
+    revision: &str,
+    cancel: &AtomicBool,
+    validation: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    validation.await?;
+    crate::api::model_download::ensure_not_cancelled(cancel)?;
+    tokio::fs::write(staging.join(".verenu-integrity"), revision).await?;
+    crate::api::model_download::ensure_not_cancelled(cancel)?;
+    promote_verified(staging, destination)
 }
 
 async fn prepare_staging(
@@ -187,6 +214,36 @@ fn promote_with_cleanup(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cancellation_during_validation_preserves_existing_install() {
+        let root =
+            std::env::temp_dir().join(format!("verenu-fluid-cancel-{}", uuid::Uuid::new_v4()));
+        let staging = root.join("model.extracting");
+        let destination = root.join("model");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(staging.join("new"), b"downloaded").unwrap();
+        std::fs::write(destination.join("old"), b"installed").unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let error = super::finish_validated_install(
+            &staging,
+            &destination,
+            "synthetic",
+            &cancel,
+            async {
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(std::fs::read(destination.join("old")).unwrap(), b"installed");
+        assert!(!destination.join("new").exists());
+        assert!(!staging.join(".verenu-integrity").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn insufficient_bundle_space_leaves_staging_untouched() {
         let root = std::env::temp_dir().join(format!("verenu-fluid-space-{}", uuid::Uuid::new_v4()));
