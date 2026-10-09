@@ -618,11 +618,14 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 alternate.map(|candidate| candidate.text.as_str()),
             ) {
                 record_lookup(true);
+                // Cache rows do not retain provider provenance. Current settings
+                // cannot tell whether Apple/local cleanup or a cloud fallback
+                // generated this text, so do not infer an on-device attribution.
                 return Ok((
                     overridden,
                     dict_entries,
                     cache_key,
-                    configured_cleanup_api_used(cfg),
+                    String::new(),
                 ));
             }
             record_lookup(false);
@@ -813,16 +816,4 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     };
 
     Ok((final_text, dict_entries, used_cache_key, cleanup_api_used))
-}
-
-fn configured_cleanup_api_used(cfg: &store::PipelineConfig) -> String {
-    cleanup_model_chain(cfg)
-        .into_iter()
-        .find(|(provider, _)| {
-            provider == store::LOCAL
-                || provider == store::APPLE_INTELLIGENCE
-                || cfg.provider_has_auth(provider)
-        })
-        .map(|(provider, model)| format!("{provider}/{model}"))
-        .unwrap_or_default()
 }
