@@ -56,13 +56,13 @@ impl Fixture {
             &self.db,
             Self::payload(version),
             &[],
-            |_| Ok(()),
+            |_, _| Ok(()),
             |effects| {
                 // The same completion boundary drives runtime updates, pruning,
                 // and the production success event. Never access host credentials.
                 notified.set(true);
                 if let Some(days) = effects.history_prune_days {
-                    db::prune_transcriptions_older_than(&self.db, days).unwrap();
+                    db::prune_transcriptions_for_retention(&self.db, &self.settings, days).unwrap();
                 }
             },
         )
@@ -85,6 +85,182 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+#[test]
+fn concurrent_key_for_old_endpoint_cannot_survive_import_publication() {
+    let f = Fixture::new();
+    let provider = serde_json::json!({
+        "id": "custom:11111111-1111-4111-8111-111111111111", "name": "Synthetic",
+        "protocol": "openai", "base_url": "https://old.example.invalid/v1", "supports_cleanup": true
+    });
+    f.settings
+        .save_value(store::CUSTOM_PROVIDERS, serde_json::json!([provider]))
+        .unwrap();
+    let mut payload = Fixture::payload("2");
+    let mut next = provider.clone();
+    next["base_url"] = serde_json::json!("https://new.example.invalid/v1");
+    payload.settings[store::CUSTOM_PROVIDERS] = serde_json::json!([next]);
+    let expected = custom_endpoint(
+        &f.settings.snapshot().unwrap(),
+        provider["id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let fake_key = std::sync::Arc::new(std::sync::Mutex::new(Some("fake-A")));
+    let (cleared_tx, cleared_rx) = std::sync::mpsc::channel();
+    let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+    let settings = f.settings.clone();
+    let key_for_writer = fake_key.clone();
+    let writer = std::thread::spawn(move || {
+        cleared_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        attempted_tx.send(()).unwrap();
+        with_custom_endpoint(&settings, &expected.id, Some(&expected), || {
+            *key_for_writer.lock().unwrap() = Some("fake-A");
+            Ok(())
+        })
+    });
+    import_payload(
+        &f.settings,
+        &f.db,
+        payload,
+        &[],
+        |previous, next| {
+            clear_changed_provider_keys(previous, next, |_| {
+                *fake_key.lock().unwrap() = None;
+                Ok(())
+            })?;
+            cleared_tx.send(()).unwrap();
+            attempted_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        writer.join().unwrap().is_err(),
+        "queued key write must reject changed endpoint"
+    );
+    assert!(
+        fake_key.lock().unwrap().is_none(),
+        "old endpoint key survived publication of new endpoint"
+    );
+}
+
+#[test]
+fn relaxed_retention_before_import_completion_preserves_history() {
+    let f = Fixture::new();
+    import_payload(
+        &f.settings,
+        &f.db,
+        Fixture::payload("2"),
+        &[],
+        |_, _| Ok(()),
+        |effects| {
+            // Model a concurrent ordinary setting save after import publishes.
+            f.settings
+                .save_value(store::HISTORY_RETENTION, serde_json::json!("Forever"))
+                .unwrap();
+            db::prune_transcriptions_for_retention(
+                &f.db,
+                &f.settings,
+                effects.history_prune_days.unwrap(),
+            )
+            .unwrap();
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        f.history_count(),
+        1,
+        "stale import retention pruned history after Forever was saved"
+    );
+}
+
+#[test]
+fn import_compares_latest_endpoint_after_database_wait() {
+    let f = Fixture::new();
+    let provider = serde_json::json!({
+        "id": "custom:11111111-1111-4111-8111-111111111111", "name": "Synthetic",
+        "protocol": "openai", "base_url": "https://old.example.invalid/v1", "supports_cleanup": true
+    });
+    f.settings
+        .save_value(store::CUSTOM_PROVIDERS, serde_json::json!([provider]))
+        .unwrap();
+    let mut payload = Fixture::payload("2");
+    let mut next = provider.clone();
+    next["base_url"] = serde_json::json!("https://import.example.invalid/v1");
+    payload.settings[store::CUSTOM_PROVIDERS] = serde_json::json!([next]);
+    let fake_key = std::sync::Arc::new(std::sync::Mutex::new(Some("fake-A")));
+    let db_guard = f.db.lock().unwrap();
+    let db = f.db.clone();
+    let settings = f.settings.clone();
+    let key_for_import = fake_key.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let importer = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        import_payload(
+            &settings,
+            &db,
+            payload,
+            &[],
+            |previous, next| {
+                assert_eq!(
+                    custom_endpoint(previous, &next[0].id).unwrap().base_url,
+                    "https://intermediate.example.invalid/v1"
+                );
+                clear_changed_provider_keys(previous, next, |_| {
+                    *key_for_import.lock().unwrap() = None;
+                    Ok(())
+                })
+            },
+            |_| {},
+        )
+    });
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let mut intermediate = provider;
+    intermediate["base_url"] = serde_json::json!("https://intermediate.example.invalid/v1");
+    let intermediate =
+        crate::api::custom::normalize_list(&serde_json::json!([intermediate])).unwrap();
+    f.settings
+        .save_values_with_commit(
+            [(store::CUSTOM_PROVIDERS, serde_json::json!(intermediate))],
+            |previous| {
+                clear_changed_provider_keys(previous, &intermediate, |_| {
+                    *fake_key.lock().unwrap() = None;
+                    Ok(())
+                })
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    with_custom_endpoint(
+        &f.settings,
+        &intermediate[0].id,
+        Some(&intermediate[0]),
+        || {
+            *fake_key.lock().unwrap() = Some("fake-C");
+            Ok(())
+        },
+    )
+    .unwrap();
+    drop(db_guard);
+    importer.join().unwrap().unwrap();
+    assert!(
+        fake_key.lock().unwrap().is_none(),
+        "latest endpoint key was not cleared"
+    );
+    assert_eq!(
+        custom_endpoint(&f.settings.snapshot().unwrap(), &intermediate[0].id)
+            .unwrap()
+            .base_url,
+        "https://import.example.invalid/v1"
+    );
 }
 
 #[test]
@@ -156,7 +332,7 @@ fn valid_import_success_completes_after_commit_for_compatible_versions() {
             &f.db,
             Fixture::payload(version),
             &[],
-            |_| Ok(()),
+            |_, _| Ok(()),
             |effects| {
                 assert_eq!(
                     observer
@@ -179,8 +355,12 @@ fn valid_import_success_completes_after_commit_for_compatible_versions() {
                 assert_eq!(disk[store::CLEANUP_ENABLED], false);
                 assert_eq!(f.history_count(), 1, "history pruned before completion");
                 assert!(f.library().0.iter().any(|e| e.term == "SyntheticNew"));
-                db::prune_transcriptions_older_than(&f.db, effects.history_prune_days.unwrap())
-                    .unwrap();
+                db::prune_transcriptions_for_retention(
+                    &f.db,
+                    &f.settings,
+                    effects.history_prune_days.unwrap(),
+                )
+                .unwrap();
                 notified.set(true);
             },
         )
@@ -251,7 +431,7 @@ fn valid_import_changed_endpoint_never_restores_fake_credentials() {
             &f.db,
             payload,
             &[],
-            |next| {
+            |_, next| {
                 assert_eq!(next[0].base_url, "https://new.example.invalid/v1");
                 fake_key.set(None);
                 Ok(())

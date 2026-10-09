@@ -103,6 +103,23 @@ impl SettingsHandle {
         Ok(SettingsSnapshot { values })
     }
 
+    /// Keep settings stable throughout an operation that uses their identity
+    /// or policy. Callers needing SQLite must acquire its lock first.
+    pub(crate) fn with_snapshot<T>(
+        &self,
+        read: impl FnOnce(&SettingsSnapshot) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let values = self
+            .values
+            .read()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        let result = read(&SettingsSnapshot {
+            values: values.clone(),
+        });
+        drop(values);
+        result
+    }
+
     pub fn get(&self, key: &str) -> Option<Value> {
         match self.values.read() {
             Ok(values) => values.get(key).cloned(),
@@ -188,6 +205,7 @@ impl SettingsHandle {
     pub(crate) fn save_values_with_commit<I, K, T>(
         &self,
         values: I,
+        prepare: impl FnOnce(&SettingsSnapshot) -> Result<(), String>,
         commit: impl FnOnce() -> Result<T, String>,
     ) -> Result<(bool, T), String>
     where
@@ -202,6 +220,9 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        prepare(&SettingsSnapshot {
+            values: settings.clone(),
+        })?;
         if pending
             .iter()
             .all(|(key, value)| settings.get(key) == Some(value))
