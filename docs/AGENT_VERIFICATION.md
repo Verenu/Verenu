@@ -106,7 +106,18 @@ screenshots, and videos. Traces may contain ephemeral tokens and customization.
 Never publish raw traces/access files. CI uploads structured reports by default.
 The owned-session summary records only project, repository-relative spec path,
 line, static test title, outcome, and retry count for each Playwright case. It
-omits raw browser errors and reporter attachments.
+omits raw browser errors and reporter attachments. Failed attempts also retain
+fixed error classifications, allowlisted assertion matcher names, validated source
+locations, and JSON pointers to trace attachments in the private `playwright.json`
+report. Assertion values, selectors, call logs, stack traces, attachment paths and
+bodies are never copied. Unknown errors get a generic withheld-details summary.
+Failed-attempt diagnostics survive a passing retry; retries still fail the gate.
+
+Trace references are metadata only, not downloadable CI artifacts. The shared
+regression action uploads only `tests/reports/` and deletes its isolated session
+home on exit, including raw traces. References identify reporter-listed attachments
+and do not prove file availability. Reproduce locally to inspect private traces. Do not
+broaden uploads to recover raw traces, screenshots, videos, or session access files.
 
 Owned Node regression failures include the static test title, repository-relative
 test file, safe error type/code, and assertion source line when available. They
