@@ -294,127 +294,163 @@ pub async fn import_data(
     json: String,
 ) -> Result<ImportSummary, String> {
     let db = db.inner().clone();
-    run_blocking("import_data", move || with_import_payload(&json, |payload| {
-        let settings = store::settings_handle(&app)?;
-        let mut settings_applied = 0usize;
-        let mut settings_skipped = 0usize;
-        let mut runtime_icon_setting_applied = false;
-        #[cfg(target_os = "windows")]
-        let mut appearance_setting_applied = false;
-        let mut history_prune_days: Option<i64> = None;
-
-        if !payload.settings.is_object() {
-            log::warn!("import_data: 'settings' field is not a JSON object — skipping settings restore");
-        }
-        if let Some(obj) = payload.settings.as_object() {
-            // A backup may reuse a UUID with a different destination. Never
-            // carry its previous host credential into that restored endpoint.
-            if let Some(value) = obj.get(store::CUSTOM_PROVIDERS) {
-                if let Ok(providers) = crate::api::custom::normalize_list(value) {
-                    clear_changed_custom_provider_keys(&app, &providers)?;
-                }
-            }
-            for (key, value) in obj {
-                if !is_exportable_setting_key(key) {
-                    settings_skipped += 1;
-                    continue;
-                }
-                match validate_setting(key, value) {
-                    Ok(()) => {
-                        let value_to_save = if key == store::CUSTOM_PROVIDERS {
-                            serde_json::to_value(crate::api::custom::normalize_list(value)?)
-                                .map_err(|_| "Could not encode restored providers.".to_string())?
-                        } else { value.clone() };
-                        settings.set(key.clone(), value_to_save)?;
-                        if crate::app_tray::setting_updates_runtime_icons(key) {
-                            runtime_icon_setting_applied = true;
-                        }
-                        #[cfg(target_os = "windows")]
-                        if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
-                            appearance_setting_applied = true;
-                        }
-                        // Mirror save_setting's side effect: a backup that
-                        // tightens history retention must prune immediately,
-                        // not silently wait for the next app restart.
-                        if key == store::HISTORY_RETENTION {
-                            history_prune_days =
-                                value.as_str().and_then(store::history_retention_days);
-                        }
-                        settings_applied += 1;
+    run_blocking("import_data", move || {
+        with_import_payload(&json, |payload| {
+            let settings = store::settings_handle(&app)?;
+            let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
+            import_payload(
+                &settings,
+                &db,
+                payload,
+                &installed_apps,
+                |providers| clear_changed_custom_provider_keys(&app, providers),
+                |effects| {
+                    if effects.runtime_icons {
+                        crate::apply_runtime_icons(&app, None);
                     }
-                    Err(e) => {
-                        log::warn!("import_data: skipping invalid setting '{key}': {e}");
-                        settings_skipped += 1;
+                    #[cfg(target_os = "windows")]
+                    if effects.appearance {
+                        crate::system::windows_titlebar::refresh_for_app(&app);
                     }
-                }
+                    if let Some(days) = effects.history_prune_days {
+                        match db::prune_transcriptions_older_than(&db, days) {
+                            Ok(deleted) if deleted > 0 => {
+                                log::info!("import_data: pruned {deleted} transcriptions older than {days} days");
+                                let _ = app.emit("verenu:history-pruned", ());
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::warn!("import_data: history prune after import failed: {e}")
+                            }
+                        }
+                    }
+                    // Mirrored frontend settings refresh only after both stores succeed.
+                    let _ = app.emit("verenu:settings-imported", ());
+                },
+            )
+        })
+    })
+    .await
+}
+
+struct ImportEffects {
+    runtime_icons: bool,
+    #[cfg(target_os = "windows")]
+    appearance: bool,
+    history_prune_days: Option<i64>,
+}
+
+fn import_payload(
+    settings: &store::SettingsHandle,
+    db: &crate::DbHandle,
+    payload: ExportPayload,
+    installed_apps: &[crate::system::apps::InstalledApp],
+    clear_provider_keys: impl FnOnce(&[crate::api::custom::CustomProvider]) -> Result<(), String>,
+    completed: impl FnOnce(ImportEffects),
+) -> Result<ImportSummary, String> {
+    let mut pending_settings = Vec::new();
+    let mut settings_applied = 0usize;
+    let mut settings_skipped = 0usize;
+    let mut runtime_icon_setting_applied = false;
+    #[cfg(target_os = "windows")]
+    let mut appearance_setting_applied = false;
+    let mut history_prune_days: Option<i64> = None;
+
+    if !payload.settings.is_object() {
+        log::warn!(
+            "import_data: 'settings' field is not a JSON object — skipping settings restore"
+        );
+    }
+    if let Some(obj) = payload.settings.as_object() {
+        // A backup may reuse a UUID with a different destination. Never
+        // carry its previous host credential into that restored endpoint.
+        if let Some(value) = obj.get(store::CUSTOM_PROVIDERS) {
+            if let Ok(providers) = crate::api::custom::normalize_list(value) {
+                clear_provider_keys(&providers)?;
             }
-            settings.save()?;
         }
-
-        if runtime_icon_setting_applied {
-            crate::apply_runtime_icons(&app, None);
-        }
-        #[cfg(target_os = "windows")]
-        if appearance_setting_applied {
-            crate::system::windows_titlebar::refresh_for_app(&app);
-        }
-
-        if let Some(days) = history_prune_days {
-            match db::prune_transcriptions_older_than(&db, days) {
-                Ok(deleted) if deleted > 0 => {
-                    log::info!("import_data: pruned {deleted} transcriptions older than {days} days");
-                    let _ = app.emit("verenu:history-pruned", ());
+        for (key, value) in obj {
+            if !is_exportable_setting_key(key) {
+                settings_skipped += 1;
+                continue;
+            }
+            match validate_setting(key, value) {
+                Ok(()) => {
+                    let value_to_save = if key == store::CUSTOM_PROVIDERS {
+                        serde_json::to_value(crate::api::custom::normalize_list(value)?)
+                            .map_err(|_| "Could not encode restored providers.".to_string())?
+                    } else {
+                        value.clone()
+                    };
+                    pending_settings.push((key.clone(), value_to_save));
+                    if crate::app_tray::setting_updates_runtime_icons(key) {
+                        runtime_icon_setting_applied = true;
+                    }
+                    #[cfg(target_os = "windows")]
+                    if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
+                        appearance_setting_applied = true;
+                    }
+                    // Mirror save_setting's side effect: a backup that
+                    // tightens history retention must prune immediately,
+                    // not silently wait for the next app restart.
+                    if key == store::HISTORY_RETENTION {
+                        history_prune_days = value.as_str().and_then(store::history_retention_days);
+                    }
+                    settings_applied += 1;
                 }
-                Ok(_) => {}
                 Err(e) => {
-                    log::warn!("import_data: history prune after import failed: {e}");
+                    log::warn!("import_data: skipping invalid setting '{key}': {e}");
+                    settings_skipped += 1;
                 }
             }
         }
+    }
 
-        // The frontend keeps several settings mirrored in shared state
-        // (appearance, cleanup toggle, beta updates, setup flag, retention
-        // dropdown). It re-reads them on this event so a fresh import isn't
-        // visually undone by stale in-memory values until the next restart.
-        let _ = app.emit("verenu:settings-imported", ());
+    let mut library_stats = LibraryImportStats::default();
 
-        let mut library_stats = LibraryImportStats::default();
-        // Resolved before taking the database lock: app discovery can walk
-        // the registry, bundles or desktop entries.
-        let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
+    // Bulk-import dictionary entries and snippets inside a single
+    // transaction (and a single lock acquisition) instead of one
+    // implicit transaction per row - hundreds of individually committed
+    // inserts each force a disk sync, which is slow, and leaves a
+    // partially-imported database if the process dies mid-import.
+    {
+        let mut conn = db
+            .lock()
+            .map_err(|_| "Database lock was poisoned".to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-        // Bulk-import dictionary entries and snippets inside a single
-        // transaction (and a single lock acquisition) instead of one
-        // implicit transaction per row - hundreds of individually committed
-        // inserts each force a disk sync, which is slow, and leaves a
-        // partially-imported database if the process dies mid-import.
-        {
-            let mut conn = db
-                .lock()
-                .map_err(|_| "Database lock was poisoned".to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-            if payload.version == "1" {
-                import_legacy_library_conn(&tx, &payload, &mut library_stats)
+        if payload.version == "1" {
+            import_legacy_library_conn(&tx, &payload, &mut library_stats)
+                .map_err(|e| e.to_string())?;
+        } else {
+            import_contextual_library_conn(&tx, &payload, installed_apps, &mut library_stats)
+                .map_err(|e| e.to_string())?;
+            // A hand-authored v2 payload may omit the Context graph. In
+            // that case retain the same safe fallback as v1. A v2 payload
+            // that does contain Contexts never imports its top-level
+            // snippets, because doing so would leak targeted content to
+            // Everywhere.
+            if payload.contexts.is_empty() {
+                import_legacy_snippets_conn(&tx, &payload.snippets, &mut library_stats)
                     .map_err(|e| e.to_string())?;
-            } else {
-                import_contextual_library_conn(&tx, &payload, &installed_apps, &mut library_stats)
-                    .map_err(|e| e.to_string())?;
-                // A hand-authored v2 payload may omit the Context graph. In
-                // that case retain the same safe fallback as v1. A v2 payload
-                // that does contain Contexts never imports its top-level
-                // snippets, because doing so would leak targeted content to
-                // Everywhere.
-                if payload.contexts.is_empty() {
-                    import_legacy_snippets_conn(&tx, &payload.snippets, &mut library_stats)
-                        .map_err(|e| e.to_string())?;
-                }
             }
-
-            tx.commit().map_err(|e| e.to_string())?;
         }
 
-        log::info!(
+        // Rows remain uncommitted if settings persistence fails. On a
+        // returned commit error, restore disk settings before returning;
+        // runtime settings remain unpublished throughout both steps.
+        settings
+            .save_values_with_commit(pending_settings, || tx.commit().map_err(|e| e.to_string()))?;
+    }
+
+    completed(ImportEffects {
+        runtime_icons: runtime_icon_setting_applied,
+        #[cfg(target_os = "windows")]
+        appearance: appearance_setting_applied,
+        history_prune_days,
+    });
+
+    log::info!(
             "import_data: settings={}/skip={} contexts={}/skip={}/existed={} dict={}/skip={}/existed={} assignments={}/skip={} corrections={}/skip={} snip={}/skip={}/existed={}",
             settings_applied, settings_skipped,
             library_stats.contexts_inserted,
@@ -432,30 +468,28 @@ pub async fn import_data(
             library_stats.snippets_already_existed,
         );
 
-        Ok(ImportSummary {
-            settings_applied,
-            settings_skipped,
-            contexts_inserted: library_stats.contexts_inserted,
-            contexts_skipped: library_stats.contexts_skipped,
-            contexts_already_existed: library_stats.contexts_already_existed,
-            dictionary_inserted: library_stats.dictionary_inserted,
-            dictionary_skipped: library_stats.dictionary_skipped,
-            dictionary_already_existed: library_stats.dictionary_already_existed,
-            dictionary_assignments_inserted: library_stats.dictionary_assignments_inserted,
-            dictionary_assignments_skipped: library_stats.dictionary_assignments_skipped,
-            dictionary_corrections_inserted: library_stats.dictionary_corrections_inserted,
-            dictionary_corrections_skipped: library_stats.dictionary_corrections_skipped,
-            snippets_inserted: library_stats.snippets_inserted,
-            snippets_skipped: library_stats.snippets_skipped,
-            snippets_already_existed: library_stats.snippets_already_existed,
-            app_targets_kept: library_stats.app_targets_kept,
-            app_targets_matched: library_stats.app_targets_matched,
-            app_targets_dropped: library_stats.app_targets_dropped,
-            sub_apps_imported: library_stats.sub_apps_imported,
-            sub_apps_dropped: library_stats.sub_apps_dropped,
-        })
-    }))
-    .await
+    Ok(ImportSummary {
+        settings_applied,
+        settings_skipped,
+        contexts_inserted: library_stats.contexts_inserted,
+        contexts_skipped: library_stats.contexts_skipped,
+        contexts_already_existed: library_stats.contexts_already_existed,
+        dictionary_inserted: library_stats.dictionary_inserted,
+        dictionary_skipped: library_stats.dictionary_skipped,
+        dictionary_already_existed: library_stats.dictionary_already_existed,
+        dictionary_assignments_inserted: library_stats.dictionary_assignments_inserted,
+        dictionary_assignments_skipped: library_stats.dictionary_assignments_skipped,
+        dictionary_corrections_inserted: library_stats.dictionary_corrections_inserted,
+        dictionary_corrections_skipped: library_stats.dictionary_corrections_skipped,
+        snippets_inserted: library_stats.snippets_inserted,
+        snippets_skipped: library_stats.snippets_skipped,
+        snippets_already_existed: library_stats.snippets_already_existed,
+        app_targets_kept: library_stats.app_targets_kept,
+        app_targets_matched: library_stats.app_targets_matched,
+        app_targets_dropped: library_stats.app_targets_dropped,
+        sub_apps_imported: library_stats.sub_apps_imported,
+        sub_apps_dropped: library_stats.sub_apps_dropped,
+    })
 }
 
 // Keep every restore side effect behind complete decoding and version checks.
@@ -476,6 +510,9 @@ fn with_import_payload<T>(
 
 #[cfg(test)]
 mod import_safety_tests;
+
+#[cfg(test)]
+mod cross_store_tests;
 
 // ---------------------------------------------------------------------------
 // Context-aware library backup helpers
