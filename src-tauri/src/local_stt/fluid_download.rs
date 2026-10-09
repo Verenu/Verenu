@@ -73,17 +73,20 @@ pub async fn download(
         let path = staging.join(&file.path);
         tokio::fs::create_dir_all(path.parent().unwrap()).await?;
         let mut output = tokio::fs::File::create(path).await?;
-        let mut response = client
-            .get(format!(
-                "https://huggingface.co/{}/resolve/{}/{}",
-                bundle.repo, bundle.revision, file.path
-            ))
-            .send()
-            .await?
-            .error_for_status()?;
+        let mut response = cancellable_io(
+            &cancel,
+            client
+                .get(format!(
+                    "https://huggingface.co/{}/resolve/{}/{}",
+                    bundle.repo, bundle.revision, file.path
+                ))
+                .send(),
+        )
+        .await?
+        .error_for_status()?;
         let mut hash = Sha256::new();
         let mut received = 0;
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = cancellable_io(&cancel, response.chunk()).await? {
             anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
             received += chunk.len() as u64;
             anyhow::ensure!(
@@ -144,6 +147,26 @@ pub async fn download(
     )
     .await?;
     Ok(())
+}
+
+// Dropping a pending request/body future aborts its wait when Cancel is clicked.
+// The manager keeps this task active until it returns, including during deletion.
+async fn cancellable_io<T>(
+    cancel: &AtomicBool,
+    operation: impl std::future::Future<Output = reqwest::Result<T>>,
+) -> anyhow::Result<T> {
+    crate::api::model_download::ensure_not_cancelled(cancel)?;
+    tokio::select! {
+        result = operation => Ok(result?),
+        _ = async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+        } => anyhow::bail!("model download cancelled"),
+    }
 }
 
 async fn finish_validated_install(
@@ -214,6 +237,24 @@ fn promote_with_cleanup(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cancellation_interrupts_pending_network_io() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let pending = async {
+            // Simulate cancellation after the network operation has started.
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+            std::future::pending::<reqwest::Result<()>>().await
+        };
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::cancellable_io(&cancel, pending),
+        )
+        .await
+        .expect("cancelled network I/O must not remain active")
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+    }
+
     #[tokio::test]
     async fn cancellation_during_validation_preserves_existing_install() {
         let root =
