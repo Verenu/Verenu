@@ -525,11 +525,11 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         && super::text_rules::explicit_english(&cfg.transcription_language);
     let commands_active = rules_active && cfg.voice_commands_enabled;
     let basic_active = rules_active && cfg.cleanup_intensity == "rules";
-    let terms = dict_entries.iter().map(|entry| entry.term.as_str()).collect::<Vec<_>>();
+    let terms = dictionary::protected_spellings(&dict_entries);
     let expanded = pure_expansion.clone().unwrap_or_else(|| {
         if basic_active || commands_active {
-            snippets::expand_snippets_with_spoken_transform(raw, &mut db_snippets, db_handle, true, |spoken| {
-                super::text_rules::process(spoken, basic_active, commands_active, &terms)
+            snippets::expand_snippets_with_spoken_transform(raw, &mut db_snippets, db_handle, true, |spoken, prefix| {
+                super::text_rules::process_after(spoken, basic_active, commands_active, &terms, prefix)
             })
         } else {
             snippets::expand_snippets_from(raw, &mut db_snippets, db_handle)
@@ -559,7 +559,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             let mut candidate = candidate.clone();
             candidate.text = snippets::expand_snippets_with_spoken_transform(
                 &candidate.text, &mut db_snippets, db_handle, false,
-                |spoken| super::text_rules::process(spoken, false, true, &terms),
+                |spoken, prefix| super::text_rules::process_after(spoken, false, true, &terms, prefix),
             );
             candidate
         })
