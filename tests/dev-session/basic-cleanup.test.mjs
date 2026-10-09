@@ -37,7 +37,8 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
     cleanup_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true,
     cleanup_cache_enabled: true, transcription_language: 'en', voice_commands_enabled: false,
   };
-  let original; let context; let snippet; let vocabulary;
+  let original; let context;
+  const snippets = []; const vocabulary = [];
   try {
     original = await invoke('get_all_settings');
     for (const [key, value] of Object.entries(settings)) await invoke('save_setting', { key, value });
@@ -49,9 +50,15 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       [true, 'um send send it new line tomorrow', 'Send it\nTomorrow'],
       [true, 'greeting discard scratch that tomorrow', 'um scratch that new line Tomorrow'],
       [true, 'um please (um) use new line', 'Please use New Line'],
+      [true, 'use question mark and new paragraph', 'use QuestionMark and new paragraph'],
+      [true, 'I use app name um every day', 'I use Verenu every day'],
+      [true, 'I use sentence name um every day', 'I use Verenu. Every day'],
     ]) {
-      if (raw.startsWith('greeting')) snippet = await invoke('create_snippet', { trigger: 'greeting', expansion: 'um scratch that new line', instructions: '', contextId: context.id });
-      if (raw.startsWith('um please')) vocabulary = await invoke('create_dictionary_entry', { term: 'New Line', mistake: 'new line', contextId: context.id });
+      if (raw.startsWith('greeting')) snippets.push(await invoke('create_snippet', { trigger: 'greeting', expansion: 'um scratch that new line', instructions: '', contextId: context.id }));
+      if (raw.startsWith('um please')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'New Line', mistake: 'new line', contextId: context.id }));
+      if (raw.startsWith('use question')) vocabulary.push(await invoke('create_dictionary_entry', { term: 'QuestionMark', mistake: 'question mark, new paragraph', contextId: context.id }));
+      if (raw.startsWith('I use app')) snippets.push(await invoke('create_snippet', { trigger: 'app name', expansion: 'Verenu', instructions: '', contextId: context.id }));
+      if (raw.startsWith('I use sentence')) snippets.push(await invoke('create_snippet', { trigger: 'sentence name', expansion: 'Verenu.', instructions: '', contextId: context.id }));
       speech = raw;
       await invoke('save_setting', { key: 'voice_commands_enabled', value: commands });
       const before = new Set((await invoke('get_recent')).map(row => row.id));
@@ -64,11 +71,11 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 4);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 7);
   } finally {
     try {
-      if (snippet) await invoke('remove_snippet', { id: snippet.id });
-      if (vocabulary) await invoke('remove_dictionary_entry', { id: vocabulary.id });
+      for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });
+      for (const entry of vocabulary) await invoke('remove_dictionary_entry', { id: entry.id });
       if (context) await invoke('delete_context', { contextId: context.id });
       for (const key of original ? Object.keys(settings) : []) await invoke('save_setting', { key, value: original[key] ?? ({ custom_providers: [], transcription_fallback_models: [], cleanup_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, cleanup_cache_enabled: true, transcription_language: 'en', voice_commands_enabled: false })[key] ?? null });
     } finally { await new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }); }

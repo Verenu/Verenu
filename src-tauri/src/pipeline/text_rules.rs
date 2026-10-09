@@ -107,10 +107,14 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
     }
 }
 
-fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize) {
+fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool) {
     let mut after = words[i + n - 1].after.clone();
     let ends_sentence = terminal(&after);
-    let capitalize_next = i == 0 || ends_sentence || terminal(&words[i - 1].after);
+    let capitalize_next = ends_sentence || if i == 0 {
+        sentence_initial || terminal(leading)
+    } else {
+        terminal(&words[i - 1].after)
+    };
     let before = if i == 0 {
         &mut *leading
     } else {
@@ -152,7 +156,7 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize) {
     }
 }
 
-fn basic(text: &str) -> String {
+fn basic(text: &str, sentence_initial: bool) -> String {
     let (mut leading, mut words) = tokenize(text);
     let mut i = 0;
     while i < words.len() {
@@ -170,7 +174,7 @@ fn basic(text: &str) -> String {
                 || words[i + 1].after.contains(',')
                 || terminal(&words[i + 1].after));
         if filler || you_know {
-            drop_words(&mut leading, &mut words, i, if you_know { 2 } else { 1 });
+            drop_words(&mut leading, &mut words, i, if you_know { 2 } else { 1 }, sentence_initial);
         } else {
             i += 1;
         }
@@ -454,9 +458,23 @@ fn matching_term_len(text: &str, term: &str) -> Option<usize> {
         .then_some(end)
 }
 
-/// Apply edits separately on each spoken span. Unclosed quotes/code protect
-/// the rest of the transcript rather than risking destructive interpretation.
+#[cfg(test)]
 pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[&str]) -> String {
+    process_after(text, cleanup, voice_commands, terms, "")
+}
+
+fn sentence_start(prefix: &str) -> bool {
+    if prefix.trim().is_empty() {
+        return true;
+    }
+    // Closing delimiters do not hide punctuation ending a quoted sentence.
+    let end = prefix.trim_end_matches([' ', '\t', '"', '”', '\'', '’', '`', ')', ']', '}']);
+    end.chars().next_back().is_some_and(|c| matches!(c, '.' | '!' | '?' | '…' | '\n' | '\r'))
+}
+
+/// Edit spoken spans independently while retaining sentence context across
+/// protected payloads. Unclosed quotes/code protect the remaining transcript.
+pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, terms: &[&str], prefix: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut spoken_start = 0;
     let mut i = 0;
@@ -488,7 +506,8 @@ pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[
                 .max()
         };
         if let Some(len) = protected_len {
-            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands));
+            let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
+            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial));
             out.push_str(&text[i..i + len]);
             i += len;
             spoken_start = i;
@@ -496,13 +515,14 @@ pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[
             i += c.len_utf8();
         }
     }
-    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands));
+    let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
+    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands, sentence_initial));
     out
 }
 
-fn edit(text: &str, cleanup: bool, voice_commands: bool) -> String {
+fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool) -> String {
     let text = if cleanup {
-        basic(text)
+        basic(text, sentence_initial)
     } else {
         text.to_owned()
     };
@@ -606,7 +626,7 @@ mod tests {
         }
         assert_eq!(
             process("um Very Very um nice", true, false, &["Very Very"]),
-            "Very Very Nice"
+            "Very Very nice"
         );
         assert!(explicit_english("EN-us"));
         assert!(explicit_english("en_GB"));
@@ -644,6 +664,20 @@ mod tests {
             ("(um)", ""),
         ] {
             assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn protected_spans_preserve_sentence_case() {
+        for (input, expected) in [
+            ("I use Verenu um every day", "I use Verenu every day"),
+            ("I use \"Verenu\" um every day", "I use \"Verenu\" every day"),
+            ("I use `Verenu` um every day", "I use `Verenu` every day"),
+            ("I use [[VERENU_CLIPBOARD_00]] um every day", "I use [[VERENU_CLIPBOARD_00]] every day"),
+            ("I use Verenu. um every day", "I use Verenu. Every day"),
+            ("I say \"Done.\" um every day", "I say \"Done.\" Every day"),
+        ] {
+            assert_eq!(process(input, true, false, &["Verenu"]), expected, "{input}");
         }
     }
 

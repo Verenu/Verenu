@@ -344,7 +344,7 @@ pub(crate) fn expand_snippets_with_spoken_transform(
     snippets: &mut [db::Snippet],
     db: &Db,
     count_usage: bool,
-    transform: impl Fn(&str) -> String,
+    transform: impl Fn(&str, &str) -> String,
 ) -> String {
     let prepared = prepare_snippets(snippets);
     let selected = collect_trigger_matches(text, &prepared);
@@ -352,7 +352,8 @@ pub(crate) fn expand_snippets_with_spoken_transform(
     let mut cursor = 0;
     let mut counts: HashMap<i64, i64> = HashMap::new();
     for m in selected {
-        out.push_str(&transform(&text[cursor..m.start]));
+        let spoken = transform(&text[cursor..m.start], &out);
+        out.push_str(&spoken);
         let snippet = &mut snippets[m.snippet_idx];
         out.push_str(&snippet.expansion);
         if count_usage {
@@ -361,7 +362,8 @@ pub(crate) fn expand_snippets_with_spoken_transform(
         }
         cursor = m.end;
     }
-    out.push_str(&transform(&text[cursor..]));
+    let spoken = transform(&text[cursor..], &out);
+    out.push_str(&spoken);
     if !counts.is_empty() {
         let mut counts = counts.into_iter().collect::<Vec<_>>();
         counts.sort_by_key(|(id, _)| *id);
