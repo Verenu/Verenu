@@ -705,6 +705,41 @@ async fn pipeline_basic_preserves_vocabulary_before_dictionary_canonicalization(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_preserves_correction_aliases_and_snippet_sentence_case() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for intensity in ["rules", "light"] {
+        reset();
+        set_enabled(true);
+        let mut config = base_config();
+        config.cleanup_intensity = intensity.into();
+        config.voice_commands_enabled = true;
+        fixture("transcription", "groq", "whisper-large-v3-turbo", Some("use question mark and new line"), None, None);
+        fixture("cleanup", "groq", "llama-3.3-70b-versatile", Some("use question mark and new line"), None, None);
+        let mut request = base_request(config);
+        request.dictionary.push(PipelineTestDictionaryEntry {
+            term: "QuestionMark".into(),
+            mistake: Some("question mark, new line".into()),
+        });
+        let result = run_pipeline_fixture(request).await.unwrap();
+        let suffix = if intensity == "light" { "." } else { "" };
+        assert_eq!(result.final_text_before_dictionary, format!("use question mark and new line{suffix}"));
+        assert_eq!(result.injected_text, format!("use QuestionMark and new line{suffix}"));
+    }
+    for (expansion, expected) in [("Verenu", "I use Verenu every day"), ("Verenu.", "I use Verenu. Every day")] {
+        reset();
+        set_enabled(true);
+        let mut config = base_config();
+        config.cleanup_intensity = "rules".into();
+        fixture("transcription", "groq", "whisper-large-v3-turbo", Some("I use app name um every day"), None, None);
+        let mut request = base_request(config);
+        request.snippets.push(PipelineTestSnippet { trigger: "app name".into(), expansion: expansion.into(), instructions: String::new() });
+        let result = run_pipeline_fixture(request).await.unwrap();
+        assert_eq!(result.injected_text, expected);
+    }
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_filler_only_does_not_write_history() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset(); set_enabled(true);
