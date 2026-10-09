@@ -650,11 +650,6 @@ pub async fn save_setting(
         let providers = crate::api::custom::normalize_list(&value)?;
         value = serde_json::to_value(&providers)
             .map_err(|_| "Could not encode custom providers.".to_string())?;
-        let credential_app = app.clone();
-        run_blocking("clear_changed_provider_keys", move || {
-            clear_changed_custom_provider_keys(&credential_app, &providers)
-        })
-        .await?;
     }
     let history_prune_days = if key == store::HISTORY_RETENTION {
         value.as_str().and_then(store::history_retention_days)
@@ -672,6 +667,7 @@ pub async fn save_setting(
         None
     };
     let settings = store::settings_handle(&app)?;
+    let credential_app = app.clone();
     let key_clone = key.clone();
     let save_result = run_blocking("save_setting", move || {
         if store::storage_full_simulation_enabled() {
@@ -680,7 +676,18 @@ pub async fn save_setting(
                 store::STORAGE_FULL_ERROR
             ));
         }
-        if key_clone == store::GITHUB_USERNAME {
+        if key_clone == store::CUSTOM_PROVIDERS {
+            let providers = crate::api::custom::normalize_list(&value)?;
+            settings
+                .save_values_with_commit(
+                    [(key_clone, value)],
+                    |previous| {
+                        clear_changed_custom_provider_keys(&credential_app, previous, &providers)
+                    },
+                    || Ok(()),
+                )
+                .map(|_| ())
+        } else if key_clone == store::GITHUB_USERNAME {
             save_github_username(&settings, value)
         } else if key_clone == store::CONTEXTUAL_FORMATTING {
             settings.save_values([
@@ -757,11 +764,13 @@ pub async fn save_setting(
 
     if let Some(days) = history_prune_days {
         let db = app.state::<DbHandle>().inner().clone();
-        let deleted =
-            tokio::task::spawn_blocking(move || db::prune_transcriptions_older_than(&db, days))
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
+        let settings = store::settings_handle(&app)?;
+        let deleted = tokio::task::spawn_blocking(move || {
+            db::prune_transcriptions_for_retention(&db, &settings, days)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
         if deleted > 0 {
             let _ = app.emit("verenu:history-pruned", ());
         }
