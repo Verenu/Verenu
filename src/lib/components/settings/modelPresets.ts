@@ -356,25 +356,67 @@ function cleanupModelFor(provider: UiProviderId | undefined, tier: 'standard' | 
 
 // ── Public: build the preset list ─────────────────────────────────────────
 
+/**
+ * The one local engine that stays offered where the blanket on-device gate is
+ * closed (Intel Macs): Apple Speech, which ships with macOS and needs no Verenu
+ * download. It must be listed by the backend as a system-managed engine, so an
+ * unloaded, empty, or failed list stays conservative. Eligibility is not
+ * permission or locale-asset readiness; those are checked when dictating.
+ * Whisper, ONNX, GGML, Fluid and cleanup models are never admitted here.
+ */
+export function eligibleSystemSpeechId(options: PresetOptions): string | null {
+  const model = options.localModels?.find(m => m.engine_type === 'apple_speech' && m.install_kind === 'system_managed');
+  return model && supportsLocalLanguage(model.id, options) ? model.id : null;
+}
+
+function systemSpeechPreset(id: string): Preset {
+  return {
+    id: 'local-transcription-only',
+    kind: 'preset',
+    name: 'Transcription only',
+    tagline: 'Apple Speech on this Mac. No model download; macOS may ask for speech permission.',
+    position: 0.9,
+    offline: true,
+    target: {
+      transcriptionDefaultModel: modelId('local', id),
+      cleanupEnabled: false,
+      cleanupDefaultModel: null,
+      dualTranscription: false,
+      transcriptionFallbacks: [],
+      cleanupFallbacks: [],
+      requiredLocalModels: [],
+    },
+  };
+}
+
 export function buildPresets(status: KeyStatus, hardware: Hardware, localSupported: boolean, options: PresetOptions = {}): Preset[] {
+  // With the blanket gate closed only eligible system speech survives: as a
+  // transcription-only preset and as an installed cloud fallback, never cleanup.
+  const systemSpeech = localSupported ? null : eligibleSystemSpeechId(options);
+  const gatedOptions: PresetOptions = {
+    ...options,
+    installedLocal: systemSpeech && options.installedLocal?.transcription.includes(systemSpeech)
+      ? { transcription: [systemSpeech], cleanup: [] }
+      : undefined,
+  };
   if (options.localOnly) {
-    if (!localSupported) return [addKeyPreset()];
+    if (!localSupported) return systemSpeech ? [systemSpeechPreset(systemSpeech)] : [addKeyPreset()];
     const local = buildLocalOnlyPresets(hardware, options);
     if (!options.includeTranscriptionOnly || local.some(preset => preset.id === 'local-transcription-only')) return local;
     return [transcriptionOnlyPreset(hardware), ...local];
   }
   if (hasCloudKey(status) || options.customProviders?.some(provider => provider.supports_transcription && (!provider.requires_key || status[provider.id]))) {
     return [
-      ...buildCloudPresets(status, localSupported ? options : { ...options, installedLocal: undefined }),
-      ...(localSupported ? buildLocalOnlyPresets(hardware, options) : []),
+      ...buildCloudPresets(status, localSupported ? options : gatedOptions),
+      ...(localSupported ? buildLocalOnlyPresets(hardware, options) : systemSpeech ? [systemSpeechPreset(systemSpeech)] : []),
     ];
   }
   if (localSupported) {
     return buildLocalOnlyPresets(hardware, options);
   }
-  // No keys and local inference unavailable (e.g. Intel Mac) — the only path
-  // forward is adding an API key.
-  return [addKeyPreset()];
+  // No keys and local inference unavailable (e.g. Intel Mac): eligible system
+  // speech, otherwise the only path forward is adding an API key.
+  return systemSpeech ? [systemSpeechPreset(systemSpeech)] : [addKeyPreset()];
 }
 
 const TRANSCRIPTION_ORDER: UiProviderId[] = ['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai'];

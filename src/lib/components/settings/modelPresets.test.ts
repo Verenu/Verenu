@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '../../tauri';
-import { buildPresets, getHardware, installedLocalFallbacks, matchActivePreset, supportsLocalLanguage, type Hardware, type ModelPerformance } from './modelPresets';
+import { buildPresets, eligibleSystemSpeechId, getHardware, installedLocalFallbacks, matchActivePreset, supportsLocalLanguage, type Hardware, type ModelPerformance } from './modelPresets';
 import type { ModelCatalogCache } from '../../modelCatalogStore.svelte';
 
 vi.mock('../../platform', () => ({ isAndroid: true }));
@@ -143,5 +143,60 @@ describe('automatic selection and prepared recovery', () => {
     const presets = buildPresets({ ...noKeys, groq: true }, desktop, true);
     const target = presets.find(p => p.id === 'cloud-balanced')!.target!;
     expect(matchActivePreset(presets, { ...target, cleanupDefaultModel: target.cleanupDefaultModel!, transcriptionFallbacks: ['local/moonshine-tiny'] })).toBe('cloud-balanced');
+  });
+});
+
+describe('blanket on-device gate closed (Intel Mac)', () => {
+  const desktop: Hardware = { totalRamMb: 16384, freeRamMb: 8192, gpus: [], unknown: false };
+  const keyed = { ...noKeys, groq: true };
+  const apple = { id: 'apple-speech', engine_type: 'apple_speech', install_kind: 'system_managed', is_downloaded: true, supported_languages: ['System languages'] };
+  const whisper = { id: 'whisper-small', engine_type: 'whisper', install_kind: 'download', is_downloaded: true, supported_languages: ['Multilingual'] };
+  const onnx = { id: 'parakeet-v3', engine_type: 'parakeet', install_kind: 'download', is_downloaded: true, supported_languages: ['English'] };
+  const fluid = { id: 'fluid-parakeet-ultra', engine_type: 'fluid_audio', install_kind: 'download', is_downloaded: true, supported_languages: ['English'] };
+  const all = [apple, whisper, onnx, fluid] as never;
+  const installed = { transcription: ['apple-speech', 'whisper-small', 'parakeet-v3', 'fluid-parakeet-ultra'], cleanup: ['qwen2.5-3b-instruct'] };
+
+  it('admits only Apple Speech as a transcription-only local preset', () => {
+    const options = { localOnly: true, includeTranscriptionOnly: true, localModels: all, installedLocal: installed };
+    expect(eligibleSystemSpeechId(options)).toBe('apple-speech');
+    const presets = buildPresets(noKeys, desktop, false, options);
+    expect(presets).toHaveLength(1);
+    expect(presets[0].target).toMatchObject({
+      transcriptionDefaultModel: 'local/apple-speech', cleanupEnabled: false, cleanupDefaultModel: null,
+      transcriptionFallbacks: [], cleanupFallbacks: [], requiredLocalModels: [],
+    });
+  });
+
+  it('denies Whisper, ONNX, Fluid and cleanup when no Apple Speech is listed', () => {
+    for (const listed of [[whisper], [onnx], [fluid], [whisper, onnx, fluid], []]) {
+      const options = { localOnly: true, includeTranscriptionOnly: true, localModels: listed as never, installedLocal: installed };
+      expect(eligibleSystemSpeechId(options)).toBeNull();
+      expect(buildPresets(noKeys, desktop, false, options).map(p => p.id)).toEqual(['add-key']);
+    }
+  });
+
+  it('stays conservative when the model list is unavailable or the engine is not system-managed Apple Speech', () => {
+    expect(eligibleSystemSpeechId({})).toBeNull();
+    expect(eligibleSystemSpeechId({ localModels: [{ ...apple, install_kind: 'download' }] as never })).toBeNull();
+    expect(eligibleSystemSpeechId({ localModels: [{ ...apple, engine_type: 'whisper' }] as never })).toBeNull();
+  });
+
+  it('keeps only installed Apple Speech as a cloud fallback, never other engines or cleanup', () => {
+    const options = { localModels: all, installedLocal: installed };
+    const presets = buildPresets(keyed, desktop, false, options);
+    expect(presets.every(p => !p.offline || p.id === 'local-transcription-only')).toBe(true);
+    for (const preset of presets.filter(p => p.id.startsWith('cloud-'))) {
+      expect(preset.target!.transcriptionFallbacks.filter(id => id.startsWith('local/'))).toEqual(['local/apple-speech']);
+      expect(preset.target!.cleanupFallbacks.some(id => id.startsWith('local/'))).toBe(false);
+      expect(preset.target!.cleanupDefaultModel?.startsWith('local/') ?? false).toBe(false);
+      expect(preset.target!.requiredLocalModels).toEqual([]);
+    }
+    const notInstalled = buildPresets(keyed, desktop, false, { localModels: all, installedLocal: { transcription: ['whisper-small'], cleanup: ['qwen2.5-3b-instruct'] } });
+    expect(notInstalled.flatMap(p => p.target?.transcriptionFallbacks ?? []).some(id => id.startsWith('local/'))).toBe(false);
+  });
+
+  it('still offers downloaded local models when the gate is open', () => {
+    const presets = buildPresets(noKeys, desktop, true, { localOnly: true, localModels: all, installedLocal: installed });
+    expect(presets.some(p => p.target?.requiredLocalModels.some(m => m.id === 'parakeet-v3'))).toBe(true);
   });
 });
