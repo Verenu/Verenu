@@ -163,7 +163,7 @@ async fn unavailable_apple_only_chain_preserves_dictation_and_saved_selection() 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn apple_cleanup_cache_preserves_provider_attribution() {
+async fn apple_cleanup_cache_does_not_infer_unknown_provider() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
     set_enabled(true);
@@ -195,7 +195,7 @@ async fn apple_cleanup_cache_preserves_provider_attribution() {
     assert!(!first.cleanup_cache_key.is_empty());
     assert_eq!(first.cleanup_cache_key, second.cleanup_cache_key);
     assert!(first.api_used.contains("cleanup=apple-intelligence/system"));
-    assert_eq!(second.api_used, first.api_used);
+    assert_eq!(second.api_used, "groq/whisper-large-v3-turbo/transcription");
     assert_eq!(
         second.history_entry.clean_text,
         first.history_entry.clean_text
@@ -205,5 +205,34 @@ async fn apple_cleanup_cache_preserves_provider_attribution() {
         1
     );
     assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 0);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apple_cleanup_cache_never_labels_cloud_recovery_as_on_device() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_default_model = "apple-intelligence/system".into();
+    config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("please send the note tomorrow"), None, None);
+    fixture("cleanup", "apple-intelligence", "system", None, Some("provider"), Some("Synthetic model unavailable"));
+    fixture("cleanup", "openai", "gpt-4o-mini", Some("Please send the note tomorrow."), None, None);
+    let mut request = base_request(config);
+    request.db = Some(crate::data::db::open(":memory:").expect("shared test db"));
+    let first = run_pipeline_fixture(request.clone()).await.unwrap();
+    let second = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(first.api_used.contains("cleanup=openai/gpt-4o-mini"));
+    assert!(!first.cleanup_cache_key.is_empty());
+    assert_eq!(first.cleanup_cache_key, second.cleanup_cache_key);
+    assert_eq!(second.injected_text, first.injected_text);
+    assert_eq!(second.api_used, "groq/whisper-large-v3-turbo/transcription");
+    let saved_api: String = request.db.as_ref().unwrap().lock().unwrap().query_row(
+        "SELECT api_used FROM transcriptions WHERE id = ?1", [second.history_entry.id], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(saved_api, second.api_used);
+    assert_eq!(fixture_hit_count("cleanup", "apple-intelligence", "system"), 1);
+    assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 1);
     reset();
 }
