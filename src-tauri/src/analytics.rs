@@ -490,6 +490,7 @@ impl Analytics {
             .unwrap_or(0);
         self.capture_once("settings_snapshot", "settings_snapshot", json!({
             "cleanup_enabled": bool_value(crate::data::store::CLEANUP_ENABLED),
+            "voice_commands_enabled": bool_value(crate::data::store::VOICE_COMMANDS_ENABLED),
             "dual_transcription_enabled": bool_value(crate::data::store::DUAL_TRANSCRIPTION_ENABLED),
             "noise_reduction": bool_value(crate::data::store::NOISE_REDUCTION),
             "auto_learn_enabled": bool_value(crate::data::store::AUTO_LEARN_ENABLED),
@@ -510,6 +511,7 @@ impl Analytics {
     pub fn setting_changed(&self, key: &str, value: &Value) {
         let (property, safe_value) = match key {
             crate::data::store::CLEANUP_ENABLED => ("cleanup_enabled", json!(value.as_bool())),
+            crate::data::store::VOICE_COMMANDS_ENABLED => ("voice_commands_enabled", json!(value.as_bool())),
             crate::data::store::DUAL_TRANSCRIPTION_ENABLED => {
                 ("dual_transcription_enabled", json!(value.as_bool()))
             }
@@ -1108,6 +1110,7 @@ fn safe_properties(event: &str, properties: Value) -> Value {
         "setup_step_duration" => &["setup_step", "duration_bucket"],
         "settings_snapshot" => &[
             "cleanup_enabled",
+            "voice_commands_enabled",
             "dual_transcription_enabled",
             "noise_reduction",
             "auto_learn_enabled",
@@ -1197,6 +1200,14 @@ fn safe_properties(event: &str, properties: Value) -> Value {
     // the typed convenience methods above.  Every string-valued telemetry
     // field is reduced to an explicit low-cardinality vocabulary here.
     match event {
+        "settings_snapshot" => {
+            if let Some(value) = map.get_mut("voice_commands_enabled") {
+                *value = json!(value.as_bool().unwrap_or(false));
+            }
+            if let Some(value) = map.get_mut("cleanup_intensity") {
+                *value = json!(normalize_category(value.as_str().unwrap_or("")));
+            }
+        }
         "setup_step_viewed" | "setup_step_completed" => {
             if let Some(value) = map.get_mut("setup_step") {
                 *value = json!(normalize_setup_step(value.as_str().unwrap_or("")));
@@ -1561,6 +1572,7 @@ fn normalize_category(value: &str) -> &'static str {
         "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" => "cloud",
         "local" => "local",
         "none" => "none",
+        "rules" => "rules",
         "light" => "light",
         "medium" => "medium",
         "high" => "high",
@@ -1661,7 +1673,7 @@ category_allowlist! { normalize_duration_bucket, "unknown";
 }
 
 category_allowlist! { normalize_setting, "unknown";
-    "cleanup_enabled" | "dual_transcription_enabled" | "noise_reduction" | "auto_learn_enabled" |
+    "cleanup_enabled" | "voice_commands_enabled" | "dual_transcription_enabled" | "noise_reduction" | "auto_learn_enabled" |
     "contextual_formatting" | "pause_media" | "transcription_provider" | "cleanup_provider" |
     "cleanup_intensity" | "history_retention" | "local_model_memory_policy" |
     "mic_mute_button_dictation" | "sync_enabled"
@@ -1714,6 +1726,28 @@ fn is_official_version(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn basic_and_voice_commands_remain_bounded_analytics_values() {
+        assert_eq!(normalize_category("rules"), "rules");
+        assert_eq!(normalize_category("private dictated text"), "unknown");
+        let snapshot = safe_properties("settings_snapshot", json!({
+            "cleanup_intensity": "rules", "voice_commands_enabled": true, "raw_text": "private"
+        }));
+        assert_eq!(snapshot["cleanup_intensity"], "rules");
+        assert_eq!(snapshot["voice_commands_enabled"], true);
+        assert!(snapshot.get("raw_text").is_none());
+        let change = safe_properties("setting_changed", json!({
+            "setting": "voice_commands_enabled", "value": false
+        }));
+        assert_eq!(change["setting"], "voice_commands_enabled");
+        assert_eq!(change["value"], false);
+        let untrusted = safe_properties("settings_snapshot", json!({
+            "voice_commands_enabled": "private dictated text", "cleanup_intensity": "private dictated text"
+        }));
+        assert_eq!(untrusted["voice_commands_enabled"], false);
+        assert_eq!(untrusted["cleanup_intensity"], "unknown");
+    }
 
     #[test]
     fn delivery_routes_keep_distinct_wire_contracts() {

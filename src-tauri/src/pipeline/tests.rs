@@ -740,6 +740,31 @@ async fn pipeline_basic_preserves_correction_aliases_and_snippet_sentence_case()
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_exact_snippet_ignores_saved_instructions() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for instructions in ["", "all capitals"] {
+        for commands in [false, true] {
+            reset();
+            set_enabled(true);
+            let mut config = base_config();
+            config.cleanup_intensity = "rules".into();
+            config.voice_commands_enabled = commands;
+            fixture("transcription", "groq", "whisper-large-v3-turbo", Some("signoff."), None, None);
+            let mut request = base_request(config);
+            request.snippets.push(PipelineTestSnippet {
+                trigger: "signoff".into(), expansion: "Thanks!".into(), instructions: instructions.into(),
+            });
+            let result = run_pipeline_fixture(request).await.unwrap();
+            assert_eq!(result.injected_text, "Thanks!");
+            assert_eq!(result.history_entry.clean_text, "Thanks!");
+            assert!(result.cleanup_cache_key.is_empty());
+            assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+        }
+    }
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_filler_only_does_not_write_history() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset(); set_enabled(true);
