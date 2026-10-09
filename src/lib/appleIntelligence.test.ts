@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { curatedRows, rowForSelection, type PickerContext } from './components/settings/modelStates';
+import { appleIntelligenceVisible, curatedRows, rowForSelection, unverifiedRows, type PickerContext } from './components/settings/modelStates';
 import { emptyProviderModelMap, mergeProviderModelMap, splitModelId } from './components/settings/models';
 import { dictationReadiness, type ReadinessInput } from './dictationReadiness';
 import { appleIntelligence, refreshAppleIntelligence } from './appleIntelligence.svelte';
@@ -30,16 +30,30 @@ describe('Apple Intelligence cleanup', () => {
     expect(rowForSelection('apple-intelligence/system', { ...picker, task: 'transcription' })?.state).toBe('unavailable');
     expect(dictationReadiness(readiness)).toEqual([]);
   });
-  it.each(['unsupported-os', 'device-not-eligible', 'intelligence-disabled', 'model-not-ready', 'unsupported-platform', 'unavailable'])('shows %s without requesting an API key or replacing selection', state => {
-    const unavailable = { state, available: false, message: `Recovery for ${state}` };
-    const row = rowForSelection('apple-intelligence/system', { ...picker, appleIntelligence: unavailable });
+  it.each(['intelligence-disabled', 'model-not-ready'])('shows %s on a supported Mac as actionable setup without an API key prompt', state => {
+    const setup = { state, available: false, message: `Recovery for ${state}` };
+    const ctx = { ...picker, appleIntelligence: setup };
+    const row = curatedRows(ctx, ['apple-intelligence/system']).find(item => item.provider === 'apple-intelligence');
     expect(row?.key).toBe('apple-intelligence/system');
-    expect(row?.note).toBe(unavailable.message);
+    expect(row?.state).toBe('needs-setup');
+    expect(row?.note).toBe(setup.message);
     expect(row?.remedy).toBe('none');
-    const issues = dictationReadiness({ ...readiness, appleIntelligence: unavailable });
+    const issues = dictationReadiness({ ...readiness, appleIntelligence: setup });
     expect(issues).toHaveLength(1);
     expect(issues[0].section).toBe('models');
-    expect(issues[0].message).toBe(unavailable.message);
+    expect(issues[0].message).toBe(setup.message);
+  });
+  it.each(['unsupported-os', 'device-not-eligible', 'unsupported-platform', 'unavailable', 'checking', 'unknown'])('hides Apple Intelligence from picker rows and the rail for %s, even when pinned', state => {
+    const hidden = { state, available: false, message: `Recovery for ${state}` };
+    const ctx = { ...picker, appleIntelligence: hidden };
+    expect(appleIntelligenceVisible(ctx)).toBe(false);
+    expect(curatedRows(ctx, ['apple-intelligence/system']).some(row => row.provider === 'apple-intelligence')).toBe(false);
+    expect(curatedRows(ctx).some(row => row.provider === 'apple-intelligence')).toBe(false);
+    expect(unverifiedRows(ctx).some(row => row.provider === 'apple-intelligence')).toBe(false);
+    // Readiness still reports the stored choice, and never requests an API key.
+    const issues = dictationReadiness({ ...readiness, appleIntelligence: hidden });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].section).toBe('models');
   });
   it('rejects unknown Apple models and speech selection even when available', () => {
     expect(rowForSelection('apple-intelligence/unknown', picker)?.state).toBe('unavailable');
