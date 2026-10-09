@@ -13,13 +13,15 @@ use serde::Deserialize;
 use std::fs;
 
 #[cfg(target_os = "linux")]
-const WINDOW_APP_ID: &str = "com.verenu.app";
+const WINDOW_CLASS: &str = "Verenu";
 
 /// GTK's Wayland window class defaults to GLib's program name, even when the
 /// GtkApplication has an explicit app ID. Set it before GTK initializes.
+/// Match the installed desktop entry's StartupWMClass so panels can resolve
+/// the app icon for both the main window and the dictation pill.
 #[cfg(target_os = "linux")]
 pub(crate) fn initialize_app_identity() {
-    gtk::glib::set_prgname(Some(WINDOW_APP_ID));
+    gtk::glib::set_prgname(Some(WINDOW_CLASS));
 }
 
 #[cfg(target_os = "linux")]
@@ -797,9 +799,10 @@ mod tests {
         // Keep GTK's default registration behavior: headless dev sessions
         // and the installed app must not share a remote GtkApplication.
         assert_ne!(config["app"]["enableGTKAppId"], true);
-        assert_eq!(config["identifier"], super::WINDOW_APP_ID);
+        assert_eq!(config["identifier"], "com.verenu.app");
+        assert_eq!(super::WINDOW_CLASS, "Verenu");
         super::initialize_app_identity();
-        assert_eq!(gtk::glib::prgname().as_deref(), Some(super::WINDOW_APP_ID));
+        assert_eq!(gtk::glib::prgname().as_deref(), Some(super::WINDOW_CLASS));
         assert_eq!(config["app"]["windows"][0]["minWidth"], 1100);
         assert_eq!(config["app"]["windows"][0]["minHeight"], 700);
         let block = super::window_rule_block();

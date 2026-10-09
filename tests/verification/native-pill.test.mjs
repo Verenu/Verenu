@@ -31,7 +31,8 @@ for (const [missing, message] of [
     };
     await assert.rejects(verifyNativePill({
       browser,
-      invoke: async () => ({ state: 'handsfree', interactive: true, rect: [10, 10, 72, 34] }),
+      invoke: async () => ({ state: 'handsfree', interactive: true, rect: [10, 10, 72, 34],
+        appIcon: { windowClass: 'Verenu', matchesMain: true } }),
       directory: '.',
       screenshot: async () => { throw new Error('Missing DOM must fail before capturing screenshots'); },
     }), error => error.code === 'ERR_ASSERTION' && error.message === message);
