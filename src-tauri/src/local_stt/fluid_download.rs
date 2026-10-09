@@ -137,6 +137,16 @@ pub async fn download(
 // Keep the old directory until promotion succeeds. A failed replacement
 // restores it; only verified model artifacts replace an existing install.
 fn promote_verified(staging: &Path, destination: &Path) -> anyhow::Result<()> {
+    promote_with_cleanup(staging, destination, |backup| {
+        std::fs::remove_dir_all(backup)
+    })
+}
+
+fn promote_with_cleanup(
+    staging: &Path,
+    destination: &Path,
+    cleanup: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     let backup = destination.with_extension(format!("replaced-{}", uuid::Uuid::new_v4()));
     let previous = destination.exists();
     if previous {
@@ -149,13 +159,36 @@ fn promote_verified(staging: &Path, destination: &Path) -> anyhow::Result<()> {
         return Err(error.into());
     }
     if previous {
-        std::fs::remove_dir_all(backup)?;
+        if cleanup(&backup).is_err() {
+            log::warn!(
+                "local-stt: verified CoreML install promoted; prior artifact cleanup failed"
+            );
+        }
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn successful_model_promotion_is_not_failed_by_backup_cleanup() {
+        let root =
+            std::env::temp_dir().join(format!("verenu-fluid-cleanup-{}", uuid::Uuid::new_v4()));
+        let destination = root.join("model");
+        let staging = root.join("verified");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(destination.join("old"), b"old").unwrap();
+        std::fs::write(staging.join("new"), b"verified").unwrap();
+        super::promote_with_cleanup(&staging, &destination, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(destination.join("new")).unwrap(), b"verified");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn damaged_install_is_replaced_and_failed_promotion_restores_previous_files() {
         let root =
