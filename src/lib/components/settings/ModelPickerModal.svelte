@@ -15,6 +15,7 @@
   import { modelId, providerDisplayLabel, splitModelId, taskLabel, type TaskType } from './models';
   import {
     curatedRows,
+    localModelOffered,
     discoveredRows,
     unverifiedRows,
     appleIntelligenceVisible,
@@ -145,7 +146,7 @@
   // Selections stay listed even after a provider drops them, so a dead choice
   // still has somewhere to show its state and be swapped out.
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
-  const supportedHere = (row: ModelRow) => local.supported || row.provider !== 'local';
+  const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
   let refreshingApple = $state(false);
   const refreshing = $derived(refreshingApple || Object.values(modelCatalogStore.refreshing).some(Boolean));
@@ -230,6 +231,9 @@
 
   function activate(row: ModelRow) {
     if (row.remedy === 'add-key') return onOpenApiKeys();
+    // A pinned pick this machine cannot run stays listed so it can be replaced,
+    // but it must not be re-selectable.
+    if (row.provider === 'local' && row.state === 'unavailable') return;
     // A model that isn't on disk yet can't be chosen, so the row's job is to
     // fetch it. Selecting it afterwards is a second, deliberate click.
     if (row.remedy === 'download') return local.onDownload(row.id);
@@ -431,9 +435,15 @@
 
         {#if !local.supported}
           <p class="picker-note">
-            On-device models aren’t available on Intel Macs yet — they haven’t been validated on
-            that hardware, and older Intel machines struggle to run a local model well. A cloud
-            provider above works with no download.
+            {#if task === 'transcription'}
+              Other on-device speech models aren’t available on Intel Macs yet — they haven’t been
+              validated on that hardware. Apple Speech and Whisper are still offered, and a cloud
+              provider works with no download.
+            {:else}
+              On-device models aren’t available on Intel Macs yet — they haven’t been validated on
+              that hardware, and older Intel machines struggle to run a local model well. A cloud
+              provider above works with no download.
+            {/if}
           </p>
         {/if}
 
@@ -464,6 +474,34 @@
                 <button class="row-tool" type="button" onclick={() => local.runtime?.onDelete()}>Remove</button>
               {/if}
             </div>
+          {/if}
+          {#if group.provider === 'local' && local.supported && localModel('fluid-english-booster')}
+            {@const booster = localModel('fluid-english-booster')!}
+            <div class="runtime-note runtime-booster" data-testid="vocabulary-booster">
+              <span>
+                <strong>English vocabulary booster</strong> · optional{booster.size_mb ? `, ${booster.size_mb} MB` : ''}.
+                Not a speech model: it re-checks Context vocabulary spelling after Parakeet CoreML
+                transcribes, only when Language is set to English. Auto-detect, other languages, and
+                Japanese skip it.
+              </span>
+              {#if booster.is_downloading}
+                <button class="btn-ghost btn-compact" type="button" onclick={() => local.onCancel(booster.id)}>Cancel</button>
+              {:else if booster.is_downloaded}
+                <button class="btn-danger btn-compact" type="button" aria-label="Remove vocabulary booster" onclick={() => local.onDelete(booster.id)}>Remove</button>
+              {:else}
+                <button class="btn-ghost btn-compact" type="button" aria-label="Install vocabulary booster" onclick={() => local.onDownload(booster.id)}>Install</button>
+              {/if}
+            </div>
+            {#if booster.is_downloading}
+              <div class="row-progress" transition:slide={{ duration: motionMs(MOTION_MS.fast), easing: cubicOut }}>
+                <LocalDownloadProgress
+                  stage={local.downloadStage[booster.id] === 'verifying' ? 'verifying' : 'downloading'}
+                  percent={(local.downloadProgress[booster.id]?.progress ?? 0) * 100}
+                  label={local.downloadStage[booster.id] === 'verifying' ? 'Verifying booster…' : 'Downloading booster…'}
+                  indeterminate={local.downloadProgress[booster.id] == null}
+                />
+              </div>
+            {/if}
           {/if}
           {#each group.rows as row, index (row.key)}
             {@const active = isActive(row.key)}
@@ -516,7 +554,11 @@
                     : 'absent'}
                 {#key phase}
                   <span class="row-tools" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-                  {#if isDownloading(row.id)}
+                  {#if localModel(row.id)?.install_kind === 'system_managed'}
+                    <span class="row-state">No download</span>
+                  {:else if row.state === 'unavailable'}
+                    <span class="row-state">Unavailable</span>
+                  {:else if isDownloading(row.id)}
                     <button
                       class="row-tool"
                       data-testid="cancel-model-download"
@@ -1174,6 +1216,39 @@
     cursor: default;
   }
 
+  /* Landscape phones: the stacked header, search and refresh rows used to
+     leave about one model row visible. Give the list the height back. */
+  @media (max-height: 520px) {
+    .picker-card {
+      height: calc(100vh - 16px);
+    }
+
+    .picker-head {
+      padding: 10px 16px 6px;
+    }
+
+    .picker-title p {
+      display: none;
+    }
+
+    .picker-search-row {
+      padding: 2px 16px 8px;
+    }
+
+    .search-icon {
+      left: 26px;
+      bottom: 8px;
+    }
+
+    .catalog-refresh {
+      padding: 4px 16px;
+    }
+
+    .picker-foot {
+      padding: 8px 16px;
+    }
+  }
+
   @media (max-width: 640px) {
     .picker-body {
       grid-template-columns: 1fr;
@@ -1206,6 +1281,33 @@
     .picker-foot {
       padding-left: 14px;
       padding-right: 14px;
+    }
+
+    /* Long ids, tags and notes ("Not downloaded") otherwise run under the
+       row's Download/Delete button; wrap them and let the name wrap too. */
+    .row-name {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .row-sub {
+      flex-wrap: wrap;
+      column-gap: 6px;
+      row-gap: 1px;
+    }
+
+    .row-sub code {
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+
+    .row-sub > :not(:first-child)::before {
+      content: none;
+    }
+
+    .row-sub > :not(:first-child) {
+      white-space: normal;
     }
 
     .custom-row {

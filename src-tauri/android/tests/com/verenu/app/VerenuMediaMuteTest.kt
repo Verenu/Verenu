@@ -74,6 +74,39 @@ class VerenuMediaMuteTest {
         assertNull(media.store.ownedVolume)
     }
 
+    @Test fun observedUserOverrideIsKeptEvenIfTheUserThenChoosesZero() {
+        val media = Media()
+        media.control.update(true)
+        media.volume = 4
+        media.control.update(true)
+        media.volume = 0
+        media.control.update(true)
+        media.control.update(false)
+        assertEquals(0, media.volume)
+        assertEquals(listOf(0), media.writes)
+        assertNull(media.store.ownedVolume)
+    }
+
+    @Test fun disabledPreferenceNeverTakesOwnership() {
+        val media = Media()
+        repeat(3) { media.control.update(false) }
+        assertEquals(7, media.volume)
+        assertTrue(media.writes.isEmpty())
+        assertNull(media.store.ownedVolume)
+    }
+
+    @Test fun repeatedLifecycleReleaseRestoresOnlyOwnedVolume() {
+        for (userVolume in listOf<Int?>(null, 4)) {
+            val media = Media()
+            media.control.update(true)
+            if (userVolume != null) media.volume = userVolume
+            repeat(3) { media.control.update(false) }
+            assertEquals(userVolume ?: 7, media.volume)
+            assertEquals(if (userVolume == null) listOf(0, 7) else listOf(0), media.writes)
+            assertNull(media.store.ownedVolume)
+        }
+    }
+
     @Test fun aLaterDictationCapturesTheNewVolume() {
         val media = Media()
         media.control.update(true)

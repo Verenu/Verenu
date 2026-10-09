@@ -1,0 +1,20 @@
+Verenu FluidAudio speech bridge
+
+AcousticVocabulary.swift adapts the acoustic rescoring orchestration from
+FluidAudio VocabularyBoostingSession.swift at revision
+0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7, distributed under Apache-2.0.
+FluidAudio: https://github.com/FluidInference/FluidAudio
+
+Verenu modifications add a private tokenizer directory, remove content
+logging, preserve primary punctuation with conservative alignment checks,
+and restrict the English booster to explicitly English dictation.
+
+FluidAudio and its third-party license notices accompany the Swift package.
+The selected FluidInference model cards declare CC-BY-4.0. The English CTC
+booster model card also contains conflicting Apache-2.0 prose. Downloads
+retain the exact pinned model card and any published license files. Model
+authors and source revisions are recorded in local_stt/fluid_assets.json.
+Model weights are downloaded only on explicit user action and are not
+bundled in Verenu. Whisper GGML weights are from ggerganov/whisper.cpp and
+OpenAI Whisper, under the MIT license. Portable Whisper uses CPU whisper.cpp,
+not WhisperKit, CoreML, or an Apple Neural Engine implementation.

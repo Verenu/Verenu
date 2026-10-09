@@ -5,6 +5,7 @@
   import ModelPresetPicker from '../../components/settings/ModelPresetPicker.svelte';
   import {
     buildPresets,
+    eligibleSystemSpeechId,
     getHardware,
     type ActiveConfig,
     type Hardware,
@@ -43,6 +44,9 @@
   // Keep local choices hidden until the platform probe confirms support.
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
   let platformLocalSupport = $state<'checking' | 'supported' | 'unsupported' | 'unknown'>('checking');
+  // Whether the first speech-model listing finished (even if it failed), so a
+  // gated platform doesn't flash the unavailable notice before Apple Speech is known.
+  let speechListSettled = $state(false);
   // Someone who picked a cloud provider didn't ask for a multi-gigabyte local
   // model; Settings → Models still offers one. Local stays for the local path.
   const localSupported = $derived(platformLocalSupport === 'supported' && provider === 'local');
@@ -50,7 +54,13 @@
   const presetOptions = $derived({
     includeTranscriptionOnly: provider === 'local',
     localOnly: provider === 'local',
+    localModels: provider === 'local' ? localSttStore.models : undefined,
   });
+  // The blanket gate (Intel Macs) stays closed for every downloaded engine, but
+  // Apple Speech ships with macOS and is offered on its own once listed.
+  const systemSpeechOnly = $derived(
+    provider === 'local' && platformLocalSupport === 'unsupported' && eligibleSystemSpeechId(presetOptions) !== null,
+  );
   const presets = $derived(buildPresets(apiKeyStatus, hardware, localSupported, presetOptions));
 
   const installedLocal = $derived({
@@ -144,7 +154,7 @@
   }
 
   onMount(() => {
-    refreshLocalModels().catch(() => {});
+    refreshLocalModels().catch(() => {}).finally(() => { speechListSettled = true; });
     refreshLocalState().catch(() => {});
     refreshLocalLlmModels().catch(() => {});
     refreshLocalLlmState().catch(() => {});
@@ -155,9 +165,9 @@
 </script>
 
 <div class="step models-step">
-  {#if provider === 'local' && platformLocalSupport === 'checking'}
+  {#if provider === 'local' && (platformLocalSupport === 'checking' || (platformLocalSupport === 'unsupported' && !speechListSettled))}
     <p class="models-note" role="status">Checking whether on-device models are available…</p>
-  {:else if provider === 'local' && platformLocalSupport === 'unsupported'}
+  {:else if provider === 'local' && platformLocalSupport === 'unsupported' && !systemSpeechOnly}
     <div class="local-support-recovery" data-support="unsupported" role="note">
       <p>On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider to continue.</p>
       <button class="btn-primary" type="button" onclick={() => onChooseCloudProvider('unsupported')}>Choose a cloud provider</button>
