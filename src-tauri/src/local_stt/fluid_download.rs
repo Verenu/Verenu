@@ -130,12 +130,58 @@ pub async fn download(
         .await??;
     }
     tokio::fs::write(staging.join(".verenu-integrity"), bundle.revision).await?;
-    tokio::fs::rename(staging, manifest.final_path(root)).await?;
+    promote_verified(&staging, &manifest.final_path(root))?;
+    Ok(())
+}
+
+// Keep the old directory until promotion succeeds. A failed replacement
+// restores it; only verified model artifacts replace an existing install.
+fn promote_verified(staging: &Path, destination: &Path) -> anyhow::Result<()> {
+    let backup = destination.with_extension(format!("replaced-{}", uuid::Uuid::new_v4()));
+    let previous = destination.exists();
+    if previous {
+        std::fs::rename(destination, &backup)?;
+    }
+    if let Err(error) = std::fs::rename(staging, destination) {
+        if previous {
+            std::fs::rename(&backup, destination)?;
+        }
+        return Err(error.into());
+    }
+    if previous {
+        std::fs::remove_dir_all(backup)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn damaged_install_is_replaced_and_failed_promotion_restores_previous_files() {
+        let root =
+            std::env::temp_dir().join(format!("verenu-fluid-promote-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let destination = root.join("model");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("old"), b"existing artifact").unwrap();
+        let staging = root.join("verified");
+        assert!(super::promote_verified(&staging, &destination).is_err());
+        assert_eq!(
+            std::fs::read(destination.join("old")).unwrap(),
+            b"existing artifact"
+        );
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join("new"), b"verified artifact").unwrap();
+        super::promote_verified(&staging, &destination).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("new")).unwrap(),
+            b"verified artifact"
+        );
+        assert!(!destination.join("old").exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn fluid_download_progress_stays_fractional_and_chunk_updates_are_bounded() {
         let payload =
