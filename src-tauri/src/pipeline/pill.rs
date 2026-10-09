@@ -153,6 +153,7 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
         .build()
     {
         Ok(pill) => {
+            crate::apply_runtime_icons(app, None);
             #[cfg(target_os = "linux")]
             crate::system::linux_webview::configure_window(&pill);
             // Keep the WebView client area transparent even when Windows
@@ -942,6 +943,28 @@ pub(crate) fn native_test_pill(
             result["interactive"] = input.interactive.into();
             result["rect"] = serde_json::json!(input.rect);
         }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let owner = app.clone();
+        app.run_on_main_thread(move || {
+            use gtk::prelude::GtkWindowExt;
+            let icon = |label| owner.get_webview_window(label)
+                .and_then(|window| window.gtk_window().ok())
+                .and_then(|window| window.icon());
+            let main = icon("main");
+            let pill = icon("pill");
+            let matches = match (main, pill) {
+                (Some(main), Some(pill)) => main.width() == pill.width()
+                    && main.height() == pill.height()
+                    && main.read_pixel_bytes() == pill.read_pixel_bytes(),
+                _ => false,
+            };
+            let _ = sender.send(serde_json::json!({
+                "windowClass": gtk::glib::prgname().map(|name| name.to_string()),
+                "matchesMain": matches,
+            }));
+        }).map_err(|error| error.to_string())?;
+        result["appIcon"] = receiver.recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| error.to_string())?;
         result
     };
     Ok(result)
