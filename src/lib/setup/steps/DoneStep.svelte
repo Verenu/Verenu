@@ -17,6 +17,8 @@
     modelsReady,
     modelReadinessMessage,
     presetName,
+    onReviewModels,
+    modelRecoveryDisabled,
   }: {
     providerName: string;
     presetName: string;
@@ -27,6 +29,8 @@
     hasKey: boolean;
     modelsReady: boolean;
     modelReadinessMessage: string;
+    onReviewModels: () => void;
+    modelRecoveryDisabled: boolean;
   } = $props();
 
   const keyLabels = $derived(hotkeyLabels());
@@ -93,7 +97,7 @@
     <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('keys')}>Add API key</button></div>
   {/if}
   {#if !modelsReady}
-    <div class="done-warning done-model-warning" role="status">{modelReadinessMessage} <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open Models settings</button></div>
+    <div class="done-warning done-model-warning" role="status">{modelReadinessMessage} <button class="btn-ghost btn-compact" disabled={modelRecoveryDisabled} onclick={onReviewModels}>Review models</button></div>
   {/if}
 
   <div class="done-quickstart" aria-label="How to dictate">
