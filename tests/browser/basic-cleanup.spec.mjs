@@ -1,6 +1,22 @@
 import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
 
+test('Context hints locate the independent voice commands control in Settings General', async ({ page }) => {
+  await page.getByRole('button', { name: 'New context group', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New context group', exact: true });
+  await expect(dialog.locator('.field-hint').filter({ hasText: 'Voice commands' })).toContainText('Settings > General');
+  const cleanup = dialog.locator('.field-col').filter({ hasText: 'Cleanup' }).getByRole('button');
+  await cleanup.click();
+  await page.getByRole('option', { name: 'Basic', exact: true }).click();
+  const hint = dialog.getByRole('note');
+  await expect(hint).toContainText('Voice commands are a separate global option in Settings > General.');
+  await hint.scrollIntoViewIfNeeded();
+  await expect(hint).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await expect(page.getByRole('switch', { name: 'Voice commands', exact: true })).toBeVisible();
+});
+
 test('Basic selection and independently opt-in commands persist without a prompt editor', async ({ page, session }, testInfo) => {
   const previous = await session.invoke('get_all_settings');
   // get_all_settings omits cleanup_intensity, so read it canonically.

@@ -48,6 +48,11 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
     for (const [commands, raw, expected] of [
       [false, 'um send send it new line tomorrow', 'Send it new line tomorrow'],
       [true, 'um send send it new line tomorrow', 'Send it\nTomorrow'],
+      [true, 'First. Second. scratch that scratch that', ''],
+      [true, 'First. Second. scratch that scratch that Third', 'Third'],
+      [true, 'Hello new line new line tomorrow', 'Hello\n\nTomorrow'],
+      [true, 'Hello new paragraph new paragraph tomorrow', 'Hello\n\n\n\nTomorrow'],
+      [false, 'Scratch that scratch that', 'Scratch that'],
       [true, 'greeting discard scratch that tomorrow', 'um scratch that new line Tomorrow'],
       [true, 'Keep it semicolon change this scratch that greeting', 'Keep it; um scratch that new line'],
       [true, 'um please (um) use new line', 'Please use New Line'],
@@ -74,6 +79,16 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const before = new Set((await invoke('get_recent')).map(row => row.id));
       const cursor = (await (await request('/events?after=0')).json()).cursor;
       const response = await request(`/audio?context=${context.id}&process=synthetic-basic`, { method: 'POST', body: audio });
+      if (expected === '') {
+        // An entirely rolled-back dictation follows the existing empty-output
+        // policy: no text is delivered and no history/completion is saved.
+        assert.equal(response.status, 422);
+        assert.equal((await response.json()).error, 'Dictation failed or audio was rejected. Inspect session events and redacted logs.');
+        assert.equal((await invoke('get_recent')).filter(row => !before.has(row.id)).length, 0);
+        const events = (await (await request(`/events?after=${cursor}`)).json()).events;
+        assert.ok(!events.some(event => event.event === 'verenu:transcribed'));
+        continue;
+      }
       assert.equal(response.status, 200);
       const result = await response.json(); assert.equal(result.pipeline, 'production'); assert.equal(result.text, expected);
       const rows = (await invoke('get_recent')).filter(row => !before.has(row.id));
@@ -81,7 +96,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 16);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 21);
   } finally {
     try {
       for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });

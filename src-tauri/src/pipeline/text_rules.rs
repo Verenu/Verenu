@@ -535,13 +535,15 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
 }
 
 fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool) -> String {
-    let text = if cleanup {
-        basic(text, sentence_initial)
+    // Execute each command before Basic can collapse repeated spoken words.
+    // Generated line boundaries remain boundaries during mechanical cleanup.
+    let text = if voice_commands {
+        commands(text)
     } else {
         text.to_owned()
     };
-    if voice_commands {
-        commands(&text)
+    if cleanup {
+        basic(&text, sentence_initial)
     } else {
         text
     }
@@ -550,6 +552,20 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn basic_preserves_each_repeated_voice_command() {
+        for (input, expected) in [
+            ("First. Second. scratch that scratch that", ""),
+            ("Hello new line new line tomorrow", "Hello\n\nTomorrow"),
+            ("Hello comma comma tomorrow", "Hello, tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        assert_eq!(process("Scratch that scratch that", true, false, &[]), "Scratch that");
+        assert_eq!(process("\"scratch that scratch that\"", true, true, &[]), "\"scratch that scratch that\"");
+        assert_eq!(process("`new line new line`", true, true, &[]), "`new line new line`");
+        assert_eq!(process("new line new line", true, true, &["new line"]), "new line new line");
+    }
     #[test]
     fn basic_examples_and_literal_boundaries() {
         for (input, expected) in [
