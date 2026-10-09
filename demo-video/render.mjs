@@ -12,6 +12,7 @@ import { createReadStream, existsSync, mkdirSync, readdirSync, statSync } from '
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readDemoVersion } from './release-version.mjs';
 
 const [assetsArg, outArg, flag, stillsArg] = process.argv.slice(2);
 if (!assetsArg || !outArg) {
@@ -20,6 +21,7 @@ if (!assetsArg || !outArg) {
 }
 const assets = resolve(assetsArg);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const version = readDemoVersion(repo);
 const FPS = 30;
 const DURATION = 60;
 
@@ -40,7 +42,7 @@ const pillFrames = readdirSync(join(assets, 'pill-frames')).filter((f) => f.ends
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome-stable' });
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 page.on('pageerror', (e) => console.error('pageerror', e.message));
-await page.goto(`${base}/demo-video/stage.html?pillFrames=${pillFrames}`);
+await page.goto(`${base}/demo-video/stage.html?pillFrames=${pillFrames}&version=${encodeURIComponent(version)}`);
 await page.evaluate(() => window.demo.load('/__assets'));
 
 const frameAt = async (t) => {

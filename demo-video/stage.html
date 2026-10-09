@@ -151,7 +151,7 @@
     <div class="wordmark">Verenu</div>
     <div class="subline">Free, open-source AI dictation</div>
     <div class="url">github.com/Verenu/Verenu</div>
-    <div class="foot">App screens and pill captured from Verenu 0.20.0 (master) with sample data. The chat app is an illustration.</div>
+    <div class="foot">App screens and pill captured from Verenu <span id="capture-version"></span> (master) with sample data. The chat app is an illustration.</div>
   </section>
 
   <div id="black"></div>
@@ -160,6 +160,9 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
+  const version = new URLSearchParams(location.search).get('version');
+  if (!version) throw new Error('Demo version is required; use render.mjs');
+  $('capture-version').textContent = version;
   const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
   const seg = (t, a, b) => clamp((t - a) / (b - a));
   const ease = (x) => 1 - Math.pow(1 - x, 3);           // easeOutCubic
