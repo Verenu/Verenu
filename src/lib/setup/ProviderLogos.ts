@@ -1,6 +1,15 @@
 import type { ProviderId } from '../settings';
 // Moonshine ships no vector mark anywhere — see the note above MODEL_MARKS.
 import moonshineLogo from '../../assets/providers/moonshine.png?url';
+/*
+ * Apple Intelligence icon, byte-for-byte the official asset Apple publishes at
+ * https://developer.apple.com/assets/elements/icons/apple-intelligence/apple-intelligence-256x256_2x.png
+ * (512x512 PNG). It is bundled locally so the app makes no runtime request for
+ * it. Do not trace, redraw, recolour or filter it; Apple's marks stay subject
+ * to Apple's trademark and identity guidelines, and the icon is used here only
+ * to identify Apple Intelligence as a cleanup option on supported Macs.
+ */
+import appleIntelligenceLogo from '../../assets/providers/apple-intelligence.png?url';
 
 /*
  * Provider marks, exactly as each brand publishes them.
@@ -65,12 +74,10 @@ const MARKS: Partial<Record<ProviderId, Mark>> = {
     plate: 'none',
     body: `<path fill="currentColor" d="M9 2h1.5v2h3V2H15v2h1a4 4 0 0 1 4 4v1h2v1.5h-2v3h2V15h-2v1a4 4 0 0 1-4 4h-1v2h-1.5v-2h-3v2H9v-2H8a4 4 0 0 1-4-4v-1H2v-1.5h2v-3H2V9h2V8a4 4 0 0 1 4-4h1V2Zm-1 3.5A2.5 2.5 0 0 0 5.5 8v8A2.5 2.5 0 0 0 8 18.5h8a2.5 2.5 0 0 0 2.5-2.5V8A2.5 2.5 0 0 0 16 5.5H8ZM9 9h6v6H9V9Z"/>`,
   },
-  // A neutral sparkle rather than a copy of Apple's mark: the chip would read as
-  // a local model, and a redrawn Apple logo is not one we can vouch for.
   'apple-intelligence': {
-    viewBox: '0 0 24 24',
+    viewBox: '0 0 512 512',
     plate: 'none',
-    body: `<path fill="currentColor" d="M12 2.5l2.1 6.4 6.4 2.1-6.4 2.1L12 19.5l-2.1-6.4-6.4-2.1 6.4-2.1L12 2.5Z"/>`,
+    body: `<title>Apple Intelligence</title><image href="${appleIntelligenceLogo}" width="512" height="512"/>`,
   },
 };
 
