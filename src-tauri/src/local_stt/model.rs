@@ -11,10 +11,15 @@ pub enum LocalSttEngineType {
     GigaAm,
     Canary,
     Cohere,
+    Whisper,
+    AppleSpeech,
+    FluidAudio,
+    CtcBooster,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LocalSttModelInfo {
+    pub install_kind: &'static str,
     pub id: String,
     pub name: String,
     pub description: String,
@@ -58,6 +63,16 @@ pub struct LocalSttModelManifest {
 }
 
 impl LocalSttModelManifest {
+    pub fn is_supported(&self) -> bool {
+        match self.engine_type {
+            LocalSttEngineType::AppleSpeech => cfg!(target_os = "macos"),
+            LocalSttEngineType::FluidAudio | LocalSttEngineType::CtcBooster => {
+                super::fluid_supported()
+            }
+            LocalSttEngineType::Whisper => !cfg!(target_os = "android"),
+            _ => true,
+        }
+    }
     pub fn final_path(&self, root: &Path) -> PathBuf {
         root.join(self.install_name)
     }
@@ -71,6 +86,18 @@ impl LocalSttModelManifest {
     }
 
     pub fn is_downloaded(&self, root: &Path) -> bool {
+        if matches!(
+            self.engine_type,
+            LocalSttEngineType::FluidAudio | LocalSttEngineType::CtcBooster
+        ) {
+            return self.is_supported() && super::fluid_download::installed(self, root);
+        }
+        if self.engine_type == LocalSttEngineType::AppleSpeech {
+            return cfg!(target_os = "macos");
+        }
+        if self.engine_type == LocalSttEngineType::Whisper && cfg!(target_os = "android") {
+            return false;
+        }
         let path = self.final_path(root);
         if self.is_directory {
             path.is_dir()
@@ -87,6 +114,11 @@ impl LocalSttModelManifest {
 
     pub fn to_info(&self, root: &Path, is_downloading: bool) -> LocalSttModelInfo {
         LocalSttModelInfo {
+            install_kind: if self.engine_type == LocalSttEngineType::AppleSpeech {
+                "system_managed"
+            } else {
+                "download"
+            },
             id: self.id.to_string(),
             name: self.name.to_string(),
             description: self.description.to_string(),
@@ -123,6 +155,44 @@ impl LocalSttModelManifest {
 /// enabled for Parakeet/Moonshine — no new build dependencies.
 pub fn built_in_model_manifests() -> Vec<LocalSttModelManifest> {
     vec![
+        fluid_manifest("fluid-parakeet-ultra", "Parakeet Ultra · CoreML", "Mac Apple Silicon offline multilingual speech. FluidAudio CoreML engine.", 603, &["Multilingual"]),
+        fluid_manifest("fluid-parakeet-110m", "Parakeet 110M · CoreML", "Small English offline speech on Mac Apple Silicon. FluidAudio TDT engine.", 217, &["English"]),
+        fluid_manifest("fluid-parakeet-ja", "Parakeet Japanese · CoreML", "Japanese offline speech on Mac Apple Silicon. FluidAudio TDT engine.", 591, &["Japanese"]),
+        LocalSttModelManifest { engine_type: LocalSttEngineType::CtcBooster,
+            ..fluid_manifest("fluid-english-booster", "English vocabulary booster", "Optional acoustic Context vocabulary rescoring for FluidAudio, for explicitly English dictation. Separate from speech models.", 98, &["English"]) },
+        LocalSttModelManifest {
+            id: "apple-speech", name: "Apple Speech",
+            description: "System-managed on-device recognition on macOS. Requires Speech permission and supported language assets.",
+            filename: "", url: None, sha256: None, size_mb: 0, is_directory: false,
+            install_name: "apple-speech", engine_type: LocalSttEngineType::AppleSpeech,
+            speed_score: 3.0, accuracy_score: 3.0, privacy_label: "Runs on this device",
+            supported_languages: &["System languages"], supports_language_selection: true,
+            supports_translation: false, is_recommended: false,
+        },
+        LocalSttModelManifest {
+            id: "whisper-small", name: "Whisper Small",
+            description: "Multilingual offline speech with Context vocabulary hints. Portable whisper.cpp CPU engine.",
+            filename: "ggml-small.bin",
+            url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin"),
+            sha256: Some("1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
+            size_mb: 465, is_directory: false, install_name: "ggml-small.bin",
+            engine_type: LocalSttEngineType::Whisper,
+            speed_score: 2.0, accuracy_score: 3.5,
+            privacy_label: "Runs on this device", supported_languages: &["Multilingual"],
+            supports_language_selection: true, supports_translation: false, is_recommended: false,
+        },
+        LocalSttModelManifest {
+            id: "whisper-large-v3-turbo", name: "Whisper Large V3 Turbo",
+            description: "Larger multilingual offline speech with Context vocabulary hints. Portable whisper.cpp CPU engine.",
+            filename: "ggml-large-v3-turbo.bin",
+            url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin"),
+            sha256: Some("1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
+            size_mb: 1550, is_directory: false, install_name: "ggml-large-v3-turbo.bin",
+            engine_type: LocalSttEngineType::Whisper,
+            speed_score: 1.5, accuracy_score: 4.0,
+            privacy_label: "Runs on this device", supported_languages: &["Multilingual"],
+            supports_language_selection: true, supports_translation: false, is_recommended: false,
+        },
         LocalSttModelManifest {
             id: "parakeet-v3",
             name: "Parakeet V3",
@@ -354,6 +424,34 @@ pub fn manifest_by_id(model_id: &str) -> Option<LocalSttModelManifest> {
         .find(|manifest| manifest.id == model_id)
 }
 
+fn fluid_manifest(
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    size_mb: u64,
+    languages: &'static [&'static str],
+) -> LocalSttModelManifest {
+    LocalSttModelManifest {
+        id,
+        name,
+        description,
+        filename: id,
+        install_name: id,
+        url: Some("https://huggingface.co/FluidInference"),
+        sha256: None,
+        size_mb,
+        is_directory: true,
+        engine_type: LocalSttEngineType::FluidAudio,
+        speed_score: 3.0,
+        accuracy_score: 4.0,
+        privacy_label: "Runs on this device",
+        supported_languages: languages,
+        supports_language_selection: id == "fluid-parakeet-ultra",
+        supports_translation: false,
+        is_recommended: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +474,10 @@ mod tests {
             (LocalSttEngineType::GigaAm, "\"giga_am\""),
             (LocalSttEngineType::Canary, "\"canary\""),
             (LocalSttEngineType::Cohere, "\"cohere\""),
+            (LocalSttEngineType::Whisper, "\"whisper\""),
+            (LocalSttEngineType::AppleSpeech, "\"apple_speech\""),
+            (LocalSttEngineType::FluidAudio, "\"fluid_audio\""),
+            (LocalSttEngineType::CtcBooster, "\"ctc_booster\""),
         ];
         for (variant, expected) in cases {
             assert_eq!(serde_json::to_string(&variant).unwrap(), expected);

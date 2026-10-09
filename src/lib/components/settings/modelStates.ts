@@ -48,6 +48,7 @@ export type ModelRow = {
 };
 
 export type LocalModelInfo = {
+  install_kind?: 'system_managed' | 'download';
   id: string;
   name?: string;
   description?: string;
@@ -67,7 +68,10 @@ export type LocalModelInfo = {
  */
 export type LocalControls = {
   models: LocalModelInfo[];
-  /** False on hardware where on-device models haven't been validated. */
+  /**
+   * False on hardware where on-device models haven't been validated. Apple
+   * Speech and whisper.cpp transcription remain offered (see `localModelOffered`).
+   */
   supported: boolean;
   downloadProgress: Record<string, { progress?: number } | undefined>;
   downloadStage: Record<string, string | undefined>;
@@ -109,11 +113,40 @@ function row(entry: CatalogEntry, state: ModelState, note = '', remedy: Remedy =
   };
 }
 
+/**
+ * Local speech models the backend only lists on hardware that supports them
+ * (Apple Speech and FluidAudio on Macs, whisper.cpp off Android). Absence from
+ * `list_models` therefore means "unsupported here", never "not downloaded".
+ */
+const PLATFORM_GATED_LOCAL = (id: string) =>
+  id === 'apple-speech' || id.startsWith('fluid-') || id.startsWith('whisper-');
+const UNSUPPORTED_LOCAL_NOTE = 'Not available on this device · choose another model';
+
+/**
+ * Speech models that stay offered where the blanket on-device gate (Intel
+ * Macs) is closed: Apple Speech ships with macOS and whisper.cpp is portable.
+ * Availability itself still comes from the backend list.
+ */
+const isPortableLocalSpeech = (id: string) => id === 'apple-speech' || id.startsWith('whisper-');
+
+/** Whether a local row may be listed given the picker's `supported` gate. */
+export function localModelOffered(local: Pick<LocalControls, 'supported'>, task: TaskType, id: string): boolean {
+  return local.supported || (task === 'transcription' && isPortableLocalSpeech(id));
+}
+
 function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
   const info = ctx.localModels.find((model) => model.id === entry.id);
   const sizeMb = info?.size_mb;
   const base = { ...row(entry, 'ready'), sizeMb };
+  if (!info && entry.tasks.includes('transcription') && PLATFORM_GATED_LOCAL(entry.id)) {
+    return { ...base, state: 'unavailable', note: UNSUPPORTED_LOCAL_NOTE };
+  }
 
+  // Apple Speech has no download; its permission and language assets are
+  // checked when dictation starts, so it is selectable as soon as it is listed.
+  if (info?.install_kind === 'system_managed') {
+    return { ...base, note: 'Managed by macOS · permission and language assets required' };
+  }
   if (!info || info.is_downloaded !== true) {
     return { ...base, state: 'needs-setup', note: 'Not downloaded', remedy: 'download' };
   }
@@ -121,6 +154,14 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return { ...base, state: 'needs-setup', note: 'Needs more memory than this machine has' };
   }
   return { ...base, note: 'Installed' };
+}
+
+/** A picked local model this machine cannot run (imported settings, another device). */
+function unsupportedLocalPick(id: string, ctx: PickerContext): boolean {
+  const parsed = splitModelId(id);
+  if (parsed?.provider !== 'local' || ctx.localModels.length === 0) return false;
+  const entry = catalogEntry('local', parsed.model);
+  return !!entry && localRow(entry, ctx).note === UNSUPPORTED_LOCAL_NOTE;
 }
 
 function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
@@ -382,7 +423,21 @@ export function unavailableMessages(
   const chain = [defaultModel, ...fallbacks];
   const taskName = task === 'transcription' ? 'Transcription' : 'Clean-up';
 
-  return unavailableSelections(task, chain, ctx).map((entry) => {
+  const unsupported = chain.flatMap((id, index) => {
+    if (!unsupportedLocalPick(id, ctx)) return [];
+    const name = modelDisplayLabel('local', splitModelId(id)!.model);
+    if (index > 0) {
+      return [`Fallback #${index} ${name} isn't available on this device and will be skipped.`];
+    }
+    const next = firstRunnable(fallbacks, ctx);
+    if (!next) {
+      return [`${name} isn't available on this device and no fallback is usable — ${taskName.toLowerCase()} will fail until you pick another model.`];
+    }
+    const parsed = splitModelId(next)!;
+    return [`${name} isn't available on this device. ${taskName} will use ${qualifiedModelLabel(parsed.provider, parsed.model)} instead.`];
+  });
+
+  return [...unsupported, ...unavailableSelections(task, chain, ctx).map((entry) => {
     const name = modelDisplayLabel(entry.provider, entry.model);
     const provider = providerDisplayLabel(entry.provider);
 
@@ -400,7 +455,7 @@ export function unavailableMessages(
     const parsed = splitModelId(next)!;
     const nextName = qualifiedModelLabel(parsed.provider, parsed.model);
     return `${name} is no longer offered by ${provider}. ${taskName} will use ${nextName} instead.`;
-  });
+  })];
 }
 
 export { MISS_INTERVAL_MS, isTrustworthy };
