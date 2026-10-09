@@ -68,6 +68,7 @@
   let apiKeyMode = $state<'fork' | 'tutorial' | 'paste'>('fork');
   let keySaved = $state(false);
   let providerKeyStatus = $state<Record<ProviderId, boolean>>({
+    'apple-intelligence': false,
     groq: false,
     openai: false,
     google: false,
@@ -405,6 +406,7 @@
       openrouter: [],
       xai: [],
       local: ['parakeet-v3'],
+      'apple-intelligence': [],
     };
     for (const id of selected) {
       const parsed = splitModelId(id);
@@ -425,6 +427,7 @@
       openrouter: [],
       xai: [],
       local: ['qwen2.5-3b-instruct'],
+      'apple-intelligence': [],
     };
     for (const id of selected) {
       const parsed = splitModelId(id);

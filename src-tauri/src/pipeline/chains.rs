@@ -3,7 +3,10 @@ use super::*;
 /// Custom endpoints can be LAN-hosted; loss of internet is not evidence that
 /// they are unreachable. Built-in cloud providers can be skipped when offline.
 pub(super) fn candidate_available_offline(provider: &str, offline: bool) -> bool {
-    !offline || provider == store::LOCAL || crate::api::custom::is_custom_id(provider)
+    !offline
+        || provider == store::LOCAL
+        || provider == store::APPLE_INTELLIGENCE
+        || crate::api::custom::is_custom_id(provider)
 }
 
 #[cfg(test)]
@@ -13,6 +16,7 @@ mod offline_tests {
     fn offline_policy_preserves_local_and_custom_endpoints() {
         assert!(!candidate_available_offline("groq", true));
         assert!(candidate_available_offline("local", true));
+        assert!(candidate_available_offline("apple-intelligence", true));
         assert!(candidate_available_offline(
             "custom:12345678-1234-1234-1234-123456789012",
             true
@@ -105,9 +109,9 @@ fn prioritize_model_chain(
     if mode == "manual" {
         return chain;
     }
-    let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain
-        .into_iter()
-        .partition(|(provider, _)| provider != store::LOCAL);
+    let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain.into_iter().partition(|(provider, _)| {
+        provider != store::LOCAL && provider != store::APPLE_INTELLIGENCE
+    });
     // The Quality pair stays intact. Only recovery candidates are reordered.
     let fixed = if mode == "quality" && task == "transcription" {
         cloud.len().min(2)
@@ -185,6 +189,8 @@ pub(super) fn has_cleanup_key_in_chain(cfg: &store::PipelineConfig) -> bool {
                     manifest.is_downloaded(&crate::local_llm::LocalLlmManager::models_root())
                 })
                 .unwrap_or(false)
+        } else if provider == store::APPLE_INTELLIGENCE {
+            crate::api::apple_intelligence::availability().available
         } else {
             cfg.provider_has_auth(provider)
         }

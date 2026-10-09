@@ -2,7 +2,7 @@ import type { AppearanceMode, CleanupIntensity, ProviderId, ToneId } from '../se
 
 // OpenRouter and xAI are bring-your-own providers set up from Settings, so the
 // wizard has no card or key tutorial for them.
-export type WizardProviderId = Exclude<ProviderId, 'openrouter' | 'xai'>;
+export type WizardProviderId = Exclude<ProviderId, 'openrouter' | 'xai' | 'apple-intelligence'>;
 
 type SetupProvider = {
   id: WizardProviderId;

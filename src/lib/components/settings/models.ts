@@ -13,6 +13,7 @@ export const ALL_PROVIDER_IDS: ProviderId[] = [
   'openrouter',
   'xai',
   'local',
+  'apple-intelligence',
 ];
 
 export const GROQ_GPT_OSS_20B_MODEL = 'openai/gpt-oss-20b';
@@ -66,6 +67,7 @@ export type CatalogEntry = {
  * to the curated list is a data edit here, never a UI change.
  */
 export const CATALOG: CatalogEntry[] = [
+  { provider: 'apple-intelligence', id: 'system', label: 'Apple Intelligence', tasks: ['cleanup'], tags: [] },
   { provider: 'groq', id: 'whisper-large-v3', label: 'Whisper Large v3', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
   { provider: 'groq', id: 'whisper-large-v3-turbo', label: 'Whisper Large v3 Turbo', tasks: ['transcription'], tags: ['fast', 'cheap'], tier: 'standard' },
   { provider: 'groq', id: GROQ_QWEN_3_8_27B_MODEL, label: 'Qwen3.8 27B', tasks: ['cleanup'], tags: ['accurate'], tier: 'premium' },
@@ -189,6 +191,7 @@ export const emptyProviderModelMap = (): ProviderModelMap => ({
   openrouter: [],
   xai: [],
   local: [],
+  'apple-intelligence': [],
 });
 
 export function modelId(provider: ProviderId, modelName: string): string {
@@ -243,6 +246,8 @@ export function providerDisplayLabel(provider: ProviderId): string {
       return 'xAI';
     case 'local':
       return 'Local';
+    case 'apple-intelligence':
+      return 'Apple Intelligence';
     default:
       return 'Groq';
   }

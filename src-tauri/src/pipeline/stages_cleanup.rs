@@ -287,11 +287,16 @@ async fn run_cleanup_provider_chain(
             continue;
         }
         let is_local = provider_id == store::LOCAL;
+        let is_apple = provider_id == store::APPLE_INTELLIGENCE;
         let key = cfg.key_for(&provider_id).to_owned();
-        if !cfg.provider_has_auth(&provider_id) && !is_local {
+        if !cfg.provider_has_auth(&provider_id) && !is_local && !is_apple {
             continue;
         }
-        let attempts = if is_local { 1 } else { CLEANUP_FAST_ATTEMPTS };
+        let attempts = if is_local || is_apple {
+            1
+        } else {
+            CLEANUP_FAST_ATTEMPTS
+        };
         for attempt in 1..=attempts {
             if attempt > 1 {
                 if let Some(telemetry) = telemetry {
@@ -320,7 +325,11 @@ async fn run_cleanup_provider_chain(
                     continue;
                 };
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS),
+                    std::time::Duration::from_secs(if is_apple {
+                        crate::api::apple_intelligence::TIMEOUT_SECS + 1
+                    } else {
+                        CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS
+                    }),
                     cleanup::cleanup_with_alternate_and_evidence(
                         expanded,
                         cp,
@@ -350,7 +359,11 @@ async fn run_cleanup_provider_chain(
                     / expanded.chars().count().max(1) as f64,
                 outcome.as_ref().is_ok_and(|text| !text.trim().is_empty()),
             );
-            if outcome.is_ok() && !is_local && !crate::api::custom::is_custom_id(&provider_id) {
+            if outcome.is_ok()
+                && !is_local
+                && !is_apple
+                && !crate::api::custom::is_custom_id(&provider_id)
+            {
                 crate::system::connectivity::note_online();
             }
             match outcome {
@@ -396,6 +409,7 @@ async fn run_cleanup_provider_chain(
                     // same-provider retry, because the second connection is
                     // often healthy even though the first one wedged.
                     if !is_local
+                        && !is_apple
                         && !offline
                         && (crate::api::is_connectivity_error(&e) || is_cleanup_soft_timeout(&e))
                     {
