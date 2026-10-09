@@ -5,7 +5,7 @@ struct Request: Decodable {
     let operation: String
     let path: String?
     let model: String?
-    let samples: [Float]?
+    let audioPcm: String?
     let language: String?
     let vocabulary: [String]?
     let boosterPath: String?
@@ -58,7 +58,17 @@ struct Response: Encodable {
                     response = Response(text: nil, error: nil, boosting: nil)
                 } else if request.operation == "transcribe" {
                     // Match media/audio.rs MAX_RECORDING_SECONDS (15 minutes).
-                    guard let samples = request.samples, samples.count <= 16_000 * 900,
+                    let maximumBytes = 16_000 * 900 * 4
+                    guard let encoded = request.audioPcm,
+                          encoded.utf8.count <= ((maximumBytes + 2) / 3) * 4,
+                          let pcm = Data(base64Encoded: encoded),
+                          pcm.count <= maximumBytes, pcm.count % 4 == 0 else { throw BridgeError.invalid }
+                    let samples: [Float] = pcm.withUnsafeBytes { bytes in
+                        stride(from: 0, to: bytes.count, by: 4).map { offset in
+                            Float(bitPattern: UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt32.self)))
+                        }
+                    }
+                    guard !samples.isEmpty,
                           samples.allSatisfy({ $0.isFinite }) else { throw BridgeError.invalid }
                     var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
                     let result = try await manager.transcribe(samples, decoderState: &state,
