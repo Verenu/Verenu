@@ -16,6 +16,7 @@ pub struct FluidEngine {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     root: PathBuf,
+    booster_integrity: super::integrity_cache::IntegrityCache,
 }
 #[derive(Deserialize)]
 struct Response {
@@ -63,6 +64,7 @@ impl FluidEngine {
             input,
             output,
             root,
+            booster_integrity: Default::default(),
         };
         engine.request(
             &serde_json::json!({"operation":"load", "path":path, "model":model}),
@@ -121,8 +123,15 @@ impl FluidEngine {
         cancellation: &AtomicBool,
     ) -> anyhow::Result<String> {
         let booster = super::model::manifest_by_id("fluid-english-booster").filter(|m| {
-            m.is_downloaded(&self.root)
-                && super::fluid_download::verify_integrity(m.id, &m.final_path(&self.root)).is_ok()
+            language == "en"
+                && !vocabulary.terms().is_empty()
+                && m.is_downloaded(&self.root)
+                && super::fluid_download::verify_cached_integrity(
+                    m.id,
+                    &m.final_path(&self.root),
+                    &mut self.booster_integrity,
+                )
+                .is_ok()
         });
         let response = self.request(&serde_json::json!({
             "operation":"transcribe", "samples":samples, "language":language,

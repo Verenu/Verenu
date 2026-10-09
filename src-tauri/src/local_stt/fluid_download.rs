@@ -9,8 +9,25 @@ use std::{
         Arc,
     },
 };
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::io::AsyncWriteExt;
+
+#[derive(Default)]
+struct ProgressThrottle(Option<std::time::Instant>);
+impl ProgressThrottle {
+    fn due(&mut self, now: std::time::Instant, complete: bool) -> bool {
+        if complete
+            || self.0.is_none_or(|last| {
+                now.duration_since(last) >= std::time::Duration::from_millis(150)
+            })
+        {
+            self.0 = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct Bundle {
@@ -44,6 +61,7 @@ pub async fn download(
     tokio::fs::create_dir_all(&staging).await?;
     let total: u64 = bundle.files.iter().map(|file| file.size).sum();
     let mut completed = 0;
+    let mut progress = ProgressThrottle::default();
     let client = reqwest::Client::new();
     for file in &bundle.files {
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
@@ -75,10 +93,15 @@ pub async fn download(
             );
             hash.update(&chunk);
             output.write_all(&chunk).await?;
-            let _ = app.emit("local-stt-model-download-progress", serde_json::json!({
-                "model_id": manifest.id, "progress": (completed + received) as f64 / total as f64 * 100.0,
-                "downloaded_bytes": completed + received, "total_bytes": total
-            }));
+            if progress.due(std::time::Instant::now(), false) {
+                crate::api::model_download::emit_download_progress(
+                    app,
+                    "local-stt-model-download-progress",
+                    manifest.id,
+                    completed + received,
+                    Some(total),
+                );
+            }
         }
         output.sync_all().await?;
         anyhow::ensure!(
@@ -88,6 +111,15 @@ pub async fn download(
         completed += received;
     }
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
+    if progress.due(std::time::Instant::now(), true) {
+        crate::api::model_download::emit_download_progress(
+            app,
+            "local-stt-model-download-progress",
+            manifest.id,
+            completed,
+            Some(total),
+        );
+    }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let validation_path = staging.clone();
@@ -100,6 +132,37 @@ pub async fn download(
     tokio::fs::write(staging.join(".verenu-integrity"), bundle.revision).await?;
     tokio::fs::rename(staging, manifest.final_path(root)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fluid_download_progress_stays_fractional_and_chunk_updates_are_bounded() {
+        let payload =
+            crate::api::model_download::DownloadProgress::new("fluid-parakeet-110m", 1, Some(100));
+        let wire = serde_json::to_value(payload).unwrap();
+        assert!((wire["progress"].as_f64().unwrap() * 100.0 - 1.0).abs() < 0.0001);
+        let mut throttle = super::ProgressThrottle::default();
+        let start = std::time::Instant::now();
+        let emitted = (0..10_000)
+            .filter(|chunk| {
+                throttle.due(
+                    start + std::time::Duration::from_micros(*chunk * 100),
+                    false,
+                )
+            })
+            .count();
+        assert_eq!(emitted, 7);
+        assert!(throttle.due(start + std::time::Duration::from_secs(1), true));
+        assert_eq!(
+            crate::api::model_download::DownloadProgress::new("fluid", 100, Some(100)).progress,
+            1.0
+        );
+        assert_eq!(
+            crate::api::model_download::DownloadProgress::new("fluid", 200, Some(100)).progress,
+            1.0
+        );
+    }
 }
 
 pub fn installed(manifest: &super::model::LocalSttModelManifest, root: &Path) -> bool {
@@ -117,6 +180,26 @@ pub fn installed(manifest: &super::model::LocalSttModelManifest, root: &Path) ->
         && bundle.files.iter().all(|file| {
             std::fs::metadata(path.join(&file.path)).is_ok_and(|meta| meta.len() == file.size)
         })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn verify_cached_integrity(
+    id: &str,
+    path: &Path,
+    cache: &mut super::integrity_cache::IntegrityCache,
+) -> anyhow::Result<()> {
+    let bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
+    let bundle = bundles
+        .iter()
+        .find(|bundle| bundle.id == id)
+        .ok_or_else(|| anyhow::anyhow!("unknown CoreML bundle"))?;
+    let mut paths = bundle
+        .files
+        .iter()
+        .map(|file| path.join(&file.path))
+        .collect::<Vec<_>>();
+    paths.push(path.join(".verenu-integrity"));
+    cache.verify(&paths, || verify_integrity(id, path))
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
