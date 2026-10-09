@@ -56,9 +56,12 @@ test('Apple cleanup uses native availability, preserves selection and completes 
     context = await invoke('create_context', { name: 'Public Apple cleanup test', tone: 'casual', cleanupIntensity: 'light', contextualFormattingDisabled: true });
     const fixture = await request('/fixtures/plain.wav');
     assert.equal(fixture.status, 200);
+    // Consume the body before other bridge requests so Node 24's HTTP parser
+    // cannot retain a paused fixture response when its socket closes.
+    const audio = await fixture.arrayBuffer();
     const before = new Set((await invoke('get_recent')).map(row => row.id));
     const cursor = (await (await request('/events?after=0')).json()).cursor;
-    const response = await request(`/audio?context=${context.id}&process=synthetic-apple`, { method: 'POST', body: await fixture.arrayBuffer() });
+    const response = await request(`/audio?context=${context.id}&process=synthetic-apple`, { method: 'POST', body: audio });
     await t.test('Production audio request succeeds', () => assert.equal(response.status, 200));
     const result = await response.json();
     await t.test('Production output matches the public speech fixture', () => {
