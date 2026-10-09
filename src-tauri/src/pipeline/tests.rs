@@ -1,4 +1,6 @@
 use super::cache::{cleanup_cache_plan, cleanup_context_fingerprint};
+#[path = "apple_cleanup_tests.rs"]
+mod apple_cleanup_tests;
 use super::gates::strip_provider_artifacts;
 use super::stages_transcription::speech_gate_accepts;
 use super::{
@@ -892,7 +894,7 @@ async fn pipeline_fixture_resolves_keyless_custom_provider_and_skips_deleted_end
         .await
         .expect("custom fallback should run");
     assert_eq!(result.raw_text, "custom provider fixture");
-    assert_eq!(result.api_used, format!("{id}/vendor/speech/transcription"));
+    assert_eq!(result.api_used, format!("{id}/vendor/speech/transcription;cleanup={id}/vendor/chat"));
     assert_eq!(result.injected_text, "Custom provider fixture.");
     reset();
 }
@@ -933,7 +935,7 @@ async fn pipeline_fixture_uses_transcription_fallback_for_retryable_errors() {
         .await
         .expect("fallback should succeed");
     assert_eq!(result.raw_text, "fallback transcript");
-    assert_eq!(result.api_used, "openai/gpt-4o-transcribe/transcription");
+    assert_eq!(result.api_used, "openai/gpt-4o-transcribe/transcription;cleanup=groq/llama-3.3-70b-versatile");
     assert_eq!(
         fixture_hit_count("transcription", "groq", "whisper-large-v3-turbo"),
         1
@@ -986,7 +988,7 @@ async fn pipeline_fixture_falls_back_past_a_non_retryable_transcription_error() 
         .await
         .expect("fallback should succeed past the non-retryable error");
     assert_eq!(result.raw_text, "fallback transcript");
-    assert_eq!(result.api_used, "openai/gpt-4o-transcribe/transcription");
+    assert_eq!(result.api_used, "openai/gpt-4o-transcribe/transcription;cleanup=groq/llama-3.3-70b-versatile");
     assert_eq!(
         fixture_hit_count("transcription", "openai", "gpt-4o-transcribe"),
         1

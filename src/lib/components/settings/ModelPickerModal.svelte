@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
   import { fade, fly, slide } from 'svelte/transition';
@@ -17,6 +18,7 @@
     localModelOffered,
     discoveredRows,
     unverifiedRows,
+    appleIntelligenceVisible,
     rowForSelection,
     type LocalControls,
     type ModelRow,
@@ -84,8 +86,14 @@
   // logos). On a phone, open on the provider of the current choice instead: a
   // fraction of the DOM to build, lay out and animate when the dialog opens.
   let providerFilter = $state<ProviderId | 'all'>(
-    // Read once on purpose: the filter is the user's from then on.
-    isAndroid ? (untrack(() => splitModelId(defaultModel)?.provider) ?? 'all') : 'all',
+    // Read once on purpose: the filter is the user's from then on. Apple has no
+    // rows on phones, so a stored Apple choice must not open an empty tab.
+    isAndroid
+      ? untrack(() => {
+          const provider = splitModelId(defaultModel)?.provider;
+          return provider && provider !== 'apple-intelligence' ? provider : 'all';
+        })
+      : 'all',
   );
 
   // Row and dialog motion is dropped or simplified on Android: dozens of
@@ -114,6 +122,7 @@
   let panelLeft = $state(0);
 
   onMount(() => {
+    if (task === 'cleanup') void refreshAppleIntelligence();
     const updatePanelLeft = () => {
       const panel = document.querySelector('.settings-page');
       if (panel) panelLeft = panel.getBoundingClientRect().left;
@@ -130,7 +139,7 @@
     return () => window.removeEventListener('resize', updatePanelLeft);
   });
 
-  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local',
+  const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local', ...(task === 'cleanup' && appleIntelligenceVisible(context) ? ['apple-intelligence' as const] : []),
     ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
   const current = $derived(rowForSelection(defaultModel, context));
@@ -139,10 +148,17 @@
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
   const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
-  const refreshing = $derived(Object.values(modelCatalogStore.refreshing).some(Boolean));
+  let refreshingApple = $state(false);
+  const refreshing = $derived(refreshingApple || Object.values(modelCatalogStore.refreshing).some(Boolean));
+  const canRefreshApple = $derived(task === 'cleanup' && (providerFilter === 'all' || providerFilter === 'apple-intelligence'));
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
     (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
   async function refreshModels() {
+    if (task === 'cleanup') {
+      refreshingApple = true;
+      try { await refreshAppleIntelligence(); }
+      finally { refreshingApple = false; }
+    }
     await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
   }
   const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
@@ -372,7 +388,7 @@
 
     <div class="catalog-refresh">
       <span role="status">{refreshing ? 'Refreshing model lists…' : catalogNote}</span>
-      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || refreshProviders.length === 0}>
+      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}>
         {refreshing ? 'Refreshing…' : 'Refresh models'}
       </button>
     </div>
@@ -608,7 +624,7 @@
       </div>
     </div>
 
-    {#if advancedModelUi && customProvider !== 'local'}
+    {#if advancedModelUi && customProvider !== 'local' && customProvider !== 'apple-intelligence'}
       <footer class="picker-foot" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
         <div class="custom-row">
           <label class="custom-label" for="picker-custom-id">
@@ -974,6 +990,9 @@
   }
 
   .row-note {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -1233,6 +1252,9 @@
   @media (max-width: 640px) {
     .picker-body {
       grid-template-columns: 1fr;
+      /* The rail keeps its own height and the list takes the rest. Otherwise the
+         auto rows share the spare space and the chip row stretches to ~180px. */
+      grid-template-rows: auto minmax(0, 1fr);
     }
 
     .picker-rail {
@@ -1240,6 +1262,13 @@
       overflow-x: auto;
       border-right: none;
       border-bottom: 1px solid var(--line);
+    }
+
+    /* Chips keep their label width in the row; full width squeezed them into
+       tall, wrapped columns. */
+    .picker-rail .rail-item {
+      width: auto;
+      flex-shrink: 0;
     }
 
     .rail-count,
@@ -1291,6 +1320,26 @@
 
     .custom-input {
       min-width: 0;
+    }
+
+    /* A phone row has no room for the reason beside the id, so the reason takes
+       its own full-width line and wraps. The id stays secondary on the first line. */
+    .row-sub {
+      flex-wrap: wrap;
+      row-gap: 2px;
+    }
+
+    .row-sub > .row-note {
+      flex: 1 1 100%;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+    }
+
+    .row-sub > .row-note::before {
+      content: none;
     }
   }
 </style>

@@ -22,9 +22,12 @@
     testingLocal = false,
     selectionMode = 'manual',
     pendingPresetId = null,
+    transformPreset,
   }: {
     showCustomNote?: boolean;
     options?: PresetOptions;
+    /** Display-only view of each preset (e.g. onboarding's Apple cleanup override). Actions still receive the original preset. */
+    transformPreset?: (preset: Preset) => Preset;
     onUseFallback?: (preset: Preset) => void;
     onTestLocal?: (preset: Preset) => void;
     testingLocal?: boolean;
@@ -45,8 +48,13 @@
     onDeletePreset: (preset: Preset) => void;
   } = $props();
 
-  const presets = $derived(buildPresets(apiKeyStatus, hardware, localSupported, options));
+  const originals = $derived(buildPresets(apiKeyStatus, hardware, localSupported, options));
+  const presets = $derived(transformPreset ? originals.map(transformPreset) : originals);
   const activeId = $derived(matchActivePreset(presets, activeConfig));
+  // Callbacks take the untransformed preset so the chosen state never stores a display-only override.
+  function original(preset: Preset): Preset {
+    return originals.find(candidate => candidate.id === preset.id) ?? preset;
+  }
   const cloudPresets = $derived(presets.filter(preset => !preset.offline));
   const localPresets = $derived(presets.filter(preset => preset.offline));
   const cloudActive = $derived(!activeConfig.transcriptionDefaultModel.startsWith('local/'));
@@ -118,12 +126,12 @@
       downloading={isDownloading(preset)}
       busy={pendingPresetId !== null}
       installedCount={installedCountFor(preset)}
-      onSelect={() => onApplyPreset(preset)}
+      onSelect={() => onApplyPreset(original(preset))}
       onAddKey={onOpenApiKeys}
-      onCancelDownload={() => onCancelPreset(preset)}
-      onDeleteModels={() => onDeletePreset(preset)}
-      onUseFallback={preset.offline && cloudActive && onUseFallback ? () => onUseFallback(preset) : undefined}
-      onTestLocal={preset.offline && onTestLocal && downloadMbFor(preset) === 0 && (!preset.target?.cleanupEnabled || options.localCleanupReady !== false) ? () => onTestLocal(preset) : undefined}
+      onCancelDownload={() => onCancelPreset(original(preset))}
+      onDeleteModels={() => onDeletePreset(original(preset))}
+      onUseFallback={preset.offline && cloudActive && onUseFallback ? () => onUseFallback(original(preset)) : undefined}
+      onTestLocal={preset.offline && onTestLocal && downloadMbFor(preset) === 0 && (!preset.target?.cleanupEnabled || options.localCleanupReady !== false) ? () => onTestLocal(original(preset)) : undefined}
       {testingLocal}
       fallbackActive={preset.offline && offlineSpeech.includes(preset.target?.transcriptionDefaultModel ?? '') && (!preset.target?.cleanupEnabled || offlineCleanup.includes(preset.target.cleanupDefaultModel ?? '') || activeConfig.cleanupDefaultModel === preset.target.cleanupDefaultModel)}
       performance={options.performance}

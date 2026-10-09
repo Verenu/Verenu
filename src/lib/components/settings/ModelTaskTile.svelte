@@ -72,7 +72,7 @@
     [defaultModel, ...fallbackModels]
       .map((id) => splitModelId(id)?.provider)
       .filter((provider): provider is ProviderId => !!provider)
-      .filter((provider) => provider !== 'local')
+      .filter((provider) => provider !== 'local' && provider !== 'apple-intelligence')
       .filter((provider, index, all) => all.indexOf(provider) === index)
       .filter((provider) => !apiKeyStatus[provider] && customProvider(provider)?.requires_key !== false),
   );

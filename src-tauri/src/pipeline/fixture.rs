@@ -151,7 +151,7 @@ pub async fn run_pipeline_fixture(
         })
     })?;
 
-    let (final_text_before_dictionary, dict_entries, cleanup_cache_key, _cleanup_api_used) =
+    let (final_text_before_dictionary, dict_entries, cleanup_cache_key, cleanup_api_used) =
         run_cleanup_and_snippets_for_db(
             &db_handle,
             &raw_text,
@@ -166,6 +166,7 @@ pub async fn run_pipeline_fixture(
             None,
         )
         .await?;
+    let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
     let apply_caps_lock_upper = request.config.caps_lock_uppercase_enabled && request.caps_lock_on;
     let (injected_text, _applied_dict_ids) =
         dictionary::apply_substitutions_from(&final_text_before_dictionary, &dict_entries);

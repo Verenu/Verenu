@@ -44,6 +44,29 @@ const snapshot: PricingSnapshot = {
 };
 
 describe('Insights pricing', () => {
+  it('counts on-device Apple cleanup as zero cost even with a colliding published rate', () => {
+    const summary = estimateCost([{
+      ...usage('system', 'cleanup', 100, 80), provider: 'apple-intelligence',
+    }], {
+      fetched_at: 1,
+      rates: [{ model_id: 'vendor/system', prompt_usd_per_token: 1, completion_usd_per_token: 1 }],
+    });
+    expect(summary.total).toBe(0);
+    expect(summary.hasUnpriced).toBe(false);
+    expect(summary.rows[0]).toMatchObject({ cost: 0, share: 0 });
+  });
+
+  it('keeps priced cloud recovery and unknown cloud rates distinct from Apple cleanup', () => {
+    const apple = { ...usage('system', 'cleanup', 4_000_000), provider: 'apple-intelligence' as const };
+    const summary = estimateCost([apple, usage('gpt-4o-mini', 'cleanup', 4_000_000)]);
+    expect(summary.total).toBeCloseTo(0.15);
+    expect(summary.hasUnpriced).toBe(false);
+    expect(summary.rows[0]).toMatchObject({ model: 'gpt-4o-mini', share: 1 });
+    expect(estimateCost([apple, usage('system', 'cleanup')]).hasUnpriced).toBe(true);
+    expect(estimateCost([{ ...apple, model: 'unknown' }]).hasUnpriced).toBe(true);
+    expect(estimateCost([{ ...apple, task: 'transcription' }]).hasUnpriced).toBe(true);
+  });
+
   it('preserves first-match priority for duplicate and competing qualified IDs', () => {
     const rates = [' Other/Example ', ' GOOGLE/EXAMPLE ', 'vendor/example', 'google/example']
       .map((model_id, i) => ({ model_id, prompt_usd_per_token: (i + 1) / 1e6, completion_usd_per_token: 0 }));
