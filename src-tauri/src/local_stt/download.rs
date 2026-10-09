@@ -326,6 +326,12 @@ pub async fn download_model(
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let overall_started_at = Instant::now();
+    if matches!(
+        manifest.engine_type,
+        super::model::LocalSttEngineType::FluidAudio | super::model::LocalSttEngineType::CtcBooster
+    ) {
+        return super::fluid_download::download(app, manifest, root, cancel).await;
+    }
     let url = manifest
         .url
         .ok_or_else(|| anyhow::anyhow!("{} does not have a download URL", manifest.name))?;

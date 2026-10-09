@@ -112,6 +112,7 @@ impl LocalTranscriptionManager {
             .map(|state| state.model_id.clone());
         let models: Vec<LocalSttModelInfo> = built_in_model_manifests()
             .into_iter()
+            .filter(|manifest| manifest.is_supported())
             .map(|manifest| {
                 manifest.to_info(&root, downloading_model_id.as_deref() == Some(manifest.id))
             })
@@ -191,6 +192,10 @@ impl LocalTranscriptionManager {
         let url = manifest.url.ok_or_else(|| {
             anyhow::anyhow!("{} cannot be downloaded automatically", manifest.name)
         })?;
+        anyhow::ensure!(
+            manifest.is_supported(),
+            "This speech engine is unsupported on this platform"
+        );
         let root = self.prepare_models_dir()?;
 
         // The model is already fully installed (e.g. the frontend's cached
@@ -356,6 +361,9 @@ impl LocalTranscriptionManager {
         log::info!("local-stt: delete requested id={model_id}");
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local model: {model_id}"))?;
+        if manifest.engine_type == super::model::LocalSttEngineType::AppleSpeech {
+            anyhow::bail!("Apple Speech language assets are managed by macOS, not Verenu");
+        }
         let root = self.prepare_models_dir()?;
         self.cancel_download(Some(model_id))?;
         let completion = self.download_task.lock().ok().and_then(|guard| {
@@ -386,6 +394,7 @@ impl LocalTranscriptionManager {
             .and_then(|guard| guard.clone())
             .as_deref()
             == Some(model_id)
+            || manifest.engine_type == super::model::LocalSttEngineType::CtcBooster
         {
             self.unload(app);
         }
@@ -411,6 +420,7 @@ impl LocalTranscriptionManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn transcribe_blocking(
         &self,
         app: &AppHandle,
@@ -418,6 +428,8 @@ impl LocalTranscriptionManager {
         samples: &[f32],
         sample_rate: u32,
         language: &str,
+        vocabulary: &super::vocabulary::Vocabulary,
+        cancellation: &std::sync::atomic::AtomicBool,
     ) -> anyhow::Result<String> {
         self.ensure_loaded(app, model_id)?;
         self.touch_activity();
@@ -428,9 +440,20 @@ impl LocalTranscriptionManager {
         let engine = guard
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("local model is not loaded"))?;
-        let text = engine.transcribe(samples, sample_rate, language)?;
+        let result = engine.transcribe(samples, sample_rate, language, vocabulary, cancellation);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if result.is_err() && matches!(engine, super::engine::LoadedLocalSttEngine::FluidAudio(_)) {
+            // A cancelled or failed helper may have exited. Recreate its
+            // process and model state on the next request, rather than reuse
+            // a stale warm-model marker.
+            *guard = None;
+            *self
+                .current_model_id
+                .lock()
+                .map_err(|_| anyhow::anyhow!("local model lock poisoned"))? = None;
+        }
         self.touch_activity();
-        Ok(text)
+        result
     }
 
     pub fn unload_if_idle(&self, app: &AppHandle) -> anyhow::Result<()> {

@@ -281,6 +281,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
             &language,
             &model,
             0,
+            &cfg.speech_vocabulary,
         )
         .await
         {
@@ -749,6 +750,7 @@ async fn run_pipeline_with_delivery(
     let retry_captured_at = std::time::Instant::now();
     if let Ok(mut st) = lock_state(&state) {
         st.retry_capture = Some(RetryCapture {
+            speech_vocabulary: cfg.speech_vocabulary.clone(),
             audio: captured_audio.clone(),
             captured_at: retry_captured_at,
             target: target.clone(),
@@ -1254,6 +1256,7 @@ pub async fn retry_transcription_impl(
     let mapping = resolve_app_mapping(Some(&settings_store), &capture.process_name);
     let db_handle = app.state::<DbHandle>().inner().clone();
     let context = db::query_context(&db_handle, capture.context.id).ok();
+    cfg.speech_vocabulary = capture.speech_vocabulary.clone();
     capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref());
     cfg.paste_in_chunks = cfg!(desktop) && capture.paste_in_chunks;
     emit_pill_context(app, &capture.context.label);
