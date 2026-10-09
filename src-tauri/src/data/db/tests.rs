@@ -645,10 +645,42 @@ fn seed_default_dictionary_entries_adds_a_verenu_entry_with_every_known_variant(
     let mistake = verenu.mistake.as_deref().unwrap_or_default();
     for variant in [
         "Varinu", "Verena", "Virinu", "Varino", "Varinew", "Varina", "Verminu", "Varinian",
-        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu",
+        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu", "Verino",
     ] {
         assert!(mistake.contains(variant), "missing variant: {variant}");
     }
+}
+
+#[test]
+fn seed_default_dictionary_entries_upgrades_verino_in_an_already_seeded_dictionary() {
+    let db = test_db();
+    insert_dictionary_entry(&db, "Verenu", Some("Verinu")).expect("old default");
+    db.lock().unwrap().execute(
+        "INSERT INTO seeded_defaults (key) VALUES ('verenu_dictionary_v1')", [],
+    ).unwrap();
+    seed_default_dictionary_entries(&db).expect("upgrade");
+    seed_default_dictionary_entries(&db).expect("idempotent upgrade");
+    let entries = query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap();
+    let verenu = entries.iter().find(|entry| entry.term == "Verenu").unwrap();
+    assert_eq!(verenu.corrections.iter().filter(|entry| entry.mistake == "Verino").count(), 1);
+    let prompt = crate::data::dictionary::build_relevant_dictionary_prompt_from(
+        &entries, "Please open Verino and start dictating this message.",
+    );
+    assert!(prompt.contains("preferred: \"Verenu\""));
+    assert!(prompt.contains("\"Verino\""));
+}
+
+#[test]
+fn seed_default_dictionary_entries_preserves_a_custom_verino_mapping() {
+    let db = test_db();
+    insert_dictionary_entry(&db, "Custom name", Some("Verino")).unwrap();
+    seed_default_dictionary_entries(&db).unwrap();
+    let entries = query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap();
+    let mappings: Vec<_> = entries.iter().filter(|entry|
+        entry.corrections.iter().any(|correction| correction.mistake == "Verino")
+    ).collect();
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(mappings[0].term, "Custom name");
 }
 
 #[test]
@@ -704,7 +736,7 @@ fn seed_default_dictionary_entries_merges_into_a_preexisting_manual_verenu_entry
     assert!(mistake.contains("Vernu"), "user's own variant must survive");
     for variant in [
         "Varinu", "Verena", "Virinu", "Varino", "Varinew", "Varina", "Verminu", "Varinian",
-        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu",
+        "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu", "Verino",
     ] {
         assert!(mistake.contains(variant), "missing variant: {variant}");
     }

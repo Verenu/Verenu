@@ -238,9 +238,12 @@ fn apply_runtime_icons_on_main_thread(app: &AppHandle, theme_hint: Option<Theme>
         ..
     } = cached_icon_art(icon_theme, tray_size);
 
-    if let Some(w) = app.get_webview_window("main") {
-        if let Err(err) = w.set_icon(tauri::image::Image::new_owned(window_rgba, 128, 128)) {
-            log::warn!("Failed to update window icon: {err}");
+    let window_icon = tauri::image::Image::new_owned(window_rgba, 128, 128);
+    for label in ["main", "pill"] {
+        if let Some(w) = app.get_webview_window(label) {
+            if let Err(err) = w.set_icon(window_icon.clone()) {
+                log::warn!("Failed to update {label} window icon: {err}");
+            }
         }
     }
 
