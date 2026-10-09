@@ -1,4 +1,51 @@
 use super::*;
+
+#[test]
+fn guarded_snapshot_orders_policy_action_before_concurrent_save() {
+    let path = unique_tmp_path();
+    let settings = SettingsHandle::empty_for_test(path.clone());
+    settings
+        .save_value(HISTORY_RETENTION, serde_json::json!("7 days"))
+        .unwrap();
+    let saved = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_saved = saved.clone();
+    let thread_settings = settings.clone();
+    let (start_tx, start_rx) = std::sync::mpsc::channel();
+    let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        start_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        attempt_tx.send(()).unwrap();
+        thread_settings
+            .save_value(HISTORY_RETENTION, serde_json::json!("Forever"))
+            .unwrap();
+        thread_saved.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    settings
+        .with_snapshot(|current| {
+            assert_eq!(
+                current.get(HISTORY_RETENTION),
+                Some(&serde_json::json!("7 days"))
+            );
+            start_tx.send(()).unwrap();
+            attempt_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            // The policy cannot change in the gap between checking it and
+            // finishing the protected action. This assertion needs no sleep.
+            assert!(settings.values.try_write().is_err());
+            assert!(!saved.load(std::sync::atomic::Ordering::SeqCst));
+            Ok(())
+        })
+        .unwrap();
+    writer.join().unwrap();
+    assert_eq!(
+        settings.get(HISTORY_RETENTION),
+        Some(serde_json::json!("Forever"))
+    );
+    std::fs::remove_file(path).unwrap();
+}
 use serde_json::json;
 use std::sync::Arc;
 
