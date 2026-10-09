@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- macOS bundles and unbundled development builds include the Swift concurrency back-deployment runtime required by Apple Intelligence cleanup, preserving the macOS 11 minimum.
+
 - Apple Intelligence cleanup uses the official Apple icon and can be selected explicitly during onboarding on supported Macs, independently of speech recognition. If it becomes unavailable during setup, completion pauses until it is ready or the choice is turned off.
 
 - Added opt-in Apple Intelligence dictation cleanup on eligible Macs running macOS 26 or newer. It runs on device without an API key, reports system availability, and uses only configured recovery models when cleanup fails. Existing model selections remain unchanged.

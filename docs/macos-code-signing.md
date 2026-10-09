@@ -82,6 +82,16 @@ your password manager), create the `env.sh` above, then run
 
 ## Building
 
+The FoundationModels bridge uses Swift concurrency. Its build helper stages
+Xcode's `libswift_Concurrency.dylib` back-deployment library for macOS 11,
+including unbundled dev/test executables. The macOS `frameworks` bundle setting
+copies it into `Contents/Frameworks`; Tauri signs the nested library before the
+app with the selected signing identity. Keep that entry and the executable's
+Frameworks rpath when changing packaging. An `@available` guard alone cannot
+supply a missing Swift runtime. Use `otool -L` and `otool -l` to inspect dependencies
+and search paths, and verify the resulting bundle with `codesign --verify --deep
+--strict`. See [Apple's Swift embedding guidance](https://developer.apple.com/library/archive/qa/qa1881/_index.html).
+
 | Command | Signing | Use for |
 |---|---|---|
 | `npm run tauri:build:signed` | Stable self-signed identity | **Local macOS builds** — permissions persist |

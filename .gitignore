@@ -41,6 +41,7 @@ tests/smoke/*.wav
 __pycache__/
 *.py[cod]
 test-results/
+src-tauri/native/macos/swift-runtime/
 tests/reports/
 playwright-report/
 blob-report/
