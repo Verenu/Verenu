@@ -682,6 +682,29 @@ async fn pipeline_basic_language_off_and_payload_contracts() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_preserves_vocabulary_before_dictionary_canonicalization() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um please (um) use new line"), None, None);
+    let mut request = base_request(config);
+    request.dictionary.push(PipelineTestDictionaryEntry {
+        term: "New Line".into(),
+        mistake: Some("new line".into()),
+    });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.raw_text, "um please (um) use new line");
+    assert_eq!(result.final_text_before_dictionary, "Please use new line");
+    assert_eq!(result.injected_text, "Please use New Line");
+    assert_eq!(result.history_entry.clean_text, result.injected_text);
+    assert!(result.cleanup_cache_key.is_empty());
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_filler_only_does_not_write_history() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset(); set_enabled(true);
