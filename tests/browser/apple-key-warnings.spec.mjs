@@ -1,5 +1,31 @@
 import { test, expect } from './fixtures.mjs';
 
+test('Apple picker rail can recheck availability through the real backend', async ({ page, session, cachedCatalogs }) => {
+  void cachedCatalogs;
+  const previous = await session.invoke('get_setting', { key: 'advanced_model_ui' });
+  let availabilityRequests = 0;
+  page.on('request', request => {
+    if (request.url().endsWith('/__verenu_dev/invoke') && request.postDataJSON()?.command === 'get_apple_intelligence_availability') availabilityRequests++;
+  });
+  try {
+    await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
+    await page.reload();
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.models"]').click();
+    await page.locator('[data-setting-target="models-cleanup"]').getByRole('button', { name: 'Change model' }).click();
+    await page.locator('.picker-rail').getByRole('button', { name: /Apple Intelligence/ }).click();
+    const refresh = page.getByRole('button', { name: 'Refresh models', exact: true });
+    await expect(refresh).toBeEnabled();
+    const before = availabilityRequests;
+    await refresh.click();
+    await expect.poll(() => availabilityRequests).toBeGreaterThan(before);
+    await expect(refresh).toBeEnabled();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+  } finally {
+    await session.invoke('save_setting', { key: 'advanced_model_ui', value: previous ?? false });
+  }
+});
+
 test('Apple cleanup defaults and fallbacks stay keyless while keyed endpoints retain warnings', async ({ page, session }) => {
   const previous = await session.invoke('get_all_settings');
   const provider = {

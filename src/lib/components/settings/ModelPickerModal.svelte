@@ -140,11 +140,17 @@
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
   const supportedHere = (row: ModelRow) => local.supported || row.provider !== 'local';
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
-  const refreshing = $derived(Object.values(modelCatalogStore.refreshing).some(Boolean));
+  let refreshingApple = $state(false);
+  const refreshing = $derived(refreshingApple || Object.values(modelCatalogStore.refreshing).some(Boolean));
+  const canRefreshApple = $derived(task === 'cleanup' && (providerFilter === 'all' || providerFilter === 'apple-intelligence'));
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
     (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
   async function refreshModels() {
-    if (task === 'cleanup') await refreshAppleIntelligence();
+    if (task === 'cleanup') {
+      refreshingApple = true;
+      try { await refreshAppleIntelligence(); }
+      finally { refreshingApple = false; }
+    }
     await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
   }
   const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
@@ -371,7 +377,7 @@
 
     <div class="catalog-refresh">
       <span role="status">{refreshing ? 'Refreshing model lists…' : catalogNote}</span>
-      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || refreshProviders.length === 0}>
+      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}>
         {refreshing ? 'Refreshing…' : 'Refresh models'}
       </button>
     </div>
