@@ -213,6 +213,12 @@ fn basic(text: &str, sentence_initial: bool) -> String {
             end += count;
             cues += 1;
         }
+        // A predicate anywhere in this replacement clause means the repeated
+        // anchor can introduce a new statement, rather than a correction.
+        let clause_end = words[end..]
+            .iter()
+            .position(|word| terminal(&word.after) || word.after.contains(';'))
+            .map_or(words.len(), |offset| end + offset + 1);
         if explicit
             && end < words.len()
             && cues > 0
@@ -220,7 +226,7 @@ fn basic(text: &str, sentence_initial: bool) -> String {
             // Only phrase introducers can anchor a replacement. A repeated
             // content word can instead begin a new clause ("tea is gone").
             && matches!(words[end].key.as_str(), "a" | "an" | "the" | "to" | "from" | "at" | "in" | "on" | "with" | "for")
-            && !words[end..].iter().take(4).any(|word| matches!(word.key.as_str(),
+            && !words[end..clause_end].iter().any(|word| matches!(word.key.as_str(),
                 "is" | "are" | "was" | "were" | "has" | "have" | "had" | "will" | "would" | "can" | "could" | "should" | "must" | "does" | "do" | "did"))
         {
             let anchor = (i.saturating_sub(4)..i).rev().find(|&a| {
@@ -287,17 +293,17 @@ fn phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
             .all(|w| inline_space(&w.after))
 }
 
-fn rollback(out: &mut String) {
+fn rollback(out: &mut String, needs_separator: bool) {
     let trimmed =
-        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | ','));
+        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | ',' | ';'));
     let keep = trimmed
         .char_indices()
         .rev()
-        .find(|(_, c)| matches!(c, '.' | '!' | '?' | '\n' | '\r'))
+        .find(|(_, c)| matches!(c, '.' | '!' | '?' | ';' | '\n' | '\r'))
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or_else(|| out.len() - out.trim_start_matches([' ', '\t']).len());
     out.truncate(keep);
-    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+    if needs_separator && !out.is_empty() && !out.ends_with(char::is_whitespace) {
         out.push(' ');
     }
 }
@@ -316,7 +322,13 @@ fn commands(text: &str) -> String {
                 start += 1;
             }
         }
-        let literal = !requested && i > 0 && noun(&words[i - 1].key);
+        // "Keep this semicolon ... scratch that" dictates a retained clause.
+        // Keep noun-marker protection for literal punctuation discussion.
+        let retained_clause = words[i].key == "semicolon"
+            && i >= 2
+            && matches!(words[i - 1].key.as_str(), "this" | "that")
+            && words[i - 2].key == "keep";
+        let literal = !requested && !retained_clause && i > 0 && noun(&words[i - 1].key);
         let punct = [
             (&["comma"][..], ",", false),
             (&["semicolon"][..], ";", false),
@@ -393,7 +405,7 @@ fn commands(text: &str) -> String {
                     out.truncate(out.len() - suffix.len());
                 }
             }
-            rollback(&mut out);
+            rollback(&mut out, i + 2 < words.len() || words[i + 1].after.ends_with(char::is_whitespace));
             cap_next = true;
             i += 2;
             continue;
@@ -556,6 +568,10 @@ mod tests {
                 "Book the window seat, I mean, the aisle seat",
                 "Book the aisle seat",
             ),
+            (
+                "Book the window seat, I mean, the aisle seat. It is available.",
+                "Book the aisle seat. It is available.",
+            ),
             ("Cut it to 5 mm, mm, thanks", "Cut it to 5 mm, thanks"),
             ("um iPhone works", "iPhone works"),
             ("um", ""),
@@ -579,6 +595,7 @@ mod tests {
             "I ordered tea, no, tea is unavailable.",
             "I ordered the tea, no, the tea is unavailable.",
             "I chose coffee, I mean, coffee tastes better.",
+            "I met the doctor, no, the doctor who called me was a nurse",
             "yes\r\nyes",
             "yes\n\nyes",
             "mm-hmm uh-huh",
@@ -656,6 +673,23 @@ mod tests {
         );
         let normalized = process("um send send it new line tomorrow", true, true, &[]);
         assert_eq!(process(&normalized, true, true, &[]), normalized);
+    }
+
+    #[test]
+    fn rollback_preserves_semicolon_clause_and_payload_boundaries() {
+        for (input, expected) in [
+            ("Keep this semicolon change this scratch that", "Keep this;"),
+            ("Keep that semicolon change this scratch that", "Keep that;"),
+            ("Keep it semicolon change this scratch that", "Keep it;"),
+            ("Keep this; change this scratch that tomorrow", "Keep this; Tomorrow"),
+            ("Keep this semicolon scratch that tomorrow", "Tomorrow"),
+            ("before [[VERENU_CLIPBOARD_7D3A_00]] keep this semicolon change this scratch that", "before [[VERENU_CLIPBOARD_7D3A_00]] keep this;"),
+            ("\"Keep this; change this scratch that\"", "\"Keep this; change this scratch that\""),
+            ("Explain this semicolon", "Explain this semicolon"),
+            ("Keep the semicolon", "Keep the semicolon"),
+        ] {
+            assert_eq!(process(input, false, true, &[]), expected, "{input}");
+        }
     }
 
     #[test]

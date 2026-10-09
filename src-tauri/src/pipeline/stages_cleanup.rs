@@ -558,8 +558,8 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     let processed_alternate = if commands_active {
         alternate.map(|candidate| {
             let mut candidate = candidate.clone();
-            candidate.text = snippets::expand_snippets_with_spoken_transform(
-                &candidate.text, &mut db_snippets, db_handle, false,
+            candidate.text = snippets::transform_alternate_with_primary_snippets(
+                raw, &candidate.text, &db_snippets,
                 |spoken, prefix| super::text_rules::process_after(spoken, false, true, &terms, prefix),
             );
             candidate
