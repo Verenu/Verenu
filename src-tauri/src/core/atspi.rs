@@ -689,6 +689,31 @@ mod tests {
         assert_eq!(focused.right_of_caret(), " three");
     }
 
+    fn wait_for_fixture<T>(timeout: Duration, mut discover: impl FnMut() -> Option<T>) -> Option<T> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(found) = discover() {
+                return Some(found);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn formatting_fixture_readiness_waits_and_times_out() {
+        let mut attempts = 0;
+        assert_eq!(wait_for_fixture(Duration::from_secs(1), || {
+            attempts += 1;
+            (attempts == 3).then_some(42)
+        }), Some(42));
+        let started = std::time::Instant::now();
+        assert!(wait_for_fixture::<()>(Duration::from_millis(100), || None).is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     /// Opt-in verification against a disposable GTK entry, never a user's document.
     #[test]
     #[ignore]
@@ -696,19 +721,29 @@ mod tests {
         let pid = std::env::var("VERENU_FORMAT_FIXTURE_PID")
             .expect("start the disposable formatting fixture first")
             .parse::<u32>().unwrap();
-        for (before, payload, expected) in [
+        let obj = wait_for_fixture(Duration::from_secs(10), || with_connection(|conn| {
+            for app in app_roots_for_pid(conn, pid) {
+                for frame in children(conn, &app) {
+                    if get_property::<String>(conn, &frame, ACCESSIBLE, "Name").as_deref()
+                        != Some("Verenu formatting verification") {
+                        continue;
+                    }
+                    if let Some(obj) = focused_via_collection(conn, &frame) {
+                        return Some(obj);
+                    }
+                }
+            }
+            None
+        })).unwrap_or_else(|| {
+            panic!("VERENU_FIXTURE_PREREQUISITE_UNAVAILABLE: expected PID/window/focused editable entry not discovered within 10 seconds");
+        });
+        for (index, (before, payload, expected)) in [
             ("", "hello", "Hello"),
             ("Hello", "World", " world"),
             ("Hello.", "next sentence", " Next sentence"),
             ("Hello ", "World", "world"),
-        ] {
+        ].into_iter().enumerate() {
             with_connection(|conn| {
-                let app = app_roots_for_pid(conn, pid).into_iter().next().unwrap();
-                let frame = children(conn, &app).into_iter().next().unwrap();
-                assert_eq!(get_property::<String>(conn, &frame, ACCESSIBLE, "Name").as_deref(),
-                    Some("Verenu formatting verification"), "use only the disposable fixture window");
-                let obj = focused_via_collection(conn, &app)
-                    .expect("Collection must find the focused editable entry");
                 let accepted: bool = call(conn, &obj, "org.a11y.atspi.EditableText",
                     "SetTextContents", &(before,)).unwrap();
                 assert!(accepted);
@@ -731,6 +766,7 @@ mod tests {
                     protected_initial_case: false,
                 });
             assert_eq!(adjusted.text, expected);
+            println!("VERENU_FORMAT_CASE_PASSED:{}", index + 1);
         }
     }
 
