@@ -4,8 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
-import { run, stopOwned } from './verification/process.mjs';
-import { executedRustTests } from './verification/rust-summary.mjs';
+import { run } from './verification/process.mjs';
+import { formattingResult, stopFixture } from './verification/native-fixture.mjs';
 const args = process.argv.slice(2);
 const index = args.indexOf('--report');
 const directory = path.join(root, 'test-results', `native-fixture-${randomUUID()}`);
@@ -22,28 +22,31 @@ try {
   else {
     await fs.mkdir(directory, { recursive: true });
     const env = { ...process.env }; delete env.NO_AT_BRIDGE;
+    const build = await run('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'atspi_live_formats_disposable_entry', '--lib', '--no-run'], { directory, name: 'focused-text-build', env, timeout: 180_000 });
+    report.artifacts.push(artifact(build.log));
+    if (build.status !== 'passed') throw new Error('Focused native fixture build failed');
     fixture = spawn('python3', ['scripts/test/linux-format-fixture.py'], { cwd: root, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Disposable GTK fixture did not become ready')), 15_000);
-      fixture.once('error', (error) => { clearTimeout(timer); reject(error); });
-      fixture.once('exit', () => { clearTimeout(timer); reject(new Error('Disposable GTK fixture exited before testing')); });
-      fixture.stdout.on('data', (chunk) => { if (String(chunk).includes(`Fixture PID: ${fixture.pid}`)) { clearTimeout(timer); resolve(); } });
+      fixture.once('error', reject);
+      fixture.once('spawn', resolve);
     });
-    const checked = await run('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'atspi_live_formats_disposable_entry', '--lib', '--', '--ignored'], { directory, name: 'focused-text', env: { ...env, VERENU_FORMAT_FIXTURE_PID: String(fixture.pid) }, timeout: 180_000 });
-    if (checked.status === 'passed' && !executedRustTests(await fs.readFile(checked.log, 'utf8'))) {
-      checked.status = 'failed';
-      checked.reason = 'The native Rust fixture did not execute any tests';
-    }
-    report.checks.push({ name: 'AT-SPI cursor formatting in owned GTK entry', status: checked.status });
+    fixture.stdout.resume();
+    fixture.stderr.resume();
+    // Rust discovers the expected PID, window and focused entry before editing.
+    const checked = await run('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'atspi_live_formats_disposable_entry', '--lib', '--', '--ignored', '--nocapture'], { directory, name: 'focused-text', env: { ...env, VERENU_FORMAT_FIXTURE_PID: String(fixture.pid) }, timeout: 30_000 });
+    const result = formattingResult(checked, await fs.readFile(checked.log, 'utf8'));
+    report.checks.push({ name: 'AT-SPI cursor formatting in owned GTK entry', status: result.status === 'verified' ? 'passed' : result.status, cases: result.cases });
     report.artifacts.push(artifact(checked.log));
-    report.status = checked.status === 'passed' ? 'verified' : 'failed';
+    report.status = result.status;
+    report.reason = result.reason;
   }
   if (sourceIdentity().fingerprint !== report.identity.fingerprint && report.status !== 'failed') {
     report.status = 'incomplete'; report.reason = 'Source changed during native fixture verification';
   }
-} catch (error) { report.status = 'failed'; report.reason = error.message; }
+} catch (error) { report.status = error.code === 'ENOENT' ? 'incomplete' : 'failed'; report.reason = error.code === 'ENOENT' ? 'Disposable GTK fixture requires python3' : error.message; }
 finally {
-  if (fixture) stopOwned(fixture);
+  try { if (fixture) await stopFixture(fixture); }
+  catch (error) { report.status = 'failed'; report.reason = error.message; }
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
   await fs.writeFile(reportPath, JSON.stringify(report, null, 2), { mode: 0o600 });
 }

@@ -387,8 +387,35 @@ pub fn count_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<i64
     Ok(count)
 }
 
+#[cfg(test)]
 pub fn prune_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<usize> {
     let mut conn = lock_conn(db)?;
+    prune_transcriptions_conn(&mut conn, max_age_days)
+}
+
+/// Check retention while holding settings stable through the destructive
+/// transaction. DB precedes settings, matching the backup-import lock order.
+pub fn prune_transcriptions_for_retention(
+    db: &Db,
+    settings: &crate::data::store::SettingsHandle,
+    expected_days: i64,
+) -> Result<usize> {
+    let mut conn = lock_conn(db)?;
+    settings
+        .with_snapshot(|current| {
+            let days = current
+                .get(crate::data::store::HISTORY_RETENTION)
+                .and_then(|v| v.as_str())
+                .unwrap_or("30 days");
+            if crate::data::store::history_retention_days(days) != Some(expected_days) {
+                return Ok(0);
+            }
+            prune_transcriptions_conn(&mut conn, expected_days).map_err(|e| e.to_string())
+        })
+        .map_err(anyhow::Error::msg)
+}
+
+fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result<usize> {
     let tx = conn.transaction()?;
     // Retention removes only transcript text. Summary triggers must stay
     // quiet so daily activity, streaks, and lifetime WPM remain intact.
