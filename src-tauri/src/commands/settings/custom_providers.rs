@@ -2,21 +2,29 @@ use super::*;
 
 pub(super) fn clear_changed_custom_provider_keys(
     app: &AppHandle,
+    previous: &store::SettingsSnapshot,
     next: &[crate::api::custom::CustomProvider],
 ) -> Result<(), String> {
     if !crate::api::custom::native_credentials_available() {
         return Ok(());
     }
-    let previous = crate::api::custom::parse_stored(
-        store::settings_snapshot(app)?.get(store::CUSTOM_PROVIDERS),
-    );
-    for old in previous {
+    clear_changed_provider_keys(previous, next, |id| {
+        crate::data::credentials::delete_saved(app, id)
+    })
+}
+
+pub(super) fn clear_changed_provider_keys(
+    previous: &store::SettingsSnapshot,
+    next: &[crate::api::custom::CustomProvider],
+    mut delete: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    for old in crate::api::custom::parse_stored(previous.get(store::CUSTOM_PROVIDERS)) {
         if next.iter().find(|p| p.id == old.id).is_none_or(|p| {
             old.base_url != p.base_url
                 || old.protocol != p.protocol
                 || old.auth_header != p.auth_header
         }) {
-            crate::data::credentials::delete_saved(app, &old.id)?;
+            delete(&old.id)?;
         }
     }
     Ok(())
@@ -35,9 +43,6 @@ pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<
         let mut providers = crate::api::custom::parse_stored(snapshot.get(store::CUSTOM_PROVIDERS));
         if !providers.iter().any(|p| p.id == provider) {
             return Err("This provider was already removed.".into());
-        }
-        if crate::api::custom::native_credentials_available() {
-            crate::data::credentials::delete_saved(&app, &provider)?;
         }
         providers.retain(|p| p.id != provider);
         let mut changes = vec![(
@@ -94,7 +99,13 @@ pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<
                 changes.push((map_key.to_string(), serde_json::json!(map)));
             }
         }
-        settings.save_values(changes)
+        settings
+            .save_values_with_commit(
+                changes,
+                |previous| clear_changed_custom_provider_keys(&app, previous, &providers),
+                || Ok(()),
+            )
+            .map(|_| ())
     })
     .await
 }
