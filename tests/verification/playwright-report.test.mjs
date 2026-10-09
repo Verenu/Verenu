@@ -27,7 +27,7 @@ test('Playwright summaries retain failed desktop and phone case names without as
     }],
   };
 
-  assert.deepEqual(summarizePlaywrightFailures(report), [
+  assert.deepEqual(summarizePlaywrightFailures(report).map(({ diagnostics, ...metadata }) => metadata), [
     { project: 'desktop', file: 'api-keys.spec.mjs', line: 3, title: 'API key actions never expose the inactive label' },
     { project: 'desktop', file: 'models.spec.mjs', line: 19, title: 'Model state survives reload' },
     { project: 'phone', file: 'api-keys.spec.mjs', line: 3, title: 'API key actions never expose the inactive label' },
@@ -62,7 +62,7 @@ test('Playwright summaries retain only allowlisted menu geometry diagnostics', (
     }],
   };
 
-  assert.deepEqual(summarizePlaywrightFailures(report), [{
+  assert.deepEqual(summarizePlaywrightFailures(report).map(({ diagnostics, ...metadata }) => metadata), [{
     project: 'phone',
     file: 'settings-dropdowns.spec.mjs',
     line: 34,
@@ -122,7 +122,7 @@ test('flaky status stays failed while the task summary retains safe diagnostics 
   assert.equal(masterSummary.status, 'failed');
   assert.equal(masterSummary.tests[0].status, 'failed');
   assert.equal(masterSummary.tests[0].retryCount, 1);
-  assert.deepEqual(taskFailures, [{
+  assert.deepEqual(taskFailures.map(({ diagnostics, ...metadata }) => metadata), [{
     project: 'phone',
     file: 'settings-dropdowns.spec.mjs',
     line: 34,
