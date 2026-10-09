@@ -6,6 +6,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added local Apple Speech on macOS with required on-device recognition, and CPU whisper.cpp Small and Large v3 Turbo on desktop. Whisper model downloads verify pinned SHA256 hashes. Apple Speech uses macOS permissions and language assets without a Verenu model download.
 - Added separate macOS 14 Apple Silicon FluidAudio Parakeet Ultra, 110M, and Japanese engines with explicit, revision-pinned model downloads, plus an optional English CTC vocabulary booster. Speech adapters use a bounded immutable vocabulary snapshot from the captured Context. Portable Whisper does not use WhisperKit or the Apple Neural Engine.
+- Fixed the dictation pill's missing app icon and aligned Linux window identity with the installed desktop entry so panels can resolve Verenu's icon.
+- Added "Verino" to the built-in Verenu vocabulary corrections, including existing dictionaries.
 
 - Added opt-in synchronous muting in Settings > Sync. Recording temporarily mutes reachable paired devices that also opt in, including saved Tailscale connections. Audio restores after recording, cancellation, disabling the feature, or a lost connection. Android recovers the saved media level after a service or process restart when it remains at zero. The preference stays local to each device.
 
