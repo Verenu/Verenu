@@ -9,6 +9,15 @@ const matchers = new Set([
 ]);
 const failedStates = new Set(['failed', 'timedOut', 'interrupted']);
 
+// Accept only canonical browser-spec metadata. Reject rather than rewrite paths:
+// redacting a path could make a diagnostic appear to name a different source.
+export function safeBrowserSourceFile(file) {
+  return typeof file === 'string'
+    && /^tests\/browser\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.spec\.mjs$/.test(file)
+    && !/(?:sk[-_]|gh[pousr]_|github_pat_)/i.test(file)
+    ? file : null;
+}
+
 function errorSummary(error, status) {
   const firstLine = typeof error?.message === 'string'
     ? error.message.slice(0, 2048).split('\n', 1)[0].replace(/\u001b\[[0-9;]*m/g, '') : '';
@@ -20,6 +29,7 @@ function errorSummary(error, status) {
 }
 
 export function safeFailureAttempts(test, file, testPointer) {
+  file = safeBrowserSourceFile(file);
   if (!Array.isArray(test?.results)) return [];
   return test.results.flatMap((result, resultIndex) => {
     if (!failedStates.has(result?.status)) return [];

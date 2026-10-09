@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from '../../scripts/verification/playwright-summary.mjs';
 import { summarizePlaywrightFailures } from '../../scripts/verification/playwright-report.mjs';
+import { safeFailureAttempts } from '../../scripts/verification/playwright-diagnostics.mjs';
 
 test('expected failures, empty results and successful retries are not clean passes', () => {
   for (const results of [[], [{ status: 'failed' }], [{ status: 'failed' }, { status: 'passed' }]]) {
@@ -269,4 +270,45 @@ test('timeout and interrupted attempts retain fixed summaries without copying si
     assert.deepEqual(summary.tests[0].diagnostics[0].summaries, [message]);
     assert.equal(JSON.stringify(summary).includes('PRIVATE_ERROR'), false);
   }
+});
+
+test('unsafe spec paths never reach summary, checks, or failure diagnostic locations', () => {
+  for (const directory of [
+    'https://private.example.test/?token=SYNTHETIC_TOKEN',
+    'sk-proj-SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789',
+    'person@example.test', '\u001b[31mSYNTHETIC_CONTROL\u202e',
+    'SYNTHETIC_QUERY?token=secret', 'SYNTHETIC_FRAGMENT#secret',
+  ]) {
+    const file = `tests/browser/${directory}/settings.spec.mjs`;
+    const candidate = file.replace('https://', 'https:/');
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', errors: [{ message: 'Error: expect(locator).toBeVisible() failed',
+        location: { file: candidate, line: 9 } }],
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    const failures = summarizePlaywrightFailures(report);
+    assert.equal(summary.status, 'failed');
+    assert.equal(summary.tests[0].file, null);
+    assert.equal(Object.hasOwn(summary.tests[0].diagnostics[0], 'location'), false);
+    assert.equal(failures[0].file, 'unknown');
+    const shared = JSON.stringify({ summary, checks: playwrightSummaryChecks(summary), failures });
+    for (const value of ['SYNTHETIC_', 'private.example.test', 'person@example.test', '\u001b', '\u202e']) {
+      assert.equal(shared.includes(value), false);
+    }
+    assert.deepEqual(summary.tests[0].diagnostics[0].summaries,
+      ['Assertion failed: toBeVisible. Values and call log withheld.']);
+    assert.equal(Object.hasOwn(safeFailureAttempts(report.suites[0].specs[0].tests[0], candidate, '/suites/0/specs/0/tests/0')[0], 'location'), false);
+  }
+});
+
+test('safe nested and absolute source paths retain normalized locations', () => {
+  const file = 'tests/browser/nested/settings.spec.mjs';
+  const summary = summarizePlaywrightReport({ suites: [{ specs: [spec({
+    file: `/repo/${file}`, status: 'unexpected', results: [{ status: 'failed', errors: [{
+      message: 'Error: expect(locator).toBeVisible() failed',
+      location: { file: 'C:\\runner\\tests\\browser\\nested\\settings.spec.mjs', line: 9, column: 3 },
+    }] }],
+  })] }] }, { projectRoot: '/repo' });
+  assert.equal(summary.tests[0].file, file);
+  assert.deepEqual(summary.tests[0].diagnostics[0].location, { file, line: 9, column: 3 });
 });
