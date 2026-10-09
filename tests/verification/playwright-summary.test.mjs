@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from '../../scripts/verification/playwright-summary.mjs';
+import { summarizePlaywrightFailures } from '../../scripts/verification/playwright-report.mjs';
+import { safeFailureAttempts } from '../../scripts/verification/playwright-diagnostics.mjs';
 
 test('expected failures, empty results and successful retries are not clean passes', () => {
   for (const results of [[], [{ status: 'failed' }], [{ status: 'failed' }, { status: 'passed' }]]) {
@@ -98,7 +100,7 @@ test('failed dropdown cases expose only allowlisted geometry and assertion lines
   };
   const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
 
-  assert.deepEqual(summary.tests, [{
+  assert.deepEqual(summary.tests.map(({ diagnostics, ...metadata }) => metadata), [{
     project: 'phone', file: 'tests/browser/settings-dropdowns.spec.mjs', line: 34,
     title: 'menus stay in the viewport', status: 'failed', retryCount: 0,
     assertionLine: 80,
@@ -205,4 +207,140 @@ test('case paths stay repository-relative and invalid report shapes do not creat
 
   const relative = summarizePlaywrightReport({ suites: [{ specs: [spec({ file: 'settings.spec.mjs' })] }] }, { projectRoot: '/repo' });
   assert.equal(relative.tests[0].file, 'tests/browser/settings.spec.mjs');
+});
+
+test('failed attempts retain safe assertion summaries, source locations and private trace pointers after retries', () => {
+  const privateValues = ['PRIVATE_RECORD', 'CLIPBOARD_VALUE', 'ENV_SECRET', 'sk-proj-abcdefgh1234', 'github_pat_abcdefgh1234', 'person@example.test'];
+  const secret = privateValues.join(' ');
+  const failed = spec({ status: 'flaky', results: [{
+    status: 'failed',
+    errors: [{ message: `\u001b[31mError: expect('${secret}').toHaveText(expected) failed\u001b[0m\nExpected: ${secret}\nReceived: https://localhost/?token=PRIVATE_TOKEN`,
+      location: { file: '/private/session/tests/browser/settings.spec.mjs', line: 29, column: 7 },
+      stack: secret, snippet: secret }],
+    attachments: [
+      { name: 'screenshot', contentType: 'image/png', body: secret, path: secret },
+      { name: 'trace', contentType: 'application/zip', path: `/private/${secret}/trace.zip`, body: secret },
+    ],
+  }, { status: 'passed' }] });
+  const report = { errors: [{ message: secret }], suites: [{ suites: [{ specs: [failed] }] }] };
+  const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+  const expected = [{
+    resultIndex: 0, status: 'failed',
+    summaries: ['Assertion failed: toHaveText. Values and call log withheld.'],
+    location: { file: 'tests/browser/settings.spec.mjs', line: 29, column: 7 },
+    artifacts: [{ kind: 'trace', report: 'playwright.json',
+      pointer: '/suites/0/suites/0/specs/0/tests/0/results/0/attachments/1', visibility: 'private' }],
+  }];
+  assert.equal(summary.status, 'failed');
+  assert.equal(summary.tests[0].retryCount, 1);
+  assert.equal(summary.tests[0].assertionLine, 29);
+  assert.deepEqual(summary.tests[0].diagnostics, expected);
+  assert.deepEqual(playwrightSummaryChecks(summary)[1].diagnostics, expected);
+  const failures = summarizePlaywrightFailures(report);
+  assert.deepEqual(failures[0].diagnostics, expected);
+  const pointer = expected[0].artifacts[0].pointer;
+  assert.equal(pointer.split('/').slice(1).reduce((value, key) => value[key], report).name, 'trace');
+  const shared = JSON.stringify({ summary, checks: playwrightSummaryChecks(summary), failures });
+  for (const value of [...privateValues, 'PRIVATE_TOKEN', '/private/', 'image/png']) assert.equal(shared.includes(value), false);
+});
+
+test('unknown errors are withheld, invalid locations and attachments are omitted, and skips remain incomplete', () => {
+  const results = [{ status: 'failed', errors: [null,
+    { message: 'Error: expect(private).toLeakSecret(PRIVATE_VALUE)', location: { file: '/private/other/settings.spec.mjs', line: 9 } },
+    { message: 'ENV_PASSWORD=PRIVATE_ENV\nclipboard: PRIVATE_CLIPBOARD', location: { file: 'tests/browser/../browser/settings.spec.mjs', line: 10 } },
+  ], attachments: [null, { name: 'PRIVATE_NAME', contentType: 'application/zip', path: 'PRIVATE_PATH' }] }];
+  const summary = summarizePlaywrightReport({ suites: [{ specs: [spec({ status: 'unexpected', results }),
+    spec({ status: 'skipped', results: [] }), spec({ results: [] })] }] }, { projectRoot: '/repo' });
+  assert.equal(summary.status, 'failed');
+  assert.deepEqual(summary.counts, { total: 3, passed: 0, failed: 2, skipped: 1, retries: 0 });
+  assert.deepEqual(summary.tests[0].diagnostics, [{ resultIndex: 0, status: 'failed',
+    summaries: ['Failure details withheld or unavailable.'], artifacts: [] }]);
+  assert.equal(Object.hasOwn(summary.tests[1], 'diagnostics'), false);
+  assert.equal(Object.hasOwn(summary.tests[2], 'diagnostics'), false);
+  assert.equal(JSON.stringify(summary).includes('PRIVATE_'), false);
+  const skipped = summarizePlaywrightReport({ suites: [{ specs: [spec({ status: 'skipped', results: [] })] }] });
+  assert.equal(skipped.status, 'incomplete');
+  assert.equal(playwrightSummaryChecks(skipped)[1].status, 'incomplete');
+});
+
+test('timeout and interrupted attempts retain fixed summaries without copying single errors', () => {
+  for (const [status, message] of [['timedOut', 'Operation timed out. Error text withheld.'], ['interrupted', 'Execution interrupted. Error text withheld.']]) {
+    const summary = summarizePlaywrightReport({ suites: [{ specs: [spec({ status: 'unexpected', results: [{ status, error: { message: 'PRIVATE_ERROR' } }] })] }] });
+    assert.equal(summary.status, 'failed');
+    assert.deepEqual(summary.tests[0].diagnostics[0].summaries, [message]);
+    assert.equal(JSON.stringify(summary).includes('PRIVATE_ERROR'), false);
+  }
+});
+
+test('unsafe spec paths never reach summary, checks, or failure diagnostic locations', () => {
+  for (const directory of [
+    'https://private.example.test/?token=SYNTHETIC_TOKEN',
+    'sk-proj-SYNTHETIC_123456789', 'sk_SYNTHETIC_123456789',
+    'ghp_SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789',
+    'person@example.test', '\u001b[31mSYNTHETIC_CONTROL\u202e',
+    'SYNTHETIC_QUERY?token=secret', 'SYNTHETIC_FRAGMENT#secret',
+  ]) {
+    const file = `tests/browser/${directory}/settings.spec.mjs`;
+    const candidate = file.replace('https://', 'https:/');
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', errors: [{ message: 'Error: expect(locator).toBeVisible() failed',
+        location: { file: candidate, line: 9 } }],
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    const failures = summarizePlaywrightFailures(report);
+    assert.equal(summary.status, 'failed');
+    assert.equal(summary.tests[0].file, null);
+    assert.equal(Object.hasOwn(summary.tests[0].diagnostics[0], 'location'), false);
+    assert.equal(failures[0].file, 'unknown');
+    const shared = JSON.stringify({ summary, checks: playwrightSummaryChecks(summary), failures });
+    for (const value of ['SYNTHETIC_', 'private.example.test', 'person@example.test', '\u001b', '\u202e']) {
+      assert.equal(shared.includes(value), false);
+    }
+    assert.deepEqual(summary.tests[0].diagnostics[0].summaries,
+      ['Assertion failed: toBeVisible. Values and call log withheld.']);
+    assert.equal(Object.hasOwn(safeFailureAttempts(report.suites[0].specs[0].tests[0], candidate, '/suites/0/specs/0/tests/0')[0], 'location'), false);
+  }
+});
+
+test('safe nested and absolute source paths retain normalized locations', () => {
+  const file = 'tests/browser/nested/settings.spec.mjs';
+  const summary = summarizePlaywrightReport({ suites: [{ specs: [spec({
+    file: `/repo/${file}`, status: 'unexpected', results: [{ status: 'failed', errors: [{
+      message: 'Error: expect(locator).toBeVisible() failed',
+      location: { file: 'C:\\runner\\tests\\browser\\nested\\settings.spec.mjs', line: 9, column: 3 },
+    }] }],
+  })] }] }, { projectRoot: '/repo' });
+  assert.equal(summary.tests[0].file, file);
+  assert.deepEqual(summary.tests[0].diagnostics[0].location, { file, line: 9, column: 3 });
+});
+
+test('ordinary sk suffixes retain source and assertion diagnostics', () => {
+  for (const file of [
+    'tests/browser/task-flow.spec.mjs', 'tests/browser/mask-entry.spec.mjs',
+    'tests/browser/risk-review.spec.mjs', 'tests/browser/task-workflow-long/settings.spec.mjs',
+    'tests/browser/sk-ui.spec.mjs',
+  ]) {
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', errors: [{ message: 'Error: expect(locator).toBeVisible() failed',
+        location: { file: `/repo/${file}`, line: 9, column: 3 } }],
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    assert.equal(summary.tests[0].file, file);
+    assert.deepEqual(summary.tests[0].diagnostics[0].location, { file, line: 9, column: 3 });
+    assert.deepEqual(summarizePlaywrightFailures(report)[0].diagnostics[0].location,
+      { file, line: 9, column: 3 });
+  }
+});
+
+test('credential-shaped spec filenames cannot expose source locations', () => {
+  for (const name of ['sk-proj-SYNTHETIC_123456789', 'sk_SYNTHETIC_123456789', 'ghp_SYNTHETIC_123456789', 'github_pat_SYNTHETIC_123456789']) {
+    const file = `tests/browser/nested/${name}.spec.mjs`;
+    const report = { suites: [{ specs: [spec({ file, status: 'unexpected', results: [{
+      status: 'failed', error: { message: 'PRIVATE_ERROR', location: { file, line: 9 } },
+    }] })] }] };
+    const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+    assert.equal(summary.tests[0].file, null);
+    assert.equal(Object.hasOwn(summary.tests[0].diagnostics[0], 'location'), false);
+    assert.equal(JSON.stringify({ summary, failures: summarizePlaywrightFailures(report) }).includes('SYNTHETIC_'), false);
+  }
 });
