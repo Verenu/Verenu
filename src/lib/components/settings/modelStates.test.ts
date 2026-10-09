@@ -3,11 +3,12 @@ import { customProviderStore, type CustomProvider } from '../../customProviders.
 import { splitModelId, mergeProviderModelMap, providerDisplayLabel } from './models';
 import type { ProviderId } from '../../settings';
 import type { ModelCatalogCache, ProviderCache } from '../../modelCatalogStore.svelte';
-import type { Hardware } from './modelPresets';
+import { supportsLocalLanguage, type Hardware } from './modelPresets';
 import {
   curatedRows,
   discoveredRows,
   firstRunnable,
+  localModelOffered,
   rowForSelection,
   suggestReplacement,
   unavailableMessages,
@@ -17,6 +18,21 @@ import {
 } from './modelStates';
 
 const T0 = 1_700_000_000_000;
+
+describe('localModelOffered', () => {
+  it('keeps Apple Speech and Whisper on hardware where the on-device gate is closed', () => {
+    const gated = { supported: false };
+    expect(localModelOffered(gated, 'transcription', 'apple-speech')).toBe(true);
+    expect(localModelOffered(gated, 'transcription', 'whisper-small')).toBe(true);
+    expect(localModelOffered(gated, 'transcription', 'parakeet-tdt-0.6b-v3')).toBe(false);
+    expect(localModelOffered(gated, 'transcription', 'fluid-english-booster')).toBe(false);
+    expect(localModelOffered(gated, 'cleanup', 'qwen2.5-0.5b-instruct')).toBe(false);
+    expect(localModelOffered(gated, 'cleanup', 'whisper-small')).toBe(false);
+  });
+  it('offers everything when supported', () => {
+    expect(localModelOffered({ supported: true }, 'cleanup', 'qwen2.5-0.5b-instruct')).toBe(true);
+  });
+});
 
 describe('custom providers', () => {
   const provider: CustomProvider = {
@@ -152,6 +168,54 @@ describe('curatedRows', () => {
     expect(tooBig.state).toBe('needs-setup');
     expect(tooBig.note).toMatch(/memory/);
     expect(tooBig.remedy).toBe('none');
+  });
+});
+
+describe('local speech models', () => {
+  const listed = [
+    { id: 'whisper-small', is_downloaded: false, size_mb: 465 },
+    { id: 'apple-speech', install_kind: 'system_managed' as const, is_downloaded: true, size_mb: 0 },
+  ];
+
+  it('offers listed Whisper for download and Apple Speech without one', () => {
+    const rows = curatedRows(ctx({ localModels: listed }));
+    expect(rows.find((r) => r.key === 'local/whisper-small')).toMatchObject({ state: 'needs-setup', remedy: 'download' });
+    expect(rows.find((r) => r.key === 'local/apple-speech')).toMatchObject({ state: 'ready', remedy: 'none' });
+  });
+
+  it('hides models the backend does not list, but keeps a pinned pick replaceable', () => {
+    const context = ctx({ localModels: [{ id: 'parakeet-v3', is_downloaded: true, size_mb: 456 }] });
+    expect(curatedRows(context).some((r) => r.id.startsWith('fluid-') || r.id === 'apple-speech')).toBe(false);
+    const pinned = curatedRows(context, ['local/apple-speech']).find((r) => r.key === 'local/apple-speech')!;
+    expect(pinned.state).toBe('unavailable');
+    expect(pinned.note).toMatch(/choose another model/);
+  });
+
+  it('treats backend wildcard languages as the frontend subset, not as unsupported', () => {
+    const localModels = [
+      { id: 'whisper-small', supported_languages: ['Multilingual'] },
+      { id: 'fluid-parakeet-ultra', supported_languages: ['Multilingual'] },
+    ] as never;
+    expect(supportsLocalLanguage('whisper-small', { language: 'ja', localModels })).toBe(true);
+    expect(supportsLocalLanguage('fluid-parakeet-ultra', { language: 'fr', localModels })).toBe(true);
+    expect(supportsLocalLanguage('fluid-parakeet-ultra', { language: 'ja', localModels })).toBe(false);
+  });
+
+  it('never lists the auxiliary booster as a speech model', () => {
+    const rows = curatedRows(ctx({ localModels: [{ id: 'fluid-english-booster', is_downloaded: true, size_mb: 98 }] }));
+    expect(rows.some((r) => r.id === 'fluid-english-booster')).toBe(false);
+    for (const language of [undefined, 'auto', 'en']) {
+      expect(supportsLocalLanguage('fluid-english-booster', { language })).toBe(false);
+      const localModels = [{ id: 'another-booster', engine_type: 'ctc_booster', supported_languages: ['English'] }] as never;
+      expect(supportsLocalLanguage('another-booster', { language, localModels })).toBe(false);
+    }
+  });
+
+  it('explains an unsupported default and names the fallback', () => {
+    const context = ctx({ localModels: [{ id: 'parakeet-v3', is_downloaded: true, size_mb: 456 }] });
+    const [message] = unavailableMessages('transcription', 'local/apple-speech', ['local/parakeet-v3'], context);
+    expect(message).toMatch(/isn't available on this device/);
+    expect(message).toContain('Local Parakeet V3');
   });
 });
 

@@ -7,3 +7,8 @@
 -keep class com.verenu.app.VerenuPermissionPlugin { *; }
 -keep class com.verenu.app.VerenuSecurityPlugin { *; }
 -keep class com.verenu.app.VerenuUpdaterPlugin { *; }
+
+# Rust calls the Application directly through JNI, outside Tauri plugins.
+-keepclassmembers class com.verenu.app.VerenuApplication {
+    public void updateMediaMute(boolean);
+}

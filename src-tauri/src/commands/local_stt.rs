@@ -16,7 +16,11 @@ pub async fn download_local_stt_model(
     manager: tauri::State<'_, crate::local_stt::LocalTranscriptionManager>,
     model_id: String,
 ) -> Result<(), String> {
-    if crate::system::platform::is_macos_intel() {
+    let portable_whisper =
+        crate::local_stt::model::manifest_by_id(&model_id).is_some_and(|model| {
+            model.engine_type == crate::local_stt::model::LocalSttEngineType::Whisper
+        });
+    if crate::system::platform::is_macos_intel() && !portable_whisper {
         return Err(LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL.to_string());
     }
     manager

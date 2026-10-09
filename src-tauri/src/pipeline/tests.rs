@@ -601,6 +601,7 @@ fn resolve_app_mapping_is_scoped_to_matching_exe() {
 
 fn base_config() -> store::PipelineConfig {
     store::PipelineConfig {
+        speech_vocabulary: Default::default(),
         transcription_provider: "groq".into(),
         transcription_language: "en".into(),
         cleanup_provider: "groq".into(),
