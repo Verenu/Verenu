@@ -18,7 +18,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added opt-in synchronous muting in Settings > Sync. Recording temporarily mutes reachable paired devices that also opt in, including saved Tailscale connections. Audio restores after recording, cancellation, disabling the feature, or a lost connection. Android recovers the saved media level after a service or process restart when it remains at zero. The preference stays local to each device.
 
-- Added an optional public GitHub commit overlay to Insights. Connect a username in Settings > Integrations, with a suggestion from GitHub CLI or Git configuration when available. A green line compares daily commits on a separate scale, with scale details available on demand. Counts cover the last 90 days, refresh automatically every 15 minutes, cache locally, and show unavailable or partial coverage explicitly.
+- Insights now uses GitHub's profile contribution calendar as its primary activity source, including anonymized private counts only when the profile owner enables them on GitHub. It falls back to clearly labeled public commit search when the calendar cannot be read. Connect a username in Settings > Integrations, with a suggestion from GitHub CLI or Git configuration when available. Counts cover the last 90 days, refresh automatically every 15 minutes, cache locally, and keep unknown days distinct from zero.
 
 - Android: hold the idle pill to dictate and release to stop, in addition to tapping. Dragging the pill still works: start moving right away, or hold the recording pill.
 
