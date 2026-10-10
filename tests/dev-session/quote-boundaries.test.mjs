@@ -22,6 +22,12 @@ test('production quoted contractions keep fillers and voice commands literal', {
     [true, 'say "don\'t um new line" literally', 'say "don\'t um new line" literally'],
     [true, "say `don't um new line` literally", "say `don't um new line` literally"],
     [true, "[[VERENU_CLIPBOARD_don't um new line]]", "[[VERENU_CLIPBOARD_don't um new line]]"],
+    [true, 'make it 5" wide um please', 'make it 5" wide please'],
+    [true, 'make it 5" wide new line please', 'make it 5" wide\nPlease'],
+    [false, 'make it 5" wide new line please', 'make it 5" wide new line please'],
+    [true, 'say "um new line" literally', 'say "um new line" literally'],
+    [true, 'say "um new line', 'say "um new line'],
+    [true, '`5" wide um new line`', '`5" wide um new line`'],
     [true, 'greeting', 'um scratch that new line'],
     [true, 'um please new line', 'Please New Line'],
   ]);
