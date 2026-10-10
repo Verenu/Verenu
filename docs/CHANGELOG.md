@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed nightly release preparation failing on CRLF version files. The release snapshot check accepts those line endings while continuing to reject trailing spaces.
+
 - macOS bundles and unbundled development builds include the Swift concurrency back-deployment runtime required by Apple Intelligence cleanup, preserving the macOS 11 minimum.
 
 - Apple Intelligence cleanup uses the official Apple icon and can be selected explicitly during onboarding on supported Macs, independently of speech recognition. If it becomes unavailable during setup, completion pauses until it is ready or the choice is turned off.
