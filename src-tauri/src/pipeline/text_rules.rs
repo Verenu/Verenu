@@ -78,6 +78,19 @@ fn sentence_boundary(s: &str, at_end: bool) -> bool {
 fn inline_space(s: &str) -> bool {
     s.chars().all(|c| matches!(c, ' ' | '\t'))
 }
+// A tokenizer gap is not necessarily a spoken separator: dots, slashes and
+// @ can join tokens into identifiers. Ordinary sentence punctuation may wrap
+// a spoken token only at an edge or together with actual whitespace.
+fn spoken_separator(gap: &str, at_edge: bool) -> bool {
+    gap.chars().all(|c| c.is_whitespace() || matches!(c, ',' | '.' | ';' | ':' | '?' | '!' | '…' | '(' | ')' | '[' | ']' | '{' | '}'))
+        && (at_edge || gap.chars().any(char::is_whitespace))
+}
+fn spoken_start(leading: &str, words: &[Word], i: usize) -> bool {
+    spoken_separator(if i == 0 { leading } else { &words[i - 1].after }, i == 0)
+}
+fn spoken_end(words: &[Word], last: usize) -> bool {
+    spoken_separator(&words[last].after, last + 1 == words.len())
+}
 fn capitalize(s: &mut String) {
     if *s == s.to_lowercase() {
         if let Some(c) = s.chars().next() {
@@ -186,10 +199,12 @@ fn basic(text: &str, sentence_initial: bool) -> String {
         let filler = matches!(
             words[i].key.as_str(),
             "uh" | "uhh" | "uhm" | "um" | "umm" | "er" | "erm" | "hm" | "hmm" | "mm" | "mmm"
-        ) && !words[i].text.chars().all(|c| c.is_uppercase())
+        ) && spoken_start(&leading, &words, i) && spoken_end(&words, i)
+            && !words[i].text.chars().all(|c| c.is_uppercase())
             && !(words[i].key == "mm" && i > 0 && number(&words[i - 1]));
         let you_know = words[i].key == "you"
             && i + 1 < words.len()
+            && spoken_start(&leading, &words, i) && spoken_end(&words, i + 1)
             && words[i + 1].key == "know"
             && inline_space(&words[i].after)
             && (i == 0 || words[i - 1].after.contains(',') || terminal(&words[i - 1].after))
@@ -328,7 +343,20 @@ fn phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
         && keys.iter().enumerate().all(|(j, k)| words[i + j].key == *k)
         && words[i..i + keys.len() - 1]
             .iter()
-            .all(|w| inline_space(&w.after))
+            .all(|w| !w.after.is_empty() && inline_space(&w.after))
+        && spoken_end(words, i + keys.len() - 1)
+}
+
+fn punctuation_phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
+    if phrase(words, i, keys) { return true; }
+    // An intrinsically multiword spoken punctuation phrase remains explicit
+    // when ASR glues its redundant punctuation to the next word. Single-word
+    // commands never get this exception: comma.com is an identifier.
+    keys.len() > 1 && i + keys.len() < words.len()
+        && keys.iter().enumerate().all(|(j, k)| words[i + j].key == *k)
+        && words[i..i + keys.len() - 1].iter().all(|w| !w.after.is_empty() && inline_space(&w.after))
+        && !words[i + keys.len() - 1].after.is_empty()
+        && words[i + keys.len() - 1].after.chars().all(|c| matches!(c, '.' | '?' | '!' | ',' | ';' | ':'))
 }
 
 fn rollback(out: &mut String, needs_separator: bool) {
@@ -348,10 +376,11 @@ fn rollback(out: &mut String, needs_separator: bool) {
 
 fn commands(text: &str) -> String {
     let (leading, words) = tokenize(text);
-    let mut out = leading;
+    let mut out = leading.clone();
     let mut i = 0;
     let mut cap_next = false;
     while i < words.len() {
+        let standalone = spoken_start(&leading, &words, i);
         let mut start = i;
         let requested = matches!(words[i].key.as_str(), "add" | "insert" | "put");
         if requested {
@@ -366,7 +395,7 @@ fn commands(text: &str) -> String {
             && i >= 2
             && matches!(words[i - 1].key.as_str(), "this" | "that")
             && words[i - 2].key == "keep";
-        let literal = !requested && !retained_clause && i > 0 && noun(&words[i - 1].key);
+        let literal = !standalone || (!requested && !retained_clause && i > 0 && noun(&words[i - 1].key));
         let punct = [
             (&["comma"][..], ",", false),
             (&["semicolon"][..], ";", false),
@@ -382,7 +411,7 @@ fn commands(text: &str) -> String {
         .into_iter()
         .find(|(keys, _, needs_request)| {
             !literal
-                && phrase(&words, start, keys)
+                && punctuation_phrase(&words, start, keys)
                 && (!needs_request
                     || requested
                     || (keys[0] == "period" && start + 1 == words.len()))
@@ -422,9 +451,10 @@ fn commands(text: &str) -> String {
             i += 2;
             continue;
         }
-        let scratch =
-            phrase(&words, i, &["scratch", "that"]) || phrase(&words, i, &["strike", "that"]);
-        let removal = i + 1 < words.len()
+        let scratch = standalone
+            && (phrase(&words, i, &["scratch", "that"]) || phrase(&words, i, &["strike", "that"]));
+        let removal = standalone && i + 1 < words.len()
+            && spoken_end(&words, i + 1)
             && words[i + 1].key == "that"
             && inline_space(&words[i].after)
             && matches!(
@@ -455,7 +485,7 @@ fn commands(text: &str) -> String {
         } else {
             0
         };
-        if mention > 0
+        if standalone && mention > 0
             && i + mention < words.len()
             && words[i + mention].key != "of"
             && inline_space(&words[i + mention - 1].after)
@@ -599,6 +629,31 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fillers_require_standalone_spoken_tokens() {
+        for input in ["contact um@example.com", "visit um.edu", "open /um/report.md", "open um.txt", "value um_value", "use um-value", "address a@um.edu", "version 1.um", "use (um.edu)"] {
+            assert_eq!(process(input, true, false, &[]), input, "{input}");
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+        for (input, expected) in [("um, send it", "Send it"), ("send, um, it", "send, it"), ("send (um) it", "send it"), ("um. send it", "Send it")] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+    #[test]
+    fn command_phrases_require_spoken_identifier_boundaries() {
+        for input in ["visit comma.com", "open semicolon.txt", "mail comma@example.com", "open /comma/file", "open /tmp/comma", "value comma_value", "use comma-value", "version 1.comma", "open new line.txt", "open scratch that.txt", "visit example.comma", "open full.stop", "put a comma.com"] {
+            assert_eq!(process(input, false, true, &[]), input, "{input}");
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+        for (input, expected) in [("hello comma, world", "hello, world"), ("hello semicolon. tomorrow", "hello; tomorrow"), ("hello full stop.tomorrow", "hello. Tomorrow"), ("hello question mark?tomorrow", "hello? Tomorrow"), ("hello comma", "hello,"), ("hello comma. world", "hello, world")] {
+            assert_eq!(process(input, false, true, &[]), expected, "{input}");
+        }
+        for input in ["\"um comma.com\"", "`um comma.com`", "[[VERENU_CLIPBOARD_um comma.com]]"] {
+            assert_eq!(process(input, true, true, &[]), input);
+        }
+        assert_eq!(process("um comma", true, true, &["um comma"]), "um comma");
+        assert_eq!(process("um comma", false, false, &[]), "um comma");
+    }
     #[test]
     fn commands_preserve_embedded_periods_and_real_sentence_boundaries() {
         for input in ["open report.md", "visit example.com", "open /tmp/report.md", "version 1.25", "visit https://example.com/report.md", "load config.json.value"] {
