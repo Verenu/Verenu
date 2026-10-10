@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { root } from '../../scripts/verification/identity.mjs';
 import { requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
@@ -31,6 +33,61 @@ test('nightly publication requires exact-source regression verification', () => 
   const release = workflow('release-quality.yml');
   for (const job of Object.values(release.jobs)) {
     assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout')).with.ref, '${{ inputs.source-ref }}');
+  }
+});
+
+test('nightly version snapshot preserves CRLF files and still rejects trailing spaces', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-nightly-crlf-'));
+  const checkout = path.join(directory, 'checkout');
+  const remote = path.join(directory, 'remote.git');
+  const git = (...args) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: 'pipe' }).trim();
+  try {
+    fs.mkdirSync(checkout);
+    execFileSync('git', ['init', '--bare', remote], { stdio: 'pipe' });
+    git('init');
+    git('config', 'user.name', 'Nightly Test');
+    git('config', 'user.email', 'nightly-test@example.invalid');
+    git('config', 'core.autocrlf', 'false');
+    git('remote', 'add', 'origin', remote);
+    fs.mkdirSync(path.join(checkout, 'src-tauri'));
+    const originals = {
+      'package.json': '{\r\n  "version": "0.20.0"\r\n}\r\n',
+      'src-tauri/tauri.conf.json': '{\r\n  "version": "0.20.0"\r\n}\r\n',
+      'src-tauri/Cargo.toml': '[package]\nname = "verenu"\nversion = "0.20.0"\n',
+    };
+    for (const [file, contents] of Object.entries(originals)) fs.writeFileSync(path.join(checkout, file), contents);
+    git('add', 'package.json', 'src-tauri');
+    git('commit', '-m', 'Synthetic master snapshot');
+    const masterSha = git('rev-parse', 'HEAD');
+    const version = '0.20.0-nightly.20261009';
+    const tag = `Verenu-${version}`;
+    const step = workflow('morning-release.yml').jobs.prepare.steps.find(step => step.id === 'tag');
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {
+      cwd: checkout,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, MASTER_SHA: masterSha, APP_VERSION: version, RELEASE_VERSION: version, RELEASE_TAG: tag, GITHUB_OUTPUT: path.join(directory, 'output') },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const releaseSha = git('rev-parse', `${tag}^{commit}`);
+    assert.equal(git('rev-parse', `${releaseSha}^`), masterSha);
+    assert.equal(JSON.parse(git('show', `${tag}:package.json`)).version, version);
+    const config = JSON.parse(git('show', `${tag}:src-tauri/tauri.conf.json`));
+    assert.equal(config.version, version);
+    assert.equal(config.bundle.windows.wix.version, '0.20.0.0');
+    assert.match(git('show', `${tag}:src-tauri/Cargo.toml`), /version = "0.20.0-nightly.20261009"/);
+    assert.match(git('ls-remote', 'origin', `refs/tags/${tag}^{}`), new RegExp(releaseSha));
+    assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_sha=${releaseSha}`));
+    for (const [file, contents] of Object.entries(originals)) assert.equal(fs.readFileSync(path.join(checkout, file), 'utf8'), contents);
+
+    // Exercise the exact workflow check again with a real trailing-space defect.
+    const check = step.run.split('\n').find(line => line.includes('diff --check')).trim();
+    fs.writeFileSync(path.join(checkout, 'package.json'), originals['package.json'].replace('0.20.0"', '0.20.0" '));
+    const invalid = spawnSync('bash', ['-c', check], { cwd: checkout, encoding: 'utf8', timeout: 10_000 });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stdout + invalid.stderr, /trailing whitespace/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
