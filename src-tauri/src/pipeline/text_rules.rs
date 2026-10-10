@@ -608,7 +608,19 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
                 && rest[..index].graphemes(true).next_back()
                     .and_then(|g| g.chars().next()).is_some_and(is_word)
                 && rest[index + close.len_utf8()..].chars().next().is_some_and(is_word);
-            (!intra_word).then_some(index + close.len_utf8())
+            // An attached numeric inch mark inside a quote can precede its
+            // actual closing quote. Prefer that larger literal span only when
+            // the next quote looks like a close, not a separate quote's opener.
+            // A final numeric quote still closes normally.
+            let measurement_mark = close == '"'
+                && rest[..index].graphemes(true).next_back()
+                    .and_then(|g| g.chars().next()).is_some_and(char::is_numeric)
+                && rest[index + 1..].find('"').is_some_and(|next| {
+                    rest[index + 1..index + 1 + next].graphemes(true).next_back()
+                        .and_then(|g| g.chars().next())
+                        .is_some_and(|c| is_word(c) || matches!(c, '.' | '!' | '?' | '…' | ')' | ']' | '}'))
+                });
+            (!intra_word && !measurement_mark).then_some(index + close.len_utf8())
         }).unwrap_or(rest.len()))
     } else {
         terms.iter()
@@ -680,6 +692,22 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn measurement_marks_inside_quotes_do_not_close_literal_spans() {
+        for input in [
+            "say \"the board is 5\" new line please\" literally",
+            "say \"the board is 5\" um please\" literally",
+            "say \"the board is 5\" scratch that please\" literally",
+            "say \"the board is 5.5\" new line please\" literally",
+            "say \"the board is 5\" by 6\" new line please\" literally",
+        ] {
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+        assert_eq!(process("say \"size 5\" new line tomorrow", true, true, &[]), "say \"size 5\"\nTomorrow");
+        assert_eq!(process("say \"size 5\" new line \"um please\"", true, true, &[]), "say \"size 5\"\n\"um please\"");
+        assert_eq!(process("say \"5\" new line \"6\"", true, true, &[]), "say \"5\"\n\"6\"");
+    }
+
     #[test]
     fn rollback_preserves_identifier_sentence_punctuation() {
         for (input, expected) in [
