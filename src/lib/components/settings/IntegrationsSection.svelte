@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import T3Integration from './T3Integration.svelte';
   import { invoke } from '../../tauri';
   import githubLight from '../../../assets/integrations/github-light.svg';
   import githubDark from '../../../assets/integrations/github-dark.svg';
@@ -56,7 +57,9 @@
 </script>
 
 <h2 class="settings-h">Integrations</h2>
-<p class="section-intro">Bring your coding activity into Insights.</p>
+<p class="section-intro">Connect your tools for dictation and Insights.</p>
+
+<T3Integration />
 
 <section class="github-integration" aria-label="GitHub integration" data-setting-target="github-integration">
   <header class="service-head">
@@ -107,8 +110,8 @@
   .section-intro { color: var(--ink-mute); font-size: 12.5px; line-height: 1.5; margin: -8px 0 24px; }
   .github-integration { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 24px 0; min-width: 0; }
   .service-head { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
-  .service-icon { display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; background: var(--control-hover); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); }
-  .service-icon img { width: 22px; height: 22px; }
+  .service-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; background: var(--control-hover); border: 1px solid var(--line); border-radius: 10px; color: var(--ink); }
+  .service-icon img { width: 28px; height: 28px; }
   .github-dark { display: none; }
   :global(:root[data-theme="dark"]) .github-light { display: none; }
   :global(:root[data-theme="dark"]) .github-dark { display: block; }
@@ -138,7 +141,7 @@
     .connect-row { flex-direction: column; }
     .connect-row > button { min-height: 38px; }
     .service-head { flex-wrap: wrap; }
-    .connection-state { margin-left: 52px; }
+    .connection-state { margin-left: 56px; }
   }
   @media (prefers-reduced-motion: reduce) { .username-field { transition: none; } }
 </style>

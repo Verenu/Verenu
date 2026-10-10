@@ -136,6 +136,41 @@ That request does not include your dictated text, history, snippets, or API keys
 
 On Windows and macOS, installing an update opens the published GitHub asset so the platform installer flow can take over. Verenu does not auto-run a downloaded Windows executable from a fixed temp path.
 
+### T3 Code skills
+
+Settings > Integrations can pair with a T3 Code environment using its existing
+pairing link. The bearer credential stays in the native credential store. Verenu
+stores the connection address, environment identity, provider/workspace catalogs,
+skill names and descriptions, and refresh timestamps locally. Connection data and
+credentials are excluded from backup exports and LAN sync; the Context opt-out
+preference is included.
+
+Verenu refreshes metadata daily while running, with a manual **Pull now** action.
+The last imported catalog remains available offline until a successful pull
+replaces it or you disconnect. Credential expiry and failed pulls require
+reconnecting to refresh, but do not erase saved skills. A failed pull from a
+changed environment retains the previously paired environment's catalog.
+Public addresses require HTTPS; localhost and private LAN addresses can use HTTP.
+Tailscale is optional.
+
+Verenu combines all imported provider/workspace catalogs into one shared skill
+list, deduplicated by name. No workspace selection is required. Only dictation
+captured in the T3 desktop app receives this list.
+With cleanup enabled, only skill identifiers are sent to the configured
+cleanup provider as matching evidence. Descriptions remain local for browsing;
+skill bodies are never downloaded. Clear
+requests to invoke a known skill can become `$skill-name`; unknown, ambiguous,
+negated, or conversational mentions are left to the cleanup model's conservative
+matching rules. The output guard rejects invented identifiers and shortened
+names that fit multiple imported skills. Skills are treated as shared across T3 conversations; pairing does
+not identify the active conversation. Browser-hosted T3 windows are not detected
+as desktop T3 targets.
+
+Skill conversion requires a working cleanup provider. If all cleanup providers
+fail, Verenu preserves the transcript without adding skill mentions. Default
+logs record whether a T3 catalog was captured and attached, without skill names
+or dictated text.
+
 ### GitHub commit insights
 
 Insights can optionally compare dictated words with public GitHub commits. This

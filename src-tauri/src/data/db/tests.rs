@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
+    let path = temp_db_path("t3_skills_v31");
+    let context_id;
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        context_id = insert_context_returning(&db, "Synthetic T3", None, None, None, None, false)
+            .unwrap()
+            .id;
+        assign_context_target(&db, context_id, "t3code").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE contexts DROP COLUMN t3_skill_mentions_disabled; PRAGMA user_version = 31;").unwrap();
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(
+            !query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+        assert_eq!(
+            query_context_targets(&db, Some(context_id)).unwrap().len(),
+            1
+        );
+        update_context_t3_skill_mentions(&db, context_id, false).unwrap();
+        assert!(
+            duplicate_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(
+            query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+        update_context_t3_skill_mentions(&db, context_id, true).unwrap();
+        assert!(
+            !query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn paste_chunks_migrates_v30_defaults_and_survives_reopen() {
     let path = temp_db_path("paste_chunks_v30");
     {
@@ -472,7 +520,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 31);
+    assert_eq!(version, 32);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
