@@ -458,11 +458,11 @@ fn rollback(out: &mut String, needs_separator: bool) {
     }
 }
 
-fn commands(text: &str) -> String {
+fn commands(text: &str, carry_sentence_start: bool) -> String {
     let (leading, words) = tokenize(text);
     let mut out = leading.clone();
     let mut i = 0;
-    let mut cap_next = false;
+    let mut cap_next = carry_sentence_start;
     while i < words.len() {
         let standalone = spoken_start(&leading, &words, i);
         let mut start = i;
@@ -732,7 +732,9 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool,
     // Execute each command before Basic can collapse repeated spoken words.
     // Generated line boundaries remain boundaries during mechanical cleanup.
     let text = if voice_commands {
-        commands(text)
+        // A protected sentence ending carries into the next spoken span.
+        // An empty transcript prefix does not request initial capitalization.
+        commands(text, sentence_initial && preceding_speech)
     } else {
         text.to_owned()
     };
@@ -1282,6 +1284,25 @@ mod tests {
         ] {
             assert_eq!(process(input, true, false, &[]), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn commands_carry_sentence_state_across_protected_spans() {
+        for (input, expected) in [
+            ("say \"done.\" tomorrow", "say \"done.\" Tomorrow"),
+            ("say `done!` tomorrow", "say `done!` Tomorrow"),
+            ("say 'done?' tomorrow", "say 'done?' Tomorrow"),
+            ("say \"done\" tomorrow", "say \"done\" tomorrow"),
+            ("say \"Dr.\" tomorrow", "say \"Dr.\" tomorrow"),
+            ("open report.md tomorrow", "open report.md tomorrow"),
+            ("\"done.\" tomorrow", "\"done.\" Tomorrow"),
+            ("say \"done.\" um tomorrow", "say \"done.\" Tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        assert_eq!(process("say \"done.\" tomorrow", true, false, &[]), "say \"done.\" tomorrow");
+        assert_eq!(process_after(" tomorrow", true, true, &[], "done."), " Tomorrow");
+        assert_eq!(process("say Done. tomorrow", true, true, &["Done."]), "say Done. Tomorrow");
     }
 
     #[test]
