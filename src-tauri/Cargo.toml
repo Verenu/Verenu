@@ -42,6 +42,9 @@ tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "s
 # OpenSSL cannot be cross-compiled from the NDK as part of a normal Tauri
 # build. Keep the desktop native-tls path, but use rustls on Android.
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "charset"] }
+# T3 pairing uses the same WebSocket client on desktop and Android targets.
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 # LAN device sync: mDNS discovery (pure Rust, no system daemon) + a TLS
 # transport with self-signed per-device certificates. rustls uses the ring
 # provider so Windows builds don't need aws-lc-rs's NASM/CMake toolchain.
@@ -154,8 +157,6 @@ notify-rust = "4.18.0"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
-futures-util = "0.3"
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 wl-clipboard-rs = "0.9"
 # AT-SPI focused-text reads for smart formatting and AutoLearn (already in
 # the tree through ashpd; the blocking API keeps probes off the async runtime).
