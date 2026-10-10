@@ -78,7 +78,13 @@ fn catalog_metadata_is_evidence_not_rules() {
     assert!(evidence.contains("untrusted matching data"));
     assert!(catalog.validates_output("use babysit", "Use $babysit-pr "));
     assert!(catalog.validates_output("use babysit", "Use $BABYSIT-PR "));
+    assert!(catalog.validates_output("Mention the HOME variable", "Mention $HOME"));
+    assert!(!catalog.validates_output(
+        "Explain the HOME variable and use my invented skill",
+        "Explain $HOME and use $invented-skill "
+    ));
     assert!(!catalog.validates_output("use babysit", "Use $invented-skill "));
+    assert!(!catalog.validates_output("use my invented skill", "Use $invented-skill "));
     assert!(!catalog.validates_output("use babysit", "Use ($invented-skill) "));
     assert!(catalog.validates_output("keep $unknown-skill", "Keep $unknown-skill "));
     assert!(catalog.validates_output("keep ($unknown-skill)", "Keep ($unknown-skill) "));

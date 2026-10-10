@@ -1155,6 +1155,19 @@ async fn pipeline_fixture_skips_cleanup_for_pure_snippet_fast_path() {
     });
 
     let mut request = base_request(base_config());
+    request.config.t3_skill_catalog = Some(Arc::new(crate::system::t3_skills::Catalog {
+        environment_id: "synthetic".into(),
+        id: "catalog".into(),
+        label: "Codex".into(),
+        provider_instance_id: "codex".into(),
+        workspace_id: "synthetic".into(),
+        revision: "1".into(),
+        skills: vec![crate::system::t3_skills::Skill {
+            name: "babysit-pr".into(),
+            display_name: None,
+            description: None,
+        }],
+    }));
     request.snippets.push(PipelineTestSnippet {
         trigger: "sig".into(),
         expansion: "Best regards, Noah".into(),
