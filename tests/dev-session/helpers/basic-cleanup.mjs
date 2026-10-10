@@ -136,6 +136,8 @@ export async function runDualSnippetCases() {
       const result = await response.json();
       assert.equal(result.pipeline, 'production'); assert.equal(result.text, expected);
       const prompt = JSON.stringify(requests.at(-1).messages);
+      assert.ok(!prompt.includes('at signbot becomes @bot'), 'alternate-only snippet aliases disable AI command recovery as well as deterministic interpretation');
+      assert.ok(prompt.includes('Do not interpret any remaining words as voice commands'), 'literal snippet barriers survive the existing AI fusion call');
       assert.equal(prompt.includes('Thanks!'), admitted, 'only primary-admitted snippet payload may enter fusion');
       assert.equal(prompt.includes('all capitals, no final period'), admitted, 'only admitted instructions constrain output');
       if (!admitted) assert.ok(prompt.includes(rawAlternate.replace(' comma', ',')), 'alternate commands process surrounding speech without interpreting snippet aliases');

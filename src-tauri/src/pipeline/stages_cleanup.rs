@@ -569,6 +569,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     // A second candidate must not resurrect words removed by an explicit
     // command. Apply the same preprocessing once, without counting snippet
     // uses again; keep both original candidates outside this cleanup stage.
+    // Capture aliases before preprocessing: alternate-only triggers stay
+    // literal barriers there, and must remain barriers in model recovery too.
+    let alternate_has_snippet = commands_active
+        && alternate.is_some_and(|candidate| snippets::has_snippet_trigger(&candidate.text, &db_snippets));
     let processed_alternate = if commands_active {
         alternate.map(|candidate| {
             let mut candidate = candidate.clone();
@@ -586,6 +590,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     let command_instruction = if commands_active && pure_expansion.is_none() {
         let protected_payload = protected_instruction.is_some()
             || snippets::has_snippet_trigger(raw, &db_snippets)
+            || alternate_has_snippet
             || super::text_rules::has_protected_spans(&expanded, &terms)
             || alternate.is_some_and(|candidate| super::text_rules::has_protected_spans(&candidate.text, &terms));
         if protected_payload {
