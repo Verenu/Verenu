@@ -967,6 +967,8 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     }
     case 'count_old_transcriptions':
       return 0 as T;
+    case 'get_apple_intelligence_availability':
+      return { state: 'unsupported-platform', available: false, message: 'Apple Intelligence cleanup is available only on supported Macs.' } as T;
     case 'get_api_key_status':
       return {
         groq: false,

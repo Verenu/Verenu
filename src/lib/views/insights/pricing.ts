@@ -112,6 +112,10 @@ function lookupRate(usage: InsightsProviderUsage, index: RateIndex): Rate | null
 
 /** Cost in USD for one model's usage, or null when the model has no known rate. */
 function modelCost(usage: InsightsProviderUsage, index: RateIndex): number | null {
+  // Apple's system cleanup runs on-device and has no provider charge. Keep
+  // this scoped to its exact provenance so cloud recovery stays priced.
+  if (usage.provider === 'apple-intelligence' && usage.task === 'cleanup'
+    && normalizeModelId(usage.model) === 'system') return 0;
   const rate = lookupRate(usage, index);
   if (!rate) return null;
   if (rate.kind === 'audio') {

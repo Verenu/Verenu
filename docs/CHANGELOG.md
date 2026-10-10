@@ -6,6 +6,11 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Added Basic cleanup in Style and Contexts: on-device English filler, repetition, and conservative repair removal, with punctuation preserved and no cleanup model call. Existing Off and Light choices keep their behavior. Basic uses only the primary transcript and skips AI tone and custom instructions. Added separate, default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. Both require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
 
+- macOS bundles and unbundled development builds include the Swift concurrency back-deployment runtime required by Apple Intelligence cleanup, preserving the macOS 11 minimum.
+
+- Apple Intelligence cleanup uses the official Apple icon and can be selected explicitly during onboarding on supported Macs, independently of speech recognition. If it becomes unavailable during setup, completion pauses until it is ready or the choice is turned off.
+
+- Added opt-in Apple Intelligence dictation cleanup on eligible Macs running macOS 26 or newer. It runs on device without an API key, reports system availability, and uses only configured recovery models when cleanup fails. Existing model selections remain unchanged.
 - Added local Apple Speech on macOS with required on-device recognition, and CPU whisper.cpp Small and Large v3 Turbo on desktop. Whisper model downloads verify pinned SHA256 hashes. Apple Speech uses macOS permissions and language assets without a Verenu model download.
 - Added separate macOS 14 Apple Silicon FluidAudio Parakeet Ultra, 110M, and Japanese engines with explicit, revision-pinned model downloads, plus an optional English CTC vocabulary booster. Speech adapters use a bounded immutable vocabulary snapshot from the captured Context. Portable Whisper does not use WhisperKit or the Apple Neural Engine.
 - Fixed the dictation pill's missing app icon and aligned Linux window identity with the installed desktop entry so panels can resolve Verenu's icon.

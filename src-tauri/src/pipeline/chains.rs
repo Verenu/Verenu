@@ -3,7 +3,10 @@ use super::*;
 /// Custom endpoints can be LAN-hosted; loss of internet is not evidence that
 /// they are unreachable. Built-in cloud providers can be skipped when offline.
 pub(super) fn candidate_available_offline(provider: &str, offline: bool) -> bool {
-    !offline || provider == store::LOCAL || crate::api::custom::is_custom_id(provider)
+    !offline
+        || provider == store::LOCAL
+        || provider == store::APPLE_INTELLIGENCE
+        || crate::api::custom::is_custom_id(provider)
 }
 
 #[cfg(test)]
@@ -13,6 +16,7 @@ mod offline_tests {
     fn offline_policy_preserves_local_and_custom_endpoints() {
         assert!(!candidate_available_offline("groq", true));
         assert!(candidate_available_offline("local", true));
+        assert!(candidate_available_offline("apple-intelligence", true));
         assert!(candidate_available_offline(
             "custom:12345678-1234-1234-1234-123456789012",
             true
@@ -45,6 +49,28 @@ mod offline_tests {
         let balanced = prioritize_model_chain(chain, "transcription", "balanced", &samples);
         assert_eq!(balanced[0].0, "openai");
         assert_eq!(balanced.last().unwrap().0, "local");
+    }
+
+    #[test]
+    fn selected_apple_cleanup_precedes_cloud_recovery_in_every_mode() {
+        let chain = vec![
+            (store::APPLE_INTELLIGENCE.into(), "system".into()),
+            (store::OPENAI.into(), "gpt-4o-mini".into()),
+            (store::LOCAL.into(), "gemma-4-e2b".into()),
+        ];
+        for mode in ["manual", "fastest", "balanced", "quality"] {
+            assert_eq!(
+                prioritize_model_chain(chain.clone(), "cleanup", mode, &[]),
+                chain,
+                "Apple must remain primary in {mode} mode"
+            );
+        }
+        let cloud_primary = vec![chain[1].clone(), chain[0].clone(), chain[2].clone()];
+        assert_eq!(
+            prioritize_model_chain(cloud_primary.clone(), "cleanup", "balanced", &[]),
+            cloud_primary,
+            "Existing cloud-primary ranking must remain unchanged"
+        );
     }
 }
 
@@ -97,7 +123,7 @@ pub(super) fn runtime_model_chain(
 }
 
 fn prioritize_model_chain(
-    chain: Vec<(String, String)>,
+    mut chain: Vec<(String, String)>,
     task: &str,
     mode: &str,
     samples: &[crate::model_performance::ModelPerformance],
@@ -105,9 +131,20 @@ fn prioritize_model_chain(
     if mode == "manual" {
         return chain;
     }
-    let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain
-        .into_iter()
-        .partition(|(provider, _)| provider != store::LOCAL);
+    // Choosing on-device cleanup must not send text to a cloud recovery model
+    // merely because automatic ranking is enabled. Rank its fallbacks only.
+    let selected_apple = if task == "cleanup"
+        && chain
+            .first()
+            .is_some_and(|(provider, _)| provider == store::APPLE_INTELLIGENCE)
+    {
+        Some(chain.remove(0))
+    } else {
+        None
+    };
+    let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain.into_iter().partition(|(provider, _)| {
+        provider != store::LOCAL && provider != store::APPLE_INTELLIGENCE
+    });
     // The Quality pair stays intact. Only recovery candidates are reordered.
     let fixed = if mode == "quality" && task == "transcription" {
         cloud.len().min(2)
@@ -117,7 +154,7 @@ fn prioritize_model_chain(
     crate::model_performance::prioritize(&mut cloud[fixed..], task, samples);
     crate::model_performance::prioritize(&mut local, task, samples);
     cloud.extend(local);
-    cloud
+    selected_apple.into_iter().chain(cloud).collect()
 }
 
 fn transcription_chain_root(
@@ -185,6 +222,8 @@ pub(super) fn has_cleanup_key_in_chain(cfg: &store::PipelineConfig) -> bool {
                     manifest.is_downloaded(&crate::local_llm::LocalLlmManager::models_root())
                 })
                 .unwrap_or(false)
+        } else if provider == store::APPLE_INTELLIGENCE {
+            crate::api::apple_intelligence::availability().available
         } else {
             cfg.provider_has_auth(provider)
         }

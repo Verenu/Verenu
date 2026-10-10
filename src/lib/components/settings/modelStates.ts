@@ -1,4 +1,5 @@
 import type { ProviderId } from '../../settings';
+import { appleIntelligence, appleIntelligenceSupported, type AppleIntelligenceAvailability } from '../../appleIntelligence.svelte';
 import { customProviderStore, customProvider, isCustomProviderId } from '../../customProviders.svelte';
 import {
   isTrustworthy,
@@ -94,7 +95,16 @@ export type PickerContext = {
   cache: ModelCatalogCache;
   localModels: LocalModelInfo[];
   hardware: Hardware;
+  appleIntelligence?: AppleIntelligenceAvailability;
 };
+
+/**
+ * Apple Intelligence is offered only on a supported Mac. Hidden rather than
+ * disabled elsewhere, so a stored or pinned Apple choice never lists as usable.
+ */
+export function appleIntelligenceVisible(ctx: Pick<PickerContext, 'appleIntelligence'>): boolean {
+  return appleIntelligenceSupported(ctx.appleIntelligence ?? appleIntelligence.status);
+}
 
 /** Providers whose absence from a list means something. Local has no list. */
 const LISTED_PROVIDERS = CLOUD_PROVIDERS;
@@ -165,6 +175,11 @@ function unsupportedLocalPick(id: string, ctx: PickerContext): boolean {
 }
 
 function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
+  if (entry.provider === 'apple-intelligence') {
+    const status = ctx.appleIntelligence ?? appleIntelligence.status;
+    if (ctx.task !== 'cleanup' || entry.id !== 'system') return row(entry, 'unavailable', 'Cleanup only');
+    return row(entry, status.available ? 'ready' : 'needs-setup', status.message);
+  }
   if (!ctx.apiKeyStatus[entry.provider] && customProvider(entry.provider)?.requires_key !== false) {
     return row(entry, 'needs-setup', 'No API key', 'add-key');
   }
@@ -204,6 +219,7 @@ export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[]
     .flatMap(p => (ctx.task === 'transcription' ? p.transcription_models : p.cleanup_models)
       .map(id => ({ provider: p.id, id, label: id, tasks: [ctx.task], tags: [] })));
   return [...catalogFor(ctx.task), ...customEntries]
+    .filter((entry) => entry.provider !== 'apple-intelligence' || appleIntelligenceVisible(ctx))
     .map((entry) => (entry.provider === 'local' ? localRow(entry, ctx) : cloudRow(entry, ctx)))
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }
@@ -292,6 +308,9 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     note: 'Custom model',
     remedy: 'none',
   };
+  if (parsed.provider === 'apple-intelligence') {
+    return { ...base, state: 'unavailable', note: 'Unsupported Apple Intelligence model' };
+  }
   if (isCustomProviderId(parsed.provider)) {
     const p = customProvider(parsed.provider);
     if (!p || !(ctx.task === 'transcription' ? p.supports_transcription : p.supports_cleanup))
