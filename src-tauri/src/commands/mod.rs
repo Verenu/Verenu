@@ -21,9 +21,8 @@ pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
 mod analytics;
 mod android;
 mod contexts;
-mod sub_apps;
-mod history;
 mod github;
+mod history;
 mod library;
 mod local_llm;
 mod local_stt;
@@ -32,8 +31,10 @@ mod permissions;
 mod recording;
 mod service_status;
 mod settings;
+mod sub_apps;
 mod sync;
 mod system;
+mod t3_skills;
 mod updater;
 
 pub(crate) async fn run_blocking<T, F>(label: &'static str, f: F) -> Result<T, String>
@@ -88,9 +89,8 @@ where
 pub use analytics::*;
 pub use android::*;
 pub use contexts::*;
-pub use sub_apps::*;
-pub use history::*;
 pub use github::*;
+pub use history::*;
 pub use library::*;
 pub use local_llm::*;
 pub use local_stt::*;
@@ -99,8 +99,10 @@ pub use permissions::*;
 pub use recording::*;
 pub use service_status::*;
 pub use settings::*;
+pub use sub_apps::*;
 pub use sync::*;
 pub use system::*;
+pub use t3_skills::*;
 pub use updater::*;
 
 #[cfg(test)]

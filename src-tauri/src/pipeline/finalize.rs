@@ -76,6 +76,9 @@ pub(super) async fn finalize_pipeline_completion(
     if apply_caps_lock_upper {
         final_text_substituted = final_text_substituted.to_uppercase();
     }
+    if let Some(catalog) = &ctx.cfg.t3_skill_catalog {
+        final_text_substituted = catalog.normalize_mentions(&final_text_substituted);
+    }
     // The marker is intentionally the only clipboard-related content that can
     // pass through text transforms. Restore exact bytes only after them.
     let (final_text_substituted, delivered_text, private_text, clipboard_warning) =
@@ -256,7 +259,12 @@ pub(super) async fn finalize_pipeline_completion(
         telemetry.insertion_attempted();
     }
     let protected_initial_case =
-        dictionary_protects_initial_case(&delivered_text, ctx.dict_entries);
+        dictionary_protects_initial_case(&delivered_text, ctx.dict_entries)
+            || ctx
+                .cfg
+                .t3_skill_catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.starts_with_skill_mention(&delivered_text));
 
     // Main-window fields accept normal dictation. Other self-targets, including
     // the pill, keep clipboard fallback rather than swallowing the paste.

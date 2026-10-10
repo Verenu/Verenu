@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Added T3 Code pairing in Settings > Integrations. Import skill names and descriptions from all providers and workspaces into one shared list, with duplicate names shown once and no workspace selection required. Refresh daily or manually. Explicit spoken skill requests become canonical `$skill-name` mentions only while dictating into the T3 desktop app. Contexts enable this by default with a per-Context opt-out. Requires T3 Code 0.46 or newer, a compatible pairing protocol, and cleanup enabled.
+- T3 pairing accepts direct localhost and private LAN HTTP links without Tailscale. Failed pulls and expired pairing credentials preserve the last imported skills until a successful pull or disconnect. Enlarged the T3 Code and GitHub integration logos.
+- T3 cleanup receives skill identifiers only. Large descriptions cannot suppress the skill list, and exact spoken name order takes priority over similar identifiers. Default logs expose catalog capture and handoff as booleans for troubleshooting. Cleanup-provider failures preserve the transcript without converting skill references.
 - Fixed nightly release preparation failing on CRLF version files. The release snapshot check accepts those line endings while continuing to reject trailing spaces.
 
 - macOS bundles and unbundled development builds include the Swift concurrency back-deployment runtime required by Apple Intelligence cleanup, preserving the macOS 11 minimum.

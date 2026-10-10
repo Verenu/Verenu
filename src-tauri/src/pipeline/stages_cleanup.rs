@@ -544,11 +544,41 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         expanded.chars().count()
     );
 
-    let dictionary_evidence = dictionary::build_relevant_dictionary_prompt_from_sources(
+    let mut dictionary_evidence = dictionary::build_relevant_dictionary_prompt_from_sources(
         &dict_entries,
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
     );
+    // Skill rules must not turn an exact snippet match into a reason to call
+    // the cleanup provider. The pure-expansion path remains local unless a
+    // separate user instruction already requires cleanup.
+    let skill_parts = (pure_expansion.is_none() && cfg.cleanup_intensity != "none")
+        .then(|| {
+            cfg.t3_skill_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.prompt_parts(raw))
+        })
+        .flatten();
+    // Booleans only: never log dictated text, skill names, or workspace labels.
+    log::debug!(
+        "pipeline: t3 skill evidence catalog={} cleanup_enabled={} attached={}",
+        cfg.t3_skill_catalog.is_some(),
+        cfg.cleanup_intensity != "none",
+        skill_parts.is_some()
+    );
+    if cfg.t3_skill_catalog.is_some() {
+        log::info!(
+            "pipeline: t3 skill handoff cleanup_enabled={} attached={}",
+            cfg.cleanup_enabled && cfg.cleanup_intensity != "none",
+            skill_parts.is_some()
+        );
+    }
+    if let Some((_, evidence)) = &skill_parts {
+        if !dictionary_evidence.is_empty() {
+            dictionary_evidence.push_str("\n\n");
+        }
+        dictionary_evidence.push_str(evidence);
+    }
     let context_custom_instructions = db::query_context(db_handle, context_id)
         .ok()
         .and_then(|c| c.custom_instructions);
@@ -556,6 +586,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         snippet_instructions.as_str(),
         context_custom_instructions.as_deref().unwrap_or(""),
         protected_instruction.unwrap_or(""),
+        skill_parts
+            .as_ref()
+            .map(|parts| parts.0.as_str())
+            .unwrap_or(""),
     ]
     .iter()
     .filter(|s| !s.is_empty())
@@ -621,12 +655,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 // Cache rows do not retain provider provenance. Current settings
                 // cannot tell whether Apple/local cleanup or a cloud fallback
                 // generated this text, so do not infer an on-device attribution.
-                return Ok((
-                    overridden,
-                    dict_entries,
-                    cache_key,
-                    String::new(),
-                ));
+                return Ok((overridden, dict_entries, cache_key, String::new()));
             }
             record_lookup(false);
         }
@@ -681,6 +710,12 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             None => None,
         };
 
+        // Reject newly invented skill names before cache insertion or delivery.
+        let guarded = guarded.filter(|cleaned| {
+            cfg.t3_skill_catalog
+                .as_ref()
+                .is_none_or(|catalog| catalog.validates_output(&expanded, cleaned))
+        });
         record_provider_duration(provider_started.elapsed());
         if guarded.is_none() {
             if let Some(telemetry) = telemetry {
@@ -735,6 +770,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 } else {
                     ensure_terminal_punctuation(&cleaned, profile, &cfg.cleanup_intensity)
                 };
+                let cleaned = cfg.t3_skill_catalog.as_ref().map_or_else(
+                    || cleaned.clone(),
+                    |catalog| catalog.normalize_mentions(&cleaned),
+                );
                 let overridden =
                     snippets::apply_cleanup_instruction_overrides(&cleaned, &snippet_instructions);
                 if !cache_key.is_empty() {

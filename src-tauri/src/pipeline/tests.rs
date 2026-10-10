@@ -571,6 +571,7 @@ fn context_can_disable_contextual_formatting_without_changing_global_setting() {
         custom_instructions: None,
         contextual_formatting_disabled: true,
         paste_in_chunks: true,
+        t3_skill_mentions_disabled: false,
         pinned_at: None,
         created_at: String::new(),
         updated_at: String::new(),
@@ -627,6 +628,7 @@ fn base_config() -> store::PipelineConfig {
         auto_learn_enabled: false,
         contextual_formatting_enabled: true,
         paste_in_chunks: false,
+        t3_skill_catalog: None,
         caps_lock_uppercase_enabled: false,
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
@@ -1153,6 +1155,19 @@ async fn pipeline_fixture_skips_cleanup_for_pure_snippet_fast_path() {
     });
 
     let mut request = base_request(base_config());
+    request.config.t3_skill_catalog = Some(Arc::new(crate::system::t3_skills::Catalog {
+        environment_id: "synthetic".into(),
+        id: "catalog".into(),
+        label: "Codex".into(),
+        provider_instance_id: "codex".into(),
+        workspace_id: "synthetic".into(),
+        revision: "1".into(),
+        skills: vec![crate::system::t3_skills::Skill {
+            name: "babysit-pr".into(),
+            display_name: None,
+            description: None,
+        }],
+    }));
     request.snippets.push(PipelineTestSnippet {
         trigger: "sig".into(),
         expansion: "Best regards, Noah".into(),
@@ -1736,6 +1751,131 @@ async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
         crate::data::db::cleanup_cache_count(request.db.as_ref().unwrap()).unwrap(),
         1
     );
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_t3_mentions_survive_punctuation_caps_and_cache() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let raw = "please use my babysit skill to monitor this pull request";
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some(raw),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Please use $babysit-pr to monitor this pull request"),
+        None,
+        None,
+    );
+    let mut config = base_config();
+    config.t3_skill_catalog = Some(Arc::new(crate::system::t3_skills::Catalog {
+        environment_id: "synthetic".into(),
+        id: "codex".into(),
+        label: "Codex".into(),
+        provider_instance_id: "codex".into(),
+        workspace_id: "synthetic".into(),
+        revision: "1".into(),
+        skills: vec![crate::system::t3_skills::Skill {
+            name: "babysit-pr".into(),
+            display_name: None,
+            description: Some("Monitor pull requests".into()),
+        }],
+    }));
+    let mut request = base_request(config);
+    request.db = Some(crate::data::db::open(":memory:").unwrap());
+    request.caps_lock_on = true;
+    request.config.caps_lock_uppercase_enabled = true;
+    let first = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(
+        first.injected_text.contains("$babysit-pr "),
+        "Skill name must survive caps lock"
+    );
+    assert_eq!(first.history_entry.clean_text, first.injected_text);
+    let second = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_eq!(first.injected_text, second.injected_text);
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        1
+    );
+    Arc::make_mut(request.config.t3_skill_catalog.as_mut().unwrap()).revision = "2".into();
+    let third = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_ne!(first.cleanup_cache_key, third.cleanup_cache_key);
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        2
+    );
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("use my babysit skill"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $babysit-pr"),
+        None,
+        None,
+    );
+    request.caps_lock_on = false;
+    let short = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(short.injected_text.contains("$babysit-pr "));
+    request.config.cleanup_cache_enabled = false;
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $invented-skill"),
+        None,
+        None,
+    );
+    let unknown = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(!unknown.injected_text.contains("$invented-skill"));
+    request.config.cleanup_intensity = "none".into();
+    let off = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(!off.injected_text.contains('$'));
+
+    request.config.cleanup_intensity = "medium".into();
+    request.config.cleanup_cache_enabled = false;
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $babysit-pr?"),
+        None,
+        None,
+    );
+    let punctuated = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_eq!(punctuated.injected_text, "Use $babysit-pr ? ");
+    assert_eq!(
+        punctuated.history_entry.clean_text,
+        punctuated.injected_text
+    );
+
+    request.profile = "very_casual".into();
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("$babysit-pr"),
+        None,
+        None,
+    );
+    let bare = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(bare.injected_text, "$babysit-pr ");
+    assert_eq!(bare.history_entry.clean_text, bare.injected_text);
     reset();
 }
 

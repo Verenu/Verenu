@@ -711,7 +711,7 @@ async fn run_pipeline_with_delivery(
         Some("context"),
         None,
     );
-    let Some((cfg, profile)) =
+    let Some((mut cfg, profile)) =
         open_config_and_context(&app, &process_name, resolved_context.as_ref()).await
     else {
         // open_config_and_context already shows its own error/pill on
@@ -720,6 +720,7 @@ async fn run_pipeline_with_delivery(
         state::leave_processing_if_owned(&state, generation);
         return;
     };
+    cfg.t3_skill_catalog = resolved_context_identity.t3_skills.clone();
     // Surface the resolved context so the pill can show where this dictation
     // is going (same value emitted at record start, now domain-refined).
     emit_pill_context(&app, &resolved_context_identity.label);
@@ -1257,6 +1258,7 @@ pub async fn retry_transcription_impl(
     let db_handle = app.state::<DbHandle>().inner().clone();
     let context = db::query_context(&db_handle, capture.context.id).ok();
     cfg.speech_vocabulary = capture.speech_vocabulary.clone();
+    cfg.t3_skill_catalog = capture.context.t3_skills.clone();
     capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref());
     cfg.paste_in_chunks = cfg!(desktop) && capture.paste_in_chunks;
     emit_pill_context(app, &capture.context.label);

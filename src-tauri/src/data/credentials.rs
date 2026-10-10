@@ -32,6 +32,7 @@ fn user_for(provider: &str) -> Option<String> {
             store::ASSEMBLYAI => store::KEY_ASSEMBLYAI,
             store::OPENROUTER => store::KEY_OPENROUTER,
             store::XAI => store::KEY_XAI,
+            store::T3_INTEGRATION => store::KEY_T3_INTEGRATION,
             _ => return None,
         }
         .to_string(),

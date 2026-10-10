@@ -573,6 +573,9 @@ pub const BETA_UPDATES_ENABLED: &str = "beta_updates_enabled";
 pub const VERENU_SERVICE_CHECKS_ENABLED: &str = "verenu_service_checks_enabled";
 pub const HISTORY_RETENTION: &str = "history_retention";
 pub const GITHUB_USERNAME: &str = "github_username";
+pub(crate) const T3_CONNECTION: &str = "t3_connection";
+pub(crate) const T3_INTEGRATION: &str = "t3_integration";
+pub(crate) const KEY_T3_INTEGRATION: &str = "key_t3_integration";
 // Derived local counts, deliberately excluded from IPC settings and exports.
 pub(crate) const GITHUB_COMMIT_CACHE: &str = "github_commit_cache";
 pub const AUTOSTART_ENABLED: &str = "autostart_enabled";

@@ -430,6 +430,10 @@ fn allowed(command: &str) -> bool {
             | "cancel_local_llm_model_download"
             | "cancel_local_llm_runtime_download"
             | "get_contexts"
+            | "set_context_t3_skill_mentions"
+            | "get_t3_skills"
+            | "pull_t3_skills"
+            | "select_t3_catalog"
             | "get_sub_apps"
             | "create_sub_app"
             | "assign_sub_app"
@@ -850,6 +854,14 @@ async fn audio(
         crate::data::db::resolve_context_for_target(&db, &target.process, target.domain.as_deref())
     }
     .map_err(|_| error(StatusCode::BAD_REQUEST, "Context could not be resolved"))?;
+    let settings = crate::data::store::settings_snapshot(&bridge.app)
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Settings unavailable"))?;
+    let mut identity = crate::core::context::ResolvedContextIdentity::from_context(&context);
+    identity.t3_skills = crate::commands::catalog_for_destination(
+        &settings,
+        &target.process,
+        context.t3_skill_mentions_disabled,
+    );
     bridge
         .spend_run()
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
@@ -873,7 +885,7 @@ async fn audio(
             .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?,
         state,
         audio,
-        crate::core::context::ResolvedContextIdentity::from_context(&context),
+        identity,
         target.process,
         target.domain,
     )
