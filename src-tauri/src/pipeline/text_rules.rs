@@ -70,7 +70,18 @@ fn terminal(s: &str) -> bool {
 // Spoken punctuation has its own explicit state; ordinary text needs a real
 // separating boundary. Unambiguous terminators retain no-space behavior.
 fn sentence_boundary(s: &str, at_end: bool) -> bool {
-    sentence_boundary_in(s, at_end, false)
+    sentence_boundary_in(s, at_end, false, "")
+}
+// These periods are lexical parts of an abbreviation or name initial. An
+// explicit spoken full stop still starts a sentence independently of this.
+fn abbreviation_before_period(prefix: &str) -> bool {
+    let chunk = prefix.rsplit(char::is_whitespace).next().unwrap_or("");
+    if chunk.contains(['@', '/']) { return false; }
+    let token = prefix.rsplit(|c: char| !c.is_alphabetic() && c != '.').next().unwrap_or("");
+    let lower = token.to_lowercase();
+    matches!(lower.as_str(), "dr" | "mr" | "mrs" | "ms" | "prof" | "sr" | "jr" | "st" | "vs" | "etc" | "e.g" | "i.e" | "a.m" | "p.m" | "ph.d" | "fig" | "dept" | "inc" | "ltd" | "approx")
+        || (token.chars().count() == 1 && token.chars().next().is_some_and(|c| c.is_uppercase() && c != 'I'))
+        || (token.contains('.') && token.split('.').all(|part| part.chars().count() == 1 && part.chars().all(char::is_alphabetic)))
 }
 fn identifier_chunk(s: &str) -> bool {
     s.contains(['/', '=', '_']) || s.char_indices().any(|(i, c)| {
@@ -90,12 +101,27 @@ fn identifier_word(words: &[Word], i: usize) -> bool {
     let chunk: String = words[start..=end].iter().map(|w| format!("{}{}", w.text, w.after)).collect();
     identifier_chunk(chunk.trim_end())
 }
-fn sentence_boundary_in(s: &str, at_end: bool, identifier: bool) -> bool {
+fn sentence_boundary_in(s: &str, at_end: bool, identifier: bool, prefix: &str) -> bool {
     s.char_indices().any(|(i, c)| {
         matches!(c, '…' | '\n' | '\r')
             || (matches!(c, '!' | '?') && (!identifier || at_end || s[i + 1..].chars().any(char::is_whitespace)))
-            || (c == '.' && (s[i + 1..].chars().any(char::is_whitespace) || at_end))
+            || (c == '.' && (s[i + 1..].chars().any(char::is_whitespace) || at_end)
+                && !abbreviation_before_period(&format!("{prefix}{}", &s[..i])))
     })
+}
+fn word_sentence_boundary(leading: &str, words: &[Word], i: usize) -> bool {
+    let mut start = i;
+    while start > 0 && !words[start - 1].after.chars().any(char::is_whitespace) { start -= 1; }
+    let mut prefix = if start == 0 {
+        leading.to_owned()
+    } else {
+        words[start - 1].after.rsplit(char::is_whitespace).next().unwrap_or("").to_owned()
+    };
+    for (j, word) in words[start..=i].iter().enumerate() {
+        prefix.push_str(&word.text);
+        if start + j < i { prefix.push_str(&word.after); }
+    }
+    sentence_boundary_in(&words[i].after, i + 1 == words.len(), identifier_word(words, i), &prefix)
 }
 fn inline_space(s: &str) -> bool {
     s.chars().all(|c| matches!(c, ' ' | '\t'))
@@ -168,11 +194,11 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
 fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool, preceding_speech: bool) {
     let mut after = words[i + n - 1].after.clone();
     let has_following_word = i + n < words.len();
-    let ends_sentence = terminal(&after);
+    let ends_sentence = word_sentence_boundary(leading, words, i + n - 1);
     let capitalize_next = ends_sentence || if i == 0 {
         sentence_initial || terminal(leading)
     } else {
-        terminal(&words[i - 1].after)
+        word_sentence_boundary(leading, words, i - 1)
     };
     let before = if i == 0 {
         &mut *leading
@@ -322,7 +348,7 @@ fn basic(text: &str, sentence_initial: bool, preceding_speech: bool) -> String {
         let at_sentence_start = if i == 0 {
             sentence_initial || sentence_boundary(&leading, false)
         } else {
-            sentence_boundary(&words[i - 1].after, false)
+            word_sentence_boundary(&leading, &words, i - 1)
         };
         for n in (1..=3).rev() {
             if i + 2 * n > words.len() {
@@ -406,7 +432,8 @@ fn rollback(out: &mut String, needs_separator: bool) {
                     && (!identifier_chunk(&trimmed[start..end])
                         || trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace)))
                 || (matches!(c, '.' | ';' | ':')
-                    && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
+                    && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace)
+                    && (*c != '.' || !abbreviation_before_period(&trimmed[..*i])))
         })
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or_else(|| out.len() - out.trim_start_matches([' ', '\t']).len());
@@ -537,7 +564,8 @@ fn commands(text: &str) -> String {
             out.push_str(&words[i + mention].after);
             // The username consumes the pending sentence position just like
             // an ordinary word; its trailing punctuation starts the next one.
-            cap_next = sentence_boundary_in(&words[i + mention].after, i + mention + 1 == words.len(), identifier_word(&words, i + mention));
+            // Generated mentions are usernames, never prose abbreviations.
+            cap_next = sentence_boundary_in(&words[i + mention].after, i + mention + 1 == words.len(), identifier_word(&words, i + mention), "");
             i += mention + 1;
             continue;
         }
@@ -552,7 +580,7 @@ fn commands(text: &str) -> String {
         }
         out.push_str(&word);
         out.push_str(&words[i].after);
-        cap_next = sentence_boundary_in(&words[i].after, i + 1 == words.len(), identifier_word(&words, i));
+        cap_next = word_sentence_boundary(&leading, &words, i);
         i += 1;
     }
     out
@@ -596,7 +624,8 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
         '“' => Some('”'),
         '`' => Some('`'),
         '‘' => Some('’'),
-        '\'' if i == 0 || !text[..i].chars().next_back().is_some_and(word_char) => Some('\''),
+        '\'' if i == 0 || !text[..i].graphemes(true).next_back()
+            .and_then(|g| g.chars().next()).is_some_and(word_char) => Some('\''),
         _ => None,
     };
     if rest.starts_with("[[VERENU_") {
@@ -651,7 +680,10 @@ fn sentence_start(prefix: &str) -> bool {
     }
     // Closing delimiters do not hide punctuation ending a quoted sentence.
     let end = prefix.trim_end_matches([' ', '\t', '"', '”', '\'', '’', '`', ')', ']', '}']);
-    end.chars().next_back().is_some_and(|c| matches!(c, '.' | '!' | '?' | '…' | '\n' | '\r'))
+    end.chars().next_back().is_some_and(|c| {
+        matches!(c, '!' | '?' | '…' | '\n' | '\r')
+            || (c == '.' && !abbreviation_before_period(&end[..end.len() - 1]))
+    })
 }
 
 /// Edit spoken spans independently while retaining sentence context across
@@ -699,6 +731,34 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn abbreviation_periods_do_not_capitalize_following_prose() {
+        for input in ["use e.g. lowercase names", "ask Dr. smith tomorrow", "call A. smith tomorrow", "use i.e. lowercase names", "use U.S. spelling"] {
+            assert_eq!(process(input, false, true, &[]), input, "{input}");
+        }
+        assert_eq!(process("Okay. go now", false, true, &[]), "Okay. Go now");
+        assert_eq!(process("use examples full stop go now", false, true, &[]), "use examples. Go now");
+        assert_eq!(process("ping at sign dr. tomorrow", false, true, &[]), "ping @dr. Tomorrow");
+        assert_eq!(process("ping @dr. tomorrow", false, true, &[]), "ping @dr. Tomorrow");
+        assert_eq!(process("@dr. tomorrow", false, true, &[]), "@dr. Tomorrow");
+    }
+
+    #[test]
+    fn abbreviation_periods_do_not_split_rollback_fragments() {
+        for input in ["Call Dr. Smith scratch that tomorrow", "Call A. Smith scratch that tomorrow", "Use e.g. names scratch that tomorrow", "Use U.S. spelling scratch that tomorrow"] {
+            assert_eq!(process(input, false, true, &[]), "Tomorrow", "{input}");
+        }
+        assert_eq!(process("Hello. Call Dr. Smith scratch that tomorrow", false, true, &[]), "Hello. Tomorrow");
+        assert_eq!(process("ping at sign dr. change this scratch that tomorrow", false, true, &[]), "ping @dr. Tomorrow");
+    }
+
+    #[test]
+    fn decomposed_possessive_apostrophes_do_not_open_quotes() {
+        assert_eq!(process("cafe\u{301}'s um menu", true, false, &[]), "cafe\u{301}'s menu");
+        assert_eq!(process("cafe\u{301}'s new line menu", false, true, &[]), "cafe\u{301}'s\nMenu");
+        assert_eq!(process("say 'cafe\u{301}'s um menu' literally", true, true, &[]), "say 'cafe\u{301}'s um menu' literally");
+    }
+
     #[test]
     fn measurement_marks_inside_quotes_do_not_close_literal_spans() {
         for input in [
