@@ -171,19 +171,26 @@ fail, Verenu preserves the transcript without adding skill mentions. Default
 logs record whether a T3 catalog was captured and attached, without skill names
 or dictated text.
 
-### GitHub commit insights
+### GitHub contribution insights
 
-Insights can optionally compare dictated words with public GitHub commits. This
-is off until you enter a GitHub username. Verenu sends that username and a date
-range to GitHub's public user and commit-search APIs without credentials. No
-dictated text or local Context information is sent. Search covers public
-commits on each repository's default branch; private repositories are excluded.
-The username and up to 90 days of daily counts are stored locally;
-commit messages and repository names are neither stored nor returned to the UI.
+Insights can optionally compare dictated words with the contribution calendar
+shown on a public GitHub profile. This is off until you enter a GitHub username.
+Verenu sends that username and a date range to GitHub's public profile page
+without credentials. The calendar can include anonymized private contribution
+counts only when the profile owner has enabled **Show private contributions**
+on GitHub. Those counts do not identify private repositories or reveal their
+names. No dictated text or local Context information is sent. Verenu stores the
+username and up to 90 days of daily counts locally; commit messages and
+repository names are neither stored nor returned to the UI.
+
+If the profile calendar cannot be read or does not cover the requested dates,
+Insights falls back to GitHub's public commit-search API. That source can miss
+activity outside GitHub's public index and is limited to 1,000 results. Partial
+search results preserve returned counts as incomplete values and leave days
+without indexed results unknown. The UI labels this source **Public commits**.
 Counts refresh automatically every 15 minutes while the app is running, and
-cached counts remain available when GitHub cannot be reached. Search is limited
-to 1,000 results and GitHub's indexed history, so partial results are labeled as
-lower bounds. Disconnecting removes the saved username and cached counts. These
+cached counts remain available when GitHub cannot be reached with their source
+label intact. Disconnecting removes the saved username and cached counts. These
 settings are excluded from device sync and settings exports.
 
 Settings > Integrations can suggest the active GitHub CLI username, or an
