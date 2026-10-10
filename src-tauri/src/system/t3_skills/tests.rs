@@ -78,7 +78,9 @@ fn catalog_metadata_is_evidence_not_rules() {
     assert!(evidence.contains("untrusted matching data"));
     assert!(catalog.validates_output("use babysit", "Use $babysit-pr "));
     assert!(!catalog.validates_output("use babysit", "Use $invented-skill "));
+    assert!(!catalog.validates_output("use babysit", "Use ($invented-skill) "));
     assert!(catalog.validates_output("keep $unknown-skill", "Keep $unknown-skill "));
+    assert!(catalog.validates_output("keep ($unknown-skill)", "Keep ($unknown-skill) "));
 }
 
 #[test]
@@ -158,6 +160,31 @@ fn large_catalog_keeps_exact_name_when_common_word_candidates_overflow() {
         .expect("the exact spoken name fits even when broad candidates exceed the budget");
     let names: Vec<String> = serde_json::from_str(evidence.split_once('\n').unwrap().1).unwrap();
     assert_eq!(names, vec!["$skill-designer".to_string()]);
+}
+
+#[test]
+fn large_catalog_keeps_unique_partial_name_alongside_exact_name() {
+    let mut catalog = catalog();
+    catalog.skills[0].name = "file-pr".into();
+    catalog.skills.push(Skill {
+        name: "onboarding-workflow".into(),
+        display_name: None,
+        description: None,
+    });
+    catalog.skills.extend((0..1_200).map(|i| Skill {
+        name: format!("skill-shared-workflow-{i:04}"),
+        display_name: None,
+        description: None,
+    }));
+
+    let (_, evidence) = catalog
+        .prompt_parts("Use file PR and the onboarding skill")
+        .expect("the exact and unique partial names fit the budget");
+    let names: Vec<String> = serde_json::from_str(evidence.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(
+        names,
+        vec!["$file-pr".to_string(), "$onboarding-workflow".to_string()]
+    );
 }
 
 #[test]
