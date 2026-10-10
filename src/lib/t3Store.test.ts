@@ -68,6 +68,37 @@ describe('T3 store request ordering', () => {
     expect(t3State.status?.connection?.label).toBe('Newer');
   });
 
+  it('applies a pull after older and newer reads finish with stale status', async () => {
+    const olderRead = deferred<ReturnType<typeof status>>();
+    const pull = deferred<ReturnType<typeof status>>();
+    const newerRead = deferred<ReturnType<typeof status>>();
+    ipc.invoke.mockReturnValueOnce(olderRead.promise).mockReturnValueOnce(pull.promise).mockReturnValueOnce(newerRead.promise);
+    const older = updateT3('get_t3_skills', undefined, { background: true });
+    const refreshing = updateT3('pull_t3_skills', { force: true }, { background: true });
+    const polling = updateT3('get_t3_skills', undefined, { background: true });
+    newerRead.resolve(status('Stale catalog'));
+    await polling;
+    olderRead.resolve(status('Older catalog'));
+    await older;
+    pull.resolve(status('Refreshed catalog'));
+    await refreshing;
+    expect(t3State.status?.connection?.label).toBe('Refreshed catalog');
+  });
+
+  it('does not let an overlapping pull restore a disconnected connection', async () => {
+    const pull = deferred<ReturnType<typeof status>>();
+    const disconnect = deferred<ReturnType<typeof status>>();
+    t3State.status = status('Old connection');
+    ipc.invoke.mockReturnValueOnce(pull.promise).mockReturnValueOnce(disconnect.promise);
+    const refreshing = updateT3('pull_t3_skills', { force: true }, { background: true });
+    const removing = updateT3('disconnect_t3');
+    disconnect.resolve(status(null));
+    await removing;
+    pull.resolve(status('Old connection'));
+    await refreshing;
+    expect(t3State.status?.connection).toBeNull();
+  });
+
   it('ignores a stale poll started during pairing even when it finishes after pairing', async () => {
     const connect = deferred<ReturnType<typeof status>>();
     const poll = deferred<ReturnType<typeof status>>();

@@ -243,8 +243,30 @@ impl Catalog {
             .map(|skill| format!("${}", skill.name))
             .collect();
         let full = serde_json::to_string(&names).ok()?;
+        let spoken_words = matching_words(raw);
+        let exact_names: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|skill| {
+                let words = matching_words(&skill.name);
+                !words.is_empty()
+                    && spoken_words
+                        .windows(words.len())
+                        .any(|window| window == words)
+            })
+            .map(|skill| format!("${}", skill.name))
+            .collect();
         let selected = if full.len() <= PROMPT_BUDGET {
             full
+        } else if !exact_names.is_empty() {
+            // Preserve fully spoken identifiers before broad shared-word
+            // candidates. A large catalog can contain more common-word names
+            // than the budget permits even though the exact request is clear.
+            let exact = serde_json::to_string(&exact_names).ok()?;
+            if exact.len() > PROMPT_BUDGET {
+                return None;
+            }
+            exact
         } else {
             let words: HashSet<_> = raw
                 .split(|c: char| !c.is_alphanumeric())
@@ -275,19 +297,6 @@ impl Catalog {
             }
             serde_json::to_string(&candidates).ok()?
         };
-        let spoken_words = matching_words(raw);
-        let exact_names: Vec<_> = self
-            .skills
-            .iter()
-            .filter(|skill| {
-                let words = matching_words(&skill.name);
-                !words.is_empty()
-                    && spoken_words
-                        .windows(words.len())
-                        .any(|window| window == words)
-            })
-            .map(|skill| format!("${}", skill.name))
-            .collect();
         let rules = if exact_names.is_empty() {
             RESOLUTION_RULE.to_string()
         } else {

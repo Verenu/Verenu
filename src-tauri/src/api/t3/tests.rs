@@ -124,3 +124,16 @@ fn provider_catalogs_follow_workspace_precedence_and_hide_noninvocable_skills() 
         parse_catalogs(&changed, "env").unwrap()[0].revision
     );
 }
+
+#[test]
+fn incomplete_same_cwd_workspace_snapshot_does_not_hide_default_catalog() {
+    let config = json!({"cwd":"/synthetic", "providers":[{
+        "instanceId":"codex", "enabled":true,
+        "skills":[{"name":"default-only","enabled":true}],
+        "workspaceSnapshots":[{"cwd":"/synthetic"}]
+    }]});
+    let catalogs = parse_catalogs(&config, "env").unwrap();
+    assert_eq!(catalogs.len(), 1);
+    assert_eq!(catalogs[0].skills.len(), 1);
+    assert_eq!(catalogs[0].skills[0].name, "default-only");
+}

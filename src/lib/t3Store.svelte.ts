@@ -27,22 +27,37 @@ let appliedSequence = 0;
 let pending = 0;
 let mutationEpoch = 0;
 let pendingMutations = 0;
-let latestMutation = 0;
-const MUTATIONS = new Set(['connect_t3', 'select_t3_catalog', 'disconnect_t3']);
+let strongMutationEpoch = 0;
+let pendingStrongMutations = 0;
+let latestStrongMutation = 0;
+let latestPull = 0;
+const STRONG_MUTATIONS = new Set(['connect_t3', 'select_t3_catalog', 'disconnect_t3']);
 
 export async function updateT3(command = 'get_t3_skills', args?: Record<string, unknown>, options: { background?: boolean } = {}): Promise<boolean> {
   const request = ++sequence;
-  const mutation = MUTATIONS.has(command);
+  const strongMutation = STRONG_MUTATIONS.has(command);
+  const pull = command === 'pull_t3_skills';
+  const mutation = strongMutation || pull;
   if (mutation) {
     mutationEpoch++;
     pendingMutations++;
-    latestMutation = request;
+  }
+  if (strongMutation) {
+    strongMutationEpoch++;
+    pendingStrongMutations++;
+    latestStrongMutation = request;
+  } else if (pull) {
+    latestPull = request;
   }
   const epoch = mutationEpoch;
+  const strongEpoch = strongMutationEpoch;
+  const pullStartedDuringStrongMutation = pull && pendingStrongMutations > 0;
   const readDuringMutation = !mutation && pendingMutations > 0;
-  const canApply = () => mutation
-    ? request === latestMutation
-    : !readDuringMutation && pendingMutations === 0 && epoch === mutationEpoch && request > appliedSequence;
+  const canApply = () => strongMutation
+    ? request === latestStrongMutation
+    : pull
+      ? !pullStartedDuringStrongMutation && strongEpoch === strongMutationEpoch && request === latestPull && request > appliedSequence
+      : !readDuringMutation && pendingMutations === 0 && epoch === mutationEpoch && request > appliedSequence;
   if (!options.background) {
     pending++;
     t3State.loading = true;
@@ -66,6 +81,7 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
     return false;
   } finally {
     if (mutation) pendingMutations--;
+    if (strongMutation) pendingStrongMutations--;
     if (!options.background) {
       pending--;
       t3State.loading = pending > 0;
