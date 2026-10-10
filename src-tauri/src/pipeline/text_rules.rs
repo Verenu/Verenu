@@ -77,6 +77,9 @@ fn identifier_chunk(s: &str) -> bool {
         (c == '.' && s[..i].chars().next_back().is_some_and(char::is_alphanumeric)
             && s[i + 1..].chars().next().is_some_and(char::is_alphanumeric))
             || (c == '@' && i > 0)
+            || (c == ':' && i > 0
+                && s[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == ']')
+                && s[i + 1..].chars().next().is_some_and(|c| c.is_ascii_digit()))
     })
 }
 fn identifier_word(words: &[Word], i: usize) -> bool {
@@ -668,7 +671,7 @@ mod tests {
     use super::*;
     #[test]
     fn url_query_delimiters_are_not_sentence_boundaries() {
-        for input in ["visit example.com?query=value", "visit https://example.com/path?query=value", "open report.md!section", "visit example.com?query"] {
+        for input in ["visit example.com?query=value", "visit https://example.com/path?query=value", "open report.md!section", "visit example.com?query", "visit localhost:3000?debug", "visit localhost:3000!debug"] {
             assert_eq!(process(input, false, true, &[]), input, "{input}");
             assert_eq!(process(&format!("{input} scratch that"), false, true, &[]), "", "{input}");
             assert_eq!(process(&format!("Hello. {input} scratch that tomorrow"), false, true, &[]), "Hello. Tomorrow", "{input}");
