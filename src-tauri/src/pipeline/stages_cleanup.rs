@@ -549,7 +549,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
     );
-    let skill_parts = (cfg.cleanup_intensity != "none")
+    // Skill rules must not turn an exact snippet match into a reason to call
+    // the cleanup provider. The pure-expansion path remains local unless a
+    // separate user instruction already requires cleanup.
+    let skill_parts = (pure_expansion.is_none() && cfg.cleanup_intensity != "none")
         .then(|| {
             cfg.t3_skill_catalog
                 .as_ref()

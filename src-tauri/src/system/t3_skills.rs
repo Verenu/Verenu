@@ -361,6 +361,9 @@ impl Catalog {
         let existing_tokens = skill_tokens(raw);
         let spoken_words = matching_words(raw);
         skill_tokens(output).into_iter().all(|name| {
+            if is_spoken_variable(raw, name) {
+                return true;
+            }
             if existing_tokens.contains(&name) {
                 return true;
             }
@@ -477,6 +480,31 @@ fn skill_tokens(text: &str) -> Vec<&str> {
             valid_name(name).then_some(name)
         })
         .collect()
+}
+
+fn is_spoken_variable(raw: &str, name: &str) -> bool {
+    if name.chars().any(|ch| matches!(ch, '-' | ':')) {
+        return false;
+    }
+    let raw_words = matching_words(raw);
+    let name_words = matching_words(name);
+    if name_words.is_empty() {
+        return false;
+    }
+    raw_words
+        .windows(name_words.len())
+        .enumerate()
+        .any(|(index, window)| {
+            if window != name_words {
+                return false;
+            }
+            let before = index
+                .checked_sub(1)
+                .and_then(|previous| raw_words.get(previous));
+            let after = raw_words.get(index + name_words.len());
+            before.is_some_and(|word| matches!(word.as_str(), "variable" | "variables"))
+                || after.is_some_and(|word| matches!(word.as_str(), "variable" | "variables"))
+        })
 }
 
 #[cfg(test)]
