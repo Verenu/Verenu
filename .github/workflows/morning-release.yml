@@ -331,7 +331,9 @@ jobs:
           fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(tauriConf, null, 2) + '\n');
           NODE
 
-          git diff --check
+          # Version replacements preserve package.json's existing CRLF bytes.
+          # Accept CR at EOL while still rejecting spaces/tabs at EOL and EOF.
+          git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
