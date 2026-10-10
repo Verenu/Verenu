@@ -17,5 +17,10 @@ test('production voice commands carry sentence state across protected spans', { 
     [true, 'say "done." new line tomorrow', 'say "done."\nTomorrow'],
     [true, 'say "done." "scratch that" tomorrow', 'say "done." "scratch that" tomorrow'],
     [true, 'I use sentence name tomorrow', 'I use Verenu. Tomorrow'],
+    [true, 'say "done". tomorrow', 'say "done". Tomorrow'],
+    [true, 'say "done"! tomorrow', 'say "done"! Tomorrow'],
+    [true, 'say "done"? tomorrow', 'say "done"? Tomorrow'],
+    [true, 'say "done", tomorrow', 'say "done", tomorrow'],
+    [true, 'I use app name. tomorrow', 'I use Verenu. Tomorrow'],
   ]);
 });
