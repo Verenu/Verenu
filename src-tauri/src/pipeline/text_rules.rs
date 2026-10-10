@@ -557,8 +557,19 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
     if rest.starts_with("[[VERENU_") {
         Some(rest.find("]]").map(|n| n + 2).unwrap_or(rest.len()))
     } else if let Some(close) = quoted {
-        Some(rest[c.len_utf8()..].find(close)
-            .map(|n| c.len_utf8() + n + close.len_utf8()).unwrap_or(rest.len()))
+        Some(rest[c.len_utf8()..].char_indices().find_map(|(offset, candidate)| {
+            if candidate != close { return None; }
+            let index = c.len_utf8() + offset;
+            let is_word = |ch| word_char(ch) && !matches!(ch, '\'' | '’');
+            // A contraction apostrophe is part of the quoted word, not its
+            // closing delimiter. Inspect the preceding grapheme's base so
+            // decomposed Unicode letters have the same boundary semantics.
+            let intra_word = matches!(close, '\'' | '’')
+                && rest[..index].graphemes(true).next_back()
+                    .and_then(|g| g.chars().next()).is_some_and(is_word)
+                && rest[index + close.len_utf8()..].chars().next().is_some_and(is_word);
+            (!intra_word).then_some(index + close.len_utf8())
+        }).unwrap_or(rest.len()))
     } else {
         terms.iter()
             .filter(|_| i == 0 || !text[..i].chars().next_back().is_some_and(word_char))
@@ -629,6 +640,27 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn single_quoted_contractions_protect_fillers() {
+        for input in ["say 'don't um pause' literally", "say ‘don’t um pause’ literally", "say 'don't um pause", "say ‘don’t um pause", "say 'cafe\u{301}'s um pause' literally"] {
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+            assert_eq!(process(input, true, false, &[]), input, "{input}");
+        }
+    }
+    #[test]
+    fn single_quoted_contractions_protect_commands() {
+        for input in ["say 'don't new line please' literally", "say ‘don’t new line please’ literally", "say 'don't scratch that please' literally", "say ‘l’été new line please’ literally", "say 'don't new line please", "say ‘don’t new line please"] {
+            assert_eq!(process(input, false, true, &[]), input, "{input}");
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+        for (input, expected) in [("say 'don't new line' comma tomorrow", "say 'don't new line', tomorrow"), ("say ‘don’t new line’ comma tomorrow", "say ‘don’t new line’, tomorrow")] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        for input in ["say \"don't um new line\" literally", "say `don't um new line` literally", "[[VERENU_CLIPBOARD_don't um new line]]"] {
+            assert_eq!(process(input, true, true, &[]), input);
+        }
+        assert_eq!(process("don't um new line", true, true, &["don't um new line"]), "don't um new line");
+    }
     #[test]
     fn fillers_require_standalone_spoken_tokens() {
         for input in ["contact um@example.com", "visit um.edu", "open /um/report.md", "open um.txt", "value um_value", "use um-value", "address a@um.edu", "version 1.um", "use (um.edu)"] {
