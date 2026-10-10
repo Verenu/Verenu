@@ -44,6 +44,8 @@ pub fn parse_pairing_link(input: &str) -> Result<PairingTarget, String> {
         .filter(|token| !token.is_empty() && token.len() <= 4_096)
         .ok_or("This link has no pairing token. Create a fresh link in T3 Code.")?;
     if let Some((_, host)) = params.iter().find(|(key, _)| key == "host") {
+        // Match T3's normalizeRemoteBaseUrl: unschemed hosts stay HTTPS. A
+        // private HTTP endpoint must be supplied with an explicit http:// URL.
         let host = host.trim_start_matches('/');
         url = Url::parse(&if host.contains("://") {
             host.to_string()

@@ -96,7 +96,7 @@ test('provided audio captures shared T3 skills without workspace selection only 
     }
     phrase = 'Can you use my babysit PR skill?';
     skill = 'babysit-pr';
-    cleanupContent = 'Use $babysit-pr?';
+    cleanupContent = 'Use $BABYSIT-PR?';
     await invoke('set_context_t3_skill_mentions', { contextId: context.id, enabled: true });
     for (const failed of [false, true]) {
       failCleanup = failed;

@@ -77,6 +77,7 @@ fn catalog_metadata_is_evidence_not_rules() {
     assert!(rules.contains("ambiguous"));
     assert!(evidence.contains("untrusted matching data"));
     assert!(catalog.validates_output("use babysit", "Use $babysit-pr "));
+    assert!(catalog.validates_output("use babysit", "Use $BABYSIT-PR "));
     assert!(!catalog.validates_output("use babysit", "Use $invented-skill "));
     assert!(!catalog.validates_output("use babysit", "Use ($invented-skill) "));
     assert!(catalog.validates_output("keep $unknown-skill", "Keep $unknown-skill "));
@@ -221,6 +222,7 @@ fn shared_descriptions_cannot_drop_skill_context() {
         .unwrap();
     assert!(!short_rules.contains("same spoken word order:"));
     assert!(catalog.validates_output("Can you use my babysit PR skill?", "Use $babysit-pr "));
+    assert!(catalog.validates_output("Can you use my babysit PR skill?", "Use $BABYSIT-PR "));
     assert!(catalog.validates_output("Can you use my PR babysit skill?", "Use $pr-babysit "));
     assert!(!catalog.validates_output("Can you use my PR babysit skill?", "Use $babysit-pr "));
     assert!(!catalog.validates_output("Can you use my babysit skill?", "Use $babysit-pr "));

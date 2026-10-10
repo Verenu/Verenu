@@ -300,7 +300,11 @@ impl Catalog {
             if existing_tokens.contains(&name) {
                 return true;
             }
-            let Some(skill) = self.skills.iter().find(|skill| skill.name == name) else {
+            let Some(skill) = self
+                .skills
+                .iter()
+                .find(|skill| skill.name.eq_ignore_ascii_case(name))
+            else {
                 return false;
             };
             let words = matching_words(&skill.name);
