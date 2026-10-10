@@ -165,7 +165,7 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
     }
 }
 
-fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool) {
+fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool, preceding_speech: bool) {
     let mut after = words[i + n - 1].after.clone();
     let has_following_word = i + n < words.len();
     let ends_sentence = terminal(&after);
@@ -182,11 +182,16 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     let removed_pair = remove_empty_delimiters(before, &mut after);
     if removed_pair {
         // The pair enclosed only the removed pause. Its outside punctuation
-        // belongs to the retained speech, including nested empty pairs.
-        *before = before.trim_end_matches([' ', '\t']).to_owned()
-            + after.trim_start_matches([' ', '\t']);
-        if inline_space(&after) && i > 0 && has_following_word {
-            before.push(' ');
+        // belongs to preceding retained speech, including nested empty pairs.
+        // Without that speech, discard orphan marks but preserve line breaks.
+        if i == 0 && !preceding_speech {
+            before.extend(after.chars().filter(|c| matches!(c, '\n' | '\r')));
+        } else {
+            *before = before.trim_end_matches([' ', '\t']).to_owned()
+                + after.trim_start_matches([' ', '\t']);
+            if inline_space(&after) && has_following_word {
+                before.push(' ');
+            }
         }
     } else if i == 0 {
         // Keep delimiters that enclose retained words; remove an empty pair
@@ -220,7 +225,7 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     }
 }
 
-fn basic(text: &str, sentence_initial: bool) -> String {
+fn basic(text: &str, sentence_initial: bool, preceding_speech: bool) -> String {
     let (mut leading, mut words) = tokenize(text);
     let mut i = 0;
     while i < words.len() {
@@ -241,7 +246,7 @@ fn basic(text: &str, sentence_initial: bool) -> String {
                 || words[i + 1].after.contains(',')
                 || terminal(&words[i + 1].after));
         if filler || you_know {
-            drop_words(&mut leading, &mut words, i, if you_know { 2 } else { 1 }, sentence_initial);
+            drop_words(&mut leading, &mut words, i, if you_know { 2 } else { 1 }, sentence_initial, preceding_speech);
         } else {
             i += 1;
         }
@@ -661,7 +666,8 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
         let protected_len = protected_span_len(text, i, terms);
         if let Some(len) = protected_len {
             let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
-            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial));
+            let preceding_speech = !prefix.trim().is_empty() || !out.trim().is_empty();
+            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial, preceding_speech));
             out.push_str(&text[i..i + len]);
             i += len;
             spoken_start = i;
@@ -670,11 +676,12 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
         }
     }
     let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
-    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands, sentence_initial));
+    let preceding_speech = !prefix.trim().is_empty() || !out.trim().is_empty();
+    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands, sentence_initial, preceding_speech));
     out
 }
 
-fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool) -> String {
+fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool, preceding_speech: bool) -> String {
     // Execute each command before Basic can collapse repeated spoken words.
     // Generated line boundaries remain boundaries during mechanical cleanup.
     let text = if voice_commands {
@@ -683,7 +690,7 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
         text.to_owned()
     };
     if cleanup {
-        basic(&text, sentence_initial)
+        basic(&text, sentence_initial, preceding_speech)
     } else {
         text
     }
@@ -719,6 +726,26 @@ mod tests {
         ] {
             assert_eq!(process(input, false, true, &[]), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn leading_empty_filler_delimiters_do_not_leave_orphan_punctuation() {
+        for (input, expected) in [
+            ("(um), continue", "Continue"),
+            ("[um]; continue", "Continue"),
+            ("{um}: continue", "Continue"),
+            ("([um]), continue", "Continue"),
+            ("(um).", ""),
+            ("(um)!", ""),
+            ("(um)?", ""),
+            ("(um). continue", "Continue"),
+            ("(um)\ncontinue", "\nContinue"),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+        assert_eq!(process("\"Please\" (um), continue", true, false, &[]), "\"Please\", continue");
+        assert_eq!(process("`Please` (um), continue", true, false, &[]), "`Please`, continue");
+        assert_eq!(process_after(" (um), continue", true, false, &[], "Please"), ", continue");
     }
 
     #[test]
