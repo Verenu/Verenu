@@ -70,8 +70,27 @@ fn terminal(s: &str) -> bool {
 // Spoken punctuation has its own explicit state; ordinary text needs a real
 // separating boundary. Unambiguous terminators retain no-space behavior.
 fn sentence_boundary(s: &str, at_end: bool) -> bool {
+    sentence_boundary_in(s, at_end, false)
+}
+fn identifier_chunk(s: &str) -> bool {
+    s.contains(['/', '=', '_']) || s.char_indices().any(|(i, c)| {
+        (c == '.' && s[..i].chars().next_back().is_some_and(char::is_alphanumeric)
+            && s[i + 1..].chars().next().is_some_and(char::is_alphanumeric))
+            || (c == '@' && i > 0)
+    })
+}
+fn identifier_word(words: &[Word], i: usize) -> bool {
+    let mut start = i;
+    let mut end = i;
+    while start > 0 && !words[start - 1].after.chars().any(char::is_whitespace) { start -= 1; }
+    while end + 1 < words.len() && !words[end].after.chars().any(char::is_whitespace) { end += 1; }
+    let chunk: String = words[start..=end].iter().map(|w| format!("{}{}", w.text, w.after)).collect();
+    identifier_chunk(chunk.trim_end())
+}
+fn sentence_boundary_in(s: &str, at_end: bool, identifier: bool) -> bool {
     s.char_indices().any(|(i, c)| {
-        matches!(c, '!' | '?' | '…' | '\n' | '\r')
+        matches!(c, '…' | '\n' | '\r')
+            || (matches!(c, '!' | '?') && (!identifier || at_end || s[i + 1..].chars().any(char::is_whitespace)))
             || (c == '.' && (s[i + 1..].chars().any(char::is_whitespace) || at_end))
     })
 }
@@ -366,7 +385,10 @@ fn rollback(out: &mut String, needs_separator: bool) {
         .char_indices()
         .rev()
         .find(|(i, c)| {
-            matches!(c, '!' | '?' | '…' | '\n' | '\r')
+            let start = trimmed[..*i].rfind(char::is_whitespace).map_or(0, |j| j + trimmed[j..].chars().next().unwrap().len_utf8());
+            let end = trimmed[*i..].find(char::is_whitespace).map_or(trimmed.len(), |j| i + j);
+            matches!(c, '…' | '\n' | '\r')
+                || (matches!(c, '!' | '?') && !identifier_chunk(&trimmed[start..end]))
                 || (matches!(c, '.' | ';' | ':')
                     && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
         })
@@ -499,7 +521,7 @@ fn commands(text: &str) -> String {
             out.push_str(&words[i + mention].after);
             // The username consumes the pending sentence position just like
             // an ordinary word; its trailing punctuation starts the next one.
-            cap_next = sentence_boundary(&words[i + mention].after, i + mention + 1 == words.len());
+            cap_next = sentence_boundary_in(&words[i + mention].after, i + mention + 1 == words.len(), identifier_word(&words, i + mention));
             i += mention + 1;
             continue;
         }
@@ -514,7 +536,7 @@ fn commands(text: &str) -> String {
         }
         out.push_str(&word);
         out.push_str(&words[i].after);
-        cap_next = sentence_boundary(&words[i].after, i + 1 == words.len());
+        cap_next = sentence_boundary_in(&words[i].after, i + 1 == words.len(), identifier_word(&words, i));
         i += 1;
     }
     out
@@ -644,6 +666,16 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn url_query_delimiters_are_not_sentence_boundaries() {
+        for input in ["visit example.com?query=value", "visit https://example.com/path?query=value", "open report.md!section", "visit example.com?query"] {
+            assert_eq!(process(input, false, true, &[]), input, "{input}");
+            assert_eq!(process(&format!("{input} scratch that"), false, true, &[]), "", "{input}");
+            assert_eq!(process(&format!("Hello. {input} scratch that tomorrow"), false, true, &[]), "Hello. Tomorrow", "{input}");
+        }
+        assert_eq!(process("hello!tomorrow", false, true, &[]), "hello!Tomorrow");
+        assert_eq!(process("Okay? tomorrow", false, true, &[]), "Okay? Tomorrow");
+    }
     #[test]
     fn rollback_uses_real_clause_boundaries() {
         for input in ["open report.md scratch that", "visit example.com scratch that", "version 1.25 scratch that", "visit https://example.com scratch that", "open /tmp/report.md scratch that", "visit https://example.com/report.md scratch that", "Hello. scratch that", "Hello… scratch that", "Keep this put a colon scratch that"] {
