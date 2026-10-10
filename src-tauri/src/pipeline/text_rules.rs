@@ -361,11 +361,15 @@ fn punctuation_phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
 
 fn rollback(out: &mut String, needs_separator: bool) {
     let trimmed =
-        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | ',' | ';' | ':'));
+        out.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | '?' | '!' | '…' | ',' | ';' | ':'));
     let keep = trimmed
         .char_indices()
         .rev()
-        .find(|(_, c)| matches!(c, '.' | '!' | '?' | ';' | ':' | '\n' | '\r'))
+        .find(|(i, c)| {
+            matches!(c, '!' | '?' | '…' | '\n' | '\r')
+                || (matches!(c, '.' | ';' | ':')
+                    && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
+        })
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or_else(|| out.len() - out.trim_start_matches([' ', '\t']).len());
     out.truncate(keep);
@@ -640,6 +644,29 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rollback_uses_real_clause_boundaries() {
+        for input in ["open report.md scratch that", "visit example.com scratch that", "version 1.25 scratch that", "visit https://example.com scratch that", "open /tmp/report.md scratch that", "visit https://example.com/report.md scratch that", "Hello. scratch that", "Hello… scratch that", "Keep this put a colon scratch that"] {
+            assert_eq!(process(input, true, true, &[]), "", "{input}");
+        }
+        for (input, expected) in [
+            ("Hi team. open report.md scratch that tomorrow", "Hi team. Tomorrow"),
+            ("Hi team. version 1.25 scratch that tomorrow", "Hi team. Tomorrow"),
+            ("Keep this: visit https://example.com scratch that tomorrow", "Keep this: Tomorrow"),
+            ("Keep it; visit example.com scratch that tomorrow", "Keep it; Tomorrow"),
+            ("Hello… world scratch that", "Hello…"),
+            ("Hello… world scratch that tomorrow", "Hello… Tomorrow"),
+            ("Hello!world scratch that tomorrow", "Hello! Tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        for input in ["open report.md scratch that", "visit https://example.com scratch that"] {
+            assert_eq!(process(input, true, false, &[]), input);
+        }
+        assert_eq!(process("\"open report.md scratch that\"", true, true, &[]), "\"open report.md scratch that\"");
+        // The protected segment's following separator is preserved verbatim.
+        assert_eq!(process("[[VERENU_CLIPBOARD_report.md]] scratch that", true, true, &[]), "[[VERENU_CLIPBOARD_report.md]] ");
+    }
     #[test]
     fn single_quoted_contractions_protect_fillers() {
         for input in ["say 'don't um pause' literally", "say ‘don’t um pause’ literally", "say 'don't um pause", "say ‘don’t um pause", "say 'cafe\u{301}'s um pause' literally"] {
