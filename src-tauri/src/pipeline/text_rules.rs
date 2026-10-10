@@ -191,6 +191,17 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
     }
 }
 
+fn retain_nonterminal_punctuation(before: &mut String, after: &str) {
+    // A pause may carry dictated punctuation when speech has no separator yet.
+    // Existing punctuation and line breaks already separate the retained speech.
+    if inline_space(before) {
+        *before = after.trim_start_matches([' ', '\t']).to_owned();
+    } else if after.contains(['\n', '\r']) {
+        before.truncate(before.trim_end_matches([' ', '\t']).len());
+        before.extend(after.chars().filter(|c| matches!(c, '\n' | '\r')));
+    }
+}
+
 fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool, preceding_speech: bool) {
     let mut after = words[i + n - 1].after.clone();
     let has_following_word = i + n < words.len();
@@ -223,8 +234,7 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
         // Keep delimiters that enclose retained words; remove an empty pair
         // only when the discarded pause was its entire contents.
         if preceding_speech && after.contains([',', ';', ':']) {
-            *leading = leading.trim_end_matches([' ', '\t']).to_owned()
-                + after.trim_start_matches([' ', '\t']);
+            retain_nonterminal_punctuation(leading, &after);
         } else if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
             leading.push_str(&after);
         } else {
@@ -247,16 +257,7 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
         } else if n == 2 && before.contains(',') && after.contains(',') {
             *before = " ".into();
         } else if after.contains([',', ';', ':']) {
-            // Punctuation dictated after a pause belongs to retained speech.
-            // Keep an existing identical separator once, as in "send, um, it".
-            let left = before.trim_end_matches([' ', '\t']);
-            let right = after.trim_start_matches([' ', '\t']);
-            let right = if left.chars().next_back() == right.chars().next() {
-                &right[right.chars().next().map_or(0, char::len_utf8)..]
-            } else {
-                right
-            };
-            *before = left.to_owned() + right;
+            retain_nonterminal_punctuation(before, &after);
         }
     }
     words.drain(i..i + n);
@@ -904,6 +905,40 @@ mod tests {
             ("Keep this, you know, continue", "Keep this continue"),
             ("um semicolon continue", "Continue"),
             ("Keep this um semicolon", "Keep this;"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+    }
+    #[test]
+    fn filler_punctuation_preserves_protected_prefix_separator() {
+        for (input, expected, terms) in [
+            ("\"Please\", um, continue", "\"Please\", continue", &[][..]),
+            ("I use Verenu, um, every day", "I use Verenu, every day", &["Verenu"][..]),
+            ("[[VERENU_CLIPBOARD_x]], um, continue", "[[VERENU_CLIPBOARD_x]], continue", &[][..]),
+            ("\"Please\" um, continue", "\"Please\", continue", &[][..]),
+        ] {
+            assert_eq!(process(input, true, true, terms), expected, "{input}");
+        }
+    }
+    #[test]
+    fn filler_punctuation_does_not_append_to_existing_boundary() {
+        for (input, expected) in [
+            ("yes. um, tomorrow", "yes. Tomorrow"),
+            ("Call Dr. um, Smith", "Call Dr. Smith"),
+            ("yes\num, tomorrow", "yes\nTomorrow"),
+            ("yes! um, tomorrow", "yes! Tomorrow"),
+            ("\"yes\". um, tomorrow", "\"yes\". Tomorrow"),
+            ("\"yes\"\num, tomorrow", "\"yes\"\nTomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+    }
+    #[test]
+    fn filler_punctuation_retains_following_dictated_line_breaks() {
+        for (input, expected) in [
+            ("yes new line um comma new paragraph tomorrow", "yes\n\n\nTomorrow"),
+            ("yes full stop um comma new paragraph tomorrow", "yes.\n\nTomorrow"),
+            ("\"yes\", um comma new line tomorrow", "\"yes\",\nTomorrow"),
         ] {
             assert_eq!(process(input, true, true, &[]), expected, "{input}");
         }
