@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::github::CommitSnapshot;
+use crate::api::github::{ActivitySource, CommitSnapshot};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const CACHE_SECONDS: i64 = 15 * 60;
@@ -110,6 +110,33 @@ fn cached_snapshot_for_user(
     value
         .and_then(|value| serde_json::from_value::<CachedCommitSnapshot>(value).ok())
         .filter(|cache| cache.snapshot.username.eq_ignore_ascii_case(username))
+        .map(normalize_cached_snapshot)
+}
+
+fn normalize_cached_snapshot(mut cache: CachedCommitSnapshot) -> CachedCommitSnapshot {
+    // Older incomplete public-search caches serialized zero for days without a
+    // returned result. They cannot distinguish a confirmed zero from missing
+    // coverage, so keep positive lower bounds and mark those days unknown.
+    if cache.snapshot.source == ActivitySource::PublicCommits && !cache.snapshot.complete {
+        for day in &mut cache.snapshot.daily {
+            if day.commits == Some(0) {
+                day.commits = None;
+            }
+        }
+        let note = "Partial public commit results; days without indexed results are unknown.";
+        if !cache
+            .snapshot
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains(note))
+        {
+            cache.snapshot.warning = Some(match cache.snapshot.warning.take() {
+                Some(warning) => format!("{warning} {note}"),
+                None => note.to_owned(),
+            });
+        }
+    }
+    cache
 }
 
 fn cache_is_fresh(
@@ -174,7 +201,7 @@ fn cached_failure_snapshot(
     let partial = if cache.snapshot.complete {
         ""
     } else {
-        " Counts are lower bounds; days without results are unknown."
+        " Returned public counts may be incomplete; days without indexed results are unknown."
     };
     cache.snapshot.warning = Some(format!(
         "Showing cached counts. {error}{timezone_note}{partial}"
@@ -481,9 +508,44 @@ mod cache_tests {
         }
     }
 
+    #[test]
+    fn legacy_incomplete_public_cache_keeps_source_and_marks_empty_days_unknown() {
+        let today = chrono::Local::now().date_naive();
+        let value = serde_json::json!({
+            "username": "fixture-user", "fetched_at": 100,
+            "start_day": (today - chrono::Duration::days(crate::api::github::HISTORY_DAYS - 1)).to_string(),
+            "end_day": today.to_string(), "utc_offset": 0, "complete": false,
+            "daily": [
+                {"day": today.to_string(), "commits": 0},
+                {"day": (today - chrono::Duration::days(1)).to_string(), "commits": 3}
+            ],
+            "warning": null,
+            "timezone_id": "iana:fixture"
+        });
+        let cache = cached_snapshot_for_user(Some(value), "fixture-user").unwrap();
+        assert_eq!(cache.snapshot.source, ActivitySource::PublicCommits);
+        assert_eq!(cache.snapshot.daily[0].commits, None);
+        assert_eq!(cache.snapshot.daily[1].commits, Some(3));
+        assert!(cache
+            .snapshot
+            .warning
+            .unwrap()
+            .contains("days without indexed results are unknown"));
+    }
+
+    #[test]
+    fn contribution_cache_preserves_confirmed_zero_days() {
+        let mut cache = cache("fixture-user", 0, Some("iana:fixture"));
+        cache.snapshot.source = ActivitySource::Contributions;
+        cache.snapshot.daily[0].commits = Some(0);
+        let normalized = normalize_cached_snapshot(cache);
+        assert_eq!(normalized.snapshot.daily[0].commits, Some(0));
+    }
+
     fn snapshot(username: &str, offset: i32) -> CommitSnapshot {
         let today = chrono::Local::now().date_naive();
         CommitSnapshot {
+            source: ActivitySource::PublicCommits,
             username: username.to_owned(),
             fetched_at: 100,
             start_day: (today - chrono::Duration::days(crate::api::github::HISTORY_DAYS - 1))
@@ -493,7 +555,7 @@ mod cache_tests {
             complete: true,
             daily: vec![crate::api::github::CommitDay {
                 day: today.to_string(),
-                commits: 4,
+                commits: Some(4),
             }],
             warning: None,
         }
@@ -941,7 +1003,7 @@ mod cache_tests {
         );
         assert_eq!(stale.utc_offset, cached.snapshot.utc_offset);
         assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
-        assert_eq!(stale.daily[0].commits, 4);
+        assert_eq!(stale.daily[0].commits, Some(4));
         let warning = stale.warning.unwrap();
         assert!(warning.contains("Showing cached counts"));
         assert!(warning.contains("UTC offset changed"));
@@ -972,7 +1034,7 @@ mod cache_tests {
         );
         assert_eq!(stale.utc_offset, -18_000);
         assert_eq!(stale.daily[0].day, cached.snapshot.daily[0].day);
-        assert_eq!(stale.daily[0].commits, 4);
+        assert_eq!(stale.daily[0].commits, Some(4));
         let warning = stale.warning.unwrap();
         assert!(warning.contains("time-zone identity does not match"));
         assert!(warning.contains("original daily buckets are retained"));
@@ -1024,7 +1086,7 @@ mod cache_tests {
             0,
             Some("America/Los_Angeles"),
         );
-        assert_eq!(stale.daily[0].commits, 4);
+        assert_eq!(stale.daily[0].commits, Some(4));
         let warning = stale.warning.unwrap();
         assert!(warning.contains("identity is missing or unavailable"));
         assert!(warning.contains("original daily buckets are retained"));
