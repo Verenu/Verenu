@@ -576,7 +576,10 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
     let rest = &text[i..];
     let c = rest.chars().next()?;
     let quoted = match c {
-        '"' => Some('"'),
+        // An attached inch mark is not the start of quoted speech. Genuine
+        // opening quotes still protect unmatched spans through end of input.
+        '"' if i == 0 || !text[..i].graphemes(true).next_back()
+            .and_then(|g| g.chars().next()).is_some_and(word_char) => Some('"'),
         '“' => Some('”'),
         '`' => Some('`'),
         '‘' => Some('’'),
@@ -669,6 +672,15 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn measurement_quotes_do_not_protect_following_speech() {
+        assert_eq!(process("make it 5\" wide um please", true, false, &[]), "make it 5\" wide please");
+        assert_eq!(process("make it 5\" wide new line please", true, true, &[]), "make it 5\" wide\nPlease");
+        assert_eq!(process("make it 5\" wide new line please", false, false, &[]), "make it 5\" wide new line please");
+        for input in ["say \"um new line\" literally", "say \"um new line", "\"5 inch um new line\"", "`5\" wide um new line`", "[[VERENU_CLIPBOARD_5\" um new line]]"] {
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+    }
     #[test]
     fn url_query_delimiters_are_not_sentence_boundaries() {
         for input in ["visit example.com?query=value", "visit https://example.com/path?query=value", "open report.md!section", "visit example.com?query", "visit localhost:3000?debug", "visit localhost:3000!debug"] {
