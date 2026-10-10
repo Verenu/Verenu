@@ -6,7 +6,7 @@
   import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
-  import { alignCommits, commitPath, type GithubSnapshot } from './github';
+  import { activityDescription, activityLabel, activitySourceInfo, alignActivity, activityPath, type GithubSnapshot } from './github';
 
   let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
 
@@ -28,15 +28,18 @@
   const max = $derived(niceCeiling(daily.reduce((m, d) => Math.max(m, d.words), 0)));
   const asBars = $derived(daily.length <= BAR_THRESHOLD);
   const plotH = H - PAD_TOP - PAD_BOTTOM;
-  const commits = $derived(alignCommits(daily, github));
-  const commitMax = $derived(Math.max(1, niceCeiling(commits.reduce<number>((m, count) => Math.max(m, count ?? 0), 0))));
-  const commitTotal = $derived(commits.reduce<number>((sum, count) => sum + (count ?? 0), 0));
-  const knownCommitTotal = $derived(commits.some(count => count !== null) ? commitTotal : null);
-  const githubPath = $derived(commitPath(commits, x, c => PAD_TOP + plotH * (1 - c / commitMax)));
+  const activity = $derived(alignActivity(daily, github));
+  const activityMax = $derived(Math.max(1, niceCeiling(activity.reduce<number>((m, count) => Math.max(m, count ?? 0), 0))));
+  const activityTotal = $derived(activity.reduce<number>((sum, count) => sum + (count ?? 0), 0));
+  const knownActivityTotal = $derived(activity.some(count => count !== null) ? activityTotal : null);
+  const activityY = (count: number) => PAD_TOP + plotH * (1 - count / activityMax);
+  const activityBounds = { top: PAD_TOP, bottom: H - PAD_BOTTOM };
+  const githubPath = $derived(activityPath(activity, x, activityY, activityBounds));
+  const githubArea = $derived(activityPath(activity, x, activityY, activityBounds, true));
 
-  function describeCommits(count: number | null | undefined): string {
-    if (count === null || count === undefined) return 'GitHub data unavailable';
-    return `${github?.complete ? '' : 'At least '}${fmtNumber(count)} public commits`;
+  function describeActivity(count: number | null | undefined): string {
+    if (!github) return 'GitHub activity unavailable';
+    return activityDescription(count, github);
   }
 
   function onKey(event: KeyboardEvent) {
@@ -89,7 +92,7 @@
   /* Held through the fade-out so the tooltip keeps its text on the way out
      instead of blanking the instant the pointer leaves. */
   let lastActive = $state<InsightsDay | null>(null);
-  const activeCommits = $derived(lastActive ? commits[daily.findIndex(d => d.day === lastActive?.day)] : null);
+  const activeActivity = $derived(lastActive ? activity[daily.findIndex(d => d.day === lastActive?.day)] : null);
   $effect(() => {
     if (active) lastActive = active;
   });
@@ -166,10 +169,10 @@
   {#if github}
     <div class="chart-legend">
       <span class="legend-item"><span class="legend-line" aria-hidden="true"></span>Words</span>
-      <span class="legend-item"><span class="legend-line commits" class:partial={!github.complete} aria-hidden="true"></span>Commits</span>
+      <span class="legend-item"><span class="legend-line commits" aria-hidden="true"></span>{activityLabel(github)}</span>
       <details class="scale-details">
         <summary class="ui-focus-ring" aria-label="Chart scale details" title="Chart scale details">ⓘ</summary>
-        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, commits 0–{fmtNumber(commitMax)}. GitHub covers public commits on repository default branches from the last 90 days.</p>
+        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, {activityLabel(github).toLowerCase()} 0–{fmtNumber(activityMax)}. {activitySourceInfo(github)}</p>
       </details>
     </div>
   {/if}
@@ -178,7 +181,7 @@
   <div
     class="plot"
     role="img"
-    aria-label={summary + (github ? ` ${describeCommits(knownCommitTotal)} in the covered dates. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
+    aria-label={summary + (github ? ` ${describeActivity(knownActivityTotal)} in the selected dates. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
     tabindex={github ? 0 : undefined}
     onkeydown={onKey}
     onblur={() => { hover = null; }}
@@ -225,12 +228,8 @@
         />
       {/if}
       {#if github}
-        <path d={githubPath} fill="none" stroke="var(--success)" stroke-width="2" stroke-dasharray={github.complete ? undefined : '4 3'} vector-effect="non-scaling-stroke" class="github-line" />
-        {#each commits as count, i}
-          {#if count !== null && (daily.length === 1 || commits[i - 1] == null && commits[i + 1] == null)}
-            <circle cx={x(i)} cy={PAD_TOP + plotH * (1 - count / commitMax)} r="2" fill="var(--success)" />
-          {/if}
-        {/each}
+        <path d={githubArea} fill="color-mix(in srgb, var(--success) 10%, transparent)" mask="url(#{gradientId}-mask)" />
+        <path d={githubPath} fill="none" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="github-line" />
       {/if}
       {#if daily.length > 0}
         <line
@@ -260,13 +259,13 @@
     {#if lastActive}
       <ChartTooltip x={cursorLeft} y={cursorPoint.y} visible={hover !== null} boundsWidth={plotWidth}>
         <strong>{fmtNumber(lastActive.words)}</strong> words
-        {#if github}<div class="commits-scale">{describeCommits(activeCommits)}</div>{/if}
+        {#if github}<div class="commits-scale">{describeActivity(activeActivity)}</div>{/if}
         <div class="tooltip-dim">{fmtDayLong(lastActive.day)}</div>
       </ChartTooltip>
     {/if}
   </div>
   {#if github && active}
-    <p class="chart-announcement" aria-live="polite">{fmtDayLong(active.day)}: {fmtNumber(active.words)} dictated words. {describeCommits(activeCommits)}.</p>
+    <p class="chart-announcement" aria-live="polite">{fmtDayLong(active.day)}: {fmtNumber(active.words)} dictated words. {describeActivity(activeActivity)}.</p>
   {/if}
 </section>
 
@@ -299,7 +298,6 @@
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
   .legend-line { width: 14px; border-top: 2px solid var(--accent); }
   .legend-line.commits { border-color: var(--success); }
-  .legend-line.partial { border-top-style: dashed; }
   .scale-details { position: relative; margin-left: auto; }
   .scale-details summary { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: var(--r-sm); color: var(--ink-mute); cursor: pointer; list-style: none; font-size: 14px; }
   .scale-details summary::-webkit-details-marker { display: none; }

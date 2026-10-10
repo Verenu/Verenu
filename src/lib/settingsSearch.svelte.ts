@@ -42,7 +42,7 @@ export function clearSettingsSearchNavigation(nonce: number): void {
 }
 
 const BASE_ENTRIES: SettingsSearchEntry[] = [
-  { id: 'integrations-github', section: 'integrations', label: 'GitHub commits', description: 'Connect a GitHub username to compare commits in Insights', target: 'github-integration', keywords: ['github', 'commits', 'coding', 'account', 'integration'] },
+  { id: 'integrations-github', section: 'integrations', label: 'GitHub contributions', description: 'Connect a GitHub username to compare contributions in Insights', target: 'github-integration', keywords: ['github', 'contributions', 'commits', 'coding', 'account', 'integration'] },
   { id: 'general-hide-pill-offline', section: 'general', label: 'Hide pill when offline', description: 'Keep the Android pill available for local or LAN models', target: 'general-hide-pill-offline', keywords: ['android', 'internet', 'network', 'offline', 'local'], androidOnly: true },
   { id: 'custom-providers', section: 'keys', label: 'Custom providers', description: 'Connect a compatible endpoint with your own models and API key', target: 'custom-providers', keywords: ['endpoint', 'anthropic', 'openai compatible', 'xai compatible', 'base url'] },
   { id: 'general-hotkey', section: 'general', label: 'Hotkey', description: 'Hold to record and release to transcribe', target: 'general-hotkey', keywords: ['shortcut', 'keyboard', 'keybind', 'record'] },
