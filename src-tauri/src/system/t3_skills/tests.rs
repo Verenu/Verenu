@@ -114,6 +114,23 @@ fn dollar_tokens_keep_t3_boundaries_and_canonical_case() {
         "USE $babysit-pr , NOW"
     );
     assert_eq!(
+        catalog.normalize_mentions("Use ($BABYSIT-PR)"),
+        "Use ( $babysit-pr ) "
+    );
+    assert_eq!(
+        catalog.normalize_mentions("Use '$BABYSIT-PR' and ($unknown)"),
+        "Use '$BABYSIT-PR' and ($unknown)"
+    );
+    assert_eq!(
+        catalog
+            .normalize_mentions("URL https://example.test/$babysit-pr and path /tmp/$babysit-pr"),
+        "URL https://example.test/$babysit-pr and path /tmp/$babysit-pr"
+    );
+    assert_eq!(
+        catalog.normalize_mentions("Use $$BABYSIT-PR"),
+        "Use $$BABYSIT-PR"
+    );
+    assert_eq!(
         catalog.normalize_mentions("Budget $20k, literal '$babysit-pr', $unknown."),
         "Budget $20k, literal '$babysit-pr', $unknown."
     );
@@ -127,7 +144,11 @@ fn initial_skill_mentions_are_protected_from_cursor_capitalization() {
     let catalog = catalog();
     assert!(catalog.starts_with_skill_mention("$BABYSIT-PR ? "));
     assert!(catalog.starts_with_skill_mention("  $babysit-pr "));
+    assert!(catalog.starts_with_skill_mention("( $babysit-pr ) "));
+    assert!(catalog.starts_with_skill_mention("- $babysit-pr "));
     assert!(!catalog.starts_with_skill_mention("'$babysit-pr'"));
+    assert!(!catalog.starts_with_skill_mention("-$babysit-pr "));
+    assert!(!catalog.starts_with_skill_mention("Use $babysit-pr "));
     assert!(!catalog.starts_with_skill_mention("$unknown "));
     assert!(!catalog.starts_with_skill_mention("$20k "));
 }

@@ -170,7 +170,7 @@ pub fn merged_catalog(environment_id: &str, catalogs: &[Catalog]) -> Option<Cata
     })
 }
 
-const RESOLUTION_RULE: &str = "For this T3 Code dictation only, replace the skill reference in a clear request to invoke a listed skill with its exact $name token. The catalog contains identifiers only. Match spoken words to identifier words separated by hyphens, underscores, or colons. Prefer an exact name in the same word order over a partial or reordered match: 'use my babysit PR skill' means $babysit-pr when listed, even if $pr-babysit is also listed. A shortened name such as 'use my babysit skill' may resolve only when it identifies a single listed skill. Preserve the rest of the request. Do not invoke skills merely mentioned, quoted, negated, or discussed. Leave ambiguous or unknown references unchanged. Never invent names. Preserve existing dollar-sign tokens. Put whitespace after a skill token, including before punctuation, so T3 recognizes it.";
+const RESOLUTION_RULE: &str = "For this T3 Code dictation only, replace the skill reference in a clear request to invoke a listed skill with its exact $name token. The catalog contains identifiers only. Match spoken words to identifier words separated by hyphens, underscores, or colons. Prefer an exact name in the same word order over a partial or reordered match: 'use my babysit PR skill' means $babysit-pr when listed, even if $pr-babysit is also listed. A shortened name such as 'use my babysit skill' may resolve only when it identifies a single listed skill. Preserve the rest of the request. Do not invoke skills merely mentioned, quoted, negated, or discussed. Leave ambiguous or unknown references unchanged. Never invent names. Preserve existing dollar-sign tokens. Put whitespace around recognized skill tokens when punctuation touches them, so T3 recognizes them.";
 
 impl Catalog {
     /// T3 recognizes dollar tokens only at whitespace boundaries. Restore the
@@ -178,37 +178,83 @@ impl Catalog {
     /// leave a final space after terminal mentions for T3's parser.
     pub fn normalize_mentions(&self, text: &str) -> String {
         let mut output = String::with_capacity(text.len());
-        let segments: Vec<_> = text.split_inclusive(char::is_whitespace).collect();
-        for (index, segment) in segments.iter().enumerate() {
-            let Some(token) = segment.strip_prefix('$') else {
-                output.push_str(segment);
+        let mut chars = text.char_indices().peekable();
+        let mut quote = None;
+        let mut terminal_mention = false;
+        while let Some((index, ch)) = chars.next() {
+            if let Some(delimiter) = quote {
+                output.push(ch);
+                if ch == delimiter {
+                    quote = None;
+                }
+                continue;
+            }
+            if matches!(ch, '"' | '\'')
+                && (ch == '"'
+                    || !text[..index]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_alphanumeric))
+            {
+                quote = Some(ch);
+                output.push(ch);
+                continue;
+            }
+            if ch != '$' {
+                output.push(ch);
+                continue;
+            }
+
+            let mut end = index + ch.len_utf8();
+            let name_start = end;
+            for name_char in text[end..].chars() {
+                if name_char.is_ascii_alphanumeric() || matches!(name_char, ':' | '_' | '-') {
+                    end += name_char.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let name = &text[name_start..end];
+            let skill = self.skills.iter().find(|skill| {
+                !name.is_empty()
+                    && name.as_bytes()[0].is_ascii_alphabetic()
+                    && skill.name.eq_ignore_ascii_case(name)
+            });
+            let previous = text[..index].chars().next_back();
+            let separated = previous.is_none_or(|previous| {
+                previous.is_whitespace() || matches!(previous, '(' | '[' | '{' | '<')
+            });
+            let Some(skill) = skill.filter(|_| separated) else {
+                output.push('$');
                 continue;
             };
-            let name = token
-                .split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, ':' | '_' | '-'))
-                .next()
-                .unwrap_or("");
-            let Some(skill) = self
-                .skills
-                .iter()
-                .find(|skill| skill.name.eq_ignore_ascii_case(name))
-            else {
-                output.push_str(segment);
-                continue;
-            };
+
+            if previous.is_some_and(|previous| !previous.is_whitespace()) {
+                output.push(' ');
+            }
             output.push('$');
             output.push_str(&skill.name);
-            let rest = &token[name.len()..];
-            if rest.chars().next().is_some_and(|c| !c.is_whitespace()) {
+            while chars
+                .peek()
+                .is_some_and(|(char_index, _)| *char_index < end)
+            {
+                chars.next();
+            }
+
+            let rest = &text[end..];
+            if rest
+                .chars()
+                .next()
+                .is_some_and(|next| !next.is_whitespace())
+            {
                 output.push(' ');
             }
-            output.push_str(rest);
-            let terminal_mention = segments[index + 1..]
-                .iter()
-                .all(|remaining| remaining.chars().all(char::is_whitespace));
-            if terminal_mention && !output.ends_with(char::is_whitespace) {
-                output.push(' ');
-            }
+            terminal_mention |= rest
+                .chars()
+                .all(|remaining| remaining.is_whitespace() || !remaining.is_alphanumeric());
+        }
+        if terminal_mention && !output.ends_with(char::is_whitespace) {
+            output.push(' ');
         }
         output
     }
@@ -217,7 +263,25 @@ impl Catalog {
     /// native cursor formatter can otherwise capitalize its initial letter,
     /// turning a valid `$name` into an unrecognized `$Name`.
     pub fn starts_with_skill_mention(&self, text: &str) -> bool {
-        let Some(token) = text.trim_start().strip_prefix('$') else {
+        let mut leading = text.trim_start();
+        loop {
+            let Some(first) = leading.chars().next() else {
+                return false;
+            };
+            if first.is_whitespace() || matches!(first, '(' | '[' | '{' | '<') {
+                leading = &leading[first.len_utf8()..];
+                continue;
+            }
+            if matches!(first, '-' | '–' | '—' | '•') {
+                let after_marker = &leading[first.len_utf8()..];
+                if after_marker.starts_with(char::is_whitespace) {
+                    leading = after_marker.trim_start();
+                    continue;
+                }
+            }
+            break;
+        }
+        let Some(token) = leading.strip_prefix('$') else {
             return false;
         };
         let name = token
