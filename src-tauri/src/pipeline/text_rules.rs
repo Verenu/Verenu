@@ -66,6 +66,15 @@ fn tokenize(text: &str) -> (String, Vec<Word>) {
 fn terminal(s: &str) -> bool {
     s.contains(['.', '!', '?', '…', '\n', '\r'])
 }
+// A period embedded between tokens belongs to a filename, domain or decimal.
+// Spoken punctuation has its own explicit state; ordinary text needs a real
+// separating boundary. Unambiguous terminators retain no-space behavior.
+fn sentence_boundary(s: &str, at_end: bool) -> bool {
+    s.char_indices().any(|(i, c)| {
+        matches!(c, '!' | '?' | '…' | '\n' | '\r')
+            || (c == '.' && (s[i + 1..].chars().any(char::is_whitespace) || at_end))
+    })
+}
 fn inline_space(s: &str) -> bool {
     s.chars().all(|c| matches!(c, ' ' | '\t'))
 }
@@ -262,6 +271,11 @@ fn basic(text: &str, sentence_initial: bool) -> String {
         let mut removed = false;
         let mut sentence_case = words[i].key.clone();
         capitalize(&mut sentence_case);
+        let at_sentence_start = if i == 0 {
+            sentence_initial || sentence_boundary(&leading, false)
+        } else {
+            sentence_boundary(&words[i - 1].after, false)
+        };
         for n in (1..=3).rev() {
             if i + 2 * n > words.len() {
                 continue;
@@ -270,7 +284,7 @@ fn basic(text: &str, sentence_initial: bool) -> String {
                 || words[i..i + 2 * n].iter().enumerate().any(|(j, word)| {
                     // Ordinary sentence capitalization can differ only on the
                     // first word; a cased repeated copy remains protected.
-                    !word.may_destutter && !(i == 0 && j == 0 && sentence_initial
+                    !word.may_destutter && !(j == 0 && at_sentence_start
                         && word.text == sentence_case
                         && words[i + n].text == words[i + n].key)
                 })
@@ -451,7 +465,7 @@ fn commands(text: &str) -> String {
             out.push_str(&words[i + mention].after);
             // The username consumes the pending sentence position just like
             // an ordinary word; its trailing punctuation starts the next one.
-            cap_next = terminal(&words[i + mention].after);
+            cap_next = sentence_boundary(&words[i + mention].after, i + mention + 1 == words.len());
             i += mention + 1;
             continue;
         }
@@ -466,7 +480,7 @@ fn commands(text: &str) -> String {
         }
         out.push_str(&word);
         out.push_str(&words[i].after);
-        cap_next = terminal(&words[i].after);
+        cap_next = sentence_boundary(&words[i].after, i + 1 == words.len());
         i += 1;
     }
     out
@@ -585,6 +599,41 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn commands_preserve_embedded_periods_and_real_sentence_boundaries() {
+        for input in ["open report.md", "visit example.com", "open /tmp/report.md", "version 1.25", "visit https://example.com/report.md", "load config.json.value"] {
+            assert_eq!(process(input, false, true, &[]), input, "{input}");
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+        for (input, expected) in [
+            ("open report.md. tomorrow", "open report.md. Tomorrow"),
+            ("hello full stop.tomorrow", "hello. Tomorrow"),
+            ("hello full stop tomorrow", "hello. Tomorrow"),
+            ("hello!tomorrow", "hello!Tomorrow"),
+            ("ping at sign maria. tomorrow", "ping @maria. Tomorrow"),
+        ] {
+            assert_eq!(process(input, false, true, &[]), expected, "{input}");
+        }
+        for input in ["\"open report.md\"", "`visit example.com`", "[[VERENU_CLIPBOARD_report.md]]"] {
+            assert_eq!(process(input, true, true, &[]), input);
+        }
+    }
+    #[test]
+    fn basic_sentence_initial_stutters_work_after_real_terminators() {
+        for (input, expected) in [
+            ("Okay. Go go now", "Okay. Go now"),
+            ("Okay! Send send it", "Okay! Send it"),
+            ("Okay? Go go now", "Okay? Go now"),
+            ("Okay\nGo go now", "Okay\nGo now"),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+            assert_eq!(process(input, false, false, &[]), input, "{input}");
+        }
+        for input in ["Okay. Duran Duran", "Okay. Bora Bora", "Okay. NASA NASA", "Okay. NASA nasa", "Okay. iPhone iPhone", "report.Go go", "\"Okay. Go go now\"", "`Okay. Go go now`"] {
+            assert_eq!(process(input, true, false, &[]), input, "{input}");
+        }
+    }
     #[test]
     fn model_command_recovery_is_compact_and_preserves_payload_boundaries() {
         let prompt = crate::api::prompts::get_cleanup_prompt_with_extras(
