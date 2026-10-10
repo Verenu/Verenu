@@ -192,9 +192,9 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
 }
 
 fn retain_nonterminal_punctuation(before: &mut String, after: &str) {
-    // A pause may carry dictated punctuation when speech has no separator yet.
-    // Existing punctuation and line breaks already separate the retained speech.
-    if inline_space(before) {
+    // Dictated punctuation can replace an existing nonterminal separator.
+    // Sentence endings and line breaks remain boundaries of retained speech.
+    if before.chars().all(|c| matches!(c, ' ' | '\t' | ',' | ';' | ':')) {
         *before = after.trim_start_matches([' ', '\t']).to_owned();
     } else if after.contains(['\n', '\r']) {
         before.truncate(before.trim_end_matches([' ', '\t']).len());
@@ -462,8 +462,15 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
     let (leading, words) = tokenize(text);
     let mut out = leading.clone();
     let mut i = 0;
+    // A protected term can split a URL immediately before its query. Rejoin
+    // only an unseparated token; closing quotes do not join prose identifiers.
+    let joined_identifier = !prefix.ends_with(char::is_whitespace)
+        && !prefix.ends_with(['"', '\'', '”', '’', '`'])
+        && !prefix.ends_with("]]")
+        && !text.starts_with(char::is_whitespace)
+        && identifier_chunk(&format!("{}{}", prefix.rsplit(char::is_whitespace).next().unwrap_or(""), text.split(char::is_whitespace).next().unwrap_or("")));
     let mut cap_next = carry_sentence_start
-        || sentence_boundary_in(&leading, words.is_empty(), false, prefix);
+        || sentence_boundary_in(&leading, words.is_empty(), joined_identifier, prefix);
     while i < words.len() {
         let standalone = spoken_start(&leading, &words, i);
         let mut start = i;
@@ -1284,6 +1291,32 @@ mod tests {
             ("(um)", ""),
         ] {
             assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn codex_current_separator_replacement() {
+        for (input, expected) in [
+            ("Keep this, um semicolon continue", "Keep this; continue"),
+            ("Keep this; um comma continue", "Keep this, continue"),
+            ("Keep this, um put a colon continue", "Keep this: continue"),
+            ("\"Keep this\", um semicolon continue", "\"Keep this\"; continue"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn codex_current_protected_query_casing() {
+        for (input, term, expected) in [
+            ("visit example.com?query=value", "example.com", "visit example.com?query=value"),
+            ("visit localhost:3000?debug", "localhost:3000", "visit localhost:3000?debug"),
+            ("visit example.com? tomorrow", "example.com", "visit example.com? Tomorrow"),
+            ("say \"done\"?tomorrow", "unused", "say \"done\"?Tomorrow"),
+            ("say Done. tomorrow", "Done", "say Done. Tomorrow"),
+            ("say [[VERENU_CLIPBOARD_00]]?tomorrow", "unused", "say [[VERENU_CLIPBOARD_00]]?Tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[term]), expected, "{input}");
         }
     }
 

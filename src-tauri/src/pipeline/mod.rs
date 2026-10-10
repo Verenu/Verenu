@@ -99,7 +99,7 @@ pub use fixture::{
 };
 pub(crate) use gates::diagnostic_recording_gate_rms;
 use gates::{
-    effective_recording_rms, has_spoken_content, is_transcription_hallucination,
+    effective_recording_rms, has_deliverable_cleanup, has_spoken_content, is_transcription_hallucination,
     normalize_transcription_math_artifacts, preview_text, recording_gate_rms,
     recording_gate_rms_for_sensitivity, silence_floor_gate_rms_for_sensitivity,
     strip_hallucinated_suffix, strip_trailing_hallucination, MIN_RECORDING_MS, MIN_RECORDING_RMS,
@@ -1012,7 +1012,7 @@ async fn run_pipeline_with_delivery(
         return;
     };
     telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
-    if final_text.trim().is_empty() {
+    if !has_deliverable_cleanup(&final_text, &cfg, &cleanup_api_used) {
         telemetry.failed(FailureCategory::EmptyResponse, true);
         if state::leave_processing_if_owned(&state, generation) { hide_pill(&app); }
         return;
@@ -1330,7 +1330,7 @@ pub async fn retry_transcription_impl(
         anyhow::bail!("Retry cleanup failed");
     };
     telemetry.complete_stage((!cleanup_api_used.is_empty()).then_some(cleanup_api_used.as_str()));
-    if final_text.trim().is_empty() {
+    if !has_deliverable_cleanup(&final_text, &cfg, &cleanup_api_used) {
         telemetry.failed(FailureCategory::EmptyResponse, true);
         hide_pill(app);
         anyhow::bail!("No spoken content remained after cleanup");

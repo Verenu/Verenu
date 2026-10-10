@@ -168,7 +168,7 @@ pub async fn run_pipeline_fixture(
         .await?;
     let api_used = append_cleanup_api_used(api_used, &cleanup_api_used);
     let apply_caps_lock_upper = request.config.caps_lock_uppercase_enabled && request.caps_lock_on;
-    if final_text_before_dictionary.trim().is_empty() {
+    if !has_deliverable_cleanup(&final_text_before_dictionary, &request.config, &cleanup_api_used) {
         anyhow::bail!("No spoken content remained after cleanup");
     }
     let (injected_text, _applied_dict_ids) =
