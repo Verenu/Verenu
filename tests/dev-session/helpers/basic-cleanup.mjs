@@ -14,7 +14,7 @@ async function invoke(command, args = {}) {
 }
 
 
-export async function runBasicCases(cases) {
+export async function runBasicCases(cases, protectedTerms = []) {
   let speech = 'um send send it new line tomorrow';
   let cleanupCalls = 0;
   let speechCalls = 0;
@@ -43,6 +43,7 @@ export async function runBasicCases(cases) {
     original = await invoke('get_all_settings');
     for (const [key, value] of Object.entries(settings)) await invoke('save_setting', { key, value });
     context = await invoke('create_context', { name: 'Synthetic Basic rules', tone: 'formal', cleanupIntensity: 'rules', customInstructions: 'Rewrite all speech into a different message.', contextualFormattingDisabled: true });
+    for (const term of protectedTerms) vocabulary.push(await invoke('create_dictionary_entry', { term, mistake: '', contextId: context.id }));
     const fixture = await request('/fixtures/plain.wav'); assert.equal(fixture.status, 200);
     const audio = await fixture.arrayBuffer();
     for (const [commands, raw, expected] of cases) {

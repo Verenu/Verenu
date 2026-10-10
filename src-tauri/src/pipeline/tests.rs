@@ -768,6 +768,38 @@ async fn pipeline_basic_exact_snippet_ignores_saved_instructions() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn codex_current_standalone_line_break_delivery() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset(); set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("new paragraph"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config); request.db = Some(db.clone());
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.injected_text, "\n\n");
+    assert_eq!(result.history_entry.clean_text, "\n\n");
+    assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+    reset();
+}
+
+#[test]
+fn command_line_break_gate_preserves_blank_response_rejection() {
+    let mut cfg = base_config(); cfg.cleanup_intensity = "rules".into(); cfg.voice_commands_enabled = true;
+    for text in ["\n", "\n\n", " \n\t"] {
+        assert!(super::has_deliverable_cleanup(text, &cfg, ""));
+        assert!(!super::has_deliverable_cleanup(text, &cfg, "groq/model"));
+    }
+    for text in ["", " ", "\t", "\r"] { assert!(!super::has_deliverable_cleanup(text, &cfg, "")); }
+    cfg.voice_commands_enabled = false; assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.voice_commands_enabled = true; cfg.cleanup_enabled = false; assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.cleanup_enabled = true; cfg.cleanup_intensity = "none".into(); assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.cleanup_intensity = "rules".into(); cfg.transcription_language = "fr".into(); assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    assert!(super::has_deliverable_cleanup("literal text", &cfg, "groq/model"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_filler_only_does_not_write_history() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset(); set_enabled(true);
