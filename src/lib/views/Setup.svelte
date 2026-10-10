@@ -61,6 +61,7 @@
   let progressLoaded = false;
   let direction = $state<'forward' | 'back'>('forward');
   let animating = $state(false);
+  let queuedJump: number | null = null;
   let stepWrapEl = $state<HTMLDivElement | null>(null);
 
   let provider = $state<WizardProviderId>('groq');
@@ -311,6 +312,11 @@
     step = target;
     await delay(motionMs(300));
     animating = false;
+    // A progress dot or recovery link used mid-transition is replayed now, once,
+    // through the normal guards, instead of being dropped.
+    const queued = queuedJump;
+    queuedJump = null;
+    if (queued !== null) jumpToStep(queued);
   }
 
   const goNext = () => animateTo(step + 1, 'forward');
@@ -336,7 +342,14 @@
 
   function jumpToStep(target: number) {
     // A save is in flight on the Done step; moving steps now would hide its progress.
-    if (target === step || finishing) return;
+    if (finishing) return;
+    // Back, Next and Skip are disabled while a step slides, but the progress dots
+    // stay clickable. Keep the latest request and honor it when the slide ends.
+    if (animating) {
+      queuedJump = target;
+      return;
+    }
+    if (target === step) return;
     void animateTo(target, target < step ? 'back' : 'forward');
   }
 
