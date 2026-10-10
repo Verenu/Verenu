@@ -788,6 +788,58 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_terminal_t3_skill_token_keeps_canonical_case_at_sentence_boundary() {
+        let catalog = crate::system::t3_skills::Catalog {
+            environment_id: "synthetic".into(),
+            id: "catalog".into(),
+            label: "Codex".into(),
+            provider_instance_id: "codex".into(),
+            workspace_id: "synthetic".into(),
+            revision: "1".into(),
+            skills: vec![crate::system::t3_skills::Skill {
+                name: "babysit-pr".into(),
+                display_name: None,
+                description: None,
+            }],
+        };
+        let normalized = catalog.normalize_mentions("($BABYSIT-PR)");
+        assert_eq!(normalized, "( $babysit-pr ) ");
+        assert!(catalog.starts_with_skill_mention(&normalized));
+
+        let protected = decide_insertion(
+            &normalized,
+            CaretTextContext {
+                left: "Previous sentence.",
+                right: "",
+                left_reliable: true,
+                right_reliable: true,
+                language: "en",
+                casing_enabled: true,
+                preserve_sentence_case: false,
+                protected_initial_case: catalog.starts_with_skill_mention(&normalized),
+            },
+        );
+        assert_eq!(protected.text, " ( $babysit-pr ) ");
+        assert_eq!(protected.case_action, CaseAction::Preserve);
+
+        let ordinary = decide_insertion(
+            "use a skill",
+            CaretTextContext {
+                left: "Previous sentence.",
+                right: "",
+                left_reliable: true,
+                right_reliable: true,
+                language: "en",
+                casing_enabled: true,
+                preserve_sentence_case: false,
+                protected_initial_case: catalog.starts_with_skill_mention("use a skill"),
+            },
+        );
+        assert_eq!(ordinary.text, " Use a skill");
+        assert_eq!(ordinary.case_action, CaseAction::CapitalizeFirstWord);
+    }
+
+    #[test]
     fn unfinished_sentence_forces_ordinary_initial_capital_lowercase() {
         assert_eq!(smart("Hello again", "unfinished", "").text, " hello again");
         assert_eq!(
