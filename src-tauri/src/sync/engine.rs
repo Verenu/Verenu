@@ -63,6 +63,7 @@ pub struct SnapshotProgress {
 pub const SYNCABLE_SETTINGS: &[&str] = &[
     store::TRANSCRIPTION_LANGUAGE,
     store::CLEANUP_ENABLED,
+    store::VOICE_COMMANDS_ENABLED,
     store::DEFAULT_TONE,
     store::CLEANUP_INTENSITY,
     store::AUTO_LEARN_ENABLED,

@@ -226,6 +226,10 @@ fn collect_trigger_matches(text: &str, prepared: &PreparedSnippetTriggers) -> Ve
     selected
 }
 
+pub(crate) fn has_snippet_trigger(text: &str, snippets: &[db::Snippet]) -> bool {
+    !collect_trigger_matches(text, &prepare_snippets(snippets)).is_empty()
+}
+
 pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]) -> i64 {
     let prepared = prepare_snippets(snippets);
     let matches = collect_trigger_matches(text, &prepared);
@@ -335,6 +339,68 @@ pub fn expand_snippets_from(text: &str, snippets: &mut [db::Snippet], db: &Db) -
     }
 
     result
+}
+
+/// Resolve triggers against untouched speech, then edit only spoken spans.
+/// Payloads are expansion barriers so a rollback cannot erase saved content.
+pub(crate) fn expand_snippets_with_spoken_transform(
+    text: &str,
+    snippets: &mut [db::Snippet],
+    db: &Db,
+    count_usage: bool,
+    transform: impl Fn(&str, &str) -> String,
+) -> String {
+    let prepared = prepare_snippets(snippets);
+    let selected = collect_trigger_matches(text, &prepared);
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    let mut counts: HashMap<i64, i64> = HashMap::new();
+    for m in selected {
+        let spoken = transform(&text[cursor..m.start], &out);
+        out.push_str(&spoken);
+        let snippet = &mut snippets[m.snippet_idx];
+        out.push_str(&snippet.expansion);
+        if count_usage {
+            snippet.use_count += 1;
+            *counts.entry(snippet.id).or_default() += 1;
+        }
+        cursor = m.end;
+    }
+    let spoken = transform(&text[cursor..], &out);
+    out.push_str(&spoken);
+    if !counts.is_empty() {
+        let mut counts = counts.into_iter().collect::<Vec<_>>();
+        counts.sort_by_key(|(id, _)| *id);
+        let _ = db::increment_snippet_use_counts(db, &counts);
+    }
+    out
+}
+
+/// Alternate candidates may expand only snippets admitted by the primary
+/// transcript, whose instructions are already included in cleanup. Other
+/// triggers stay literal barriers, including triggers named like commands.
+pub(crate) fn transform_alternate_with_primary_snippets(
+    primary: &str,
+    alternate: &str,
+    snippets: &[db::Snippet],
+    transform: impl Fn(&str, &str) -> String,
+) -> String {
+    let prepared = prepare_snippets(snippets);
+    let admitted = collect_trigger_matches(primary, &prepared);
+    let selected = collect_trigger_matches(alternate, &prepared);
+    let mut out = String::with_capacity(alternate.len());
+    let mut cursor = 0;
+    for m in selected {
+        out.push_str(&transform(&alternate[cursor..m.start], &out));
+        if admitted.iter().any(|primary| primary.snippet_idx == m.snippet_idx) {
+            out.push_str(&snippets[m.snippet_idx].expansion);
+        } else {
+            out.push_str(&alternate[m.start..m.end]);
+        }
+        cursor = m.end;
+    }
+    out.push_str(&transform(&alternate[cursor..], &out));
+    out
 }
 
 /// Apply mechanical final-output constraints from matched snippet instructions.
@@ -463,6 +529,38 @@ mod tests {
         count_words_without_snippet_triggers, expand_snippets_from, prepare_snippets,
     };
     use crate::data::db;
+
+    #[test]
+    fn alternate_expands_only_primary_snippets_and_keeps_other_triggers_as_barriers() {
+        let snippets = vec![db::Snippet {
+            id: 1,
+            trigger: "signoff, new paragraph".into(),
+            expansion: "Thanks! scratch that".into(),
+            instructions: "all capitals, no final period".into(),
+            use_count: 7,
+            created_at: String::new(),
+        }];
+        let transform = |spoken: &str, _prefix: &str| spoken.to_uppercase();
+        assert_eq!(
+            super::transform_alternate_with_primary_snippets(
+                "Please write a reply", "Please write signoff comma tomorrow", &snippets, transform,
+            ),
+            "PLEASE WRITE signoff COMMA TOMORROW",
+        );
+        assert_eq!(
+            super::transform_alternate_with_primary_snippets(
+                "Please write a reply", "new paragraph discard scratch that tomorrow", &snippets, transform,
+            ),
+            "new paragraph DISCARD SCRATCH THAT TOMORROW",
+        );
+        assert_eq!(
+            super::transform_alternate_with_primary_snippets(
+                "signoff", "new paragraph discard scratch that tomorrow", &snippets, transform,
+            ),
+            "Thanks! scratch that DISCARD SCRATCH THAT TOMORROW",
+        );
+        assert_eq!(snippets[0].use_count, 7);
+    }
 
     #[test]
     fn uppercase_override_applies_to_entire_output() {

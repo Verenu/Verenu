@@ -100,6 +100,7 @@ export const cleanupCards: CleanupCard[] = [
   { id: 'light', name: 'Light', desc: 'Remove speech artifacts and fix basics. Keep wording, order, and structure.' },
   { id: 'medium', name: 'Medium', desc: 'Improve flow and remove redundancy while preserving every distinct detail.' },
   { id: 'high', name: 'Strong', desc: 'Rewrite concisely while preserving facts, constraints, qualifiers, and emphasis.' },
+  { id: 'rules', name: 'Basic', desc: 'On-device removal of English fillers and accidental repeats. Keeps punctuation. No AI tone or instructions.' },
 ];
 
 type ToneCard = { id: ToneId; name: string; desc: string };
@@ -114,6 +115,7 @@ export const toneCards: ToneCard[] = [
 const SAMPLE_RAW = 'um so like i think we should um ship it tomorrow maybe';
 
 const cleanupPreview: Record<CleanupCard['id'], string> = {
+  rules: 'So like i think we should ship it tomorrow maybe',
   none: 'um so like i think we should um ship it tomorrow maybe',
   light: 'I think we should ship it tomorrow maybe',
   medium: 'I think we should ship it tomorrow, maybe.',
@@ -130,7 +132,7 @@ const tonePreview: Record<ToneCard['id'], (base: string) => string> = {
 };
 
 export function writingStylePreview(intensity: CleanupCard['id'], tone: ToneCard['id']): { before: string; after: string } {
-  return { before: SAMPLE_RAW, after: tonePreview[tone](cleanupPreview[intensity]) };
+  return { before: SAMPLE_RAW, after: intensity === 'rules' || intensity === 'none' ? cleanupPreview[intensity] : tonePreview[tone](cleanupPreview[intensity]) };
 }
 
 /**

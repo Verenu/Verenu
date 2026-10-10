@@ -579,7 +579,7 @@ fn analytics_settings_from_snapshot(
                     _ => "unknown",
                 },
                 crate::data::store::CLEANUP_INTENSITY => match value {
-                    "none" | "light" | "medium" | "high" => value,
+                    "none" | "rules" | "light" | "medium" | "high" => value,
                     _ => "unknown",
                 },
                 crate::data::store::HISTORY_RETENTION => match value {
@@ -600,6 +600,7 @@ fn analytics_settings_from_snapshot(
         crate::data::store::analytics_feature_breadth(settings, context_group_count);
     json!({
         "cleanup_enabled": bool_value(crate::data::store::CLEANUP_ENABLED),
+        "voice_commands_enabled": bool_value(crate::data::store::VOICE_COMMANDS_ENABLED),
         "dual_transcription_enabled": bool_value(crate::data::store::DUAL_TRANSCRIPTION_ENABLED),
         "noise_reduction": bool_value(crate::data::store::NOISE_REDUCTION),
         "mute_audio": bool_value(crate::data::store::MUTE_AUDIO),

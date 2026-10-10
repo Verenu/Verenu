@@ -13,7 +13,7 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 // Bump this whenever cleanup instructions change so previously generated
 // output cannot mask the new prompt through the cleanup-result cache.
-pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v10";
+pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v11";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -529,15 +529,32 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     }
 
     // Fast path: an exact snippet trigger can skip the LLM unless a later
-    // cleanup instruction needs the expanded text to reach the model.
-    let pure_expansion = if snippet_instructions.is_empty() {
+    // cleanup instruction needs the expanded text to reach the model. Basic
+    // ignores those instructions, so they must not disable exact expansion.
+    let pure_expansion = if cfg.cleanup_intensity == "rules" || snippet_instructions.is_empty() {
         snippets::try_pure_snippet_expand_from(raw, &db_snippets, db_handle)
     } else {
         None
     };
-    let expanded = pure_expansion
-        .clone()
-        .unwrap_or_else(|| snippets::expand_snippets_from(raw, &mut db_snippets, db_handle));
+    let rules_active = cfg.cleanup_enabled && cfg.cleanup_intensity != "none"
+        && super::text_rules::explicit_english(&cfg.transcription_language);
+    let commands_active = rules_active && cfg.voice_commands_enabled;
+    let basic_active = rules_active && cfg.cleanup_intensity == "rules";
+    let terms = dictionary::protected_spellings(&dict_entries);
+    let expanded = pure_expansion.clone().unwrap_or_else(|| {
+        if basic_active || commands_active {
+            snippets::expand_snippets_with_spoken_transform(raw, &mut db_snippets, db_handle, true, |spoken, prefix| {
+                super::text_rules::process_after(spoken, basic_active, commands_active, &terms, prefix)
+            })
+        } else {
+            snippets::expand_snippets_from(raw, &mut db_snippets, db_handle)
+        }
+    });
+    // Basic never uses a cleanup provider, fusion, preset prompt, tone or
+    // custom instructions. Other languages and Auto preserve the transcript.
+    if cfg.cleanup_intensity == "rules" || (commands_active && expanded.trim().is_empty()) {
+        return Ok((expanded, dict_entries, String::new(), String::new()));
+    }
     log::debug!(
         "pipeline: snippets expanded pure_fast_path={} expanded_chars={}",
         pure_expansion.is_some(),
@@ -549,13 +566,44 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
     );
+    // A second candidate must not resurrect words removed by an explicit
+    // command. Apply the same preprocessing once, without counting snippet
+    // uses again; keep both original candidates outside this cleanup stage.
+    // Capture aliases before preprocessing: alternate-only triggers stay
+    // literal barriers there, and must remain barriers in model recovery too.
+    let alternate_has_snippet = commands_active
+        && alternate.is_some_and(|candidate| snippets::has_snippet_trigger(&candidate.text, &db_snippets));
+    let processed_alternate = if commands_active {
+        alternate.map(|candidate| {
+            let mut candidate = candidate.clone();
+            candidate.text = snippets::transform_alternate_with_primary_snippets(
+                raw, &candidate.text, &db_snippets,
+                |spoken, prefix| super::text_rules::process_after(spoken, false, true, &terms, prefix),
+            );
+            candidate
+        })
+    } else { None };
+    let alternate = processed_alternate.as_ref().or(alternate);
     let context_custom_instructions = db::query_context(db_handle, context_id)
         .ok()
         .and_then(|c| c.custom_instructions);
+    let command_instruction = if commands_active && pure_expansion.is_none() {
+        let protected_payload = protected_instruction.is_some()
+            || snippets::has_snippet_trigger(raw, &db_snippets)
+            || alternate_has_snippet
+            || super::text_rules::has_protected_spans(&expanded, &terms)
+            || alternate.is_some_and(|candidate| super::text_rules::has_protected_spans(&candidate.text, &terms));
+        if protected_payload {
+            super::text_rules::MODEL_COMMAND_PRESERVATION_INSTRUCTION
+        } else {
+            super::text_rules::MODEL_COMMAND_RECOVERY_INSTRUCTION
+        }
+    } else { "" };
     let user_overrides = [
         snippet_instructions.as_str(),
         context_custom_instructions.as_deref().unwrap_or(""),
         protected_instruction.unwrap_or(""),
+        command_instruction,
     ]
     .iter()
     .filter(|s| !s.is_empty())

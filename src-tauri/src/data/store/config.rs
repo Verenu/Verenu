@@ -18,6 +18,7 @@ pub struct PipelineConfig {
     pub dual_transcription_enabled: bool,
     pub cleanup_fallback_models: Vec<String>,
     pub cleanup_enabled: bool,
+    pub voice_commands_enabled: bool,
     pub cleanup_cache_enabled: bool,
     pub key_groq: String,
     pub key_openai: String,
@@ -405,6 +406,10 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .get(CLEANUP_CACHE_ENABLED)
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        voice_commands_enabled: store
+            .get(VOICE_COMMANDS_ENABLED)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         key_groq: crate::data::credentials::get(GROQ),
         key_openai: crate::data::credentials::get(OPENAI),
         key_google: crate::data::credentials::get(GOOGLE),

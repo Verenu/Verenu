@@ -61,6 +61,7 @@
   let progressLoaded = false;
   let direction = $state<'forward' | 'back'>('forward');
   let animating = $state(false);
+  let queuedJump: number | null = null;
   let stepWrapEl = $state<HTMLDivElement | null>(null);
 
   let provider = $state<WizardProviderId>('groq');
@@ -92,9 +93,12 @@
   let appleCleanupChoice = $state(false);
 
   let cleanupIntensity = $state<CleanupIntensity>('medium');
-  const useAppleCleanup = $derived(appleCleanupChoice && cleanupIntensity !== 'none');
+  // Apple Intelligence is an AI cleanup engine. Off runs no cleanup and Basic ('rules')
+  // runs on-device rules with no model, so neither applies, saves, or requires Apple.
+  const aiCleanupSelected = $derived(cleanupIntensity !== 'none' && cleanupIntensity !== 'rules');
+  const useAppleCleanup = $derived(appleCleanupChoice && aiCleanupSelected);
   // The choice is kept even if the Mac stops being ready; finish() refuses it then.
-  const appleReadiness = $derived(appleCleanupReadiness(appleCleanupChoice, cleanupIntensity !== 'none', appleIntelligence.status));
+  const appleReadiness = $derived(appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, appleIntelligence.status));
   let tone = $state<ToneId>('casual');
   let language = $state<TranscriptionLanguageCode>('en');
   let usesHeadphones = $state(true);
@@ -108,8 +112,9 @@
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let defaultModels = $derived(applyAppleCleanupDefaults(setupDefaultModels(provider), useAppleCleanup));
   let effectiveTarget = $derived(applyAppleCleanup(modelPreset?.target, useAppleCleanup));
-  let effectiveCleanupName = $derived(effectiveTarget && !effectiveTarget.cleanupEnabled ? 'Off' : cleanupName);
+  // Basic stays on even when the preset has no cleanup model (see setupCleanupEnabled).
   let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, effectiveTarget));
+  let effectiveCleanupName = $derived(effectiveCleanupEnabled ? cleanupName : 'Off');
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
   let doneModelReadiness = $derived(setupModelReadiness(effectiveTarget, {
@@ -118,7 +123,7 @@
     transcriptionState: localSttStore.state,
     cleanupState: localLlmStore.state,
     cleanupRuntime: localLlmStore.runtime,
-  }, effectiveCleanupEnabled, defaultModels));
+  }, effectiveCleanupEnabled && cleanupIntensity !== 'rules', defaultModels));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
@@ -307,6 +312,11 @@
     step = target;
     await delay(motionMs(300));
     animating = false;
+    // A progress dot or recovery link used mid-transition is replayed now, once,
+    // through the normal guards, instead of being dropped.
+    const queued = queuedJump;
+    queuedJump = null;
+    if (queued !== null) jumpToStep(queued);
   }
 
   const goNext = () => animateTo(step + 1, 'forward');
@@ -332,7 +342,14 @@
 
   function jumpToStep(target: number) {
     // A save is in flight on the Done step; moving steps now would hide its progress.
-    if (target === step || finishing) return;
+    if (finishing) return;
+    // Back, Next and Skip are disabled while a step slides, but the progress dots
+    // stay clickable. Keep the latest request and honor it when the slide ends.
+    if (animating) {
+      queuedJump = target;
+      return;
+    }
+    if (target === step) return;
     void animateTo(target, target < step ? 'back' : 'forward');
   }
 
@@ -459,7 +476,7 @@
     // "ready" never saves an engine that cannot run. The shared refresh is
     // de-duplicated and fails closed to 'unavailable'.
     const readiness = useAppleCleanup
-      ? appleCleanupReadiness(appleCleanupChoice, cleanupIntensity !== 'none', await refreshAppleIntelligence())
+      ? appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, await refreshAppleIntelligence())
       : appleReadiness;
     if (!readiness.ready) {
       saveError = readiness.message;
@@ -480,7 +497,8 @@
     // Intensity 'none' and cleanup_enabled=false are ANDed by the pipeline
     // (see should_run_cleanup_llm), so keep the Settings toggle agreeing with
     // what the wizard was actually told. A preset with no cleanup model (e.g.
-    // "Transcription only") also forces it off.
+    // "Transcription only") turns AI cleanup off, but Basic ('rules') needs no
+    // model and stays on (see setupCleanupEnabled).
     const cleanupEnabled = effectiveCleanupEnabled;
     // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
@@ -561,7 +579,7 @@
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
     if (s === modelsStep) return { name: 'Models', title: 'Speed or accuracy?', subtitle: provider === 'local' ? 'Choose speech recognition only, or add optional cleanup models.' : 'Pick the balance you want. Each option sets transcription and optional cleanup models for you.' };
-    if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup intensity and tone shape every transcription. You can override both per-app later.' };
+    if (s === writingStyleStep) return { name: 'Writing Style', title: 'How should your dictation sound?', subtitle: 'Cleanup applies to every dictation; tone applies only to AI cleanup.' };
     if (s === languageStep) return { name: 'Language', title: 'What language will you dictate in?', subtitle: "This is the language Verenu expects to hear. The app's own interface stays in English." };
     if (s === audioEnvStep) return { name: 'Audio', title: 'Headphones or speakers?', subtitle: 'This decides whether Verenu needs to silence your other audio while you dictate.' };
     if (s === onboardingTryItStep) return { name: 'Try It', title: 'Give it a try', subtitle: 'Test the full pipeline, end to end, before you go.' };
@@ -742,7 +760,8 @@
         apiKeyStatus={providerKeyStatus}
         bind:preset={modelPreset}
         bind:appleCleanup={appleCleanupChoice}
-        cleanupRequested={cleanupIntensity !== 'none'}
+        cleanupRequested={aiCleanupSelected}
+        basicCleanup={cleanupIntensity === 'rules'}
         onOpenApiKeys={() => jumpToStep(apiKeyStep)}
         onChooseCloudProvider={chooseCloudProviderFromModels}
       />
@@ -758,7 +777,7 @@
       <DoneStep
         providerName={providerDisplayName}
         cleanupName={effectiveCleanupName}
-        {toneName}
+        toneName={cleanupIntensity === 'rules' ? 'No AI tone' : toneName}
         {languageLabel}
         {usesHeadphones}
         hasKey={doneHasKey}
