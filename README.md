@@ -97,6 +97,7 @@ Verenu's own server (`api.verenu.com`) serves only public app metadata — relea
 - Cloud transcription sends recorded audio to your chosen transcription provider
 - Context instructions, cleanup settings, and selected model metadata go with cleanup requests
 - Update checks hit GitHub release metadata
+- Optional GitHub Insights sends a username and date range to GitHub's public contribution calendar. If the profile owner enables **Show private contributions**, GitHub may include anonymized private counts. Verenu does not send dictated text or sign in to GitHub for this feature; public commit search is used only when the calendar cannot be read.
 - Provider status and health checks hit `api.verenu.com` (public status only, no dictated content, keys, or history). You can disable these background checks in Settings → Privacy.
 
 ### Optional product analytics
