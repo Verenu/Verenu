@@ -222,7 +222,10 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     } else if i == 0 {
         // Keep delimiters that enclose retained words; remove an empty pair
         // only when the discarded pause was its entire contents.
-        if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
+        if preceding_speech && after.contains([',', ';', ':']) {
+            *leading = leading.trim_end_matches([' ', '\t']).to_owned()
+                + after.trim_start_matches([' ', '\t']);
+        } else if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
             leading.push_str(&after);
         } else {
             leading.push_str(
@@ -243,6 +246,17 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
             *before = after;
         } else if n == 2 && before.contains(',') && after.contains(',') {
             *before = " ".into();
+        } else if after.contains([',', ';', ':']) {
+            // Punctuation dictated after a pause belongs to retained speech.
+            // Keep an existing identical separator once, as in "send, um, it".
+            let left = before.trim_end_matches([' ', '\t']);
+            let right = after.trim_start_matches([' ', '\t']);
+            let right = if left.chars().next_back() == right.chars().next() {
+                &right[right.chars().next().map_or(0, char::len_utf8)..]
+            } else {
+                right
+            };
+            *before = left.to_owned() + right;
         }
     }
     words.drain(i..i + n);
@@ -431,7 +445,7 @@ fn rollback(out: &mut String, needs_separator: bool) {
                 || (matches!(c, '!' | '?')
                     && (!identifier_chunk(&trimmed[start..end])
                         || trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace)))
-                || (matches!(c, '.' | ';' | ':')
+                || (matches!(c, '.' | ',' | ';' | ':')
                     && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace)
                     && (*c != '.' || !abbreviation_before_period(&trimmed[..*i])))
         })
@@ -458,9 +472,9 @@ fn commands(text: &str) -> String {
                 start += 1;
             }
         }
-        // "Keep this semicolon ... scratch that" dictates a retained clause.
+        // "Keep this comma/semicolon ... scratch that" dictates a retained clause.
         // Keep noun-marker protection for literal punctuation discussion.
-        let retained_clause = words[i].key == "semicolon"
+        let retained_clause = matches!(words[i].key.as_str(), "comma" | "semicolon")
             && i >= 2
             && matches!(words[i - 1].key.as_str(), "this" | "that")
             && words[i - 2].key == "keep";
@@ -865,6 +879,34 @@ mod tests {
         assert_eq!(process("\"open report.md scratch that\"", true, true, &[]), "\"open report.md scratch that\"");
         // The protected segment's following separator is preserved verbatim.
         assert_eq!(process("[[VERENU_CLIPBOARD_report.md]] scratch that", true, true, &[]), "[[VERENU_CLIPBOARD_report.md]] ");
+    }
+    #[test]
+    fn rollback_preserves_comma_clause() {
+        for (input, expected) in [
+            ("Keep this comma change this scratch that tomorrow", "Keep this, Tomorrow"),
+            ("Keep it comma change this scratch that tomorrow", "Keep it, Tomorrow"),
+            ("Keep this, change this scratch that tomorrow", "Keep this, Tomorrow"),
+            ("Keep this comma change this scratch that", "Keep this,"),
+            ("visit https://example.com/a,b scratch that tomorrow", "Tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
+        for input in ["Explain this comma", "Keep the comma", "\"Keep this comma change this scratch that\""] {
+            assert_eq!(process(input, true, true, &[]), input, "{input}");
+        }
+    }
+    #[test]
+    fn filler_removal_preserves_spoken_nonterminal_punctuation() {
+        for (input, expected) in [
+            ("Keep this um semicolon continue", "Keep this; continue"),
+            ("Keep this um comma continue", "Keep this, continue"),
+            ("Keep this um put a colon continue", "Keep this: continue"),
+            ("Keep this, you know, continue", "Keep this continue"),
+            ("um semicolon continue", "Continue"),
+            ("Keep this um semicolon", "Keep this;"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+        }
     }
     #[test]
     fn single_quoted_contractions_protect_fillers() {
