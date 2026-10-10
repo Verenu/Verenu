@@ -483,7 +483,10 @@ fn skill_tokens(text: &str) -> Vec<&str> {
 }
 
 fn is_spoken_variable(raw: &str, name: &str) -> bool {
-    if name.chars().any(|ch| matches!(ch, '-' | ':')) {
+    let mut identifier = name.chars();
+    if !identifier.next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        || !identifier.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return false;
     }
     let raw_words = matching_words(raw);
@@ -502,8 +505,28 @@ fn is_spoken_variable(raw: &str, name: &str) -> bool {
                 .checked_sub(1)
                 .and_then(|previous| raw_words.get(previous));
             let after = raw_words.get(index + name_words.len());
-            before.is_some_and(|word| matches!(word.as_str(), "variable" | "variables"))
-                || after.is_some_and(|word| matches!(word.as_str(), "variable" | "variables"))
+            let preceded_by_variable = before.is_some_and(|word| {
+                matches!(word.as_str(), "variable" | "variables")
+                    || (word == "environment"
+                        && index
+                            .checked_sub(2)
+                            .and_then(|previous| raw_words.get(previous))
+                            .is_some_and(|word| matches!(word.as_str(), "variable" | "variables")))
+            });
+            let followed_by_variable = after.is_some_and(|word| {
+                matches!(word.as_str(), "variable" | "variables")
+                    || (word == "environment"
+                        && raw_words
+                            .get(index + name_words.len() + 1)
+                            .is_some_and(|word| matches!(word.as_str(), "variable" | "variables")))
+            });
+            let spoken_dollar = before.is_some_and(|word| word == "dollar")
+                || (before.is_some_and(|word| word == "sign")
+                    && index
+                        .checked_sub(2)
+                        .and_then(|previous| raw_words.get(previous))
+                        .is_some_and(|word| word == "dollar"));
+            preceded_by_variable || followed_by_variable || spoken_dollar
         })
 }
 
