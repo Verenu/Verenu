@@ -443,6 +443,9 @@ fn commands(text: &str) -> String {
             out.push('@');
             out.push_str(&words[i + mention].text);
             out.push_str(&words[i + mention].after);
+            // The username consumes the pending sentence position just like
+            // an ordinary word; its trailing punctuation starts the next one.
+            cap_next = terminal(&words[i + mention].after);
             i += mention + 1;
             continue;
         }
@@ -570,6 +573,27 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mention_trailing_sentence_terminator_capitalizes_following_word() {
+        assert_eq!(process("ping at sign maria. tomorrow", true, true, &[]), "ping @maria. Tomorrow");
+    }
+    #[test]
+    fn mention_refreshes_sentence_state_after_consuming_username() {
+        for (input, expected) in [
+            ("Hello full stop at sign maria tomorrow", "Hello. @maria tomorrow"),
+            ("ping at sign maria. tomorrow", "ping @maria. Tomorrow"),
+            ("Hello full stop at the rate maria tomorrow", "Hello. @maria tomorrow"),
+            ("ping at the rate maria! tomorrow", "ping @maria! Tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &[]), expected, "{input}");
+            assert_eq!(process(input, false, true, &[]), expected, "{input}");
+            assert_eq!(process(input, true, false, &[]), input, "{input}");
+        }
+        for input in ["\"ping at sign maria. tomorrow\"", "`ping at sign maria. tomorrow`", "[[VERENU_CLIPBOARD_ping at sign maria. tomorrow]]"] {
+            assert_eq!(process(input, true, true, &[]), input);
+        }
+        assert_eq!(process("ping at sign maria. tomorrow", true, true, &["at sign maria. tomorrow"]), "ping at sign maria. tomorrow");
+    }
     #[test]
     fn rollback_preserves_colon_clause_and_payload_boundaries() {
         for (input, expected) in [

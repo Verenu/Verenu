@@ -48,6 +48,12 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
     for (const [commands, raw, expected] of [
       [false, 'um send send it new line tomorrow', 'Send it new line tomorrow'],
       [true, 'um send send it new line tomorrow', 'Send it\nTomorrow'],
+      [true, 'Hello full stop at sign maria tomorrow', 'Hello. @maria tomorrow'],
+      [true, 'ping at sign maria. tomorrow', 'ping @maria. Tomorrow'],
+      [true, 'Hello full stop at the rate maria tomorrow', 'Hello. @maria tomorrow'],
+      [false, 'ping at sign maria. tomorrow', 'ping at sign maria. tomorrow'],
+      [true, '"ping at sign maria. tomorrow"', '"ping at sign maria. tomorrow"'],
+      [true, '`ping at sign maria. tomorrow`', '`ping at sign maria. tomorrow`'],
       [true, 'First. Second. scratch that scratch that', ''],
       [true, 'First. Second. scratch that scratch that Third', 'Third'],
       [true, 'Hello new line new line tomorrow', 'Hello\n\nTomorrow'],
@@ -106,7 +112,7 @@ test('production Basic and opt-in commands bypass cleanup HTTP and save exact co
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
-    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 30);
+    assert.equal(cleanupCalls, 0); assert.equal(speechCalls, 36);
   } finally {
     try {
       for (const snippet of snippets) await invoke('remove_snippet', { id: snippet.id });
