@@ -175,6 +175,10 @@ pub async fn run_pipeline_fixture(
     } else {
         injected_text
     };
+    let injected_text = request.config.t3_skill_catalog.as_ref().map_or_else(
+        || injected_text.clone(),
+        |catalog| catalog.normalize_mentions(&injected_text),
+    );
     // Mirrors finalize.rs: History must save the same text that actually
     // gets injected (dictionary substitution included), not the
     // pre-dictionary value.

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import T3ContextSetting from '../components/T3ContextSetting.svelte';
+  import { isT3App } from '../t3Skills';
   import ContextIcon from '../components/ContextIcon.svelte';
   import ColorSwatches from '../components/ColorSwatches.svelte';
   import { portal } from '../portal';
@@ -185,6 +187,8 @@
   let modalCustomInstructions = $state('');
   let modalContextualFormattingDisabled = $state(false);
   let modalPasteInChunks = $state(false);
+  let modalT3Enabled = $state(true);
+  let savingT3 = $state(false);
   let modalAdvancedOpen = $state(false);
   let editingContextId = $state<number | null>(null);
   // Tone/cleanup dropdown menus render fixed-position at the top level (not
@@ -228,6 +232,18 @@
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
   // Sub-apps capture a desktop window; Android has no such windows.
   const selectedSubApps = $derived(isAndroid ? [] : contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
+  const hasT3Target = $derived([...selectedTargets, ...selectedSubApps].some(target => isT3App(target.executable)));
+
+  async function setT3Enabled(enabled: boolean) {
+    if (!selectedContext || savingT3) return;
+    const id = selectedContext.id;
+    savingT3 = true;
+    try {
+      await invoke('set_context_t3_skill_mentions', { contextId: id, enabled });
+      contextsStore.contexts = contextsStore.contexts.map(context => context.id === id ? { ...context, t3_skill_mentions_disabled: !enabled } : context);
+    } catch (error) { contextErrorMessage = classifyIpcError(error).message; }
+    finally { savingT3 = false; }
+  }
   // A sub-app belongs to at most one context group, so only unassigned ones
   // are offered; assigning one removes it from this list everywhere.
   const unassignedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === null));
@@ -695,6 +711,7 @@
     modalCustomInstructions = editing?.custom_instructions ?? '';
     modalContextualFormattingDisabled = editing?.contextual_formatting_disabled ?? false;
     modalPasteInChunks = editing?.paste_in_chunks ?? false;
+    modalT3Enabled = !editing?.t3_skill_mentions_disabled;
     modalAdvancedOpen = false;
     modalApps = [];
     modalAppQuery = '';
@@ -907,6 +924,10 @@
           ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         createdContextId = created.id;
+        if (!modalT3Enabled) {
+          await invoke('set_context_t3_skill_mentions', { contextId: created.id, enabled: false });
+          created.t3_skill_mentions_disabled = true;
+        }
         if (modalColor) {
           await invoke('update_context_color', { contextId: created.id, color: modalColor });
           created.color = modalColor;
@@ -1309,6 +1330,10 @@
             {/each}
             {#if selectedTargets.length === 0 && selectedWebsites.length === 0 && selectedSubApps.length === 0}<span class="target-empty">No apps or sites assigned yet</span>{/if}
           </div>
+        {/if}
+
+        {#if !isAndroid && (hasT3Target || selectedContext.is_everywhere)}
+          <T3ContextSetting enabled={!selectedContext.t3_skill_mentions_disabled} disabled={savingT3} onchange={(value) => void setT3Enabled(value)} />
         {/if}
 
         <div class="tabs" role="tablist" tabindex="-1" bind:this={tablistEl} onkeydown={handleTablistKeydown}>
@@ -1718,6 +1743,10 @@
           onfocus={updateModalAppMatchPos}
           onkeydown={handleModalAppKeydown}
         />
+
+        {#if !isAndroid && modalApps.some(app => isT3App(app.exe))}
+          <T3ContextSetting enabled={modalT3Enabled} onchange={(value) => modalT3Enabled = value} />
+        {/if}
 
         <label class="field-label" for="context-website">Attach websites (optional)</label>
         {#if modalWebsites.length > 0}

@@ -62,6 +62,7 @@ type DevContext = {
   custom_instructions: string | null;
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
+  t3_skill_mentions_disabled?: boolean;
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
@@ -611,6 +612,18 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return { ...defaultSettings, ...readDevSettings() } as T;
     case 'get_app_mappings':
       return getDevSetting('app_mappings') as T;
+    case 'get_t3_skills':
+    case 'pull_t3_skills':
+      return { minimumVersion: '0.46', connection: null, skills: [] } as T;
+    case 'connect_t3':
+      throw new Error('Connect T3 from the installed desktop app.');
+    case 'set_context_t3_skill_mentions': {
+      const rows = readDevContexts();
+      const id = Number(args?.contextId);
+      if (!rows.some(row => row.id === id)) throw new Error('Context no longer exists.');
+      writeDevList(DEV_CONTEXTS_KEY, rows.map(row => row.id === id ? { ...row, t3_skill_mentions_disabled: !args?.enabled } : row));
+      return undefined as T;
+    }
     case 'get_contexts':
       return readDevContexts() as T;
     case 'create_context': {

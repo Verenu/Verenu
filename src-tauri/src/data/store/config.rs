@@ -7,6 +7,7 @@ use super::*;
 /// All settings values needed by run_pipeline, loaded in one place.
 #[derive(Clone, Debug, Default)]
 pub struct PipelineConfig {
+    pub t3_skill_catalog: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
     /// Ephemeral, captured Context hints. Never serialized to settings.
     pub speech_vocabulary: crate::local_stt::vocabulary::Vocabulary,
     pub transcription_provider: String,
@@ -428,6 +429,7 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
         paste_in_chunks: false,
+        t3_skill_catalog: None,
         caps_lock_uppercase_enabled: store
             .get(CAPS_LOCK_UPPERCASE)
             .and_then(|v| v.as_bool())
