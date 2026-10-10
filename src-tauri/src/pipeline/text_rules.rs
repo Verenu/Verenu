@@ -167,6 +167,7 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
 
 fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool) {
     let mut after = words[i + n - 1].after.clone();
+    let has_following_word = i + n < words.len();
     let ends_sentence = terminal(&after);
     let capitalize_next = ends_sentence || if i == 0 {
         sentence_initial || terminal(leading)
@@ -179,10 +180,15 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
         &mut words[i - 1].after
     };
     let removed_pair = remove_empty_delimiters(before, &mut after);
-    if removed_pair && i > 0 && before.is_empty() && inline_space(&after) && i + n < words.len() {
-        words[i - 1].after = " ".into();
-    }
-    if i == 0 {
+    if removed_pair {
+        // The pair enclosed only the removed pause. Its outside punctuation
+        // belongs to the retained speech, including nested empty pairs.
+        *before = before.trim_end_matches([' ', '\t']).to_owned()
+            + after.trim_start_matches([' ', '\t']);
+        if inline_space(&after) && i > 0 && has_following_word {
+            before.push(' ');
+        }
+    } else if i == 0 {
         // Keep delimiters that enclose retained words; remove an empty pair
         // only when the discarded pause was its entire contents.
         if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
@@ -391,7 +397,9 @@ fn rollback(out: &mut String, needs_separator: bool) {
             let start = trimmed[..*i].rfind(char::is_whitespace).map_or(0, |j| j + trimmed[j..].chars().next().unwrap().len_utf8());
             let end = trimmed[*i..].find(char::is_whitespace).map_or(trimmed.len(), |j| i + j);
             matches!(c, '…' | '\n' | '\r')
-                || (matches!(c, '!' | '?') && !identifier_chunk(&trimmed[start..end]))
+                || (matches!(c, '!' | '?')
+                    && (!identifier_chunk(&trimmed[start..end])
+                        || trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace)))
                 || (matches!(c, '.' | ';' | ':')
                     && trimmed[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
         })
@@ -672,6 +680,35 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rollback_preserves_identifier_sentence_punctuation() {
+        for (input, expected) in [
+            ("Did you visit example.com? change this scratch that tomorrow", "Did you visit example.com? Tomorrow"),
+            ("Visit https://example.com! change this scratch that tomorrow", "Visit https://example.com! Tomorrow"),
+            ("Visit localhost:3000? change this scratch that tomorrow", "Visit localhost:3000? Tomorrow"),
+            ("Visit example.com?query=value scratch that tomorrow", "Tomorrow"),
+            ("Hello. visit example.com?query=value scratch that tomorrow", "Hello. Tomorrow"),
+        ] {
+            assert_eq!(process(input, false, true, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn empty_filler_delimiters_preserve_external_punctuation() {
+        for (input, expected) in [
+            ("Please (um), continue", "Please, continue"),
+            ("Please [um]; continue", "Please; continue"),
+            ("Please {um}: continue", "Please: continue"),
+            ("Please ([um]), continue", "Please, continue"),
+            ("Please (um). continue", "Please. Continue"),
+            ("Please (um)! continue", "Please! Continue"),
+            ("Please (um)? continue", "Please? Continue"),
+            ("Please, um, continue", "Please, continue"),
+        ] {
+            assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+
     #[test]
     fn measurement_quotes_do_not_protect_following_speech() {
         assert_eq!(process("make it 5\" wide um please", true, false, &[]), "make it 5\" wide please");
