@@ -57,6 +57,66 @@ test('Basic selection and independently opt-in commands persist without a prompt
   }
 });
 
+test('Context cleanup hint follows the effective cleanup when Use default is selected', async ({ page, session }) => {
+  const previousIntensity = await session.invoke('get_setting', { key: 'cleanup_intensity' });
+  const name = `Inherited hint ${Date.now()}`;
+  let created;
+  const basicNote = 'Basic cleanup runs on this device and ignores the tone and custom instructions above.';
+  const aiHint = 'Sent to the AI cleanup model for this context.';
+  const openNew = async () => {
+    await page.getByRole('button', { name: 'New context group', exact: true }).click();
+    return page.getByRole('dialog', { name: 'New context group', exact: true });
+  };
+  const choose = async (dialog, option) => {
+    await dialog.locator('.field-col').filter({ hasText: 'Cleanup' }).getByRole('button').click();
+    await page.getByRole('option', { name: option, exact: true }).click();
+  };
+  const expectBasic = async (dialog, inherited) => {
+    const note = dialog.getByRole('note');
+    await expect(note).toContainText(basicNote);
+    if (inherited) await expect(note).toContainText('Your default cleanup is Basic.');
+    else await expect(note).not.toContainText('Your default cleanup is Basic.');
+    await expect(dialog.getByText(aiHint)).toHaveCount(0);
+  };
+  const expectAi = async (dialog) => {
+    await expect(dialog.getByText(aiHint)).toBeVisible();
+    await expect(dialog.getByRole('note')).toHaveCount(0);
+  };
+  try {
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'rules' });
+    await page.reload();
+    let dialog = await openNew();
+    await expectBasic(dialog, true);
+    await choose(dialog, 'Light');
+    await expectAi(dialog);
+    await choose(dialog, 'Use default');
+    await expectBasic(dialog, true);
+    await choose(dialog, 'Basic');
+    await expectBasic(dialog, false);
+    await choose(dialog, 'Use default');
+    await dialog.getByLabel('Context group name').fill(name);
+    await dialog.getByRole('button', { name: 'Create context group', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    created = (await session.invoke('get_contexts')).find((row) => row.name === name);
+    expect(created).toBeTruthy();
+    // Inheriting stays inheriting: the saved override is null, not 'rules'.
+    expect(created.cleanup_intensity ?? null).toBeNull();
+
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
+    await page.reload();
+    dialog = await openNew();
+    await expectAi(dialog);
+    await choose(dialog, 'Basic');
+    await expectBasic(dialog, false);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  } finally {
+    if (created) await session.invoke('delete_context', { contextId: created.id });
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: previousIntensity ?? 'medium' });
+    await page.reload();
+  }
+});
+
 for (const reducedMotion of ['no-preference', 'reduce']) {
   test(`Voice commands details animate open and closed (${reducedMotion})`, async ({ page, session }) => {
     const previous = await session.invoke('get_all_settings');
