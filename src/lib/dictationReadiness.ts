@@ -6,6 +6,7 @@ import {
   splitModelId,
 } from './components/settings/models';
 import { isCustomProviderId } from './customProviders.svelte';
+import type { AppleIntelligenceAvailability } from './appleIntelligence.svelte';
 
 export type ReadinessIssue = {
   task: 'transcription' | 'cleanup';
@@ -39,6 +40,7 @@ export type ReadinessInput = {
   cleanupModels: { id: string; is_downloaded: boolean }[];
   cleanupEngineInstalled: boolean;
   customProviders?: ReadinessCustomProvider[];
+  appleIntelligence?: AppleIntelligenceAvailability;
 };
 
 const CLOUD_PROVIDERS = new Set(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai']);
@@ -46,6 +48,7 @@ const CLOUD_PROVIDERS = new Set(['groq', 'openai', 'google', 'assemblyai', 'open
 const DEFAULT_MODELS: Record<string, Partial<Record<ReadinessIssue['task'], string>>> = {
   // Keep these aligned with default_*_model_for in src-tauri/src/data/store/config.rs.
   local: { transcription: 'local/parakeet-v3', cleanup: 'local/gemma-4-e2b' },
+  'apple-intelligence': { cleanup: 'apple-intelligence/system' },
   groq: { transcription: 'groq/whisper-large-v3-turbo', cleanup: 'groq/qwen/qwen3.8-27b' },
   openai: { transcription: 'openai/gpt-4o-transcribe', cleanup: 'openai/gpt-4o-mini' },
   google: { transcription: 'google/gemini-3.5-transcribe', cleanup: 'google/gemini-3.5-flash-lite' },
@@ -120,7 +123,7 @@ export function hasReachableOffCleanupOverride(
 }
 
 type ModelCandidateInput = Pick<ReadinessInput,
-  'keys' | 'speechModels' | 'cleanupModels' | 'cleanupEngineInstalled' | 'customProviders'>;
+  'keys' | 'speechModels' | 'cleanupModels' | 'cleanupEngineInstalled' | 'customProviders' | 'appleIntelligence'>;
 
 type DualTranscriptionInput = Pick<ReadinessInput,
   'dualTranscriptionEnabled' | 'transcriptionModel' | 'transcriptionFallbacks' | 'isOnline'> & ModelCandidateInput;
@@ -171,6 +174,14 @@ function evaluateModel(task: ReadinessIssue['task'], value: string, input: Model
       return { ready: false, message: 'Optional cleanup needs its local engine.', section: 'models' };
     }
     return { ready: true };
+  }
+  if (provider === 'apple-intelligence') {
+    if (task !== 'cleanup' || id !== 'system') {
+      return { ready: false, message: 'Apple Intelligence supports its system cleanup model only.', section: 'models' };
+    }
+    return input.appleIntelligence?.available
+      ? { ready: true }
+      : { ready: false, message: input.appleIntelligence?.message ?? 'Apple Intelligence availability has not been checked.', section: 'models' };
   }
 
   const custom = input.customProviders?.find(item => item.id === provider);
