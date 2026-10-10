@@ -31,7 +31,7 @@ export function refreshGithub(refresh = false): Promise<void> {
       githubState.snapshot = snapshot;
       githubState.error = '';
     } catch (error) {
-      if (token === generation) githubState.error = formatIpcError(error, 'Could not refresh GitHub commits.');
+      if (token === generation) githubState.error = formatIpcError(error, 'Could not refresh GitHub activity.');
     } finally {
       if (token === generation) { githubState.loading = false; githubState.ready = true; }
     }

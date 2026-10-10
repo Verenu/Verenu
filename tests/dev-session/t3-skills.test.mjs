@@ -81,6 +81,10 @@ test('provided audio captures shared T3 skills without workspace selection only 
         await panel.locator('#t3-skill-search').fill('designer');
         assert.equal(await panel.locator('.skill-list li').count(), 1);
         assert.ok((await panel.locator('.skill-list').textContent()).includes('$skill-designer'));
+        if (process.env.VERENU_T3_SCREENSHOT_DIR) {
+          await fs.mkdir(process.env.VERENU_T3_SCREENSHOT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.VERENU_T3_SCREENSHOT_DIR, `integrations-${viewport.width}.png`) });
+        }
       } finally { await page.close(); }
     }
     await browser.close(); browser = undefined;
