@@ -615,10 +615,12 @@
       // Refresh shared values only. Do not reset a theme preview, microphone,
       // shortcut capture, or other device-local controls during a peer sync.
       void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
-        cleanup_enabled: cleanup, transcription_language: language }) => {
+        cleanup_enabled: cleanup, transcription_language: language,
+        voice_commands_enabled: commands }) => {
         if (!active) return;
         contextualFormatting = formatting ?? true;
         appStore.cleanupEnabled = cleanup ?? true;
+        voiceCommands = commands ?? false;
         if (!languageDropdownOpen && language && transcriptionLanguages.some(option => option.code === language)) {
           selectedLanguage = language;
         }
