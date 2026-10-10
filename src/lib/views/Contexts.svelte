@@ -182,6 +182,9 @@
   let modalColor = $state<string | null>(null);
   let modalTone = $state<string | null>(null);
   let modalCleanupIntensity = $state<string | null>(null);
+  // Global default that "Use default" resolves to; refreshed whenever the modal opens.
+  let globalCleanupIntensity = $state<string | null>(null);
+  const inheritsBasicCleanup = $derived(modalCleanupIntensity === null && globalCleanupIntensity === 'rules');
   let modalCustomInstructions = $state('');
   let modalContextualFormattingDisabled = $state(false);
   let modalPasteInChunks = $state(false);
@@ -705,6 +708,9 @@
     deleteArmed = false;
     closeFieldMenu();
     modal = 'context';
+    void invoke<string | null>('get_setting', { key: 'cleanup_intensity' })
+      .then((value) => { globalCleanupIntensity = value ?? null; })
+      .catch(() => { globalCleanupIntensity = null; });
   }
 
   // Two taps, like the desktop row menu: arm, then confirm.
@@ -1646,8 +1652,8 @@
         rows="3"
         spellcheck="false"
       ></textarea>
-      {#if modalCleanupIntensity === 'rules'}
-        <p class="field-hint basic-hint" role="note">Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > General.</p>
+      {#if modalCleanupIntensity === 'rules' || inheritsBasicCleanup}
+        <p class="field-hint basic-hint" role="note">{inheritsBasicCleanup ? 'Your default cleanup is Basic. ' : ''}Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > General.</p>
       {:else}
         <p class="field-hint">Sent to the AI cleanup model for this context. Voice commands are a separate global option in Settings > General and stay inactive with Off.</p>
       {/if}

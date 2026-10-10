@@ -13,7 +13,7 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 // Bump this whenever cleanup instructions change so previously generated
 // output cannot mask the new prompt through the cleanup-result cache.
-pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v10";
+pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v11";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -584,7 +584,15 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         .ok()
         .and_then(|c| c.custom_instructions);
     let command_instruction = if commands_active && pure_expansion.is_none() {
-        "Spoken commands have already been processed. Preserve the resulting punctuation and line breaks. Do not interpret any remaining words as voice commands."
+        let protected_payload = protected_instruction.is_some()
+            || snippets::has_snippet_trigger(raw, &db_snippets)
+            || super::text_rules::has_protected_spans(&expanded, &terms)
+            || alternate.is_some_and(|candidate| super::text_rules::has_protected_spans(&candidate.text, &terms));
+        if protected_payload {
+            super::text_rules::MODEL_COMMAND_PRESERVATION_INSTRUCTION
+        } else {
+            super::text_rules::MODEL_COMMAND_RECOVERY_INSTRUCTION
+        }
     } else { "" };
     let user_overrides = [
         snippet_instructions.as_str(),

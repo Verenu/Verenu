@@ -8,6 +8,12 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
+// Used only by an already-required AI cleanup call, after deterministic edits.
+// Keep this compact: the shared prompt-budget estimate stays below 200 tokens.
+pub(super) const MODEL_COMMAND_RECOVERY_INSTRUCTION: &str = "Before cleanup, recover only clear missed voice commands, including joined STT words. Convert comma, semicolon, full stop, question/exclamation mark; new/next line or paragraph; at sign/at the rate plus one username (at signbot becomes @bot). Period, colon, dash/hyphen require add/insert/put. Scratch/strike that removes only the latest fragment since punctuation or a line break. Remove command words, then clean normally. Preserve already-processed punctuation, line breaks and mentions; do not repeat rollback. Keep ambiguous or literal uses unchanged; never reinterpret quotes, code, vocabulary, snippets or clipboard text.";
+
+pub(super) const MODEL_COMMAND_PRESERVATION_INSTRUCTION: &str = "Spoken commands have already been processed. Preserve the resulting punctuation and line breaks. Do not interpret any remaining words as voice commands.";
+
 #[derive(Clone, Debug)]
 struct Word {
     text: String,
@@ -493,6 +499,35 @@ fn matching_term_len(text: &str, term: &str) -> Option<usize> {
         .then_some(end)
 }
 
+fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
+    let rest = &text[i..];
+    let c = rest.chars().next()?;
+    let quoted = match c {
+        '"' => Some('"'),
+        '“' => Some('”'),
+        '`' => Some('`'),
+        '‘' => Some('’'),
+        '\'' if i == 0 || !text[..i].chars().next_back().is_some_and(word_char) => Some('\''),
+        _ => None,
+    };
+    if rest.starts_with("[[VERENU_") {
+        Some(rest.find("]]").map(|n| n + 2).unwrap_or(rest.len()))
+    } else if let Some(close) = quoted {
+        Some(rest[c.len_utf8()..].find(close)
+            .map(|n| c.len_utf8() + n + close.len_utf8()).unwrap_or(rest.len()))
+    } else {
+        terms.iter()
+            .filter(|_| i == 0 || !text[..i].chars().next_back().is_some_and(word_char))
+            .filter_map(|term| matching_term_len(rest, term)).max()
+    }
+}
+
+/// Expanded payloads are not labeled for the model. In their presence keep
+/// model command recovery off rather than asking it to guess their origin.
+pub(super) fn has_protected_spans(text: &str, terms: &[&str]) -> bool {
+    text.char_indices().any(|(i, _)| protected_span_len(text, i, terms).is_some())
+}
+
 #[cfg(test)]
 pub(super) fn process(text: &str, cleanup: bool, voice_commands: bool, terms: &[&str]) -> String {
     process_after(text, cleanup, voice_commands, terms, "")
@@ -516,30 +551,7 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
     while i < text.len() {
         let rest = &text[i..];
         let c = rest.chars().next().unwrap();
-        let quoted = match c {
-            '"' => Some('"'),
-            '“' => Some('”'),
-            '`' => Some('`'),
-            '‘' => Some('’'),
-            '\'' if i == 0 || !text[..i].chars().next_back().is_some_and(word_char) => Some('\''),
-            _ => None,
-        };
-        let protected_len = if rest.starts_with("[[VERENU_") {
-            Some(rest.find("]]").map(|n| n + 2).unwrap_or(rest.len()))
-        } else if let Some(close) = quoted {
-            Some(
-                rest[c.len_utf8()..]
-                    .find(close)
-                    .map(|n| c.len_utf8() + n + close.len_utf8())
-                    .unwrap_or(rest.len()),
-            )
-        } else {
-            terms
-                .iter()
-                .filter(|_| i == 0 || !text[..i].chars().next_back().is_some_and(word_char))
-                .filter_map(|term| matching_term_len(rest, term))
-                .max()
-        };
+        let protected_len = protected_span_len(text, i, terms);
         if let Some(len) = protected_len {
             let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
             out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial));
@@ -573,6 +585,30 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_command_recovery_is_compact_and_preserves_payload_boundaries() {
+        let prompt = crate::api::prompts::get_cleanup_prompt_with_extras(
+            "groq", "llama-3.3-70b-versatile", "casual", "light",
+            MODEL_COMMAND_RECOVERY_INSTRUCTION, None, "ping at signbot", None,
+        );
+        let baseline = crate::api::prompts::get_cleanup_prompt_with_extras(
+            "groq", "llama-3.3-70b-versatile", "casual", "light", "", None,
+            "ping at signbot", None,
+        );
+        assert!(crate::api::prompts::prompt_token_estimate(&prompt)
+            - crate::api::prompts::prompt_token_estimate(&baseline) < 200);
+        assert!(prompt.contains("at signbot becomes @bot"));
+        assert!(!MODEL_COMMAND_RECOVERY_INSTRUCTION.contains("Do not interpret any remaining"));
+        for text in ["\"at signbot\"", "‘at signbot’", "`at signbot`", "\"unclosed at signbot", "[[VERENU_CLIPBOARD_at signbot]]", "Use CommandName", "use commandname"] {
+            assert!(has_protected_spans(text, &["CommandName"]), "{text}");
+        }
+        for text in ["ping at signbot", "don't send it", "the commandname_suffix", "aCommandName"] {
+            assert!(!has_protected_spans(text, &["CommandName"]), "{text}");
+        }
+        // The deterministic parser remains conservative; the model receives
+        // residual variants, not a new global fuzzy command interpretation.
+        assert_eq!(process("ping at signbot", false, true, &[]), "ping at signbot");
+    }
     #[test]
     fn mention_trailing_sentence_terminator_capitalizes_following_word() {
         assert_eq!(process("ping at sign maria. tomorrow", true, true, &[]), "ping @maria. Tomorrow");

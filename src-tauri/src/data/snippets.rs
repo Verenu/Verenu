@@ -226,6 +226,10 @@ fn collect_trigger_matches(text: &str, prepared: &PreparedSnippetTriggers) -> Ve
     selected
 }
 
+pub(crate) fn has_snippet_trigger(text: &str, snippets: &[db::Snippet]) -> bool {
+    !collect_trigger_matches(text, &prepare_snippets(snippets)).is_empty()
+}
+
 pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]) -> i64 {
     let prepared = prepare_snippets(snippets);
     let matches = collect_trigger_matches(text, &prepared);
