@@ -458,11 +458,12 @@ fn rollback(out: &mut String, needs_separator: bool) {
     }
 }
 
-fn commands(text: &str, carry_sentence_start: bool) -> String {
+fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
     let (leading, words) = tokenize(text);
     let mut out = leading.clone();
     let mut i = 0;
-    let mut cap_next = carry_sentence_start;
+    let mut cap_next = carry_sentence_start
+        || sentence_boundary_in(&leading, words.is_empty(), false, prefix);
     while i < words.len() {
         let standalone = spoken_start(&leading, &words, i);
         let mut start = i;
@@ -714,7 +715,7 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
         if let Some(len) = protected_len {
             let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
             let preceding_speech = !prefix.trim().is_empty() || !out.trim().is_empty();
-            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial, preceding_speech));
+            out.push_str(&edit(&text[spoken_start..i], cleanup, voice_commands, sentence_initial, preceding_speech, if out.is_empty() { prefix } else { &out }));
             out.push_str(&text[i..i + len]);
             i += len;
             spoken_start = i;
@@ -724,17 +725,17 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
     }
     let sentence_initial = sentence_start(if out.is_empty() { prefix } else { &out });
     let preceding_speech = !prefix.trim().is_empty() || !out.trim().is_empty();
-    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands, sentence_initial, preceding_speech));
+    out.push_str(&edit(&text[spoken_start..], cleanup, voice_commands, sentence_initial, preceding_speech, if out.is_empty() { prefix } else { &out }));
     out
 }
 
-fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool, preceding_speech: bool) -> String {
+fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool, preceding_speech: bool, prefix: &str) -> String {
     // Execute each command before Basic can collapse repeated spoken words.
     // Generated line boundaries remain boundaries during mechanical cleanup.
     let text = if voice_commands {
         // A protected sentence ending carries into the next spoken span.
         // An empty transcript prefix does not request initial capitalization.
-        commands(text, sentence_initial && preceding_speech)
+        commands(text, sentence_initial && preceding_speech, prefix)
     } else {
         text.to_owned()
     };
@@ -1283,6 +1284,20 @@ mod tests {
             ("(um)", ""),
         ] {
             assert_eq!(process(input, true, false, &[]), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn commands_respect_terminal_gaps_after_protected_spans() {
+        for (input, terms, expected) in [
+            ("say \"done\". tomorrow", vec![], "say \"done\". Tomorrow"),
+            ("say \"done\"! tomorrow", vec![], "say \"done\"! Tomorrow"),
+            ("say \"done\"? tomorrow", vec![], "say \"done\"? Tomorrow"),
+            ("I use Verenu. tomorrow", vec!["Verenu"], "I use Verenu. Tomorrow"),
+            ("Call Dr. tomorrow", vec!["Dr"], "Call Dr. tomorrow"),
+            ("say \"done\", tomorrow", vec![], "say \"done\", tomorrow"),
+        ] {
+            assert_eq!(process(input, true, true, &terms), expected, "{input}");
         }
     }
 
