@@ -144,6 +144,23 @@ fn large_catalog_candidate_selection_is_bounded() {
 }
 
 #[test]
+fn large_catalog_keeps_exact_name_when_common_word_candidates_overflow() {
+    let mut catalog = catalog();
+    catalog.skills[0].name = "skill-designer".into();
+    catalog.skills.extend((0..1_200).map(|i| Skill {
+        name: format!("skill-shared-workflow-{i:04}"),
+        display_name: None,
+        description: None,
+    }));
+
+    let (_, evidence) = catalog
+        .prompt_parts("Can you use my skill designer skill?")
+        .expect("the exact spoken name fits even when broad candidates exceed the budget");
+    let names: Vec<String> = serde_json::from_str(evidence.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(names, vec!["$skill-designer".to_string()]);
+}
+
+#[test]
 fn shared_descriptions_cannot_drop_skill_context() {
     let mut catalog = catalog();
     catalog.skills.extend((0..80).map(|i| Skill {

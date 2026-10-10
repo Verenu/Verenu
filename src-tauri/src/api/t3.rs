@@ -282,12 +282,12 @@ pub fn parse_catalogs(config: &Value, environment_id: &str) -> Result<Vec<Catalo
         let mut seen_scopes = HashSet::new();
         // Workspace-specific catalogs take precedence over the provider default.
         for (cwd, skills) in scopes.into_iter().rev() {
-            if !seen_scopes.insert(cwd) {
-                continue;
-            }
             let Some(skills) = skills.and_then(Value::as_array) else {
                 continue;
             };
+            if !seen_scopes.insert(cwd) {
+                continue;
+            }
             if skills.len() > t3_skills::MAX_SKILLS {
                 return Err("The T3 catalog contains too many skills.".into());
             }

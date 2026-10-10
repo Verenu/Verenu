@@ -7,6 +7,7 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { chromium } from 'playwright';
 import { startOwnedSession } from '../../scripts/verification/session.mjs';
+import { run } from '../../scripts/verification/process.mjs';
 
 test('provided audio captures shared T3 skills without workspace selection only for enabled T3 destinations', { timeout: 900_000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-t3-audio-'));
@@ -43,7 +44,10 @@ test('provided audio captures shared T3 skills without workspace selection only 
   process.env.VERENU_DEV_SEED_DIR = seed;
   let session, browser;
   try {
-    session = await startOwnedSession({ id: `t3-audio-${randomUUID()}`, directory, synthetic: false });
+    const fixtures = path.join(directory, 'audio');
+    const generated = await run(process.execPath, ['scripts/dev-audio-fixtures.mjs', '--out', fixtures], { directory, name: 'audio-fixtures', timeout: 120_000 });
+    assert.equal(generated.status, 'passed', 'Synthetic audio generation failed');
+    session = await startOwnedSession({ id: `t3-audio-${randomUUID()}`, directory, fixtures, synthetic: false });
     const base = new URL(session.access.localAccessUrl).origin;
     const request = (route, init = {}) => fetch(`${base}/__verenu_dev${route}`, { ...init, headers: { Authorization: `Bearer ${session.access.token}`, ...init.headers }, signal: AbortSignal.timeout(120_000) });
     const invoke = async (command, args = {}) => {
@@ -54,7 +58,9 @@ test('provided audio captures shared T3 skills without workspace selection only 
     const provider = { id, name: 'Public skill regression', protocol: 'openai', base_url: `http://127.0.0.1:${server.address().port}/v1`, requires_key: false, supports_transcription: true, supports_cleanup: true, auth_header: null, extra_headers: {}, body_overrides: null, transcription_models: ['public-speech'], cleanup_models: ['public-cleanup'] };
     for (const [key, value] of Object.entries({ custom_providers: [provider], transcription_default_model: `${id}/public-speech`, cleanup_default_model: `${id}/public-cleanup`, transcription_fallback_models: [], cleanup_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, cleanup_cache_enabled: false })) await invoke('save_setting', { key, value });
     const context = await invoke('create_context', { name: 'Public skill regression', tone: 'very_casual', cleanupIntensity: 'medium', contextualFormattingDisabled: true });
-    const audio = await fs.readFile(path.join(os.homedir(), '.cache/verenu/test-audio/plain.wav'));
+    const fixture = await request('/fixtures/plain.wav');
+    assert.equal(fixture.status, 200);
+    const audio = Buffer.from(await fixture.arrayBuffer());
     const status = await invoke('get_t3_skills');
     assert.equal(status.connection.selectedCatalog, null);
     assert.deepEqual(status.skills.map(skill => skill.name), ['babysit-pr', 'pr-babysit', 'skill-designer']);
