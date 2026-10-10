@@ -77,6 +77,7 @@
     "macOS": {
       "bundleName": "Verenu",
       "minimumSystemVersion": "11.0",
+      "frameworks": ["native/macos/swift-runtime/libswift_Concurrency.dylib"],
       "entitlements": "Entitlements.plist"
     },
     "android": {

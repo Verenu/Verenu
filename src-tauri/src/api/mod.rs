@@ -1,3 +1,4 @@
+pub mod apple_intelligence;
 pub mod auto_learn;
 pub mod base64_audio;
 pub mod cleanup;
@@ -26,6 +27,7 @@ pub enum ProviderId {
     OpenRouter,
     Xai,
     Local,
+    AppleIntelligence,
 }
 
 /// Largest provider response Verenu will read from a custom endpoint.
@@ -170,6 +172,7 @@ impl Target {
 /// provider can mix adapters (xAI chats like OpenAI but transcribes its own way).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CleanupAdapter {
+    AppleIntelligence,
     OpenAiChat { url: &'static str },
     Gemini,
     Unsupported,
@@ -204,6 +207,7 @@ impl ProviderId {
             "openrouter" => Self::OpenRouter,
             "xai" => Self::Xai,
             "local" => Self::Local,
+            "apple-intelligence" => Self::AppleIntelligence,
             _ => Self::Groq,
         }
     }
@@ -217,6 +221,7 @@ impl ProviderId {
             Self::OpenRouter => "openrouter",
             Self::Xai => "xai",
             Self::Local => "local",
+            Self::AppleIntelligence => "apple-intelligence",
         }
     }
 
@@ -229,6 +234,7 @@ impl ProviderId {
             Self::OpenRouter => "OpenRouter",
             Self::Xai => "xAI",
             Self::Local => "Local",
+            Self::AppleIntelligence => "Apple Intelligence",
         }
     }
 
@@ -247,6 +253,7 @@ impl ProviderId {
                 url: "https://api.x.ai/v1/chat/completions",
             },
             Self::Google => CleanupAdapter::Gemini,
+            Self::AppleIntelligence => CleanupAdapter::AppleIntelligence,
             Self::AssemblyAi | Self::Local => CleanupAdapter::Unsupported,
         }
     }
@@ -267,7 +274,7 @@ impl ProviderId {
             },
             Self::Google => TranscriptionAdapter::Gemini,
             Self::AssemblyAi => TranscriptionAdapter::AssemblyAi,
-            Self::Local => TranscriptionAdapter::Unsupported,
+            Self::Local | Self::AppleIntelligence => TranscriptionAdapter::Unsupported,
         }
     }
 }

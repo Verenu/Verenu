@@ -398,6 +398,7 @@ fn allowed(command: &str) -> bool {
             | "get_api_key_status"
             | "list_provider_models"
             | "get_provider_model_catalog"
+            | "get_apple_intelligence_availability"
             | "get_recent"
             | "get_history_apps"
             | "get_stats"

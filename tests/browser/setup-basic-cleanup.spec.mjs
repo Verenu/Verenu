@@ -1,10 +1,23 @@
 import { test, expect } from './fixtures.mjs';
+import path from 'node:path';
+
+async function captureSetupState(page, name) {
+  // Wait for the existing finite wizard transitions rather than capturing
+  // outgoing and incoming steps overlaid. This changes no interaction budget.
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations()
+      .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
+      .map(animation => animation.finished.catch(() => {})));
+  });
+  await page.screenshot({ path: path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), name) });
+}
 
 // Regression: a transcription-only preset chosen in setup must not turn Basic
 // cleanup off. Only the frontend downloaded-model inventory is a fixture;
 // settings writes and the protected-setting boundary use the real backend.
 // This does not verify local model downloads or inference.
-test('Setup keeps Basic cleanup on after a transcription-only preset', async ({ page, session }) => {
+for (const priorAppleChoice of [false, true]) {
+test(`Setup keeps Basic cleanup on after a transcription-only preset${priorAppleChoice ? ' and an unavailable Apple choice' : ''}`, async ({ page, session }, testInfo) => {
   const previous = await session.invoke('get_all_settings');
   previous.cleanup_intensity = await session.invoke('get_setting', { key: 'cleanup_intensity' });
   previous.default_tone = await session.invoke('get_setting', { key: 'default_tone' });
@@ -32,13 +45,51 @@ test('Setup keeps Basic cleanup on after a transcription-only preset', async ({ 
       localSttStore.models = models.map(model => ({ ...model, is_downloaded: true, is_downloading: false }));
     });
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeEnabled();
+    if (priorAppleChoice) {
+      // Presentation eligibility only: this does not establish Mac support.
+      await page.evaluate(async () => {
+        const { appleIntelligence, refreshAppleIntelligence } = await import('/src/lib/appleIntelligence.svelte.ts');
+        await refreshAppleIntelligence();
+        appleIntelligence.status = { state: 'available', available: true, message: 'Synthetic setup fixture' };
+      });
+      await page.getByRole('switch', { name: 'Clean up with Apple Intelligence', exact: true }).click();
+    }
     await page.getByRole('button', { name: 'Use local Transcription only' }).click();
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: 'Next', exact: true }).click();
 
     await page.getByRole('button', { name: /^Basic / }).click();
     await expect(page.getByRole('button', { name: /^Basic / })).toHaveAttribute('aria-pressed', 'true');
+    let appleRefreshCalls = 0;
+    if (priorAppleChoice) {
+      await page.evaluate(async () => {
+        (await import('/src/lib/appleIntelligence.svelte.ts')).appleIntelligence.status = {
+          state: 'intelligence-disabled', available: false, message: 'Synthetic fixture: unavailable after Basic choice',
+        };
+      });
+      await page.route('**/__verenu_dev/invoke', async route => {
+        if (route.request().postDataJSON()?.command !== 'get_apple_intelligence_availability') return route.continue();
+        appleRefreshCalls++;
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          state: 'intelligence-disabled', available: false, message: 'Synthetic fixture: unavailable',
+        }) });
+      });
+    }
 
+    if (priorAppleChoice) {
+      // Ready Basic deliberately has no recovery action on Done. Review the
+      // earlier Models step through the wizard's normal progress navigation.
+      await page.getByRole('button', { name: 'Step 4', exact: true }).click();
+      await page.evaluate(async () => {
+        await (await import('/src/lib/appleIntelligence.svelte.ts')).refreshAppleIntelligence();
+        const { localSttStore } = await import('/src/lib/localSttStore.svelte.ts');
+        const { invoke } = await import('/src/lib/tauri.ts');
+        localSttStore.models = (await invoke('list_local_stt_models')).map(model => ({ ...model, is_downloaded: true, is_downloading: false }));
+      });
+      await expect(page.getByText('Basic cleanup runs on this device, so Apple Intelligence is not used.', { exact: false })).toBeVisible();
+      await expect(page.getByText('Setup cannot finish', { exact: false })).toHaveCount(0);
+      await captureSetupState(page, `basic-apple-models-${testInfo.project.name}.png`);
+    }
     // Basic and voice commands are gated on cleanup_enabled, so the wizard must
     // summarise Basic rather than reporting cleanup as off.
     for (let i = 0; i < 6 && !(await page.getByText('Finish setup', { exact: true }).isVisible()); i++) {
@@ -47,6 +98,8 @@ test('Setup keeps Basic cleanup on after a transcription-only preset', async ({ 
     await expect(page.getByText('Finish setup', { exact: true })).toBeVisible();
     await expect(page.getByText('Basic cleanup · No AI tone', { exact: true })).toBeVisible();
     await expect(page.getByText('Cleanup off', { exact: true })).toHaveCount(0);
+    const refreshCallsBeforeFinish = appleRefreshCalls;
+    await captureSetupState(page, `basic-apple-done-before-${priorAppleChoice}-${testInfo.project.name}.png`);
     const protectedSetting = page.waitForResponse(response => {
       if (!response.url().endsWith('/__verenu_dev/invoke')) return false;
       const payload = response.request().postDataJSON();
@@ -58,6 +111,11 @@ test('Setup keeps Basic cleanup on after a transcription-only preset', async ({ 
     await expect.poll(async () => (await session.invoke('get_all_settings')).cleanup_enabled).toBe(true);
     expect(await session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('rules');
     expect(await session.invoke('get_setting', { key: 'setup_complete' })).toBe(false);
+    if (priorAppleChoice) {
+      expect(appleRefreshCalls).toBe(refreshCallsBeforeFinish);
+      expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).not.toBe('apple-intelligence/system');
+    }
+    await captureSetupState(page, `basic-apple-done-after-${priorAppleChoice}-${testInfo.project.name}.png`);
   } finally {
     for (const key of [
       'setup_progress', 'setup_complete', 'cleanup_intensity', 'default_tone', 'cleanup_enabled',
@@ -69,3 +127,4 @@ test('Setup keeps Basic cleanup on after a transcription-only preset', async ({ 
     await page.reload();
   }
 });
+}

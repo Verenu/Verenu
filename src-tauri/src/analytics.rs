@@ -1467,7 +1467,15 @@ fn parse_safe_provider_model(value: &str) -> Option<(&'static str, &'static str)
         .map_or(first, |(_, value)| value.trim());
     let (provider, model) = first.split_once('/')?;
     let provider = normalize_provider(provider);
-    (provider != "unknown").then_some((provider, normalize_model_family(model)))
+    let model = if provider == "apple-intelligence" {
+        match model {
+            "system" => "apple_system",
+            _ => "unknown",
+        }
+    } else {
+        normalize_model_family(model)
+    };
+    (provider != "unknown").then_some((provider, model))
 }
 
 // Return static allowlisted literals rather than caller-owned text.
@@ -1494,10 +1502,14 @@ macro_rules! category_allowlist {
 }
 
 category_allowlist! { normalize_provider, "unknown";
-    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" | "local"
+    "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" | "local" | "apple-intelligence"
 }
 
 fn normalize_model_family(value: &str) -> &'static str {
+    // Preserve the fixed family when outbound properties are sanitized again.
+    if value == "apple_system" {
+        return "apple_system";
+    }
     let value = value.to_ascii_lowercase();
     if value.starts_with("whisper-") || value.contains("whisper") {
         match value.as_str() {
@@ -1570,7 +1582,7 @@ category_allowlist! { normalize_context_result, "unknown";
 fn normalize_category(value: &str) -> &'static str {
     match value {
         "groq" | "openai" | "google" | "assemblyai" | "openrouter" | "xai" => "cloud",
-        "local" => "local",
+        "local" | "apple-intelligence" => "local",
         "none" => "none",
         "rules" => "rules",
         "light" => "light",
@@ -1915,6 +1927,49 @@ mod tests {
         );
         assert!(analytics.dictation_runs.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apple_cleanup_metadata_stays_bounded_through_sanitization() {
+        assert_eq!(
+            parse_safe_provider_model("apple-intelligence/system"),
+            Some(("apple-intelligence", "apple_system"))
+        );
+        assert_eq!(normalize_category("apple-intelligence"), "local");
+        let mut properties =
+            json!({"pipeline_stage": "cleanup", "private_text": "PRIVATE_SENTINEL"});
+        add_model_properties(&mut properties, Some("apple-intelligence/system"));
+        let safe = safe_properties("pipeline_stage_completed", properties);
+        assert_eq!(safe["provider"], "apple-intelligence");
+        assert_eq!(safe["model"], "apple_system");
+        assert!(!safe.to_string().contains("PRIVATE_SENTINEL"));
+        assert_eq!(
+            safe_properties("pipeline_stage_completed", safe.clone()),
+            safe
+        );
+        for model in ["system/private", "SYSTEM", "gemini-private"] {
+            assert_eq!(
+                parse_safe_provider_model(&format!("apple-intelligence/{model}")),
+                Some(("apple-intelligence", "unknown"))
+            );
+        }
+        // The existing primary-description parser rejects query-bearing input.
+        assert_eq!(
+            parse_safe_provider_model("apple-intelligence/system?token=PRIVATE_SENTINEL"),
+            None
+        );
+        for provider in [
+            "apple-intelligence-private",
+            "Apple-Intelligence",
+            "apple-intelligence?token=PRIVATE_SENTINEL",
+        ] {
+            assert_eq!(
+                parse_safe_provider_model(&format!("{provider}/system")),
+                None
+            );
+            assert_eq!(normalize_category(provider), "unknown");
+        }
+        assert_eq!(normalize_model_family("system"), "unknown");
     }
 
     #[test]
