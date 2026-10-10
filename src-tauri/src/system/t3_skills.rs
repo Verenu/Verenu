@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MIN_T3_VERSION: &str = "0.46";
 pub const MAX_SKILLS: usize = 2_000;
@@ -258,44 +258,29 @@ impl Catalog {
             .collect();
         let selected = if full.len() <= PROMPT_BUDGET {
             full
-        } else if !exact_names.is_empty() {
-            // Preserve fully spoken identifiers before broad shared-word
-            // candidates. A large catalog can contain more common-word names
-            // than the budget permits even though the exact request is clear.
-            let exact = serde_json::to_string(&exact_names).ok()?;
-            if exact.len() > PROMPT_BUDGET {
-                return None;
-            }
-            exact
         } else {
-            let words: HashSet<_> = raw
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|word| word.len() > 2)
-                .map(str::to_lowercase)
+            let exact: HashSet<_> = exact_names.iter().map(String::as_str).collect();
+            let unique_partial = self.unique_partial_matches(&spoken_words);
+            let candidates: Vec<_> = self
+                .skills
+                .iter()
+                .enumerate()
+                .filter(|(index, skill)| {
+                    let name = format!("${}", skill.name);
+                    exact.contains(name.as_str()) || unique_partial[*index]
+                })
+                .map(|(_, skill)| format!("${}", skill.name))
                 .collect();
-            let mut candidates = Vec::new();
-            let mut bytes = 2;
-            for name in &names {
-                let haystack = name.to_lowercase();
-                if !haystack
-                    .split(|c: char| !c.is_alphanumeric())
-                    .any(|word| words.contains(word))
-                {
-                    continue;
-                }
-                let size = serde_json::to_string(name).ok()?.len() + 1;
-                // Never truncate candidates to an arbitrary winner; ambiguity
-                // beyond the budget disables resolution for this utterance.
-                if bytes + size > PROMPT_BUDGET {
-                    return None;
-                }
-                bytes += size;
-                candidates.push(name);
-            }
             if candidates.is_empty() {
                 return None;
             }
-            serde_json::to_string(&candidates).ok()?
+            let selected = serde_json::to_string(&candidates).ok()?;
+            // Keep every exact and uniquely resolvable partial name; never
+            // truncate to an arbitrary winner if those requests exceed budget.
+            if selected.len() > PROMPT_BUDGET {
+                return None;
+            }
+            selected
         };
         let rules = if exact_names.is_empty() {
             RESOLUTION_RULE.to_string()
@@ -326,24 +311,80 @@ impl Catalog {
             {
                 return true;
             }
-            let partial: Vec<_> = words
-                .iter()
-                .filter(|word| spoken_words.contains(word))
-                .collect();
             // A model can ignore the ambiguity instruction. Never deliver its
             // guessed identifier when the same spoken name words fit siblings.
-            !partial.is_empty()
-                && self
-                    .skills
-                    .iter()
-                    .filter(|candidate| {
-                        let candidate_words = matching_words(&candidate.name);
-                        partial.iter().all(|word| candidate_words.contains(word))
-                    })
-                    .take(2)
-                    .count()
-                    == 1
+            self.has_unique_partial_match(&skill.name, &spoken_words)
         })
+    }
+
+    fn has_unique_partial_match(&self, name: &str, spoken_words: &[String]) -> bool {
+        let words = matching_words(name);
+        let partial: Vec<_> = words
+            .iter()
+            .filter(|word| spoken_words.contains(word))
+            .collect();
+        !partial.is_empty()
+            && self
+                .skills
+                .iter()
+                .filter(|candidate| {
+                    let candidate_words = matching_words(&candidate.name);
+                    partial.iter().all(|word| candidate_words.contains(word))
+                })
+                .take(2)
+                .count()
+                == 1
+    }
+
+    fn unique_partial_matches(&self, spoken_words: &[String]) -> Vec<bool> {
+        let spoken: HashSet<_> = spoken_words.iter().map(String::as_str).collect();
+        let skill_words: Vec<_> = self
+            .skills
+            .iter()
+            .map(|skill| matching_words(&skill.name))
+            .collect();
+        let mut postings = HashMap::<String, Vec<usize>>::new();
+        for (index, words) in skill_words.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for word in words {
+                if seen.insert(word.as_str()) {
+                    postings.entry(word.clone()).or_default().push(index);
+                }
+            }
+        }
+
+        skill_words
+            .iter()
+            .map(|words| {
+                let partial: Vec<_> = words
+                    .iter()
+                    .filter(|word| spoken.contains(word.as_str()))
+                    .collect();
+                let Some(rarest) = partial
+                    .iter()
+                    .min_by_key(|word| postings.get(word.as_str()).map_or(0, Vec::len))
+                else {
+                    return false;
+                };
+                let Some(candidates) = postings.get(rarest.as_str()) else {
+                    return false;
+                };
+                let mut matches = 0;
+                for candidate in candidates {
+                    if partial.iter().all(|word| {
+                        skill_words[*candidate]
+                            .iter()
+                            .any(|candidate_word| candidate_word == *word)
+                    }) {
+                        matches += 1;
+                        if matches > 1 {
+                            return false;
+                        }
+                    }
+                }
+                matches == 1
+            })
+            .collect()
     }
 }
 
@@ -355,14 +396,18 @@ fn matching_words(text: &str) -> Vec<String> {
 }
 
 fn skill_tokens(text: &str) -> Vec<&str> {
-    text.split_whitespace()
-        .filter_map(|word| word.strip_prefix('$'))
-        .map(|word| {
-            word.trim_end_matches(|c: char| {
-                !c.is_ascii_alphanumeric() && !matches!(c, ':' | '_' | '-')
-            })
+    text.match_indices('$')
+        .filter_map(|(index, _)| {
+            if index > 0 && text.as_bytes()[index - 1] == b'$' {
+                return None;
+            }
+            let rest = &text[index + 1..];
+            let length = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, ':' | '_' | '-'))
+                .unwrap_or(rest.len());
+            let name = &rest[..length];
+            valid_name(name).then_some(name)
         })
-        .filter(|name| valid_name(name))
         .collect()
 }
 
