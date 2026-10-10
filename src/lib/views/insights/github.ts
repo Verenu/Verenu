@@ -27,6 +27,21 @@ export function activityDescription(count: number | null | undefined, snapshot: 
   return snapshot.complete ? label : `${label} (partial results)`;
 }
 
+export function activityRangeDescription(
+  count: number | null | undefined,
+  aligned: Array<number | null>,
+  snapshot: GithubSnapshot,
+): string {
+  const description = activityDescription(count, snapshot);
+  if (count === null || count === undefined) return `${description} in the selected dates`;
+
+  const fullCoverage = snapshot.complete && aligned.length > 0 && aligned.every(day => day !== null);
+  if (fullCoverage) return `${description} in the selected dates`;
+
+  const hasUnknownDates = aligned.some(day => day === null);
+  return `${description} across covered dates${hasUnknownDates ? '; other selected dates are unknown' : ''}`;
+}
+
 function fmtActivityCount(count: number, noun: string): string {
   return `${new Intl.NumberFormat().format(count)} ${noun}${count === 1 ? '' : 's'}`;
 }

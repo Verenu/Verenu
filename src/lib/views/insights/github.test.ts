@@ -3,6 +3,7 @@ import {
   activityDescription,
   activityLabel,
   activityPath,
+  activityRangeDescription,
   alignActivity,
   type GithubSnapshot,
 } from './github';
@@ -45,6 +46,23 @@ describe('GitHub activity coverage', () => {
     const fallback = { ...snapshot, source: 'public_commits' as const };
     expect(activityLabel(fallback)).toBe('Public commits');
     expect(activityDescription(1, fallback)).toBe('1 public commit');
+  });
+
+  it('does not claim an exact selected-range total when cached coverage is shorter', () => {
+    const stale: GithubSnapshot = {
+      ...snapshot,
+      end_day: '2026-10-02',
+      daily: [
+        { day: '2026-10-01', commits: 0 },
+        { day: '2026-10-02', commits: 8 },
+      ],
+    };
+    const selectedRange = alignActivity(daily, stale);
+    expect(selectedRange).toEqual([null, 0, 8, null]);
+    expect(activityRangeDescription(8, selectedRange, stale)).toBe(
+      '8 contributions across covered dates; other selected dates are unknown',
+    );
+    expect(activityRangeDescription(8, [0, 8], stale)).toBe('8 contributions in the selected dates');
   });
 
   it('breaks the smooth line across unknown dates', () => {

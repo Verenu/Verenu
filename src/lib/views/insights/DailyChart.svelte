@@ -6,7 +6,7 @@
   import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
-  import { activityDescription, activityLabel, activitySourceInfo, alignActivity, activityPath, type GithubSnapshot } from './github';
+  import { activityDescription, activityLabel, activityRangeDescription, activitySourceInfo, alignActivity, activityPath, type GithubSnapshot } from './github';
 
   let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
 
@@ -181,7 +181,7 @@
   <div
     class="plot"
     role="img"
-    aria-label={summary + (github ? ` ${describeActivity(knownActivityTotal)} in the selected dates. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
+    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
     tabindex={github ? 0 : undefined}
     onkeydown={onKey}
     onblur={() => { hover = null; }}
