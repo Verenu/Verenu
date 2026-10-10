@@ -282,13 +282,27 @@ pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
     }
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
-    settings.set(store::T3_CONNECTION, serde_json::Value::Null)?;
-    settings.save()?;
-    run_blocking("delete_t3_credential", || {
-        crate::data::credentials::delete(store::T3_INTEGRATION)
+    let transaction_settings = settings.clone();
+    run_blocking("delete_t3_credential", move || {
+        commit_disconnect(&transaction_settings, || {
+            crate::data::credentials::delete(store::T3_INTEGRATION)
+        })
     })
     .await?;
     Ok(status(&settings.snapshot()?))
+}
+
+fn commit_disconnect(
+    settings: &store::SettingsHandle,
+    delete_credential: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    settings
+        .save_values_with_commit(
+            [(store::T3_CONNECTION, serde_json::Value::Null)],
+            |_| Ok(()),
+            delete_credential,
+        )
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -422,5 +436,46 @@ mod tests {
         let mut invalid = sample();
         invalid.catalogs[0].skills[0].name = "invalid name".into();
         assert!(captured_catalog(&snapshot(&invalid)).is_none());
+    }
+
+    #[test]
+    fn t3_disconnect_keeps_connection_and_cached_skills_when_credential_delete_fails() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_t3_disconnect_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let previous = serde_json::to_value(sample()).unwrap();
+        settings
+            .save_value(store::T3_CONNECTION, previous.clone())
+            .unwrap();
+        let previous_bytes = std::fs::read(&path).unwrap();
+
+        let error = commit_disconnect(&settings, || {
+            Err("Synthetic credential deletion failure.".into())
+        })
+        .unwrap_err();
+
+        assert_eq!(error, "Synthetic credential deletion failure.");
+        assert_eq!(settings.get(store::T3_CONNECTION), Some(previous.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), previous_bytes);
+        assert_eq!(
+            captured_catalog(&settings.snapshot().unwrap())
+                .unwrap()
+                .skills[0]
+                .name,
+            "babysit-pr"
+        );
+
+        commit_disconnect(&settings, || Ok(())).unwrap();
+        assert_eq!(
+            settings.get(store::T3_CONNECTION),
+            Some(serde_json::Value::Null)
+        );
+        assert!(captured_catalog(&settings.snapshot().unwrap()).is_none());
+        let _ = std::fs::remove_file(path);
     }
 }

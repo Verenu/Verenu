@@ -301,6 +301,8 @@ impl Catalog {
         }
         // Metadata stays local for browsing. Sending identifiers alone avoids
         // common description words consuming the whole matching budget.
+        // Keep the complete compact list available for implicit skill requests;
+        // the caller limits it to opted-in T3 cleanup and skips pure snippets.
         let names: Vec<_> = self
             .skills
             .iter()

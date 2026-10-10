@@ -8,6 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { sourceIdentity } from './verification/identity.mjs';
 import { syncBuildIdentityFile } from './verification/build-identity.mjs';
+import { cargoTargetDirectory } from './verification/session.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -166,7 +167,7 @@ async function start() {
     }
     const maxRuns = Number(option('--max-runs', '30'));
     if (!Number.isSafeInteger(maxRuns) || maxRuns < 0 || maxRuns > 10000) throw new Error('--max-runs must be an integer from 0 to 10000');
-    const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target') };
+    const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: cargoTargetDirectory(process.env) };
     env.VERENU_BUILD_FINGERPRINT = identity.fingerprint;
     env.VERENU_BUILD_FINGERPRINT_FILE = buildIdentityFile;
     env.VERENU_DEV_WORKTREE = identity.worktree;
