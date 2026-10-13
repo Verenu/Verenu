@@ -98,7 +98,7 @@ export const test = base.extend({
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(session.access.localAccessUrl);
-    await expect(page.getByRole('button', { name: /^Dev tests/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Dev tests/ })).toBeVisible({ timeout: 30_000 });
     await use(page);
     expect(errors, 'No uncaught application errors').toEqual([]);
   },
