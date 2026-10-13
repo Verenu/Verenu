@@ -5975,7 +5975,6 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-wry"
 version = "2.11.4"
-source = "git+https://github.com/tauri-apps/tauri.git?rev=5a882eccfda53a189ec076c79c4ad186f50db5ff#5a882eccfda53a189ec076c79c4ad186f50db5ff"
 dependencies = [
  "gtk",
  "http",

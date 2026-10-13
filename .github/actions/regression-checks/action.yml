@@ -43,6 +43,9 @@ runs:
       run: |
         cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
         cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
+    - name: Stress native runtime handle ownership
+      shell: bash
+      run: dbus-run-session -- xvfb-run -a cargo run --manifest-path src-tauri/Cargo.toml --example runtime-handle-stress
     - name: Run every owned-session and browser regression
       shell: bash
       env:
