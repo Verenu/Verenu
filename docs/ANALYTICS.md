@@ -174,7 +174,7 @@ known pipeline provider string.
 from the successfully processed dictation. It is a coarse output-size metric,
 not text, and is never computed remotely or sent with the source string.
 
-Settings properties are only the approved booleans `cleanup_enabled`,
+Settings properties are only the approved booleans `cleanup_enabled`, `voice_commands_enabled`,
 `dual_transcription_enabled`, `noise_reduction`, `mute_audio`, `exclusive_mic`,
 `pause_media`, `sound_effects`, `auto_learn_enabled`,
 `contextual_formatting`, `contextual_caps`, `auto_spacing`, and
@@ -182,7 +182,7 @@ Settings properties are only the approved booleans `cleanup_enabled`,
 `cleanup_provider`, `cleanup_intensity`, `history_retention`, and
 `local_model_memory_policy`. Unknown category values become `unknown`.
 `context_group_count` is clamped to 0-200 and excludes the built-in Everywhere
-context. `feature_breadth` is a 0-9 count of meaningful capabilities: cleanup,
+context. `feature_breadth` is a 0-10 count of meaningful capabilities: cleanup, voice commands,
 contexts, auto-learn, dual transcription, local models, contextual formatting,
 noise reduction, mute-button dictation, and sync. Neither field contains names
 or content.
