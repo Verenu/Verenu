@@ -37,6 +37,7 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+scraper     = "0.24"
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util", "fs"] }
 # OpenSSL cannot be cross-compiled from the NDK as part of a normal Tauri
 # build. Keep the desktop native-tls path, but use rustls on Android.
