@@ -3,7 +3,7 @@ import { test, expect } from './fixtures.mjs';
 // Regression: progress dots stay clickable while a step slides, and a click in
 // that window used to be dropped. It must land on the requested step once the
 // slide ends, in both motion modes, by pointer and by keyboard (Enter and Space).
-// The pointer click runs in the same task as Next. A keyboard user's focus first
+// A keyboard user's focus first
 // moves into the incoming step (Setup's landing focus: its heading, else its first
 // control, in a new .step-wrap), so the keyboard cases focus the dot only after
 // that, still mid-slide, and record the real key's origin. Focus left on the
@@ -25,28 +25,25 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
 
         const keyboard = mode !== 'pointer';
-        // Click Next and, in the same task, the earlier dot (pointer). For the
-        // keyboard, wait for landing focus to settle on the new step, then focus
-        // the dot while the slide is still running.
-        const early = await page.evaluate(async (keyboard) => {
+        const outgoing = await page.locator('.step-wrap:not([inert])').elementHandle();
+        // Keep the transition open across automation round trips. Wall-clock
+        // scheduling on a busy runner must not decide whether input was early.
+        await page.clock.install();
+        await page.clock.pauseAt(new Date());
+        await page.getByRole('button', { name: 'Next', exact: true }).evaluate(button => button.click());
+        await page.clock.runFor(50);
+        // Landing focus has settled, but the paused clock keeps the transition
+        // running while pointer or trusted keyboard input reaches the dot.
+        const early = await page.evaluate(({ keyboard, outgoing }) => {
           const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Next');
           const dot = document.querySelector('button[aria-label="Step 5"]');
-          const outgoing = document.querySelector('.step-wrap');
-          button.click();
-          await new Promise(requestAnimationFrame);
           const result = { slidingAfterNext: button.disabled, landingFocusSettled: false, slidingAtDotFocus: false, dotFocused: false };
           if (!keyboard) {
             dot.click();
             return result;
           }
-          for (let frame = 0; frame < 20 && button.disabled; frame++) {
-            const landed = document.activeElement?.closest('.step-wrap');
-            if (landed && landed !== outgoing) {
-              result.landingFocusSettled = true;
-              break;
-            }
-            await new Promise(requestAnimationFrame);
-          }
+          const landed = document.activeElement?.closest('.step-wrap');
+          result.landingFocusSettled = !!landed && landed !== outgoing;
           if (!result.landingFocusSettled) return result;
           dot.focus();
           result.slidingAtDotFocus = button.disabled;
@@ -58,7 +55,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
           });
           for (const type of ['keydown', 'keyup', 'click']) dot.addEventListener(type, record, { capture: true });
           return result;
-        }, keyboard);
+        }, { keyboard, outgoing });
         expect(early.slidingAfterNext).toBe(true);
         if (keyboard) {
           expect(early.landingFocusSettled).toBe(true);
@@ -77,6 +74,8 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
           expect(clicks[0]).toMatchObject({ trusted: true, detail: 0, nextDisabled: true, onDot: true });
         }
 
+        await page.clock.runFor(1000);
+        await page.clock.resume();
         await expect(label(5)).toBeVisible();
         await expect(page.getByRole('button', { name: 'Step 5', exact: true })).toHaveAttribute('aria-current', 'step');
         // The queued request ends the transition cleanly: navigation works again.
@@ -84,6 +83,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         await page.getByRole('button', { name: 'Next', exact: true }).click();
         await expect(label(6)).toBeVisible();
       } finally {
+        await page.clock.resume();
         await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
         await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
         await page.emulateMedia({ reducedMotion: null });
