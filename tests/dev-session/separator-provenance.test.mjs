@@ -16,5 +16,6 @@ test('Basic preserves literal separators and distinguishes spoken punctuation', 
     [true, 'abcdefgh comma scratch that foo; um, continue', 'Foo; continue'],
     [true, 'We live in the U.S. full stop change this scratch that tomorrow', 'We live in the U.S. Tomorrow'],
     [true, 'call Dr full stop um tomorrow', 'call Dr. Tomorrow'],
+    [true, 'call Dr. um full stop um tomorrow', 'call Dr. Tomorrow'],
   ]);
 });

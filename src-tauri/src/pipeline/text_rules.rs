@@ -264,6 +264,12 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     } else {
         let previous = &mut words[i - 1];
         let before = &mut previous.after;
+        if ends_sentence && terminal(before) {
+            // Keep the retained terminator, including abbreviation periods,
+            // but carry the explicit sentence boundary across this filler.
+            previous.after_dictated |= after_dictated;
+            previous.after_dictated_terminal |= after_dictated_terminal;
+        }
         if after.contains([')', ']', '}']) {
             *before = before.trim_end_matches([' ', '\t']).to_owned()
                 + after.trim_start_matches([' ', '\t']);
@@ -824,6 +830,8 @@ mod tests {
         }
         assert_eq!(process("call Dr full stop um tomorrow", true, true, &[]), "call Dr. Tomorrow");
         assert_eq!(process("call Dr full stop um um tomorrow", true, true, &[]), "call Dr. Tomorrow");
+        assert_eq!(process("call Dr. um full stop um tomorrow", true, true, &[]), "call Dr. Tomorrow");
+        assert_eq!(process("yes full stop um full stop comma new paragraph tomorrow", true, true, &[]), "yes.\n\nTomorrow");
         assert_eq!(process("call Dr comma um tomorrow", true, true, &[]), "call Dr, tomorrow");
         assert_eq!(process("call Dr. um tomorrow", true, true, &[]), "call Dr. tomorrow");
     }
