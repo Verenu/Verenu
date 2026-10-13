@@ -167,7 +167,7 @@
     <div>
       <h1 class="page-h">Insights</h1>
       {#if !isAndroid}
-        <p class="page-sub">How much you dictate, how fast, and what it costs. Dictation statistics are computed locally. Optionally compare your public GitHub commits.</p>
+        <p class="page-sub">How much you dictate, how fast, and what it costs. Dictation statistics are computed locally. Optionally compare GitHub contributions.</p>
       {/if}
     </div>
 
@@ -253,7 +253,7 @@
 
   {#if githubState.username}
     <div class="github-status">
-      <span>{githubState.loading ? 'Refreshing GitHub commits…' : github ? 'GitHub commits update automatically' : 'GitHub commits unavailable'}</span>
+      <span>{githubState.loading ? 'Refreshing GitHub activity…' : github?.source === 'public_commits' ? 'Showing public commit search results' : github ? 'GitHub contributions update automatically' : 'GitHub activity unavailable'}</span>
       <button class="btn-ghost btn-compact" onclick={() => { appStore.settingsSection = 'integrations'; appStore.settingsOpen = true; }}>Manage in Settings</button>
     </div>
     {#if github?.warning || githubState.error}<p class="github-warning" role="status">{github?.warning || githubState.error}</p>{/if}

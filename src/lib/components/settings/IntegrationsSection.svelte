@@ -61,7 +61,7 @@
 <section class="github-integration" aria-label="GitHub integration" data-setting-target="github-integration">
   <header class="service-head">
     <div class="service-icon" aria-hidden="true"><img class="github-light" src={githubLight} alt="" /><img class="github-dark" src={githubDark} alt="" /></div>
-    <div class="service-title"><h3>GitHub</h3><p>Compare public commits with your dictated words.</p></div>
+    <div class="service-title"><h3>GitHub</h3><p>Compare contributions such as commits, pull requests, and reviews with your dictated words.</p></div>
     {#if connected}<span class="connection-state" class:attention={!!githubState.error}>{githubState.loading ? 'Updating' : githubState.error ? 'Needs attention' : 'Connected'}</span>{/if}
   </header>
 
@@ -97,10 +97,10 @@
 
   {#if error || githubState.error}<p class="connection-error" role="alert">{error || githubState.error}</p>{/if}
   {#if githubState.snapshot}
-    <p class="refresh-meta" role="status">{githubState.loading ? 'Refreshing commits…' : `Last updated ${new Date(githubState.snapshot.fetched_at * 1000).toLocaleString()}`}</p>
+    <p class="refresh-meta" role="status">{githubState.loading ? 'Refreshing GitHub activity…' : `Last updated ${new Date(githubState.snapshot.fetched_at * 1000).toLocaleString()}`}</p>
     {#if githubState.snapshot.warning}<p class="connection-note" role="status">{githubState.snapshot.warning}</p>{/if}
   {/if}
-  <p id="github-privacy" class="privacy-note">Public commits on repository default branches, covering the last 90 days. Your dictated text stays on this device.</p>
+  <p id="github-privacy" class="privacy-note">Verenu reads GitHub's public contribution calendar without signing in. It can include anonymized private counts only if Show private contributions is enabled on your profile. If the calendar cannot be read, Insights falls back to public commit search, which can miss activity and is limited to 1,000 results. Your dictated text stays on this device.</p>
 </section>
 
 <style>
