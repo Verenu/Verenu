@@ -19,6 +19,7 @@ struct Word {
     text: String,
     key: String,
     after: String,
+    after_dictated: bool,
     may_destutter: bool,
 }
 
@@ -26,18 +27,19 @@ fn word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '\'' | '’' | '-')
 }
 
-fn tokenize(text: &str) -> (String, Vec<Word>) {
+fn tokenize(text: &str, dictated: &[usize]) -> (String, Vec<Word>) {
     let mut leading = String::new();
     let mut words: Vec<Word> = Vec::new();
     let mut in_word = false;
     // Graphemes keep combining marks attached to their Unicode base letter.
-    for g in text.graphemes(true) {
+    for (offset, g) in text.grapheme_indices(true) {
         if g.chars().next().is_some_and(word_char) {
             if !in_word {
                 words.push(Word {
                     text: String::new(),
                     key: String::new(),
                     after: String::new(),
+                    after_dictated: false,
                     may_destutter: false,
                 });
             }
@@ -49,6 +51,7 @@ fn tokenize(text: &str) -> (String, Vec<Word>) {
             in_word = false;
             if let Some(word) = words.last_mut() {
                 word.after.push_str(g);
+                word.after_dictated |= dictated.binary_search(&offset).is_ok();
             } else {
                 leading.push_str(g);
             }
@@ -191,19 +194,23 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
     }
 }
 
-fn retain_nonterminal_punctuation(before: &mut String, after: &str) {
+fn retain_nonterminal_punctuation(before: &mut String, after: &str, dictated: bool) -> bool {
     // Dictated punctuation can replace an existing nonterminal separator.
     // Sentence endings and line breaks remain boundaries of retained speech.
-    if before.chars().all(|c| matches!(c, ' ' | '\t' | ',' | ';' | ':')) {
+    if before.chars().all(|c| matches!(c, ' ' | '\t' | ',' | ';' | ':'))
+        && (dictated || inline_space(before)) {
         *before = after.trim_start_matches([' ', '\t']).to_owned();
+        return true;
     } else if after.contains(['\n', '\r']) {
         before.truncate(before.trim_end_matches([' ', '\t']).len());
         before.extend(after.chars().filter(|c| matches!(c, '\n' | '\r')));
     }
+    false
 }
 
 fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, sentence_initial: bool, preceding_speech: bool) {
     let mut after = words[i + n - 1].after.clone();
+    let after_dictated = words[i + n - 1].after_dictated;
     let has_following_word = i + n < words.len();
     let ends_sentence = word_sentence_boundary(leading, words, i + n - 1);
     let capitalize_next = ends_sentence || if i == 0 {
@@ -229,12 +236,13 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
             if inline_space(&after) && has_following_word {
                 before.push(' ');
             }
+            if i > 0 { words[i - 1].after_dictated |= after_dictated; }
         }
     } else if i == 0 {
         // Keep delimiters that enclose retained words; remove an empty pair
         // only when the discarded pause was its entire contents.
         if preceding_speech && after.contains([',', ';', ':']) {
-            retain_nonterminal_punctuation(leading, &after);
+            retain_nonterminal_punctuation(leading, &after, after_dictated);
         } else if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
             leading.push_str(&after);
         } else {
@@ -246,18 +254,24 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
             );
         }
     } else {
-        let before = &mut words[i - 1].after;
+        let previous = &mut words[i - 1];
+        let before = &mut previous.after;
         if after.contains([')', ']', '}']) {
             *before = before.trim_end_matches([' ', '\t']).to_owned()
                 + after.trim_start_matches([' ', '\t']);
+            previous.after_dictated |= after_dictated;
         } else if ends_sentence && before.contains(['(', '[', '{']) {
             before.push_str(&after);
+            previous.after_dictated |= after_dictated;
         } else if ends_sentence && !terminal(before) {
             *before = after;
-        } else if n == 2 && before.contains(',') && after.contains(',') {
+            previous.after_dictated = after_dictated;
+        } else if n == 2 && before.contains(',') && after.contains(',')
+            && !previous.after_dictated && !after_dictated {
             *before = " ".into();
-        } else if after.contains([',', ';', ':']) {
-            retain_nonterminal_punctuation(before, &after);
+        } else if after.contains([',', ';', ':'])
+            && retain_nonterminal_punctuation(before, &after, after_dictated) {
+            previous.after_dictated = after_dictated;
         }
     }
     words.drain(i..i + n);
@@ -266,8 +280,8 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     }
 }
 
-fn basic(text: &str, sentence_initial: bool, preceding_speech: bool) -> String {
-    let (mut leading, mut words) = tokenize(text);
+fn basic(text: &str, dictated: &[usize], sentence_initial: bool, preceding_speech: bool) -> String {
+    let (mut leading, mut words) = tokenize(text, dictated);
     let mut i = 0;
     while i < words.len() {
         let filler = matches!(
@@ -394,6 +408,7 @@ fn basic(text: &str, sentence_initial: bool, preceding_speech: bool) -> String {
                     .all(|w| inline_space(&w.after))
             {
                 words[i + n - 1].after = words[i + 2 * n - 1].after.clone();
+                words[i + n - 1].after_dictated = words[i + 2 * n - 1].after_dictated;
                 words.drain(i + n..i + 2 * n);
                 removed = true;
                 break;
@@ -458,9 +473,16 @@ fn rollback(out: &mut String, needs_separator: bool) {
     }
 }
 
-fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
-    let (leading, words) = tokenize(text);
+struct CommandOutput {
+    text: String,
+    // Sorted byte positions of explicit punctuation, retained through rollback.
+    dictated: Vec<usize>,
+}
+
+fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutput {
+    let (leading, words) = tokenize(text, &[]);
     let mut out = leading.clone();
+    let mut dictated = Vec::new();
     let mut i = 0;
     // A protected term can split a URL immediately before its query. Rejoin
     // only an unseparated token; closing quotes do not join prose identifiers.
@@ -517,6 +539,8 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
             if !out.ends_with(symbol) {
                 out.push_str(symbol);
             }
+            let offset = out.len() - symbol.len();
+            if dictated.last() != Some(&offset) { dictated.push(offset); }
             // ASR punctuation immediately around a spoken command is redundant.
             let after = words[last]
                 .after
@@ -566,6 +590,7 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
                 }
             }
             rollback(&mut out, i + 2 < words.len() || words[i + 1].after.ends_with(char::is_whitespace));
+            dictated.retain(|offset| *offset < out.len());
             cap_next = true;
             i += 2;
             continue;
@@ -606,7 +631,7 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> String {
         cap_next = word_sentence_boundary(&leading, &words, i);
         i += 1;
     }
-    out
+    CommandOutput { text: out, dictated }
 }
 
 pub(super) fn explicit_english(language: &str) -> bool {
@@ -744,18 +769,40 @@ fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool,
         // An empty transcript prefix does not request initial capitalization.
         commands(text, sentence_initial && preceding_speech, prefix)
     } else {
-        text.to_owned()
+        CommandOutput { text: text.to_owned(), dictated: Vec::new() }
     };
     if cleanup {
-        basic(&text, sentence_initial, preceding_speech)
+        basic(&text.text, &text.dictated, sentence_initial, preceding_speech)
     } else {
-        text
+        text.text
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filler_separators_replace_punctuation_only_when_dictated() {
+        for commands in [false, true] {
+            for (input, expected) in [
+                ("Keep this; um, continue", "Keep this; continue"),
+                ("Keep this: um; continue", "Keep this: continue"),
+                ("Keep this, um; continue", "Keep this, continue"),
+                ("\"Keep this\"; um, continue", "\"Keep this\"; continue"),
+            ] {
+                assert_eq!(process(input, true, commands, &[]), expected, "{input}");
+            }
+        }
+        assert_eq!(process("Keep this; um comma continue", true, true, &[]), "Keep this, continue");
+        assert_eq!(process("Keep this comma you know comma continue", true, true, &[]), "Keep this, continue");
+        assert_eq!(process("hi, um semicolon um, continue", true, true, &[]), "hi; continue");
+    }
+
+    #[test]
+    fn rollback_discards_punctuation_provenance_before_reusing_offsets() {
+        assert_eq!(process("abcdefgh comma scratch that foo; um, continue", true, true, &[]), "Foo; continue");
+    }
+
     #[test]
     fn abbreviation_periods_do_not_capitalize_following_prose() {
         for input in ["use e.g. lowercase names", "ask Dr. smith tomorrow", "call A. smith tomorrow", "use i.e. lowercase names", "use U.S. spelling"] {
