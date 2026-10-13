@@ -5,6 +5,7 @@
   import { expoOut } from 'svelte/easing';
   import { saveSetting, type CleanupIntensity, type ToneId } from '../settings';
   import { appStore } from '../stores';
+  import { contextsStore } from '../contextsStore.svelte';
   import { openCleanupPromptEditor } from '../stores.svelte';
   import { splitModelId } from '../components/settings/models';
   import { formatIpcError } from '../errors';
@@ -21,7 +22,10 @@
   let intensity = $state('medium');
   let tone = $state('casual');
   let editorError = $state('');
-  const toneInactive = $derived(intensity === 'none' || intensity === 'rules');
+  const modelFreeCleanup = $derived(intensity === 'none' || intensity === 'rules');
+  const toneInactive = $derived(modelFreeCleanup && !contextsStore.contexts.some(
+    context => ['light', 'medium', 'high'].includes(context.cleanup_intensity ?? ''),
+  ));
 
   async function editStyle(id: string, event: MouseEvent, isTone = false) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -137,7 +141,7 @@
     </div>
   {/if}
 
-  {#if toneInactive}<p class="style-intro">Tone and custom AI instructions do not apply with Basic or Off. Saved choices remain available for AI cleanup.</p>{/if}
+  {#if modelFreeCleanup}<p class="style-intro">Tone and custom AI instructions do not apply to Basic or Off cleanup. Contexts using AI cleanup can still use the default tone.</p>{/if}
 
   {#if appStore.legacyFeaturesEnabled}
     <div class="tabs" role="tablist" tabindex="-1" bind:this={tablistEl} onkeydown={handleTablistKeydown}>
