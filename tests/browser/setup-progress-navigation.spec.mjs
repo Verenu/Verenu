@@ -28,8 +28,11 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         const outgoing = await page.locator('.step-wrap:not([inert])').elementHandle();
         // Keep the transition open across automation round trips. Wall-clock
         // scheduling on a busy runner must not decide whether input was early.
-        await page.clock.install();
-        await page.clock.pauseAt(new Date());
+        // Install before the pause target: a timestamp captured as "now" can
+        // already be in the browser clock's past when the RPC reaches it.
+        // This initialization jump occurs before Next starts the transition.
+        await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+        await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
         await page.getByRole('button', { name: 'Next', exact: true }).evaluate(button => button.click());
         await page.clock.runFor(50);
         // Landing focus has settled, but the paused clock keeps the transition
