@@ -38,6 +38,9 @@ const CLIPPING_WARN_FRACTION: f32 = 0.01;
 /// cannot dilute a distorted stretch of speech below the warning threshold.
 const LOUD_SAMPLE_FLOOR: f32 = 0.1;
 
+/// Raw peak at which the capture itself, before any software gain, is clipped.
+const RAW_FULL_SCALE: f32 = 0.99;
+
 /// Pre-gain level statistics for one recording, kept so a log line can tell
 /// "the input is too quiet, raise the system mic volume" apart from "the gain
 /// is clipping the signal" without ever retaining audio.
@@ -107,9 +110,21 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
     );
     if stats.is_clipping() {
         log::warn!(
-            "audio: microphone gain {gain:.1}x is clipping the input ({:.1}% of loud samples); lower the gain and raise the system microphone volume instead",
-            stats.clipped_fraction() * 100.0
+            "audio: input is clipping ({:.1}% of loud samples) at gain {gain:.1}x; {}",
+            stats.clipped_fraction() * 100.0,
+            clipping_advice(stats, gain)
         );
+    }
+}
+
+/// Where the clipping starts decides the fix. If the microphone signal already
+/// reaches full scale (or no gain is being applied) the system or hardware
+/// input level is too hot; otherwise the software gain is pushing it over.
+fn clipping_advice(stats: &InputLevelStats, gain: f32) -> &'static str {
+    if gain <= 1.0 || stats.peak >= RAW_FULL_SCALE {
+        "the microphone signal is already at full scale; lower the system microphone volume or the device's hardware gain"
+    } else {
+        "lower the microphone gain, and raise the system microphone volume instead if the voice is too quiet"
     }
 }
 
@@ -1116,7 +1131,7 @@ mod tests {
     }
 
     use super::{
-        dbfs, enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, InputLevelStats, WorkerWake,
+        clipping_advice, dbfs, enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, InputLevelStats, WorkerWake,
         DISPLAY_GAIN,
     };
     use crossbeam_queue::ArrayQueue;
@@ -1377,6 +1392,20 @@ mod tests {
         let moderate = level_stats_for_sine(0.2, 2.0);
         assert_eq!(moderate.clipped, 0);
         assert!(!moderate.is_clipping());
+    }
+
+    #[test]
+    fn clipping_advice_depends_on_where_the_clipping_starts() {
+        // Software gain pushed a healthy signal over full scale.
+        let boosted = level_stats_for_sine(0.2, 8.0);
+        assert!(clipping_advice(&boosted, 8.0).starts_with("lower the microphone gain"));
+        // The microphone itself is already at full scale: lowering the
+        // software gain cannot help and raising the system volume would hurt.
+        let hot_mic = level_stats_for_sine(1.0, 2.0);
+        assert!(clipping_advice(&hot_mic, 2.0).contains("lower the system microphone volume"));
+        // At unity gain the software multiplier is not the cause at all.
+        let unity = level_stats_for_sine(0.5, 1.0);
+        assert!(clipping_advice(&unity, 1.0).contains("lower the system microphone volume"));
     }
 
     #[test]
