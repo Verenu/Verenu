@@ -253,6 +253,11 @@ function patchGradle() {
   }
   const dependencies = [
     {
+      marker: 'testImplementation("org.json:json:',
+      declaration: 'testImplementation("org.json:json:20240303")',
+      comment: 'Real JSONObject behavior for analytics sanitizer JVM regressions.',
+    },
+    {
       marker: 'junit:junit',
       declaration: 'testImplementation("junit:junit:4.13.2")',
       comment: 'Deterministic native insertion, focus, browser and lifecycle regressions.',

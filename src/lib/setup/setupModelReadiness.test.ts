@@ -137,6 +137,16 @@ describe('setup model readiness', () => {
     });
   });
 
+  it('keeps Basic cleanup on for a transcription-only preset while Off and AI intensities still follow the preset', () => {
+    expect(setupCleanupEnabled('none', transcriptionOnly)).toBe(false);
+    expect(setupCleanupEnabled('light', transcriptionOnly)).toBe(false);
+    expect(setupCleanupEnabled('rules', transcriptionOnly)).toBe(true);
+    expect(setupCleanupEnabled('rules', null)).toBe(true);
+    expect(setupCleanupEnabled('medium', null)).toBe(true);
+    expect(setupCleanupEnabled('none', null)).toBe(false);
+    expect(setupCleanupEnabled('medium', localWithCleanup)).toBe(true);
+  });
+
   it('distinguishes a pending download from other missing local requirements', () => {
     const readiness = setupModelReadiness(localWithCleanup, {
       ...inventory,

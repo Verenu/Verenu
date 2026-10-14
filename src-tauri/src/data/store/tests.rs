@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn feature_breadth_counts_voice_commands_and_only_boolean_flags() {
+    let commands =
+        SettingsSnapshot::from_pairs([(VOICE_COMMANDS_ENABLED.into(), Value::Bool(true))]);
+    assert_eq!(analytics_feature_breadth(&commands, 0), 1);
+    assert_eq!(analytics_feature_breadth(&commands, 1), 2);
+    for value in [
+        Value::Bool(false),
+        Value::Null,
+        Value::String("true".into()),
+        Value::from(1),
+    ] {
+        let settings = SettingsSnapshot::from_pairs([(VOICE_COMMANDS_ENABLED.into(), value)]);
+        assert_eq!(analytics_feature_breadth(&settings, -1), 0);
+    }
+    let all = SettingsSnapshot::from_pairs(
+        [
+            CLEANUP_ENABLED,
+            VOICE_COMMANDS_ENABLED,
+            DUAL_TRANSCRIPTION_ENABLED,
+            NOISE_REDUCTION,
+            AUTO_LEARN_ENABLED,
+            CONTEXTUAL_FORMATTING,
+            PAUSE_MEDIA_DURING_DICTATION,
+            MIC_MUTE_BUTTON_DICTATION,
+            SYNC_ENABLED,
+        ]
+        .map(|key| (key.into(), Value::Bool(true))),
+    );
+    assert_eq!(analytics_feature_breadth(&all, 0), 9);
+    assert_eq!(analytics_feature_breadth(&all, 200), 10);
+}
+
+#[test]
 fn guarded_snapshot_orders_policy_action_before_concurrent_save() {
     let path = unique_tmp_path();
     let settings = SettingsHandle::empty_for_test(path.clone());

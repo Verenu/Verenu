@@ -12,16 +12,18 @@
   // Tone is a cleanup-LLM instruction, so with cleanup off it has nothing to act on.
   // Mirrors how Style.svelte inerts the whole page when cleanup_enabled is false.
   const cleanupOff = $derived(intensity === 'none');
+  const toneInactive = $derived(cleanupOff || intensity === 'rules');
   const preview = $derived(writingStylePreview(intensity, tone));
 </script>
 
 <div class="step writing-style-step">
   <div class="style-group">
     <p class="group-label">Cleanup intensity</p>
-    <div class="style-grid">
-      {#each cleanupCards as c}
+    <div class="style-grid cleanup-grid">
+      {#each cleanupCards as c, i}
         <button
           class="pick-card style-card"
+          class:wide={i >= 3}
           class:selected={intensity === c.id}
           aria-pressed={intensity === c.id}
           onclick={() => { intensity = c.id; }}
@@ -36,24 +38,24 @@
     </div>
   </div>
 
-  <div class="style-group" class:disabled={cleanupOff}>
+  <div class="style-group" class:disabled={toneInactive}>
     <div class="group-head">
       <p class="group-label">Tone</p>
-      {#if cleanupOff}
-        <span class="group-note">Only applies when cleanup runs</span>
+      {#if toneInactive}
+        <span class="group-note">{cleanupOff ? 'Off skips cleanup' : 'Basic skips AI tone'}</span>
       {/if}
     </div>
-    <div class="style-grid tone-grid" inert={cleanupOff}>
+    <div class="style-grid tone-grid" inert={toneInactive}>
       {#each toneCards as t}
         <button
           class="pick-card style-card"
-          class:selected={tone === t.id && !cleanupOff}
-          aria-pressed={tone === t.id && !cleanupOff}
+          class:selected={tone === t.id && !toneInactive}
+          aria-pressed={tone === t.id && !toneInactive}
           onclick={() => { tone = t.id; }}
         >
           <div class="card-top">
             <span class="card-name">{t.name}</span>
-            <div class="pick-radio" class:checked={tone === t.id && !cleanupOff}></div>
+            <div class="pick-radio" class:checked={tone === t.id && !toneInactive}></div>
           </div>
           <p class="card-desc">{t.desc}</p>
         </button>
@@ -107,6 +109,12 @@
   .style-grid > :global(*) { grid-column: span 3; }
   .tone-grid > :global(*) { grid-column: span 4; }
 
+  /* Five cleanup cards as 3 + 2 rather than 4 + a lone fifth: the wider cards
+     wrap their descriptions onto fewer lines, which is what keeps the step
+     inside a 720px window. Order is unchanged, so Basic still reads last. */
+  .cleanup-grid > :global(*) { grid-column: span 4; }
+  .cleanup-grid > .wide { grid-column: span 6; }
+
   .style-card { min-height: 72px; justify-content: flex-start; }
 
   .card-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
@@ -147,5 +155,17 @@
     .tone-grid > :global(*) { grid-column: span 6; }
     .preview-row { grid-template-columns: 1fr; gap: 5px; }
     .preview-arrow { display: none; }
+  }
+
+  /* Short wizard windows (the 900x600 class): five cleanup cards wrap onto two
+     rows, so tighten card, group and preview chrome instead of letting the
+     step scroll. Choices, descriptions and tone stay visible. */
+  @media (max-height: 660px) {
+    .writing-style-step { gap: 12px; }
+    .style-group { gap: 6px; }
+    .writing-style-step .style-grid { gap: 6px; }
+    .writing-style-step .style-card { min-height: 0; padding: 8px 10px; gap: 2px; }
+    .writing-style-step .card-desc { line-height: 1.3; }
+    .writing-style-step .preview-box { min-height: 52px; padding: 8px 12px; }
   }
 </style>

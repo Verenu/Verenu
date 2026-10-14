@@ -169,6 +169,20 @@ fn effective_correction_variants<'a>(
         .collect()
 }
 
+/// Protect the same context-effective spellings that substitutions consume.
+pub(crate) fn protected_spellings(entries: &[db::DictionaryEntry]) -> Vec<&str> {
+    entries
+        .iter()
+        .flat_map(|entry| {
+            std::iter::once(entry.term.as_str()).chain(
+                effective_correction_variants(entry)
+                    .into_iter()
+                    .map(|variant| variant.mistake),
+            )
+        })
+        .collect()
+}
+
 fn entry_match_score(
     entry: &db::DictionaryEntry,
     source_lower: &str,
@@ -705,6 +719,15 @@ mod tests {
         assert!(development_ids.is_empty());
         assert_eq!(writing_text, "use Groq");
         assert_eq!(writing_ids, vec![702]);
+    }
+
+    #[test]
+    fn protected_spellings_use_effective_context_aliases_and_legacy_variants() {
+        let legacy = entry(1, "QuestionMark", Some("question mark, new line"));
+        assert_eq!(super::protected_spellings(&[legacy]), ["QuestionMark", "question mark", "new line"]);
+        let mut scoped = context_entry(7, "Verenu", 11, 701, "Varinu, Verena", false);
+        scoped.mistake = Some("legacy unrelated alias".into());
+        assert_eq!(super::protected_spellings(&[scoped]), ["Verenu", "Varinu", "Verena"]);
     }
 
     #[test]
