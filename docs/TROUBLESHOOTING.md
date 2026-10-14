@@ -76,7 +76,9 @@ audio: input levels gain=2.0x raw_rms=-31.0 dBFS raw_peak=-12.4 dBFS boosted_pea
 
 Aim for `boosted_peak` between about -12 and -3 dBFS. `clipped` is the share of
 loud samples (above about -20 dBFS after gain) that hit full scale; at 1% or more
-the recording also logs a warning: lower the gain. A `raw_peak`
+the recording also logs a warning. If `raw_peak` is already near 0 dBFS
+(or the gain is 1x), the microphone itself is too hot: lower the system volume or
+the device's hardware gain. Otherwise lower the gain. A `raw_peak`
 below about -30 dBFS means the system input volume should go up. These lines record
 levels only, never audio or text.
 
