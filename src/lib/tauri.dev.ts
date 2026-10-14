@@ -151,6 +151,7 @@ const defaultSettings: Record<string, unknown> = {
   transcription_fallback_models: [],
   cleanup_fallback_models: [],
   cleanup_enabled: true,
+  voice_commands_enabled: false,
   default_tone: 'casual',
   cleanup_intensity: 'medium',
   app_mappings: [],

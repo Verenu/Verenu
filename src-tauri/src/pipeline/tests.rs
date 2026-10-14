@@ -611,6 +611,7 @@ fn base_config() -> store::PipelineConfig {
         dual_transcription_enabled: false,
         cleanup_fallback_models: Vec::new(),
         cleanup_enabled: true,
+        voice_commands_enabled: false,
         cleanup_cache_enabled: true,
         key_groq: "fixture-groq-key".into(),
         key_openai: "fixture-openai-key".into(),
@@ -633,6 +634,197 @@ fn base_config() -> store::PipelineConfig {
         cleanup_prompt_override: String::new(),
         style_prompt_instructions: Default::default(),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_never_calls_cleanup_and_preserves_raw_history() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset(); set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    config.voice_commands_enabled = true;
+    config.cleanup_prompt_override = "Rewrite everything".into();
+    config.style_prompt_instructions.insert("casual".into(), "Rewrite everything".into());
+    config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um send send it new line tomorrow"), None, None);
+    fixture("cleanup", "groq", "llama-3.3-70b-versatile", Some("Wrong output"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config); request.db = Some(db.clone());
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.raw_text, "um send send it new line tomorrow");
+    assert_eq!(result.final_text_before_dictionary, "Send it\nTomorrow");
+    assert_eq!(result.history_entry.clean_text, result.injected_text);
+    let saved_raw: String = db.lock().unwrap().query_row("SELECT raw_text FROM transcriptions WHERE id = ?1", [result.history_entry.id], |row| row.get(0)).unwrap();
+    assert_eq!(saved_raw, result.raw_text);
+    assert!(result.cleanup_cache_key.is_empty());
+    assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+    assert_eq!(fixture_hit_count("cleanup", "openai", "gpt-4o-mini"), 0);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_language_off_and_payload_contracts() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for (intensity, enabled, language) in [("none", true, "en"), ("rules", false, "en"), ("rules", true, "auto"), ("rules", true, "fr")] {
+        reset(); set_enabled(true);
+        let mut config = base_config();
+        config.cleanup_intensity = intensity.into(); config.cleanup_enabled = enabled;
+        config.voice_commands_enabled = true; config.transcription_language = language.into();
+        fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um hello new line world"), None, None);
+        let result = run_pipeline_fixture(base_request(config)).await.unwrap();
+        assert_eq!(result.final_text_before_dictionary, "um hello new line world");
+    }
+    reset(); set_enabled(true);
+    let mut config = base_config(); config.cleanup_intensity = "rules".into(); config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um greeting discarded scratch that tomorrow"), None, None);
+    let mut request = base_request(config);
+    request.snippets.push(PipelineTestSnippet { trigger: "greeting".into(), expansion: "um scratch that new line".into(), instructions: String::new() });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.final_text_before_dictionary, "um scratch that new line Tomorrow");
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_preserves_vocabulary_before_dictionary_canonicalization() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um please (um) use new line"), None, None);
+    let mut request = base_request(config);
+    request.dictionary.push(PipelineTestDictionaryEntry {
+        term: "New Line".into(),
+        mistake: Some("new line".into()),
+    });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.raw_text, "um please (um) use new line");
+    assert_eq!(result.final_text_before_dictionary, "Please use new line");
+    assert_eq!(result.injected_text, "Please use New Line");
+    assert_eq!(result.history_entry.clean_text, result.injected_text);
+    assert!(result.cleanup_cache_key.is_empty());
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_preserves_correction_aliases_and_snippet_sentence_case() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for intensity in ["rules", "light"] {
+        reset();
+        set_enabled(true);
+        let mut config = base_config();
+        config.cleanup_intensity = intensity.into();
+        config.voice_commands_enabled = true;
+        fixture("transcription", "groq", "whisper-large-v3-turbo", Some("use question mark and new line"), None, None);
+        fixture("cleanup", "groq", "llama-3.3-70b-versatile", Some("use question mark and new line"), None, None);
+        let mut request = base_request(config);
+        request.dictionary.push(PipelineTestDictionaryEntry {
+            term: "QuestionMark".into(),
+            mistake: Some("question mark, new line".into()),
+        });
+        let result = run_pipeline_fixture(request).await.unwrap();
+        let suffix = if intensity == "light" { "." } else { "" };
+        assert_eq!(result.final_text_before_dictionary, format!("use question mark and new line{suffix}"));
+        assert_eq!(result.injected_text, format!("use QuestionMark and new line{suffix}"));
+    }
+    for (expansion, expected) in [("Verenu", "I use Verenu every day"), ("Verenu.", "I use Verenu. Every day")] {
+        reset();
+        set_enabled(true);
+        let mut config = base_config();
+        config.cleanup_intensity = "rules".into();
+        fixture("transcription", "groq", "whisper-large-v3-turbo", Some("I use app name um every day"), None, None);
+        let mut request = base_request(config);
+        request.snippets.push(PipelineTestSnippet { trigger: "app name".into(), expansion: expansion.into(), instructions: String::new() });
+        let result = run_pipeline_fixture(request).await.unwrap();
+        assert_eq!(result.injected_text, expected);
+    }
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_exact_snippet_ignores_saved_instructions() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    for instructions in ["", "all capitals"] {
+        for commands in [false, true] {
+            reset();
+            set_enabled(true);
+            let mut config = base_config();
+            config.cleanup_intensity = "rules".into();
+            config.voice_commands_enabled = commands;
+            fixture("transcription", "groq", "whisper-large-v3-turbo", Some("signoff."), None, None);
+            let mut request = base_request(config);
+            request.snippets.push(PipelineTestSnippet {
+                trigger: "signoff".into(), expansion: "Thanks!".into(), instructions: instructions.into(),
+            });
+            let result = run_pipeline_fixture(request).await.unwrap();
+            assert_eq!(result.injected_text, "Thanks!");
+            assert_eq!(result.history_entry.clean_text, "Thanks!");
+            assert!(result.cleanup_cache_key.is_empty());
+            assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+        }
+    }
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_current_standalone_line_break_delivery() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset(); set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("new paragraph"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config); request.db = Some(db.clone());
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.injected_text, "\n\n");
+    assert_eq!(result.history_entry.clean_text, "\n\n");
+    assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+    reset();
+}
+
+#[test]
+fn command_line_break_gate_preserves_blank_response_rejection() {
+    let mut cfg = base_config(); cfg.cleanup_intensity = "rules".into(); cfg.voice_commands_enabled = true;
+    for text in ["\n", "\n\n", " \n\t"] {
+        assert!(super::has_deliverable_cleanup(text, &cfg, ""));
+        assert!(!super::has_deliverable_cleanup(text, &cfg, "groq/model"));
+    }
+    for text in ["", " ", "\t", "\r"] { assert!(!super::has_deliverable_cleanup(text, &cfg, "")); }
+    cfg.voice_commands_enabled = false; assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.voice_commands_enabled = true; cfg.cleanup_enabled = false; assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.cleanup_enabled = true; cfg.cleanup_intensity = "none".into(); assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    cfg.cleanup_intensity = "rules".into(); cfg.transcription_language = "fr".into(); assert!(!super::has_deliverable_cleanup("\n", &cfg, ""));
+    assert!(super::has_deliverable_cleanup("literal text", &cfg, "groq/model"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_basic_filler_only_does_not_write_history() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset(); set_enabled(true);
+    let mut config = base_config(); config.cleanup_intensity = "rules".into();
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("um uh hmm"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config); request.db = Some(db.clone());
+    assert!(run_pipeline_fixture(request).await.unwrap_err().to_string().contains("No spoken content"));
+    assert!(db::query_recent(&db).unwrap().is_empty());
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_commands_keep_pure_snippet_fast_path_for_light() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset(); set_enabled(true);
+    let mut config = base_config(); config.cleanup_intensity = "light".into(); config.voice_commands_enabled = true;
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("greeting."), None, None);
+    fixture("cleanup", "groq", "llama-3.3-70b-versatile", Some("Wrong output"), None, None);
+    let mut request = base_request(config);
+    request.snippets.push(PipelineTestSnippet { trigger: "greeting".into(), expansion: "scratch that new line".into(), instructions: String::new() });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(result.final_text_before_dictionary, "scratch that new line");
+    assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
+    reset();
 }
 
 fn test_audio(duration_ms: u64) -> super::CapturedAudio {

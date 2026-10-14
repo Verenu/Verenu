@@ -53,6 +53,7 @@ impl SettingsSnapshot {
 pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_count: i64) -> i64 {
     let flags = [
         CLEANUP_ENABLED,
+        VOICE_COMMANDS_ENABLED,
         DUAL_TRANSCRIPTION_ENABLED,
         NOISE_REDUCTION,
         AUTO_LEARN_ENABLED,
@@ -506,6 +507,7 @@ pub const SUB_APP_CAPTURE_HOTKEY: &str = "sub_app_capture_hotkey";
 pub const MICROPHONE_DEVICE: &str = "microphone_device";
 pub const DEFAULT_TONE: &str = "default_tone";
 pub const CLEANUP_INTENSITY: &str = "cleanup_intensity";
+pub const VOICE_COMMANDS_ENABLED: &str = "voice_commands_enabled";
 pub const APP_MAPPINGS: &str = "app_mappings";
 pub const NOISE_REDUCTION: &str = "noise_reduction";
 pub const MUTE_AUDIO: &str = "mute_audio";
@@ -582,7 +584,7 @@ pub const LOCAL_MODEL_MEMORY_POLICY: &str = "local_model_memory_policy";
 pub const ANALYTICS_ENABLED: &str = "analytics_enabled";
 
 pub const DEFAULT_TONES: &[&str] = &["casual", "formal", "very_casual"];
-pub const CLEANUP_INTENSITIES: &[&str] = &["none", "light", "medium", "high"];
+pub const CLEANUP_INTENSITIES: &[&str] = &["none", "rules", "light", "medium", "high"];
 pub const HISTORY_RETENTION_OPTIONS: &[&str] = &["7 days", "30 days", "90 days", "Forever"];
 pub const LOCAL_MODEL_MEMORY_POLICY_OPTIONS: &[&str] = &[
     "keep_loaded",

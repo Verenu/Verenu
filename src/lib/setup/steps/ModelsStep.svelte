@@ -35,6 +35,7 @@
     preset = $bindable(),
     appleCleanup = $bindable(false),
     cleanupRequested = true,
+    basicCleanup = false,
     onOpenApiKeys,
     onChooseCloudProvider,
   }: {
@@ -45,8 +46,10 @@
     preset: Preset | null;
     /** Explicit opt-in to cleanup on Apple Intelligence. Cleanup only; speech is unchanged. */
     appleCleanup?: boolean;
-    /** False when cleanup intensity is Off. The Apple choice is kept but not applied, required, or downloaded. */
+    /** False when no AI cleanup runs (Off or Basic). The Apple choice is kept but not applied, required, or downloaded. */
     cleanupRequested?: boolean;
+    /** True when the inactive cleanup is Basic on-device cleanup rather than Off. Copy only. */
+    basicCleanup?: boolean;
     onOpenApiKeys: () => void;
     onChooseCloudProvider: (localSupport: 'unsupported' | 'unknown') => void;
   } = $props();
@@ -240,6 +243,8 @@
           <p class="apple-desc apple-warn" role="alert">
             {#if cleanupRequested}
               This Mac cannot confirm Apple Intelligence right now. Setup cannot finish until you turn the selected cleanup off.
+            {:else if basicCleanup}
+              Basic cleanup runs on this device, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
             {:else}
               Cleanup is off, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
             {/if}
@@ -260,7 +265,9 @@
         <div class="apple-info">
           <span class="apple-title" id="apple-cleanup-title">Clean up with Apple Intelligence</span>
           <p class="apple-desc">
-            {#if !cleanupRequested}
+            {#if !cleanupRequested && basicCleanup}
+              Basic cleanup runs on this device, so Apple Intelligence is not used. Your choice is kept if you switch back to AI cleanup.
+            {:else if !cleanupRequested}
               Cleanup is off, so Apple Intelligence is not used. Your choice is kept if you turn cleanup back on.
             {:else if appleOffer.selectable}
               Cleanup runs on this Mac with no API key or model download. Speech recognition stays as chosen above.

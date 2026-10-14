@@ -5,6 +5,16 @@
 
 use crate::data::store;
 
+/// Whitespace is normally an empty completion. Locally processed voice
+/// commands may intentionally deliver only line breaks, unlike blank AI output.
+pub(super) fn has_deliverable_cleanup(text: &str, cfg: &store::PipelineConfig, cleanup_api_used: &str) -> bool {
+    !text.trim().is_empty()
+        || (cfg.cleanup_enabled && cfg.cleanup_intensity != "none"
+            && cfg.voice_commands_enabled && super::text_rules::explicit_english(&cfg.transcription_language)
+            && cleanup_api_used.is_empty() && text.contains('\n')
+            && text.chars().all(|c| matches!(c, '\n' | '\r' | ' ' | '\t')))
+}
+
 /// Minimum recording length before any API is called. Shorter clips make
 /// Whisper hallucinate, so they're rejected outright.
 pub(super) const MIN_RECORDING_MS: u64 = 700;

@@ -5,6 +5,7 @@
   import { expoOut } from 'svelte/easing';
   import { saveSetting, type CleanupIntensity, type ToneId } from '../settings';
   import { appStore } from '../stores';
+  import { contextsStore } from '../contextsStore.svelte';
   import { openCleanupPromptEditor } from '../stores.svelte';
   import { splitModelId } from '../components/settings/models';
   import { formatIpcError } from '../errors';
@@ -21,6 +22,10 @@
   let intensity = $state('medium');
   let tone = $state('casual');
   let editorError = $state('');
+  const modelFreeCleanup = $derived(intensity === 'none' || intensity === 'rules');
+  const toneInactive = $derived(modelFreeCleanup && !contextsStore.contexts.some(
+    context => ['light', 'medium', 'high'].includes(context.cleanup_intensity ?? ''),
+  ));
 
   async function editStyle(id: string, event: MouseEvent, isTone = false) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -45,6 +50,7 @@
     { id: 'light', name: 'Light', desc: 'Remove non-semantic speech artifacts and fix basics. Keep wording, order, and detail.', sample: "I was thinking we should probably leave a bit earlier because there's going to be traffic, I think." },
     { id: 'medium', name: 'Medium', desc: 'Improve flow and remove redundancy with light restructuring. Preserve every distinct detail.', sample: "I think we should leave a bit earlier. There's going to be traffic." },
     { id: 'high', name: 'Strong', desc: 'Rewrite concisely and directly. Preserve facts, constraints, qualifiers, and emphasis.', sample: 'Leave early. There will be traffic.' },
+    { id: 'rules', name: 'Basic', desc: 'On-device removal of English fillers and accidental repeats. Keeps punctuation. No AI tone or instructions. Needs English selected in Settings.', sample: 'I think we can deploy the app.' },
   ];
 
   const personalCards = [
@@ -135,6 +141,8 @@
     </div>
   {/if}
 
+  {#if modelFreeCleanup}<p class="style-intro">Tone and custom AI instructions do not apply to Basic or Off cleanup. Contexts using AI cleanup can still use the default tone.</p>{/if}
+
   {#if appStore.legacyFeaturesEnabled}
     <div class="tabs" role="tablist" tabindex="-1" bind:this={tablistEl} onkeydown={handleTablistKeydown}>
       {#each tabs as t}
@@ -186,7 +194,7 @@
                   <span class="desc">{c.desc}</span>
                   <span class="style-sample">"{c.sample}"</span>
                 </button>
-                {#if c.id !== 'none'}
+                {#if c.id !== 'none' && c.id !== 'rules'}
                   <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
                   </button>
@@ -196,7 +204,7 @@
             </div>
           {:else if tab === 'personal'}
             <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
-            <div class="style-grid">
+            <div class="style-grid" inert={toneInactive} class:tab-content-disabled={toneInactive}>
               {#each personalCards as c}
                 <div class="style-card-wrap">
                 <button
@@ -239,7 +247,7 @@
               <span class="desc">{c.desc}</span>
               <span class="style-sample">"{c.sample}"</span>
             </button>
-            {#if c.id !== 'none'}
+            {#if c.id !== 'none' && c.id !== 'rules'}
               <button class="style-edit" aria-label="Edit {c.name} cleanup prompt" onclick={(event) => editStyle(c.id, event)}>
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
               </button>
@@ -254,7 +262,7 @@
       <section class="style-section">
         <h2 class="style-section-h">Personal Tone</h2>
         <p class="style-intro">Default tone. <span>Applies to any app not explicitly mapped.</span></p>
-        <div class="style-grid">
+        <div class="style-grid" inert={toneInactive} class:tab-content-disabled={toneInactive}>
           {#each personalCards as c}
                 <div class="style-card-wrap">
             <button

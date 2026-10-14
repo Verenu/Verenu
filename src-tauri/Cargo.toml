@@ -178,8 +178,10 @@ codegen-units = 1
 # aborts when a legitimate GtkOverlay adds another ancestor. This upstream
 # revision replaces the infallible downcast with a guarded lookup. Keep the
 # runtime crates on one source revision so their shared trait types agree.
+# The local Wry runtime adds atomic ownership of the main-thread context;
+# see vendor/README.md and the runtime-handle-stress regression example.
 tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
-tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
+tauri-runtime-wry = { path = "vendor/tauri-runtime-wry-2.11.4" }
 tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
 
 # tauri-winrt-notification 0.7.2 pins quick-xml = "^0.37" (0.37.5 in our
