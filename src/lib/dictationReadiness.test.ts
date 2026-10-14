@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanupMayBeUsed, dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
+import { cleanupMayBeUsed, dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReachableOffCleanupOverride, hasReadyOfflineSpeech, readinessModel, type ReadinessInput } from './dictationReadiness';
 
 const cloud: ReadinessInput = {
   transcriptionModel: 'groq/whisper-large-v3-turbo',
@@ -15,6 +15,14 @@ const downloadedSpeech = [{ id: 'parakeet-v3', is_downloaded: true }];
 const downloadedCleanup = [{ id: 'qwen2.5-3b-instruct', is_downloaded: true }];
 
 describe('dictation configuration readiness', () => {
+  it('Basic needs no cleanup provider or dual fusion while AI context overrides still do', () => {
+    const input = { ...cloud, keys: { groq: true }, cleanupIntensity: 'rules', dualTranscriptionEnabled: true,
+      transcriptionFallbacks: ['local/parakeet-v3'], speechModels: downloadedSpeech };
+    expect(cleanupMayBeUsed(input)).toBe(false);
+    expect(dictationReadiness(input)).toEqual([]);
+    expect(hasCleanupIntensityOverride([{ id: 1, is_everywhere: true, cleanup_intensity: 'rules' }])).toBe(false);
+    expect(cleanupMayBeUsed({ ...input, cleanupIntensityOverrideMayBeUsed: true })).toBe(true);
+  });
   it('excludes built-in cloud speech from offline fusion but restores it online', () => {
     const input: ReadinessInput = {
       ...cloud, transcriptionModel: 'local/parakeet-v3',
@@ -349,6 +357,59 @@ describe('dictation configuration readiness', () => {
       expect(hasCleanupIntensityOverride(contexts, [], [assignment])).toBe(true);
     }
     expect(hasCleanupIntensityOverride(contexts, [], [])).toBe(false);
+  });
+
+  it('warns for dual speech under Basic when a reachable Off Context reconciles with cleanup', () => {
+    const contexts = [{ id: 4, is_everywhere: false, cleanup_intensity: 'none' }];
+    const assignments = [{ context_id: 4, executable: 'fixture-app' }];
+    expect(hasReachableOffCleanupOverride(contexts)).toBe(false);
+    expect(hasReachableOffCleanupOverride(contexts, [], [{ context_id: null }])).toBe(false);
+    expect(hasReachableOffCleanupOverride(contexts, [], assignments)).toBe(true);
+    expect(hasReachableOffCleanupOverride([{ id: 5, is_everywhere: true, cleanup_intensity: 'rules' }])).toBe(false);
+    expect(hasReachableOffCleanupOverride([], [{ cleanup_intensity: '  NONE ' }])).toBe(true);
+    expect(hasCleanupIntensityOverride(contexts, [], assignments)).toBe(false);
+
+    const basicDualSpeech: ReadinessInput = {
+      ...cloud,
+      transcriptionModel: 'local/parakeet-v3',
+      transcriptionFallbacks: ['groq/whisper-large-v3-turbo'],
+      speechModels: downloadedSpeech,
+      cleanupModel: 'local/missing-cleanup-model',
+      cleanupIntensity: 'rules',
+      dualTranscriptionEnabled: true,
+      keys: { groq: true },
+      cleanupOffContextMayBeUsed: hasReachableOffCleanupOverride(contexts, [], assignments),
+    };
+    expect(cleanupMayBeUsed(basicDualSpeech)).toBe(true);
+    expect(dictationReadiness(basicDualSpeech)).toMatchObject([{
+      task: 'cleanup',
+      section: 'models',
+      message: expect.stringContaining('A Context set to Off may use cleanup to compare both speech results.'),
+    }]);
+
+    // Negations: no reachable Off Context, unassigned Off Context, one or duplicate
+    // eligible candidates, unavailable or offline fallback, cleanup off, ready cleanup.
+    expect(cleanupMayBeUsed({ ...basicDualSpeech, cleanupOffContextMayBeUsed: false })).toBe(false);
+    expect(dictationReadiness({ ...basicDualSpeech, cleanupOffContextMayBeUsed: false })).toEqual([]);
+    expect(dictationReadiness({ ...basicDualSpeech, cleanupOffContextMayBeUsed: hasReachableOffCleanupOverride(contexts) })).toEqual([]);
+    expect(dictationReadiness({ ...basicDualSpeech, transcriptionFallbacks: [], cleanupOffContextMayBeUsed: true })).toEqual([]);
+    expect(dictationReadiness({
+      ...basicDualSpeech,
+      transcriptionModel: 'groq/whisper-large-v3-turbo',
+      transcriptionFallbacks: [' GROQ/ whisper-large-v3-turbo '],
+      speechModels: [],
+      cleanupOffContextMayBeUsed: true,
+    })).toEqual([]);
+    expect(dictationReadiness({ ...basicDualSpeech, transcriptionFallbacks: ['openai/gpt-4o-transcribe'], cleanupOffContextMayBeUsed: true })).toEqual([]);
+    expect(dictationReadiness({ ...basicDualSpeech, isOnline: false, cleanupOffContextMayBeUsed: true })).toEqual([]);
+    expect(dictationReadiness({ ...basicDualSpeech, cleanupEnabled: false, cleanupOffContextMayBeUsed: true })).toEqual([]);
+    expect(dictationReadiness({
+      ...basicDualSpeech,
+      cleanupModel: 'local/qwen2.5-3b-instruct',
+      cleanupModels: downloadedCleanup,
+      cleanupEngineInstalled: true,
+      cleanupOffContextMayBeUsed: true,
+    })).toEqual([]);
   });
 
   it('offers model setup for missing local speech without requiring a key', () => {
