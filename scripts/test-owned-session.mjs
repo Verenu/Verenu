@@ -11,6 +11,7 @@ import { run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
 import { summarizeNodeFailure, summarizeNodeTests } from './verification/node-reporter.mjs';
+import { runOwnedNodeSuite } from './verification/node-sessions.mjs';
 
 const args = process.argv.slice(2);
 const require = createRequire(import.meta.url);
@@ -31,27 +32,27 @@ try {
   assert.equal(generated.status, 'passed', 'Synthetic audio generation failed');
   const id = `verify-${randomUUID()}`;
   const synthetic = !args.includes('--live');
-  session = await startOwnedSession({ id, fixtures, directory, synthetic });
-  const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
-  const sessionFiles = (await fs.readdir(path.join(root, 'tests/dev-session'))).filter(file => file.endsWith('.test.mjs')).sort();
-  const nodeReport = path.join(directory, 'session-cases.json');
-  const tested = await run(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=spec', '--test-reporter=./scripts/verification/node-reporter.mjs', '--test-reporter-destination=stdout', `--test-reporter-destination=${nodeReport}`, ...sessionFiles.map(file => `tests/dev-session/${file}`)], { directory, name: 'session-tests', env });
-  report.artifacts.push(artifact(tested.log));
-  const nodeEvents = await fs.readFile(nodeReport, 'utf8').then(JSON.parse).catch(() => null);
-  const nodeSummary = summarizeNodeTests(nodeEvents, sessionFiles, { live: args.includes('--live') });
-  if (tested.status !== 'passed' || nodeSummary.status !== 'passed') {
-    report.nodeFailure = summarizeNodeFailure(nodeSummary, sessionFiles, {
-      processStatus: tested.status,
-      exitCode: tested.exitCode,
-      timedOut: tested.reason === 'Check timed out',
+  const nodes = await runOwnedNodeSuite({ identity, fixtures, directory, synthetic, live: args.includes('--live') });
+  report.artifacts.push(...nodes.artifacts);
+  report.nodeSessions = nodes.sessions;
+  const nodeSummary = summarizeNodeTests({ tests: nodes.tests }, nodes.files, { live: args.includes('--live') });
+  if (nodes.status !== 'passed' || nodeSummary.status !== 'passed') {
+    if (nodes.status === 'failed') nodeSummary.status = 'failed';
+    report.nodeFailure = summarizeNodeFailure(nodeSummary, nodes.files, {
+      processStatus: nodes.status === 'failed' ? 'failed' : 'passed',
+      exitCode: nodes.status === 'failed' ? 1 : 0,
+      timedOut: nodes.sessions.some(shard => shard.timedOut),
     });
-    if (tested.status === 'passed') throw Object.assign(new Error('Owned-session cases were skipped or missing'), { verificationStatus: 'incomplete' });
+    if (nodes.status !== 'failed') throw Object.assign(new Error('Owned-session cases were skipped or missing'), { verificationStatus: 'incomplete' });
     throw new Error('Real-session regression failed');
   }
   report.node = nodeSummary;
   report.checks.push({ name: 'Every owned-session test file executed without unexpected skips', status: report.node.status });
-  const suite = JSON.parse(await fs.readFile(path.join(session.directory, 'verification.json'), 'utf8'));
-  report.checks.push(...suite.checks);
+  report.checks.push(...nodes.checks);
+  // Browser interactions and restart persistence retain one shared lifetime,
+  // independently of the file-local Node verification workers above.
+  session = await startOwnedSession({ id, fixtures, directory, synthetic });
+  const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
   const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
   const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
   report.artifacts.push(artifact(playwright.log));

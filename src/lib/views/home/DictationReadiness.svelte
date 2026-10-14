@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { invoke, listen, type LocalSttModelInfo, type LocalLlmModelInfo, type LocalLlmRuntimeInfo } from '../../tauri';
   import { appStore } from '../../stores';
-  import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
+  import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReachableOffCleanupOverride, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
   import { openSetupSettings } from '../../settingsNavigation';
   import type { AppMapping } from '../../appMappings';
   import type { Context, ContextTarget, ContextWebsiteTarget, ContextSubApp } from '../../stores';
@@ -58,6 +58,7 @@
         refreshAppleIntelligence(),
       ]);
       if (!mounted || current !== sequence) return;
+      const cleanupAssignments = [...(targets ?? []), ...(websites ?? []), ...(subApps ?? [])];
       const input: ReadinessInput = {
         transcriptionModel: readinessModel('transcription', speech, legacySpeech, speechProvider),
         cleanupModel: readinessModel('cleanup', cleanup, legacyCleanup, cleanupProvider),
@@ -65,7 +66,8 @@
         cleanupFallbacks: cleanupFallbacks ?? [],
         cleanupEnabled: enabled ?? true,
         cleanupIntensity: intensity,
-        cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? [], [...(targets ?? []), ...(websites ?? []), ...(subApps ?? [])]),
+        cleanupIntensityOverrideMayBeUsed: hasCleanupIntensityOverride(contexts ?? [], appMappings ?? [], cleanupAssignments),
+        cleanupOffContextMayBeUsed: hasReachableOffCleanupOverride(contexts ?? [], appMappings ?? [], cleanupAssignments),
         dualTranscriptionEnabled: dualTranscriptionEnabled ?? false,
         isOnline,
         keys,
