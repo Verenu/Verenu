@@ -71,11 +71,12 @@ To see how hot the signal is, dictate a sentence and read the session log
 (see "Session logs for agents"). Each recording writes one line:
 
 ```text
-audio: input levels gain=2.0x raw_rms=-31.0 dBFS raw_peak=-12.4 dBFS boosted_peak=-6.4 dBFS clipped=0.00%
+audio: input levels gain=2.0x raw_rms=-31.0 dBFS raw_peak=-12.4 dBFS boosted_peak=-6.4 dBFS clipped=0.00% of loud samples
 ```
 
-Aim for `boosted_peak` between about -12 and -3 dBFS. A value near 0 dBFS or a
-`clipped` percentage above 1% also logs a warning: lower the gain. A `raw_peak`
+Aim for `boosted_peak` between about -12 and -3 dBFS. `clipped` is the share of
+loud samples (above about -20 dBFS after gain) that hit full scale; at 1% or more
+the recording also logs a warning: lower the gain. A `raw_peak`
 below about -30 dBFS means the system input volume should go up. These lines record
 levels only, never audio or text.
 
