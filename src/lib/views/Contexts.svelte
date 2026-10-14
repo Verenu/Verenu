@@ -182,6 +182,9 @@
   let modalColor = $state<string | null>(null);
   let modalTone = $state<string | null>(null);
   let modalCleanupIntensity = $state<string | null>(null);
+  // Global default that "Use default" resolves to; refreshed whenever the modal opens.
+  let globalCleanupIntensity = $state<string | null>(null);
+  const inheritsBasicCleanup = $derived(modalCleanupIntensity === null && globalCleanupIntensity === 'rules');
   let modalCustomInstructions = $state('');
   let modalContextualFormattingDisabled = $state(false);
   let modalPasteInChunks = $state(false);
@@ -705,6 +708,9 @@
     deleteArmed = false;
     closeFieldMenu();
     modal = 'context';
+    void invoke<string | null>('get_setting', { key: 'cleanup_intensity' })
+      .then((value) => { globalCleanupIntensity = value ?? null; })
+      .catch(() => { globalCleanupIntensity = null; });
   }
 
   // Two taps, like the desktop row menu: arm, then confirm.
@@ -1646,7 +1652,11 @@
         rows="3"
         spellcheck="false"
       ></textarea>
-      <p class="field-hint">Sent directly to the cleanup model whenever this context group is active.</p>
+      {#if modalCleanupIntensity === 'rules' || inheritsBasicCleanup}
+        <p class="field-hint basic-hint" role="note">{inheritsBasicCleanup ? 'Your default cleanup is Basic. ' : ''}Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > General.</p>
+      {:else}
+        <p class="field-hint">Sent to the AI cleanup model for this context. Voice commands are a separate global option in Settings > General and stay inactive with Off.</p>
+      {/if}
 
       <div class="advanced-disclosure">
         <button
@@ -2085,6 +2095,7 @@
   .char-counter.is-limit { color: var(--danger); }
   .custom-instructions-input { resize: vertical; font-size: 12.5px; max-height: 160px; }
   .field-hint { color: var(--ink-mute); font-size: 11px; margin: 3px 0 0; }
+  .basic-hint { max-width: 56ch; margin-top: 6px; color: var(--ink-soft); line-height: 1.5; }
   .advanced-disclosure { margin-top: 10px; }
   .advanced-trigger { align-items: center; background: transparent; border: 0; border-radius: var(--r-sm); color: var(--ink-soft); cursor: pointer; display: flex; justify-content: space-between; padding: 7px 8px; text-align: left; transition: background-color 150ms ease, color 150ms ease; width: 100%; }
   .advanced-trigger:hover { background: var(--control-hover); color: var(--ink); }

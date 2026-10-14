@@ -24,6 +24,39 @@ test('open General settings reflects a shared setting after sync without changin
   }
 });
 
+test('open General settings reflects voice commands after sync without remount or appearance change', async ({ page, session }) => {
+  const initial = await session.invoke('get_setting', { key: 'voice_commands_enabled' });
+  const appearance = await session.invoke('get_setting', { key: 'appearance_mode' });
+  try {
+    await session.invoke('save_setting', { key: 'voice_commands_enabled', value: false });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    const control = page.getByRole('switch', { name: 'Voice commands', exact: true });
+    await control.scrollIntoViewIfNeeded();
+    await expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(await session.invoke('get_setting', { key: 'voice_commands_enabled' })).toBe(false);
+    await session.invoke('save_setting', { key: 'voice_commands_enabled', value: true });
+    await page.evaluate(async () => {
+      const { emit } = await import('/src/lib/tauri.ts');
+      await emit('verenu:sync-status', { state: 'synced' });
+    });
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    expect(await session.invoke('get_setting', { key: 'voice_commands_enabled' })).toBe(true);
+    await session.invoke('save_setting', { key: 'voice_commands_enabled', value: false });
+    await page.evaluate(async () => {
+      const { emit } = await import('/src/lib/tauri.ts');
+      await emit('verenu:sync-status', { state: 'synced' });
+    });
+    await expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(await session.invoke('get_setting', { key: 'voice_commands_enabled' })).toBe(false);
+    await control.click();
+    await expect(control).toHaveAttribute('aria-checked', 'true');
+    expect(await session.invoke('get_setting', { key: 'voice_commands_enabled' })).toBe(true);
+    expect(await session.invoke('get_setting', { key: 'appearance_mode' })).toEqual(appearance);
+  } finally {
+    await session.invoke('save_setting', { key: 'voice_commands_enabled', value: initial ?? false });
+  }
+});
+
 test('Home refreshes imported history and totals when sync completes', async ({ page, session }) => {
   const directory = path.dirname(process.env.VERENU_SESSION_ACCESS_FILE);
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'session.json'), 'utf8'));

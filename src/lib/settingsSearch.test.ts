@@ -28,6 +28,15 @@ describe('settings search', () => {
     });
   });
 
+  it('routes voice command searches to the General voice commands row', () => {
+    for (const query of ['voice commands', 'spoken punctuation', 'scratch that', 'line break']) {
+      expect(searchSettings(query, visibleSections)[0]).toMatchObject({
+        section: 'general',
+        target: 'general-voice-commands',
+      });
+    }
+  });
+
   it('finds a specific model and routes it to the relevant model task', () => {
     expect(searchSettings('gpt 4o mini transcribe', visibleSections)[0]).toMatchObject({
       label: 'GPT-4o mini Transcribe',

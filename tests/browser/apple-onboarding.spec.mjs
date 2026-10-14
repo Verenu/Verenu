@@ -12,6 +12,14 @@ test('Finish rechecks native Apple availability before saving setup choices', as
   let startedRefresh;
   const refreshStarted = new Promise(resolve => { startedRefresh = resolve; });
   try {
+    // This missing-key presentation case must not depend on synthetic provider
+    // credentials used by earlier production checks. No credentials are changed.
+    const keyStatus = await session.invoke('get_api_key_status');
+    const missingKeys = Object.fromEntries(Object.keys(keyStatus).map(provider => [provider, provider === 'local']));
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command !== 'get_api_key_status') return route.continue();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(missingKeys) });
+    });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 3, provider: 'groq' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
@@ -27,8 +35,9 @@ test('Finish rechecks native Apple availability before saving setup choices', as
     for (let step = 0; step < 5; step++) await page.getByRole('button', { name: 'Next', exact: true }).click();
     const finish = page.getByRole('button', { name: 'Finish setup', exact: true });
     await expect(finish).toBeVisible();
+    await expect(page.locator('.done-step').getByRole('button', { name: 'Add API key', exact: true })).toBeVisible();
     await page.route('**/__verenu_dev/invoke', async route => {
-      if (route.request().postDataJSON()?.command !== 'get_apple_intelligence_availability') return route.continue();
+      if (route.request().postDataJSON()?.command !== 'get_apple_intelligence_availability') return route.fallback();
       refreshCalls++;
       startedRefresh();
       await refreshReleased;
