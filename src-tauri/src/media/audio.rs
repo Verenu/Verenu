@@ -28,10 +28,15 @@ fn finite_sample_or_zero(v: f32) -> f32 {
     }
 }
 
-/// Fraction of boosted samples that hit full scale above which a recording is
+/// Share of loud samples that hit full scale at or above which a recording is
 /// reported as clipping. A few stray peaks are normal; sustained flat-topping
 /// means the software gain is fighting a microphone that is already hot.
 const CLIPPING_WARN_FRACTION: f32 = 0.01;
+
+/// Boosted amplitude (about -20 dBFS) above which a sample counts as loud.
+/// Clipping is judged against loud samples only, so pauses and room tone
+/// cannot dilute a distorted stretch of speech below the warning threshold.
+const LOUD_SAMPLE_FLOOR: f32 = 0.1;
 
 /// Pre-gain level statistics for one recording, kept so a log line can tell
 /// "the input is too quiet, raise the system mic volume" apart from "the gain
@@ -41,6 +46,7 @@ struct InputLevelStats {
     sum_sq: f64,
     peak: f32,
     clipped: u64,
+    loud: u64,
     count: u64,
 }
 
@@ -53,7 +59,11 @@ impl InputLevelStats {
         if raw_abs > self.peak {
             self.peak = raw_abs;
         }
-        if raw_abs * gain >= 1.0 {
+        let boosted = raw_abs * gain;
+        if boosted >= LOUD_SAMPLE_FLOOR {
+            self.loud += 1;
+        }
+        if boosted >= 1.0 {
             self.clipped += 1;
         }
     }
@@ -66,11 +76,12 @@ impl InputLevelStats {
         }
     }
 
+    /// Clipped samples as a share of loud samples (see `LOUD_SAMPLE_FLOOR`).
     fn clipped_fraction(&self) -> f32 {
-        if self.count == 0 {
+        if self.loud == 0 {
             0.0
         } else {
-            self.clipped as f32 / self.count as f32
+            self.clipped as f32 / self.loud as f32
         }
     }
 
@@ -88,7 +99,7 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
         return;
     }
     log::info!(
-        "audio: input levels gain={gain:.1}x raw_rms={:.1} dBFS raw_peak={:.1} dBFS boosted_peak={:.1} dBFS clipped={:.2}%",
+        "audio: input levels gain={gain:.1}x raw_rms={:.1} dBFS raw_peak={:.1} dBFS boosted_peak={:.1} dBFS clipped={:.2}% of loud samples",
         dbfs(stats.rms()),
         dbfs(stats.peak),
         dbfs(stats.peak * gain),
@@ -96,7 +107,7 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
     );
     if stats.is_clipping() {
         log::warn!(
-            "audio: microphone gain {gain:.1}x is clipping the input ({:.1}% of samples); lower the gain and raise the system microphone volume instead",
+            "audio: microphone gain {gain:.1}x is clipping the input ({:.1}% of loud samples); lower the gain and raise the system microphone volume instead",
             stats.clipped_fraction() * 100.0
         );
     }
@@ -1366,6 +1377,16 @@ mod tests {
         let moderate = level_stats_for_sine(0.2, 2.0);
         assert_eq!(moderate.clipped, 0);
         assert!(!moderate.is_clipping());
+    }
+
+    #[test]
+    fn silence_does_not_dilute_clipping() {
+        // 1 s of flat-topped speech inside 60 s of room tone must still warn.
+        let mut stats = level_stats_for_sine(0.2, 8.0);
+        for _ in 0..59 * 48_000 {
+            stats.observe(0.001, 8.0);
+        }
+        assert!(stats.is_clipping(), "clipped {:.3}", stats.clipped_fraction());
     }
 
     #[test]
