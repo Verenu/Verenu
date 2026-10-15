@@ -57,18 +57,33 @@ impl WindowsMuteState {
     fn begin(
         &mut self,
         snapshot_and_mute: impl FnOnce() -> Result<Option<String>, String>,
+        confirm_current_mute: impl FnOnce() -> Result<bool, String>,
         mut restore: impl FnMut(&str) -> Result<(), String>,
-    ) -> Vec<String> {
+    ) -> (MuteOutcome, Vec<String>) {
         if self.active_endpoint.is_some() {
-            return Vec::new();
+            return match confirm_current_mute() {
+                Ok(true) => (MuteOutcome::AlreadyMuted, Vec::new()),
+                Ok(false) => (
+                    MuteOutcome::Failed,
+                    vec!["Current Windows output is no longer muted".into()],
+                ),
+                Err(err) => (MuteOutcome::Failed, vec![err]),
+            };
         }
 
         let mut failures = self.retry_pending(&mut restore);
-        match snapshot_and_mute() {
-            Ok(endpoint) => self.active_endpoint = endpoint,
-            Err(err) => failures.push(err),
-        }
-        failures
+        let outcome = match snapshot_and_mute() {
+            Ok(Some(endpoint)) => {
+                self.active_endpoint = Some(endpoint);
+                MuteOutcome::Muted
+            }
+            Ok(None) => MuteOutcome::AlreadyMuted,
+            Err(err) => {
+                failures.push(err);
+                MuteOutcome::Failed
+            }
+        };
+        (outcome, failures)
     }
 
     fn end(&mut self, mut restore: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
@@ -189,6 +204,26 @@ fn restore_windows_endpoint(endpoint: &str) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         volume
             .SetMute(false, std::ptr::null())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Resolve the default again rather than trusting the endpoint saved for restore.
+#[cfg(windows)]
+fn confirm_current_windows_mute() -> Result<bool, String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| e.to_string())?;
+        let volume: IAudioEndpointVolume = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| e.to_string())?;
+        volume
+            .GetMute()
+            .map(|muted| muted.as_bool())
             .map_err(|e| e.to_string())
     }
 }
@@ -450,6 +485,34 @@ mod macos {
         }
     }
 
+    pub fn confirm_current_mute() -> Result<bool, String> {
+        let device_id = default_output_device()?;
+        if property_is_settable(
+            device_id,
+            kAudioDevicePropertyMute,
+            kAudioObjectPropertyScopeOutput,
+        )? && get_u32_property(
+            device_id,
+            kAudioDevicePropertyMute,
+            kAudioObjectPropertyScopeOutput,
+        )? != 0
+        {
+            return Ok(true);
+        }
+        if property_is_settable(
+            device_id,
+            kAudioDevicePropertyVolumeScalar,
+            kAudioObjectPropertyScopeOutput,
+        )? {
+            return Ok(get_f32_property(
+                device_id,
+                kAudioDevicePropertyVolumeScalar,
+                kAudioObjectPropertyScopeOutput,
+            )? == 0.0);
+        }
+        Ok(false)
+    }
+
     pub(super) fn default_input_device() -> Result<AudioDeviceID, String> {
         let property_address = property_address(
             kAudioHardwarePropertyDefaultInputDevice,
@@ -674,18 +737,15 @@ pub fn mute() -> MuteOutcome {
         }
     };
 
-    let failures = muted.begin(snapshot_and_mute_windows, restore_windows_endpoint);
+    let (outcome, failures) = muted.begin(
+        snapshot_and_mute_windows,
+        confirm_current_windows_mute,
+        restore_windows_endpoint,
+    );
     for err in &failures {
         log::warn!("Failed to apply Windows audio mute state: {err}");
     }
-    // A failed restore of an older endpoint does not mean this mute failed.
-    if muted.active_endpoint.is_some() {
-        MuteOutcome::Muted
-    } else if failures.is_empty() {
-        MuteOutcome::AlreadyMuted
-    } else {
-        MuteOutcome::Failed
-    }
+    outcome
 }
 
 #[cfg(windows)]
@@ -714,7 +774,14 @@ pub fn mute() -> MuteOutcome {
     };
 
     if !matches!(*restore_state, MacRestoreState::Idle) {
-        return MuteOutcome::AlreadyMuted;
+        return match macos::confirm_current_mute() {
+            Ok(true) => MuteOutcome::AlreadyMuted,
+            Ok(false) => MuteOutcome::Failed,
+            Err(err) => {
+                log::warn!("Could not confirm current macOS output mute: {err}");
+                MuteOutcome::Failed
+            }
+        };
     }
 
     match macos::snapshot_and_mute() {
@@ -1069,7 +1136,7 @@ pub fn release_mic(_session_id: u64) {}
 
 #[cfg(test)]
 mod windows_mute_state_tests {
-    use super::WindowsMuteState;
+    use super::{MuteOutcome, WindowsMuteState};
     use std::cell::Cell;
 
     #[test]
@@ -1079,6 +1146,7 @@ mod windows_mute_state_tests {
 
         state.begin(
             || Ok(Some("removed-endpoint".to_string())),
+            || panic!("no existing lease"),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -1100,6 +1168,7 @@ mod windows_mute_state_tests {
                 new_endpoint_muted.set(true);
                 Ok(Some("current-endpoint".to_string()))
             },
+            || panic!("no existing lease"),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 if endpoint == "removed-endpoint" {
@@ -1123,6 +1192,7 @@ mod windows_mute_state_tests {
 
         state.begin(
             || Ok(None),
+            || panic!("no existing lease"),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -1164,7 +1234,11 @@ mod windows_mute_state_tests {
     #[test]
     fn unmute_retries_pending_restore_without_an_active_endpoint() {
         let mut state = WindowsMuteState::new();
-        state.begin(|| Ok(Some("temporarily-missing".to_string())), |_| Ok(()));
+        state.begin(
+            || Ok(Some("temporarily-missing".to_string())),
+            || panic!("no existing lease"),
+            |_| Ok(()),
+        );
         assert!(state
             .end(|_| Err("endpoint unavailable".to_string()))
             .is_err());
@@ -1182,5 +1256,40 @@ mod windows_mute_state_tests {
         assert_eq!(restored.as_deref(), Some("temporarily-missing"));
         assert!(state.pending_restores.is_empty());
         assert_eq!(state.active_endpoint, None);
+    }
+
+    #[test]
+    fn existing_windows_lease_requires_fresh_default_output_confirmation() {
+        let mut state = WindowsMuteState::new();
+        state.begin(
+            || Ok(Some("original-output".into())),
+            || unreachable!(),
+            |_| Ok(()),
+        );
+
+        // Switching to an audible output, manually unmuting, or losing access
+        // to the audio server must not confirm silence from a saved lease.
+        for current in [Ok(false), Err("audio server unavailable".into()), Ok(true)] {
+            let expected = if current == Ok(true) {
+                MuteOutcome::AlreadyMuted
+            } else {
+                MuteOutcome::Failed
+            };
+            let (outcome, _) = state.begin(
+                || panic!("must preserve restore snapshot"),
+                || current,
+                |_| panic!("must not restore during confirmation"),
+            );
+            assert_eq!(outcome, expected);
+            assert_eq!(state.active_endpoint.as_deref(), Some("original-output"));
+        }
+        let mut restored = Vec::new();
+        state
+            .end(|endpoint| {
+                restored.push(endpoint.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(restored, ["original-output"]);
     }
 }
