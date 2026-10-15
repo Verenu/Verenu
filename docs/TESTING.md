@@ -288,8 +288,8 @@ credentials report incomplete and fail instead of claiming provider success.
 
 `node scripts/ci/merge-rules.mjs` checks the deployed required status checks.
 `--apply` installs the master-only CI ruleset without editing other rulesets.
-The new aggregate `CI required` check can be required after the updated workflow
-has landed; the deployed ruleset initially requires the already-existing checks.
+The ruleset requires the aggregate `CI required` check and the existing Actions
+checks. Code review is managed separately through the repository's review rules.
 
 ## Related Docs
 
