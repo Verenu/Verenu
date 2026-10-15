@@ -210,6 +210,17 @@ impl Catalog {
                 continue;
             }
 
+            let previous = text[..index].chars().next_back();
+            let preceding_segment = text[..index].rsplit(char::is_whitespace).next().unwrap_or("");
+            let embedded_path_or_uri = preceding_segment.contains("://")
+                || preceding_segment
+                    .chars()
+                    .any(|previous| matches!(previous, '/' | '\\'));
+            if previous == Some('$') || embedded_path_or_uri {
+                output.push('$');
+                continue;
+            }
+
             let mut end = index + ch.len_utf8();
             let name_start = end;
             for name_char in text[end..].chars() {
@@ -221,15 +232,9 @@ impl Catalog {
             }
             let name = &text[name_start..end];
             let skill = self.skills.iter().find(|skill| {
-                !name.is_empty()
-                    && name.as_bytes()[0].is_ascii_alphabetic()
-                    && skill.name.eq_ignore_ascii_case(name)
+                !name.is_empty() && skill.name.eq_ignore_ascii_case(name)
             });
-            let previous = text[..index].chars().next_back();
-            let separated = previous.is_none_or(|previous| {
-                previous.is_whitespace() || matches!(previous, '(' | '[' | '{' | '<')
-            });
-            let Some(skill) = skill.filter(|_| separated) else {
+            let Some(skill) = skill else {
                 output.push('$');
                 continue;
             };
