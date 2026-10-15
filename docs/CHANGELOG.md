@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Model pickers open with a small batch per provider instead of rendering every discovered model at once. Search covers the full catalog, current selections stay first, and more models remain available in each provider group while catalogs refresh or a provider is offline.
+
 - Reworked the microphone gain advice in Settings > Audio. The "enable noise reduction" tip no longer appears when noise reduction is already on; at high gain it now points at the usual cause, a system input volume that is set too low. Each recording logs its input level and the share of samples clipped by the gain, with a warning when the gain is clipping the signal. Troubleshooting covers checking PipeWire and hardware capture levels.
 
 - Added Basic cleanup in Style and Contexts: on-device English filler, repetition, and conservative repair removal, with punctuation preserved and no cleanup model call. Existing Off and Light choices keep their behavior. Basic uses only the primary transcript and skips AI tone and custom instructions. Added separate, default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. Both require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.

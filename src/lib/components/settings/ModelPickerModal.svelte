@@ -96,13 +96,8 @@
       : 'all',
   );
 
-  // Row and dialog motion is dropped or simplified on Android: dozens of
-  // simultaneous transitions, plus a scale from 18% on a card this size, is what
-  // made opening the picker stall a phone.
-  const rowIn = (node: Element, params: Parameters<typeof fly>[1]) =>
-    isAndroid ? { duration: 0 } : fly(node, params);
-  const rowOut = (node: Element, params: Parameters<typeof fade>[1]) =>
-    isAndroid ? { duration: 0 } : fade(node, params);
+  // Animate the dialog once, rather than measuring and animating every model
+  // row while the dialog itself is being laid out.
   const cardMotion = (node: Element, params: { origin?: { x: number; y: number }; duration?: number }) =>
     isAndroid
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
@@ -188,6 +183,17 @@
   const inFilter = (row: ModelRow) =>
     providerFilter === 'all' || row.provider === providerFilter;
   const shown = $derived(searched.filter(inFilter));
+  // Provider discovery can add hundreds of compatible models. Build only a
+  // small batch of rows on open; search and provider counts still use the full
+  // catalog, including cached entries while a refresh is pending or offline.
+  const ROW_BATCH = 20;
+  let rowLimits = $state<Partial<Record<ProviderId, number>>>({});
+  $effect(() => {
+    query;
+    providerFilter;
+    showUnverified;
+    rowLimits = {};
+  });
   /** How many the disclosure would add, counted for the tab you're on. */
   const hiddenCount = $derived(matchedUnverified.filter(inFilter).length);
 
@@ -209,7 +215,8 @@
       provider,
       rows: shown
         .filter((row) => row.provider === provider)
-        .sort((a, b) => RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
+        .sort((a, b) => Number(pinned.includes(b.key)) - Number(pinned.includes(a.key))
+          || RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
     })).filter((group) => group.rows.length > 0),
   );
 
@@ -503,20 +510,13 @@
               </div>
             {/if}
           {/if}
-          {#each group.rows as row, index (row.key)}
+          {#each group.rows.slice(0, rowLimits[group.provider] ?? ROW_BATCH) as row (row.key)}
             {@const active = isActive(row.key)}
             {@const fallback = isFallback(row.key)}
             <div
               class="model-row"
               class:row-active={active}
               class:row-dim={row.state === 'needs-setup'}
-              in:rowIn|global={{
-                y: 6,
-                duration: motionMs(MOTION_MS.base),
-                delay: motionMs(Math.min(index, 8) * 12),
-                easing: cubicOut,
-              }}
-              out:rowOut|global={{ duration: motionMs(MOTION_MS.fast) }}
             >
               <button
                 class="row-main"
@@ -604,6 +604,16 @@
               </div>
             {/if}
           {/each}
+          {#if group.rows.length > (rowLimits[group.provider] ?? ROW_BATCH)}
+            <button
+              type="button"
+              class="more-toggle"
+              onclick={() => (rowLimits[group.provider] = (rowLimits[group.provider] ?? ROW_BATCH) + ROW_BATCH)}
+            >
+              Show next {Math.min(ROW_BATCH, group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH))} {providerDisplayLabel(group.provider)} models
+              <span>({group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH)} remaining · search all models above)</span>
+            </button>
+          {/if}
         {/each}
 
         {#if hiddenCount > 0 || showUnverified}
