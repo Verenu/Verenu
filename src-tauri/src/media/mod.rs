@@ -6,5 +6,6 @@ pub mod digital_silence;
 #[cfg(windows)]
 pub mod hardware_mute;
 pub mod mic_mute_trigger;
+pub mod mute_gate;
 pub mod sound;
 pub mod vad;
