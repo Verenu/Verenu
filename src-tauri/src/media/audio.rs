@@ -28,6 +28,106 @@ fn finite_sample_or_zero(v: f32) -> f32 {
     }
 }
 
+/// Share of loud samples that hit full scale at or above which a recording is
+/// reported as clipping. A few stray peaks are normal; sustained flat-topping
+/// means the software gain is fighting a microphone that is already hot.
+const CLIPPING_WARN_FRACTION: f32 = 0.01;
+
+/// Boosted amplitude (about -20 dBFS) above which a sample counts as loud.
+/// Clipping is judged against loud samples only, so pauses and room tone
+/// cannot dilute a distorted stretch of speech below the warning threshold.
+const LOUD_SAMPLE_FLOOR: f32 = 0.1;
+
+/// Raw peak at which the capture itself, before any software gain, is clipped.
+const RAW_FULL_SCALE: f32 = 0.99;
+
+/// Pre-gain level statistics for one recording, kept so a log line can tell
+/// "the input is too quiet, raise the system mic volume" apart from "the gain
+/// is clipping the signal" without ever retaining audio.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct InputLevelStats {
+    sum_sq: f64,
+    peak: f32,
+    clipped: u64,
+    loud: u64,
+    count: u64,
+}
+
+impl InputLevelStats {
+    /// Record one raw (pre-gain) mono sample against the configured gain.
+    fn observe(&mut self, raw: f32, gain: f32) {
+        let raw_abs = raw.abs();
+        self.sum_sq += f64::from(raw) * f64::from(raw);
+        self.count += 1;
+        if raw_abs > self.peak {
+            self.peak = raw_abs;
+        }
+        let boosted = raw_abs * gain;
+        if boosted >= LOUD_SAMPLE_FLOOR {
+            self.loud += 1;
+        }
+        if boosted >= 1.0 {
+            self.clipped += 1;
+        }
+    }
+
+    fn rms(&self) -> f32 {
+        if self.count == 0 {
+            0.0
+        } else {
+            (self.sum_sq / self.count as f64).sqrt() as f32
+        }
+    }
+
+    /// Clipped samples as a share of loud samples (see `LOUD_SAMPLE_FLOOR`).
+    fn clipped_fraction(&self) -> f32 {
+        if self.loud == 0 {
+            0.0
+        } else {
+            self.clipped as f32 / self.loud as f32
+        }
+    }
+
+    fn is_clipping(&self) -> bool {
+        self.clipped_fraction() >= CLIPPING_WARN_FRACTION
+    }
+}
+
+fn dbfs(linear: f32) -> f32 {
+    20.0 * linear.max(1e-6).log10()
+}
+
+fn log_input_levels(stats: &InputLevelStats, gain: f32) {
+    if stats.count == 0 {
+        return;
+    }
+    log::info!(
+        "audio: input levels gain={gain:.1}x raw_rms={:.1} dBFS raw_peak={:.1} dBFS boosted_peak={:.1} dBFS clipped={:.2}% of loud samples",
+        dbfs(stats.rms()),
+        dbfs(stats.peak),
+        dbfs(stats.peak * gain),
+        stats.clipped_fraction() * 100.0
+    );
+    if stats.is_clipping() {
+        log::warn!(
+            "audio: input is clipping ({:.1}% of loud samples) at gain {gain:.1}x; {}",
+            stats.clipped_fraction() * 100.0,
+            clipping_advice(stats, gain)
+        );
+    }
+}
+
+/// Where the clipping starts decides the fix. If the microphone signal already
+/// reaches full scale (or no gain is being applied) the system or hardware
+/// input level is too hot; otherwise the software gain is pushing it over.
+fn clipping_advice(stats: &InputLevelStats, gain: f32) -> &'static str {
+    if gain <= 1.0 || stats.peak >= RAW_FULL_SCALE {
+        "the microphone signal is already at full scale; lower the system microphone volume or the device's hardware gain"
+    } else {
+        "lower the microphone gain, and raise the system microphone volume instead if the voice is too quiet"
+    }
+}
+
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     let names: Vec<String> = host
@@ -620,8 +720,7 @@ impl RecordingSession {
                 } else {
                     Vec::new()
                 };
-                let mut raw_sum_sq = 0.0f64;
-                let mut raw_sample_count = 0u64;
+                let mut input_levels = InputLevelStats::default();
                 let mut termination = RecordingTermination::Complete;
                 let mut recovery_write_failed = false;
                 let mut resampler = StreamingResampler::new(sample_rate);
@@ -642,9 +741,7 @@ impl RecordingSession {
                 loop {
                     batch.clear();
                     while let Some(sample) = worker_queue.pop() {
-                        let raw_sample = sample as f64;
-                        raw_sum_sq += raw_sample * raw_sample;
-                        raw_sample_count += 1;
+                        input_levels.observe(sample, gain);
                         batch.push(clamp_unit_sample(sample * gain));
                     }
 
@@ -742,12 +839,8 @@ impl RecordingSession {
                     termination = RecordingTermination::RecoveryWriteFailed;
                 }
 
-                let raw_rms = if raw_sample_count == 0 {
-                    0.0
-                } else {
-                    (raw_sum_sq / raw_sample_count as f64).sqrt() as f32
-                };
-                (samples_16k, termination, raw_rms)
+                log_input_levels(&input_levels, gain);
+                (samples_16k, termination, input_levels.rms())
             });
             let worker = ProcessingWorker {
                 stop: Arc::clone(&stop_processing),
@@ -1038,7 +1131,8 @@ mod tests {
     }
 
     use super::{
-        enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, WorkerWake, DISPLAY_GAIN,
+        clipping_advice, dbfs, enqueue_i16_buffer, push_overwriting_oldest, CaptureBuffer, InputLevelStats, WorkerWake,
+        DISPLAY_GAIN,
     };
     use crossbeam_queue::ArrayQueue;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -1272,5 +1366,72 @@ mod tests {
         let low = f32::from_bits(low_level.load(Ordering::Relaxed));
         let high = f32::from_bits(high_level.load(Ordering::Relaxed));
         assert!(high > low * 7.5);
+    }
+    fn level_stats_for_sine(amplitude: f32, gain: f32) -> InputLevelStats {
+        let mut stats = InputLevelStats::default();
+        for i in 0..48_000 {
+            let phase = i as f32 * 2.0 * std::f32::consts::PI * 220.0 / 48_000.0;
+            stats.observe(amplitude * phase.sin(), gain);
+        }
+        stats
+    }
+
+    #[test]
+    fn input_levels_report_rms_and_peak_before_gain() {
+        let stats = level_stats_for_sine(0.2, 8.0);
+        assert!((stats.rms() - 0.2 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.002);
+        assert!((stats.peak - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn eight_x_gain_clips_a_hot_signal_but_moderate_gain_does_not() {
+        // A 0.2-peak voice is a healthy level for a USB mic with its hardware
+        // gain set correctly. 8x pushes it far past full scale.
+        let hot = level_stats_for_sine(0.2, 8.0);
+        assert!(hot.is_clipping(), "clipped {:.3}", hot.clipped_fraction());
+        let moderate = level_stats_for_sine(0.2, 2.0);
+        assert_eq!(moderate.clipped, 0);
+        assert!(!moderate.is_clipping());
+    }
+
+    #[test]
+    fn clipping_advice_depends_on_where_the_clipping_starts() {
+        // Software gain pushed a healthy signal over full scale.
+        let boosted = level_stats_for_sine(0.2, 8.0);
+        assert!(clipping_advice(&boosted, 8.0).starts_with("lower the microphone gain"));
+        // The microphone itself is already at full scale: lowering the
+        // software gain cannot help and raising the system volume would hurt.
+        let hot_mic = level_stats_for_sine(1.0, 2.0);
+        assert!(clipping_advice(&hot_mic, 2.0).contains("lower the system microphone volume"));
+        // At unity gain the software multiplier is not the cause at all.
+        let unity = level_stats_for_sine(0.5, 1.0);
+        assert!(clipping_advice(&unity, 1.0).contains("lower the system microphone volume"));
+    }
+
+    #[test]
+    fn silence_does_not_dilute_clipping() {
+        // 1 s of flat-topped speech inside 60 s of room tone must still warn.
+        let mut stats = level_stats_for_sine(0.2, 8.0);
+        for _ in 0..59 * 48_000 {
+            stats.observe(0.001, 8.0);
+        }
+        assert!(stats.is_clipping(), "clipped {:.3}", stats.clipped_fraction());
+    }
+
+    #[test]
+    fn quiet_input_needs_gain_without_clipping() {
+        // The case that drove the 8x setting: a mic whose system volume is far
+        // too low. It is quiet, and boosting it still does not clip.
+        let quiet = level_stats_for_sine(0.02, 8.0);
+        assert!(!quiet.is_clipping());
+        assert!(dbfs(quiet.peak * 8.0) < -6.0);
+    }
+
+    #[test]
+    fn empty_input_levels_are_zero() {
+        let stats = InputLevelStats::default();
+        assert_eq!(stats.rms(), 0.0);
+        assert_eq!(stats.clipped_fraction(), 0.0);
+        assert!(!stats.is_clipping());
     }
 }

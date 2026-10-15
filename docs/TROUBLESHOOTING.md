@@ -47,6 +47,41 @@ Verenu intentionally rejects recordings that are too short or too quiet. The pil
 - Open Settings -> Audio and check the selected microphone, microphone gain, and noise reduction settings.
 - Watch the floating pill bars while speaking. No movement usually means the app is not receiving usable audio.
 
+## Microphone gain is pinned at 8x
+
+Microphone gain is a digital boost applied after your system's input volume. If you
+need 8x to be heard, the system input volume is almost always too low. Boosting in
+Verenu also multiplies room noise and clips loud speech, and noise reduction cannot
+undo clipping. Raise the system level first, then lower the slider (most setups need
+1-4x).
+
+On Linux with PipeWire and WirePlumber, check the whole chain:
+
+```bash
+wpctl get-volume @DEFAULT_AUDIO_SOURCE@   # target roughly 0.4-0.8, not MUTED
+wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.6
+amixer -c <card> sget Mic                  # USB mics often have a separate hardware capture gain
+```
+
+A PipeWire volume near zero, or a hardware capture control at 0, can look like a
+dead microphone and is the usual reason people push the slider to the maximum.
+WirePlumber remembers the level per device, so it only needs setting once.
+
+To see how hot the signal is, dictate a sentence and read the session log
+(see "Session logs for agents"). Each recording writes one line:
+
+```text
+audio: input levels gain=2.0x raw_rms=-31.0 dBFS raw_peak=-12.4 dBFS boosted_peak=-6.4 dBFS clipped=0.00% of loud samples
+```
+
+Aim for `boosted_peak` between about -12 and -3 dBFS. `clipped` is the share of
+loud samples (above about -20 dBFS after gain) that hit full scale; at 1% or more
+the recording also logs a warning. If `raw_peak` is already near 0 dBFS
+(or the gain is 1x), the microphone itself is too hot: lower the system volume or
+the device's hardware gain. Otherwise lower the gain. A `raw_peak`
+below about -30 dBFS means the system input volume should go up. These lines record
+levels only, never audio or text.
+
 ## macOS Permissions
 
 macOS needs permissions for real use:

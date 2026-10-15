@@ -5,7 +5,7 @@
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
   import { booleanSettingHandler, loadSettingsSnapshot, saveSetting } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
-  import { defaultMicGain, shouldPersistMicGain } from './audioGain';
+  import { defaultMicGain, micGainAdvice, shouldPersistMicGain } from './audioGain';
 
   let noiseReduction = $state(true);
   let muteAudio = $state(false);
@@ -17,6 +17,7 @@
   let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSavedMicGain: number | null = null;
   let micGainChangedByUser = false;
+  const gainAdvice = $derived(micGainAdvice(micGain, noiseReduction));
 
   async function loadSettings() {
     try {
@@ -116,7 +117,7 @@
   <div class="gain-header">
     <div>
       <div class="label">Microphone gain</div>
-      <div class="desc">Boost signal strength before sending audio to the voice model</div>
+      <div class="desc">Digital boost applied on top of your system input volume. Raise the system volume first if you need more than about 4×.</div>
     </div>
     <span class="gain-value">{micGain.toFixed(1)}×</span>
   </div>
@@ -137,10 +138,10 @@
       <span>8×</span>
     </div>
   </div>
-  {#if micGain >= 5}
-    <div class="gain-tip" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+  {#if gainAdvice}
+    <div class="gain-tip" role="note" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      At high gain, enable <strong>noise reduction</strong> to avoid amplifying background noise.
+      {gainAdvice}
     </div>
   {/if}
 </div>
@@ -280,7 +281,6 @@
     line-height: 1.4;
   }
   .gain-tip svg { flex-shrink: 0; color: var(--warning); }
-  .gain-tip strong { font-weight: 600; }
 
   .sound-volume-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .sound-volume-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
