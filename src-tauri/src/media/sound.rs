@@ -65,10 +65,15 @@ impl MuteOwners {
         self.local || !self.remote.is_empty()
     }
 
-    fn acquire_local(&mut self, active: bool, generation: u64) {
-        if !self.shutting_down && active && self.local_generation == generation {
+    /// Takes local ownership when this claim is still current. Returns whether
+    /// it did, so a superseded claim is never reported as muted just because
+    /// another owner (a remote device) holds the mute.
+    fn acquire_local(&mut self, active: bool, generation: u64) -> bool {
+        let acquired = !self.shutting_down && active && self.local_generation == generation;
+        if acquired {
             self.local = true;
         }
+        acquired
     }
 }
 
@@ -103,7 +108,7 @@ fn release_mute_owners_on_exit(owners: &mut MuteOwners, restore_audio: impl FnOn
 
 #[cfg(test)]
 mod mute_tests {
-    use super::{MuteOutcome, MuteOwners};
+    use super::{MuteOutcome, MuteOwners, MUTE_OWNERS};
     use std::cell::Cell;
 
     #[test]
@@ -137,6 +142,36 @@ mod mute_tests {
         owners.acquire_local(true, 1);
         assert!(owners.local);
         assert!(owners.muted());
+    }
+
+    #[test]
+    fn stale_claim_is_not_acquired() {
+        let mut owners = MuteOwners {
+            local_generation: 2,
+            ..Default::default()
+        };
+        assert!(!owners.acquire_local(true, 1));
+        assert!(!owners.local);
+        assert!(owners.acquire_local(true, 2));
+    }
+
+    #[test]
+    fn superseded_mute_task_fails_even_while_another_owner_holds_the_mute() {
+        let remote_owner = u64::MAX - 7;
+        MUTE_OWNERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remote
+            .insert(remote_owner);
+        let stale = super::local_mute_task();
+        let _newer = super::local_mute_task();
+        let outcome = stale();
+        MUTE_OWNERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remote
+            .remove(&remote_owner);
+        assert_eq!(outcome, MuteOutcome::Failed);
     }
 
     #[test]
@@ -300,10 +335,18 @@ pub fn local_mute_task() -> impl FnOnce() -> MuteOutcome + Send + 'static {
         owners.local_generation
     };
     move || {
-        update_mute_owners(|owners| owners.acquire_local(true, generation))
-            // The generation was superseded (an unmute raced in): nothing is
-            // muted on this recording's behalf.
-            .unwrap_or(MuteOutcome::Failed)
+        let mut acquired = false;
+        let outcome = update_mute_owners(|owners| {
+            acquired = owners.acquire_local(true, generation);
+        });
+        if acquired {
+            outcome.unwrap_or(MuteOutcome::Failed)
+        } else {
+            // The claim was superseded (an unmute or a newer recording raced
+            // in): nothing is muted on this recording's behalf, even if some
+            // other owner keeps the output muted.
+            MuteOutcome::Failed
+        }
     }
 }
 
