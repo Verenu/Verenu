@@ -258,6 +258,7 @@ mod tests {
         let target = RejectionTarget::DictionaryCorrections {
             correction_ids: vec![701, 702],
             context: ResolvedContextIdentity {
+                t3_skills: None,
                 id: 11,
                 label: "Development".to_string(),
             },
@@ -282,6 +283,7 @@ mod tests {
             let target = RejectionTarget::DictionaryCorrections {
                 correction_ids: vec![701],
                 context: ResolvedContextIdentity {
+                    t3_skills: None,
                     id: context_id,
                     label: "context".to_string(),
                 },

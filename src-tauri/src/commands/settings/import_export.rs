@@ -124,6 +124,8 @@ pub struct ExportContext {
     #[serde(default)]
     pub paste_in_chunks: bool,
     #[serde(default)]
+    pub t3_skill_mentions_disabled: Option<bool>,
+    #[serde(default)]
     pub pinned_at: Option<String>,
     #[serde(default)]
     pub dictionary: Vec<ExportContextDictionaryEntry>,
@@ -536,9 +538,7 @@ mod cross_store_tests;
 fn export_contextual_library(
     db: &db::Db,
 ) -> AnyhowResult<(Vec<ExportDictionaryEntry>, Vec<ExportContext>)> {
-    let conn = db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
 
     let dictionary = {
         let mut stmt = conn.prepare(
@@ -601,7 +601,7 @@ fn export_contextual_library(
     let mut contexts = Vec::new();
     let mut context_stmt = conn.prepare(
         "SELECT id, uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks
+                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled
            FROM contexts
           ORDER BY is_everywhere DESC, id",
     )?;
@@ -620,6 +620,7 @@ fn export_contextual_library(
                 contextual_formatting_disabled: row.get::<_, i64>(9)? != 0,
                 pinned_at: row.get(10)?,
                 paste_in_chunks: row.get::<_, i64>(11)? != 0,
+                t3_skill_mentions_disabled: Some(row.get::<_, bool>(12)?),
                 dictionary: Vec::new(),
                 snippets: Vec::new(),
                 targets: Vec::new(),
@@ -1202,7 +1203,7 @@ fn import_context_conn(
         conn.execute(
             "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3,
                     color = ?4, custom_instructions = ?5,
-                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
+                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
                     updated_at = datetime('now')
               WHERE id = ?8",
             params![
@@ -1215,6 +1216,7 @@ fn import_context_conn(
                 source.pinned_at,
                 id,
                 source.paste_in_chunks,
+                source.t3_skill_mentions_disabled,
             ],
         )?;
         stats.contexts_already_existed += 1;
@@ -1253,7 +1255,7 @@ fn import_context_conn(
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
                         cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
-                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10,
+                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
                   WHERE id = ?9",
                 params![
@@ -1267,13 +1269,14 @@ fn import_context_conn(
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
+                    source.t3_skill_mentions_disabled,
                 ],
             )?;
         } else {
             conn.execute(
                 "UPDATE contexts SET icon = ?1, tone = ?2,
                         cleanup_intensity = ?3, color = ?4, custom_instructions = ?5,
-                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
+                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
                   WHERE id = ?8",
                 params![
@@ -1286,6 +1289,7 @@ fn import_context_conn(
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
+                    source.t3_skill_mentions_disabled,
                 ],
             )?;
         }
@@ -1312,8 +1316,8 @@ fn import_context_conn(
     let inserted = conn.execute(
         "INSERT INTO contexts
            (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 0))",
         params![
             uuid,
             name,
@@ -1325,6 +1329,7 @@ fn import_context_conn(
             source.contextual_formatting_disabled as i64,
             source.pinned_at,
             source.paste_in_chunks,
+            source.t3_skill_mentions_disabled,
         ],
     );
     match inserted {
@@ -1624,6 +1629,38 @@ mod tests {
     }
 
     #[test]
+    fn t3_context_backup_preserves_opt_out_and_legacy_imports() {
+        let source = db::open(":memory:").unwrap();
+        let context =
+            db::insert_context_returning(&source, "T3 backup", None, None, None, None, false)
+                .unwrap();
+        db::update_context_t3_skill_mentions(&source, context.id, false).unwrap();
+        let (_, contexts) = export_contextual_library(&source).unwrap();
+        let mut exported = contexts
+            .into_iter()
+            .find(|c| c.name == "T3 backup")
+            .unwrap();
+        assert_eq!(exported.t3_skill_mentions_disabled, Some(true));
+        let target = db::open(":memory:").unwrap();
+        let conn = target.lock().unwrap();
+        let mut stats = LibraryImportStats::default();
+        let id = import_context_conn(&conn, &exported, &mut stats)
+            .unwrap()
+            .unwrap();
+        exported.t3_skill_mentions_disabled = None;
+        import_context_conn(&conn, &exported, &mut stats).unwrap();
+        assert!(conn
+            .query_row(
+                "SELECT t3_skill_mentions_disabled FROM contexts WHERE id=?1",
+                [id],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap());
+        assert!(!exportable_setting_keys().any(|key| key == store::T3_CONNECTION));
+        assert!(!exportable_setting_keys().any(|key| key == store::KEY_T3_INTEGRATION));
+    }
+
+    #[test]
     fn contextual_backup_round_trip_preserves_context_scoped_corrections() {
         let source = db::open(":memory:").expect("source db");
         let development =
@@ -1797,10 +1834,7 @@ mod tests {
             ),
             None
         );
-        assert_eq!(
-            resolve_import_target(&target("?::photoshop.app", None, None), &installed, Some("linux")),
-            None
-        );
+        assert_eq!(resolve_import_target(&target("?::photoshop.app", None, None), &installed, Some("linux")), None);
     }
 
     #[test]

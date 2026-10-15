@@ -83,10 +83,21 @@ pub(super) fn resolve_context_for_window(
         target.id,
     )
     .ok()?;
-    Some(crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
+    let mut identity = crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
         &context,
         sub_app.as_ref(),
-    ))
+    );
+    identity.t3_skills = store::settings_snapshot(app)
+        .ok()
+        .as_ref()
+        .and_then(|settings| {
+            crate::commands::catalog_for_destination(
+                settings,
+                &process_name,
+                context.t3_skill_mentions_disabled,
+            )
+        });
+    Some(identity)
 }
 
 pub(super) fn emit_context_for_window(

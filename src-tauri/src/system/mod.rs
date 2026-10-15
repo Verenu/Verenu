@@ -20,6 +20,7 @@ pub mod notify;
 pub mod omarchy_theme;
 pub mod platform;
 pub mod session;
+pub mod t3_skills;
 pub mod text;
 pub mod volume;
 #[cfg(target_os = "windows")]
