@@ -633,14 +633,22 @@ mod linux {
     pub fn default_sink() -> Result<(Sink, bool), String> {
         const INSPECT: [&str; 2] = ["inspect", "@DEFAULT_AUDIO_SINK@"];
         const VOLUME: [&str; 2] = ["get-volume", "@DEFAULT_AUDIO_SINK@"];
-        if let (Ok(inspect), Ok(volume)) = (spawn("wpctl", &INSPECT), spawn("wpctl", &VOLUME)) {
-            let inspect = finish(inspect, "wpctl", &INSPECT);
-            let volume = finish(volume, "wpctl", &VOLUME);
-            if let (Ok(inspect), Ok(volume)) = (inspect, volume) {
-                if let Some(id) = parse_wpctl_id(&inspect) {
-                    return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+        match (spawn("wpctl", &INSPECT), spawn("wpctl", &VOLUME)) {
+            (Ok(inspect), Ok(volume)) => {
+                let inspect = finish(inspect, "wpctl", &INSPECT);
+                let volume = finish(volume, "wpctl", &VOLUME);
+                if let (Ok(inspect), Ok(volume)) = (inspect, volume) {
+                    if let Some(id) = parse_wpctl_id(&inspect) {
+                        return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+                    }
                 }
             }
+            // Only one process started: reap it instead of leaving a zombie.
+            (Ok(mut child), Err(_)) | (Err(_), Ok(mut child)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            (Err(_), Err(_)) => {}
         }
         let name = run("pactl", &["get-default-sink"])?.trim().to_string();
         if name.is_empty() {

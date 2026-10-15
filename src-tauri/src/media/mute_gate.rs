@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Longest recording start waits for the mute to be confirmed. A confirmed
-/// mute takes about 15 ms on PipeWire, so this only matters when the audio
+/// mute takes roughly 15-30 ms on PipeWire, so this only matters when the audio
 /// server is unhealthy.
 pub const MUTE_CONFIRM_TIMEOUT: Duration = Duration::from_millis(250);
 
