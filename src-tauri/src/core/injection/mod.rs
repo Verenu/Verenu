@@ -810,7 +810,7 @@ pub async fn inject_text(
     paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     #[cfg(any(test, debug_assertions))]
-    if crate::testing::is_enabled() {
+    if crate::testing::injection_capture_enabled() {
         crate::testing::record_injection(crate::testing::InjectionRecord {
             text: text.to_string(),
             target_hwnd: target.id,

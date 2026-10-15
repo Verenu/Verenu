@@ -857,6 +857,95 @@ fn base_request(config: store::PipelineConfig) -> PipelineTestRequest {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn injection_capture_keeps_provider_requests_live() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    crate::testing::set_injection_capture_enabled(true);
+    assert!(crate::testing::resolve_provider_fixture("cleanup", "groq", "model").is_none());
+    let result = crate::core::injection::inject_text(
+        "Public synthetic delivery", &WindowTarget::default(), false, false,
+        "casual", "en", false, false,
+    ).await.unwrap();
+    assert_eq!(result.text, "Public synthetic delivery");
+    let deliveries = take_injections();
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0].text, result.text);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "uses explicitly selected settings, synthetic WAVs and live native provider credentials"]
+async fn live_t3_skill_audio_with_imported_catalog() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(false);
+    crate::testing::set_injection_capture_enabled(true);
+    assert!(!crate::testing::is_enabled(), "provider fixtures must remain disabled");
+    let settings_path = std::env::var("VERENU_LIVE_SETTINGS_PATH").expect("explicit settings path required");
+    let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(settings_path).unwrap()).unwrap();
+    let snapshot = store::SettingsSnapshot::from_pairs(settings);
+    let mut config = store::load_pipeline_config(&snapshot);
+    let cleanup_provider = config
+        .cleanup_default_model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .unwrap_or("");
+    assert!(
+        config
+            .custom_providers
+            .iter()
+            .any(|provider| provider.id == cleanup_provider),
+        "live check must use the explicitly configured custom cleanup provider"
+    );
+    config.t3_skill_catalog = crate::commands::catalog_for_destination(
+        &snapshot, "com.monke.t3code.grokbot", false);
+    assert!(config.t3_skill_catalog.as_ref().is_some_and(|catalog| catalog.skills.len() > 2),
+        "live check must use the imported catalog, not a two-skill substitute");
+    config.cleanup_cache_enabled = false;
+    let audio_dir = std::env::var("VERENU_LIVE_AUDIO_DIR").expect("explicit public synthetic WAV directory required");
+    let cases = [
+        ("exact", Some("babysit-pr")),
+        ("natural", Some("babysit-pr")),
+        ("shortened", Some("babysit-pr")),
+        ("fuzzy", Some("babysit-pr")),
+        ("ordinary", None),
+        ("discussion", None),
+        ("quoted", None),
+        ("negation", None),
+    ];
+    let catalog = config.t3_skill_catalog.as_ref().unwrap();
+    for (name, expected_skill) in cases {
+        let mut reader = hound::WavReader::open(PathBuf::from(&audio_dir).join(format!("{name}.wav"))).unwrap();
+        assert_eq!(reader.spec().sample_rate, 16000);
+        assert_eq!(reader.spec().channels, 1);
+        let samples: Vec<f32> = reader.samples::<i16>().map(|sample| sample.unwrap() as f32 / 32768.0).collect();
+        let duration_ms = samples.len() as u64 * 1000 / 16000;
+        let mut request = base_request(config.clone());
+        request.audio = super::CapturedAudio::from_samples(samples, 16000, duration_ms);
+        request.profile = config.default_tone.clone();
+        let result = run_pipeline_fixture(request).await.expect("live synthetic pipeline failed");
+        if let Some(skill) = expected_skill {
+            assert!(result.injected_text.contains(&format!("${skill}")), "{name}: expected catalog skill token missing");
+        } else {
+            let added_skill = catalog.skills.iter().any(|skill| {
+                let token = format!("${}", skill.name);
+                result.injected_text.contains(&token) && !result.raw_text.contains(&token)
+            });
+            assert!(!added_skill, "{name}: non-invocation speech gained a catalog skill token");
+        }
+        assert_eq!(result.history_entry.clean_text, result.injected_text);
+        assert_eq!(result.recent.len(), 1);
+        assert_eq!(result.recent[0].clean_text, result.injected_text);
+        let deliveries = take_injections();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].text, result.injected_text);
+        println!("live_t3_audio case={name} catalog=imported providers=configured skill_expectation_met=true history_matches=true");
+    }
+    reset();
+}
+
 struct LocalModelsTestGuard {
     root: PathBuf,
     previous_override: Option<OsString>,
