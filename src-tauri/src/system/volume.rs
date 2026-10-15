@@ -21,6 +21,11 @@ pub enum MuteOutcome {
     Muted,
     /// The output was already muted (by the user or by an earlier dictation).
     AlreadyMuted,
+    /// The mute request was delivered, but the platform cannot report whether
+    /// the output actually went silent (Android applies it in Kotlin and may
+    /// leave the volume up after a user override).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    Requested,
     /// The output could not be muted; dictation continues unmuted.
     Failed,
 }
@@ -639,7 +644,16 @@ mod linux {
                 let volume = finish(volume, "wpctl", &VOLUME);
                 if let (Ok(inspect), Ok(volume)) = (inspect, volume) {
                     if let Some(id) = parse_wpctl_id(&inspect) {
-                        return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
+                        let sink = Sink::PipeWire(id);
+                        let mut muted = volume.contains("[MUTED]");
+                        if muted {
+                            // The two reads resolved the default sink
+                            // separately. If it changed in between, the flag
+                            // belongs to a different sink, so confirm it
+                            // against the inspected node before trusting it.
+                            muted = is_muted(&sink)?;
+                        }
+                        return Ok((sink, muted));
                     }
                 }
             }
@@ -1030,7 +1044,7 @@ pub(crate) fn android_mute_requested() -> bool {
 pub fn mute() -> MuteOutcome {
     ANDROID_MUTE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
     if update_android_media_mute(true) {
-        MuteOutcome::Muted
+        MuteOutcome::Requested
     } else {
         MuteOutcome::Failed
     }
