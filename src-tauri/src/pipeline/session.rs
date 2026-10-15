@@ -316,6 +316,7 @@ pub fn start_recording_session_ex_with_context(
                 }
                 st.lifecycle = DictationLifecycle::Recording {
                     session,
+                    mute_claim,
                     exclusive_mic_session_id,
                     handless,
                     handless_from_hold: false,
@@ -442,7 +443,6 @@ pub async fn cancel_recording_with_resume(
     prepend_audio: Option<CapturedAudio>,
     recording_context: ResolvedContextIdentity,
 ) {
-    crate::media::sound::coordinated_unmute();
     crate::system::media_control::end_dictation_media_pause();
 
     let Some(stopped_capture) =
