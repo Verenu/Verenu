@@ -22,6 +22,8 @@ pub enum MuteGate {
     Skipped,
     /// The output is silent: Verenu muted it, or it already was.
     Confirmed(MuteOutcome),
+    /// The mute request was delivered but the platform cannot confirm it.
+    Unconfirmed,
     /// The mute was attempted but could not be applied.
     Failed,
     /// The mute was not confirmed in time; recording started without it.
@@ -63,6 +65,7 @@ where
         }
         Ok(_) => match rx.recv_timeout(timeout) {
             Ok(MuteOutcome::Failed) => MuteGate::Failed,
+            Ok(MuteOutcome::Requested) => MuteGate::Unconfirmed,
             Ok(outcome) => MuteGate::Confirmed(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => MuteGate::TimedOut,
             // The mute thread died without reporting back.
@@ -99,11 +102,12 @@ where
     let mute_settled = Instant::now();
     let value = start();
     let mute_to_record = mute_settled.elapsed();
-    let level = if report.gate.is_confirmed() {
-        log::Level::Info
-    } else {
-        // Recording went ahead unmuted; make that visible in the log.
-        log::Level::Warn
+    let level = match report.gate {
+        MuteGate::Failed | MuteGate::TimedOut => {
+            // Recording went ahead unmuted; make that visible in the log.
+            log::Level::Warn
+        }
+        _ => log::Level::Info,
     };
     log::log!(
         level,
@@ -188,6 +192,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(*log.lock().unwrap(), ["recording-open", "late-mute"]);
+    }
+
+    #[test]
+    fn a_requested_but_unconfirmable_mute_is_not_confirmed() {
+        let log = events();
+        let start_log = log.clone();
+        let (_, report) = start_after_mute(
+            Some(|| MuteOutcome::Requested),
+            Duration::from_secs(2),
+            move || push(&start_log, "recording-open"),
+        );
+        assert_eq!(report.gate, MuteGate::Unconfirmed);
+        assert!(!report.gate.is_confirmed());
+        assert_eq!(*log.lock().unwrap(), ["recording-open"]);
     }
 
     #[test]
