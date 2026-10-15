@@ -8,6 +8,26 @@ mod model_catalog;
 mod import_export;
 mod prompts;
 
+#[cfg(test)]
+mod secondary_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn secondary_shortcuts_accept_single_keys_and_remain_device_local() {
+        for key in [store::LINUX_CANCEL_KEY, store::LINUX_HANDSFREE_KEY] {
+            for code in ["Escape", "Space", "F8", "ArrowUp", "KeyK"] {
+                assert!(validate_setting(key, &serde_json::json!(code)).is_ok());
+            }
+            for value in [serde_json::json!("Ctrl+F8"), serde_json::json!("MetaLeft"),
+                serde_json::json!(["F8"]), serde_json::Value::Null] {
+                assert!(validate_setting(key, &value).is_err());
+            }
+            assert!(!SETTING_SPECS.iter().find(|spec| spec.key == key).unwrap().exportable);
+            assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&key));
+        }
+    }
+}
+
 pub use api_keys::*;
 pub use custom_providers::*;
 pub use model_catalog::*;
@@ -75,6 +95,7 @@ enum SettingKind {
     Hotkey,
     ClipboardPhrase,
     SubAppChord,
+    ControlKey,
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +135,8 @@ setting_specs! {
     CLEANUP_CACHE_ENABLED: Bool = true,
     HOTKEY: Hotkey = true,
     SUB_APP_CAPTURE_HOTKEY: SubAppChord = false,
+    LINUX_CANCEL_KEY: ControlKey = false,
+    LINUX_HANDSFREE_KEY: ControlKey = false,
     MICROPHONE_DEVICE: StringOrNull = false,
     DEFAULT_TONE: DefaultTone = true,
     CLEANUP_INTENSITY: CleanupIntensity = true,
@@ -338,6 +361,7 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::SubAppChord => value
             .as_str()
             .is_some_and(|v| crate::core::hotkey::chord::Chord::parse(v).is_some()),
+        SettingKind::ControlKey => value.as_str().is_some_and(crate::core::hotkey::is_control_key),
         SettingKind::ClipboardPhrase => value
             .as_str()
             .map(store::normalize_clipboard_phrase)
@@ -754,6 +778,10 @@ pub async fn save_setting(
     if key == store::SUB_APP_CAPTURE_HOTKEY {
         apply_sub_app_capture_hotkey(&app);
     }
+    #[cfg(target_os = "linux")]
+    if key == store::LINUX_CANCEL_KEY || key == store::LINUX_HANDSFREE_KEY {
+        apply_linux_control_keys(&app)?;
+    }
 
     if key == store::MIC_MUTE_BUTTON_DICTATION || key == store::MICROPHONE_DEVICE {
         crate::media::mic_mute_trigger::reload(&app);
@@ -842,6 +870,8 @@ pub struct AllSettings {
     pub verenu_service_checks_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
     pub sub_app_capture_hotkey: Option<String>,
+    pub linux_cancel_key: Option<String>,
+    pub linux_handsfree_key: Option<String>,
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
@@ -932,6 +962,8 @@ all_settings! {
     verenu_service_checks_enabled = bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
     hotkey = str_array_val(store::HOTKEY),
     sub_app_capture_hotkey = str_val(store::SUB_APP_CAPTURE_HOTKEY),
+    linux_cancel_key = str_val(store::LINUX_CANCEL_KEY),
+    linux_handsfree_key = str_val(store::LINUX_HANDSFREE_KEY),
     appearance_mode = str_val(store::APPEARANCE_MODE),
     accent_color = str_val(store::ACCENT_COLOR),
     custom_theme = json_val(store::CUSTOM_THEME),
@@ -1210,6 +1242,19 @@ mod provider_model_cache_tests {
         assert!(is_readable_setting_key(store::SETUP_PROGRESS));
         assert!(!is_exportable_setting_key(store::SETUP_PROGRESS));
     }
+}
+
+/// Applies device-local secondary key preferences without changing desktop config.
+#[cfg(target_os = "linux")]
+pub fn apply_linux_control_keys(app: &AppHandle) -> Result<(), String> {
+    let settings = store::settings_handle(app)?;
+    let key = |name, default: &str| settings.get(name)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| default.into());
+    crate::core::hotkey::update_control_keys(
+        &key(store::LINUX_CANCEL_KEY, "Escape"),
+        &key(store::LINUX_HANDSFREE_KEY, "Space"),
+    )
 }
 
 /// Applies the saved sub-app capture chord (or the platform default).
