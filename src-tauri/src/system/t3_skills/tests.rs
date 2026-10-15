@@ -129,7 +129,12 @@ fn catalog_validates_names_and_duplicates() {
 
 #[test]
 fn dollar_tokens_keep_t3_boundaries_and_canonical_case() {
-    let catalog = catalog();
+    let mut catalog = catalog();
+    catalog.skills.push(Skill {
+        name: "3d-model".into(),
+        display_name: None,
+        description: None,
+    });
     assert_eq!(
         catalog.normalize_mentions("Use $babysit-pr."),
         "Use $babysit-pr . "
@@ -143,6 +148,11 @@ fn dollar_tokens_keep_t3_boundaries_and_canonical_case() {
         catalog.normalize_mentions("USE $BABYSIT-PR, NOW"),
         "USE $babysit-pr , NOW"
     );
+    assert_eq!(
+        catalog.normalize_mentions("Use:$BABYSIT-PR"),
+        "Use: $babysit-pr "
+    );
+    assert_eq!(catalog.normalize_mentions("$3D-model"), "$3d-model ");
     assert_eq!(
         catalog.normalize_mentions("Use ($BABYSIT-PR)"),
         "Use ( $babysit-pr ) "
@@ -167,6 +177,7 @@ fn dollar_tokens_keep_t3_boundaries_and_canonical_case() {
     assert!(!valid_name("20k"));
     assert!(!valid_name("100M"));
     assert!(valid_name("3d-model"));
+    assert!(catalog.validates_output("use 3D model", "Use:$3D-model"));
 }
 
 #[test]

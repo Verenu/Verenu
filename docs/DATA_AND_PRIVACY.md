@@ -159,12 +159,14 @@ captured in the T3 desktop app receives this list.
 With cleanup enabled, only skill identifiers are sent to the configured
 cleanup provider as matching evidence. Descriptions remain local for browsing;
 skill bodies are never downloaded. Clear
-requests to invoke a known skill can become `$skill-name`; unknown, ambiguous,
-negated, or conversational mentions are left to the cleanup model's conservative
-matching rules. The output guard rejects invented identifiers and shortened
-names that fit multiple imported skills. Skills are treated as shared across T3 conversations; pairing does
-not identify the active conversation. Browser-hosted T3 windows are not detected
-as desktop T3 targets.
+requests to invoke a known skill can become `$skill-name`. The cleanup model
+chooses the closest confidently matching exact name from the full imported list
+and abstains when the request is unclear; ordinary speech and references that
+are quoted, negated, or discussed should not add a skill token. The output guard
+rejects newly invented identifiers while preserving existing dollar tokens and
+spoken environment-variable references. Skills are treated as shared across T3
+conversations; pairing does not identify the active conversation.
+Browser-hosted T3 windows are not detected as desktop T3 targets.
 
 Skill conversion requires a working cleanup provider. If all cleanup providers
 fail, Verenu preserves the transcript without adding skill mentions. Default

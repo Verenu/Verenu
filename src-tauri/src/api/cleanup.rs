@@ -304,7 +304,8 @@ fn parse_chat_cleanup(data: ChatResp) -> Result<String> {
         _ => "other",
     };
     let content = choice.message.content.as_deref().unwrap_or("").trim();
-    if finish == "length" || content.is_empty() {
+    let incomplete_finish = matches!(finish, "length" | "content_filter" | "tool_calls");
+    if incomplete_finish || content.is_empty() {
         let completion_tokens = data.usage.as_ref().and_then(|usage| usage.completion_tokens);
         let reasoning_tokens = data.usage.as_ref()
             .and_then(|usage| usage.completion_tokens_details.as_ref())
@@ -1004,6 +1005,19 @@ mod tests {
         let error = super::parse_chat_cleanup(data).unwrap_err().to_string();
         assert!(error.contains("finish_reason=other"));
         assert!(!error.contains("private"));
+    }
+
+    #[test]
+    fn chat_cleanup_rejects_partial_filtered_and_tool_call_responses() {
+        for finish_reason in ["content_filter", "tool_calls"] {
+            let data = serde_json::from_value(serde_json::json!({
+                "choices":[{"finish_reason":finish_reason,"message":{"content":"private partial answer"}}]
+            }))
+            .unwrap();
+            let error = super::parse_chat_cleanup(data).unwrap_err().to_string();
+            assert!(error.contains(&format!("finish_reason={finish_reason}")));
+            assert!(!error.contains("private partial answer"));
+        }
     }
 
     #[test]
