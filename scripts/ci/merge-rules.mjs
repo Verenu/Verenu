@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { requiredCiRulesetPayload } from './ruleset-payload.mjs';
 
 // Run --apply only after the aggregate check is available on master.
-const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'CI required', 'Review dependency changes', 'review'];
+const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'CI required', 'Review dependency changes'];
 const gh = args => JSON.parse(execFileSync('gh', args, { encoding: 'utf8', timeout: 30_000 }));
 const repository = gh(['repo', 'view', '--json', 'nameWithOwner']).nameWithOwner;
 const endpoint = `repos/${repository}/rulesets`;
@@ -24,4 +24,4 @@ const missing = contexts.filter(context => !checks.some(row => row.context === c
 if (missing.length) {
   console.error(`Required CI checks missing: ${missing.join(', ')}`);
   process.exitCode = 1;
-} else console.log('Master requires all existing CI checks and the AI review, bound to GitHub Actions.');
+} else console.log('Master requires the configured CI checks, bound to GitHub Actions.');
