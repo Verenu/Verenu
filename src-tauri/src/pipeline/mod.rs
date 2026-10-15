@@ -209,7 +209,6 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     };
 
     let _media_pause_guard = crate::system::media_control::DictationMediaPauseGuard::new();
-    crate::media::sound::coordinated_unmute();
     show_pill(&app, "processing");
 
     let settings_store = match store::settings_snapshot(&app) {
@@ -526,13 +525,12 @@ async fn run_pipeline_with_delivery(
     let context_id = resolved_context_identity.id;
     log::info!("pipeline: start gen={generation} target_id={}", target.id);
 
-    // Mark the session inactive before unmuting or waiting on stop() so the
-    // delayed mute helper cannot wake up and re-mute the system mid-shutdown.
+    // The lifecycle take already released this recording's mute claim.
+    // Mark capture inactive before waiting on stop().
     if let Some(session) = &session {
         session.active.store(false, Ordering::Relaxed);
     }
     crate::media::sound::cancel_pending_start();
-    crate::media::sound::coordinated_unmute();
     show_pill(&app, "processing");
     // Label the pill "Transcribing…" from the moment processing starts, not
     // once the transcription call actually begins. Audio encoding and the

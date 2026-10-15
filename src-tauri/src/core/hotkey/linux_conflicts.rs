@@ -225,6 +225,16 @@ mod tests {
     }
 
     #[test]
+    fn secondary_controls_can_choose_another_key_and_recover_the_requested_key() {
+        let bindings = [Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
+        assert_eq!(control_key(&bindings, "Space"), None);
+        assert_eq!(control_key(&bindings, "F8"), Some("F8".into()));
+        assert_eq!(control_key(&[], "Space"), Some("Space".into()));
+        let another_control = [Binding { key: "F8".into(), ignore_mods: true, ..Binding::default() }];
+        assert_eq!(control_key(&another_control, "F8"), None);
+    }
+
+    #[test]
     fn newly_supported_regular_keys_check_numeric_desktop_bindings() {
         let bindings = [Binding { modmask: 12, keycode: 111, ..Binding::default() }];
         assert!(!free(&bindings, &["CTRL+ALT+Up".into()], false));

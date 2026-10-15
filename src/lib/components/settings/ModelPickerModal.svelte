@@ -96,8 +96,9 @@
       : 'all',
   );
 
-  // Animate the dialog once, rather than measuring and animating every model
-  // row while the dialog itself is being laid out.
+  // Animate the dialog, not every catalog row. Live catalogs can contain
+  // hundreds of discoveries; per-row transitions force style/layout reads
+  // before the dialog can paint, even for rows outside the scroll viewport.
   const cardMotion = (node: Element, params: { origin?: { x: number; y: number }; duration?: number }) =>
     isAndroid
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
@@ -144,17 +145,20 @@
   const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
   let refreshingApple = $state(false);
-  const refreshing = $derived(refreshingApple || Object.values(modelCatalogStore.refreshing).some(Boolean));
   const canRefreshApple = $derived(task === 'cleanup' && (providerFilter === 'all' || providerFilter === 'apple-intelligence'));
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
     (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
+  const refreshing = $derived((canRefreshApple && refreshingApple) || refreshProviders.some((provider) => modelCatalogStore.refreshing[provider]));
+  async function refreshAppleModels() {
+    refreshingApple = true;
+    try { await refreshAppleIntelligence(); }
+    finally { refreshingApple = false; }
+  }
   async function refreshModels() {
-    if (task === 'cleanup') {
-      refreshingApple = true;
-      try { await refreshAppleIntelligence(); }
-      finally { refreshingApple = false; }
-    }
-    await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
+    await Promise.all([
+      ...(canRefreshApple ? [refreshAppleModels()] : []),
+      ...refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))),
+    ]);
   }
   const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
     ? 'Refresh unavailable. Keeping cached models.'
@@ -395,7 +399,7 @@
     </div>
 
     <div class="catalog-refresh">
-      <span role="status">{refreshing ? 'Refreshing model lists…' : catalogNote}</span>
+      <span role="status">{refreshing ? 'Refreshing model lists… You can still choose a model.' : catalogNote}</span>
       <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}>
         {refreshing ? 'Refreshing…' : 'Refresh models'}
       </button>

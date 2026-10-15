@@ -227,7 +227,6 @@ pub async fn stop_recording(
             }
         });
     } else {
-        crate::media::sound::coordinated_unmute();
         crate::system::media_control::end_dictation_media_pause();
         pipeline::hide_pill(&app);
     }
