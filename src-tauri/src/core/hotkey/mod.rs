@@ -88,6 +88,11 @@ pub fn modifier_name(code: &str) -> Option<&'static str> {
     }
 }
 
+/// Secondary Linux controls are a single key, independent of held modifiers.
+pub fn is_control_key(code: &str) -> bool {
+    is_known_key_code(code) && modifier_name(code).is_none() && code != "Fn"
+}
+
 pub fn mapped_codes(codes: &[String]) -> Result<Vec<u32>, String> {
     normalize_codes(codes)?
         .iter()
