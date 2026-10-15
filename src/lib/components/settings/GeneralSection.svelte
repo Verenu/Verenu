@@ -110,6 +110,13 @@
   let capsLockUppercase = $state(false);
   let legacyFeaturesError = $state('');
   let hotkey = $state(defaultHotkey);
+  type CaptureTarget = 'dictation' | 'cancel' | 'handsfree';
+  let captureTarget = $state<CaptureTarget>('dictation');
+  let controlKeys = $state({ cancel: 'Escape', handsfree: 'Space' });
+  const secondaryControls = [
+    { id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' },
+    { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' },
+  ] as const;
   let recordingHotkey = $state(false);
   let capturedKeys = $state<string[]>([]);
   let hotkeyError = $state('');
@@ -151,9 +158,9 @@
   }
 
   let buttonText = $derived(
-    recordingHotkey
+    recordingHotkey && captureTarget === 'dictation'
       ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Hold your shortcut...'
-      : hotkeyState === 'saving' ? 'Saving...'
+      : hotkeyState === 'saving' && captureTarget === 'dictation' ? 'Saving...'
       : isLinux && !isAndroid && desktopShortcut('dictation') ? desktopShortcut('dictation')?.active?.split('+').join(' + ') ?? 'Unavailable' : formatHotkeyDisplay(hotkey)
   );
 
@@ -211,6 +218,7 @@
       'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
       'microphone_device', 'legacy_features_enabled', 'android_pill_position',
       'android_pill_cover_keyboard_mic', 'android_pill_hide_offline', 'android_pill_dock_position',
+      'linux_cancel_key', 'linux_handsfree_key',
     ] as const;
     const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
     requests.splice(7, 0, invoke<string[]>('get_microphones'));
@@ -226,6 +234,7 @@
 
     const hk = val<string[] | null>(1, null);
     if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
+    controlKeys = { cancel: val(14, 'Escape'), handsfree: val(15, 'Space') };
 
     const appearance = val<AppearanceMode | null>(2, null);
     // A theme being edited is previewing through these store fields; the saved
@@ -493,10 +502,11 @@
     guardThemeEditor(() => void withAppearanceLock(() => persistAccentColor(color)));
   }
 
-  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
+  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent, target: CaptureTarget = 'dictation') {
     e.stopPropagation();
     if (recordingHotkey || hotkeyState === 'saving') return;
     clearTimeout(feedbackTimer);
+    captureTarget = target;
     hotkeyError = '';
     capture.reset();
     hotkeyState = 'saving';
@@ -528,7 +538,7 @@
   }
 
   async function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
-    if (e && (e.target as HTMLElement).closest('.keybind-btn')) return;
+    if (e && (e.target as HTMLElement).closest('.keybind-btn, .secondary-keybind-btn')) return;
     if (recordingHotkey) {
       removeHotkeyCaptureListeners();
       recordingHotkey = false;
@@ -550,7 +560,7 @@
   function handleHotkeyKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === 'Escape' && capturedKeys.length === 0) {
+    if (captureTarget === 'dictation' && e.code === 'Escape' && capturedKeys.length === 0) {
       cancelRecordingHotkey();
       return;
     }
@@ -571,11 +581,19 @@
     hotkeyState = 'saving';
     let outcome: 'success' | 'error' = 'success';
     try {
-      const available = await invoke<boolean>('check_hotkey', { keys });
-      if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
-      await invoke('save_hotkey', { keys });
-      hotkey = keys;
-      await loadHotkey();
+      if (captureTarget === 'dictation') {
+        const available = await invoke<boolean>('check_hotkey', { keys });
+        if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
+        await invoke('save_hotkey', { keys });
+        hotkey = keys;
+        await loadHotkey();
+      } else {
+        if (keys.length !== 1 || /^(Control|Alt|Shift|Meta)/.test(keys[0]) || keys[0] === 'Fn') {
+          throw new Error('Choose a single key without modifiers.');
+        }
+        await saveSetting(captureTarget === 'cancel' ? 'linux_cancel_key' : 'linux_handsfree_key', keys[0]);
+        controlKeys[captureTarget] = keys[0];
+      }
     } catch (error) {
       outcome = 'error';
       hotkeyError = formatIpcError(error, 'Could not save this shortcut');
@@ -739,24 +757,24 @@
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
-      onclick={startRecordingHotkey}
-      disabled={hotkeyState === 'saving'}
-      aria-label={recordingHotkey ? 'Recording shortcut' : 'Change dictation hotkey'}
+      onclick={(e) => startRecordingHotkey(e)}
+      disabled={hotkeyState === 'saving' || (recordingHotkey && captureTarget !== 'dictation')}
+      aria-label={recordingHotkey && captureTarget === 'dictation' ? 'Recording shortcut' : 'Change dictation hotkey'}
       aria-describedby="hotkey-help"
-      class:recording={recordingHotkey}
-      class:armed={hotkeyState === 'armed'}
-      class:first={hotkeyState === 'first'}
-      class:saving={hotkeyState === 'saving'}
-      class:success={hotkeyState === 'success'}
-      class:error={hotkeyState === 'error'}
+      class:recording={recordingHotkey && captureTarget === 'dictation'}
+      class:armed={captureTarget === 'dictation' && hotkeyState === 'armed'}
+      class:first={captureTarget === 'dictation' && hotkeyState === 'first'}
+      class:saving={captureTarget === 'dictation' && hotkeyState === 'saving'}
+      class:success={captureTarget === 'dictation' && hotkeyState === 'success'}
+      class:error={captureTarget === 'dictation' && hotkeyState === 'error'}
     >
       {#key buttonText}
         <span aria-live="polite" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
       {/key}
     </button>
   </div>
-  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={Boolean(hotkeyError)} role={hotkeyError ? 'alert' : undefined}>
-    {hotkeyError || (recordingHotkey ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
+    {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
   </p>
 {/if}
 {#if isMac && hotkey[0] === 'F5'}
@@ -777,11 +795,24 @@
 {/if}
 {#if isLinux && !isAndroid}
   <DesktopShortcutStatus id="copy" />
-  {#each [{ id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' }, { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' }] as control}
+  {#each secondaryControls as control}
+    {@const status = desktopShortcut(control.id)}
+    {@const capturing = recordingHotkey && captureTarget === control.id}
     <div class="setting-row">
       <div><div class="label">{control.label}</div><div class="desc">{control.description}</div></div>
-      <span class="badge key-badge">{desktopShortcut(control.id as 'cancel' | 'handsfree')?.active ?? 'Unavailable'}</span>
+      <button class="badge key-badge secondary-keybind-btn" class:recording={capturing}
+        disabled={hotkeyState === 'saving' || (recordingHotkey && !capturing)}
+        aria-label={`Change ${control.label} shortcut`} aria-describedby={`${control.id}-help`}
+        onclick={(e) => startRecordingHotkey(e, control.id)}>
+        {capturing ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Press a key…'
+          : `${formatKeyLabel(controlKeys[control.id])}${status?.active === null ? ' · Unavailable' : ''}`}
+      </button>
     </div>
+    <p id={`${control.id}-help`} class="hotkey-tip" role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
+      {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
+        ? 'Press and release one key to save, including Escape. Click outside to cancel.'
+        : 'Click to change. Uses one key with any held modifiers; desktop bindings on that key take priority.'}
+    </p>
     <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
   {/each}
 {/if}
@@ -1016,7 +1047,7 @@
   }
   .hotkey-tip strong { color: var(--ink-soft); font-weight: 600; }
 
-  .keybind-btn {
+  .keybind-btn, .secondary-keybind-btn {
     cursor: pointer;
     border: 1px solid transparent;
     transition:
@@ -1034,8 +1065,8 @@
     overflow-wrap: anywhere;
   }
   .hotkey-error { color: var(--danger); }
-  .keybind-btn:hover { background: var(--control-hover); }
-  .keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
+  .keybind-btn:hover, .secondary-keybind-btn:hover { background: var(--control-hover); }
+  .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }
   .keybind-btn.first { transform: scale(1.03); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .keybind-btn.saving { opacity: 0.9; }

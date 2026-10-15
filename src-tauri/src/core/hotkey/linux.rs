@@ -15,6 +15,9 @@ mod conflicts;
 mod portal;
 #[path = "linux_shortcuts.rs"]
 mod shortcuts;
+#[cfg(test)]
+#[path = "linux_secondary_tests.rs"]
+mod secondary_tests;
 
 const CTRL: u32 = 1;
 const ALT: u32 = 2;
@@ -35,6 +38,50 @@ fn configured_keys(slot: &Mutex<Vec<u32>>) -> Vec<u32> {
 }
 static CANCEL_KEY: Mutex<String> = Mutex::new(String::new());
 static HANDSFREE_KEY: Mutex<String> = Mutex::new(String::new());
+static CONTROL_KEYS: Mutex<Option<[String; 2]>> = Mutex::new(None);
+
+fn control_trigger(code: &str) -> Result<String, String> {
+    if !super::is_control_key(code) {
+        return Err("Choose a single key without modifiers".into());
+    }
+    let key = map_code_to_vk(code);
+    match key {
+        200 => Ok("Space".into()),
+        101..=112 => Ok(format!("F{}", key - 100)),
+        _ => REGULAR_KEYS.iter().find(|(_, _, id)| 1000 + id == key)
+            .map(|(_, name, _)| (*name).into())
+            .ok_or_else(|| "This key is not supported on Linux".into()),
+    }
+}
+
+#[cfg(test)]
+mod control_key_tests {
+    #[test]
+    fn saved_control_codes_resolve_to_compositor_keysyms() {
+        for (code, trigger) in [("Escape", "Escape"), ("Space", "Space"), ("F8", "F8"),
+            ("KeyK", "K"), ("ArrowUp", "Up"), ("Quote", "apostrophe")] {
+            assert_eq!(super::control_trigger(code).unwrap(), trigger);
+        }
+        for code in ["ControlLeft", "MetaRight", "Fn", "Ctrl+F8", "", "Unknown"] {
+            assert!(super::control_trigger(code).is_err());
+        }
+    }
+}
+
+pub fn update_control_keys(cancel: &str, handsfree: &str) -> Result<(), String> {
+    let keys = [control_trigger(cancel)?, control_trigger(handsfree)?];
+    let mut requested = CONTROL_KEYS.lock().map_err(|_| "Shortcut state unavailable")?;
+    if requested.as_ref() != Some(&keys) {
+        *requested = Some(keys);
+        CONFIG_GENERATION.fetch_add(1, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn requested_control_keys() -> [String; 2] {
+    CONTROL_KEYS.lock().ok().and_then(|keys| keys.clone())
+        .unwrap_or_else(|| ["Escape".into(), "Space".into()])
+}
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
 static HANDLESS: AtomicBool = AtomicBool::new(false);
 static PROCESSING: AtomicU64 = AtomicU64::new(0);
@@ -708,7 +755,7 @@ fn refresh_escape_listening() {
     refresh_space_listening();
     let available = CANCEL_KEY.lock().map(|key| !key.is_empty()).unwrap_or(false)
         && CANCEL_PORTAL_ID.lock().map(|id| id.is_some()).unwrap_or(false);
-    let wanted = available && (CHORD_ACTIVE.load(Ordering::SeqCst)
+    let wanted = !super::capture_active() && available && (CHORD_ACTIVE.load(Ordering::SeqCst)
         || HANDLESS.load(Ordering::SeqCst)
         || PROCESSING.load(Ordering::SeqCst) != 0);
     if wanted == ESCAPE_ARMED.load(Ordering::SeqCst) {
@@ -746,7 +793,7 @@ fn refresh_space_listening() {
         .map(|key| key.clone())
         .unwrap_or_default();
     let id = HANDSFREE_PORTAL_ID.lock().ok().and_then(|id| id.clone());
-    let wanted = !key.is_empty() && id.is_some() && CHORD_ACTIVE.load(Ordering::SeqCst)
+    let wanted = !super::capture_active() && !key.is_empty() && id.is_some() && CHORD_ACTIVE.load(Ordering::SeqCst)
         && !HANDLESS.load(Ordering::SeqCst)
         && !(configured_keys(&EFFECTIVE_KEYS).contains(&200) && key.eq_ignore_ascii_case("Space"));
     if wanted == SPACE_ARMED.load(Ordering::SeqCst) {
@@ -777,8 +824,11 @@ fn register_temporary_controls() {
         .lock()
         .map(|key| key.clone())
         .unwrap_or_default();
-    for (name, key, id, armed, description) in [
+    let [cancel, handsfree] = requested_control_keys();
+    for (control, requested, name, key, id, armed, description) in [
         (
+            "cancel",
+            cancel.as_str(),
             "escape",
             cancel_key.as_str(),
             &CANCEL_PORTAL_ID,
@@ -786,6 +836,8 @@ fn register_temporary_controls() {
             "Verenu cancel dictation (while active)",
         ),
         (
+            "handsfree",
+            handsfree.as_str(),
             "space",
             handsfree_key.as_str(),
             &HANDSFREE_PORTAL_ID,
@@ -794,17 +846,22 @@ fn register_temporary_controls() {
         ),
     ] {
         let id = id.lock().ok().and_then(|id| id.clone());
-        let snippet = match id.filter(|_| !key.is_empty()) {
+        let active_id = id.filter(|_| !key.is_empty());
+        let snippet = match active_id.as_deref() {
             Some(id) => format!(
                 "{}; {}",
-                shortcuts::temporary_binding(name, key, Some(&id), description),
+                shortcuts::temporary_binding(name, key, Some(id), description),
                 shortcuts::temporary_binding(name, key, None, "")
             ),
             None => shortcuts::temporary_binding(name, key, None, ""),
         };
         match eval_hyprland(&snippet) {
-            Ok(()) => armed.store(false, Ordering::SeqCst),
-            Err(error) => log::warn!("linux hotkey: temporary control registration failed: {error}"),
+            Ok(()) => {
+                armed.store(false, Ordering::SeqCst);
+                conflicts::status(control, requested.into(), active_id.map(|_| key.into()), vec![]);
+            }
+            Err(error) => publish_shortcut_failure(control, requested,
+                portal::Failure::new("Installing secondary shortcut", error)),
         }
     }
 }
@@ -1124,15 +1181,16 @@ async fn run_portal_session(
     }
     // These controls ignore held modifiers, so reserve the key across every
     // modifier mask and submap before enabling it during dictation.
+    let [cancel, handsfree] = requested_control_keys();
     for (id, requested, key_slot) in [
         (
             "cancel",
-            "Escape",
+            cancel.as_str(),
             &CANCEL_KEY,
         ),
         (
             "handsfree",
-            "Space",
+            handsfree.as_str(),
             &HANDSFREE_KEY,
         ),
     ] {
@@ -1302,7 +1360,8 @@ fn failure_statuses(
     dictation: &str,
     previous: &[super::shortcut_status::ShortcutStatus],
 ) -> Vec<super::shortcut_status::ShortcutStatus> {
-    [("dictation", dictation), ("copy", "Ctrl+Alt+C"), ("capture", "Ctrl+Alt+Shift+S"), ("cancel", "Escape"), ("handsfree", "Space")]
+    let [cancel, handsfree] = requested_control_keys();
+    [("dictation", dictation), ("copy", "Ctrl+Alt+C"), ("capture", "Ctrl+Alt+Shift+S"), ("cancel", cancel.as_str()), ("handsfree", handsfree.as_str())]
         .into_iter()
         .map(|(id, default)| super::shortcut_status::ShortcutStatus {
             id: id.into(),
