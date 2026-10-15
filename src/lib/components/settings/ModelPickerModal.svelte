@@ -96,13 +96,9 @@
       : 'all',
   );
 
-  // Row and dialog motion is dropped or simplified on Android: dozens of
-  // simultaneous transitions, plus a scale from 18% on a card this size, is what
-  // made opening the picker stall a phone.
-  const rowIn = (node: Element, params: Parameters<typeof fly>[1]) =>
-    isAndroid ? { duration: 0 } : fly(node, params);
-  const rowOut = (node: Element, params: Parameters<typeof fade>[1]) =>
-    isAndroid ? { duration: 0 } : fade(node, params);
+  // Animate the dialog, not every catalog row. Live catalogs can contain
+  // hundreds of discoveries; per-row transitions force style/layout reads
+  // before the dialog can paint, even for rows outside the scroll viewport.
   const cardMotion = (node: Element, params: { origin?: { x: number; y: number }; duration?: number }) =>
     isAndroid
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
@@ -149,17 +145,20 @@
   const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
   let refreshingApple = $state(false);
-  const refreshing = $derived(refreshingApple || Object.values(modelCatalogStore.refreshing).some(Boolean));
   const canRefreshApple = $derived(task === 'cleanup' && (providerFilter === 'all' || providerFilter === 'apple-intelligence'));
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
     (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
+  const refreshing = $derived((canRefreshApple && refreshingApple) || refreshProviders.some((provider) => modelCatalogStore.refreshing[provider]));
+  async function refreshAppleModels() {
+    refreshingApple = true;
+    try { await refreshAppleIntelligence(); }
+    finally { refreshingApple = false; }
+  }
   async function refreshModels() {
-    if (task === 'cleanup') {
-      refreshingApple = true;
-      try { await refreshAppleIntelligence(); }
-      finally { refreshingApple = false; }
-    }
-    await Promise.all(refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))));
+    await Promise.all([
+      ...(canRefreshApple ? [refreshAppleModels()] : []),
+      ...refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))),
+    ]);
   }
   const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
     ? 'Refresh unavailable. Keeping cached models.'
@@ -387,7 +386,7 @@
     </div>
 
     <div class="catalog-refresh">
-      <span role="status">{refreshing ? 'Refreshing model lists…' : catalogNote}</span>
+      <span role="status">{refreshing ? 'Refreshing model lists… You can still choose a model.' : catalogNote}</span>
       <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}>
         {refreshing ? 'Refreshing…' : 'Refresh models'}
       </button>
@@ -503,20 +502,13 @@
               </div>
             {/if}
           {/if}
-          {#each group.rows as row, index (row.key)}
+          {#each group.rows as row (row.key)}
             {@const active = isActive(row.key)}
             {@const fallback = isFallback(row.key)}
             <div
               class="model-row"
               class:row-active={active}
               class:row-dim={row.state === 'needs-setup'}
-              in:rowIn|global={{
-                y: 6,
-                duration: motionMs(MOTION_MS.base),
-                delay: motionMs(Math.min(index, 8) * 12),
-                easing: cubicOut,
-              }}
-              out:rowOut|global={{ duration: motionMs(MOTION_MS.fast) }}
             >
               <button
                 class="row-main"

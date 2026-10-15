@@ -136,6 +136,8 @@ type SettingsValueMap = {
   appearance_mode: AppearanceMode;
   /** Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S"; unset means the platform default. */
   sub_app_capture_hotkey: string | null;
+  linux_cancel_key: string | null;
+  linux_handsfree_key: string | null;
   accent_color: string | null;
   /** Hex palette for the Custom appearance mode. */
   custom_theme: CustomTheme | null;
