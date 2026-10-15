@@ -11,11 +11,14 @@ async function expectFullWidthAdvice(page) {
   const advice = row.getByRole('note');
   await expect(advice).toBeVisible();
   await advice.evaluate(async (element) => {
-    await Promise.all(element.closest('.panel-inner').getAnimations({ subtree: true })
+    const panel = element.closest('.panel-inner') ?? element;
+    await Promise.all(panel.getAnimations({ subtree: true })
       .map(animation => animation.finished.catch(() => {})));
   });
   const content = await row.boundingBox();
   const bounds = await advice.boundingBox();
+  expect(content, 'Audio row has rendered bounds').not.toBeNull();
+  expect(bounds, 'Advice has rendered bounds').not.toBeNull();
   expect(Math.abs(bounds.x - content.x), 'Warning aligns with the Audio content left edge').toBeLessThanOrEqual(1);
   expect(Math.abs(bounds.x + bounds.width - content.x - content.width), 'Warning fills the Audio content right edge').toBeLessThanOrEqual(1);
   expect(await advice.evaluate(element => element.scrollWidth <= element.clientWidth + 1), 'Advice wraps within its border').toBe(true);
