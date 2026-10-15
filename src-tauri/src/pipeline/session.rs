@@ -144,9 +144,7 @@ pub fn start_recording_session_ex_with_context(
     // user selected. This identity is immutable for the whole dictation; the
     // processing path must not infer it again from whichever window happens
     // to be focused after recording or while AutoLearn is monitoring.
-    let target = lock_state(state)
-        .map(|st| st.target.clone())
-        .unwrap_or_default();
+    let target = lock_state(state).map(|st| st.target.clone()).unwrap_or_default();
     // An interrupted processing task hands its audio to a replacement
     // recording through `recording_context`. Prefer that state handoff when
     // no explicit resume payload was supplied. Fresh reservations clear the
@@ -240,7 +238,7 @@ pub fn start_recording_session_ex_with_context(
     // "Mute PC Audio": the output is muted, and the mute confirmed, before the
     // microphone opens so playing audio cannot leak into the recording. The
     // wait is bounded; on timeout or failure recording starts unmuted.
-    let (started, _mute_report) = crate::media::mute_gate::start_after_mute(
+    let (started, mute_report) = crate::media::mute_gate::start_after_mute(
         mute_audio.then(crate::media::sound::local_mute_task),
         crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
         || {
@@ -393,9 +391,13 @@ pub fn start_recording_session_ex_with_context(
             if pause_media {
                 crate::system::media_control::begin_dictation_media_pause();
             }
-            // The output is already muted, so the cue would be silent; skip
-            // it rather than hold the mute back until the cue has played.
-            if let Some(delay_ms) = options.start_cue_delay_ms.filter(|_| !mute_audio) {
+            // A confirmed mute would swallow the cue, so skip it rather than
+            // hold the mute back until the cue has played. Without a confirmed
+            // mute the cue still plays.
+            if let Some(delay_ms) = options
+                .start_cue_delay_ms
+                .filter(|_| !mute_report.gate.is_confirmed())
+            {
                 crate::media::sound::play_start_delayed(delay_ms);
             }
             Ok(())

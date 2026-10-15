@@ -52,10 +52,14 @@ pub const START_CUE_HANDSFREE_DELAY_MS: u64 = 220;
 /// handsfree double-tap never sounds and the cue can be held back cleanly.
 static START_CUE_GEN: AtomicU64 = AtomicU64::new(0);
 static SOUND_TX: OnceLock<mpsc::Sender<SoundCommand>> = OnceLock::new();
+/// Claim counter for the local mute owner. It is deliberately outside the
+/// `MUTE_OWNERS` mutex: that lock is held across the blocking OS mute call, and
+/// claiming or invalidating a mute must never wait on a stuck audio server.
+static LOCAL_MUTE_CLAIM: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct MuteOwners {
     shutting_down: bool,
-    local_generation: u64,
     local: bool,
     remote: std::collections::HashSet<u64>,
 }
@@ -68,8 +72,8 @@ impl MuteOwners {
     /// Takes local ownership when this claim is still current. Returns whether
     /// it did, so a superseded claim is never reported as muted just because
     /// another owner (a remote device) holds the mute.
-    fn acquire_local(&mut self, active: bool, generation: u64) -> bool {
-        let acquired = !self.shutting_down && active && self.local_generation == generation;
+    fn acquire_local(&mut self, active: bool, claim_is_current: bool) -> bool {
+        let acquired = !self.shutting_down && active && claim_is_current;
         if acquired {
             self.local = true;
         }
@@ -93,7 +97,9 @@ fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) -> Option<MuteOutcom
             crate::system::volume::unmute();
             None
         }
-        (true, true) => Some(MuteOutcome::AlreadyMuted),
+        // Already owned by someone else: ask the OS layer again. It is
+        // idempotent when the output is muted, and retries a mute that failed.
+        (true, true) => Some(crate::system::volume::mute()),
         (false, false) => None,
     }
 }
@@ -102,7 +108,6 @@ fn release_mute_owners_on_exit(owners: &mut MuteOwners, restore_audio: impl FnOn
     owners.shutting_down = true;
     owners.local = false;
     owners.remote.clear();
-    owners.local_generation = owners.local_generation.wrapping_add(1);
     restore_audio();
 }
 
@@ -135,24 +140,18 @@ mod mute_tests {
 
     #[test]
     fn immediate_local_mute_acquires_the_same_owner_as_the_delayed_path() {
-        let mut owners = MuteOwners {
-            local_generation: 1,
-            ..Default::default()
-        };
-        owners.acquire_local(true, 1);
+        let mut owners = MuteOwners::default();
+        assert!(owners.acquire_local(true, true));
         assert!(owners.local);
         assert!(owners.muted());
     }
 
     #[test]
     fn stale_claim_is_not_acquired() {
-        let mut owners = MuteOwners {
-            local_generation: 2,
-            ..Default::default()
-        };
-        assert!(!owners.acquire_local(true, 1));
+        let mut owners = MuteOwners::default();
+        assert!(!owners.acquire_local(true, false));
         assert!(!owners.local);
-        assert!(owners.acquire_local(true, 2));
+        assert!(owners.acquire_local(true, true));
     }
 
     #[test]
@@ -194,7 +193,7 @@ mod mute_tests {
         assert_eq!(restore_calls.get(), 1);
         assert!(owners.shutting_down);
         assert!(!owners.muted());
-        owners.acquire_local(true, owners.local_generation);
+        assert!(!owners.acquire_local(true, true));
         assert!(!owners.local);
     }
 }
@@ -329,15 +328,14 @@ pub fn cancel_pending_start() {
 /// keeps playing audio out of the first recorded samples. A later
 /// `coordinated_unmute` supersedes a mute that is still in flight.
 pub fn local_mute_task() -> impl FnOnce() -> MuteOutcome + Send + 'static {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
     move || {
         let mut acquired = false;
         let outcome = update_mute_owners(|owners| {
-            acquired = owners.acquire_local(true, generation);
+            acquired =
+                owners.acquire_local(true, LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation);
         });
         if acquired {
             outcome.unwrap_or(MuteOutcome::Failed)
@@ -352,14 +350,12 @@ pub fn local_mute_task() -> impl FnOnce() -> MuteOutcome + Send + 'static {
 
 /// Invalidate any pending coordinated mute before unmuting the system.
 pub fn coordinated_unmute() {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
     tauri::async_runtime::spawn_blocking(move || {
         update_mute_owners(|owners| {
-            if owners.local_generation == generation {
+            if LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation {
                 owners.local = false;
             }
         });
