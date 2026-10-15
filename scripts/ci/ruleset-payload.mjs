@@ -1,3 +1,10 @@
+export function requiredCiContextDiff(actual, contexts) {
+  return {
+    missing: contexts.filter(context => !actual.some(row => row.context === context && row.integration_id === 15368)),
+    unexpected: actual.filter(row => row.integration_id !== 15368 || !contexts.includes(row.context)).map(row => row.context),
+  };
+}
+
 export function requiredCiRulesetPayload(current, contexts) {
   const rules = (current?.rules || []).filter(rule => rule.type !== 'required_status_checks');
   rules.push({
