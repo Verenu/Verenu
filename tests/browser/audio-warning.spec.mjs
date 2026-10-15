@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.mjs';
+import { defaultMicGain } from '../../src/lib/components/settings/audioGain.ts';
 
 async function openAudio(page) {
   await page.locator('[data-debug-id="nav.settings"]').click();
@@ -27,9 +28,11 @@ async function expectFullWidthAdvice(page) {
 
 test('high-gain advice fills the Audio content width for both noise reduction states', async ({ page, session }, testInfo) => {
   const initial = await session.invoke('get_all_settings');
+  // Browser sessions run a desktop Rust worker, including the phone viewport.
+  const initialGain = initial.mic_gain ?? defaultMicGain(false);
   await openAudio(page);
   const gain = page.getByRole('slider', { name: 'Microphone gain', exact: true });
-  const initialGain = Number(await gain.inputValue());
+  await expect(gain).toHaveValue(String(initialGain));
   try {
     await session.invoke('save_setting', { key: 'mic_gain', value: 8 });
     await session.invoke('save_setting', { key: 'noise_reduction', value: false });
