@@ -1249,6 +1249,16 @@ mod tests {
     }
 
     #[test]
+    fn old_opener_error_preserves_replacement_start_reservation() {
+        let state = fresh_state();
+        reserve_starting(&state).unwrap();
+        let old = crate::media::sound::claim_local_mute();
+        let _replacement = crate::media::sound::claim_local_mute();
+        crate::pipeline::session::release_starting_reservation_for_claim(&state, Some(old));
+        assert!(matches!(lock_state(&state).unwrap().lifecycle, DictationLifecycle::Starting { .. }));
+    }
+
+    #[test]
     fn interrupt_takes_processing_and_installs_starting_with_prepend_audio() {
         let state = fresh_state();
         let context = ResolvedContextIdentity {

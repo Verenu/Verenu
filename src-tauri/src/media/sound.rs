@@ -197,10 +197,54 @@ mod mute_tests {
     }
 
     #[test]
+    fn late_opener_and_queued_release_cannot_release_a_replacement_mute() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let claims = AtomicU64::new(1);
+        // A is cancelled, then B claims before A's release worker runs.
+        let queued_release = super::invalidate_local_claim(&claims, 1).unwrap();
+        let b = claims.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        assert_eq!(super::invalidate_local_claim(&claims, 1), None);
+        assert_eq!(claims.load(Ordering::SeqCst), b);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == queued_release,
+            || panic!("A must not restore B's output"),
+        );
+        assert!(owners.local);
+        let released_b = super::invalidate_local_claim(&claims, b).unwrap();
+        let restored = Cell::new(false);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == released_b,
+            || restored.set(true),
+        );
+        assert!(restored.get());
+        assert!(!owners.muted());
+    }
+
+    #[test]
+    fn releasing_local_claim_preserves_remote_mute() {
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        owners.remote.insert(7);
+        super::apply_local_release(&mut owners, true, || {
+            panic!("remote owner still needs mute")
+        });
+        assert!(!owners.local);
+        assert!(owners.muted());
+    }
+
+    #[test]
     fn superseded_mute_task_mutes_nothing() {
-        let stale = super::local_mute_task();
+        let stale = super::claim_local_mute().task();
         // A newer claim (or an unmute) supersedes the earlier one.
-        let _newer = super::local_mute_task();
+        let _newer = super::claim_local_mute();
         assert_eq!(stale(), MuteOutcome::Failed);
     }
 
@@ -350,18 +394,64 @@ pub fn cancel_pending_start() {
 /// is silent. Claiming immediately, rather than after the start cue, is what
 /// keeps playing audio out of the first recorded samples. A later
 /// `coordinated_unmute` supersedes a mute that is still in flight.
-pub fn local_mute_task() -> impl FnOnce() -> MuteOutcome + Send + 'static {
+#[derive(Clone, Copy)]
+pub struct LocalMuteClaim(u64);
+
+pub fn claim_local_mute() -> LocalMuteClaim {
     let generation = LOCAL_MUTE_CLAIM
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
-    move || {
+    LocalMuteClaim(generation)
+}
+
+impl LocalMuteClaim {
+    pub fn is_current(self) -> bool {
+        LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == self.0
+    }
+
+    pub fn task(self) -> impl FnOnce() -> MuteOutcome + Send + 'static {
+        move || {
+            let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+            apply_local_mute(&mut owners, self.is_current(), crate::system::volume::mute)
+        }
+    }
+
+    /// A late opener must not invalidate or release a replacement's claim.
+    pub fn release(self) {
+        if let Some(generation) = invalidate_local_claim(&LOCAL_MUTE_CLAIM, self.0) {
+            queue_local_release(generation);
+        }
+    }
+}
+
+fn invalidate_local_claim(counter: &AtomicU64, claim: u64) -> Option<u64> {
+    let released = claim.wrapping_add(1);
+    counter
+        .compare_exchange(claim, released, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| released)
+}
+
+fn apply_local_release(owners: &mut MuteOwners, claim_is_current: bool, restore: impl FnOnce()) {
+    if !claim_is_current {
+        return;
+    }
+    let before = owners.muted();
+    owners.local = false;
+    if before && !owners.muted() {
+        restore();
+    }
+}
+
+fn queue_local_release(generation: u64) {
+    tauri::async_runtime::spawn_blocking(move || {
         let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        apply_local_mute(
+        apply_local_release(
             &mut owners,
             LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation,
-            crate::system::volume::mute,
-        )
-    }
+            crate::system::volume::unmute,
+        );
+    });
 }
 
 /// Invalidate any pending coordinated mute before unmuting the system.
@@ -369,13 +459,7 @@ pub fn coordinated_unmute() {
     let generation = LOCAL_MUTE_CLAIM
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
-    tauri::async_runtime::spawn_blocking(move || {
-        update_mute_owners(|owners| {
-            if LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation {
-                owners.local = false;
-            }
-        });
-    });
+    queue_local_release(generation);
 }
 
 fn sound_tx() -> &'static mpsc::Sender<SoundCommand> {
@@ -775,7 +859,7 @@ mod tests {
         for _ in 0..8 {
             let begin = std::time::Instant::now();
             let (muted_at_open, report) = crate::media::mute_gate::start_after_mute(
-                Some(local_mute_task()),
+                Some(claim_local_mute().task()),
                 crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
                 wpctl_default_sink_muted,
             );
@@ -818,7 +902,7 @@ mod tests {
         }
         for _ in 0..3 {
             let (opened, report) = crate::media::mute_gate::start_after_mute(
-                Some(local_mute_task()),
+                Some(claim_local_mute().task()),
                 crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
                 || {
                     let muted_before_open = wpctl_default_sink_muted();

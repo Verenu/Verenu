@@ -30,6 +30,18 @@ pub enum MuteOutcome {
     Failed,
 }
 
+#[cfg(any(windows, target_os = "macos", test))]
+fn confirm_output(
+    outcome: MuteOutcome,
+    confirm: impl FnOnce() -> Result<bool, String>,
+) -> Result<MuteOutcome, String> {
+    if confirm()? {
+        Ok(outcome)
+    } else {
+        Err("Current default output is not confirmed muted".into())
+    }
+}
+
 #[cfg(windows)]
 static MUTED_ENDPOINT: Mutex<WindowsMuteState> = Mutex::new(WindowsMuteState::new());
 
@@ -72,7 +84,7 @@ impl WindowsMuteState {
         }
 
         let mut failures = self.retry_pending(&mut restore);
-        let outcome = match snapshot_and_mute() {
+        let mut outcome = match snapshot_and_mute() {
             Ok(Some(endpoint)) => {
                 self.active_endpoint = Some(endpoint);
                 MuteOutcome::Muted
@@ -83,6 +95,15 @@ impl WindowsMuteState {
                 MuteOutcome::Failed
             }
         };
+        if outcome != MuteOutcome::Failed {
+            match confirm_output(outcome, confirm_current_mute) {
+                Ok(confirmed) => outcome = confirmed,
+                Err(err) => {
+                    failures.push(err);
+                    outcome = MuteOutcome::Failed;
+                }
+            }
+        }
         (outcome, failures)
     }
 
@@ -180,14 +201,21 @@ fn snapshot_and_mute_windows() -> Result<Option<String>, String> {
         if volume.GetMute().map_err(|e| e.to_string())?.as_bool() {
             return Ok(None);
         }
-        let id = device.GetId().map_err(|e| e.to_string())?;
-        let endpoint = id.to_string().map_err(|e| e.to_string());
-        windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
-        let endpoint = endpoint?;
+        let endpoint = windows_endpoint_id(&device)?;
         volume
             .SetMute(true, std::ptr::null())
             .map_err(|e| e.to_string())?;
         Ok(Some(endpoint))
+    }
+}
+
+#[cfg(windows)]
+fn windows_endpoint_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String, String> {
+    unsafe {
+        let id = device.GetId().map_err(|e| e.to_string())?;
+        let endpoint = id.to_string().map_err(|e| e.to_string());
+        windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
+        endpoint
     }
 }
 
@@ -218,13 +246,15 @@ fn confirm_current_windows_mute() -> Result<bool, String> {
         let device = enumerator
             .GetDefaultAudioEndpoint(eRender, eConsole)
             .map_err(|e| e.to_string())?;
+        let endpoint = windows_endpoint_id(&device)?;
         let volume: IAudioEndpointVolume = device
             .Activate(CLSCTX_ALL, None)
             .map_err(|e| e.to_string())?;
-        volume
-            .GetMute()
-            .map(|muted| muted.as_bool())
-            .map_err(|e| e.to_string())
+        let muted = volume.GetMute().map_err(|e| e.to_string())?.as_bool();
+        let current = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| e.to_string())?;
+        Ok(muted && windows_endpoint_id(&current)? == endpoint)
     }
 }
 
@@ -487,7 +517,7 @@ mod macos {
 
     pub fn confirm_current_mute() -> Result<bool, String> {
         let device_id = default_output_device()?;
-        if property_is_settable(
+        let muted = if property_is_settable(
             device_id,
             kAudioDevicePropertyMute,
             kAudioObjectPropertyScopeOutput,
@@ -497,20 +527,21 @@ mod macos {
             kAudioObjectPropertyScopeOutput,
         )? != 0
         {
-            return Ok(true);
-        }
-        if property_is_settable(
+            true
+        } else if property_is_settable(
             device_id,
             kAudioDevicePropertyVolumeScalar,
             kAudioObjectPropertyScopeOutput,
         )? {
-            return Ok(get_f32_property(
+            get_f32_property(
                 device_id,
                 kAudioDevicePropertyVolumeScalar,
                 kAudioObjectPropertyScopeOutput,
-            )? == 0.0);
-        }
-        Ok(false)
+            )? == 0.0
+        } else {
+            false
+        };
+        Ok(muted && default_output_device()? == device_id)
     }
 
     pub(super) fn default_input_device() -> Result<AudioDeviceID, String> {
@@ -836,7 +867,13 @@ pub fn mute() -> MuteOutcome {
     match macos::snapshot_and_mute() {
         Ok(Some(snapshot)) => {
             *restore_state = snapshot;
-            MuteOutcome::Muted
+            match confirm_output(MuteOutcome::Muted, macos::confirm_current_mute) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    log::warn!("Could not confirm initial macOS output mute: {err}");
+                    MuteOutcome::Failed
+                }
+            }
         }
         Ok(None) => {
             if !WARNED_UNSUPPORTED_AUDIO_CONTROL.swap(true, Ordering::Relaxed) {
@@ -1250,13 +1287,52 @@ mod windows_mute_state_tests {
     use std::cell::Cell;
 
     #[test]
+    fn fresh_windows_mute_requires_current_output_confirmation_and_retains_restore() {
+        for confirmation in [Ok(false), Err("output unavailable".into()), Ok(true)] {
+            let mut state = WindowsMuteState::new();
+            let confirmed = confirmation == Ok(true);
+            let (outcome, _) = state.begin(
+                || Ok(Some("original-output".into())),
+                || confirmation,
+                |_| Ok(()),
+            );
+            assert_eq!(
+                outcome,
+                if confirmed {
+                    MuteOutcome::Muted
+                } else {
+                    MuteOutcome::Failed
+                }
+            );
+            assert_eq!(state.active_endpoint.as_deref(), Some("original-output"));
+            let mut restored = None;
+            state
+                .end(|endpoint| {
+                    restored = Some(endpoint.to_string());
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(restored.as_deref(), Some("original-output"));
+        }
+    }
+
+    #[test]
+    fn initial_and_already_muted_outcomes_require_current_output_confirmation() {
+        for outcome in [MuteOutcome::Muted, MuteOutcome::AlreadyMuted] {
+            assert_eq!(super::confirm_output(outcome, || Ok(true)), Ok(outcome));
+            assert!(super::confirm_output(outcome, || Ok(false)).is_err());
+            assert!(super::confirm_output(outcome, || Err("read failed".into())).is_err());
+        }
+    }
+
+    #[test]
     fn failed_restore_does_not_block_a_later_default_endpoint_mute() {
         let mut state = WindowsMuteState::new();
         let mut restore_attempts = Vec::new();
 
         state.begin(
             || Ok(Some("removed-endpoint".to_string())),
-            || panic!("no existing lease"),
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -1278,7 +1354,7 @@ mod windows_mute_state_tests {
                 new_endpoint_muted.set(true);
                 Ok(Some("current-endpoint".to_string()))
             },
-            || panic!("no existing lease"),
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 if endpoint == "removed-endpoint" {
@@ -1302,7 +1378,7 @@ mod windows_mute_state_tests {
 
         state.begin(
             || Ok(None),
-            || panic!("no existing lease"),
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -1346,7 +1422,7 @@ mod windows_mute_state_tests {
         let mut state = WindowsMuteState::new();
         state.begin(
             || Ok(Some("temporarily-missing".to_string())),
-            || panic!("no existing lease"),
+            || Ok(true),
             |_| Ok(()),
         );
         assert!(state
@@ -1373,7 +1449,7 @@ mod windows_mute_state_tests {
         let mut state = WindowsMuteState::new();
         state.begin(
             || Ok(Some("original-output".into())),
-            || unreachable!(),
+            || Ok(true),
             |_| Ok(()),
         );
 
