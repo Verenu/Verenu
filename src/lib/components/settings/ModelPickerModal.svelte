@@ -215,7 +215,8 @@
       provider,
       rows: shown
         .filter((row) => row.provider === provider)
-        .sort((a, b) => Number(pinned.includes(b.key)) - Number(pinned.includes(a.key))
+        .sort((a, b) => Number(b.key === defaultModel) - Number(a.key === defaultModel)
+          || Number(pinned.includes(b.key)) - Number(pinned.includes(a.key))
           || RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
     })).filter((group) => group.rows.length > 0),
   );
