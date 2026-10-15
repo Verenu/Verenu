@@ -63,6 +63,7 @@ export interface Context {
   custom_instructions: string | null;
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
+  t3_skill_mentions_disabled?: boolean;
   /** ISO timestamp of when the user pinned this context, or null if unpinned. */
   pinned_at: string | null;
   created_at: string;

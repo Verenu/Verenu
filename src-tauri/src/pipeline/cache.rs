@@ -82,6 +82,11 @@ pub(super) fn cleanup_context_fingerprint(
         cfg.cleanup_fallback_models,
         cfg.custom_providers,
         extra_rules,
+        cfg.t3_skill_catalog.as_ref().map(|catalog| (
+            &catalog.environment_id,
+            &catalog.id,
+            &catalog.revision
+        )),
         app_context,
         edits,
         cfg.advanced_model_ui,

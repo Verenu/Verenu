@@ -13,6 +13,8 @@ use crate::data::db::{self, Context, Db};
 pub struct ResolvedContextIdentity {
     pub id: i64,
     pub label: String,
+    /// Immutable catalog selected at capture start; retries reuse it.
+    pub t3_skills: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
 }
 
 impl ResolvedContextIdentity {
@@ -20,6 +22,7 @@ impl ResolvedContextIdentity {
         Self {
             id: context.id,
             label: context.name.clone(),
+            t3_skills: None,
         }
     }
 
@@ -36,6 +39,7 @@ impl ResolvedContextIdentity {
         Self {
             id: db::EVERYWHERE_CONTEXT_ID,
             label: "Everywhere".to_string(),
+            t3_skills: None,
         }
     }
 }
@@ -320,7 +324,8 @@ mod tests {
             color: None,
             custom_instructions: None,
             contextual_formatting_disabled: false,
-        paste_in_chunks: false,
+            paste_in_chunks: false,
+            t3_skill_mentions_disabled: false,
             pinned_at: None,
             created_at: String::new(),
             updated_at: String::new(),
@@ -329,6 +334,7 @@ mod tests {
         assert_eq!(
             ResolvedContextIdentity::from_context(&context),
             ResolvedContextIdentity {
+                t3_skills: None,
                 id: 42,
                 label: "Development".to_string(),
             }

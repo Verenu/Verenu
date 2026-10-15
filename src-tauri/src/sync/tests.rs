@@ -21,6 +21,35 @@ mod device_tests;
 // ---- helpers ----
 
 #[test]
+fn t3_skill_opt_out_syncs_with_contexts_and_old_payloads_omit_it() {
+    let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    let b = test_db("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let context =
+        db::insert_context_returning(&a, "T3 skills sync", None, None, None, None, false).unwrap();
+    db::update_context_t3_skill_mentions(&a, context.id, false).unwrap();
+    db::update_context_t3_skill_mentions(&a, db::EVERYWHERE_CONTEXT_ID, false).unwrap();
+    exchange(&a, &b);
+    let rows = db::query_contexts(&b).unwrap();
+    assert!(
+        rows.iter()
+            .find(|c| c.name == "T3 skills sync")
+            .unwrap()
+            .t3_skill_mentions_disabled
+    );
+    assert!(
+        rows.iter()
+            .find(|c| c.is_everywhere)
+            .unwrap()
+            .t3_skill_mentions_disabled
+    );
+    let old: engine::ContextAggregate = serde_json::from_value(
+        json!({"name": "Old context", "created_at": "2026-01-01", "updated_at": "2026-01-01"}),
+    )
+    .unwrap();
+    assert_eq!(old.t3_skill_mentions_disabled, None);
+}
+
+#[test]
 fn paste_chunks_context_sync_preserves_desktop_preference() {
     let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     let b = test_db("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -32,7 +61,8 @@ fn paste_chunks_context_sync_preserves_desktop_preference() {
     assert!(rows.iter().find(|c| c.is_everywhere).unwrap().paste_in_chunks);
     let old: engine::ContextAggregate = serde_json::from_value(json!({
         "name": "Old context", "created_at": "2026-01-01", "updated_at": "2026-01-01"
-    })).unwrap();
+    }))
+    .unwrap();
     assert!(!old.paste_in_chunks);
 }
 

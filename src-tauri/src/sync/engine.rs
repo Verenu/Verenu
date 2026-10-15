@@ -326,6 +326,8 @@ pub struct ContextAggregate {
     #[serde(default)]
     pub paste_in_chunks: bool,
     #[serde(default)]
+    pub t3_skill_mentions_disabled: Option<bool>,
+    #[serde(default)]
     pub pinned_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -661,7 +663,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
     let row = conn
         .prepare_cached(
             "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions,
-                    contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
+                    contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
              FROM contexts WHERE uuid = ?1",
         )?
         .query_row(
@@ -682,6 +684,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
                         created_at: r.get(10)?,
                         updated_at: r.get(11)?,
                         paste_in_chunks: r.get::<_, i64>(12)? != 0,
+                        t3_skill_mentions_disabled: Some(r.get::<_, bool>(13)?),
                         targets: Vec::new(),
                         websites: Vec::new(),
                         dictionary_uuids: Vec::new(),
@@ -2121,15 +2124,16 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         conn.execute(
             "INSERT INTO contexts (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
                                    custom_instructions, contextual_formatting_disabled, pinned_at,
-                                   created_at, updated_at, paste_in_chunks)
-             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                                   created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, 0))
              ON CONFLICT(uuid) DO UPDATE SET
                name = excluded.name, icon = excluded.icon, tone = excluded.tone,
                cleanup_intensity = excluded.cleanup_intensity, color = excluded.color,
                custom_instructions = excluded.custom_instructions,
                contextual_formatting_disabled = excluded.contextual_formatting_disabled,
                pinned_at = excluded.pinned_at, updated_at = excluded.updated_at,
-               paste_in_chunks = excluded.paste_in_chunks",
+               paste_in_chunks = excluded.paste_in_chunks,
+               t3_skill_mentions_disabled = COALESCE(?13, contexts.t3_skill_mentions_disabled)",
             params![
                 op.row_uuid,
                 aggregate.name,
@@ -2142,7 +2146,8 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
                 aggregate.pinned_at,
                 aggregate.created_at,
                 aggregate.updated_at,
-                aggregate.paste_in_chunks
+                aggregate.paste_in_chunks,
+                aggregate.t3_skill_mentions_disabled
             ],
         )
     };
@@ -2216,7 +2221,7 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
     }
     conn.execute(
         "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3, color = ?4,
-                custom_instructions = ?5, contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9
+                custom_instructions = ?5, contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled)
          WHERE id = ?8",
         params![
             aggregate.icon,
@@ -2227,7 +2232,8 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
             aggregate.contextual_formatting_disabled as i64,
             aggregate.pinned_at,
             everywhere_id,
-            aggregate.paste_in_chunks
+            aggregate.paste_in_chunks,
+            aggregate.t3_skill_mentions_disabled
         ],
     )?;
     reconcile_context_members(conn, everywhere_id, aggregate)?;
@@ -3239,6 +3245,7 @@ mod payload_tests {
                     "name": "Work", "is_everywhere": false, "icon": "W", "tone": "casual",
                     "cleanup_intensity": "light", "color": "#123456", "custom_instructions": "Keep café",
                     "contextual_formatting_disabled": true, "paste_in_chunks": true,
+                    "t3_skill_mentions_disabled": false,
                     "pinned_at": "2026-01-02", "created_at": "2026-01-01", "updated_at": "2026-01-02",
                     "targets": [{"executable": "editor", "platform": "linux", "app_name": "Editor", "developer": "Example"}],
                     "websites": ["example.com"], "dictionary_uuids": ["dictionary"],

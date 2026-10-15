@@ -19,6 +19,7 @@
   import { startAutomaticUpdateChecks } from './lib/updates';
   import { startPolling } from './lib/polling';
   import { startGithubRefresh } from './lib/githubStore.svelte';
+  import { startT3Refresh } from './lib/t3Store.svelte';
   import { startLocalSttListeners } from './lib/localSttStore.svelte';
   import { startLocalLlmListeners } from './lib/localLlmStore.svelte';
   import { startDownloadManagerListeners } from './lib/downloadManager.svelte';
@@ -283,6 +284,7 @@
 
   onMount(() => {
     const stopGithubRefresh = startGithubRefresh();
+    const stopT3Refresh = startT3Refresh();
     let mounted = true;
     let cleanupFn: (() => void) | undefined;
     let stopNotificationClickListener: (() => void) | undefined;
@@ -575,6 +577,7 @@
 
     return () => {
       stopGithubRefresh();
+      stopT3Refresh();
       mounted = false;
       stopInsets();
       if (cleanupFn) cleanupFn();

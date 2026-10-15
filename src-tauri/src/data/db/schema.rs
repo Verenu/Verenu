@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS contexts (
   custom_instructions TEXT,
   contextual_formatting_disabled INTEGER NOT NULL DEFAULT 0 CHECK (contextual_formatting_disabled IN (0, 1)),
   paste_in_chunks INTEGER NOT NULL DEFAULT 0 CHECK (paste_in_chunks IN (0, 1)),
+  t3_skill_mentions_disabled INTEGER NOT NULL DEFAULT 0 CHECK (t3_skill_mentions_disabled IN (0, 1)),
   pinned_at         DATETIME,
   created_at        DATETIME NOT NULL DEFAULT (datetime('now')),
   updated_at        DATETIME NOT NULL DEFAULT (datetime('now'))
@@ -1045,6 +1046,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             ensure_table_column(conn, "contexts", "paste_in_chunks",
                 "ALTER TABLE contexts ADD COLUMN paste_in_chunks INTEGER NOT NULL DEFAULT 0 CHECK (paste_in_chunks IN (0, 1));")?;
             conn.execute_batch("PRAGMA user_version = 31;")?;
+            Ok(())
+        })?;
+    }
+    if user_version < 32 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "contexts", "t3_skill_mentions_disabled",
+                "ALTER TABLE contexts ADD COLUMN t3_skill_mentions_disabled INTEGER NOT NULL DEFAULT 0 CHECK (t3_skill_mentions_disabled IN (0, 1));")?;
+            conn.execute_batch("PRAGMA user_version = 32;")?;
             Ok(())
         })?;
     }
@@ -2191,7 +2200,10 @@ fn ensure_table_column(
 fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
     // Old keys contain readable, lossy normalized input. Results are disposable;
     // discard them rather than retaining unsafe keys after an upgrade.
-    conn.execute("DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%'", [])?;
+    conn.execute(
+        "DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%'",
+        [],
+    )?;
     let mut repaired = false;
     repaired |= ensure_table_column(
         conn,

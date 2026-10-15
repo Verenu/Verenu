@@ -941,7 +941,12 @@ mod tests {
     fn main_window_dictation_uses_normal_injection() {
         // A processing pill can gain focus without changing the captured target.
         for foreground_owned in [false, true] {
-            assert!(!should_copy_self_target(42, Some(42), foreground_owned, true));
+            assert!(!should_copy_self_target(
+                42,
+                Some(42),
+                foreground_owned,
+                true
+            ));
         }
     }
 
@@ -1011,6 +1016,7 @@ mod tests {
         {
             let mut st = lock_state(&state).expect("state lock");
             st.recording_context = Some(ResolvedContextIdentity {
+                t3_skills: None,
                 id: 42,
                 label: "Old context".into(),
             });
@@ -1067,6 +1073,7 @@ mod tests {
     fn peek_cancelled_capture_does_not_consume() {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
+            t3_skills: None,
             id: 7,
             label: "Development".into(),
         };
@@ -1136,6 +1143,7 @@ mod tests {
                 target: WindowTarget::default(),
                 process_name: String::new(),
                 context: ResolvedContextIdentity {
+                    t3_skills: None,
                     id: 1,
                     label: "Everywhere".into(),
                 },
@@ -1311,6 +1319,7 @@ mod tests {
     fn interrupt_takes_processing_and_installs_starting_with_prepend_audio() {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
+            t3_skills: None,
             id: 8,
             label: "Development".into(),
         };
@@ -1344,6 +1353,7 @@ mod tests {
     fn escape_takes_processing_and_discards_audio_into_idle() {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
+            t3_skills: None,
             id: 9,
             label: "Writing".into(),
         };

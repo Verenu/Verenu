@@ -522,6 +522,7 @@ fn loaded_to_capture(take: LoadedTake) -> CancelledCapture {
             .meta
             .context_id
             .map(|id| ResolvedContextIdentity {
+                t3_skills: None,
                 id,
                 label: "Recovered context".to_string(),
             })

@@ -41,6 +41,18 @@ pub async fn duplicate_context(app: AppHandle, context_id: i64) -> Result<db::Co
 }
 
 #[tauri::command]
+pub async fn set_context_t3_skill_mentions(
+    app: AppHandle,
+    context_id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    run_db(&app, "set_context_t3_skill_mentions", move |db| {
+        db::update_context_t3_skill_mentions(db, context_id, enabled)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Result<(), String> {
     run_db(&app, "update_context", move |db| db::update_context(db, context_id, &name))
         .await

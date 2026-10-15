@@ -571,6 +571,7 @@ fn context_can_disable_contextual_formatting_without_changing_global_setting() {
         custom_instructions: None,
         contextual_formatting_disabled: true,
         paste_in_chunks: true,
+        t3_skill_mentions_disabled: false,
         pinned_at: None,
         created_at: String::new(),
         updated_at: String::new(),
@@ -628,6 +629,7 @@ fn base_config() -> store::PipelineConfig {
         auto_learn_enabled: false,
         contextual_formatting_enabled: true,
         paste_in_chunks: false,
+        t3_skill_catalog: None,
         caps_lock_uppercase_enabled: false,
         advanced_model_ui: false,
         local_model_memory_policy: "unload_after_5m".into(),
@@ -853,6 +855,95 @@ fn base_request(config: store::PipelineConfig) -> PipelineTestRequest {
         dictionary: Vec::new(),
         caps_lock_on: false,
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn injection_capture_keeps_provider_requests_live() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    crate::testing::set_injection_capture_enabled(true);
+    assert!(crate::testing::resolve_provider_fixture("cleanup", "groq", "model").is_none());
+    let result = crate::core::injection::inject_text(
+        "Public synthetic delivery", &WindowTarget::default(), false, false,
+        "casual", "en", false, false,
+    ).await.unwrap();
+    assert_eq!(result.text, "Public synthetic delivery");
+    let deliveries = take_injections();
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0].text, result.text);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "uses explicitly selected settings, synthetic WAVs and live native provider credentials"]
+async fn live_t3_skill_audio_with_imported_catalog() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(false);
+    crate::testing::set_injection_capture_enabled(true);
+    assert!(!crate::testing::is_enabled(), "provider fixtures must remain disabled");
+    let settings_path = std::env::var("VERENU_LIVE_SETTINGS_PATH").expect("explicit settings path required");
+    let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(settings_path).unwrap()).unwrap();
+    let snapshot = store::SettingsSnapshot::from_pairs(settings);
+    let mut config = store::load_pipeline_config(&snapshot);
+    let cleanup_provider = config
+        .cleanup_default_model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .unwrap_or("");
+    assert!(
+        config
+            .custom_providers
+            .iter()
+            .any(|provider| provider.id == cleanup_provider),
+        "live check must use the explicitly configured custom cleanup provider"
+    );
+    config.t3_skill_catalog = crate::commands::catalog_for_destination(
+        &snapshot, "com.monke.t3code.grokbot", false);
+    assert!(config.t3_skill_catalog.as_ref().is_some_and(|catalog| catalog.skills.len() > 2),
+        "live check must use the imported catalog, not a two-skill substitute");
+    config.cleanup_cache_enabled = false;
+    let audio_dir = std::env::var("VERENU_LIVE_AUDIO_DIR").expect("explicit public synthetic WAV directory required");
+    let cases = [
+        ("exact", Some("babysit-pr")),
+        ("natural", Some("babysit-pr")),
+        ("shortened", Some("babysit-pr")),
+        ("fuzzy", Some("babysit-pr")),
+        ("ordinary", None),
+        ("discussion", None),
+        ("quoted", None),
+        ("negation", None),
+    ];
+    let catalog = config.t3_skill_catalog.as_ref().unwrap();
+    for (name, expected_skill) in cases {
+        let mut reader = hound::WavReader::open(PathBuf::from(&audio_dir).join(format!("{name}.wav"))).unwrap();
+        assert_eq!(reader.spec().sample_rate, 16000);
+        assert_eq!(reader.spec().channels, 1);
+        let samples: Vec<f32> = reader.samples::<i16>().map(|sample| sample.unwrap() as f32 / 32768.0).collect();
+        let duration_ms = samples.len() as u64 * 1000 / 16000;
+        let mut request = base_request(config.clone());
+        request.audio = super::CapturedAudio::from_samples(samples, 16000, duration_ms);
+        request.profile = config.default_tone.clone();
+        let result = run_pipeline_fixture(request).await.expect("live synthetic pipeline failed");
+        if let Some(skill) = expected_skill {
+            assert!(result.injected_text.contains(&format!("${skill}")), "{name}: expected catalog skill token missing");
+        } else {
+            let added_skill = catalog.skills.iter().any(|skill| {
+                let token = format!("${}", skill.name);
+                result.injected_text.contains(&token) && !result.raw_text.contains(&token)
+            });
+            assert!(!added_skill, "{name}: non-invocation speech gained a catalog skill token");
+        }
+        assert_eq!(result.history_entry.clean_text, result.injected_text);
+        assert_eq!(result.recent.len(), 1);
+        assert_eq!(result.recent[0].clean_text, result.injected_text);
+        let deliveries = take_injections();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].text, result.injected_text);
+        println!("live_t3_audio case={name} catalog=imported providers=configured skill_expectation_met=true history_matches=true");
+    }
+    reset();
 }
 
 struct LocalModelsTestGuard {
@@ -1345,6 +1436,19 @@ async fn pipeline_fixture_skips_cleanup_for_pure_snippet_fast_path() {
     });
 
     let mut request = base_request(base_config());
+    request.config.t3_skill_catalog = Some(Arc::new(crate::system::t3_skills::Catalog {
+        environment_id: "synthetic".into(),
+        id: "catalog".into(),
+        label: "Codex".into(),
+        provider_instance_id: "codex".into(),
+        workspace_id: "synthetic".into(),
+        revision: "1".into(),
+        skills: vec![crate::system::t3_skills::Skill {
+            name: "babysit-pr".into(),
+            display_name: None,
+            description: None,
+        }],
+    }));
     request.snippets.push(PipelineTestSnippet {
         trigger: "sig".into(),
         expansion: "Best regards, Noah".into(),
@@ -1928,6 +2032,131 @@ async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
         crate::data::db::cleanup_cache_count(request.db.as_ref().unwrap()).unwrap(),
         1
     );
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_fixture_t3_mentions_survive_punctuation_caps_and_cache() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let raw = "please use my babysit skill to monitor this pull request";
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some(raw),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Please use $babysit-pr to monitor this pull request"),
+        None,
+        None,
+    );
+    let mut config = base_config();
+    config.t3_skill_catalog = Some(Arc::new(crate::system::t3_skills::Catalog {
+        environment_id: "synthetic".into(),
+        id: "codex".into(),
+        label: "Codex".into(),
+        provider_instance_id: "codex".into(),
+        workspace_id: "synthetic".into(),
+        revision: "1".into(),
+        skills: vec![crate::system::t3_skills::Skill {
+            name: "babysit-pr".into(),
+            display_name: None,
+            description: Some("Monitor pull requests".into()),
+        }],
+    }));
+    let mut request = base_request(config);
+    request.db = Some(crate::data::db::open(":memory:").unwrap());
+    request.caps_lock_on = true;
+    request.config.caps_lock_uppercase_enabled = true;
+    let first = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(
+        first.injected_text.contains("$babysit-pr "),
+        "Skill name must survive caps lock"
+    );
+    assert_eq!(first.history_entry.clean_text, first.injected_text);
+    let second = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_eq!(first.injected_text, second.injected_text);
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        1
+    );
+    Arc::make_mut(request.config.t3_skill_catalog.as_mut().unwrap()).revision = "2".into();
+    let third = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_ne!(first.cleanup_cache_key, third.cleanup_cache_key);
+    assert_eq!(
+        fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
+        2
+    );
+    fixture(
+        "transcription",
+        "groq",
+        "whisper-large-v3-turbo",
+        Some("use my babysit skill"),
+        None,
+        None,
+    );
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $babysit-pr"),
+        None,
+        None,
+    );
+    request.caps_lock_on = false;
+    let short = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(short.injected_text.contains("$babysit-pr "));
+    request.config.cleanup_cache_enabled = false;
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $invented-skill"),
+        None,
+        None,
+    );
+    let unknown = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(!unknown.injected_text.contains("$invented-skill"));
+    request.config.cleanup_intensity = "none".into();
+    let off = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert!(!off.injected_text.contains('$'));
+
+    request.config.cleanup_intensity = "medium".into();
+    request.config.cleanup_cache_enabled = false;
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("Use $babysit-pr?"),
+        None,
+        None,
+    );
+    let punctuated = run_pipeline_fixture(request.clone()).await.unwrap();
+    assert_eq!(punctuated.injected_text, "Use $babysit-pr ? ");
+    assert_eq!(
+        punctuated.history_entry.clean_text,
+        punctuated.injected_text
+    );
+
+    request.profile = "very_casual".into();
+    fixture(
+        "cleanup",
+        "groq",
+        "llama-3.3-70b-versatile",
+        Some("$babysit-pr"),
+        None,
+        None,
+    );
+    let bare = run_pipeline_fixture(request).await.unwrap();
+    assert_eq!(bare.injected_text, "$babysit-pr ");
+    assert_eq!(bare.history_entry.clean_text, bare.injected_text);
     reset();
 }
 
