@@ -144,7 +144,9 @@ pub fn start_recording_session_ex_with_context(
     // user selected. This identity is immutable for the whole dictation; the
     // processing path must not infer it again from whichever window happens
     // to be focused after recording or while AutoLearn is monitoring.
-    let target = lock_state(state).map(|st| st.target.clone()).unwrap_or_default();
+    let target = lock_state(state)
+        .map(|st| st.target.clone())
+        .unwrap_or_default();
     // An interrupted processing task hands its audio to a replacement
     // recording through `recording_context`. Prefer that state handoff when
     // no explicit resume payload was supplied. Fresh reservations clear the
@@ -235,13 +237,23 @@ pub fn start_recording_session_ex_with_context(
         .map(|audio| audio.samples_16k.len());
     let max_output_samples =
         prepend_samples.map(|samples| audio::MAX_RECORDING_SAMPLES.saturating_sub(samples));
-    match audio::RecordingSession::start(
-        device,
-        noise_reduction,
-        mic_gain,
-        durable_sink,
-        max_output_samples,
-    ) {
+    // "Mute PC Audio": the output is muted, and the mute confirmed, before the
+    // microphone opens so playing audio cannot leak into the recording. The
+    // wait is bounded; on timeout or failure recording starts unmuted.
+    let (started, _mute_report) = crate::media::mute_gate::start_after_mute(
+        mute_audio.then(crate::media::sound::local_mute_task),
+        crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+        || {
+            audio::RecordingSession::start(
+                device,
+                noise_reduction,
+                mic_gain,
+                durable_sink,
+                max_output_samples,
+            )
+        },
+    );
+    match started {
         Ok(session) => {
             let analytics_run_id: Option<String> = {
                 #[cfg(desktop)]
@@ -260,12 +272,14 @@ pub fn start_recording_session_ex_with_context(
             let active_arc = session.active.clone();
             let speech_detected_arc = session.speech_detected.clone();
             let stream_error_arc = session.stream_error.clone();
-            let start_cue_active = session.active.clone();
             {
                 let mut st = match lock_state(state) {
                     Ok(st) => st,
                     Err(e) => {
                         let _ = session.stop();
+                        if mute_audio {
+                            crate::media::sound::coordinated_unmute();
+                        }
                         if let Some(session_id) = exclusive_mic_session_id {
                             crate::system::volume::release_mic(session_id);
                         }
@@ -282,6 +296,9 @@ pub fn start_recording_session_ex_with_context(
                     );
                     drop(st);
                     let _ = session.stop();
+                    if mute_audio {
+                        crate::media::sound::coordinated_unmute();
+                    }
                     if let Some(session_id) = exclusive_mic_session_id {
                         crate::system::volume::release_mic(session_id);
                     }
@@ -376,22 +393,17 @@ pub fn start_recording_session_ex_with_context(
             if pause_media {
                 crate::system::media_control::begin_dictation_media_pause();
             }
-            if let Some(delay_ms) = options.start_cue_delay_ms {
-                if mute_audio {
-                    crate::media::sound::play_start_delayed_then(delay_ms, move || {
-                        if start_cue_active.load(Ordering::Relaxed) {
-                            crate::media::sound::coordinated_mute(start_cue_active);
-                        }
-                    });
-                } else {
-                    crate::media::sound::play_start_delayed(delay_ms);
-                }
-            } else if mute_audio {
-                crate::media::sound::coordinated_mute(start_cue_active);
+            // The output is already muted, so the cue would be silent; skip
+            // it rather than hold the mute back until the cue has played.
+            if let Some(delay_ms) = options.start_cue_delay_ms.filter(|_| !mute_audio) {
+                crate::media::sound::play_start_delayed(delay_ms);
             }
             Ok(())
         }
         Err(e) => {
+            if mute_audio {
+                crate::media::sound::coordinated_unmute();
+            }
             if let Some(session_id) = exclusive_mic_session_id {
                 crate::system::volume::release_mic(session_id);
             }
