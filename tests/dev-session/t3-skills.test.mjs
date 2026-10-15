@@ -278,12 +278,14 @@ test('provided audio captures shared T3 skills without workspace selection only 
     assert.ok(dollarVariableEvents.events.some(event => event.event === 'verenu:transcribed' && event.payload === dollarVariableOutput.text));
     assert.equal(requests.at(-1).evidence, true);
     assert.ok(!requests.at(-1).body.includes('Private description sentinel'));
-    phrase = 'Can you use my babysit skill?';
-    cleanupContent = null;
+    phrase = 'Please prepare the quarterly report.';
+    cleanupContent = 'Use $BABYSIT-PR';
     failCleanup = false;
-    const ambiguous = await request(`/audio?context=${context.id}&process=t3-code`, { method: 'POST', body: audio });
-    assert.equal(ambiguous.status, 200);
-    assert.ok(!(await ambiguous.json()).text.includes('$'));
+    const listedSelection = await request(`/audio?context=${context.id}&process=t3-code`, { method: 'POST', body: audio });
+    assert.equal(listedSelection.status, 200);
+    assert.equal((await listedSelection.json()).text, 'Use $babysit-pr ');
+    assert.equal(requests.at(-1).evidence, true);
+    assert.ok(!requests.at(-1).body.includes('Private description sentinel'));
   } finally {
     if (browser) await browser.close();
     if (session) await session.stop();
