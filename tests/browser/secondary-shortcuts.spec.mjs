@@ -6,6 +6,10 @@ async function openGeneral(page) {
   await expect(page.getByRole('button', { name: 'Change Cancel dictation shortcut', exact: true })).toBeVisible();
 }
 
+async function waitForCaptureReady(button) {
+  await expect(button).toContainText('Press a key');
+}
+
 test('secondary shortcut controls edit unavailable keys and persist through reload', async ({ page, session }) => {
   const previous = await session.invoke('get_all_settings');
   try {
@@ -23,10 +27,12 @@ test('secondary shortcut controls edit unavailable keys and persist through relo
     await expect(cancel).toBeEnabled();
     await expect(handsfree).toBeEnabled();
     await cancel.click();
+    await waitForCaptureReady(cancel);
     await page.keyboard.press('F8');
     await expect.poll(async () => (await session.invoke('get_all_settings')).linux_cancel_key).toBe('F8');
     await expect(cancel).toContainText('F8');
     await handsfree.click();
+    await waitForCaptureReady(handsfree);
     await page.keyboard.press('F9');
     await expect.poll(async () => (await session.invoke('get_all_settings')).linux_handsfree_key).toBe('F9');
     await expect(handsfree).toContainText('F9');
@@ -35,14 +41,17 @@ test('secondary shortcut controls edit unavailable keys and persist through relo
     await expect(cancel).toContainText('F8');
     await expect(handsfree).toContainText('F9');
     await cancel.click();
+    await waitForCaptureReady(cancel);
     await page.keyboard.press('Control+F10');
     await expect(page.getByRole('alert').filter({ hasText: 'Choose a single key without modifiers' })).toBeVisible();
     expect((await session.invoke('get_all_settings')).linux_cancel_key).toBe('F8');
     // Escape is assignable; cancelling capture uses the explicit outside click.
     await cancel.click();
+    await waitForCaptureReady(cancel);
     await page.keyboard.press('Escape');
     await expect.poll(async () => (await session.invoke('get_all_settings')).linux_cancel_key).toBe('Escape');
     await handsfree.click();
+    await waitForCaptureReady(handsfree);
     await page.getByText('Switch to hands-free', { exact: true }).click();
     await expect(handsfree).toContainText('F9');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
