@@ -569,7 +569,9 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     // Skill rules must not turn an exact snippet match into a reason to call
     // the cleanup provider. The pure-expansion path remains local unless a
     // separate user instruction already requires cleanup.
-    let skill_parts = (pure_expansion.is_none() && cfg.cleanup_intensity != "none")
+    let skill_parts = (cfg.cleanup_enabled
+        && pure_expansion.is_none()
+        && cfg.cleanup_intensity != "none")
         .then(|| {
             cfg.t3_skill_catalog
                 .as_ref()
@@ -580,7 +582,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     log::debug!(
         "pipeline: t3 skill evidence catalog={} cleanup_enabled={} attached={}",
         cfg.t3_skill_catalog.is_some(),
-        cfg.cleanup_intensity != "none",
+        cfg.cleanup_enabled && cfg.cleanup_intensity != "none",
         skill_parts.is_some()
     );
     if cfg.t3_skill_catalog.is_some() {
