@@ -213,17 +213,12 @@
 
   async function loadSettings() {
     const snapshot = loadSettingsSnapshot();
-    void snapshot.then(settings => {
-      if (!destroyed) controlKeys = {
-        cancel: settings.linux_cancel_key ?? 'Escape',
-        handsfree: settings.linux_handsfree_key ?? 'Space',
-      };
-    });
     const keys = [
       'autostart_enabled', 'hotkey', 'appearance_mode', 'transcription_language',
       'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
       'microphone_device', 'legacy_features_enabled', 'android_pill_position',
       'android_pill_cover_keyboard_mic', 'android_pill_hide_offline', 'android_pill_dock_position',
+      'linux_cancel_key', 'linux_handsfree_key',
     ] as const;
     const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
     requests.splice(7, 0, invoke<string[]>('get_microphones'));
@@ -239,6 +234,7 @@
 
     const hk = val<string[] | null>(1, null);
     if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
+    controlKeys = { cancel: val(14, 'Escape'), handsfree: val(15, 'Space') };
 
     const appearance = val<AppearanceMode | null>(2, null);
     // A theme being edited is previewing through these store fields; the saved
