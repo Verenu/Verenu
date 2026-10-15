@@ -166,7 +166,7 @@ pub fn start_recording_session_ex_with_context(
         crate::pipeline::pill::queue_pill_context(&recording_context.label);
     }
 
-    let (durable_id, prepend_for_lifecycle) = {
+    let (durable_id, prepend_for_lifecycle, mute_claim) = {
         let mut st = match lock_state(state) {
             Ok(st) => st,
             Err(e) => {
@@ -217,7 +217,11 @@ pub fn start_recording_session_ex_with_context(
             st.failover_started_at_unix = 0;
             None
         };
-        (durable_id, prepend_audio)
+        // Register under the lifecycle lock: cancelling Starting invalidates
+        // this claim before a new reservation can appear. A cancelled opener
+        // must not create a fresh mute claim after releasing the lock.
+        let mute_claim = mute_audio.then(crate::media::sound::claim_local_mute);
+        (durable_id, prepend_audio, mute_claim)
     };
     let durable_sink = durable_id.and_then(|id| {
         super::failover::open_live_writer(
@@ -235,13 +239,23 @@ pub fn start_recording_session_ex_with_context(
         .map(|audio| audio.samples_16k.len());
     let max_output_samples =
         prepend_samples.map(|samples| audio::MAX_RECORDING_SAMPLES.saturating_sub(samples));
-    match audio::RecordingSession::start(
-        device,
-        noise_reduction,
-        mic_gain,
-        durable_sink,
-        max_output_samples,
-    ) {
+    // "Mute PC Audio": the output is muted, and the mute confirmed, before the
+    // microphone opens so playing audio cannot leak into the recording. The
+    // wait is bounded; on timeout or failure recording starts unmuted.
+    let (started, mute_report) = crate::media::mute_gate::start_after_mute(
+        mute_claim.map(|claim| claim.task()),
+        crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+        || {
+            audio::RecordingSession::start(
+                device,
+                noise_reduction,
+                mic_gain,
+                durable_sink,
+                max_output_samples,
+            )
+        },
+    );
+    match started {
         Ok(session) => {
             let analytics_run_id: Option<String> = {
                 #[cfg(desktop)]
@@ -260,28 +274,35 @@ pub fn start_recording_session_ex_with_context(
             let active_arc = session.active.clone();
             let speech_detected_arc = session.speech_detected.clone();
             let stream_error_arc = session.stream_error.clone();
-            let start_cue_active = session.active.clone();
             {
                 let mut st = match lock_state(state) {
                     Ok(st) => st,
                     Err(e) => {
                         let _ = session.stop();
+                        release_starting_reservation_for_claim(state, mute_claim);
+                        if let Some(claim) = mute_claim {
+                            claim.release();
+                        }
                         if let Some(session_id) = exclusive_mic_session_id {
                             crate::system::volume::release_mic(session_id);
                         }
                         if options.durable {
                             super::failover::abandon_live();
                         }
-                        release_starting_reservation(state);
                         return Err(e.to_string());
                     }
                 };
-                if !matches!(&st.lifecycle, DictationLifecycle::Starting { .. }) {
+                if !matches!(&st.lifecycle, DictationLifecycle::Starting { .. })
+                    || mute_claim.is_some_and(|claim| !claim.is_current())
+                {
                     log::warn!(
                         "start_recording_session_ex: lifecycle was not Starting when installing Recording"
                     );
                     drop(st);
                     let _ = session.stop();
+                    if let Some(claim) = mute_claim {
+                        claim.release();
+                    }
                     if let Some(session_id) = exclusive_mic_session_id {
                         crate::system::volume::release_mic(session_id);
                     }
@@ -295,6 +316,7 @@ pub fn start_recording_session_ex_with_context(
                 }
                 st.lifecycle = DictationLifecycle::Recording {
                     session,
+                    mute_claim,
                     exclusive_mic_session_id,
                     handless,
                     handless_from_hold: false,
@@ -376,18 +398,14 @@ pub fn start_recording_session_ex_with_context(
             if pause_media {
                 crate::system::media_control::begin_dictation_media_pause();
             }
-            if let Some(delay_ms) = options.start_cue_delay_ms {
-                if mute_audio {
-                    crate::media::sound::play_start_delayed_then(delay_ms, move || {
-                        if start_cue_active.load(Ordering::Relaxed) {
-                            crate::media::sound::coordinated_mute(start_cue_active);
-                        }
-                    });
-                } else {
-                    crate::media::sound::play_start_delayed(delay_ms);
-                }
-            } else if mute_audio {
-                crate::media::sound::coordinated_mute(start_cue_active);
+            // A confirmed mute would swallow the cue, so skip it rather than
+            // hold the mute back until the cue has played. Without a confirmed
+            // mute the cue still plays.
+            if let Some(delay_ms) = options
+                .start_cue_delay_ms
+                .filter(|_| !mute_report.gate.is_confirmed())
+            {
+                crate::media::sound::play_start_delayed(delay_ms);
             }
             Ok(())
         }
@@ -398,7 +416,10 @@ pub fn start_recording_session_ex_with_context(
             if options.durable {
                 super::failover::abandon_live();
             }
-            release_starting_reservation(state);
+            release_starting_reservation_for_claim(state, mute_claim);
+            if let Some(claim) = mute_claim {
+                claim.release();
+            }
             Err(e.to_string())
         }
     }
@@ -422,7 +443,6 @@ pub async fn cancel_recording_with_resume(
     prepend_audio: Option<CapturedAudio>,
     recording_context: ResolvedContextIdentity,
 ) {
-    crate::media::sound::coordinated_unmute();
     crate::system::media_control::end_dictation_media_pause();
 
     let Some(stopped_capture) =
@@ -633,6 +653,13 @@ pub fn stash_cancelled_capture(
 /// open — the carried prepend audio (if any) is simply dropped, not
 /// retained anywhere a later, unrelated dictation could inherit it.
 pub(crate) fn release_starting_reservation(state: &SharedState) {
+    release_starting_reservation_for_claim(state, None);
+}
+
+pub(super) fn release_starting_reservation_for_claim(
+    state: &SharedState,
+    claim: Option<crate::media::sound::LocalMuteClaim>,
+) {
     let mut st = match state.lock() {
         Ok(st) => st,
         Err(poisoned) => {
@@ -642,7 +669,9 @@ pub(crate) fn release_starting_reservation(state: &SharedState) {
             poisoned.into_inner()
         }
     };
-    if matches!(st.lifecycle, DictationLifecycle::Starting { .. }) {
+    if matches!(st.lifecycle, DictationLifecycle::Starting { .. })
+        && claim.is_none_or(|claim| claim.is_current())
+    {
         st.lifecycle = DictationLifecycle::Idle;
     }
 }
