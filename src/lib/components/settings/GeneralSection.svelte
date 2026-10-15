@@ -538,7 +538,7 @@
   }
 
   async function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
-    if (e && (e.target as HTMLElement).closest('.keybind-btn')) return;
+    if (e && (e.target as HTMLElement).closest('.keybind-btn, .secondary-keybind-btn')) return;
     if (recordingHotkey) {
       removeHotkeyCaptureListeners();
       recordingHotkey = false;
@@ -800,7 +800,7 @@
     {@const capturing = recordingHotkey && captureTarget === control.id}
     <div class="setting-row">
       <div><div class="label">{control.label}</div><div class="desc">{control.description}</div></div>
-      <button class="badge key-badge keybind-btn" class:recording={capturing}
+      <button class="badge key-badge secondary-keybind-btn" class:recording={capturing}
         disabled={hotkeyState === 'saving' || (recordingHotkey && !capturing)}
         aria-label={`Change ${control.label} shortcut`} aria-describedby={`${control.id}-help`}
         onclick={(e) => startRecordingHotkey(e, control.id)}>
@@ -1047,7 +1047,7 @@
   }
   .hotkey-tip strong { color: var(--ink-soft); font-weight: 600; }
 
-  .keybind-btn {
+  .keybind-btn, .secondary-keybind-btn {
     cursor: pointer;
     border: 1px solid transparent;
     transition:
@@ -1065,8 +1065,8 @@
     overflow-wrap: anywhere;
   }
   .hotkey-error { color: var(--danger); }
-  .keybind-btn:hover { background: var(--control-hover); }
-  .keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
+  .keybind-btn:hover, .secondary-keybind-btn:hover { background: var(--control-hover); }
+  .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }
   .keybind-btn.first { transform: scale(1.03); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .keybind-btn.saving { opacity: 0.9; }
