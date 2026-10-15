@@ -19,6 +19,8 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use crate::system::volume::MuteOutcome;
+
 /// Which dictation transition the cue represents.
 #[derive(Clone, Copy)]
 pub enum SoundCue {
@@ -50,10 +52,14 @@ pub const START_CUE_HANDSFREE_DELAY_MS: u64 = 220;
 /// handsfree double-tap never sounds and the cue can be held back cleanly.
 static START_CUE_GEN: AtomicU64 = AtomicU64::new(0);
 static SOUND_TX: OnceLock<mpsc::Sender<SoundCommand>> = OnceLock::new();
+/// Claim counter for the local mute owner. It is deliberately outside the
+/// `MUTE_OWNERS` mutex: that lock is held across the blocking OS mute call, and
+/// claiming or invalidating a mute must never wait on a stuck audio server.
+static LOCAL_MUTE_CLAIM: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct MuteOwners {
     shutting_down: bool,
-    local_generation: u64,
     local: bool,
     remote: std::collections::HashSet<u64>,
 }
@@ -63,24 +69,51 @@ impl MuteOwners {
         self.local || !self.remote.is_empty()
     }
 
-    fn acquire_local(&mut self, active: bool, generation: u64) {
-        if !self.shutting_down && active && self.local_generation == generation {
+    /// Takes local ownership when this claim is still current. Returns whether
+    /// it did, so a superseded claim is never reported as muted just because
+    /// another owner (a remote device) holds the mute.
+    fn acquire_local(&mut self, active: bool, claim_is_current: bool) -> bool {
+        let acquired = !self.shutting_down && active && claim_is_current;
+        if acquired {
             self.local = true;
         }
+        acquired
     }
 }
 
 static MUTE_OWNERS: std::sync::LazyLock<std::sync::Mutex<MuteOwners>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(MuteOwners::default()));
 
-fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) {
+fn apply_local_mute(
+    owners: &mut MuteOwners,
+    claim_is_current: bool,
+    mute: impl FnOnce() -> MuteOutcome,
+) -> MuteOutcome {
+    if owners.acquire_local(true, claim_is_current) {
+        mute()
+    } else {
+        // A rejected claim must not touch the OS, even if another owner exists.
+        MuteOutcome::Failed
+    }
+}
+
+/// Applies an ownership change and the OS mute/unmute it implies. Returns the
+/// mute outcome when the output is muted afterwards (or the mute failed), and
+/// `None` when nothing is muted.
+fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) -> Option<MuteOutcome> {
     let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     let before = owners.muted();
     update(&mut owners);
     match (before, owners.muted()) {
-        (false, true) => crate::system::volume::mute(),
-        (true, false) => crate::system::volume::unmute(),
-        _ => {}
+        (false, true) => Some(crate::system::volume::mute()),
+        (true, false) => {
+            crate::system::volume::unmute();
+            None
+        }
+        // Already owned by someone else: ask the OS layer again. It is
+        // idempotent when the output is muted, and retries a mute that failed.
+        (true, true) => Some(crate::system::volume::mute()),
+        (false, false) => None,
     }
 }
 
@@ -88,13 +121,12 @@ fn release_mute_owners_on_exit(owners: &mut MuteOwners, restore_audio: impl FnOn
     owners.shutting_down = true;
     owners.local = false;
     owners.remote.clear();
-    owners.local_generation = owners.local_generation.wrapping_add(1);
     restore_audio();
 }
 
 #[cfg(test)]
 mod mute_tests {
-    use super::MuteOwners;
+    use super::{MuteOutcome, MuteOwners};
     use std::cell::Cell;
 
     #[test]
@@ -121,13 +153,99 @@ mod mute_tests {
 
     #[test]
     fn immediate_local_mute_acquires_the_same_owner_as_the_delayed_path() {
-        let mut owners = MuteOwners {
-            local_generation: 1,
-            ..Default::default()
-        };
-        owners.acquire_local(true, 1);
+        let mut owners = MuteOwners::default();
+        assert!(owners.acquire_local(true, true));
         assert!(owners.local);
         assert!(owners.muted());
+    }
+
+    #[test]
+    fn stale_claim_is_not_acquired() {
+        let mut owners = MuteOwners::default();
+        assert!(!owners.acquire_local(true, false));
+        assert!(!owners.local);
+        assert!(owners.acquire_local(true, true));
+    }
+
+    #[test]
+    fn superseded_mute_task_fails_even_while_another_owner_holds_the_mute() {
+        let remote_owner = u64::MAX - 7;
+        let mut owners = MuteOwners::default();
+        owners.remote.insert(remote_owner);
+        let outcome = super::apply_local_mute(&mut owners, false, || {
+            panic!("a rejected claim must not call the OS mute")
+        });
+        assert_eq!(outcome, MuteOutcome::Failed);
+        assert!(!owners.local);
+        assert_eq!(owners.remote, [remote_owner].into_iter().collect());
+    }
+
+    #[test]
+    fn current_local_claim_returns_the_actual_mute_outcome() {
+        let mut owners = MuteOwners::default();
+        let calls = Cell::new(0);
+        let outcome = super::apply_local_mute(&mut owners, true, || {
+            calls.set(calls.get() + 1);
+            MuteOutcome::Failed
+        });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(outcome, MuteOutcome::Failed);
+        assert!(
+            owners.local,
+            "failed mute still needs the normal release path"
+        );
+    }
+
+    #[test]
+    fn late_opener_and_queued_release_cannot_release_a_replacement_mute() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let claims = AtomicU64::new(1);
+        // A is cancelled, then B claims before A's release worker runs.
+        let queued_release = super::invalidate_local_claim(&claims, 1).unwrap();
+        let b = claims.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        assert_eq!(super::invalidate_local_claim(&claims, 1), None);
+        assert_eq!(claims.load(Ordering::SeqCst), b);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == queued_release,
+            || panic!("A must not restore B's output"),
+        );
+        assert!(owners.local);
+        let released_b = super::invalidate_local_claim(&claims, b).unwrap();
+        let restored = Cell::new(false);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == released_b,
+            || restored.set(true),
+        );
+        assert!(restored.get());
+        assert!(!owners.muted());
+    }
+
+    #[test]
+    fn releasing_local_claim_preserves_remote_mute() {
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        owners.remote.insert(7);
+        super::apply_local_release(&mut owners, true, || {
+            panic!("remote owner still needs mute")
+        });
+        assert!(!owners.local);
+        assert!(owners.muted());
+    }
+
+    #[test]
+    fn superseded_mute_task_mutes_nothing() {
+        let stale = super::claim_local_mute().task();
+        // A newer claim (or an unmute) supersedes the earlier one.
+        let _newer = super::claim_local_mute();
+        assert_eq!(stale(), MuteOutcome::Failed);
     }
 
     #[test]
@@ -142,7 +260,7 @@ mod mute_tests {
         assert_eq!(restore_calls.get(), 1);
         assert!(owners.shutting_down);
         assert!(!owners.muted());
-        owners.acquire_local(true, owners.local_generation);
+        assert!(!owners.acquire_local(true, true));
         assert!(!owners.local);
     }
 }
@@ -270,35 +388,78 @@ pub fn cancel_pending_start() {
     START_CUE_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Mute only if the same volume session is still current after the call
-/// returns. If an unmute raced in between, immediately undo the stale mute.
-pub fn coordinated_mute(active: Arc<std::sync::atomic::AtomicBool>) {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
+/// Claims local mute ownership for a recording that is about to open and
+/// returns the task that applies the mute. Run it through
+/// `mute_gate::start_after_mute` so the microphone only opens once the output
+/// is silent. Claiming immediately, rather than after the start cue, is what
+/// keeps playing audio out of the first recorded samples. A later
+/// `coordinated_unmute` supersedes a mute that is still in flight.
+#[derive(Clone, Copy)]
+pub struct LocalMuteClaim(u64);
+
+pub fn claim_local_mute() -> LocalMuteClaim {
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    LocalMuteClaim(generation)
+}
+
+impl LocalMuteClaim {
+    pub fn is_current(self) -> bool {
+        LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == self.0
+    }
+
+    pub fn task(self) -> impl FnOnce() -> MuteOutcome + Send + 'static {
+        move || {
+            let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+            apply_local_mute(&mut owners, self.is_current(), crate::system::volume::mute)
+        }
+    }
+
+    /// A late opener must not invalidate or release a replacement's claim.
+    pub fn release(self) {
+        if let Some(generation) = invalidate_local_claim(&LOCAL_MUTE_CLAIM, self.0) {
+            queue_local_release(generation);
+        }
+    }
+}
+
+fn invalidate_local_claim(counter: &AtomicU64, claim: u64) -> Option<u64> {
+    let released = claim.wrapping_add(1);
+    counter
+        .compare_exchange(claim, released, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| released)
+}
+
+fn apply_local_release(owners: &mut MuteOwners, claim_is_current: bool, restore: impl FnOnce()) {
+    if !claim_is_current {
+        return;
+    }
+    let before = owners.muted();
+    owners.local = false;
+    if before && !owners.muted() {
+        restore();
+    }
+}
+
+fn queue_local_release(generation: u64) {
     tauri::async_runtime::spawn_blocking(move || {
-        update_mute_owners(|owners| {
-            owners.acquire_local(active.load(Ordering::Relaxed), generation)
-        });
+        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        apply_local_release(
+            &mut owners,
+            LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation,
+            crate::system::volume::unmute,
+        );
     });
 }
 
 /// Invalidate any pending coordinated mute before unmuting the system.
 pub fn coordinated_unmute() {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        update_mute_owners(|owners| {
-            if owners.local_generation == generation {
-                owners.local = false;
-            }
-        });
-    });
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    queue_local_release(generation);
 }
 
 fn sound_tx() -> &'static mpsc::Sender<SoundCommand> {
@@ -672,5 +833,101 @@ mod tests {
         assert!(render_samples(notes(SoundCue::Start), 0.0)
             .iter()
             .all(|sample| *sample == 0.0));
+    }
+    #[cfg(target_os = "linux")]
+    fn wpctl_default_sink_muted() -> bool {
+        let out = std::process::Command::new("wpctl")
+            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+            .output()
+            .expect("wpctl");
+        String::from_utf8_lossy(&out.stdout).contains("[MUTED]")
+    }
+
+    /// Real-hardware check of the production ordering: when the recording
+    /// opens, an independent `wpctl` read must already report the default sink
+    /// muted. Run with
+    /// `cargo test --lib media::sound::tests::live_mute_precedes_recording -- --ignored --nocapture`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "mutes the real default sink"]
+    fn live_mute_precedes_recording() {
+        if wpctl_default_sink_muted() {
+            eprintln!("default sink already muted; skipping");
+            return;
+        }
+        let mut totals = Vec::new();
+        for _ in 0..8 {
+            let begin = std::time::Instant::now();
+            let (muted_at_open, report) = crate::media::mute_gate::start_after_mute(
+                Some(claim_local_mute().task()),
+                crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+                wpctl_default_sink_muted,
+            );
+            let confirmed_total = begin.elapsed();
+            coordinated_unmute();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while wpctl_default_sink_muted() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!wpctl_default_sink_muted(), "sink was not restored");
+            assert!(report.gate.is_confirmed(), "gate: {:?}", report.gate);
+            assert!(muted_at_open, "recording opened before the sink was muted");
+            totals.push(report.waited.as_secs_f64() * 1000.0);
+            eprintln!(
+                "LIVE gate={:?} mute confirmed in {:.1} ms (hotkey-to-mic-open path {:.1} ms)",
+                report.gate,
+                report.waited.as_secs_f64() * 1000.0,
+                confirmed_total.as_secs_f64() * 1000.0
+            );
+        }
+        totals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "LIVE confirmed-mute ms: min={:.1} median={:.1} max={:.1}",
+            totals[0],
+            totals[totals.len() / 2],
+            totals[totals.len() - 1]
+        );
+    }
+    /// Same ordering check against the real production capture path: the
+    /// default microphone must open only once the sink is muted, and the
+    /// mute-to-mic-open gap is printed. Run with
+    /// `cargo test --lib media::sound::tests::live_mute_then_real_mic_open -- --ignored --nocapture`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "mutes the real default sink and opens the real microphone"]
+    fn live_mute_then_real_mic_open() {
+        if wpctl_default_sink_muted() {
+            eprintln!("default sink already muted; skipping");
+            return;
+        }
+        for _ in 0..3 {
+            let (opened, report) = crate::media::mute_gate::start_after_mute(
+                Some(claim_local_mute().task()),
+                crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+                || {
+                    let muted_before_open = wpctl_default_sink_muted();
+                    let opening = std::time::Instant::now();
+                    let session =
+                        crate::media::audio::RecordingSession::start(None, false, 1.0, None, None);
+                    (muted_before_open, session, opening.elapsed())
+                },
+            );
+            coordinated_unmute();
+            let (muted_before_open, session, open_time) = opened;
+            let session = session.expect("default microphone failed to open");
+            eprintln!(
+                "LIVE mute confirmed in {:.1} ms; mic opened {:.1} ms after that",
+                report.waited.as_secs_f64() * 1000.0,
+                open_time.as_secs_f64() * 1000.0
+            );
+            let _ = session.stop();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while wpctl_default_sink_muted() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!wpctl_default_sink_muted(), "sink was not restored");
+            assert!(report.gate.is_confirmed(), "gate: {:?}", report.gate);
+            assert!(muted_before_open, "mic opened before the sink was muted");
+        }
     }
 }

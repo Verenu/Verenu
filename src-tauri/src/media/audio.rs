@@ -629,6 +629,24 @@ impl StreamingResampler {
 }
 
 impl RecordingSession {
+    /// Device-free resource for lifecycle tests; it captures no audio and
+    /// has no worker. Stopping it reports the disconnected result channel.
+    #[cfg(test)]
+    pub(crate) fn lifecycle_fixture() -> Self {
+        let (stop_tx, _) = mpsc::sync_channel(1);
+        let (_, result_rx) = mpsc::channel();
+        Self {
+            stop_tx,
+            result_rx,
+            level: Arc::new(AtomicU32::new(0)),
+            raw_level: Arc::new(AtomicU32::new(0)),
+            envelope: Arc::new(EnvelopeTap::new()),
+            active: Arc::new(AtomicBool::new(true)),
+            speech_detected: Arc::new(AtomicBool::new(false)),
+            stream_error: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn start(
         device_name: Option<String>,
         noise_reduction: bool,
