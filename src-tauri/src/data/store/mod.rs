@@ -502,6 +502,8 @@ pub const CLEANUP_FALLBACK_MODELS: &str = "cleanup_fallback_models";
 pub const CLEANUP_ENABLED: &str = "cleanup_enabled";
 pub const CLEANUP_CACHE_ENABLED: &str = "cleanup_cache_enabled";
 pub const HOTKEY: &str = "hotkey";
+pub const LINUX_CANCEL_KEY: &str = "linux_cancel_key";
+pub const LINUX_HANDSFREE_KEY: &str = "linux_handsfree_key";
 /// Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S" (see core::hotkey::chord).
 pub const SUB_APP_CAPTURE_HOTKEY: &str = "sub_app_capture_hotkey";
 pub const MICROPHONE_DEVICE: &str = "microphone_device";

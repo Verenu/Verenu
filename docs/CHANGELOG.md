@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Linux Cancel dictation and Switch to hands-free shortcuts can now be changed in General settings, including when unavailable. Each selected key stays on this device, is checked against desktop shortcuts, and recovers when its conflict is removed.
+
 - Reworked the microphone gain advice in Settings > Audio. The "enable noise reduction" tip no longer appears when noise reduction is already on; at high gain it now points at the usual cause, a system input volume that is set too low. Each recording logs its input level and the share of samples clipped by the gain, with a warning when the gain is clipping the signal. Troubleshooting covers checking PipeWire and hardware capture levels.
 
 - Added Basic cleanup in Style and Contexts: on-device English filler, repetition, and conservative repair removal, with punctuation preserved and no cleanup model call. Existing Off and Light choices keep their behavior. Basic uses only the primary transcript and skips AI tone and custom instructions. Added separate, default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. Both require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
