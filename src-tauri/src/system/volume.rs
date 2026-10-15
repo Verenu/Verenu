@@ -592,30 +592,19 @@ fn set_system_muted(_muted: bool) -> Result<(), String> {
 /// mid-dictation cannot leave a different sink muted.
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
 
-    fn spawn(program: &str, args: &[&str]) -> Result<Child, String> {
-        Command::new(program)
+    fn run(program: &str, args: &[&str]) -> Result<String, String> {
+        let output = Command::new(program)
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("{program} unavailable: {e}"))
-    }
-
-    fn finish(child: Child, program: &str, args: &[&str]) -> Result<String, String> {
-        let output = child
-            .wait_with_output()
+            .output()
             .map_err(|e| format!("{program} unavailable: {e}"))?;
         if !output.status.success() {
             return Err(format!("{program} {} failed", args.first().unwrap_or(&"")));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
-    fn run(program: &str, args: &[&str]) -> Result<String, String> {
-        finish(spawn(program, args)?, program, args)
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -633,36 +622,16 @@ mod linux {
     }
 
     /// Returns the default sink and whether it is currently muted. The node id
-    /// and the mute flag come from two `wpctl` processes that run side by side,
-    /// so the pre-mute read costs one process start instead of two.
+    /// is resolved first and the mute flag is read from that same id, so a
+    /// default-device change in between cannot pair one sink with another
+    /// sink's flag.
     pub fn default_sink() -> Result<(Sink, bool), String> {
-        const INSPECT: [&str; 2] = ["inspect", "@DEFAULT_AUDIO_SINK@"];
-        const VOLUME: [&str; 2] = ["get-volume", "@DEFAULT_AUDIO_SINK@"];
-        match (spawn("wpctl", &INSPECT), spawn("wpctl", &VOLUME)) {
-            (Ok(inspect), Ok(volume)) => {
-                let inspect = finish(inspect, "wpctl", &INSPECT);
-                let volume = finish(volume, "wpctl", &VOLUME);
-                if let (Ok(inspect), Ok(volume)) = (inspect, volume) {
-                    if let Some(id) = parse_wpctl_id(&inspect) {
-                        let sink = Sink::PipeWire(id);
-                        let mut muted = volume.contains("[MUTED]");
-                        if muted {
-                            // The two reads resolved the default sink
-                            // separately. If it changed in between, the flag
-                            // belongs to a different sink, so confirm it
-                            // against the inspected node before trusting it.
-                            muted = is_muted(&sink)?;
-                        }
-                        return Ok((sink, muted));
-                    }
+        if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
+            if let Some(id) = parse_wpctl_id(&inspect) {
+                if let Ok(volume) = run("wpctl", &["get-volume", &id]) {
+                    return Ok((Sink::PipeWire(id), volume.contains("[MUTED]")));
                 }
             }
-            // Only one process started: reap it instead of leaving a zombie.
-            (Ok(mut child), Err(_)) | (Err(_), Ok(mut child)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            (Err(_), Err(_)) => {}
         }
         let name = run("pactl", &["get-default-sink"])?.trim().to_string();
         if name.is_empty() {
@@ -689,10 +658,11 @@ mod linux {
     }
 }
 
-/// The sink Verenu muted, if any. A sink that was already muted by the user is
-/// never recorded, so it is never unmuted on their behalf.
+/// The sinks Verenu muted. A sink that was already muted by the user is never
+/// recorded, so it is never unmuted on their behalf. More than one sink is
+/// possible when the default output changes while a mute is held.
 #[cfg(target_os = "linux")]
-static LINUX_MUTED_SINK: Mutex<Option<linux::Sink>> = Mutex::new(None);
+static LINUX_MUTED_SINKS: Mutex<Vec<linux::Sink>> = Mutex::new(Vec::new());
 
 #[cfg(windows)]
 pub fn mute() -> MuteOutcome {
@@ -899,13 +869,12 @@ pub fn release_mic(session_id: u64) {
 
 #[cfg(target_os = "linux")]
 pub fn mute() -> MuteOutcome {
-    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+    let mut muted_sinks = match LINUX_MUTED_SINKS.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if muted_sink.is_some() {
-        return MuteOutcome::AlreadyMuted;
-    }
+    // Always check the sink that is the default right now: it may differ from
+    // one muted earlier, and a tracked sink may have been unmuted by the user.
     let sink = match linux::default_sink() {
         Ok((_, true)) => return MuteOutcome::AlreadyMuted,
         Ok((sink, false)) => sink,
@@ -920,7 +889,9 @@ pub fn mute() -> MuteOutcome {
     }
     // Recorded before the read-back so a sink that did get muted is always
     // restored, even if the confirmation below fails.
-    *muted_sink = Some(sink.clone());
+    if !muted_sinks.contains(&sink) {
+        muted_sinks.push(sink.clone());
+    }
     match linux::is_muted(&sink) {
         Ok(true) => MuteOutcome::Muted,
         Ok(false) => {
@@ -936,11 +907,11 @@ pub fn mute() -> MuteOutcome {
 
 #[cfg(target_os = "linux")]
 pub fn unmute() {
-    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+    let mut muted_sinks = match LINUX_MUTED_SINKS.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(sink) = muted_sink.take() {
+    for sink in muted_sinks.drain(..) {
         if let Err(err) = linux::set_muted(&sink, false) {
             log::warn!("Failed to unmute system audio: {err}");
         }
