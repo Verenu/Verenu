@@ -94,7 +94,7 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await rail.getByRole('button', { name: /OpenRouter/ }).click();
       await dialog.getByRole('button', { name: 'Refresh models', exact: true }).click();
       await expect.poll(() => requests).toBe(2);
-      // A hung provider does not disable refresh for a different provider.
+      // Choices remain interactive when viewing another provider during a refresh.
       await rail.getByRole('button', { name: /Synthetic picker endpoint/ }).click();
       await expect(dialog.getByRole('status')).not.toContainText('Refreshing');
       await dialog.locator('.row-main').filter({ hasText: 'synthetic-alternative' }).click();
@@ -106,9 +106,11 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
     } finally {
       release?.();
       await page.unroute('**/__verenu_dev/invoke', route);
-      for (const key of ['custom_providers', 'advanced_model_ui', `${task}_default_model`, `${task}_provider`, `${task}_model`, `${task}_models_by_provider`, 'model_selection_mode']) {
+      for (const key of ['custom_providers', `${task}_default_model`, `${task}_provider`, `${task}_model`, `${task}_models_by_provider`, 'model_selection_mode']) {
         if (previous[key] !== undefined && previous[key] !== null) await session.invoke('save_setting', { key, value: previous[key] });
       }
+      await session.invoke('save_setting', { key: 'advanced_model_ui', value: previous.advanced_model_ui === true });
     }
+    expect(await session.invoke('get_setting', { key: 'advanced_model_ui' })).toBe(previous.advanced_model_ui === true);
   });
 }
