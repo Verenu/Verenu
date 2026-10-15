@@ -65,30 +65,123 @@ test('provided audio captures shared T3 skills without workspace selection only 
     assert.equal(status.connection.selectedCatalog, null);
     assert.deepEqual(status.skills.map(skill => skill.name), ['babysit-pr', 'pr-babysit', 'skill-designer']);
     browser = await chromium.launch({ headless: true });
+    const screenshots = process.env.VERENU_T3_SCREENSHOT_DIR;
     for (const viewport of [{ width: 1320, height: 860 }, { width: 390, height: 844 }]) {
-      const page = await browser.newPage({ viewport });
+      const context = await browser.newContext({ viewport });
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+      const page = await context.newPage();
       try {
         await page.goto(session.access.localAccessUrl);
         await page.locator('[data-debug-id="nav.settings"]').click();
         await page.locator('[data-debug-id="settings.integrations"]').click();
-        const panel = page.locator('.t3-integration');
-        await panel.getByRole('button', { name: 'View skills', exact: true }).click();
-        await panel.locator('.skill-list').waitFor();
-        assert.equal(await panel.getByRole('listbox').count(), 0);
-        assert.equal(await panel.locator('.skill-list li').count(), 3);
-        assert.ok((await panel.textContent()).includes('3 shared skills available'));
+        // Pull on mount must settle before menu actions, which are inert while loading.
+        await page.waitForFunction(() => document.querySelector('[aria-label="T3 Code integration"]')?.getAttribute('aria-busy') === 'false');
+        const panel = page.getByRole('region', { name: 'T3 Code integration', exact: true });
+        const countButton = panel.getByRole('button', { name: '3 skills', exact: true });
+        const actions = panel.getByRole('button', { name: 'T3 Code actions', exact: true });
+        const before = await invoke('get_t3_skills');
+        assert.equal(before.skills.length, 3);
+        assert.equal(await panel.getByRole('button', { name: 'Connect T3 Code', exact: true }).count(), 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-        await panel.locator('#t3-skill-search').fill('designer');
-        assert.equal(await panel.locator('.skill-list li').count(), 1);
-        assert.ok((await panel.locator('.skill-list').textContent()).includes('$skill-designer'));
-        if (process.env.VERENU_T3_SCREENSHOT_DIR) {
-          await fs.mkdir(process.env.VERENU_T3_SCREENSHOT_DIR, { recursive: true });
-          await page.screenshot({ path: path.join(process.env.VERENU_T3_SCREENSHOT_DIR, `integrations-${viewport.width}.png`) });
+        if (screenshots) {
+          await fs.mkdir(screenshots, { recursive: true });
+          await page.screenshot({ path: path.join(screenshots, `integrations-${viewport.width}.png`) });
         }
-      } finally { await page.close(); }
+
+        // The skill count opens a names-only, alphabetical, searchable dialog.
+        await countButton.click();
+        const dialog = page.getByRole('dialog', { name: 'Shared T3 skills', exact: true });
+        await dialog.waitFor();
+        await dialog.evaluate(async node => {
+          // Svelte schedules the intro animation on its next frame. Wait for it
+          // to exist before measuring the final sheet geometry.
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          await Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => {})));
+        });
+        const list = dialog.getByRole('list', { name: 'Shared T3 skill names', exact: true });
+        const tokens = async () => (await list.locator('code').allTextContents()).map(text => text.trim());
+        assert.deepEqual(await tokens(), ['$babysit-pr', '$pr-babysit', '$skill-designer']);
+        const dialogText = await dialog.innerText();
+        assert.ok(!dialogText.includes('Private description sentinel'));
+        assert.ok(!dialogText.includes('Create and improve skills.'));
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        if (viewport.width <= 560) {
+          // Narrow screens dock the dialog as a full-width bottom sheet.
+          const sheet = await dialog.boundingBox();
+          assert.ok(sheet.width >= viewport.width - 1, 'bottom sheet spans the viewport width');
+          assert.ok(sheet.y + sheet.height >= viewport.height - 1, 'bottom sheet is docked to the bottom edge');
+        }
+        if (screenshots) await page.screenshot({ path: path.join(screenshots, `t3-skills-dialog-${viewport.width}.png`) });
+
+        const search = dialog.getByRole('searchbox', { name: 'Search skill names', exact: true });
+        await search.fill('designer');
+        assert.deepEqual(await tokens(), ['$skill-designer']);
+        await search.fill('sentinel');
+        assert.deepEqual(await tokens(), []);
+        assert.ok((await dialog.innerText()).includes('No skill names match “sentinel”.'));
+        await search.fill('$BABY');
+        assert.deepEqual(await tokens(), ['$babysit-pr', '$pr-babysit']);
+        await search.fill('');
+        assert.equal((await tokens()).length, 3);
+
+        // Copy writes the exact token and reports the outcome in the dialog.
+        await dialog.getByRole('button', { name: 'Copy $skill-designer', exact: true }).click();
+        await dialog.getByRole('status').filter({ hasText: 'Copied $skill-designer.' }).waitFor();
+        await page.waitForFunction(async () => (await navigator.clipboard.readText()) === '$skill-designer', null, { timeout: 5000 });
+
+        // Escape dismisses the dialog and returns focus to the count that opened it.
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({ state: 'detached' });
+        assert.equal(await countButton.evaluate(node => node === document.activeElement), true);
+        assert.ok(await panel.isVisible());
+
+        // The three-dot menu is keyboard-dismissable and does not close Settings.
+        await actions.click();
+        const menu = page.getByRole('menu', { name: 'T3 Code actions', exact: true });
+        await menu.waitFor();
+        assert.deepEqual((await menu.getByRole('menuitem').allTextContents()).map(text => text.trim()), ['Pull now', 'Reconnect', 'Disconnect']);
+        await page.keyboard.press('Escape');
+        await menu.waitFor({ state: 'detached' });
+        assert.equal(await actions.getAttribute('aria-expanded'), 'false');
+        assert.ok(await panel.isVisible());
+
+        // Reconnect shows a replacement form, and a failed pairing keeps the current connection.
+        await actions.click();
+        await menu.getByRole('menuitem', { name: 'Reconnect', exact: true }).click();
+        const pairing = panel.locator('#t3-pairing-link');
+        await pairing.waitFor();
+        assert.equal(await pairing.evaluate(node => node === document.activeElement), true);
+        assert.ok((await panel.innerText()).includes('Your current connection stays active until the new link connects.'));
+        assert.equal(await countButton.count(), 1);
+        await pairing.fill('https://synthetic.invalid/pair#token=synthetic');
+        await panel.getByRole('button', { name: 'Connect T3 Code', exact: true }).click();
+        await panel.getByRole('alert').waitFor();
+        assert.equal(await pairing.inputValue(), '');
+        const afterFailedPairing = await invoke('get_t3_skills');
+        assert.equal(afterFailedPairing.connection.id, before.connection.id);
+        assert.deepEqual(afterFailedPairing.skills, before.skills);
+        await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await pairing.waitFor({ state: 'detached' });
+        assert.equal(await countButton.isVisible(), true);
+        assert.ok(!(await panel.innerText()).includes('Using saved skills'), 'A failed replacement pairing is not a failed skill pull');
+
+        // Disconnect asks first. The dev session cannot disconnect, so this run dismisses the confirmation.
+        await actions.click();
+        await menu.getByRole('menuitem', { name: 'Disconnect', exact: true }).click();
+        const confirm = page.getByRole('dialog', { name: 'Disconnect T3 Code?', exact: true });
+        await confirm.waitFor();
+        const confirmText = await confirm.innerText();
+        assert.ok(confirmText.includes('native credential store'));
+        assert.ok(confirmText.includes('deletes the 3 imported skill names'));
+        await page.keyboard.press('Escape');
+        await confirm.waitFor({ state: 'detached' });
+        assert.equal(await actions.evaluate(node => node === document.activeElement), true);
+        assert.ok(await panel.isVisible());
+        assert.equal((await invoke('get_t3_skills')).connection.id, before.connection.id);
+      } finally { await context.close(); }
     }
     await browser.close(); browser = undefined;
-    for (const [process, enabled, expected] of [['t3-code', true, true], ['synthetic-other', true, false], ['t3-code', false, false]]) {
+    for (const [process, enabled, expected] of [['t3-code', true, true], ['com.monke.t3code.grokbot', true, true], ['synthetic-other', true, false], ['t3-code', false, false]]) {
       await invoke('set_context_t3_skill_mentions', { contextId: context.id, enabled });
       const response = await request(`/audio?context=${context.id}&process=${process}`, { method: 'POST', body: audio });
       assert.equal(response.status, 200);

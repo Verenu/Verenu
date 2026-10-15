@@ -30,6 +30,8 @@ export const icons = {
   pencil:   `<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>`,
   refresh:  `<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>`,
   devices:  `<rect x="2" y="6" width="13" height="10" rx="2"/><path d="M17 9h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-5"/><path d="M6 20h5"/><path d="M15.5 15.5h.01"/>`,
+  info:     `<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>`,
+  unlink:   `<path d="M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M8 2v3M2 8h3M16 19v3M19 16h3"/>`,
 };
 
 /** Icons offered for context groups and sub-apps. */

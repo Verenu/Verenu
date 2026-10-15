@@ -573,7 +573,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         .then(|| {
             cfg.t3_skill_catalog
                 .as_ref()
-                .and_then(|catalog| catalog.prompt_parts(raw))
+                .and_then(|catalog| catalog.prompt_parts())
         })
         .flatten();
     // Booleans only: never log dictated text, skill names, or workspace labels.
@@ -760,9 +760,15 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
 
         // Reject newly invented skill names before cache insertion or delivery.
         let guarded = guarded.filter(|cleaned| {
-            cfg.t3_skill_catalog
+            let rejection = cfg.t3_skill_catalog
                 .as_ref()
-                .is_none_or(|catalog| catalog.validates_output(&expanded, cleaned))
+                .and_then(|catalog| catalog.output_rejection(&expanded, cleaned));
+            let valid = rejection.is_none();
+            if cfg.t3_skill_catalog.is_some() {
+                log::info!("pipeline: t3 skill validation gen={} accepted={} output_changed={} rejection={:?}",
+                    gen, valid, cleaned != &expanded, rejection);
+            }
+            valid
         });
         record_provider_duration(provider_started.elapsed());
         if guarded.is_none() {
