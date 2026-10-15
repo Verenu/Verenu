@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Model pickers open with a small batch per provider instead of rendering every discovered model at once. Search covers the full catalog, current selections stay first, and more models remain available in each provider group while catalogs refresh or a provider is offline.
+
 - Linux Cancel dictation and Switch to hands-free shortcuts can now be changed in General settings, including when unavailable. Each selected key stays on this device, is checked against desktop shortcuts, and recovers when its conflict is removed.
 
 - Fixed Mute PC Audio letting playing audio leak into the start of a dictation. The output is now muted, and the mute confirmed, before the microphone opens, instead of after it and after the start cue. On Linux a confirmed mute takes about 20 ms (the mute used to begin roughly 660 ms after the hotkey when start sounds were on). The wait is capped at 250 ms, so an unresponsive audio server cannot delay dictation, and the log records the mute-to-record time. The start sound is skipped when the mute is confirmed, because it would play into the muted output.

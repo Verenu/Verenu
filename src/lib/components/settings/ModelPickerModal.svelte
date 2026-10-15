@@ -187,6 +187,17 @@
   const inFilter = (row: ModelRow) =>
     providerFilter === 'all' || row.provider === providerFilter;
   const shown = $derived(searched.filter(inFilter));
+  // Provider discovery can add hundreds of compatible models. Build only a
+  // small batch of rows on open; search and provider counts still use the full
+  // catalog, including cached entries while a refresh is pending or offline.
+  const ROW_BATCH = 20;
+  let rowLimits = $state<Partial<Record<ProviderId, number>>>({});
+  $effect(() => {
+    query;
+    providerFilter;
+    showUnverified;
+    rowLimits = {};
+  });
   /** How many the disclosure would add, counted for the tab you're on. */
   const hiddenCount = $derived(matchedUnverified.filter(inFilter).length);
 
@@ -208,7 +219,9 @@
       provider,
       rows: shown
         .filter((row) => row.provider === provider)
-        .sort((a, b) => RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
+        .sort((a, b) => Number(b.key === defaultModel) - Number(a.key === defaultModel)
+          || Number(pinned.includes(b.key)) - Number(pinned.includes(a.key))
+          || RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
     })).filter((group) => group.rows.length > 0),
   );
 
@@ -502,7 +515,7 @@
               </div>
             {/if}
           {/if}
-          {#each group.rows as row (row.key)}
+          {#each group.rows.slice(0, rowLimits[group.provider] ?? ROW_BATCH) as row (row.key)}
             {@const active = isActive(row.key)}
             {@const fallback = isFallback(row.key)}
             <div
@@ -596,6 +609,16 @@
               </div>
             {/if}
           {/each}
+          {#if group.rows.length > (rowLimits[group.provider] ?? ROW_BATCH)}
+            <button
+              type="button"
+              class="more-toggle"
+              onclick={() => (rowLimits[group.provider] = (rowLimits[group.provider] ?? ROW_BATCH) + ROW_BATCH)}
+            >
+              Show next {Math.min(ROW_BATCH, group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH))} {providerDisplayLabel(group.provider)} models
+              <span>({group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH)} remaining · search all models above)</span>
+            </button>
+          {/if}
         {/each}
 
         {#if hiddenCount > 0 || showUnverified}
