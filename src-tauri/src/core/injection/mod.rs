@@ -204,6 +204,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_cursor_formatting_preserves_terminal_t3_skill_token() {
+        let catalog = crate::system::t3_skills::Catalog {
+            environment_id: "synthetic".into(),
+            id: "catalog".into(),
+            label: "Codex".into(),
+            provider_instance_id: "codex".into(),
+            workspace_id: "synthetic".into(),
+            revision: "1".into(),
+            skills: vec![crate::system::t3_skills::Skill {
+                name: "babysit-pr".into(),
+                display_name: None,
+                description: None,
+            }],
+        };
+        for (spoken, expected) in [
+            ("$BABYSIT-PR?", "$babysit-pr ? "),
+            ("$BABYSIT-PR", "$babysit-pr "),
+        ] {
+            let normalized = catalog.normalize_mentions(spoken);
+            assert_eq!(normalized, expected);
+            assert_eq!(
+                format_for_caret_text(
+                    &normalized,
+                    "Previous sentence. ",
+                    "",
+                    true,
+                    true,
+                    true,
+                    true,
+                    "casual",
+                    "en",
+                    catalog.starts_with_skill_mention(&normalized),
+                ),
+                expected
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -771,7 +810,7 @@ pub async fn inject_text(
     paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     #[cfg(any(test, debug_assertions))]
-    if crate::testing::is_enabled() {
+    if crate::testing::injection_capture_enabled() {
         crate::testing::record_injection(crate::testing::InjectionRecord {
             text: text.to_string(),
             target_hwnd: target.id,

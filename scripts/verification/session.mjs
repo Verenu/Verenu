@@ -5,6 +5,10 @@ import { spawn } from 'node:child_process';
 import { root, sourceFileChanges, sourceSnapshot } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
+export function cargoTargetDirectory(environment = process.env) {
+  return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
+}
+
 export function ownedSessionStartupState(manifest, launcherPid) {
   if (!manifest || manifest.launcherPid !== launcherPid) return null;
   if (manifest.status === 'ready') return 'ready';

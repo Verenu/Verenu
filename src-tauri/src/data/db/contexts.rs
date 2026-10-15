@@ -25,6 +25,9 @@ pub struct Context {
     pub contextual_formatting_disabled: bool,
     #[serde(default)]
     pub paste_in_chunks: bool,
+    /// Applies only to captured T3 Code destinations, never other apps in this Context.
+    #[serde(default)]
+    pub t3_skill_mentions_disabled: bool,
     /// `NULL` when unpinned. Pinned contexts sort newest-pin-first in the
     /// sidebar; Everywhere is pinned implicitly by the UI and never sets this.
     pub pinned_at: Option<String>,
@@ -110,6 +113,7 @@ fn context_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Context> {
         custom_instructions: row.get(7)?,
         contextual_formatting_disabled: row.get::<_, i64>(8)? != 0,
         paste_in_chunks: row.get::<_, i64>(12)? != 0,
+        t3_skill_mentions_disabled: row.get::<_, i64>(13)? != 0,
         pinned_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -179,7 +183,7 @@ pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     let conn = lock_conn(db)?;
     query_all(
         &conn,
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
          FROM contexts
          ORDER BY id ASC",
         [], context_from_row,
@@ -249,7 +253,7 @@ pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<Contex
 
 pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
          FROM contexts WHERE id = ?1",
         params![context_id],
         context_from_row,
@@ -356,8 +360,8 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     tx.execute(
         "INSERT INTO contexts (
            name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled, paste_in_chunks
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+           custom_instructions, contextual_formatting_disabled, paste_in_chunks, t3_skill_mentions_disabled
+         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             name,
             source.icon,
@@ -367,6 +371,7 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
             source.custom_instructions,
             source.contextual_formatting_disabled,
             source.paste_in_chunks,
+            source.t3_skill_mentions_disabled,
         ],
     )?;
     let duplicate_id = tx.last_insert_rowid();
@@ -431,6 +436,16 @@ pub fn update_context_settings_with_delivery(
             contextual_formatting_disabled,
             paste_in_chunks,
         ],
+    )?;
+    require_row_changed(changed, "Context", context_id)
+}
+
+/// T3-specific policy stays independent of group-wide tone and instructions.
+pub fn update_context_t3_skill_mentions(db: &Db, context_id: i64, enabled: bool) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let changed = conn.execute(
+        "UPDATE contexts SET t3_skill_mentions_disabled = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![context_id, !enabled],
     )?;
     require_row_changed(changed, "Context", context_id)
 }
