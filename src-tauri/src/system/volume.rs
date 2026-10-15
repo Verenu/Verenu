@@ -655,6 +655,7 @@ fn set_system_muted(_muted: bool) -> Result<(), String> {
 /// mid-dictation cannot leave a different sink muted.
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::MuteOutcome;
     use std::process::{Command, Stdio};
 
     fn run(program: &str, args: &[&str]) -> Result<String, String> {
@@ -702,6 +703,54 @@ mod linux {
         }
         let mute = run("pactl", &["get-sink-mute", &name])?;
         Ok((Sink::Pulse(name), mute.contains("yes")))
+    }
+
+    /// Re-resolve identity after reading mute state, including on the
+    /// already-muted path. Do not pair a new default's flag with an old id.
+    pub fn current_default(sink: &Sink) -> Result<Sink, String> {
+        if matches!(sink, Sink::PipeWire(_)) {
+            let inspect = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"])?;
+            return parse_wpctl_id(&inspect)
+                .map(Sink::PipeWire)
+                .ok_or_else(|| "could not resolve the current PipeWire default".into());
+        }
+        let name = run("pactl", &["get-default-sink"])?.trim().to_string();
+        if name.is_empty() {
+            return Err("no default audio sink".into());
+        }
+        Ok(Sink::Pulse(name))
+    }
+
+    pub fn mute_current_output(
+        muted_sinks: &mut Vec<Sink>,
+        mut snapshot: impl FnMut() -> Result<(Sink, bool), String>,
+        mut set_mute: impl FnMut(&Sink) -> Result<(), String>,
+        mut read_mute: impl FnMut(&Sink) -> Result<bool, String>,
+        mut current: impl FnMut(&Sink) -> Result<Sink, String>,
+    ) -> Result<MuteOutcome, String> {
+        // The outer gate bounds recording's wait even if an OS read stalls.
+        // Also bound churn so a changing default cannot create an endless task.
+        for _ in 0..3 {
+            let (sink, already_muted) = snapshot()?;
+            if !already_muted {
+                set_mute(&sink)?;
+                // Keep restoration ownership even if confirmation fails.
+                if !muted_sinks.contains(&sink) {
+                    muted_sinks.push(sink.clone());
+                }
+                if !read_mute(&sink)? {
+                    return Err("System audio mute was not reflected by the audio server".into());
+                }
+            }
+            if current(&sink)? == sink {
+                return Ok(if already_muted {
+                    MuteOutcome::AlreadyMuted
+                } else {
+                    MuteOutcome::Muted
+                });
+            }
+        }
+        Err("Default audio output kept changing during mute confirmation".into())
     }
 
     pub fn set_muted(sink: &Sink, muted: bool) -> Result<(), String> {
@@ -940,31 +989,14 @@ pub fn mute() -> MuteOutcome {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    // Always check the sink that is the default right now: it may differ from
-    // one muted earlier, and a tracked sink may have been unmuted by the user.
-    let sink = match linux::default_sink() {
-        Ok((_, true)) => return MuteOutcome::AlreadyMuted,
-        Ok((sink, false)) => sink,
-        Err(err) => {
-            log::warn!("Failed to read system audio state: {err}");
-            return MuteOutcome::Failed;
-        }
-    };
-    if let Err(err) = linux::set_muted(&sink, true) {
-        log::warn!("Failed to mute system audio: {err}");
-        return MuteOutcome::Failed;
-    }
-    // Recorded before the read-back so a sink that did get muted is always
-    // restored, even if the confirmation below fails.
-    if !muted_sinks.contains(&sink) {
-        muted_sinks.push(sink.clone());
-    }
-    match linux::is_muted(&sink) {
-        Ok(true) => MuteOutcome::Muted,
-        Ok(false) => {
-            log::warn!("System audio mute was not reflected by the audio server");
-            MuteOutcome::Failed
-        }
+    match linux::mute_current_output(
+        &mut muted_sinks,
+        linux::default_sink,
+        |sink| linux::set_muted(sink, true),
+        linux::is_muted,
+        linux::current_default,
+    ) {
+        Ok(outcome) => outcome,
         Err(err) => {
             log::warn!("Could not confirm system audio mute: {err}");
             MuteOutcome::Failed
@@ -987,6 +1019,84 @@ pub fn unmute() {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
+    use super::linux::{mute_current_output, Sink};
+    use super::MuteOutcome;
+    use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn default_switch_during_confirmation_mutes_the_new_output() {
+        for sink in [Sink::PipeWire as fn(String) -> Sink, Sink::Pulse] {
+            for initially_muted in [false, true] {
+                let a = sink("A".into());
+                let b = sink("B".into());
+                let os_muted = RefCell::new(if initially_muted {
+                    vec![a.clone()]
+                } else {
+                    vec![]
+                });
+                let snapshots = Cell::new(0);
+                let mut owned = Vec::new();
+                let outcome = mute_current_output(
+                    &mut owned,
+                    || {
+                        let output = if snapshots.replace(snapshots.get() + 1) == 0 {
+                            &a
+                        } else {
+                            &b
+                        };
+                        Ok((output.clone(), os_muted.borrow().contains(output)))
+                    },
+                    |output| {
+                        os_muted.borrow_mut().push(output.clone());
+                        Ok(())
+                    },
+                    |output| Ok(os_muted.borrow().contains(output)),
+                    |_| Ok(b.clone()),
+                )
+                .unwrap();
+                assert_eq!(outcome, MuteOutcome::Muted);
+                assert_eq!(snapshots.get(), 2);
+                assert!(os_muted.borrow().contains(&b));
+                assert_eq!(owned, if initially_muted { vec![b] } else { vec![a, b] });
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_default_changes_are_bounded_and_keep_restore_ownership() {
+        let attempts = Cell::new(0);
+        let mut owned = Vec::new();
+        let outcome = mute_current_output(
+            &mut owned,
+            || {
+                let id = attempts.replace(attempts.get() + 1);
+                Ok((Sink::PipeWire(id.to_string()), false))
+            },
+            |_| Ok(()),
+            |_| Ok(true),
+            |_| Ok(Sink::PipeWire("next".into())),
+        );
+        assert!(outcome.is_err());
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(owned.len(), 3);
+    }
+
+    #[test]
+    fn stable_already_muted_output_is_confirmed_without_taking_restore_ownership() {
+        let sink = Sink::PipeWire("A".into());
+        let mut owned = Vec::new();
+        let outcome = mute_current_output(
+            &mut owned,
+            || Ok((sink.clone(), true)),
+            |_| panic!("must not modify an already-muted output"),
+            |_| panic!("snapshot already read mute state"),
+            |_| Ok(sink.clone()),
+        )
+        .unwrap();
+        assert_eq!(outcome, MuteOutcome::AlreadyMuted);
+        assert!(owned.is_empty());
+    }
+
     #[test]
     fn wpctl_inspect_header_yields_node_id() {
         assert_eq!(

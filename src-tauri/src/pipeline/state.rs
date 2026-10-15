@@ -557,6 +557,7 @@ pub fn take_recording_plain_with_prepend(
             // Cancelling a start must consume the reservation atomically. If
             // the microphone task has not installed Recording yet, it will
             // observe Idle and stop the session instead of resurrecting it.
+            crate::media::sound::coordinated_unmute();
             st.recording_context = None;
             None
         }
@@ -571,11 +572,18 @@ pub fn take_recording_plain_with_prepend(
 /// used by stop commands that can arrive before the microphone task finishes
 /// opening the device.
 pub fn cancel_starting_reservation(state: &SharedState) -> bool {
+    cancel_starting_reservation_with(state, crate::media::sound::coordinated_unmute)
+}
+
+fn cancel_starting_reservation_with(state: &SharedState, release_mute: impl FnOnce()) -> bool {
     let Ok(mut st) = lock_state(state) else {
         return false;
     };
     if matches!(st.lifecycle, DictationLifecycle::Starting { .. }) {
         log::info!("lifecycle: starting -> idle (start reservation cancelled)");
+        // Invalidate before exposing Idle to a new start. Restoration runs
+        // independently of a microphone open that may still be blocked.
+        release_mute();
         st.lifecycle = DictationLifecycle::Idle;
         st.recording_context = None;
         true
@@ -698,6 +706,7 @@ pub(super) fn take_recording_for_stopping(state: &SharedState) -> Option<Stoppin
             // A release can race the microphone opening. Consume the start
             // reservation so the late opener cannot install a recording after
             // the user has already released the hotkey.
+            crate::media::sound::coordinated_unmute();
             st.recording_context = None;
             None
         }
@@ -1219,6 +1228,24 @@ mod tests {
         reserve_starting(&state).unwrap();
         assert!(cancel_starting_reservation(&state));
         assert!(lock_state(&state).unwrap().lifecycle.is_idle());
+    }
+
+    #[test]
+    fn cancelling_start_releases_mute_before_unlocking_the_reservation() {
+        let state = fresh_state();
+        reserve_starting(&state).unwrap();
+        let released = std::cell::Cell::new(false);
+        // The microphone opener has not completed. Cancellation must release
+        // its mute now, while new starts are still excluded by the state lock.
+        assert!(cancel_starting_reservation_with(&state, || {
+            assert!(state.try_lock().is_err());
+            released.set(true);
+        }));
+        assert!(released.get());
+        assert!(lock_state(&state).unwrap().lifecycle.is_idle());
+        assert!(!cancel_starting_reservation_with(&state, || panic!(
+            "Idle has no pending start"
+        )));
     }
 
     #[test]

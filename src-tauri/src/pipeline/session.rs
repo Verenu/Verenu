@@ -166,7 +166,7 @@ pub fn start_recording_session_ex_with_context(
         crate::pipeline::pill::queue_pill_context(&recording_context.label);
     }
 
-    let (durable_id, prepend_for_lifecycle) = {
+    let (durable_id, prepend_for_lifecycle, mute_task) = {
         let mut st = match lock_state(state) {
             Ok(st) => st,
             Err(e) => {
@@ -217,7 +217,11 @@ pub fn start_recording_session_ex_with_context(
             st.failover_started_at_unix = 0;
             None
         };
-        (durable_id, prepend_audio)
+        // Register under the lifecycle lock: cancelling Starting invalidates
+        // this claim before a new reservation can appear. A cancelled opener
+        // must not create a fresh mute claim after releasing the lock.
+        let mute_task = mute_audio.then(crate::media::sound::local_mute_task);
+        (durable_id, prepend_audio, mute_task)
     };
     let durable_sink = durable_id.and_then(|id| {
         super::failover::open_live_writer(
@@ -239,7 +243,7 @@ pub fn start_recording_session_ex_with_context(
     // microphone opens so playing audio cannot leak into the recording. The
     // wait is bounded; on timeout or failure recording starts unmuted.
     let (started, mute_report) = crate::media::mute_gate::start_after_mute(
-        mute_audio.then(crate::media::sound::local_mute_task),
+        mute_task,
         crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
         || {
             audio::RecordingSession::start(
