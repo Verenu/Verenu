@@ -58,7 +58,6 @@ export function modalBackdrop(_node: Element, params: MotionTransitionParams = {
   };
 }
 
-/** A side sheet entering from (and leaving toward) the right edge of the window. */
 export function drawerSlide(node: Element, params: MotionTransitionParams = {}) {
   const duration = motionMs(params.duration ?? MOTION_MS.panel);
   const width = node.getBoundingClientRect().width || 480;

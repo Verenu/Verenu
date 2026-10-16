@@ -35,11 +35,8 @@ export interface DictionaryEntry {
   id: number;
   dictionary_id?: number;
   context_id?: number | null;
-  /** Context-owned correction mapping id used by rejection/deletion paths. */
   correction_id?: number | null;
-  /** Context-owned mapping ids, preserving all comma-separated mistake variants. */
   correction_ids?: number[];
-  /** All effective Context-owned mappings, in deterministic backend order. */
   corrections?: DictionaryCorrection[];
   term: string;
   mistake: string | null;
@@ -62,7 +59,6 @@ export interface Context {
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
   t3_skill_mentions_disabled?: boolean;
-  /** ISO timestamp of when the user pinned this context, or null if unpinned. */
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
@@ -80,16 +76,13 @@ export interface ContextTarget {
 
 export type TitleMatchMode = 'contains' | 'starts_with' | 'equals';
 
-/** A place inside an app: the app plus a window-title rule. */
 export interface ContextSubApp {
   id: number;
   uuid: string;
-  /** `null` while the sub-app waits in the sub-app list. */
   context_id: number | null;
   executable: string;
   app_name: string | null;
   label: string;
-  /** Icon key from CONTEXT_ICON_CHOICES; `null` shows the app icon. */
   icon: string | null;
   title_pattern: string;
   match_mode: TitleMatchMode;
@@ -205,18 +198,12 @@ export async function fetchSnippets(): Promise<void> {
   }
 }
 
-/**
- * The one cleanup prompt, used by every model. It was once keyed per
- * provider/model, which quietly lost the edit the moment a fallback took over
- * — you tuned the prompt on your default and the fallback ran the stock one.
- */
 export const cleanupPromptStore = $state<{ override: string }>({ override: '' });
 
 export const cleanupPromptEditor = $state<{
   open: boolean;
   intensity: 'light' | 'medium' | 'high' | null;
   tone: 'casual' | 'formal' | 'very_casual' | null;
-  /** The model the editor tests the prompt against — not what it saves under. */
   provider: ProviderId | null;
   model: string | null;
   origin: { x: number; y: number } | null;

@@ -42,7 +42,6 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'about',       label: 'About',        icon: 'help',    group: 'Verenu' },
 ];
 
-/** Full id order, including gated sections, so swap direction stays stable. */
 export const SETTINGS_SECTION_ORDER: readonly SettingsSectionId[] =
   SETTINGS_SECTIONS.map((s) => s.id);
 

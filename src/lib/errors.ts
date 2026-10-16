@@ -1,17 +1,6 @@
 import { isAndroid, isMac } from './platform';
 import type { SettingsSectionId } from './settingsSections';
 
-/**
- * Shared frontend error classification.
- *
- * Backend errors arrive over IPC as strings (command `Err` payloads or the
- * `verenu:error` event). Some of those strings are already user-crafted, some
- * carry structured markers (AUTH_401|..., QUOTA_EXCEEDED:...), and some could
- * still embed provider response bodies. This module is the single place that
- * turns any of those into a stable `ErrorKind` plus a safe, human message, so
- * components stop substring-matching backend strings in their own scripts.
- */
-
 export type ErrorKind =
   | 'unknown'
   | 'already-recording'
@@ -159,7 +148,6 @@ const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
   'provider-unavailable': 'The provider is temporarily unavailable. Wait a moment, then try again or choose another provider.',
 };
 
-/** Extracts a displayable string from any IPC/JS error shape. */
 export function extractIpcErrorMessage(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
     if ('message' in err) {
@@ -281,14 +269,12 @@ export function classifyIpcError(err: unknown): ClassifiedError {
   return { kind: 'unknown', message: safe };
 }
 
-/** Add the failed action when a native error only describes its cause. */
 export function formatIpcError(err: unknown, action?: string): string {
   const { message } = classifyIpcError(err);
   return action && !message.toLowerCase().startsWith(action.replace(/[.!?]+$/, '').toLowerCase())
     ? `${action.replace(/[.!?]+$/, '')}. ${message}` : message;
 }
 
-/** LAN sync uses the local network, so do not send people to internet settings. */
 export function formatSyncError(err: unknown, action?: string): string {
   const raw = stripInternalMarkers(extractIpcErrorMessage(err));
   const classified = classifyIpcError(err);
@@ -319,10 +305,6 @@ export function formatSyncError(err: unknown, action?: string): string {
   return prefix && !message.toLowerCase().startsWith(prefix.toLowerCase()) ? `${prefix}. ${message}` : message;
 }
 
-/**
- * Which settings section, if any, is the useful next step for this error.
- * `null` means there is nothing actionable to jump to.
- */
 export function settingsSectionForKind(kind: ErrorKind): SettingsSectionId | null {
   switch (kind) {
     case 'auth-401':

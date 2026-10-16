@@ -1,6 +1,5 @@
 'use strict';
 
-
 const { chromium } = require('playwright');
 const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
 

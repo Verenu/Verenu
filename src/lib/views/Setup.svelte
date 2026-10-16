@@ -179,11 +179,6 @@
     };
   });
 
-  /**
-   * Reopen the wizard where it was left. Signing in to a provider happens in a
-   * browser and granting permissions in system settings, and Android may drop
-   * the app while the user is away, so the wizard must not restart at step 0.
-   */
   async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Record<ProviderId, boolean> | null) {
     if (!saved) return;
     if (saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {

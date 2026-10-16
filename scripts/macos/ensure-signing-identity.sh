@@ -1,27 +1,4 @@
 #!/usr/bin/env bash
-#
-# Verify the stable macOS code-signing identity is available before a signed
-# build. See docs/macos-code-signing.md.
-#
-# WHY THIS MATTERS
-# ----------------
-# macOS TCC ties the Accessibility grant to the app's code
-# signature (its "designated requirement"), NOT its path or bundle id. Ad-hoc
-# signing (`signingIdentity: "-"`) has no stable identity, so every rebuild gets a
-# different CDHash and the OS treats it as a brand-new app — silently dropping
-# every permission the user granted. Symptom: System Settings shows the app as
-# enabled, but the hotkey/injection stop working after a rebuild.
-#
-# The fix is to sign every local/release build with ONE reused self-signed
-# certificate ("Open Flow Self-Signed"). The certificate is the long-lived secret:
-# it must be the SAME cert forever, because end users' grants (and yours) are tied
-# to that exact cert's designated requirement. Generating a fresh certificate
-# would change the DR and break every existing grant — so this script NEVER
-# generates one. It only verifies the canonical cert is present, optionally
-# importing it from a p12 you provide.
-#
-# SECRETS: this committed script contains none. Passwords come from your
-# environment (or an untracked `~/.openflow-signing/env.sh` that it sources).
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

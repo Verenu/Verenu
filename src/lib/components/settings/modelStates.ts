@@ -23,13 +23,6 @@ import {
   type TaskType,
 } from './models';
 
-/**
- * - `ready`        usable right now
- * - `needs-setup`  known-good, but missing a key, a download, or the RAM
- * - `unavailable`  was offered once, and a trustworthy list no longer has it
- * - `not-found`    never seen in any successful list — a typo or a stale pick
- * - `unverified`   the provider returned it, but Verenu knows nothing about it
- */
 export type ModelState = 'ready' | 'needs-setup' | 'unavailable' | 'not-found' | 'unverified';
 
 export type Remedy = 'add-key' | 'download' | 'none';
@@ -37,12 +30,10 @@ export type Remedy = 'add-key' | 'download' | 'none';
 export type ModelRow = {
   provider: ProviderId;
   id: string;
-  /** Canonical `provider/model`. */
   key: string;
   label: string;
   tags: ModelTag[];
   state: ModelState;
-  /** Short human reason, shown on the row. Empty for a plain ready model. */
   note: string;
   remedy: Remedy;
   sizeMb?: number;
@@ -61,12 +52,6 @@ export type LocalModelInfo = {
   prompt_family?: string;
 };
 
-/**
- * Everything the picker needs to manage local models in place — downloading,
- * deleting and (for cleanup) the shared runtime and per-model prompts. These
- * used to live in a separate "Local models" section that listed the same
- * models again under a different UI.
- */
 export type LocalControls = {
   models: LocalModelInfo[];
   supported: boolean;
@@ -75,7 +60,6 @@ export type LocalControls = {
   onDownload: (id: string) => void;
   onCancel: (id: string) => void;
   onDelete: (id: string) => void;
-  /** Cleanup only: the local LLM runtime every on-device model needs. */
   runtime?: {
     info?: { installed: boolean; backend?: string; approx_download_mb?: number; is_downloading?: boolean };
     progress?: { stage?: string; progress?: number };
@@ -94,10 +78,6 @@ export type PickerContext = {
   appleIntelligence?: AppleIntelligenceAvailability;
 };
 
-/**
- * Apple Intelligence is offered only on a supported Mac. Hidden rather than
- * disabled elsewhere, so a stored or pinned Apple choice never lists as usable.
- */
 export function appleIntelligenceVisible(ctx: Pick<PickerContext, 'appleIntelligence'>): boolean {
   return appleIntelligenceSupported(ctx.appleIntelligence ?? appleIntelligence.status);
 }
@@ -124,7 +104,6 @@ const UNSUPPORTED_LOCAL_NOTE = 'Not available on this device · choose another m
 
 const isPortableLocalSpeech = (id: string) => id === 'apple-speech' || id.startsWith('whisper-');
 
-/** Whether a local row may be listed given the picker's `supported` gate. */
 export function localModelOffered(local: Pick<LocalControls, 'supported'>, task: TaskType, id: string): boolean {
   return local.supported || (task === 'transcription' && isPortableLocalSpeech(id));
 }
@@ -180,15 +159,6 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
   return row(entry, 'unavailable', `No longer offered by ${providerDisplayLabel(entry.provider)}`);
 }
 
-/**
- * Every curated model for the task, classified.
- *
- * A model a trustworthy live list no longer contains is dropped outright
- * rather than shown as retired — the picker is a list of what you can pick,
- * and a retired model is not one of those. `keep` pins ids that must stay
- * visible anyway: your current selections, which need somewhere to display
- * their state and be replaced from.
- */
 export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[] {
   const pinned = new Set(keep);
   const customEntries: CatalogEntry[] = customProviderStore.providers
@@ -201,7 +171,6 @@ export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[]
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }
 
-/** New models with compatible capability metadata appear without an app update. */
 export function discoveredRows(ctx: PickerContext): ModelRow[] {
   const rows: ModelRow[] = [];
   for (const provider of LISTED_PROVIDERS) {
@@ -257,11 +226,6 @@ export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   return rows;
 }
 
-/**
- * The row for whatever is selected right now, even when it is in neither the
- * catalog nor the live list. Without it a deprecated or hand-typed id has
- * nowhere to show its state and no way to be replaced in place.
- */
 export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRow | null {
   const parsed = splitModelId(selectedId);
   if (!parsed) return null;
@@ -322,13 +286,6 @@ function confirmedMissing(cache: ModelCatalogCache[ProviderId], id: string): boo
   return !!counter && counter.count >= 2;
 }
 
-/**
- * Selected models a trustworthy provider list no longer contains.
- *
- * Silence is the safe answer: an unreachable provider, a missing key, a 429, or
- * a partial Google pagination all leave `lastError` set, and none of them mean
- * a model went away.
- */
 export function unavailableSelections(
   task: TaskType,
   selected: string[],
@@ -361,10 +318,6 @@ export function unavailableSelections(
   return found;
 }
 
-/**
- * Closest still-usable sibling from the same provider: most shared tags wins,
- * premium beats standard on a tie, then catalog order.
- */
 export function suggestReplacement(
   task: TaskType,
   provider: ProviderId,
@@ -390,7 +343,6 @@ export function suggestReplacement(
   return ranked.length ? modelId(provider, ranked[0].entry.id) : null;
 }
 
-/** First entry in the chain that can actually run right now. */
 export function firstRunnable(chain: string[], ctx: PickerContext): string | null {
   for (const id of chain) {
     const row = rowForSelection(id, ctx);
@@ -399,10 +351,6 @@ export function firstRunnable(chain: string[], ctx: PickerContext): string | nul
   return null;
 }
 
-/**
- * One sentence per unavailable selection, built from the real chain — whether a
- * fallback picks up the work, and whether the task is about to fail outright.
- */
 export function unavailableMessages(
   task: TaskType,
   defaultModel: string,

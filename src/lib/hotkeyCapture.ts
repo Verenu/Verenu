@@ -2,7 +2,6 @@ function normalizeCode(code: string): string {
   return code === 'OSLeft' ? 'MetaLeft' : code === 'OSRight' ? 'MetaRight' : code;
 }
 
-/** Capture the keys held together, committing on the first release. */
 export class HotkeyCapture {
   private held = new Set<string>();
 

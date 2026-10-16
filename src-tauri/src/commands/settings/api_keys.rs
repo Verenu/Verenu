@@ -122,8 +122,6 @@ pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationRes
     }
 }
 
-/// Live, non-blocking key check: a cheap models-list GET, no audio and no token spend.
-/// Anything short of a clean 2xx/401/403 is treated as inconclusive rather than a hard fail.
 #[tauri::command]
 pub async fn validate_api_key(
     app: AppHandle,
@@ -298,14 +296,6 @@ fn dedupe(ids: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Every model id the provider currently offers, read with the *saved*
-/// credential — the frontend never holds a key, only a presence boolean.
-///
-/// Failure and emptiness must stay distinguishable: the catalog store treats
-/// `Err` as "no trustworthy list" and leaves its cache alone, while `Ok(vec![])`
-/// is a real (if odd) answer. That is why a partial Google pagination is an
-/// error rather than the pages that did arrive — a truncated list would read
-/// downstream as mass deprecation.
 #[tauri::command]
 pub async fn list_provider_models(
     _app: AppHandle,

@@ -1,15 +1,12 @@
-/** Bar count and height range — mirrors the pill's rendered geometry. */
 export const BARS = 12;
 export const BAR_MIN_H = 3;
 export const BAR_MAX_H = 16;
 
-/** Sub-window size of each envelope sample. MUST match ENVELOPE_WINDOW_MS in media/audio.rs. */
 export const ENVELOPE_WINDOW_MS = 10;
 
 const AGE_STEP_MS = 45;
 const HALF_SPAN = (BARS - 1) / 2;
 
-/** Oldest audio visible in the row, in ms — the outermost bar pair's age. */
 export const HISTORY_SPAN_MS = HALF_SPAN * AGE_STEP_MS;
 
 const RING_MS = HISTORY_SPAN_MS + 500;
@@ -20,7 +17,6 @@ const RESYNC_RATE = 0.06;
 
 const SILENT_DB = -90;
 
-/** Linear amplitude -> dBFS. Exported for tests. */
 export function toDb(linear: number): number {
   return linear > 0 ? 20 * Math.log10(linear) : SILENT_DB;
 }
@@ -41,7 +37,6 @@ const REF_FALL_TAU_MS = 5000;
 const HEADROOM_DB = 6;
 const REF_ACTIVE_MARGIN_DB = 6;
 
-/** dB mapped into an explicit [lo, hi] window -> 0..1. Exported for tests. */
 export function mapWindow(db: number, loDb: number, hiDb: number): number {
   const span = Math.max(hiDb - loDb, 1);
   const n = (db - loDb) / span;
@@ -101,11 +96,8 @@ const kRefDown = 1 - Math.exp(-ENVELOPE_WINDOW_MS / REF_FALL_TAU_MS);
 const aD = alphaFor(DERIV_CUTOFF_HZ, dtSec);
 
 export interface PillVisualizer {
-  /** Feed one `audio-envelope` batch: peaks at a fixed ENVELOPE_WINDOW_MS cadence. */
   pushEnvelope(samples: ArrayLike<number>): void;
-  /** Advance one animation frame; returns the 12 bar heights in px. */
   step(nowMs: number): number[];
-  /** Drop every stage's state back to silence. */
   reset(): void;
 }
 

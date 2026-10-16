@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-#
-# Build a macOS release bundle signed with the stable, reused self-signed identity
-# so the TCC Accessibility grant survives rebuilds.
-# See scripts/macos/ensure-signing-identity.sh and docs/macos-code-signing.md.
-#
-# Extra args are forwarded to `tauri build`, e.g.:
-#   npm run tauri:build:signed -- --target aarch64-apple-darwin
-#
-# SECRETS: none are committed here. The build-keychain password is read from your
-# environment (or an untracked `~/.openflow-signing/env.sh` that this sources).
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

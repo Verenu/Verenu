@@ -363,16 +363,6 @@ pub(super) async fn inject_text(
         anyhow::bail!("Nothing was focused to paste into");
     }
 
-    // Read-only check: does any control in the target thread actually own
-    // keyboard focus? Covers a real window with zero editable controls
-    // selected (e.g. a fresh Chrome tab with nothing clicked) — Ctrl+V
-    // would silently go nowhere. This replaced a post-paste clipboard-sniff
-    // fallback (select-back-one-char + Ctrl+C) that tried to infer the same
-    // thing after already sending Ctrl+V; that approach both false-flagged
-    // working pastes into controls UIA can't read (ProseMirror/Chromium
-    // editors) and could edit/delete live document content by racing the
-    // editor's own async paste-settling. GetGUIThreadInfo answers the
-    // question directly with no synthetic input.
     let target_thread_id =
         unsafe { GetWindowThreadProcessId(HWND(target_hwnd as *mut core::ffi::c_void), None) };
     let has_focus = target_thread_id != 0 && {
@@ -423,24 +413,6 @@ pub(super) async fn inject_text(
     } else {
         unavailable_injection_probe()
     };
-
-    // GetGUIThreadInfo (checked above) can't tell "a real textbox is
-    // focused inside this page" apart from "nothing is" — Chromium/Electron
-    // expose exactly one native HWND for the whole content area, which
-    // keeps OS keyboard focus regardless of what's focused (or isn't)
-    // inside the DOM. When nothing inside the page claims focus, UIA's
-    // focused-element walk resolves to that container itself, reported as
-    // control_type "pane"/"window" with no text pattern support
-    // (UnsupportedControl).
-    //
-    // This probe is deliberately NOT used to abort the paste, though: many
-    // perfectly pasteable apps (Qt, Java Swing, Flutter, terminal emulators,
-    // custom Win32 controls, webviews without UIA initialized) also expose
-    // only a generic pane/window to UIA with UnsupportedControl — so
-    // rejecting that state would break dictation into all of them. The
-    // GetGUIThreadInfo has_focus guard above already answers "was anything
-    // focused at all"; this probe only feeds contextual formatting and
-    // post-paste verification, never a hard reject.
 
     if (contextual_caps || auto_spacing)
         && crate::core::window_context::get_foreground_hwnd() != target_hwnd
@@ -575,30 +547,6 @@ pub(super) async fn inject_text(
 
     restore_guard.restore_now();
 
-    // Best-effort post-paste verification: reuse the same UIA read already
-    // used pre-injection for caret reads, not new plumbing. Only act on a
-    // real CaretLocal readback — any other source (unavailable, permission
-    // missing, unsupported control, etc.) means UIA can't reliably tell
-    // either way (many working Chromium/Electron widgets fall in this
-    // bucket), so it's left lenient here. The "was anything focused at all"
-    // question is answered up front, before Ctrl+V is ever sent — see the
-    // GetGUIThreadInfo check near the top of this function — rather than
-    // inferred here after the fact.
-    //
-    // Chromium/ProseMirror-style editors commit a paste to their own state
-    // before the accessibility tree catches up, and that lag is variable —
-    // often well over the retry window — so a read taken too early reads the
-    // pre-paste text and flags a *successful* paste as failed (the false
-    // positives reported in Chrome). The loop retries with growing gaps and,
-    // before giving up, cross-checks the control's full text (the
-    // ValuePattern/document read reflects the DOM even when the caret-range
-    // read stays stale). A hard failure is only declared when the tree
-    // *freshly* read the caret as not containing our text. A read that stays
-    // frozen on the pre-injection tail means UIA never observed the change at
-    // all — an unverifiable paste, not a failed one — which we log and treat
-    // as best-effort success, since the pre-injection guards already
-    // confirmed a focused, writable text control and a false "paste failed"
-    // is worse than an unverified-but-likely-fine paste.
     if !adjusted.trim_end().is_empty() {
         let pre_injection_tail = injection_probe.context_tail.as_str();
         let mut verified = false;

@@ -26,10 +26,8 @@
   }: {
     preset: Preset;
     active?: boolean;
-    /** Total MB of required local models not yet on disk (0 = ready to use). */
     downloadMb?: number;
     downloading?: boolean;
-    /** How many of this preset's local models are already downloaded. */
     installedCount?: number;
     onSelect: () => void;
     onAddKey?: () => void;
@@ -41,7 +39,6 @@
     fallbackActive?: boolean;
     performance?: ModelPerformance[];
     detailsOpen?: boolean;
-    /** Another preset is downloading; start nothing new until it finishes. */
     busy?: boolean;
     onToggleDetails?: () => void;
   } = $props();

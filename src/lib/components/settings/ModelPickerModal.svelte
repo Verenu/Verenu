@@ -42,17 +42,11 @@
     local,
     origin = null,
   }: {
-    /**
-     * `select` replaces the active model; `fallback` only appends to the chain.
-     * Someone who opened "Add fallback" must not be able to clobber their
-     * default by clicking a row, so the row gesture changes with the mode.
-     */
     mode: 'select' | 'fallback';
     task: TaskType;
     context: PickerContext;
     defaultModel: string;
     fallbackModels: string[];
-    /** Only gates the hand-typed model-id footer, not the model list itself. */
     advancedModelUi: boolean;
     customDraft: string;
     onSelect: (id: string) => void;
@@ -61,13 +55,7 @@
     onAddCustomModel: (id: string) => void;
     onOpenApiKeys: () => void;
     onClose: () => void;
-    /**
-     * Downloading, deleting and prompt-editing local models happens here now,
-     * on the row for the model itself, rather than in a separate section that
-     * listed the same models a second time under different UI.
-     */
     local: LocalControls;
-    /** Centre of the button that opened this, so the dialog grows out of it. */
     origin?: { x: number; y: number } | null;
   } = $props();
 

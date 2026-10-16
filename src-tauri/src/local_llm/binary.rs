@@ -8,21 +8,10 @@ const LLAMA_CPP_TAG: &str = "b9842";
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlamaBackend {
-    // detect_backend() only constructs these inside a `#[cfg(windows)]`
-    // branch, which is stripped entirely from non-Windows builds — so on
-    // macOS, dead-code analysis genuinely can't see them get constructed by
-    // any reachable path, even though they're real, normal states on
-    // Windows. Suppressed only off-Windows so the lint stays meaningful there.
     #[cfg_attr(not(windows), allow(dead_code))]
     Cuda,
     #[cfg_attr(not(windows), allow(dead_code))]
     Vulkan,
-    // detect_backend() only constructs these inside a
-    // `#[cfg(target_os = "macos")]` branch, which is stripped entirely from
-    // non-macOS builds — so on Windows, dead-code analysis genuinely can't
-    // see them get constructed by any reachable path, even though they're
-    // real, normal states on macOS. Suppressed only off-macOS so the lint
-    // stays meaningful there.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Metal,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

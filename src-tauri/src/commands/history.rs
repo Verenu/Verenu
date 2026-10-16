@@ -39,9 +39,6 @@ pub async fn get_stats(app: AppHandle) -> Result<db::Stats, String> {
     run_db(&app, "get_stats", db::query_stats).await
 }
 
-/// Aggregated insights for the Insights page. `days` is 7 | 30 | 90 | 0,
-/// where 0 means all time. `context_id` narrows every per-dictation figure to
-/// one context group; `None` covers all of them.
 #[tauri::command]
 pub async fn get_insights(
     app: AppHandle,

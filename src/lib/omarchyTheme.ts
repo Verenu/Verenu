@@ -87,7 +87,6 @@ export function isOmarchyTheme(value: unknown): value is OmarchyTheme {
   );
 }
 
-/** Applies or clears the palette. Pass `null` to restore theme.css tokens. */
 export function applyOmarchyPalette(root: HTMLElement, theme: OmarchyTheme | null): void {
   if (!isOmarchyTheme(theme)) {
     for (const property of OMARCHY_PROPERTIES) root.style.removeProperty(property);
@@ -177,11 +176,6 @@ function statusTokens(colors: Record<string, string>, background: string): Parti
   return tokens;
 }
 
-/**
- * The palette the current appearance mode paints with, or `null` for the stock
- * Light/Dark look. System follows the desktop, so on Omarchy (the only place
- * `omarchy` is ever non-null) it means the active Omarchy theme.
- */
 export function resolvePalette(
   mode: string,
   omarchy: OmarchyTheme | null,
@@ -192,11 +186,6 @@ export function resolvePalette(
   return null;
 }
 
-/**
- * Under a palette the palette's accent (or, for Custom, the typed text color
- * when it has none) is the default. A custom accent the user picked still wins; the black/white
- * "follow theme" swatches do not.
- */
 export function effectiveAccent(accentColor: string | null, palette: OmarchyTheme | null): string | null {
   if (!palette) return accentColor;
   if (accentColor && !isAdaptiveDefaultAccent(accentColor)) return accentColor;

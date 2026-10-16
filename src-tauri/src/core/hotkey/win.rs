@@ -262,13 +262,6 @@ pub fn is_win_key_down() -> bool {
     unsafe { modifier_held(91) }
 }
 
-/// Recovery action for a stuck Win key (confirmed via `is_win_key_down()`
-/// first) — called right before a paste so a leftover "Win held" OS state
-/// can't turn the paste's Ctrl+V into a Win-shortcut. Synthesizes a real
-/// keyup for both Win keys (Windows should honor this as authoritative
-/// regardless of why its internal state was wrong) and asks the hook thread
-/// to forget its own chord-key ownership bookkeeping too, in case the hook
-/// itself still thinks it's holding/suppressing the key.
 pub fn force_release_win_key() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
