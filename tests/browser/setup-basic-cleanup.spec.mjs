@@ -22,7 +22,7 @@ async function installAppleAvailabilityProbe(page) {
         const url = typeof input === 'string' ? input : input?.url ?? '';
         isAvailabilityCheck = url.endsWith('/__verenu_dev/invoke') && typeof init?.body === 'string'
           && JSON.parse(init.body).command === 'get_apple_intelligence_availability';
-      } catch {   }
+      } catch {}
       if (isAvailabilityCheck) {
         const limit = Error.stackTraceLimit;
         Error.stackTraceLimit = 100;

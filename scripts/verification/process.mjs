@@ -9,7 +9,7 @@ export function stopOwned(child, signal = 'SIGTERM') {
     const killer = spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
     killer.on('error', () => child.kill());
   } else {
-    try { process.kill(-child.pid, signal); } catch {   }
+    try { process.kill(-child.pid, signal); } catch {}
   }
 }
 export function run(command, args, { directory, name, timeout = 900_000, env = process.env } = {}) {

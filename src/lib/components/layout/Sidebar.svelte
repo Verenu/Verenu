@@ -49,7 +49,7 @@
   onMount(() => {
     let active = true;
     let lastSampleAt = -Infinity;
-    try { memoryBaseline = parseMemoryBaseline(localStorage.getItem(MEMORY_BASELINE_KEY)); } catch {   }
+    try { memoryBaseline = parseMemoryBaseline(localStorage.getItem(MEMORY_BASELINE_KEY)); } catch {}
     const refresh = async () => {
       try {
         const next = await invoke<number>('get_memory_mb');
@@ -60,7 +60,7 @@
           lastSampleAt = now;
           if (updated !== memoryBaseline) {
             memoryBaseline = updated;
-            try { localStorage.setItem(MEMORY_BASELINE_KEY, JSON.stringify(updated)); } catch {   }
+            try { localStorage.setItem(MEMORY_BASELINE_KEY, JSON.stringify(updated)); } catch {}
           }
         }
         if (active && next !== rawMemoryMb) {
@@ -68,7 +68,7 @@
           rawMemoryMb = next;
           memoryMb.set(next);
         }
-      } catch {   }
+      } catch {}
     };
     const poll = startPolling(refresh, MEMORY_SAMPLE_INTERVAL_MS);
     return () => { active = false; poll.stop(); };

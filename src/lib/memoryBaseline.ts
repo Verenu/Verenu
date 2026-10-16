@@ -13,7 +13,7 @@ export function parseMemoryBaseline(raw: string | null): MemoryBaseline {
     if (value && Number.isFinite(value.averageMb) && value.averageMb > 0 &&
       Number.isInteger(value.samples) && value.samples > 0 &&
       value.samples <= MEMORY_BASELINE_SAMPLES) return value;
-  } catch {   }
+  } catch {}
   return { averageMb: 0, samples: 0 };
 }
 
