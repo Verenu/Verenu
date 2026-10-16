@@ -72,8 +72,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
     stopOwned(child);
     await Promise.race([exited, new Promise((resolve) => { const timer = setTimeout(resolve, 15_000); timer.unref(); })]);
     if (child.exitCode === null && child.signalCode === null && child.pid) {
-      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch {   } }
-      else { try { child.kill('SIGKILL'); } catch {   } }
+      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+      else { try { child.kill('SIGKILL'); } catch {} }
     }
     await log.close();
   })();

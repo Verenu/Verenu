@@ -20,13 +20,6 @@ fn paste_failure_is_fresh(captured_at: std::time::Instant, now: std::time::Insta
         .is_some_and(|age| age < PASTE_FAILURE_WINDOW)
 }
 
-/// Default pill window width (logical points) before the frontend reports the
-/// real content width. Deliberately the *smallest* content width (the bare
-/// recording capsule, matching PillApp.svelte's MIN_PILL_WINDOW_W) rather than
-/// the historical fixed 380: the frontend widens the window within a frame of
-/// mounting whenever it needs more, so starting small means the very first
-/// reveal never flashes a 380px-wide transparent click-capture band around a
-/// 72px pill.
 pub const DEFAULT_PILL_WIDTH_POINTS: f64 = 96.0;
 
 /// Default pill window height (logical points) — the bare 34px capsule plus
@@ -43,12 +36,6 @@ pub struct AppState {
     pub target: WindowTarget,
     pub pill_placement: Option<PillPlacement>,
     pub pill_placement_stale: bool,
-    /// Width (logical points / CSS px) the pill window should be sized to —
-    /// reported by the frontend from the measured visible content so the
-    /// transparent click-capture zone around the pill stays as small as the
-    /// pill itself (see `commands::recording::set_pill_size`). Used by the
-    /// placement math so reveals and cross-monitor moves size to the content
-    /// instead of snapping back to the old fixed 380px.
     pub pill_width_points: f64,
     /// Height (logical points) the pill window should be sized to. Tracks the
     /// profile label floating above the capsule; the window grows upward so

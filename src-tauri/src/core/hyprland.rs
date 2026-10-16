@@ -838,9 +838,14 @@ mod tests {
             "handsfree",
             &[37, 105, 133, 134],
         );
-        let fixture = include_str!("../../../tests/fixtures/hyprland-gestures.lua")
-            .replace("-- GENERATED_WINDOW_RULES", &super::window_rule_block())
-            .replace("-- GENERATED_BINDINGS", &block);
+        let source = include_str!("../../../tests/fixtures/hyprland-gestures.lua");
+        for marker in ["__VERENU_GENERATED_WINDOW_RULES__()", "__VERENU_GENERATED_BINDINGS__()"] {
+            assert!(source.contains(marker), "hyprland gesture fixture missing sentinel {marker}");
+        }
+        let fixture = source
+            .replace("__VERENU_GENERATED_WINDOW_RULES__()", &super::window_rule_block())
+            .replace("__VERENU_GENERATED_BINDINGS__()", &block);
+        assert!(!fixture.contains("__VERENU_"), "hyprland gesture fixture left an unreplaced sentinel");
         let mut child = Command::new("lua")
             .arg("-")
             .stdin(Stdio::piped())

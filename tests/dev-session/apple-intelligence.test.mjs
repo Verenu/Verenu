@@ -26,7 +26,7 @@ test('Apple cleanup uses native availability, preserves selection and completes 
   });
   const calls = [];
   const server = http.createServer(async (req, res) => {
-    for await (const _ of req) {   }
+    for await (const _ of req) {}
     calls.push(req.url);
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ text: 'please send the note tomorrow' }));

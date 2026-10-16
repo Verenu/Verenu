@@ -36,7 +36,9 @@ local function count(action)
   return total
 end
 
+__VERENU_GENERATED_BINDINGS__()
 
+__VERENU_GENERATED_WINDOW_RULES__()
 assert(#window_rules == 2, "fresh setup did not install both window policies")
 assert(window_rules[1].match.class == "^(com\\.verenu\\.app|[Vv]erenu)$", "window policy depends on executable filename")
 assert(window_rules[1].float and window_rules[1].center and window_rules[1].min_size[1] == 1100 and window_rules[1].min_size[2] == 700, "main window size policy missing")

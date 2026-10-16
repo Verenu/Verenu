@@ -87,7 +87,7 @@ const processTracker = setInterval(() => {
   } else if (!sawLaunchedProcess && Date.now() - launchStartedAt > launchTimeoutMs) {
     clearInterval(processTracker);
     console.error(`[macOS dev runner] LaunchServices did not start ${appBundle} within ${launchTimeoutMs}ms.`);
-    try { child.kill(); } catch {   }
+    try { child.kill(); } catch {}
     process.exit(1);
   } else if (sawLaunchedProcess) {
     if (emptySince === 0) emptySince = Date.now();
@@ -104,7 +104,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     clearInterval(processTracker);
     launchedPids = findBundleProcessIds(bundledBinary).filter((pid) => !existingPids.has(pid));
     for (const pid of launchedPids) {
-      try { process.kill(pid, signal); } catch {   }
+      try { process.kill(pid, signal); } catch {}
     }
     child.kill(signal);
     process.exit(128 + (osConstants.signals[signal] ?? 1));
@@ -299,7 +299,7 @@ function installPreparedBundle(preparedBundle, canonicalBundle) {
     renameSync(preparedBundle, canonicalBundle);
   } catch (error) {
     if (!existsSync(canonicalBundle) && existsSync(backupBundle)) {
-      try { renameSync(backupBundle, canonicalBundle); } catch {   }
+      try { renameSync(backupBundle, canonicalBundle); } catch {}
     }
     rmSync(preparedBundle, { recursive: true, force: true });
     throw new Error(`Could not atomically install development app bundle: ${error}`);
