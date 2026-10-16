@@ -1,14 +1,3 @@
-//! User-defined providers: any OpenAI-, Anthropic-, or xAI-compatible endpoint.
-//!
-//! A custom provider is plain, non-secret configuration stored in
-//! `settings.json` under `custom_providers`. Its API key lives in the native
-//! credential store under `api_key_custom_<uuid>`, exactly like a built-in
-//! provider's key. Identity is a random UUID, never the editable name, so
-//! renaming a provider keeps its key and deleting one can find and remove it.
-//!
-//! Everything here is validated before it is stored, because the base URL and
-//! headers decide where dictated audio and text are sent.
-
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
@@ -16,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub const CUSTOM_PREFIX: &str = "custom:";
-/// Browser sessions must never reuse a host custom key with an edited endpoint.
 pub fn native_credentials_available() -> bool {
     #[cfg(feature = "dev-session")]
     {
@@ -44,8 +32,6 @@ const PROTECTED_BODY_KEYS: &[&str] = &[
     "tools",
     "tool_choice",
 ];
-/// Headers a custom provider may not set: they would break the request framing
-/// or let a pasted definition smuggle in a cookie or proxy credential.
 const FORBIDDEN_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -93,7 +79,6 @@ impl CustomProtocol {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomProvider {
-    /// `custom:<uuid>`. Stable for the life of the provider.
     pub id: String,
     pub name: String,
     pub protocol: CustomProtocol,
@@ -104,12 +89,10 @@ pub struct CustomProvider {
     pub supports_transcription: bool,
     #[serde(default)]
     pub supports_cleanup: bool,
-    /// Send the key raw in this header instead of the protocol default.
     #[serde(default)]
     pub auth_header: Option<String>,
     #[serde(default)]
     pub extra_headers: BTreeMap<String, String>,
-    /// Extra JSON merged into the cleanup request body.
     #[serde(default)]
     pub body_overrides: Option<Map<String, Value>>,
     #[serde(default)]
@@ -142,8 +125,6 @@ pub fn is_custom_id(id: &str) -> bool {
     parse_custom_id(id).is_some()
 }
 
-/// `custom:<uuid>` with a canonical lowercase hyphenated UUID, or `None`.
-/// Strictness matters: the uuid becomes part of a keychain account name.
 pub fn parse_custom_id(id: &str) -> Option<uuid::Uuid> {
     let rest = id.strip_prefix(CUSTOM_PREFIX)?;
     let parsed = uuid::Uuid::parse_str(rest).ok()?;
@@ -155,7 +136,6 @@ pub fn new_custom_id() -> String {
     format!("{CUSTOM_PREFIX}{}", uuid::Uuid::new_v4().hyphenated())
 }
 
-/// Keychain account for a custom provider's key.
 pub fn credential_account(id: &str) -> Option<String> {
     parse_custom_id(id).map(|u| {
         format!(
@@ -167,7 +147,6 @@ pub fn credential_account(id: &str) -> Option<String> {
 }
 
 impl CustomProvider {
-    /// Trims, canonicalizes, and checks every field. Call before storing.
     pub fn normalize(&mut self) -> Result<(), String> {
         if parse_custom_id(&self.id).is_none() {
             return Err("Invalid provider id.".into());
@@ -250,7 +229,6 @@ impl CustomProvider {
         Ok(())
     }
 
-    /// Authentication and hardening for requests to this endpoint.
     pub fn wire(&self) -> super::Wire {
         super::Wire {
             omit_auth: !self.requires_key,
@@ -281,8 +259,6 @@ impl CustomProvider {
         self.url("models")
     }
 
-    /// Overrides with protected keys removed. `normalize` already rejects
-    /// them; this is the second lock on the request path.
     pub fn safe_overrides(&self) -> Option<Map<String, Value>> {
         self.body_overrides.as_ref().map(|map| {
             map.iter()
@@ -326,8 +302,6 @@ fn checked_header_name(name: &str) -> Result<String, String> {
     Ok(lower)
 }
 
-/// Whether plain `http://` is acceptable: only for machines the user controls
-/// (Ollama, LM Studio, vLLM on the same box or LAN).
 pub fn is_local_host(host: &str) -> bool {
     let host = host.trim_matches(|c| c == '[' || c == ']');
     if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
@@ -344,8 +318,6 @@ pub fn is_local_host(host: &str) -> bool {
     }
 }
 
-/// Validates and canonicalizes a base URL: http(s) only, no credentials, query
-/// or fragment, https unless the host is local, trailing slash removed.
 pub fn normalize_base_url(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.len() > 2048 {
@@ -381,8 +353,6 @@ pub fn normalize_base_url(raw: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
-/// Parses the stored list. A malformed entry is dropped rather than failing
-/// the whole app, since this runs on every dictation.
 pub fn parse_stored(value: Option<&Value>) -> Vec<CustomProvider> {
     let Some(Value::Array(items)) = value else {
         return Vec::new();

@@ -160,7 +160,6 @@ static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static CLEANUP_CALLS: AtomicU64 = AtomicU64::new(0);
 static CLEANUP_MS: AtomicU64 = AtomicU64::new(0);
 
-/// Process-local counts only. No dictated text or prompt data is recorded.
 #[derive(serde::Serialize)]
 pub(crate) struct CleanupCacheMetrics {
     pub hits: u64,

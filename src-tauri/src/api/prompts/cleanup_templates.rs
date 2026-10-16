@@ -12,7 +12,6 @@ pub fn looks_like_refusal(text: &str) -> bool {
     MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
-/// True if `text` looks like model scaffolding rather than cleaned dictation.
 pub fn looks_like_model_artifact_leak(text: &str) -> bool {
     if text.contains("<|") {
         return true;
@@ -23,7 +22,6 @@ pub fn looks_like_model_artifact_leak(text: &str) -> bool {
         .any(|marker| lower_trimmed.starts_with(marker))
 }
 
-/// Small quantized models can get stuck repeating one token.
 pub fn looks_like_degenerate_repetition(text: &str) -> bool {
     const RUN_THRESHOLD: usize = 6;
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -41,7 +39,6 @@ pub fn looks_like_degenerate_repetition(text: &str) -> bool {
     false
 }
 
-/// Flags output whose vocabulary overlap is too low to be a faithful edit.
 pub fn looks_like_fabricated_content(raw: &str, cleaned: &str) -> bool {
     let raw_words: std::collections::HashSet<String> =
         crate::system::text::tokenize_lower_alnum(raw)
@@ -147,7 +144,6 @@ fn looks_like_self_correction_rewrite(raw: &str, cleaned: &str) -> bool {
     false
 }
 
-/// Light cleanup promises to preserve nearly all spoken content.
 pub fn looks_like_excessive_content_loss(intensity: &str, raw: &str, cleaned: &str) -> bool {
     if !matches!(intensity, "none" | "light") {
         return false;
@@ -164,7 +160,6 @@ pub fn looks_like_excessive_content_loss(intensity: &str, raw: &str, cleaned: &s
     cleaned_words * 100 < raw_words * retention_floor
 }
 
-/// Light cleanup must not pad a dictation with new elaboration.
 pub fn looks_like_unwanted_expansion(intensity: &str, raw: &str, cleaned: &str) -> bool {
     if !matches!(intensity, "none" | "light") {
         return false;
@@ -177,7 +172,6 @@ pub fn looks_like_unwanted_expansion(intensity: &str, raw: &str, cleaned: &str) 
     cleaned_words * 100 > raw_words * 120
 }
 
-/// Flags an edit that swaps the speaker's first- and second-person viewpoint.
 pub fn looks_like_perspective_flip(raw: &str, cleaned: &str) -> bool {
     fn pronoun_counts(tokens: &[String]) -> (usize, usize) {
         let first_person = tokens
@@ -240,8 +234,6 @@ pub fn default_tone_instructions(tone: &str) -> String {
         .to_string()
 }
 
-/// Substitute only the selected preset instructions; the system template and
-/// runtime context remain managed separately. Tags in edits are plain text.
 pub fn with_style_instructions(
     base: Option<&str>,
     cleanup: Option<&str>,
@@ -282,9 +274,6 @@ pub fn hardened_retry_template() -> &'static str {
     DEFAULT_CLEANUP_TEMPLATE
 }
 
-/// A rough provider-independent estimate used for prompt-budget regression
-/// tests and diagnostics. It intentionally avoids pretending to be a specific
-/// tokenizer; four UTF-8 characters per token is a conservative planning rule.
 #[cfg(test)]
 pub fn prompt_token_estimate(text: &str) -> usize {
     text.chars().count().div_ceil(4)

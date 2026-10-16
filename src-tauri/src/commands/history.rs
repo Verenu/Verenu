@@ -1,6 +1,4 @@
-
 use super::*;
-
 
 #[tauri::command]
 pub async fn get_recent(
@@ -31,7 +29,6 @@ pub async fn get_recent(
     .await
 }
 
-/// Distinct apps present in transcription history, for the History app filter.
 #[tauri::command]
 pub async fn get_history_apps(app: AppHandle) -> Result<Vec<String>, String> {
     run_db(&app, "get_history_apps", db::query_distinct_apps).await
@@ -57,9 +54,6 @@ pub async fn get_insights(
     .await
 }
 
-/// Returns the locally cached OpenRouter rate table, refreshing it at most
-/// once every 48 hours. A failed refresh falls back to the last good snapshot
-/// so a pricing outage never blocks the Insights page.
 #[tauri::command]
 pub async fn get_insights_pricing(app: AppHandle) -> Result<db::PricingSnapshot, String> {
     let fresh = run_db(

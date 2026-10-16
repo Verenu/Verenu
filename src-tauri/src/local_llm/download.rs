@@ -41,9 +41,6 @@ fn final_file_path(
     manifest.final_path(root).join(artifact.filename)
 }
 
-/// Pure SHA256-of-a-file helper, kept separate from `verify_artifact_checksum`
-/// so the actual hashing/comparison logic is unit-testable without needing a
-/// real `AppHandle` to drive event emission.
 pub(super) fn sha256_hex(path: &Path) -> anyhow::Result<String> {
     model_download::sha256_with_progress(path, &AtomicBool::new(false), |_| {})
 }
@@ -63,13 +60,6 @@ fn sha256_hex_with_progress(
     )
 }
 
-/// Verifies a freshly-downloaded artifact's SHA256 against its manifest
-/// checksum before it's renamed into the final model directory and made
-/// available to llama-server to load and execute. On mismatch, the
-/// corrupted `.partial` file is deleted (not left for a future attempt to
-/// "resume" from — appending more bytes to already-corrupted data can never
-/// fix it, so leaving it in place would make every subsequent download
-/// attempt fail identically forever).
 fn verify_artifact_checksum(
     app: &AppHandle,
     manifest: &LocalLlmModelManifest,

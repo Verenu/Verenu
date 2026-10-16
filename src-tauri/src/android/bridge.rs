@@ -1,50 +1,3 @@
-//! Token-authed loopback bridge between Rust and the Kotlin overlay service.
-//!
-//! The Android `AccessibilityService` + `TYPE_ACCESSIBILITY_OVERLAY` pill and
-//! the `EncryptedSharedPreferences` Keystore are Kotlin-owned (see
-//! `src-tauri/android/`), while recording, transcription, cleanup, history,
-//! and sync stay in Rust. The two sides meet here, over `127.0.0.1`:
-//!
-//! * No new dependencies: Tokio TCP (`net` feature, already enabled) +
-//!   `serde_json`. No JNI glue, no extra Tauri plugin crate, no WebView
-//!   relay — the service works even when the main activity is dead.
-//! * Authentication: a random 256-bit token minted per boot, stored in a
-//!   `0600` file (`android_bridge.json`) inside the app-data dir that only
-//!   this UID can read. Every request needs
-//!   `Authorization: Bearer <token>`. Loopback HTTP is exempt from the
-//!   cleartext ban, and the port binds `127.0.0.1` only.
-//! * Privacy: the bridge NEVER logs dictated text, API keys, or the token —
-//!   sequence numbers and lengths only.
-//!
-//! Protocol (JSON, one request per connection, `Connection: close`):
-//!
-//! | Method | Path | Body → Response |
-//! | --- | --- | --- |
-//! | GET | `/v1/state` | → `{ lifecycle, dictationActive, overlay, pendingInsertion }` |
-//! | POST | `/v1/focus` | `{ keyboardVisible, hasEditableFocus }` → overlay decision |
-//! | POST | `/v1/recording/start` | `{ package, hasEditableFocus, supportsSetText }` → `{ ok, analyticsSettings }` |
-//! | POST | `/v1/recording/stop` | → `{ ok }` (pipeline continues through state/outbox) |
-//! | POST | `/v1/recording/cancel` | → `{ ok }` |
-//! | POST | `/v1/recording/retry` | → `{ ok }` |
-//! | POST | `/v1/insertion/format` | `{ seq, left, right, leftReliable, rightReliable }` → `{ ok, text }` (smart caps/spacing for the caret) |
-//! | POST | `/v1/insertion/ack` | `{ seq, success, strategy, error?, package?, discard? }` → `{ ok }` |
-//! | POST | `/v1/credential` | `{ provider, key }` → `{ ok }` (Keystore unlock push) |
-//! | POST | `/v1/credentials/clear` | → `{ ok }` (drop Rust's in-memory cache) |
-//! | GET | `/v1/keystore/pending` | → `{ provider, key }` once, then `{ provider: null }` |
-//!
-//! Keystore sync: the main app saves through the `android_keystore_save`
-//! command (memory cache + staged rotation); Kotlin sees `keystorePending`
-//! in `GET /v1/state`, fetches the rotation once, and persists it to
-//! `EncryptedSharedPreferences`. Boot/unlock flows the other way via
-//! `POST /v1/credential`. Rust never writes a secret to disk on Android.
-//!
-//! Insertion handoff: the pipeline deposits final text via
-//! [`publish_android_insertion`] (called from the Android branch of
-//! `core::injection::inject_text`); Kotlin polls `GET /v1/state`, inserts
-//! through accessibility APIs (clipboard fallback where blocked), and acks.
-//! History is already written by the pipeline before the handoff, so an ack
-//! only drives pill/events/diagnostics — a lost ack can never lose text.
-
 use serde_json::{json, Value};
 use std::io;
 use std::path::PathBuf;
@@ -52,9 +5,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-
-/// How the pipeline wants the text fitted to the caret. Kotlin reads the text
-/// around the caret at insertion time and asks for it via `/v1/insertion/format`.
 #[derive(Clone)]
 pub struct InsertionFormat {
     pub contextual_caps: bool,
@@ -86,10 +36,6 @@ fn outbox() -> &'static Mutex<Outbox> {
     })
 }
 
-/// Deposit final dictated text for the Kotlin overlay service. Returns the
-/// sequence number Kotlin must quote back in its ack. Overwrites any
-/// unacknowledged entry — a new dictation supersedes the previous one, and
-/// history already holds the old text so nothing is lost.
 pub fn publish_android_insertion(text: &str) -> u64 {
     publish_android_insertion_with(text, None)
 }
@@ -111,9 +57,6 @@ pub fn publish_android_insertion_with(text: &str, format: Option<InsertionFormat
     seq
 }
 
-/// Fit the pending insertion `seq` to the caret using the text Kotlin read on
-/// either side of it. Returns the original text when formatting is off, the
-/// entry is gone, or the edges were not readable.
 pub(crate) fn format_pending_insertion(
     seq: u64,
     left: &str,
@@ -150,8 +93,6 @@ pub(crate) enum AckOutcome {
     Stale { expected: Option<u64> },
 }
 
-/// Acknowledge a handoff. Success clears the outbox; failure keeps the text
-/// so the overlay can retry from `GET /v1/state` without re-dictating.
 pub(crate) fn ack_outbox(seq: u64, success: bool) -> AckOutcome {
     let mut guard = outbox().lock().unwrap_or_else(|e| e.into_inner());
     match &guard.current {
@@ -193,14 +134,11 @@ pub(crate) fn clear_outbox_for_tests() {
     outbox().lock().unwrap_or_else(|e| e.into_inner()).current = None;
 }
 
-
 fn keystore_pending_cell() -> &'static Mutex<Option<(String, String)>> {
     static PENDING: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(None))
 }
 
-/// Stash a Keystore rotation for single-delivery fetch. Empty `key` means
-/// "delete this provider".
 pub(crate) fn stage_keystore_rotation(provider: &str, key: &str) {
     *keystore_pending_cell()
         .lock()
@@ -225,9 +163,6 @@ pub(crate) fn has_keystore_rotation() -> bool {
         .is_some()
 }
 
-/// Drop a staged rotation as part of the lock/revocation fail-closed path.
-/// The Accessibility service may be disconnected between staging and delivery;
-/// leaving the secret in this process-global cell would defeat the cache clear.
 pub(crate) fn clear_keystore_rotation() {
     *keystore_pending_cell()
         .lock()
@@ -238,7 +173,6 @@ pub(crate) fn clear_keystore_rotation() {
 pub(crate) fn clear_keystore_rotation_for_tests() {
     clear_keystore_rotation();
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FocusReport {
@@ -253,7 +187,6 @@ pub(crate) struct BridgeState {
     pub package_hint: Mutex<String>,
 }
 
-/// Mint a 256-bit hex token. `rand` 0.8 is already a dependency (sync).
 pub(crate) fn mint_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -267,7 +200,6 @@ fn now_unix_ms() -> u64 {
         .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
-
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -291,9 +223,6 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// Constant-time bearer comparison. The token has 256 bits of entropy so
-/// brute force over loopback is infeasible anyway; this just closes the
-/// timing side-channel for free.
 fn bearer_matches(presented: &str, token: &str) -> bool {
     let expected = format!("Bearer {token}");
     let a = presented.as_bytes();
@@ -308,7 +237,6 @@ fn bearer_matches(presented: &str, token: &str) -> bool {
     diff == 0
 }
 
-/// Pure: split a raw head block into method/path/auth/content-length.
 pub(crate) fn parse_head(head: &str, token: &str) -> Result<(String, String, usize, bool), String> {
     let request_line = head.lines().next().unwrap_or("").trim_end_matches('\r');
     let mut parts = request_line.split_whitespace();
@@ -356,7 +284,6 @@ fn ok(body: Value) -> Vec<u8> {
     }
     http_response(200, "OK", &Value::Object(map))
 }
-
 
 fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
     use crate::data::store;
@@ -599,16 +526,11 @@ fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> b
         .unwrap_or(true)
 }
 
-
 fn pill_stage_cell() -> &'static Mutex<String> {
     static STAGE: OnceLock<Mutex<String>> = OnceLock::new();
     STAGE.get_or_init(|| Mutex::new(String::new()))
 }
 
-/// Record the latest pipeline stage (`transcribing`/`cleaning`/`pasting`).
-/// Called from `emit_pill_stage` on every platform; a single short-string
-/// store, so desktop pays nothing measurable and the Android overlay poller
-/// can render Transcribing → Cleaning → Inserting faithfully.
 pub(crate) fn note_pill_stage(stage: &str) {
     *pill_stage_cell().lock().unwrap_or_else(|e| e.into_inner()) = stage.to_string();
 }
@@ -644,7 +566,6 @@ fn set_dictation_target(package: &str, domain: &str) {
     };
 }
 
-/// Lowercased package of the app the current dictation started in.
 pub(crate) fn dictation_package() -> Option<String> {
     let target = dictation_target_cell()
         .lock()
@@ -653,7 +574,6 @@ pub(crate) fn dictation_package() -> Option<String> {
     (!target.package.is_empty()).then_some(target.package)
 }
 
-/// Host of the page open in the browser the dictation started in.
 pub(crate) fn dictation_domain() -> Option<String> {
     let target = dictation_target_cell()
         .lock()
@@ -661,7 +581,6 @@ pub(crate) fn dictation_domain() -> Option<String> {
         .clone();
     (!target.domain.is_empty()).then_some(target.domain)
 }
-
 
 struct BridgeError {
     message: String,
@@ -673,11 +592,6 @@ fn bridge_error_cell() -> &'static Mutex<Option<BridgeError>> {
     CELL.get_or_init(|| Mutex::new(None))
 }
 
-/// Record the latest user-facing pipeline error. Called from
-/// `show_error_pill` on every platform (one short-string store); the payloads
-/// there are already sanitized user-facing messages — never dictated text —
-/// so mirroring them is safe. Lets the Android overlay render Retry instead
-/// of going silently idle when the main activity is dead.
 pub(crate) fn note_bridge_error(message: &str) {
     *bridge_error_cell()
         .lock()
@@ -701,16 +615,11 @@ pub(crate) fn last_bridge_error() -> Option<(String, u64)> {
         .map(|e| (e.message.clone(), now_unix_ms().saturating_sub(e.at_ms)))
 }
 
-
 fn audio_level_cell() -> &'static std::sync::atomic::AtomicU32 {
     static LEVEL: OnceLock<std::sync::atomic::AtomicU32> = OnceLock::new();
     LEVEL.get_or_init(|| std::sync::atomic::AtomicU32::new(0))
 }
 
-/// Mirror the current mic level (0.0–1.0 display gain applied upstream).
-/// Called every 50ms while recording; a single atomic store, so desktop pays
-/// nothing measurable. The Android overlay poller renders its waveform from
-/// this since it cannot see the `audio-level` WebView events.
 pub(crate) fn note_audio_level(level: f32) {
     audio_level_cell().store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
@@ -720,9 +629,6 @@ fn audio_envelope_buffer() -> &'static Mutex<Vec<f32>> {
     ENVELOPE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Queue the recorder's short-window peak envelope (10 ms per sample, see
-/// `EnvelopeTap`) for the Android pill. Capped so a stalled poller can never
-/// grow it without bound; the oldest samples are the ones dropped.
 pub(crate) fn note_audio_envelope(samples: &[f32]) {
     const MAX_BUFFERED: usize = 400;
     let mut buffer = audio_envelope_buffer()
@@ -735,7 +641,6 @@ pub(crate) fn note_audio_envelope(samples: &[f32]) {
     }
 }
 
-/// Everything queued since the previous call (single consumer: the pill).
 pub(crate) fn take_audio_envelope() -> Vec<f32> {
     std::mem::take(
         &mut *audio_envelope_buffer()
@@ -1027,16 +932,12 @@ async fn serve_connection(
     Ok(())
 }
 
-/// Byte offset just past the `\r\n\r\n` terminator, if present.
 fn find_head_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|pos| pos + 4)
 }
 
-
-/// Path of the connection file Kotlin reads after boot. Same-UID private
-/// storage; written `0600` on unix so no other app can steal the token.
 pub fn connection_file_path() -> PathBuf {
     crate::app_data_dir().join("android_bridge.json")
 }
@@ -1069,9 +970,6 @@ fn write_connection_file(port: u16, token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Start the bridge on 127.0.0.1 (ephemeral port), publish the connection
-/// file, and spawn the accept loop. Called from `main.rs` setup on Android;
-/// the protocol itself is platform-independent so tests exercise it here.
 pub fn start_bridge(app: AppHandle) -> anyhow::Result<std::net::SocketAddr> {
     let token = mint_token();
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;

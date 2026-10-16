@@ -12,10 +12,6 @@ use transcribe_rs::onnx::Quantization;
 use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams, WhisperLoadParams};
 use transcribe_rs::{SpeechModel, TranscribeOptions};
 
-/// Number of inference threads for streaming Moonshine models. Matches the
-/// crate's own example default (examples/moonshine_streaming.rs) — there is
-/// no per-platform tuning need here, ONNX Runtime CPU inference scales fine
-/// at this thread count for a model this small.
 const MOONSHINE_STREAMING_THREADS: usize = 4;
 
 pub enum LoadedLocalSttEngine {

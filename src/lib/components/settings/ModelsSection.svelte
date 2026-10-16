@@ -158,12 +158,6 @@
     customProviders: customProviderStore.providers,
   });
 
-  /**
-   * Local models are downloaded, deleted and prompt-edited from inside the
-   * picker now. The old "Local models" section listed the very same models a
-   * second time under a different UI, which is what made the page feel like
-   * two products stapled together.
-   */
   function localControls(type: TaskType): LocalControls {
     if (type === 'transcription') {
       return {
@@ -194,7 +188,6 @@
     };
   }
 
-  /** Everything the picker needs to classify a model, per task. */
   function pickerContext(type: TaskType): PickerContext {
     return {
       task: type,
@@ -205,7 +198,6 @@
     };
   }
 
-  /** Selections plus the curated catalog — the ids worth counting misses for. */
   function trackedModelIds(): string[] {
     const selected = [
       transcriptionDefaultModel,
@@ -682,7 +674,6 @@
     }
   }
 
-  /** Makes a model the active one, pushing the previous default aside. */
   function selectModel(type: TaskType, id: string) {
     modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
@@ -724,7 +715,6 @@
     customDrafts = { ...customDrafts, [type]: value };
   }
 
-  /** Adds a hand-typed id and makes it active — you typed it to use it. */
   function addCustomModelForTask(type: TaskType, draft: string) {
     const raw = draft.trim();
     if (!raw) return;
@@ -1019,9 +1009,6 @@
 {/if}
 
 <style>
-
-
-
 
   .advanced-toggle-row {
     display: flex;

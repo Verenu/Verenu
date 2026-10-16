@@ -15,10 +15,6 @@ pub fn build_relevant_dictionary_prompt_from(
     build_relevant_dictionary_prompt_from_sources(entries, raw_text, None)
 }
 
-/// Build vocabulary evidence from the candidate transcripts instead of
-/// dumping the whole Context dictionary into every request. The primary
-/// candidate has the highest weight; an alternate hit can surface a useful
-/// term but never becomes a replacement rule.
 pub fn build_relevant_dictionary_prompt_from_sources(
     entries: &[db::DictionaryEntry],
     primary_text: &str,
@@ -146,7 +142,6 @@ fn effective_correction_variants<'a>(
         .collect()
 }
 
-/// Protect the same context-effective spellings that substitutions consume.
 pub(crate) fn protected_spellings(entries: &[db::DictionaryEntry]) -> Vec<&str> {
     entries
         .iter()

@@ -1,12 +1,9 @@
-
 use super::*;
 use std::sync::Mutex;
 
 pub const SUB_APP_CAPTURED_EVENT: &str = "verenu:sub-app-captured";
 pub const SUB_APP_CAPTURE_FAILED_EVENT: &str = "verenu:sub-app-capture-failed";
 
-/// What the capture hotkey saw in the foreground window. The title only
-/// travels to the local review sheet; it is not persisted or logged.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct SubAppCapture {
     pub executable: String,
@@ -17,8 +14,6 @@ pub struct SubAppCapture {
 
 static PENDING_CAPTURE: Mutex<Option<SubAppCapture>> = Mutex::new(None);
 
-/// Snapshot of the foreground window, taken before Verenu raises itself.
-/// `None` when nothing usable is focused (no title, or Verenu itself).
 pub fn capture_foreground() -> Option<SubAppCapture> {
     let target = crate::core::window_geometry::WindowTarget::capture_foreground();
     if target.id == 0 {
@@ -61,8 +56,6 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
     })
 }
 
-/// Readable name when no installed app matches: drop `.exe`/`.app` and use
-/// the last segment of a reverse-DNS Linux app id (`com.t3tools.t3code`).
 fn fallback_app_name(executable: &str) -> String {
     let base = executable.trim_end_matches(".exe").trim_end_matches(".app");
     base.rsplit('.')
@@ -72,7 +65,6 @@ fn fallback_app_name(executable: &str) -> String {
         .to_string()
 }
 
-/// Hotkey entry point: capture, hand the snapshot to the UI, then show it.
 pub fn handle_capture_hotkey(app: &AppHandle) {
     match capture_foreground() {
         Some(capture) => {
@@ -93,8 +85,6 @@ pub fn handle_capture_hotkey(app: &AppHandle) {
     }
 }
 
-/// Returns and clears a capture the UI has not picked up yet (the window may
-/// still have been loading when the event fired).
 #[tauri::command]
 pub fn take_pending_sub_app_capture() -> Option<SubAppCapture> {
     PENDING_CAPTURE.lock().ok().and_then(|mut slot| slot.take())

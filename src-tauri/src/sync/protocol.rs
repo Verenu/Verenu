@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
@@ -6,26 +5,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
-/// Bump when the message set or op payloads change incompatibly. Devices on
-/// different versions refuse to sync with a clear error instead of corrupting
-/// each other's data. Version 2 adds Context-scoped dictionary correction
-/// records to deltas and snapshots.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// Hard cap on one framed message. Batches are chunked well below this; the
-/// cap exists so a hostile peer can't make us allocate unbounded memory.
 pub const MAX_MESSAGE_BYTES: u32 = 64 * 1024 * 1024;
 
-/// A peer may still send a legacy-sized frame, but the aggregate amount of
-/// frame storage held by all readers is bounded.  This keeps the 64 MiB wire
-/// compatibility envelope without allowing concurrent declarations to turn
-/// into hundreds of MiB of allocations.
 const FRAME_MEMORY_UNIT_BYTES: usize = 64 * 1024;
 const FRAME_MEMORY_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const FRAME_MEMORY_PERMITS: u32 = (FRAME_MEMORY_BUDGET_BYTES / FRAME_MEMORY_UNIT_BYTES) as u32;
 
-/// A partial frame is not allowed to pin a connection or its memory budget
-/// indefinitely.  This applies to both the length prefix and the body.
 pub const MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn frame_memory() -> Arc<Semaphore> {
@@ -35,11 +22,8 @@ fn frame_memory() -> Arc<Semaphore> {
         .clone()
 }
 
-/// Ops are sent in chunks of this many rows (transcription text makes rows
-/// large; this keeps each message comfortably under the frame cap).
 pub const OPS_PER_BATCH: usize = 400;
 
-/// Snapshot rows per history chunk (see the engine's `collect_ops`).
 pub const SNAPSHOT_ROW_CHUNK: i64 = 400;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,9 +36,7 @@ pub struct Hello {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsExchange {
-    /// This device's own lifetime counters (the `lifetime_stats` row).
     pub self_stats: DeviceStatsDto,
-    /// Everything this device knows about *other* devices' counters.
     pub remote_stats: Vec<DeviceStatsDto>,
 }
 
@@ -65,13 +47,6 @@ pub struct DeviceStatsDto {
     pub dictionary_fixes: i64,
 }
 
-/// The payload for one persistent, Context-owned correction mapping.
-///
-/// The row UUID is carried by [`SyncOp::row_uuid`]. Context and dictionary
-/// references deliberately use their stable wire UUIDs instead of local
-/// SQLite ids. `dictionary_term` is a natural-key fallback for the short
-/// window in which two devices independently created the same canonical term
-/// and the losing dictionary UUID has already been reparented locally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictionaryCorrectionRow {
     pub context_uuid: String,
@@ -94,7 +69,6 @@ fn default_correction_confidence_tier() -> String {
     "low".to_string()
 }
 
-/// One synced setting: the value plus the LWW stamp from `sync_setting_meta`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingRecord {
     pub key: String,
@@ -103,7 +77,6 @@ pub struct SettingRecord {
     pub origin: String,
 }
 
-/// A single change: one row upsert/delete (or a context aggregate upsert).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncOp {
     pub table: String,
@@ -112,7 +85,6 @@ pub struct SyncOp {
     pub ts_ms: i64,
     pub origin: String,
     pub origin_seq: i64,
-    /// JSON payload for upserts (shape depends on `table`); absent for deletes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
 }
@@ -130,9 +102,6 @@ impl SyncOp {
         self.op == "delete"
     }
 
-    /// Deterministic total order for last-writer-wins: (timestamp, origin,
-    /// origin seq). Two devices comparing the same pair of ops always pick the
-    /// same winner regardless of application order.
     pub fn stamp(&self) -> (i64, &str, i64) {
         (self.ts_ms, self.origin.as_str(), self.origin_seq)
     }
@@ -151,18 +120,14 @@ pub struct PullRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpsBatch {
     pub ops: Vec<SyncOp>,
-    /// Sender's log position after this batch (valid when `done`).
     pub cursor: i64,
-    /// True when this is the last batch of the pull.
     pub done: bool,
     pub snapshot: bool,
 }
 
-/// Everything that can travel over the wire after the TLS handshake.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
-    /// Ephemeral mute lease on a separate pinned TLS connection. Never persisted.
     DictationMute {
         device_uuid: String,
     },
@@ -195,15 +160,11 @@ pub enum Message {
         device_uuid: String,
         device_name: String,
         protocol: u32,
-        /// Initiator's SPAKE2 message, exchanged in the clear by design -
-        /// PAKE messages are safe over an unauthenticated channel.
         spake_msg: Vec<u8>,
     },
-    /// Responder agrees and sends its SPAKE2 message (user typed the code).
     PairAccept {
         spake_msg: Vec<u8>,
     },
-    /// Initiator's SPAKE2 message, or the encrypted identity exchange.
     PairVerify {
         ciphertext: Vec<u8>,
         nonce: Vec<u8>,
@@ -231,8 +192,6 @@ pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Messag
     read_message_with_timeout(reader, MESSAGE_READ_TIMEOUT).await
 }
 
-/// Pairing approval is a human wait and needs its own deadline. Ordinary
-/// frames retain the shorter timeout so stalled transfers release resources.
 pub async fn read_message_with_timeout<R: AsyncRead + Unpin>(
     reader: &mut R,
     deadline: Duration,

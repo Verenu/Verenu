@@ -1,8 +1,3 @@
-//! XDG Desktop Portal global shortcut implementation for Wayland/Hyprland.
-//!
-//! The portal owns conflict detection and consent UI. We intentionally do not
-//! read `/dev/input`, install X11 hooks, or use a privileged input helper.
-
 use ashpd::desktop::global_shortcuts::NewShortcut;
 use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -86,8 +81,6 @@ static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
 static HANDLESS: AtomicBool = AtomicBool::new(false);
 static PROCESSING: AtomicU64 = AtomicU64::new(0);
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// Whether the dynamic bare-Escape Hyprland bind is currently installed.
-/// The Lua handle disables only Verenu's binding, preserving user bindings.
 static ESCAPE_ARMED: AtomicBool = AtomicBool::new(false);
 static CANCEL_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static HANDSFREE_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
@@ -133,16 +126,6 @@ enum PortalGestureAction {
     Cancel,
 }
 
-/// Turns the portal's chord-level Activated/Deactivated stream into the same
-/// gesture contract used by the Windows and macOS hotkey backends.
-///
-/// Hyprland may deliver another Activated notification while a key is still
-/// held. Tracking the physical chord edge here prevents that repeat from being
-/// mistaken for the second tap of a hands-free gesture. Once a real quick tap
-/// is released, its matching recording stays open and exactly one following
-/// activation inside the double-tap window enters hands-free. The release of
-/// that second tap is consumed here, so it cannot immediately stop the session
-/// it just started.
 #[derive(Default)]
 struct PortalGesture {
     chord_active: bool,
@@ -481,9 +464,6 @@ fn shortcut_triggers(keys: &[String]) -> Result<Vec<String>, String> {
     Ok(triggers)
 }
 
-/// Validate Linux shortcut shape without consulting the compositor. Browser
-/// dev sessions disable global hotkeys, so they can check supported bindings
-/// while running under Xvfb or another headless fixture.
 pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
     shortcut_triggers(keys).map(|_| true)
 }
@@ -568,8 +548,6 @@ pub fn set_chord_cancel_callback(callback: impl Fn() + Send + Sync + 'static) {
 }
 static SUB_APP_CHORD: Mutex<Option<super::chord::Chord>> = Mutex::new(None);
 
-/// Rebinds the sub-app capture chord. Rewrites only the capture block in the
-/// Hyprland config, so the dictation bind and portal session are untouched.
 pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
     if let Ok(mut slot) = SUB_APP_CHORD.lock() {
         *slot = Some(chord);
@@ -634,17 +612,12 @@ fn install_sub_app_capture_binding() {
     }
 }
 
-/// Called by the single-instance handoff from the sub-app capture chord
-/// (`--verenu-capture-sub-app`, bound in its own managed Hyprland block).
 pub fn notify_capture_sub_app() {
     if let Some(cb) = SUB_APP.get() {
         cb();
     }
 }
 
-/// Called by the Hyprland raw-key gesture watcher when it has already
-/// recognized the second quick tap. Reset the Rust-side edge tracker so the
-/// release of that second tap cannot stop the hands-free session it starts.
 pub fn notify_handless() {
     if let Some(gesture) = GESTURE.get() {
         match gesture.lock() {
@@ -721,13 +694,6 @@ fn eval_hyprland(snippet: &str) -> Result<(), String> {
         .ok_or_else(|| "hyprctl eval rejected the snippet".to_string())
 }
 
-/// Arms or disarms the bare-Escape cancel bind to match live dictation state.
-///
-/// Mirrors the macOS backend (`refresh_escape_listening` there registers a
-/// Carbon Escape hotkey only while recording/hands-free/processing): Escape
-/// must cancel an in-flight dictation, but a permanently installed bare-Escape
-/// bind would swallow Escape in every application, all the time. Idempotent —
-/// only shells out to `hyprctl` on transitions.
 fn refresh_escape_listening() {
     refresh_space_listening();
     let available = CANCEL_KEY.lock().map(|key| !key.is_empty()).unwrap_or(false)

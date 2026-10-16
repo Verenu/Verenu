@@ -1,4 +1,3 @@
-//! APK-owned native runtime paths. Executable code never comes from a model download.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 

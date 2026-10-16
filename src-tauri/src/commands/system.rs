@@ -1,4 +1,3 @@
-
 use super::*;
 
 
@@ -27,11 +26,6 @@ pub fn frontend_ready(
     Ok(())
 }
 
-
-/// Lets the frontend show an explanatory notice in place of the local
-/// STT/LLM download UI up front, instead of only discovering it's blocked
-/// after the user clicks Download and gets an error toast. See
-/// `system::platform::is_macos_intel` for the reasoning.
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
     if cfg!(target_os = "android") {
@@ -39,7 +33,6 @@ pub async fn local_models_supported_on_this_platform() -> bool {
     }
     !crate::system::platform::is_macos_intel()
 }
-
 
 #[tauri::command]
 pub async fn get_memory_mb() -> u64 {
@@ -52,19 +45,12 @@ pub async fn get_memory_mb() -> u64 {
     }
 }
 
-/// One detected GPU's VRAM. NVIDIA-only (see `memory::gpu_vram_statuses`);
-/// absent entirely on other vendors, which the frontend treats as "no signal".
 #[derive(serde::Serialize)]
 pub struct GpuCapability {
     pub vram_total_mb: u64,
     pub vram_used_mb: u64,
 }
 
-/// System hardware snapshot used by the Models tab to recommend presets. RAM
-/// is the primary signal (correct for Apple Silicon unified memory too); VRAM
-/// is a bonus that's only present on NVIDIA machines. A `total_ram_mb` of 0
-/// means the read failed — the frontend must treat that as "unknown, assume
-/// capable" rather than "no memory".
 #[derive(serde::Serialize)]
 pub struct HardwareCapabilities {
     pub is_android: bool,
@@ -102,7 +88,6 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
         }
     })
 }
-
 
 #[tauri::command]
 pub fn set_diagnostics_monitoring(enabled: bool) {
@@ -540,7 +525,6 @@ fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSn
     output
 }
 
-
 #[tauri::command]
 pub async fn set_hotkey_capture(active: bool) -> Result<(), String> {
     if crate::is_dev_session() {
@@ -615,7 +599,6 @@ pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String
     })
     .await
 }
-
 
 #[tauri::command]
 pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String> {
@@ -804,7 +787,6 @@ fn run_launchctl(args: &[&str]) -> Result<(), String> {
     Err(format!("launchctl failed: {detail}"))
 }
 
-
 #[tauri::command]
 pub async fn check_connectivity() -> bool {
     // Prefer the OS's own network state (see system/connectivity.rs) — on
@@ -853,7 +835,6 @@ async fn native_connectivity_check() -> Option<bool> {
     crate::system::connectivity::check_native()
 }
 
-
 #[tauri::command]
 pub fn get_recent_logs(limit: Option<usize>) -> Vec<String> {
     crate::system::logger::recent(limit)
@@ -886,7 +867,6 @@ pub fn set_dev_logging_enabled(enabled: bool) {
 pub fn get_dev_logging_enabled() -> bool {
     crate::system::logger::is_verbose()
 }
-
 
 #[tauri::command]
 pub fn notify_update_available(app: AppHandle, version: String) -> Result<(), String> {

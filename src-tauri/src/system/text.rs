@@ -1,6 +1,3 @@
-/// True if `token` contains a feature (non-ASCII, q/x/z, digit/apostrophe/hyphen/underscore,
-/// or internal capitalization) that makes it unlikely to be a plain mis-transcribed
-/// common word — i.e. likely a brand/technical term or proper noun.
 pub fn has_distinctive_features(token: &str) -> bool {
     if !token.is_ascii() {
         return true;
@@ -57,14 +54,6 @@ fn is_cjk_token_char(ch: char) -> bool {
     )
 }
 
-/// Strips em dashes (—, U+2014) the cleanup model introduced but the
-/// speaker never actually said, replacing each with a comma so the
-/// surrounding clause still reads naturally. People don't dictate "em
-/// dash" out loud — its appearance in cleaned output is a well-known LLM
-/// stylistic habit (dramatic pause / parenthetical aside), not derived from
-/// real speech. If `raw` already contains an em dash, `cleaned` is returned
-/// unchanged, since the speaker may genuinely have meant that exact break
-/// (e.g. dictated from text that already used one).
 pub fn strip_unspoken_em_dashes(raw: &str, cleaned: &str) -> String {
     const EM_DASH: char = '\u{2014}';
     if raw.contains(EM_DASH) || !cleaned.contains(EM_DASH) {
@@ -172,13 +161,6 @@ fn capitalize_first_char(word: &str) -> String {
     }
 }
 
-/// Removes standalone filler/hesitation words from `text` and cleans up the
-/// spacing/punctuation left behind, without ever touching sentence-ending
-/// punctuation or newlines (both structurally meaningful — e.g. "new
-/// paragraph"/"new line" voice commands). If removing a filler word merges
-/// two separators into a new sentence boundary (e.g. "...it. Um, next..."
-/// -> "...it. next..."), the following word is re-capitalized so the
-/// sentence still starts correctly.
 pub fn strip_filler_hesitations(text: &str) -> String {
     let tokens = tokenize_words_and_other(text);
 
@@ -261,21 +243,6 @@ pub fn strip_filler_hesitations(text: &str) -> String {
     out.trim_matches([' ', ',']).to_string()
 }
 
-/// Collapses a run of 6+ identical consecutive words down to a single
-/// occurrence. Small local ASR models occasionally get stuck re-predicting
-/// the same short token under acoustic ambiguity (a CTC/RNNT "repetition
-/// collapse" failure) — no real speaker dictates the same word six-plus
-/// times in a row, so this is always a transcription artifact, never
-/// genuine content. This runs on the RAW transcription, before cleanup:
-/// a run baked into the raw text is invisible to
-/// `looks_like_degenerate_repetition`'s usefulness in one specific way — if
-/// the cleanup model reproduces it too (plausible under "light" intensity,
-/// which explicitly asks it to preserve wording verbatim) and the pipeline
-/// falls back to the raw text as a safety net, that raw text still has the
-/// run; there is nothing safer left to fall back to. Collapsing at the
-/// source means a repetition glitch corrupts only the handful of words it
-/// actually hit, instead of leaking downstream. Threshold matches
-/// `looks_like_degenerate_repetition` in `api/prompts/cleanup_templates.rs`.
 pub fn collapse_degenerate_word_runs(text: &str) -> String {
     const RUN_THRESHOLD: usize = 6;
     let tokens = tokenize_words_and_other(text);

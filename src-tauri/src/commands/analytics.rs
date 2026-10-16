@@ -1,7 +1,5 @@
 use super::*;
 
-/// Frontend setup analytics accepts only a small fixed vocabulary. The
-/// transport and identity remain owned by the Rust analytics boundary.
 #[tauri::command]
 pub fn analytics_setup_event(
     app: AppHandle,

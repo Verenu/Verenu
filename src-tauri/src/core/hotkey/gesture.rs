@@ -94,10 +94,6 @@ impl ChordStateMachine {
         Self::with_partial_passthrough(vec![true; count])
     }
 
-    /// Creates a state machine with one policy per configured key: modifier
-    /// prefixes may pass through while waiting for the rest of the chord, but
-    /// regular keys should be claimed immediately so they cannot leak into the
-    /// focused app before a multi-key chord completes.
     pub(super) fn with_partial_passthrough(passthrough_if_incomplete: Vec<bool>) -> Self {
         let count = passthrough_if_incomplete.len();
         Self {
@@ -123,15 +119,6 @@ impl ChordStateMachine {
     fn key_down_since_mut(&mut self, key: ChordKey) -> &mut u64 {
         &mut self.keys[key.0].down_since_ms
     }
-    /// Corrects stale ownership bookkeeping against live OS key state. A
-    /// keyup can occasionally never reach this hook (e.g. swallowed by
-    /// another low-level hook, or eaten by the OS's own Start-menu handling
-    /// of a bare Win press) which leaves `key_down` stuck true forever —
-    /// after that, the next lone press of the *other* key looks like a
-    /// chord-forming edge and fires dictation off a single key. Called with
-    /// the live `GetAsyncKeyState` read for the *other* key (never the one
-    /// whose edge is currently being processed — its own down/up handling
-    /// already reconciles itself).
     pub(super) fn reconcile_stale_key(&mut self, key: ChordKey, os_held: bool, now_ms: u64) {
         if os_held || !*self.key_down_mut(key) {
             return;
@@ -160,10 +147,6 @@ impl ChordStateMachine {
         self.keys.fill(KeyState::default());
         self.chord_down = false;
     }
-    /// Clears gesture/timing state only — never physical-key or ownership
-    /// state. A full reset here would forget a currently-suppressed chord's
-    /// keys are still Verenu-owned, letting a bare Ctrl-up/Win-up leak to the
-    /// OS (Start menu) if a reset lands between a chord's two keyups.
     pub(super) fn reset_gesture_state(&mut self) {
         self.chord_down = false;
         self.chord_first_down_ms = 0;

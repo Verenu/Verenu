@@ -1,8 +1,6 @@
 use super::count_words;
 use crate::api::cleanup::escape_transcript_xml as escape_markup;
 
-/// Layout permission varies by level; spoken commands and literal tokens are
-/// governed once by the shared contract before any changing request data.
 pub(super) fn formatting_rules(intensity: &str) -> &'static str {
     match intensity {
         "medium" => "Use paragraphs or lists when the dictated structure clearly calls for them; never invent headings.",

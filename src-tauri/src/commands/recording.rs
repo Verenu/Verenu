@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::core::window_geometry::{capture_webview_center, WindowTarget};
 
@@ -30,7 +29,6 @@ pub async fn get_microphones() -> Vec<String> {
         }
     }
 }
-
 
 #[tauri::command]
 pub async fn start_input_recording(
@@ -235,10 +233,6 @@ pub async fn stop_handless_mode(
     Ok(())
 }
 
-/// Resumes a cancelled recording's audio: starts a fresh hands-free
-/// recording that will be prepended with the previously-captured audio when
-/// it stops, so the finished dictation reads as one continuous take. Errs if
-/// the capture already expired or was already resumed/dismissed.
 #[tauri::command]
 pub async fn resume_cancelled_capture(
     app: AppHandle,
@@ -327,12 +321,6 @@ pub fn get_cancelled_capture(
     )
 }
 
-/// Discards a cancelled recording's stashed audio without resuming it —
-/// called when the user explicitly dismisses the offer, either the pill's
-/// own dismiss (X) button or Home's dismiss button. The pill toast's plain
-/// 10s auto-hide does *not* call this: the capture stays resumable from Home
-/// for the full `CANCEL_RESUME_WINDOW` regardless of whether the toast is
-/// still on screen.
 #[tauri::command]
 pub async fn dismiss_cancelled_capture(
     app: AppHandle,
@@ -403,15 +391,6 @@ pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Resizes the pill window to fit its visible content. The frontend measures
-/// the actual rendered content (pill capsule + profile label above it + error
-/// text) and reports the size in CSS px (== logical points on the pill's
-/// monitor), so the transparent click-capture zone around the pill stays
-/// exactly as wide as the pill itself instead of a fixed 380px band that
-/// swallows or forwards stray clicks — the floating pill grows for wide
-/// content (long error messages, handsfree buttons) and shrinks back when
-/// it's just the bare recording capsule. Height changes grow the window
-/// upward so the pill itself stays visually pinned in place.
 #[tauri::command]
 pub fn set_pill_size(
     app: AppHandle,

@@ -28,9 +28,6 @@ pub struct PipelineTestRequest {
     pub config: store::PipelineConfig,
     pub profile: String,
     pub target_hwnd: usize,
-    /// Full target for injection backends that need more than the raw id
-    /// (see `PipelineCompletionContext::target`). The fixture harness
-    /// short-circuits injection in test mode before the address is read.
     pub target: WindowTarget,
     pub app_context: Option<String>,
     pub snippets: Vec<PipelineTestSnippet>,

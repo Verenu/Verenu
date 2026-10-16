@@ -1,6 +1,4 @@
-
 use super::*;
-
 
 #[tauri::command]
 pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
@@ -41,11 +39,6 @@ pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
     }
 }
 
-/// Returns a `data:image/png;base64,...` URI for `exe`'s real icon, or
-/// `None` if it couldn't be resolved/extracted — the frontend falls back to
-/// a colored-initial badge in that case. Deliberately not bundled into
-/// `get_installed_apps`: extraction/caching is per-icon work and lazy
-/// per-row loading keeps that bulk list light.
 #[tauri::command]
 pub async fn get_app_icon(app: AppHandle, exe: String) -> Option<String> {
     #[cfg(target_os = "android")]
@@ -74,10 +67,6 @@ pub async fn get_app_icon(app: AppHandle, exe: String) -> Option<String> {
     }
 }
 
-/// Returns a `data:image/...;base64,...` URI for a website target's favicon,
-/// or `None` when it couldn't be resolved — the frontend falls back to a globe
-/// glyph. Results (including failures) are disk-cached per hostname, so the
-/// sidebar's icon stacks don't re-fetch on every render.
 #[tauri::command]
 pub async fn get_site_icon(app: AppHandle, domain: String) -> Option<String> {
     crate::system::icons::get_site_icon_data_uri(&app, &domain).await
@@ -103,7 +92,6 @@ pub async fn save_app_mappings(app: AppHandle, mappings: Vec<AppMapping>) -> Res
     })
     .await
 }
-
 
 #[tauri::command]
 pub async fn get_snippets(app: AppHandle) -> Result<Vec<db::Snippet>, String> {
@@ -162,7 +150,6 @@ pub async fn edit_snippet(
 pub async fn remove_snippet(app: AppHandle, id: i64) -> Result<(), String> {
     run_db(&app, "remove_snippet", move |db| db::delete_snippet(db, id)).await
 }
-
 
 #[tauri::command]
 pub async fn get_dictionary(app: AppHandle) -> Result<Vec<db::DictionaryEntry>, String> {

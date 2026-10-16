@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use serde_json::json;
 use std::net::IpAddr;
@@ -14,7 +13,6 @@ mod regression_tests;
 
 #[path = "device_tests.rs"]
 mod device_tests;
-
 
 #[test]
 fn t3_skill_opt_out_syncs_with_contexts_and_old_payloads_omit_it() {
@@ -418,7 +416,6 @@ fn peer_of(device_uuid: &str) -> sync_store::SyncPeer {
     }
 }
 
-
 #[test]
 fn triggers_capture_content_changes() {
     let a_uuid = uuid("aaaa");
@@ -588,7 +585,6 @@ fn dictionary_correction_op(
         })),
     }
 }
-
 
 #[test]
 fn context_correction_delta_roundtrip_preserves_scope_and_identity() {
@@ -1441,7 +1437,6 @@ fn older_op_never_overwrites_newer() {
     assert_eq!(term, "term-new");
 }
 
-
 #[tokio::test]
 async fn session_snapshot_seeds_a_new_device() {
     let a = test_db(&uuid("aaaa"));
@@ -1782,7 +1777,6 @@ async fn run_two_sessions(a: &DbHandle, b: &DbHandle, host_a: &TestHost, host_b:
     r1.expect("session a");
     r2.expect("session b");
 }
-
 
 #[tokio::test]
 async fn lifetime_counters_merge_without_double_counting() {
@@ -2202,7 +2196,6 @@ fn context_app_matching_uses_local_name_and_rejects_weak_matches() {
     assert!(super::manager::closest_installed_app("Completely Different.app", &apps).is_none());
 }
 
-
 #[tokio::test]
 async fn messages_roundtrip_through_the_framer() {
     use super::protocol::{read_message, send_message};
@@ -2272,7 +2265,6 @@ async fn stalled_tls_handshake_times_out() {
     );
     let _ = client.await;
 }
-
 
 #[tokio::test]
 async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {

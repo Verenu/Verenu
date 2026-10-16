@@ -1,4 +1,3 @@
-/** Average words in a published novel — the unit behind "you've written N books". */
 const WORDS_PER_BOOK = 80_000;
 
 const subCentUsd = new Intl.NumberFormat('en-US', {

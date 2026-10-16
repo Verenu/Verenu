@@ -515,7 +515,6 @@
       </div>
     </div>
 
-    <!-- Keychain Access (optional) -->
     {#if showKeychainRow}
       <div class="perm-row">
         <div class="perm-row-main">

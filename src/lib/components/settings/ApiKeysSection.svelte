@@ -45,8 +45,6 @@
           const durable = await invoke<Partial<KeyStatus>>('plugin:verenu-security|getCredentialStatus');
           status = { ...status, ...durable };
         } catch (err) {
-          // The Rust status is still useful if an older build lacks the native
-          // command or the Keystore is temporarily unavailable.
           console.warn('native credential status unavailable:', err);
         }
       }

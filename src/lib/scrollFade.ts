@@ -1,4 +1,3 @@
-
 export type ScrollEdgeCallback = (top: boolean, bottom: boolean, node: HTMLElement) => void;
 
 export function scrollEdges(node: HTMLElement, onChange: ScrollEdgeCallback) {

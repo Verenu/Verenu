@@ -1,4 +1,3 @@
-
 #[cfg(target_os = "linux")]
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -31,8 +30,6 @@ pub(crate) struct ProcMeminfo {
     pub available_kb: u64,
 }
 
-/// Kernel `stat` fields after the parenthesized comm. Field 1 is pid and
-/// field 2 is comm, so `rest[0]` is state (field 3).
 pub(crate) fn parse_stat(text: &str) -> Option<ProcStat> {
     let start = text.find('(')?;
     let end = text.rfind(')')?;
@@ -87,7 +84,6 @@ pub(crate) fn parse_status_kb(text: &str, key: &str) -> Option<u64> {
     line.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// `smaps_rollup` keys are the same `Name:   123 kB` shape as `/proc/status`.
 pub(crate) fn parse_smaps_kb(text: &str, key: &str) -> Option<u64> {
     parse_status_kb(text, key)
 }

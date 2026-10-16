@@ -1,11 +1,3 @@
-//! On-device English dictation rules. This is a conservative token editor,
-//! not a grammar model. Quoted text, code, markers and exact vocabulary terms
-//! are barriers: neither edits nor rollback may cross them.
-//! Independently implemented from the behavior described in the BetterWispr
-//! research brief; no Swift source is incorporated.
-//! Some regression examples are adapted from BetterWispr's Apache-2.0 test
-//! cases. The supplied license is retained in licenses/BetterWispr.txt.
-
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const MODEL_COMMAND_RECOVERY_INSTRUCTION: &str = "Before cleanup, recover only clear missed voice commands, including joined STT words. Convert comma, semicolon, full stop, question/exclamation mark; new/next line or paragraph; at sign/at the rate plus one username (at signbot becomes @bot). Period, colon, dash/hyphen require add/insert/put. Scratch/strike that removes only the latest fragment since punctuation or a line break. Remove command words, then clean normally. Preserve already-processed punctuation, line breaks and mentions; do not repeat rollback. Keep ambiguous or literal uses unchanged; never reinterpret quotes, code, vocabulary, snippets or clipboard text.";
@@ -678,8 +670,6 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
     }
 }
 
-/// Expanded payloads are not labeled for the model. In their presence keep
-/// model command recovery off rather than asking it to guess their origin.
 pub(super) fn has_protected_spans(text: &str, terms: &[&str]) -> bool {
     text.char_indices().any(|(i, _)| protected_span_len(text, i, terms).is_some())
 }
@@ -700,8 +690,6 @@ fn sentence_start(prefix: &str) -> bool {
     })
 }
 
-/// Edit spoken spans independently while retaining sentence context across
-/// protected payloads. Unclosed quotes/code protect the remaining transcript.
 pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, terms: &[&str], prefix: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut spoken_start = 0;

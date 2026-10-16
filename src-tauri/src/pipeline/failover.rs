@@ -1,9 +1,3 @@
-//! Disk-backed dictation failover: crash/reboot survival for in-progress takes.
-//!
-//! Audio is stored as append-only i16le mono 16 kHz PCM plus an atomic JSON
-//! sidecar. The sidecar `sample_count` is published only after the matching
-//! PCM bytes have been flushed, and load clamps to the shorter of the two.
-
 use super::gates::{MIN_RECORDING_MS, MIN_RECORDING_RMS};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use super::pill::{show_cancelled_pill, show_interrupted_pill};
@@ -53,9 +47,6 @@ pub struct SessionMeta {
     pub duration_ms: u64,
     #[serde(default)]
     pub rms: f32,
-    /// Stable local Context identity captured when this durable take began.
-    /// Old sidecars omit it and are intentionally treated as Everywhere on
-    /// recovery because their originating Context cannot be inferred safely.
     #[serde(default)]
     pub context_id: Option<i64>,
 }
@@ -196,7 +187,6 @@ fn load_session(path: &Path) -> Option<SessionMeta> {
     Some(meta)
 }
 
-/// Load a slot, clamping published `sample_count` to the PCM file length.
 pub fn load_slot(root: &Path, live: bool) -> Option<LoadedTake> {
     let dir = slot_dir(root, live);
     let mut meta = load_session(&dir.join(SESSION_FILE))?;
@@ -421,8 +411,6 @@ fn id_prefix(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// Startup restore: pick the best candidate, validate it fully, then delete
-/// the alternative and return it.
 pub fn restore_choice(root: &Path, now_unix: i64) -> Option<LoadedTake> {
     let live = inspect_slot(root, true);
     let committed = inspect_slot(root, false);
@@ -505,7 +493,6 @@ fn loaded_to_capture(take: LoadedTake) -> CancelledCapture {
     }
 }
 
-/// Load a surviving take into RAM. Does not show the pill (the watchdog does).
 pub fn restore_into_state(state: &SharedState) {
     let Some(take) = restore_choice(&failover_dir(), now_unix()) else {
         return;
@@ -530,7 +517,6 @@ pub fn restore_into_state(state: &SharedState) {
     }
 }
 
-/// After the pill window can be shown, surface a restored take.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn offer_restored_capture_pill(app: &AppHandle) -> bool {
     let Some(state) = app.try_state::<SharedState>() else {
@@ -623,8 +609,6 @@ pub fn retire_committed() {
     delete_committed(&failover_dir());
 }
 
-/// Incremental live writer. PCM is appended and synced before `sample_count`
-/// is published in the sidecar.
 pub struct LiveWriter {
     root: PathBuf,
     file: File,

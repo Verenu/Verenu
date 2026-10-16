@@ -37,11 +37,6 @@ struct DownloadTaskState {
     completion: Arc<tokio::sync::Notify>,
 }
 
-/// Guarantees `is_loading` is cleared and waiters are woken even if
-/// `load_model_inner` panics mid-load — without this, a panic during load
-/// (unwind, not the release profile's panic=abort) leaves `is_loading` stuck
-/// `true` forever, and every future `ensure_loaded()` call deadlocks
-/// permanently waiting on a notify that will never come.
 struct LoadSlotGuard {
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
@@ -84,18 +79,6 @@ impl LocalTranscriptionManager {
         crate::app_data_dir().join("models").join("stt")
     }
 
-    /// Ensures the models directory exists. Deliberately does NOT clean up
-    /// stale `.extracting` artifacts here — this is called from read paths
-    /// like `list_models()`/`state()` refreshes that can run concurrently
-    /// with an active extraction, and deleting that directory out from under
-    /// an in-progress `tar` unpack corrupts it (confirmed via logs: rapid
-    /// Cancel-button clicks during extraction, each triggering a refresh,
-    /// deleted the live `.extracting` dir and crashed the unpack with
-    /// "the system cannot find the file specified"). Stale-leftover cleanup
-    /// from a previous crashed session happens exactly once, inside
-    /// `download::download_model()`, which only runs while this manager's
-    /// `download_task` guard is held — i.e. provably no concurrent extraction
-    /// can be using that directory at that point.
     pub fn prepare_models_dir(&self) -> anyhow::Result<PathBuf> {
         let root = Self::models_root();
         std::fs::create_dir_all(&root)?;
@@ -172,9 +155,6 @@ impl LocalTranscriptionManager {
         }
     }
 
-    /// Local inference runs in a non-cancellable native/ONNX call. Keep one
-    /// call in flight so a timed-out caller cannot stack more blocking jobs
-    /// behind the same engine mutex while the abandoned call unwinds.
     pub fn try_begin_transcription(&self) -> bool {
         self.transcription_active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -488,11 +468,6 @@ impl LocalTranscriptionManager {
         }
     }
 
-    /// Unconditional safety unload triggered by system RAM/VRAM pressure —
-    /// unlike `unload_if_idle`, this ignores the configured memory policy
-    /// (including "keep loaded") since freeing memory for whatever else
-    /// needs it takes priority over a passive idle preference. Still skips
-    /// while a recording is actively in progress.
     pub fn unload_for_resource_pressure(&self, app: &AppHandle) {
         if self.recording_active.load(Ordering::Relaxed) {
             return;

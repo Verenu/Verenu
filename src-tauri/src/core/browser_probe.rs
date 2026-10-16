@@ -1,15 +1,3 @@
-//! Best-effort browser address-bar domain read, used to pick a Context by
-//! website when dictating into a browser tab. Only ever called when the
-//! captured process is a known browser (`window_context::is_browser_exe`).
-//! Any failure, timeout, or missing permission returns `None` and the caller
-//! falls back to exe-only context resolution — this must never block or
-//! error the dictation pipeline.
-
-/// Strips scheme/path/query/fragment/port/userinfo from a URL or address-bar
-/// string down to a bare lowercase domain, e.g.
-/// "https://user@mail.google.com:443/mail/u/0?tab=rm" -> "mail.google.com".
-/// Returns `None` for input that doesn't look like a URL/domain at all (pure
-/// search-bar text with spaces).
 pub fn extract_domain(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -170,10 +158,6 @@ mod win {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    /// macOS address-bar read is not yet implemented (would extend the
-    /// existing AX shim in `system/macos_ax_text_marker.m` to read the known
-    /// per-browser address-bar identifiers). Returns `None` so website
-    /// matching silently falls back to exe-only resolution on macOS for now.
     pub fn read_address_bar_text(_window_id: usize) -> Option<String> {
         None
     }
@@ -197,10 +181,6 @@ fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     None
 }
 
-/// Reads a browser window's address bar and returns just the domain, e.g.
-/// "mail.google.com". Caller must confirm the captured process is a
-/// browser (`window_context::is_browser_exe`) before calling this — it does
-/// not check that itself, since the OS-level read is comparatively costly.
 #[cfg(not(target_os = "linux"))]
 fn read_browser_domain_for_window(window_id: usize) -> Option<String> {
     let raw = platform_read_address_bar_text(window_id)?;

@@ -1,4 +1,3 @@
-
 use super::*;
 #[cfg(any(target_os = "macos", windows))]
 use tauri_plugin_shell::ShellExt;
@@ -12,7 +11,6 @@ pub enum InstallOutcome {
     InstallerOpened,
     DownloadOpened,
 }
-
 
 #[tauri::command]
 pub async fn check_for_update(
@@ -29,9 +27,6 @@ pub async fn check_for_update(
     }
 }
 
-/// Developer-only reinstall path. It deliberately uses the same selected
-/// stable/beta channel as normal update checks but does not require the chosen
-/// release to be newer than the currently installed version.
 #[tauri::command]
 pub async fn reinstall_latest_update(app: AppHandle) -> Result<String, String> {
     let channel = selected_update_channel(&app)?;
@@ -211,9 +206,6 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
-/// Run before Tauri is initialized when this executable was spawned as the
-/// private update helper. Returns `true` only when the helper arguments were
-/// complete and the caller should exit instead of launching the application.
 #[cfg(windows)]
 pub(crate) fn run_update_helper_if_requested() -> bool {
     let Some(args) = parse_update_helper_args(std::env::args_os().skip(1)) else {

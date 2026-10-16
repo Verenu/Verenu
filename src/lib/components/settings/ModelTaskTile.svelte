@@ -56,7 +56,6 @@
   } = $props();
 
   let picker = $state<'select' | 'fallback' | null>(null);
-  /** Centre of whichever button opened the dialog, so it grows out of it. */
   let pickerOrigin = $state<{ x: number; y: number } | null>(null);
 
   function openPicker(mode: 'select' | 'fallback', event: MouseEvent) {
@@ -342,7 +341,6 @@
     width: 100%;
     height: 100%;
   }
-
 
   .active-text {
     min-width: 0;

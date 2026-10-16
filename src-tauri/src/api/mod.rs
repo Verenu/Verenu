@@ -30,27 +30,18 @@ pub enum ProviderId {
     AppleIntelligence,
 }
 
-/// Largest provider response Verenu will read from a custom endpoint.
 const MAX_CUSTOM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-/// How requests to one provider are authenticated and sent. Built-in
-/// providers use the default; custom endpoints override it.
 #[derive(Clone, Debug, Default)]
 pub struct Wire {
-    /// Explicitly disable authentication, even if a saved key was supplied.
     pub omit_auth: bool,
-    /// Send the key raw in this header instead of as a bearer token.
     pub auth_header: Option<String>,
-    /// Anthropic-style `x-api-key` plus `anthropic-version`.
     pub anthropic: bool,
     pub headers: Vec<(String, String)>,
-    /// Custom endpoint: no redirects, capped response size.
     pub hardened: bool,
 }
 
 impl Wire {
-    /// Custom response bodies can echo audio, text, or credentials. Drop error
-    /// responses without reading or logging those bodies.
     pub fn check_status(
         &self,
         response: reqwest::Response,
@@ -102,8 +93,6 @@ impl Wire {
         request
     }
 
-    /// Reads a JSON body. Custom endpoints are size-capped so a hostile or
-    /// broken server can't stream unbounded data into memory.
     pub async fn json<T: serde::de::DeserializeOwned>(
         &self,
         mut resp: reqwest::Response,
@@ -122,7 +111,6 @@ impl Wire {
     }
 }
 
-/// Who a request goes to: a built-in provider or a user-defined endpoint.
 #[derive(Clone, Debug)]
 pub enum Target {
     Builtin(ProviderId),
@@ -136,8 +124,6 @@ impl From<ProviderId> for Target {
 }
 
 impl Target {
-    /// Resolves a provider string from settings. An unknown custom id (its
-    /// provider was deleted) yields `None` so callers skip it.
     pub fn resolve(id: &str, customs: &[custom::CustomProvider]) -> Option<Self> {
         if custom::is_custom_id(id) {
             return customs
@@ -165,9 +151,6 @@ impl Target {
     }
 }
 
-/// How a provider turns a transcript into cleaned text. Identity (which key,
-/// which label) stays on `ProviderId`; the wire format is a separate axis so a
-/// provider can mix adapters (xAI chats like OpenAI but transcribes its own way).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CleanupAdapter {
     AppleIntelligence,
@@ -176,18 +159,14 @@ pub enum CleanupAdapter {
     Unsupported,
 }
 
-/// How a provider turns audio into text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TranscriptionAdapter {
-    /// OpenAI-style multipart upload with a bearer key.
     OpenAiMultipart {
         url: &'static str,
     },
-    /// JSON body with base64 `input_audio`.
     OpenRouterJson {
         url: &'static str,
     },
-    /// xAI's multipart `/v1/stt`, where `file` must be the last field.
     XaiStt {
         url: &'static str,
     },
@@ -593,8 +572,6 @@ pub fn is_retryable_provider_error(e: &anyhow::Error) -> bool {
         || msg.contains(" 504")
 }
 
-/// Converts an error into a safe, actionable user-facing message. Provider
-/// metadata and response bodies must never be shown directly in the UI.
 pub fn user_facing_error(e: &anyhow::Error) -> String {
     if parse_auth_401_error(&e.to_string()).is_some() || is_quota_error(e) {
         return user_facing_message(&e.to_string());
@@ -630,7 +607,6 @@ fn provider_status_message(status: u16) -> String {
     }
 }
 
-/// String-based sibling for call sites that already hold an error message.
 pub fn user_facing_message(msg: &str) -> String {
     if let Some(parsed) = parse_auth_401_error(msg) {
         return auth_401_display_message(&parsed);
@@ -667,7 +643,6 @@ fn truncate_display(s: &str) -> String {
     }
 }
 
-/// Whether an error indicates the request never reached a reachable server.
 pub fn is_connectivity_error(e: &anyhow::Error) -> bool {
     for cause in e.chain() {
         if let Some(reqwest_err) = cause.downcast_ref::<reqwest::Error>() {

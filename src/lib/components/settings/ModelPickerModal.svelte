@@ -75,7 +75,6 @@
   const isDownloading = (id: string) => localModel(id)?.is_downloading === true;
   const isDownloaded = (id: string) => localModel(id)?.is_downloaded === true;
 
-  /** The cleanup runtime is a one-time prerequisite shared by every local LLM. */
   const runtimePending = $derived(
     !!local.runtime && !local.runtime.info?.installed && !!local.runtime.info,
   );
@@ -95,18 +94,7 @@
     isAndroid
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
       : expandFromOrigin(node, params);
-  /**
-   * Everything a provider lists that Verenu hasn't vetted. Off by default —
-   * these come straight from the live `/v1/models` fetch, so a brand-new model
-   * shows up here the day it ships, but so does anything the modality filter
-   * couldn't rule out.
-   */
   let showUnverified = $state(false);
-  /**
-   * Settings is a full-screen page beside the rail, so centring on the whole
-   * window puts the dialog visibly left of the content it belongs to. Measure
-   * the panel and centre inside that instead.
-   */
   let panelLeft = $state(0);
 
   onMount(() => {
@@ -156,7 +144,6 @@
       ? 'Some capability metadata is unavailable. Keeping known models.'
       : 'Model lists refresh daily. Your selections stay the same.');
   const unverified = $derived(unverifiedRows(context).filter(supportedHere));
-  /** What the search box says it searches — the collapsed tail isn't in it. */
   const listedCount = $derived(curated.length + (showUnverified ? unverified.length : 0));
 
   const needle = $derived(query.trim().toLowerCase());
@@ -185,10 +172,8 @@
     showUnverified;
     rowLimits = {};
   });
-  /** How many the disclosure would add, counted for the tab you're on. */
   const hiddenCount = $derived(matchedUnverified.filter(inFilter).length);
 
-  /** Usable first, then anything needing setup, then anything gone. */
   const RANK: Record<ModelRow['state'], number> = {
     ready: 0,
     unverified: 1,
@@ -197,7 +182,6 @@
     'not-found': 4,
   };
 
-  /** Phones list the recommended 0.5B cleanup model first; the rest stay alphabetical. */
   const phonePreferred = (row: ModelRow) =>
     isAndroid && row.provider === 'local' && row.id === 'qwen2.5-0.5b-instruct' ? 0 : 1;
 
@@ -867,7 +851,6 @@
     width: 18px;
     height: 18px;
   }
-
 
   .picker-list {
     overflow-y: auto;

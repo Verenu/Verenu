@@ -46,8 +46,6 @@ impl Vocabulary {
         &self.0
     }
 
-    /// UTF-8 byte bound keeps byte-level BPE within 160 prompt tokens even
-    /// for scripts whose individual characters span several bytes.
     pub fn whisper_prompt(&self) -> Option<String> {
         let mut prompt = String::new();
         for term in self.terms().iter().take(64) {

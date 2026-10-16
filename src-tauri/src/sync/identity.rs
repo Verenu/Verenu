@@ -1,10 +1,3 @@
-//! Per-device sync identity: a random uuid plus an ECDSA P-256 key pair with a
-//! self-signed certificate (the same pattern Tailscale-style mesh tools use).
-//! The private key lives in the OS credential store, the public certificate in
-//! the app data directory, and the uuid in the database's `sync_identity` row.
-//! Together they are the device's long-term identity; deleting all three is
-//! the only way pairing "forgets" this device.
-
 use anyhow::{anyhow, Context, Result};
 use chrono::Datelike;
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
@@ -14,10 +7,8 @@ use sha2::{Digest, Sha256};
 use super::secrets;
 
 const CERT_FILE: &str = "sync-identity.der";
-/// Certificate lifetime in years; re-issued lazily shortly before expiry.
 const CERT_YEARS: i64 = 10;
 const CERT_DAYS: i64 = 365 * CERT_YEARS;
-/// Re-issue when the stored cert is older than this fraction of its lifetime.
 const REISSUE_FRACTION: f64 = 0.9;
 
 #[derive(Debug, Clone)]
@@ -33,7 +24,6 @@ impl DeviceIdentity {
         &self.cert_der
     }
 
-    /// SHA-256 of the certificate DER, hex encoded - the fingerprint peers pin.
     #[allow(dead_code)]
     pub fn cert_fingerprint(&self) -> String {
         fingerprint_of(self.cert_der.as_ref())
@@ -54,9 +44,6 @@ pub fn fingerprint_of(der: &[u8]) -> String {
     hex
 }
 
-/// Loads the identity, re-using stored pieces and creating whatever is missing.
-/// `known_uuid` is the uuid previously persisted in the database, if any - it
-/// survives keychain/cert loss so a repaired device keeps its sync identity.
 pub fn load_or_create(
     app_data_dir: &std::path::Path,
     known_uuid: Option<String>,
@@ -149,7 +136,6 @@ pub(crate) fn generate_for_tests() -> DeviceIdentity {
     create_identity(None).expect("test identity")
 }
 
-/// Best-effort human name for this machine, shown on the peer during pairing.
 pub fn default_device_name() -> String {
     hostname_raw()
         .unwrap_or_else(|| "This device".to_string())
