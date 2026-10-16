@@ -56,7 +56,7 @@ for (const task of ['transcription', 'cleanup']) {
       const dialog = page.getByRole('dialog');
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('.row-main[aria-current="true"]')).toContainText(model);
-      await expect(dialog.getByText('Refreshing model lists…', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('status')).toContainText('Refreshing model lists…');
       expect(pending.length).toBeGreaterThan(0);
       // Bounds the expensive DOM/transition work regardless of catalog size.
       expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
@@ -72,7 +72,7 @@ for (const task of ['transcription', 'cleanup']) {
       await expect(dialog.getByText('synthetic/model-0649', { exact: true }).first()).toBeVisible();
       await dialog.getByRole('button', { name: 'Refresh models', exact: true }).click();
       await expect.poll(() => pending.length).toBeGreaterThan(0);
-      await expect(dialog.getByText('Refreshing model lists…', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('status')).toContainText('Refreshing model lists…');
       await failPending();
       await expect(dialog.getByText('Refresh unavailable. Keeping cached models.', { exact: true })).toBeVisible();
       await dialog.locator('.picker-search').fill('');
