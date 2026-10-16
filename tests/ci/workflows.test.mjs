@@ -121,7 +121,8 @@ test('PR checks compile and run Android native regressions and native WebViews',
 test('master required-check rules preserve other rules and add no bypass actors', () => {
   const rules = fs.readFileSync(path.join(root, 'scripts/ci/merge-rules.mjs'), 'utf8');
   assert.match(rules, /'CI required'/);
-  assert.match(rules, /effectiveDiff\.unexpected\.length/);
+  assert.match(rules, /configuredDiff\.unexpected\.length/);
+  assert.doesNotMatch(rules, /effectiveDiff\.unexpected\.length/);
   const contexts = rules.match(/const contexts = \[(.*?)\];/s)?.[1] || '';
   assert.ok(contexts);
   assert.doesNotMatch(contexts, /['"]review['"]/);
