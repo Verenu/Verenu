@@ -9,14 +9,12 @@ test('T3 integration shows compatibility and protects native pairing in browser 
   const panel = page.getByRole('region', { name: 'T3 Code integration', exact: true });
   await expect(panel.getByRole('button', { name: 'Connect T3 Code', exact: true })).toBeDisabled();
   await expect(panel).toContainText('Use localhost, a private LAN address, or an HTTPS address. Tailscale is optional.');
-  // Compatibility and privacy details sit behind the card's info control.
   const about = panel.getByRole('button', { name: 'About T3 Code', exact: true });
   await expect(about).toHaveAttribute('aria-expanded', 'false');
   await about.click();
   await expect(about).toHaveAttribute('aria-expanded', 'true');
   await expect(panel.getByText(`T3 Code ${status.minimumVersion} or newer.`, { exact: true })).toBeVisible();
   await expect(panel).toContainText('Skill instructions are never imported');
-  // Escape closes the disclosure and leaves Settings open.
   await page.keyboard.press('Escape');
   await expect(about).toHaveAttribute('aria-expanded', 'false');
   await expect(panel).toBeVisible();

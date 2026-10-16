@@ -1,12 +1,3 @@
-//! Optional dictation trigger driven by the selected microphone's mute
-//! button. Watches, in parallel:
-//! - endpoint (mixer) mute bit
-//! - hardware mute subunits on the capture topology path
-//! - digital-silence PCM when hardware mute never flips a Windows mute bit
-//!
-//! Binds the selected capture device with relaxed name matching so WASAPI and
-//! CPAL labels for the same mic still resolve. Never calls SetMute.
-
 #[cfg(any(windows, target_os = "linux"))]
 fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
     let mut silent = 0u32;
@@ -85,14 +76,8 @@ mod common {
     static EVENT_TX: OnceLock<
         std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
     > = OnceLock::new();
-    /// Instant the selected mic last entered the muted bit, used to recognize
-    /// a mute→unmute pulse as a hands-free toggle.
     static PULSE_MUTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    /// Guards against endpoint+PCM both delivering the same unmute edge and
-    /// starting then immediately stopping dictation.
     static LAST_PULSE_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    /// Idle digital-silence capture client. Taken/dropped before dictation
-    /// opens the same mic so the streams never overlap.
     static ACTIVE_PCM: Mutex<Option<PcmMonitorGuard>> = Mutex::new(None);
 
     pub(super) fn release_active_pcm() {
@@ -100,7 +85,6 @@ mod common {
         if guard.is_some() {
             log::info!("mic_mute_trigger: PCM monitor released");
         }
-        // Join happens in Drop outside the mutex.
         drop(guard);
     }
 
@@ -124,7 +108,6 @@ mod common {
         } else {
             None
         };
-        // Join outside the mutex — Drop may block on JoinHandle::join.
         drop(previous);
     }
 
@@ -156,9 +139,6 @@ mod common {
         let state_hk = shared;
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
-                // Joining the idle PCM client can take tens of ms.
-                // Do that on a blocking pool thread before unmute dispatch may
-                // open the dictation capture stream on this Tokio worker.
                 if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
                     let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
                 }
@@ -166,7 +146,6 @@ mod common {
             }
         });
 
-        // Kick an initial bind attempt for the current setting.
         GENERATION.fetch_add(1, Ordering::SeqCst);
         log::info!("mic_mute_trigger: watcher started");
     }
@@ -247,8 +226,6 @@ mod common {
 
         match event {
             MuteTriggerEvent::BecameMuted { method } => {
-                // Arm the pulse only. Stopping on mute alone leaves the mic
-                // muted mid-gesture and fires before the unmute half arrives.
                 mark_pulse_muted(Instant::now());
                 log::info!(
                     "mic_mute_trigger: muted via {} — pulse armed (waiting for unmute)",
@@ -307,16 +284,11 @@ mod common {
                     log::info!("mic_mute_trigger: ignored pulse — could not reserve starting");
                     return;
                 }
-                // Idle PCM was already released on the blocking pool before
-                // this unmute dispatch ran.
                 let target = WindowTarget::capture_foreground();
                 if let Ok(mut st) = state.lock() {
                     st.target = target;
                     st.pill_placement_stale = true;
                 }
-                // Use the normal recording capsule (waveform), not the
-                // hands-free Cancel/Confirm chrome — mute-pulse dictation
-                // doesn't need those buttons and that UI read as "broken".
                 start_recording_session(app, state, "handsfree", true);
                 crate::core::hotkey::set_handless_active(true);
                 log::info!("mic_mute_trigger: dictation started (handsfree)");
@@ -352,9 +324,6 @@ mod common {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
             if let Some(handle) = self.join.take() {
-                // Join so the capture client is released before dictation
-                // opens the same mic. Fire-and-forget stop left the stream up
-                // long enough to starve the pill visualizer.
                 let _ = handle.join();
             }
         }
@@ -446,8 +415,6 @@ mod win {
     };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
-    /// Ignore PCM unmute/mute if endpoint already reported a matching transition
-    /// within this window — endpoint path wins.
     const ENDPOINT_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
 
     pub(super) fn watcher_loop(app: AppHandle, state: SharedState) {
@@ -461,8 +428,6 @@ mod win {
         loop {
             let gen = GENERATION.load(Ordering::SeqCst);
             if !feature_enabled(&app) {
-                // No GetMute / PCM work while the setting is off. Park until
-                // save_setting calls reload(), with a long timeout as a backstop.
                 std::thread::park_timeout(DISABLED_IDLE);
                 continue;
             }
@@ -507,7 +472,6 @@ mod win {
             .map(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Shared raw mute bit: notify callback writes, watch loop debounces once.
         let raw_muted = Arc::new(Mutex::new(EndpointRawMute {
             muted: initial_muted,
             source: DetectionMethod::EndpointPoll,
@@ -528,11 +492,6 @@ mod win {
             "mic_mute_trigger: endpoint mute watcher bound (initial_muted={initial_muted}, seeded without firing)"
         );
 
-        // PCM digital-silence covers mute buttons that never flip GetMute
-        // (common on USB mics even when QueryHardwareSupport advertises mute).
-        // Skip it only when the capture path already exposes IAudioMute.
-        // Always join/drop the stream before dictation so a second WASAPI
-        // client cannot starve the pill visualizer.
         let need_pcm = topology.control_count() == 0;
         if need_pcm {
             log::info!(
@@ -589,7 +548,6 @@ mod win {
                     release_active_pcm();
                     log::info!("mic_mute_trigger: PCM monitor paused (dictation holds the mic)");
                 }
-                // Allow idle PCM to restart immediately after this dictation.
                 last_pcm_start_at = None;
                 if let Some(level) = recording_raw_level(state) {
                     let silent = level <= crate::media::digital_silence::DIGITAL_SILENCE_EPS * 4.0;
@@ -745,7 +703,6 @@ mod win {
                 return Ok(());
             }
             let data = unsafe { &*pnotify };
-            // Volume-only notifications share this callback; only mute-bit edges matter.
             let muted = data.bMuted.as_bool();
             if let Ok(mut raw) = self.raw.lock() {
                 if muted != raw.muted {
@@ -1076,12 +1033,10 @@ mod win {
         emit_pcm_transition(transition);
     }
 
-
 }
 
 #[cfg(any(windows, target_os = "linux"))]
 pub use common::{reload, setup};
-
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
@@ -1089,23 +1044,6 @@ pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn reload(_app: &tauri::AppHandle) {}
 
-/// Linux (PipeWire) mic-mute-button dictation trigger.
-///
-/// Same user contract as the Windows watcher: a mute→unmute pulse on the
-/// selected microphone (held 10ms..3s) toggles hands-free dictation. Two
-/// independent mute sources are watched in parallel, because USB/headset
-/// hardware buttons disagree about where they report:
-///
-/// - PipeWire source mute (`pactl`), which covers mixer mutes and every
-///   hardware button that flips the graph mute flag. Watched event-driven
-///   via `pactl subscribe` with a slow poll as drift backstop.
-/// - Digital-silence PCM (CPAL idle capture + the shared
-///   `DigitalSilenceDetector`), which covers buttons that zero the samples
-///   without ever flipping a mute flag — common on USB mics.
-///
-/// Never mutes or unmutes anything itself; like the Windows watcher it only
-/// observes. The idle PCM client is released before dictation opens the mic
-/// so the streams never overlap.
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{common::*, pcm_stats};
@@ -1119,8 +1057,6 @@ mod linux {
     use tauri::AppHandle;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-    // ---------- PipeWire helpers (pure parsing is unit-tested below) ----------
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct PipeWireSource {
@@ -1142,9 +1078,6 @@ mod linux {
         String::from_utf8(output.stdout).map_err(|e| format!("pactl output not utf8: {e}"))
     }
 
-    /// Parses `pactl list sources` blocks into sources. Only id/name/
-    /// description are kept — mute is always queried separately so the
-    /// reading is never older than the decision that uses it.
     fn parse_sources_list(text: &str) -> Vec<PipeWireSource> {
         let mut sources = Vec::new();
         let mut current: Option<PipeWireSource> = None;
@@ -1191,16 +1124,11 @@ mod linux {
         })
     }
 
-    /// Whether a `pactl subscribe` line concerns a source (as opposed to a
-    /// sink, client, card, …). Pure so topology churn stays testable.
     fn is_source_event(line: &str) -> bool {
         let lower = line.to_ascii_lowercase();
         lower.contains("source") && (lower.contains("event") || lower.contains("change"))
     }
 
-    /// Picks the watched source: the selected mic by relaxed name match
-    /// (same scoring as the Windows watcher so WASAPI/CPAL/PipeWire labels
-    /// for one mic still resolve), else the PipeWire default source.
     fn pick_watched_source(
         sources: &[PipeWireSource],
         desired_name: Option<&str>,
@@ -1264,10 +1192,6 @@ mod linux {
         }
     }
 
-    /// One watch session for a generation: resolves the source, subscribes
-    /// to PipeWire events, and runs the idle PCM fallback until the
-    /// generation changes, the feature is disabled, or the topology shifts
-    /// under us (returns, letting `watcher_loop` re-resolve).
     fn watch_session(
         app: &AppHandle,
         state: &SharedState,
@@ -1294,10 +1218,6 @@ mod linux {
         let mut debouncer = MuteDebouncer::new(DEBOUNCE);
         debouncer.seed(initial_muted);
 
-        // `pactl subscribe` is the event-driven half: one long-lived child
-        // instead of polling a subprocess. The reader thread only forwards a
-        // ping — the main loop below performs the actual mute query, so a
-        // burst of subscribe lines can never interleave two queries.
         let (ping_tx, ping_rx) = std::sync::mpsc::channel::<()>();
         let subscribe_child = std::process::Command::new("pactl")
             .arg("subscribe")
@@ -1322,15 +1242,10 @@ mod linux {
                         let _ = ping_tx.send(());
                     }
                 }
-                // EOF / error: nudge the main loop so the mute query below
-                // fails fast and the session rebinds instead of going deaf.
                 let _ = ping_tx.send(());
             });
         let _ = reader;
 
-        // Digital-silence fallback for hardware buttons that zero PCM without
-        // flipping the PipeWire mute flag. Always on while idle (the flag
-        // alone misses exactly the buttons this feature is for).
         let mut last_pcm_start_at: Option<Instant> = None;
         const PCM_RETRY: Duration = Duration::from_secs(5);
         let mut level_debouncer = MuteDebouncer::new(DEBOUNCE);
@@ -1351,7 +1266,6 @@ mod linux {
                 break;
             }
 
-            // Drain subscribe pings: re-query the mute flag once per batch.
             let mut saw_ping = false;
             while ping_rx.try_recv().is_ok() {
                 saw_ping = true;

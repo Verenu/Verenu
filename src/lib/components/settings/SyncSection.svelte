@@ -27,14 +27,12 @@
   import { portal } from '../../portal';
   import { icons } from '../../icons';
 
-  // Local device name editing.
   let deviceName = $state('');
   let nameSaved = $state('');
   let nameBusy = $state(false);
 
   const syncMuting = new SyncMutingSetting();
 
-  // Per-row action state.
   let pairingUuid = $state('');
   let syncingUuid = $state('');
   let removingUuid = $state('');
@@ -42,7 +40,6 @@
   let statusKind = $state<'' | 'ok' | 'err'>('');
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // Tailscale setup.
   let setupOpen = $state(false);
   let tipsOpen = $state(false);
   let tailscaleIp = $state('');
@@ -55,7 +52,6 @@
   let manualCopy = $state(false);
   let detailsCopied = $state(false);
 
-  // Per-device route editor and return-route reminder.
   let editingConnection = $state<PairedDevice | null>(null);
   let peerAddress = $state('');
   let routeBusy = $state(false);
@@ -136,9 +132,6 @@
     };
   });
 
-  // A device that appears in the paired list is the result of a finished
-  // pairing. Announce it, and remind the user to give the other device a way
-  // back when this side reaches it through a saved Tailscale connection.
   $effect(() => {
     if (!syncStore.status) return;
     const current = peers;
@@ -393,7 +386,6 @@
 
 <h2 class="settings-h">Sync</h2>
 
-<!-- This device -->
 <div class="id-card" data-setting-target="sync-this-device">
   <div class="tile" aria-hidden="true">
     <svg
@@ -509,7 +501,6 @@
   />
 </div>
 
-<!-- Paired devices -->
 <h3 class="settings-subhead" data-setting-target="sync-paired">Paired devices</h3>
 {#if peers.length === 0}
   <div class="empty-note" in:fade={{ duration: durFast() }}>
@@ -645,7 +636,6 @@
   </div>
 {/if}
 
-<!-- Nearby devices -->
 <h3 class="settings-subhead" data-setting-target="sync-nearby">Nearby devices</h3>
 {#if !syncStore.loaded}
   <div class="discover-card" role="status" in:fade={{ duration: durFast() }}>
@@ -702,7 +692,6 @@
   </div>
 {/if}
 
-<!-- Tailscale setup -->
 <section class="setup" class:is-open={setupOpen} data-setting-target="sync-tailscale">
   <button
     class="setup-toggle ui-focus-ring"
@@ -858,7 +847,6 @@
 
 {#if outgoing}
   <div class="dialog-layer" use:portal>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button
     class="modal-backdrop sync-backdrop"
     aria-label="Cancel pairing"
@@ -932,7 +920,6 @@
 
 {#if confirmRemove}
   <div class="dialog-layer" use:portal>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button
     class="modal-backdrop sync-backdrop"
     aria-label="Close dialog"
@@ -996,7 +983,6 @@
 </div>
 
 <style>
-  /* Shared device glyph tile */
   .tile {
     width: 38px;
     height: 38px;
@@ -1016,7 +1002,6 @@
     color: var(--ink-mute);
   }
 
-  /* This device identity card */
   .id-card {
     display: flex;
     align-items: center;
@@ -1102,7 +1087,6 @@
     background: var(--danger);
   }
 
-  /* Transient notices (saved, copied, failed) */
   .notices {
     display: grid;
   }
@@ -1170,8 +1154,6 @@
     height: 12px;
   }
 
-  /* Device list. Each device is one container: its row, route editor and
-     reminder share a border so the editor reads as part of the device. */
   .device-list {
     margin-top: 8px;
   }
@@ -1270,7 +1252,6 @@
       justify-content: center;
     }
   }
-  /* Three labels no longer fit on one line: Sync now takes its own row. */
   @container (max-width: 400px) {
     .device-actions {
       grid-auto-flow: row;
@@ -1282,7 +1263,6 @@
     }
   }
 
-  /* Expanding regions inside a device or the setup card */
   .drawer {
     border-top: 1px solid var(--line);
   }
@@ -1298,7 +1278,6 @@
     color: var(--ink-strong);
   }
 
-  /* One input with its action beside it; stacked on narrow containers. */
   .field {
     display: flex;
     align-items: stretch;
@@ -1405,7 +1384,6 @@
     }
   }
 
-  /* Status pill */
   .pill {
     display: inline-flex;
     align-items: center;
@@ -1463,7 +1441,6 @@
     }
   }
 
-  /* Searching / empty nearby states */
   .discover-card {
     display: flex;
     align-items: center;
@@ -1568,7 +1545,6 @@
     text-align: left;
   }
 
-  /* Tailscale setup */
   .setup {
     margin-top: 14px;
     container-type: inline-size;
@@ -1645,7 +1621,6 @@
   .step:last-child {
     padding-bottom: 2px;
   }
-  /* Connector between markers; it fills once its step is done. */
   .step::before,
   .step::after {
     content: '';
@@ -1779,9 +1754,6 @@
     margin-top: 6px;
   }
 
-  /* Pairing and removal dialogs. They are moved to the body so the settings
-     page transform cannot offset them, and sit above the settings layer like
-     the incoming pairing prompt. */
   .sync-backdrop {
     z-index: 70;
   }
@@ -1889,8 +1861,6 @@
     opacity: 0.7;
   }
 
-  /* Looping indicators stop for users who prefer reduced motion; labels and
-     colors still carry each state. */
   @media (prefers-reduced-motion: reduce) {
     .sync-glyph.spin,
     .pill.syncing .pill-dot,

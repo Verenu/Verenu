@@ -1,9 +1,6 @@
 <script lang="ts">
   import { isWindows } from '../../platform';
 
-  // One answer drives two settings: with speakers, whatever is playing bleeds
-  // into the mic, so Verenu silences it (and pauses media, on Windows) while
-  // you dictate. Headphones need neither.
   let { usesHeadphones = $bindable(true) }: { usesHeadphones?: boolean } = $props();
 
   const options = [

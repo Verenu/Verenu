@@ -2,22 +2,9 @@ import { invoke } from './tauri';
 import { saveSetting, type ProviderId } from './settings';
 import { CATALOG, modelId } from './components/settings/models';
 
-/** How long a good list stays fresh before the next Settings visit refetches. */
 export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-/** How long to wait after a failure before trying that provider again. */
 export const CATALOG_RETRY_MS = 15 * 60 * 1000;
-/**
- * Two misses only mean something if they're separated in time. Without this,
- * Settings-open plus a key-save seconds apart would satisfy the deprecation
- * threshold during a single provider incident.
- */
 export const MISS_INTERVAL_MS = 15 * 60 * 1000;
-/**
- * A 200 that drops more than this share of the ids we knew about is treated as
- * a degraded response: recorded as a success, but it advances no miss counters.
- * A provider serving a truncated list is exactly what the two-miss rule exists
- * to survive, and it doesn't arrive as an HTTP error.
- */
 const SUSPICIOUS_SHRINK = 0.5;
 
 export type MissCounter = { count: number; lastCountedAt: number };
@@ -27,14 +14,10 @@ export type ProviderModelCatalog = { ids: string[]; metadata: Record<string, Mod
 
 export type ProviderCache = {
   ids: string[];
-  /** Every id ever seen in a successful list — separates "retired" from "never existed". */
   everSeen: string[];
-  /** 0 means no successful fetch has ever landed for this provider. */
   lastSuccessAt: number;
   lastAttemptAt: number;
-  /** null means the last attempt succeeded. */
   lastError: string | null;
-  /** Keyed by canonical `provider/model` id. */
   missing: Record<string, MissCounter>;
   metadata?: Record<string, ModelCapability>;
   warning?: string | null;
@@ -51,11 +34,6 @@ const emptyProviderCache = (): ProviderCache => ({
   missing: {},
 });
 
-/**
- * Defensive read of a persisted blob. The Rust validator rejects malformed
- * saves, so anything wrong here came from a hand-edited settings file — drop
- * the bad parts rather than throwing on Settings open.
- */
 export function mergeCatalogCache(raw: unknown): ModelCatalogCache {
   const merged: ModelCatalogCache = {};
   if (!raw || typeof raw !== 'object') return merged;
@@ -118,32 +96,20 @@ export function parseMetadata(raw: unknown): Record<string, ModelCapability> {
   return result;
 }
 
-/** Cached discoveries remain selectable while a provider is offline. */
 export function hasSnapshot(cache: ProviderCache | undefined): boolean {
   return !!cache && cache.lastSuccessAt > 0;
 }
 
-/** True when a provider's list is complete enough to reason about absence. */
 export function isTrustworthy(cache: ProviderCache | undefined): boolean {
   return !!cache && cache.lastError === null && cache.lastSuccessAt > 0;
 }
 
 export function shouldRefresh(cache: ProviderCache | undefined, now: number): boolean {
   if (!cache) return true;
-  // A failed attempt earns a short cooldown, not a full day of silence — and a
-  // successful one must not be retried every time Settings opens.
   if (cache.lastError !== null) return now - cache.lastAttemptAt >= CATALOG_RETRY_MS;
   return now - cache.lastSuccessAt >= CATALOG_TTL_MS;
 }
 
-/**
- * Folds a successful fetch into a provider's cache. Pure, so the counting rules
- * are testable without a clock or IPC.
- *
- * `tracked` is the set of canonical ids worth counting misses for — the user's
- * selections plus the curated catalog. Anything else is pruned so the counter
- * map can't grow without bound.
- */
 export function applySuccess(
   previous: ProviderCache | undefined,
   provider: ProviderId,
@@ -164,11 +130,9 @@ export function applySuccess(
   for (const id of tracked) {
     const parsed = id.startsWith(`${provider}/`) ? id.slice(provider.length + 1) : null;
     if (parsed === null) continue;
-    if (live.has(parsed)) continue; // Reappeared, or never gone — counter resets.
+    if (live.has(parsed)) continue;
     const prior = before.missing[id];
     if (degraded) {
-      // Carry the counter forward untouched: this response can't be trusted to
-      // prove absence, but it also shouldn't erase what we'd already observed.
       if (prior) missing[id] = prior;
       continue;
     }
@@ -180,7 +144,6 @@ export function applySuccess(
   }
 
   return {
-    // A truncated 200 must not make the picker drop known models.
     ids: degraded ? Array.from(new Set([...before.ids, ...ids])) : ids,
     everSeen,
     lastSuccessAt: now,
@@ -192,7 +155,6 @@ export function applySuccess(
   };
 }
 
-/** A failed fetch records the attempt and touches nothing else. */
 export function applyFailure(
   previous: ProviderCache | undefined,
   error: string,
@@ -202,20 +164,14 @@ export function applyFailure(
   return { ...before, lastAttemptAt: now, lastError: error };
 }
 
-// ── Store ──────────────────────────────────────────────────────────────────
-
 export const modelCatalogStore = $state<{ cache: ModelCatalogCache; refreshing: Partial<Record<ProviderId, boolean>> }>({ cache: {}, refreshing: {} });
 
-/** One in-flight request per provider, so overlapping triggers coalesce. */
 const inFlight = new Map<ProviderId, Promise<void>>();
-/** Serializes persistence: a per-provider refresh must never clobber another's entry. */
 let writeChain: Promise<unknown> = Promise.resolve();
 let hydrated = false;
 let hydration: Promise<void> | undefined;
 
 export function hydrateCatalogCache(raw: unknown) {
-  // An in-flight refresh can finish while Models loads settings. Keep its
-  // newer result instead of replacing it with an older persisted snapshot.
   const saved = mergeCatalogCache(raw);
   for (const provider of CLOUD_PROVIDERS) {
     const current = modelCatalogStore.cache[provider];
@@ -232,7 +188,6 @@ async function ensureHydrated() {
 }
 
 function persist() {
-  // Always writes the whole object, never one provider's slice.
   const snapshot = JSON.parse(JSON.stringify(modelCatalogStore.cache)) as ModelCatalogCache;
   writeChain = writeChain
     .then(() => saveSetting('provider_model_cache', snapshot))
@@ -258,7 +213,6 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
         trackedIds([...tracked, ...Object.keys(modelCatalogStore.cache[provider]?.missing ?? {})], CATALOG),
         now,
       );
-      // Retain capabilities on a metadata outage, including across restarts.
       updated.metadata = { ...updated.metadata, ...parseMetadata(catalog.metadata) };
       updated.warning = catalog.warning;
       modelCatalogStore.cache[provider] = updated;
@@ -275,7 +229,6 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
       );
     })
     .then(() => {
-      // Never replace a saved cache with an empty snapshot after a failed read.
       if (loaded) return persist();
     })
     .finally(() => {
@@ -287,14 +240,11 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
   return request;
 }
 
-/** Refreshes every keyed provider whose cache has gone stale. */
 export async function refreshStaleCatalogs(
   apiKeyStatus: Record<ProviderId, boolean>,
   tracked: string[],
   now = Date.now(),
 ) {
-  // Decide freshness after loading the persisted cache. Otherwise opening
-  // Settings launches requests before hydration and refetches on every visit.
   await ensureHydrated();
   return Promise.all(
     CLOUD_PROVIDERS
@@ -304,7 +254,6 @@ export async function refreshStaleCatalogs(
   );
 }
 
-/** Canonical ids worth tracking misses for: the user's picks plus the catalog. */
 export function trackedIds(selected: string[], curated: { provider: ProviderId; id: string }[]) {
   return Array.from(
     new Set([...selected, ...curated.map((entry) => modelId(entry.provider, entry.id))]),

@@ -387,8 +387,6 @@ describe('dictation configuration readiness', () => {
       message: expect.stringContaining('A Context set to Off may use cleanup to compare both speech results.'),
     }]);
 
-    // Negations: no reachable Off Context, unassigned Off Context, one or duplicate
-    // eligible candidates, unavailable or offline fallback, cleanup off, ready cleanup.
     expect(cleanupMayBeUsed({ ...basicDualSpeech, cleanupOffContextMayBeUsed: false })).toBe(false);
     expect(dictationReadiness({ ...basicDualSpeech, cleanupOffContextMayBeUsed: false })).toEqual([]);
     expect(dictationReadiness({ ...basicDualSpeech, cleanupOffContextMayBeUsed: hasReachableOffCleanupOverride(contexts) })).toEqual([]);

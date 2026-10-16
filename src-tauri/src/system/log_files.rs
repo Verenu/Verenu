@@ -1,4 +1,3 @@
-//! Bounded, best-effort persistence of already-redacted session logs.
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -35,7 +34,6 @@ pub(super) fn init(directory: PathBuf) {
         let (tx, rx) = mpsc::sync_channel(1024);
         let dropped = Arc::new(AtomicUsize::new(0));
         let count = dropped.clone();
-        // Filesystem work never runs on the dictation or native hotkey thread.
         let _ = std::thread::Builder::new()
             .name("verenu-log-writer".into())
             .spawn(move || run(directory, rx, count));
@@ -120,7 +118,6 @@ impl Writer {
         if self.file.is_none() || self.written + bytes.len() as u64 > PART_BYTES {
             self.file = None;
             self.lease = None;
-            // Reserve one part so the directory stays bounded as this file grows.
             prune(&self.directory, SystemTime::now(), TOTAL_BYTES - PART_BYTES)?;
             self.cleaned = Instant::now();
             let path = self
@@ -212,7 +209,6 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
                     .space_checked
                     .is_none_or(|at| at.elapsed() >= SPACE_INTERVAL)
                 {
-                    // Treat failed disk queries conservatively and retry later.
                     free = fs2::available_space(&writer.directory).unwrap_or(0);
                     writer.space_checked = Some(Instant::now());
                 }
@@ -237,7 +233,6 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
             })();
             if !matches!(result, Ok(true)) {
                 dropped.fetch_add(records + omitted, Ordering::Relaxed);
-                // Reopen after I/O errors. Never spin, accumulate retries, or log recursively.
                 if result.is_err() {
                     writer.file = None;
                     writer.space_checked = None;
@@ -286,8 +281,6 @@ fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
     files.sort_by_key(|entry| entry.0);
     let mut total: u64 = files.iter().map(|entry| entry.1).sum();
     for (modified, size, path) in files {
-        // Lock a sidecar so agents can read the active log on Windows too.
-        // Another writer owns this lease while it is writing the matching file.
         let lease_path = path.with_extension("lock");
         if let Ok(lease) = OpenOptions::new()
             .read(true)
@@ -304,8 +297,6 @@ fn prune(directory: &Path, now: SystemTime, budget: u64) -> io::Result<()> {
             {
                 total = total.saturating_sub(size);
             }
-            // Drop the lease before removing its sidecar. Session IDs are
-            // unique, so no new writer can reuse this path.
             let _ = FileExt::unlock(&lease);
             drop(lease);
             let _ = fs::remove_file(lease_path);

@@ -1,13 +1,5 @@
-//! Audio capture handoff, quality-gate evaluation, and every transcription
-//! path (single-chain, primary-chain, and dual-model candidates).
-
 use super::stages_style::{apply_app_style_overrides, resolve_app_mapping};
 use super::*;
-// session.stop() blocks until the audio thread finishes (denoise + resample + WAV encode).
-// spawn_blocking keeps the tokio worker free during that wait. Split from the
-// quality gate (below) so a resumed/prepended recording can be merged first
-// and validated once as a whole, instead of gating the (possibly very short)
-// new fragment on its own before it's had a chance to be merged.
 struct ExclusiveMicReleaseGuard(Option<u64>);
 
 impl Drop for ExclusiveMicReleaseGuard {
@@ -91,7 +83,6 @@ pub(super) async fn stop_and_capture_audio(
                 ),
             )
             .await;
-            // A deliberate duration cap is not a recoverable partial take.
             super::failover::abandon_live();
             return None;
         }
@@ -102,14 +93,10 @@ pub(super) async fn stop_and_capture_audio(
                 "Recording was interrupted because audio fell behind and samples were dropped. Please try again.",
             )
             .await;
-            // Keep the durable prefix for startup recovery.
             return None;
         }
         audio::RecordingTermination::RecoveryWriteFailed => {
             log::warn!("pipeline: recovery recording could not be kept durable");
-            // Recovery is optional. Keep the complete in-memory take for the
-            // normal transcription path, but discard the incomplete spool so
-            // it cannot later appear as a misleading continuation prompt.
             disable_recovery_after_write_failure(app);
         }
     }
@@ -122,8 +109,6 @@ pub(super) async fn stop_and_capture_audio(
     })
 }
 
-/// Quality gate (min duration / near-silence RMS) against already-captured
-/// (and possibly prepend-merged) audio. Shows the rejection pill itself.
 pub(super) fn validate_captured_audio(
     app: &AppHandle,
     audio: &CapturedAudio,
@@ -149,11 +134,6 @@ pub(super) fn validate_captured_audio(
     true
 }
 
-/// Speech-presence decision made before any transcription API call. VAD is
-/// authoritative when available. RMS is only a fallback when VAD itself
-/// failed to load or run (`vad_result: None`), so loud non-speech cannot bypass
-/// a successful VAD rejection.
-/// Shows the rejection pill itself, matching `validate_captured_audio`.
 pub(super) fn passes_speech_gate(
     app: &AppHandle,
     rms: f32,
@@ -178,8 +158,6 @@ pub(super) fn passes_speech_gate(
     false
 }
 
-/// Pure part of the speech gate, kept separate so the important VAD-versus-
-/// RMS precedence is testable without constructing a Tauri app handle.
 pub(super) fn speech_gate_accepts(
     vad_result: Option<&crate::media::vad::SpeechDetectionResult>,
     gate_rms: f32,
@@ -240,10 +218,6 @@ pub(super) async fn transcribe_any(
             .state::<crate::local_stt::LocalTranscriptionManager>()
             .inner()
             .clone();
-        // Only show the "loading model" pill when this specific model
-        // actually needs to load — previously shown unconditionally for
-        // every local transcription, so it flashed even when the model was
-        // already warm in memory (e.g. dictating twice in a row).
         let state = manager.state();
         let already_warm = state.is_loaded && state.current_model_id.as_deref() == Some(model);
         if !already_warm {
@@ -269,11 +243,6 @@ pub(super) async fn transcribe_any(
                 result.is_ok(),
             );
         }
-        // Only switch back to "processing" if we actually left it for
-        // "loading_local_model" above — re-emitting the same state the pill
-        // is already in is a no-op for the frontend, but it's still a wasted
-        // Rust -> IPC -> WebView2 round trip and window re-show call on the
-        // (common) warm-model path.
         if !already_warm {
             show_pill(app, "processing");
         }
@@ -287,8 +256,6 @@ pub(super) async fn transcribe_any(
         (_, Some(key)) => key,
         _ => anyhow::bail!("No API key saved for {provider_id}"),
     };
-    // Allow longer recordings more processing time, while bounding a stalled
-    // cloud request so an installed local fallback can still be reached.
     let timeout = std::time::Duration::from_secs((20 + audio.duration_ms / 500).min(120));
     let result = tokio::time::timeout(
         timeout,
@@ -309,11 +276,6 @@ pub(super) async fn transcribe_any(
     result
 }
 
-/// Active connectivity disambiguation: returns true when the user's own
-/// connection is down (not just one provider). Reads the Verenu service-check
-/// preference so the probe honors "don't contact Verenu" — falling back to
-/// google.com when Verenu checks are disabled, or when Verenu itself is the
-/// thing that's unreachable.
 pub(super) async fn confirm_offline(app: &AppHandle) -> bool {
     let checks_enabled = store::settings_snapshot(app)
         .map(|s| {
@@ -352,20 +314,12 @@ pub(super) async fn run_transcription(
     } {
         Ok((raw, provider_id, model, alternate)) => (raw, provider_id, model, alternate),
         Err(error) => {
-            // Never surface the raw provider context string (body previews,
-            // request ids) — user_facing_error() strips it and keeps the
-            // detail in the log line below.
             let user_msg = crate::api::user_facing_error(&error);
             log::error!(
                 "pipeline: transcription failed gen={} error={}",
                 gen,
                 trim_err(&error.to_string())
             );
-            // Every provider in the chain just failed to be reached (a
-            // connect error, not an HTTP rejection). Before blaming the
-            // provider or showing a generic "nothing transcribed", actively
-            // probe whether the user's own connection is down so a dropped
-            // network reads as exactly that instead of a confusing error.
             if crate::api::is_connectivity_error(&error) && confirm_offline(app).await {
                 emit_connectivity_recheck(app);
                 show_error_pill(
@@ -452,8 +406,6 @@ async fn run_dual_transcription_candidates(
                 next_index += 1;
                 continue;
             }
-            // Do not start local inference until every prior cloud attempt
-            // settles. Local engines also need sequential model requests.
             if provider == store::LOCAL && !in_flight.is_empty() {
                 break;
             }
@@ -524,9 +476,6 @@ async fn run_dual_transcription_candidates(
     successes.sort_by_key(|(index, _, _, _)| *index);
     let mut successes = successes.into_iter();
     let Some((_, primary_text, primary_provider, primary_model)) = successes.next() else {
-        // Preserve the underlying provider error when one exists, so a
-        // connectivity outage can be detected upstream instead of being
-        // flattened into a generic "nothing transcribed".
         if let Some(error) = last_err {
             return Err(error);
         }
@@ -653,16 +602,6 @@ async fn run_primary_transcription_chain(
             }
             Ok(_) => {}
             Err(e) => {
-                // Always move on to the next candidate, retryable or not.
-                // "Retryable" only answers "would retrying this same
-                // provider help" (no for a missing/invalid key, bad
-                // request, etc.) — it says nothing about whether a
-                // different fallback provider/model would succeed, so it
-                // must never gate whether the rest of the chain gets tried.
-                // Previously this `break`d on non-retryable errors, which
-                // meant a primary provider with no API key saved (a very
-                // common config: cloud primary + local fallback) skipped
-                // every configured fallback and failed outright.
                 let retryable = crate::api::is_retryable_provider_error(&e);
                 if provider_id != store::LOCAL
                     && (crate::api::is_connectivity_error(&e) || e.to_string().contains("timeout"))

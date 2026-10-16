@@ -22,15 +22,7 @@ pub struct LocalLlmManager {
     pub shutdown_signal: Arc<AtomicBool>,
     download_task: Arc<Mutex<Option<DownloadTaskState>>>,
     runtime_download: Arc<Mutex<Option<Arc<AtomicBool>>>>,
-    // Counts in-flight cleanup_with_prompt calls (load + generate). There is
-    // no safe way to cancel an in-flight llama-server request — killing the
-    // process mid-generation just surfaces as a connection error to the
-    // caller - so resource-pressure unload must wait for this to hit zero
-    // rather than interrupting a request the user is actively waiting on.
     active_requests: Arc<AtomicU32>,
-    // Serializes request admission with synchronous unload decisions. The
-    // counter alone cannot close the tiny gap where the idle reaper sees zero
-    // just before a cleanup call increments it.
     request_start_gate: Arc<Mutex<()>>,
 }
 
@@ -40,11 +32,6 @@ struct DownloadTaskState {
     cancel: Arc<AtomicBool>,
 }
 
-/// Guarantees `is_loading` is cleared and waiters are woken even if
-/// `load_model_inner` panics mid-load — without this, a panic during load
-/// (unwind, not the release profile's panic=abort) leaves `is_loading` stuck
-/// `true` forever, and every future `ensure_loaded()` call deadlocks
-/// permanently waiting on a notify that will never come.
 struct LoadSlotGuard {
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
@@ -159,8 +146,6 @@ impl LocalLlmManager {
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local cleanup model: {model_id}"))?;
         let root = self.prepare_models_dir()?;
-        // Every model download entry point needs the shared engine, including
-        // requests for weights that are already installed.
         self.download_runtime(app)?;
         if manifest.is_downloaded(&root) {
             let _ = app.emit(
@@ -359,12 +344,6 @@ impl LocalLlmManager {
 
     pub fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
         self.cancel_runtime_download()?;
-        // The runtime binary (llama-server.exe) is a real OS executable —
-        // on Windows it's locked while running, so deleting its folder
-        // while a model is loaded would fail or partially fail. Stop it
-        // first regardless of memory policy, same as the resource-pressure
-        // unload path: the user explicitly asked to remove the runtime, so
-        // freeing it takes priority over "keep loaded".
         self.unload(app);
         super::binary::delete_runtime(&super::binary::runtime_root())?;
         let _ = app.emit(
@@ -471,19 +450,7 @@ impl LocalLlmManager {
             request_cleanup(&endpoint, model_id, prompt, primary_text, max_tokens).await
         };
         self.touch_activity();
-        output.map_err(|err| {
-            let tail = self
-                .server
-                .lock()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(|server| server.recent_log_tail()));
-            match tail {
-                Some(lines) if !lines.is_empty() => {
-                    anyhow::anyhow!("{err}{}", super::runtime::format_log_tail(&lines))
-                }
-                _ => err,
-            }
-        })
+        output
     }
 
     pub fn unload_if_idle(&self, app: &AppHandle) -> anyhow::Result<()> {
@@ -492,16 +459,9 @@ impl LocalLlmManager {
             .lock()
             .map_err(|_| anyhow::anyhow!("local cleanup request gate poisoned"))?;
         let active_requests = self.active_requests.load(Ordering::SeqCst);
-        // `cleanup_with_prompt` holds this count across both model loading and
-        // generation. Killing llama-server here would turn an active cleanup
-        // into a connection error, particularly with `unload_immediately`.
         if active_requests > 0 {
             return Ok(());
         }
-        // Same reasoning as local_stt::manager::unload_if_idle: this is
-        // polled every 30s for the app's whole lifetime, so skip the
-        // settings-snapshot + idle computation entirely once nothing is
-        // loaded rather than repeating it forever after the one real unload.
         let is_loaded = self
             .current_model_id
             .lock()
@@ -545,14 +505,6 @@ impl LocalLlmManager {
         }
     }
 
-    /// Unconditional safety unload triggered by system RAM/VRAM pressure —
-    /// unlike `unload_if_idle`, this ignores the configured memory policy
-    /// (including "keep loaded") since freeing memory for whatever else
-    /// needs it takes priority over a passive idle preference. Skipped
-    /// entirely while a cleanup request is in flight: killing the
-    /// llama-server process mid-generation has no safe cancellation path,
-    /// it just surfaces as a connection error to whoever is waiting on the
-    /// result. The next periodic check (30s later) will retry.
     pub fn unload_for_resource_pressure(&self, app: &AppHandle) {
         let Ok(_request_gate) = self.request_start_gate.lock() else {
             log::warn!("local-llm: request gate poisoned; skipping resource-pressure unload");
@@ -574,15 +526,6 @@ impl LocalLlmManager {
         }
     }
 
-    /// Blocks until no other load is in progress, then either reports that
-    /// the model we wanted was the one that just finished loading (`false`
-    /// — caller must not reload it) or claims the load slot for the caller
-    /// (`true` — caller must call `load_model_inner`). Returning this as a
-    /// bool (rather than folding the "already loaded" case into an early
-    /// `Ok(())` the caller can't distinguish from "slot acquired") matters:
-    /// conflating the two used to make `ensure_loaded` call
-    /// `load_model_inner` unconditionally, which unloads-then-reloads a
-    /// model a concurrent caller just finished loading.
     fn wait_for_load_slot(&self, model_id: &str) -> anyhow::Result<Option<LoadSlotGuard>> {
         let mut loading = self
             .is_loading
@@ -620,9 +563,6 @@ impl LocalLlmManager {
         self.load_model_inner(app, model_id).await
     }
 
-    /// Lock the runtime first, matching `unload` and `load_model_inner`.
-    /// Holding model-id then runtime while another thread holds runtime then
-    /// model-id deadlocks the periodic idle reaper against a model load.
     fn is_model_loaded(&self, model_id: &str) -> anyhow::Result<bool> {
         let server = self
             .server
@@ -665,13 +605,6 @@ impl LocalLlmManager {
     }
 }
 
-/// Retries `remove_dir_all` briefly before giving up. `delete_model` only
-/// signals cancellation to the background download task via an atomic flag
-/// (no handle to await its actual exit), so a download that's mid-write when
-/// deletion is requested may still hold open file handles for a moment —
-/// on Windows especially, that turns straight into an access-denied error.
-/// A short retry window covers the gap between the cancel flag being seen
-/// and the task actually unwinding and dropping its handles.
 async fn remove_dir_all_with_retry(path: &std::path::Path) -> std::io::Result<()> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || remove_dir_all_with_retry_blocking(&path))

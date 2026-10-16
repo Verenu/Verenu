@@ -2,7 +2,6 @@ package com.verenu.app
 
 import org.json.JSONObject
 
-// Final allowlist boundary shared by production analytics and JVM regressions.
 internal fun safeAnalyticsSettings(json: JSONObject?): Map<String, Any> {
   if (json == null) return emptyMap()
   val booleans = listOf(

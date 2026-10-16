@@ -44,8 +44,6 @@ test('default session admits 30 audio attempts and rejects the 31st without prov
       await response.arrayBuffer();
     }
     const cursor = (await (await request('/events?after=0')).json()).cursor;
-    // Use valid speech for the rejected request: the quota must prevent the
-    // provider request that this audio would otherwise trigger.
     const speech = await request('/fixtures/plain.wav');
     assert.equal(speech.status, 200);
     const rejected = await request('/audio', { method: 'POST', body: await speech.arrayBuffer() });

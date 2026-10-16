@@ -1,11 +1,4 @@
-//! Cross-build single-instance handoff for Windows.
-//!
-//! Tauri's single-instance plugin intentionally keeps the first process and
-//! exits the second one. That is the wrong direction for an updater relaunch,
-//! and its identifier-based namespace also lets dev and packaged builds run
-//! side by side. This small mutex/event pair gives the newest process the
-//! ownership instead.
-
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::time::Duration;
 
 use windows::core::PCWSTR;
@@ -19,22 +12,16 @@ const MUTEX_NAME: &str = "Local\\Verenu.SingleInstance.v1";
 const EVENT_NAME: &str = "Local\\Verenu.SingleInstance.Takeover.v1";
 
 pub(crate) struct Guard {
-    mutex: HANDLE,
-    event: HANDLE,
+    mutex: OwnedHandle,
+    _event: OwnedHandle,
 }
-
-// Win32 HANDLE values are process-owned opaque references. The guard is only
-// moved into Tauri's synchronized state and each handle is closed exactly once
-// by Drop; no handle is accessed concurrently through the Rust fields.
-unsafe impl Send for Guard {}
-unsafe impl Sync for Guard {}
 
 impl Drop for Guard {
     fn drop(&mut self) {
         unsafe {
-            let _ = windows::Win32::System::Threading::ReleaseMutex(self.mutex);
-            let _ = CloseHandle(self.mutex);
-            let _ = CloseHandle(self.event);
+            let _ = windows::Win32::System::Threading::ReleaseMutex(HANDLE(
+                self.mutex.as_raw_handle(),
+            ));
         }
     }
 }
@@ -48,35 +35,37 @@ pub(crate) fn acquire() -> Guard {
             CreateEventW(None, false, false, PCWSTR(event_name.as_ptr()))
                 .expect("failed to create Verenu takeover event")
         };
+        let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
         let mutex = unsafe {
             CreateMutexW(None, true, PCWSTR(mutex_name.as_ptr()))
                 .expect("failed to create Verenu single-instance mutex")
         };
+        let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        let mutex = unsafe { OwnedHandle::from_raw_handle(mutex.0) };
 
-        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
-            return Guard { mutex, event };
+        if !already_exists {
+            return Guard {
+                mutex,
+                _event: event,
+            };
         }
 
-        // Ask the current owner to perform its normal Tauri shutdown. The
-        // mutex handle is also a wait handle, so this process can acquire it
-        // as soon as the old process has completely torn down.
         unsafe {
-            let _ = SetEvent(event);
+            let _ = SetEvent(HANDLE(event.as_raw_handle()));
         }
-        let result = unsafe { WaitForSingleObject(mutex, 15_000) };
+        let result = unsafe { WaitForSingleObject(HANDLE(mutex.as_raw_handle()), 15_000) };
         if result == WAIT_OBJECT_0 || result == WAIT_ABANDONED_0 {
-            return Guard { mutex, event };
+            return Guard {
+                mutex,
+                _event: event,
+            };
         }
 
-        unsafe {
-            let _ = CloseHandle(mutex);
-            let _ = CloseHandle(event);
-        }
+        drop(mutex);
+        drop(event);
         if result != WAIT_TIMEOUT {
             panic!("failed waiting for the previous Verenu instance to exit");
         }
-        // Retry after a bounded wait. This also handles a brief startup race
-        // where the previous owner has not installed its event listener yet.
         std::thread::sleep(Duration::from_millis(100));
     }
 }

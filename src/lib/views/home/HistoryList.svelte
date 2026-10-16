@@ -75,9 +75,6 @@
     const seenHeaders = new Set<string>();
     const dateCache = new Map<string, string>();
     flatItems = recents.reduce<RenderItem[]>((acc, entry) => {
-      // Group by the user's local calendar day. The database stores UTC
-      // timestamps, so the raw date prefix can split one local day into two
-      // separate headers around UTC midnight.
       const dayKey = localDayKey(entry.created_at);
       let label = dateCache.get(dayKey);
       if (!label) {
@@ -86,9 +83,6 @@
       }
       if (!seenHeaders.has(dayKey)) {
         seenHeaders.add(dayKey);
-        // The very first header is rendered outside the virtualized list,
-        // paired with the search toolbar, so it isn't left to a
-        // ResizeObserver-measured item (that fought the expand animation).
         const isFirstHeader = acc.length === 0;
         if (!(hasBanner ? label === 'Today' : isFirstHeader)) {
           acc.push({ type: 'header', label, key: `header-${dayKey}` });
@@ -98,7 +92,6 @@
       return acc;
     }, []);
 
-    // Prune cachedHeights to avoid memory leaks from old/deleted history items
     const keys = new Set(flatItems.map(item => item.key));
     for (const key of Object.keys(cachedHeights)) {
       if (!keys.has(key)) {
@@ -116,18 +109,10 @@
   const DEFAULT_ROW_HEIGHT = 74;
   let stackedMeta: Record<string, boolean> = {};
 
-  // Decide per row whether the left-column meta stack fits inside the row's
-  // existing height. Measured rather than compared against a tuned constant, so
-  // it stays correct when padding/font/spacing change. The left block is always
-  // in the DOM (absolutely positioned, invisible until hover) so it can be
-  // measured before we commit to a layout.
   function measureStacked(node: HTMLElement, key: string) {
     const metaEl = node.querySelector<HTMLElement>('.day-meta-left');
     if (!metaEl) return;
-    // Skip while hovered: the below-variant grows the row on hover, which would
-    // otherwise flip the decision mid-interaction.
     if (node.matches(':hover, :focus-within')) return;
-    // 1px slack: sub-pixel layout differences must not flip the decision.
     const fits = metaEl.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom + 1;
     if (stackedMeta[key] !== fits) {
       stackedMeta = { ...stackedMeta, [key]: fits };
@@ -190,14 +175,13 @@
     const clientHeight = container === document.documentElement ? window.innerHeight : container.clientHeight;
 
     const relativeScrollTop = Math.max(0, scrollTop - listOffset);
-    const buffer = 400; // scroll buffer (px)
+    const buffer = 400;
     const startY = Math.max(0, relativeScrollTop - buffer);
     const endY = relativeScrollTop + clientHeight + buffer;
 
     let start = flatItems.length;
     let end = flatItems.length;
 
-    // Binary search for start index (first item ending after startY)
     let low = 0;
     let high = flatItems.length - 1;
     while (low <= high) {
@@ -212,7 +196,6 @@
       }
     }
 
-    // Binary search for end index (first item starting after endY)
     low = start;
     high = flatItems.length - 1;
     while (low <= high) {
@@ -248,18 +231,11 @@
     container;
     listContainer;
     appStore.updateInfo;
-    // The toolbar's "Clear filters" button appears/disappears with filter
-    // state, which changes the list's vertical offset — recompute when it
-    // toggles, not just when history rows change.
     filtersActive;
-    // Depend on the entries directly, not the derived `hasBanner` boolean —
-    // swapping one banner for the other keeps the boolean true, so the block
-    // would otherwise not re-run and `listOffset` would go stale.
     failedEntry;
     cancelledEntry;
     updateLayout();
     updateVirtualList();
-    // Recalculate list offset after the DOM has updated to handle banner toggles
     tick().then(() => {
       const oldOffset = listOffset;
       updateListOffset();
@@ -282,15 +258,7 @@
     for (const entry of entries) {
       const node = entry.target as HTMLElement;
       const key = nodeKeys.get(node);
-      // Hovering a short row reveals the below-text metadata and changes its
-      // height. Do not feed those transient hover dimensions back into the
-      // virtual list while the interaction is active; doing so causes the
-      // spacers to be recalculated on every frame of the old height transition.
       if (key && !isInteractiveRow(node)) {
-        // Rounded: borderBoxSize and getBoundingClientRect can disagree by a
-        // fraction of a pixel, which would otherwise feed a "changed" height
-        // back into the layout every observer callback and never settle —
-        // the observer keeps re-measuring the row it just repositioned.
         const height = Math.round(
           entry.borderBoxSize?.[0]?.blockSize ?? node.getBoundingClientRect().height
         );
@@ -424,11 +392,6 @@
   {/if}
 
   {#if recents.length === 0 && !hasBanner}
-    <!--
-      With nothing to search, this row was an empty label plus a lone search
-      icon adrift on its own line. Keep it only while filters are active, since
-      that is the one case where the row still has a job (clearing them).
-    -->
     {#if filtersActive}
       <div class="day-head day-head-row">
         <span></span>
@@ -487,9 +450,6 @@
             <div class="day-main">
               <div class="day-text">{item.entry.clean_text}</div>
               {#if rowMeta(item.entry, installedApps)}
-                <!-- Always in the DOM: removing it changed the row height, which
-                     flipped the measured stacked/below decision, which put it
-                     back — a self-feeding hover jitter loop. -->
                 <div class="day-meta day-meta-below" aria-hidden={!!stackedMeta[item.key]}>{rowMeta(item.entry, installedApps)}</div>
               {/if}
             </div>
@@ -557,8 +517,6 @@
   }
   .day-row:hover { background: var(--control-hover); }
 
-  /* Banner rows put a wider action cluster (Retry, or Discard+Continue) in the
-     third column, which is normally sized just for the 18px copy-btn. */
   .day-row.banner-row { grid-template-columns: 84px 1fr auto; }
 
   .copy-btn {
@@ -617,8 +575,6 @@
   }
 
   .day-meta {
-    /* Explicit: the left variant lives inside .day-time, which is mono/500 with
-       tabular numerals — without this it wouldn't match the underneath variant. */
     font-family: var(--sans);
     font-weight: 400;
     font-variant-numeric: normal;
@@ -646,8 +602,6 @@
     overflow: hidden;
   }
 
-  /* Row is already tall enough (multi-line text) — stack in the left column,
-     no extra height ever needed, so it never shifts the page. */
   .day-meta-left {
     position: absolute;
     top: 20px;
@@ -666,17 +620,12 @@
     transform: translateX(0);
   }
 
-  /* Row is short (one-line text) — no room on the left without growing the
-     row, so put it underneath instead; only this variant needs to grow. */
   .day-meta-below {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-height: 0;
     transform: translateX(-8px);
-    /* The virtual-list observer ignores this row while the interaction is
-       active, so the expansion can animate without feeding intermediate
-       heights back into the spacer calculation. */
     transition:
       opacity var(--ui-duration-fast) var(--ui-ease-out),
       transform var(--ui-duration-fast) var(--ui-ease-out),

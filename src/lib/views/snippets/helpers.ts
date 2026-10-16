@@ -2,8 +2,6 @@ export type SortKey = 'newest' | 'oldest' | 'alpha' | 'most_used';
 export type CreatedRecordMeta = { id: number; created_at: string };
 
 export const TRIGGER_LIMIT = 300;
-// Cap auto-grow so a long paste can't blow out the modal layout; the textarea
-// scrolls internally past this height.
 export const FIELD_GROW_MAX = 220;
 
 export const sortLabels: { key: SortKey; label: string }[] = [

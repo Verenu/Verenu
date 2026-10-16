@@ -87,19 +87,13 @@ const processTracker = setInterval(() => {
   } else if (!sawLaunchedProcess && Date.now() - launchStartedAt > launchTimeoutMs) {
     clearInterval(processTracker);
     console.error(`[macOS dev runner] LaunchServices did not start ${appBundle} within ${launchTimeoutMs}ms.`);
-    try { child.kill(); } catch { /* open may already have exited */ }
+    try { child.kill(); } catch {}
     process.exit(1);
   } else if (sawLaunchedProcess) {
     if (emptySince === 0) emptySince = Date.now();
-    // Relaunch intentionally has a short gap between the old process exiting
-    // and LaunchServices creating the replacement. Keep Vite/Tauri alive
-    // through that handoff, but exit normally after a real app quit.
     if (Date.now() - emptySince > 2500) {
       clearInterval(processTracker);
       console.log('[macOS dev runner] Launched app process ended; LaunchServices does not expose a termination status, so the runner is exiting normally.');
-      // Let Node terminate naturally after the tracker is cleared. This
-      // preserves the normal-shutdown status without masking a signal-driven
-      // termination in the signal handlers above.
       return;
     }
   }
@@ -110,7 +104,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     clearInterval(processTracker);
     launchedPids = findBundleProcessIds(bundledBinary).filter((pid) => !existingPids.has(pid));
     for (const pid of launchedPids) {
-      try { process.kill(pid, signal); } catch { /* process already exited */ }
+      try { process.kill(pid, signal); } catch {}
     }
     child.kill(signal);
     process.exit(128 + (osConstants.signals[signal] ?? 1));
@@ -147,7 +141,6 @@ function processPathCandidates(value) {
   try {
     candidates.add(realpathSync(value));
   } catch {
-    // The process may have exited between the bundle scan and this check.
   }
   for (const candidate of [...candidates]) {
     if (candidate.startsWith('/var/')) candidates.add(`/private${candidate}`);
@@ -171,7 +164,6 @@ function resolveTargetDir(cargoArgs) {
     try {
       return JSON.parse(metadata.stdout).target_directory;
     } catch {
-      // Fall through to Cargo's default target directory.
     }
   }
 
@@ -307,13 +299,12 @@ function installPreparedBundle(preparedBundle, canonicalBundle) {
     renameSync(preparedBundle, canonicalBundle);
   } catch (error) {
     if (!existsSync(canonicalBundle) && existsSync(backupBundle)) {
-      try { renameSync(backupBundle, canonicalBundle); } catch { /* preserve original error */ }
+      try { renameSync(backupBundle, canonicalBundle); } catch {}
     }
     rmSync(preparedBundle, { recursive: true, force: true });
     throw new Error(`Could not atomically install development app bundle: ${error}`);
   }
 
-  // Keep old bundles alive until no process references their executable.
   cleanupPreviousBundles(path.dirname(canonicalBundle));
 }
 
@@ -335,8 +326,6 @@ function setPlistValue(plistPath, key, value) {
     encoding: 'utf8',
   });
   if (result.status !== 0) {
-    // The source plist intentionally contains only merge keys, so add fields
-    // that are not already present.
     const addResult = spawnSync('/usr/bin/plutil', ['-insert', key, '-string', value, plistPath], {
       encoding: 'utf8',
     });
@@ -390,10 +379,6 @@ function verifyPreparedIdentity(appBundle, expectedIdentity) {
 }
 
 function resolveSigningAuthority(identity) {
-  // `codesign --sign` accepts either a certificate common name or its
-  // 40-character SHA-1 hash. `codesign -dv` reports the common name in the
-  // Authority field, so resolve hashes through the local identity catalogue
-  // before comparing the signed bundle.
   if (!/^[0-9a-f]{40}$/i.test(identity)) return identity;
   const identities = spawnSync('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning'], {
     encoding: 'utf8',
@@ -444,9 +429,6 @@ function quarantineLegacyDevelopmentCopy(profileDir, canonicalBundle) {
     console.warn(`  ${duplicateCanonical}`);
     console.warn('Use only the canonical bundle printed by this runner for development permissions.');
   }
-  // Only mark migration complete after the legacy path is gone. If the
-  // quarantine destination already exists, retry/warn on the next run rather
-  // than permanently suppressing detection while Verenu.app remains present.
   if (!legacyActive && !existsSync(legacyBundle)) {
     writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o600 });
   }

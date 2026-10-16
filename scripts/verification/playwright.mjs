@@ -1,5 +1,3 @@
-// Keep CI diagnostics limited to test names and result states. Raw errors,
-// traces, page URLs, and attachments can contain session credentials.
 export function failedPlaywrightChecks(report) {
   const checks = [];
   function visit(suite, parents) {

@@ -1,8 +1,3 @@
-// SVG path data for all icons — 24x24 viewBox, stroke-based.
-// WARNING: several icons are looked up DYNAMICALLY via `icons[entry.icon]`
-// (Sidebar nav entries, settingsSections.ts) — a static grep for `icons.foo`
-// does NOT prove an icon is unused. Keep this set in sync with the literal
-// `icon:` keys in Sidebar.svelte and settingsSections.ts.
 export const icons = {
   home:     `<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>`,
   book:     `<path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h6"/>`,
@@ -34,5 +29,4 @@ export const icons = {
   unlink:   `<path d="M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M8 2v3M2 8h3M16 19v3M19 16h3"/>`,
 };
 
-/** Icons offered for context groups and sub-apps. */
 export const CONTEXT_ICON_CHOICES = ['code', 'browser', 'chat', 'pencil', 'mic', 'book', 'sliders', 'shield', 'key', 'chart', 'lock', 'bell'] as const;

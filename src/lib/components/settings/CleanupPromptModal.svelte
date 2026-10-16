@@ -111,9 +111,6 @@
     loadDraft();
   });
 
-  // The textarea only mounts after the draft IPC returns (loading gate). The
-  // focus trap lands on the card while loading; hand focus to the editor once
-  // it exists, unless the user has already moved inside the dialog.
   $effect(() => {
     if (!cleanupPromptEditor.open || loading) return;
     const textarea = modalEl?.querySelector<HTMLTextAreaElement>('textarea');
@@ -155,7 +152,6 @@
         const warnings = await invoke<string[]>('lint_cleanup_prompt', { template: text, intensity, tone });
         if (isMounted && draft === text) liveWarnings = warnings;
       } catch {
-        // lint errors are non-critical
       }
     }, 300);
   }
@@ -168,7 +164,6 @@
     runLint(draft);
   }
 
-  /** Matching the default is how you clear the override, not a value to store. */
   async function persistDraft() {
     const override = draft.trim() === defaultText.trim() ? '' : draft;
     if (styleKey) {
@@ -236,9 +231,6 @@
     handleClose();
   }
 
-  // The focus trap owns Tab cycling and focus restore; Escape stays here so a
-  // dialog is always one key away from dismissal (Settings' Escape guard
-  // yields while [role="dialog"] is present).
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -266,7 +258,6 @@
   const showSaveAnyway = $derived(testState.status === 'failed');
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="prompt-modal-wrap" use:portal>
   <div
     class="prompt-modal-backdrop"
@@ -294,14 +285,12 @@
     in:expandFromOrigin={{ origin, duration: 240 }}
     out:expandFromOrigin={{ origin, duration: 180 }}
   >
-    <!-- Close — absolute, matches .settings-close -->
     <button type="button" class="prompt-modal-close" aria-label="Close editor" onclick={handleClose}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <path d="M6 6l12 12M18 6L6 18"/>
       </svg>
     </button>
 
-    <!-- Header bar — paper bg like settings sidebar -->
     <div class="prompt-head">
       <div class="prompt-head-info">
         <span class="prompt-head-provider">{editorTitle}</span>
@@ -333,7 +322,6 @@
       </div>
     </div>
 
-    <!-- Error / warning panel -->
     {#if allErrors.length > 0}
       <div
         class="prompt-result"
@@ -354,14 +342,12 @@
       </div>
     {/if}
 
-    <!-- Tags -->
     {#if !styleKey}<div class="prompt-tags-row">
       {#each CLEANUP_PROMPT_TAGS as tag}
         <span class="prompt-tag">{tag}</span>
       {/each}
     </div>{:else}<p class="prompt-scope">Edit only this preset’s instructions. Verenu keeps the system prompt, safety rules, formatting, and context separate.</p>{/if}
 
-    <!-- Editor -->
     <div class="prompt-editor-body">
       {#if loading}
         <p class="prompt-loading">Loading…</p>
@@ -382,14 +368,6 @@
 </div>
 
 <style>
-  /*
-   * Fixed and portalled to the body: the settings page animates with a
-   * transform, which would otherwise become this dialog's containing block.
-   * The card also no longer borrows .ui-modal-card — that class is
-   * position:fixed with left/top:50% and translate:-50% -50%, and those offsets
-   * survived the local position:relative override, which is what parked the
-   * dialog in the bottom-right corner.
-   */
   .prompt-modal-wrap {
     position: fixed;
     inset: 0;
@@ -419,7 +397,6 @@
     overflow: hidden;
   }
 
-  /* ── Close button — matches .settings-close exactly ── */
   .prompt-modal-close {
     position: absolute;
     top: 10px;
@@ -438,7 +415,6 @@
   .prompt-modal-close:hover { color: var(--ink-strong); background: var(--control-hover); }
   .prompt-modal-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-  /* ── Header bar ── */
   .prompt-head {
     flex-shrink: 0;
     display: flex;
@@ -464,7 +440,6 @@
     white-space: nowrap;
   }
 
-  /* Prose now, not a model id — sans, per the mono-sparingly rule. */
   .prompt-head-model {
     font-family: var(--sans);
     font-size: 11px;
@@ -481,7 +456,6 @@
     flex-shrink: 0;
   }
 
-  /* ── Status chip — matches .summary-item vocabulary ── */
   .status-chip {
     display: inline-flex;
     align-items: center;
@@ -547,7 +521,6 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Buttons — match existing prompt-btn patterns ── */
   .prompt-btn {
     font-size: 12px;
     font-family: var(--sans);
@@ -581,7 +554,6 @@
   .prompt-btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
   .prompt-btn-ghost:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-  /* ── Error / warning result ── */
   .prompt-result {
     flex-shrink: 0;
     padding: 8px 16px 10px;
@@ -614,7 +586,6 @@
     margin-top: 8px;
   }
 
-  /* ── Tags ── */
   .prompt-tags-row {
     flex-shrink: 0;
     display: flex;
@@ -633,7 +604,6 @@
     color: var(--accent-ink);
   }
 
-  /* ── Editor ── */
   .prompt-editor-body {
     flex: 1;
     display: flex;

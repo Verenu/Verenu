@@ -17,7 +17,6 @@ test('About update check uses real backend and reports failures honestly', async
   await expect(checking).toHaveCount(0, { timeout: 30_000 });
   const status = row.locator('[role="status"]');
   await expect(status).toHaveText(/\S/, { timeout: 30_000 });
-  // Public release availability varies; each result must be visible and actionable.
   await expect(status).toContainText(/latest version|is available|Could not check|unavailable|compatible/i, { timeout: 30_000 });
   await page.screenshot({ path: path.join(directory, `updater-result-${test.info().project.name}.png`) });
   await page.reload();

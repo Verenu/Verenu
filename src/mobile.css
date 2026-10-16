@@ -1,16 +1,3 @@
-/*
- * Android shell: phone, foldable and tablet layout.
- *
- * Every rule is scoped to `.app[data-android='true']` (or to an element that
- * only renders there), so nothing in this file can reach the desktop UI. The
- * views keep their own styles; this sheet owns the mobile rhythm on top of
- * them: type scale, touch targets, the settings list/detail screens, and the
- * measure used on wide (unfolded / tablet) windows.
- *
- * Width classes come from `data-width-class` (compact < 600dp, medium < 840dp,
- * expanded), set by App.svelte from the live window size.
- */
-
 .app[data-android='true'] {
   --page-pad-x: 20px;
   --page-pad-y: 20px;
@@ -31,8 +18,6 @@
   --page-pad-y: 32px;
 }
 
-/* ------------------------------------------------------------------ type */
-
 .app[data-android='true'] .page-h {
   font-size: 30px;
   font-weight: 700;
@@ -48,7 +33,6 @@
   margin-bottom: 20px;
 }
 
-/* Wide windows read as a centred column, not a stretched phone. */
 .app[data-android='true'][data-width-class='medium'] .content-inner {
   width: 100%;
   max-width: 760px;
@@ -60,8 +44,6 @@
   max-width: 1040px;
   margin-inline: auto;
 }
-
-/* -------------------------------------------------------- touch controls */
 
 .app[data-android='true'] .btn-primary,
 .app[data-android='true'] .btn-ghost,
@@ -103,7 +85,6 @@
   font-size: 15px;
 }
 
-/* A 30x16 desktop switch is a 4mm target on a phone. */
 .app[data-android='true'] .toggle {
   width: 52px;
   height: 32px;
@@ -124,8 +105,6 @@
   height: 12px;
 }
 
-/* ------------------------------------------------------------ list rows */
-
 .app[data-android='true'] .setting-row .label {
   font-size: 15px;
 }
@@ -143,17 +122,6 @@
   color: var(--ink-mute);
 }
 
-/* ------------------------------------------------- settings rows (stacked) */
-
-/*
- * A foldable's inner screen (~830dp) leaves the settings panel just over the
- * 440px container breakpoint Settings.svelte stacks at, so rows flipped back to
- * the desktop pattern: label on the left, every control marooned on the right.
- * Touch rows always stack: text gets the full measure, the control sits under
- * it on the left, and only a switch (one line, thumb-sized) stays beside its
- * label. The column keeps a reading measure on wide windows instead of
- * stretching label and control across the whole screen.
- */
 .app[data-android='true'] .settings-body .setting-row {
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
@@ -196,8 +164,6 @@
   margin-inline: 0;
 }
 
-/* Rows that predate .setting-row (the Advanced Models switch) read at the same
-   size as their neighbours. */
 .app[data-android='true'] .settings-body .advanced-toggle-row {
   padding: 14px 0;
 }
@@ -212,17 +178,6 @@
   line-height: 1.5;
 }
 
-/* ---------------------------------------------------------------- sheets */
-
-/*
- * Dialogs are bottom sheets (ui.css) and some are portalled out of `.app`, so
- * these rules key off :root instead. A sheet is a column: header, a body that
- * scrolls, and actions that always stay in view. The page itself shrinks when
- * the keyboard opens (MainActivity), so the sheet rides on top of the keyboard.
- */
-/* The bottom bar is z-index 70 and desktop dialogs sit at 51, so on a phone the
-   bar painted over a sheet's action buttons. Dialogs rise above the bar (the
-   full-screen model picker, 90, stays on top of them). */
 :root:has(.app[data-android='true']) :is(.ui-modal-backdrop, .modal-backdrop, .modal-overlay, .context-modal-backdrop) {
   z-index: 84;
 }
@@ -231,15 +186,10 @@
   z-index: 85;
 }
 
-/* Menus portalled to the document root from inside a dialog (the context
-   editor's Tone/Cleanup and app search) must stay above the dialog's layer. */
 :root:has(.app[data-android='true']) :is(.field-menu-fixed, .modal-app-matches) {
   z-index: 88;
 }
 
-/* Dialogs that render inside a page (About, Privacy, Sync...) live in that
-   page's stacking context, so no z-index of their own can clear the bar. While
-   one is open the bar steps under the page and its dim, like any modal. */
 .app[data-android='true']:has(:is(.ui-modal-card, .modal-card, .snippet-modal-card)) .mobile-nav {
   z-index: 40;
 }
@@ -288,7 +238,6 @@
   flex-wrap: wrap;
 }
 
-/* Sheet actions share the row at full touch height, primary action last. */
 :root:has(.app[data-android='true']) :is(.ui-modal-actions, .footer-actions, .pair-actions) > button {
   flex: 1 1 140px;
   min-height: 48px;
@@ -296,7 +245,6 @@
   border-radius: 14px;
 }
 
-/* The snippet dialog is a centred flex card; seat it on the bottom edge. */
 :root:has(.app[data-android='true']) .modal-overlay {
   align-items: flex-end;
   padding: 12px 0 0;
@@ -308,17 +256,12 @@
   border-bottom: 0;
 }
 
-/* Wide windows: a sheet that spans 800dp is not a sheet, keep a measure. */
 :root:has(.app[data-android='true']:not([data-width-class='compact'])) :is(.ui-modal-card, .modal-card) {
   left: 50%;
   right: auto;
   width: min(560px, 100%);
   translate: -50% 0;
 }
-
-/* ------------------------------------------------------------- settings */
-/* Phone and unfolded windows (bottom nav). Expanded windows keep the sidebar
-   rail, which already lists the sections. */
 
 .app[data-compact-nav='true'] .settings-page {
   left: 0;
@@ -336,7 +279,6 @@
 .app[data-compact-nav='true'] .settings-page .settings-footbar { grid-area: foot; }
 .app[data-compact-nav='true'] .settings-page .m-list { grid-area: list; }
 
-/* The section's own heading is the top bar's title now. */
 .app[data-compact-nav='true'] .settings-body .settings-h {
   display: none;
 }
@@ -459,7 +401,6 @@
   color: var(--ink-faint);
 }
 
-/* Phones: one screen at a time. */
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] {
   grid-template-areas: 'list';
   grid-template-rows: minmax(0, 1fr);
@@ -471,11 +412,6 @@
   display: none;
 }
 
-/* The section behind the list keeps its layout (controls such as the language
-   picker measure their text on mount, and measure 0 inside display:none), so it
-   is parked off-screen. `visibility: hidden` would not do: controls that set
-   `visibility: visible` themselves (the API key Save/Clear flip buttons) would
-   show straight through over the list. */
 .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .settings-body {
   position: absolute;
   top: 0;
@@ -485,7 +421,6 @@
   pointer-events: none;
 }
 
-/* Unfolded / tablet: the list stays beside the section. */
 .app[data-compact-nav='true']:not([data-width-class='compact']) .settings-page {
   grid-template-columns: 320px minmax(0, 1fr);
   grid-template-areas:
@@ -522,8 +457,6 @@
   }
 }
 
-/* Unfolded and tablet windows: keep the tabs a comfortable reach apart
-   instead of spreading five targets across a 700dp bar. */
 .app[data-android='true']:not([data-width-class='compact']) .mobile-nav {
   justify-content: center;
   gap: 20px;
@@ -532,8 +465,6 @@
 .app[data-android='true']:not([data-width-class='compact']) .mobile-nav .mobile-nav-item {
   flex: 0 1 120px;
 }
-
-/* ------------------------------------------------------------ home hero */
 
 .app[data-android='true'] .hero-photo {
   border-radius: 20px;
@@ -553,12 +484,6 @@
   font-size: 14px;
 }
 
-/* -------------------------------------------------------------- sliders */
-
-/* Range thumbs are ~12px on desktop; make them a real touch target. The desktop
-   sliders paint their fill as a background on the input itself, so growing the
-   input for touch turned the whole 32px box into the track. Keep the input
-   transparent and draw the slim fill/track on the track pseudo-element. */
 .app[data-android='true'] input[type='range'] {
   height: 32px;
   min-height: 32px;
@@ -580,20 +505,14 @@
 .app[data-android='true'] input[type='range']::-webkit-slider-thumb {
   width: 24px;
   height: 24px;
-  margin-top: -9px; /* centre the thumb on the 6px track: (6 - 24) / 2 */
+  margin-top: -9px;
   border-width: 3px;
   box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-/* ------------------------------------------------------------- keyboard */
-
-/* With the keyboard up the bottom bar is hidden (App.svelte), so pages and the
-   settings screen reclaim its height. */
 .app[data-android='true'][data-compact-nav='true'][data-keyboard='open'] {
   --mobile-nav-h: 0px;
 }
-
-/* ------------------------------------------------------ settings search */
 
 .m-search {
   display: flex;
@@ -648,10 +567,6 @@
   font-size: 14px;
 }
 
-/* ------------------------------------------------------- insights filters */
-
-/* The scope filters line up with the title instead of hanging below it, and on
-   a phone they split the row into two equal, full-size touch targets. */
 .app[data-android='true'] .content-inner > .head {
   align-items: center;
   gap: 14px 16px;
@@ -681,10 +596,6 @@
   max-width: none;
 }
 
-/* -------------------------------------------------- context group editor */
-
-/* Edit, Add app and Add website share one wrapping row under the title,
-   instead of stacking as two full-width rows that push the list down. */
 .app[data-android='true'] .context-header {
   display: flex;
   flex-flow: row wrap;
@@ -710,7 +621,6 @@
   margin-top: 0;
 }
 
-/* Tone and Cleanup sit tight under the icon picker; give them air. */
 :root:has(.app[data-android='true']) .context-modal .field-row {
   margin-top: 16px;
   gap: 12px;
@@ -731,9 +641,6 @@
   margin-top: 20px;
 }
 
-/* Pickers (apps, websites) open as a panel docked above the keyboard. The
-   desktop dropdown anchors to the trigger's right edge and, in the narrow
-   layout, becomes a flex item that shoves the other buttons across the row. */
 :root:has(.app[data-android='true']) .app-picker {
   position: fixed;
   z-index: 88;
@@ -754,7 +661,6 @@
   overscroll-behavior: contain;
 }
 
-/* The group editor is a full screen, not a pull-up sheet. */
 :root:has(.app[data-android='true']) .modal-card.context-modal {
   inset: 0;
   width: 100%;
@@ -770,7 +676,6 @@
   display: none;
 }
 
-/* Unfolded and tablet windows: a centred card, not an 830dp-wide form. */
 :root:has(.app[data-android='true']:not([data-width-class='compact'])) .modal-card.context-modal {
   inset: 50% auto auto 50%;
   width: min(600px, calc(100% - 48px));
@@ -791,8 +696,6 @@
   font-weight: 700;
 }
 
-/* ------------------------------------------------------------- motion */
-
 @media (prefers-reduced-motion: no-preference) {
   @keyframes m-in-right {
     from { opacity: 0; transform: translate3d(32px, 0, 0); }
@@ -809,7 +712,6 @@
     to { opacity: 1; transform: translate3d(0, 0, 0); }
   }
 
-  /* Drilling in: the section arrives from the right, its first rows follow. */
   .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='detail'] :is(.m-bar, .settings-body) {
     animation: m-in-right 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   }
@@ -824,7 +726,6 @@
   .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(5) { animation-delay: 150ms; }
   .app[data-compact-nav='true'] .settings-body .panel-inner > :nth-child(n + 6) { animation-delay: 180ms; }
 
-  /* Coming back to (or opening) the list: it settles in group by group. */
   .app[data-compact-nav='true'][data-width-class='compact'] .settings-page[data-mobile-view='list'] .m-list {
     animation: m-in-left 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
   }
@@ -861,7 +762,6 @@
     transform: scale(0.9);
   }
 
-  /* Taps feel physical across the shell. */
   .app[data-android='true'] :is(.btn-primary, .btn-ghost, .btn-danger, .ctx-chip, .tab) {
     transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1), background-color 140ms ease, border-color 140ms ease;
   }
@@ -871,14 +771,6 @@
   }
 }
 
-/* ------------------------------------------------------------ model picker */
-
-/*
- * The model picker is a full-screen page on a phone. It sits above the bottom
- * bar (z-index 70), reads top to bottom (title, search, provider chips, list),
- * and keeps every row and control at touch size. The desktop dialog is a
- * 720x600 card with a side rail and hover-only buttons.
- */
 :root:has(.app[data-android='true']) .picker-wrap {
   z-index: 90;
   display: block;
@@ -937,7 +829,6 @@
   border-radius: 14px;
 }
 
-/* One quiet line instead of a bordered bar. */
 :root:has(.app[data-android='true']) .catalog-refresh {
   padding: 4px 16px 8px;
   border-bottom: 0;
@@ -950,7 +841,6 @@
   font-size: 13px;
 }
 
-/* Provider rail: a row of chips above the list, not a tall column. */
 :root:has(.app[data-android='true']) .picker-body {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -987,7 +877,6 @@
   border-color: var(--ink);
 }
 
-/* The list: roomy rows, id hidden (the name and tags are what you choose by). */
 :root:has(.app[data-android='true']) .picker-list {
   padding: 8px 12px calc(24px + env(safe-area-inset-bottom, 0px));
   overscroll-behavior: contain;
@@ -1059,7 +948,6 @@
   color: var(--bg-elev);
 }
 
-/* Download, Cancel and Delete sit beside the row at touch size. */
 :root:has(.app[data-android='true']) .row-tools {
   flex: 0 0 auto;
   padding-right: 8px;
@@ -1079,7 +967,6 @@
   white-space: nowrap;
 }
 
-/* Add-as-fallback is hover-only on desktop, which does not exist on touch. */
 :root:has(.app[data-android='true']) .row-add {
   flex: 0 0 auto;
   width: 44px;
@@ -1104,7 +991,6 @@
   min-height: 52px;
 }
 
-/* The exact-id field is docked at the bottom, above the keyboard. */
 :root:has(.app[data-android='true']) .picker-foot {
   padding: 10px 16px calc(12px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--line);
@@ -1118,14 +1004,6 @@
   border-radius: 12px;
 }
 
-/* --------------------------------------------------- cleanup prompt editor */
-
-/*
- * A 800x580 desktop dialog with a 30px close button and a header that packs
- * title, status, Reset and Audit & save into one row. On a phone it is a full
- * screen editor: title and actions stacked, touch-size controls, the prompt
- * filling the rest. Unfolded windows keep a large centred card.
- */
 :root:has(.app[data-android='true']) .prompt-modal-wrap {
   z-index: 86;
 }
@@ -1205,10 +1083,6 @@
   line-height: 1.55;
 }
 
-/* ------------------------------------------------------------------ setup */
-
-/* The primary action is the thumb's destination: on a phone it takes the width
-   the Back/Skip links leave, at full touch height, above the gesture bar. */
 :root:has(.app[data-android='true'][data-width-class='compact']) .setup-actionbar {
   gap: 12px;
   padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));

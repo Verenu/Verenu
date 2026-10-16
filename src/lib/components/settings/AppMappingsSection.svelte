@@ -22,12 +22,6 @@
 </div>
 
 <style>
-  /*
-   * The editor caps itself at 640px because it is also rendered on the Style
-   * page, whose column runs to --page-max (1160px). In settings the column is
-   * already the measure, so the cap only made the mappings sit short of the
-   * section heading — drop it here and let the settings column govern.
-   */
   .mappings-host {
     --mappings-measure: none;
   }

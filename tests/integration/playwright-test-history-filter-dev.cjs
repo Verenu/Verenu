@@ -3,18 +3,11 @@
 const path = require('path');
 const os = require('os');
 
-// History search + app filter UX. Exercises the real Home/HistoryList/
-// HistoryToolbar against a filtering `get_recent`/`get_history_apps` mock so
-// the search → SQLite-arg wiring, the app dropdown, the combined filter, the
-// row metadata, and the "No matches" empty state are all covered end-to-end.
-
 const { chromium } = require('playwright');
 const { tauriMock } = require('../smoke/_tauri-mock.cjs');
 
 const FAILURE_SCREENSHOT = path.join(os.tmpdir(), 'verenu-history-filter-fail.png');
 
-// Overrides the frozen smoke mock's history commands with a filtering variant
-// that carries app names + durations, so the frontend's real flow is exercised.
 const historyMockWrap = function () {
   const entries = [
     { id: 6, clean_text: 'Send the quarterly report to accounting', raw_text: 'send the quarterly report to accounting', words: 7, duration_ms: 8400, app_name: 'outlook.exe', created_at: '2026-05-31 08:05:00' },
@@ -66,13 +59,9 @@ const historyMockWrap = function () {
     await page.goto('http://localhost:1420', { waitUntil: 'networkidle', timeout: 15_000 });
     await page.locator('h1.page-h:has-text("Welcome back")').waitFor({ state: 'visible', timeout: 12_000 });
 
-    // Wait for the initial history load to settle before interacting with the
-    // toolbar. Otherwise the first toolbar instance can be replaced while
-    // Playwright is transitioning from the loading/empty state to the rows.
     await page.locator('.day-row').first().waitFor({ state: 'visible', timeout: 12_000 });
     await page.waitForTimeout(3000);
 
-    // Search is intentionally collapsed to a bare icon until it is needed.
     await page.getByRole('button', { name: 'Search history' }).click();
     const search = page.locator('input[aria-label="Search history"]');
     await search.waitFor({ state: 'visible', timeout: 5_000 });
@@ -90,9 +79,6 @@ const historyMockWrap = function () {
       return page.locator('.day-text').allInnerTexts();
     };
 
-    // Hover metadata must settle without feeding an animated row height back
-    // into the virtualized list. Sampling both geometry values catches the
-    // rapid layout loop that is otherwise easy to miss in a screenshot.
     const hoverRow = dayRows.first();
     await hoverRow.hover();
     const hoverSamples = [];
@@ -112,16 +98,13 @@ const historyMockWrap = function () {
     }
 
     if (false) {
-    // Row metadata: app label + compact duration under the text.
     const metaFirst = await page.locator('.day-meta-left').first().innerText();
     if (!/Outlook · \d+s/.test(metaFirst)) errors.push(`row meta wrong: "${metaFirst}"`);
-    // Row with no app but a duration still shows just the duration.
     const metaNoApp = await page.locator('.day-row:has-text("Draft a response to the vendor") .day-meta-left').innerText();
     if (metaNoApp !== '5s') errors.push(`no-app row meta wrong: "${metaNoApp}"`);
     if ((await page.locator('.day-row').count()) !== 6) errors.push('all history rows should render unfiltered');
     }
 
-    // Search: partial + case-insensitive, finds cleaned text.
     await page.keyboard.type('quarterly');
     await page.waitForTimeout(500);
     const searched = await visibleCleanTexts();
@@ -129,7 +112,6 @@ const historyMockWrap = function () {
       errors.push(`search "quarterly" wrong: ${JSON.stringify(searched)}`);
     }
 
-    // Combined search + app filter.
     await page.locator('.history-app-dropdown button').click();
     await page.waitForTimeout(200);
     await page.locator('#history-app-menu [role="option"]:has-text("Outlook")').click();
@@ -139,7 +121,6 @@ const historyMockWrap = function () {
       errors.push(`search+app combined wrong: ${JSON.stringify(combined)}`);
     }
 
-    // App filter alone.
     await page.getByRole('button', { name: 'Clear search' }).click();
     await page.waitForTimeout(500);
     const byApp = await visibleCleanTexts();
@@ -147,8 +128,6 @@ const historyMockWrap = function () {
       errors.push(`app filter wrong: ${JSON.stringify(byApp)}`);
     }
 
-    // No matches → empty state; reset via the search × and the dropdown's
-    // "All apps" option before exercising the explicit Clear filters action.
     await ensureSearchInput();
     await page.keyboard.type('zzzz nothing matches');
     await page.waitForTimeout(500);
@@ -167,8 +146,6 @@ const historyMockWrap = function () {
     const metaNoApp = await page.locator('.day-row:has-text("Draft a response to the vendor") .day-meta-left').innerText();
     if (metaNoApp !== '5s') errors.push(`no-app row meta wrong: "${metaNoApp}"`);
 
-    // The explicit clear action enters with a horizontal transition and resets
-    // both controls together.
     await ensureSearchInput();
     await page.keyboard.type('accounting');
     await page.waitForTimeout(500);
@@ -176,8 +153,6 @@ const historyMockWrap = function () {
     await page.waitForTimeout(500);
     if ((await page.locator('.day-row').count()) !== 6) errors.push('Clear filters must restore all rows');
 
-    // Pagination contract intact: "Load older" only when a full page is present
-    // is exercised by the frozen smoke test; here just ensure no error surfaced.
     if (errors.length > 0) {
       console.error('FAILURES:');
       errors.forEach((e) => console.error('  ' + e));

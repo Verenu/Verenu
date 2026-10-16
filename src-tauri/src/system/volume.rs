@@ -12,21 +12,12 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
-/// Result of an attempt to mute the default output. Dictation waits for this
-/// before opening the microphone, so `Muted` and `AlreadyMuted` must only be
-/// returned when the output really is silent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuteOutcome {
-    /// Verenu muted the output and, where the platform allows, read it back.
     Muted,
-    /// The output was already muted (by the user or by an earlier dictation).
     AlreadyMuted,
-    /// The mute request was delivered, but the platform cannot report whether
-    /// the output actually went silent (Android applies it in Kotlin and may
-    /// leave the volume up after a user override).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     Requested,
-    /// The output could not be muted; dictation continues unmuted.
     Failed,
 }
 
@@ -48,8 +39,6 @@ static MUTED_ENDPOINT: Mutex<WindowsMuteState> = Mutex::new(WindowsMuteState::ne
 #[cfg(any(windows, test))]
 const MAX_PENDING_WINDOWS_RESTORES: usize = 8;
 
-/// Tracks the endpoint for the current mute owner separately from endpoints
-/// whose restoration failed. A stale endpoint must not block muting a new one.
 #[cfg(any(windows, test))]
 #[derive(Default)]
 struct WindowsMuteState {
@@ -168,8 +157,6 @@ enum MacRestoreState {
     },
 }
 
-// ---- exclusive microphone access (macOS hog mode) ----
-
 #[cfg(target_os = "macos")]
 static HOG_STATE: Mutex<HogState> = Mutex::new(HogState::Idle);
 #[cfg(target_os = "macos")]
@@ -236,7 +223,6 @@ fn restore_windows_endpoint(endpoint: &str) -> Result<(), String> {
     }
 }
 
-/// Resolve the default again rather than trusting the endpoint saved for restore.
 #[cfg(windows)]
 fn confirm_current_windows_mute() -> Result<bool, String> {
     unsafe {
@@ -624,9 +610,6 @@ mod macos {
         }
     }
 
-    /// Acquires exclusive (hog-mode) ownership of the default input device for
-    /// this process. Returns the device id on success, `None` if hog mode isn't
-    /// settable or another process already owns the device (nothing to restore).
     pub fn snapshot_and_hog() -> Result<Option<AudioDeviceID>, String> {
         let device_id = default_input_device()?;
 
@@ -638,7 +621,6 @@ mod macos {
             return Ok(None);
         }
 
-        // Hog mode owner is a pid_t; pass our pid to acquire, -1 to release.
         let our_pid = std::process::id() as i32;
         set_i32_property(
             device_id,
@@ -655,8 +637,6 @@ mod macos {
         if owner == our_pid {
             Ok(Some(device_id))
         } else {
-            // The HAL declined or another process holds the device — we own
-            // nothing, so there is nothing to release later.
             Ok(None)
         }
     }
@@ -681,9 +661,6 @@ fn set_system_muted(_muted: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Default-sink mute through PipeWire (`wpctl`), with a PulseAudio `pactl`
-/// fallback. The sink is pinned by id when muting so a default-device change
-/// mid-dictation cannot leave a different sink muted.
 #[cfg(target_os = "linux")]
 mod linux {
     use super::MuteOutcome;
@@ -716,10 +693,6 @@ mod linux {
         })
     }
 
-    /// Returns the default sink and whether it is currently muted. The node id
-    /// is resolved first and the mute flag is read from that same id, so a
-    /// default-device change in between cannot pair one sink with another
-    /// sink's flag.
     pub fn default_sink() -> Result<(Sink, bool), String> {
         if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
             if let Some(id) = parse_wpctl_id(&inspect) {
@@ -736,8 +709,6 @@ mod linux {
         Ok((Sink::Pulse(name), mute.contains("yes")))
     }
 
-    /// Re-resolve identity after reading mute state, including on the
-    /// already-muted path. Do not pair a new default's flag with an old id.
     pub fn current_default(sink: &Sink) -> Result<Sink, String> {
         if matches!(sink, Sink::PipeWire(_)) {
             let inspect = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"])?;
@@ -759,13 +730,10 @@ mod linux {
         mut read_mute: impl FnMut(&Sink) -> Result<bool, String>,
         mut current: impl FnMut(&Sink) -> Result<Sink, String>,
     ) -> Result<MuteOutcome, String> {
-        // The outer gate bounds recording's wait even if an OS read stalls.
-        // Also bound churn so a changing default cannot create an endless task.
         for _ in 0..3 {
             let (sink, already_muted) = snapshot()?;
             if !already_muted {
                 set_mute(&sink)?;
-                // Keep restoration ownership even if confirmation fails.
                 if !muted_sinks.contains(&sink) {
                     muted_sinks.push(sink.clone());
                 }
@@ -792,7 +760,6 @@ mod linux {
         }
     }
 
-    /// Reads the sink's mute flag back from the audio server.
     pub fn is_muted(sink: &Sink) -> Result<bool, String> {
         match sink {
             Sink::PipeWire(id) => Ok(run("wpctl", &["get-volume", id])?.contains("[MUTED]")),
@@ -801,9 +768,6 @@ mod linux {
     }
 }
 
-/// The sinks Verenu muted. A sink that was already muted by the user is never
-/// recorded, so it is never unmuted on their behalf. More than one sink is
-/// possible when the default output changes while a mute is held.
 #[cfg(target_os = "linux")]
 static LINUX_MUTED_SINKS: Mutex<Vec<linux::Sink>> = Mutex::new(Vec::new());
 
@@ -912,9 +876,6 @@ pub fn unmute() {
     }
 }
 
-/// Reserves the microphone exclusively for this process (macOS hog mode), so no
-/// other app can capture it while dictating. Safe to call repeatedly — a no-op
-/// if exclusive access is already held.
 #[cfg(target_os = "macos")]
 pub fn register_session() -> u64 {
     let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -991,7 +952,6 @@ pub fn hog_mic(session_id: u64) {
     }
 }
 
-/// Releases exclusive microphone access taken by [`hog_mic`]. No-op if not held.
 #[cfg(target_os = "macos")]
 pub fn release_mic(session_id: u64) {
     let _ = ACTIVE_SESSION_ID.compare_exchange(session_id, 0, Ordering::SeqCst, Ordering::SeqCst);
@@ -1159,9 +1119,6 @@ mod linux_tests {
         String::from_utf8_lossy(&out.stdout).contains("[MUTED]")
     }
 
-    /// Real-hardware measurement: `cargo test live_mute_latency -- --ignored --nocapture`.
-    /// Briefly mutes the default sink a few times and checks the state
-    /// independently with `wpctl`. Skips when the sink is already muted.
     #[test]
     #[ignore = "mutes the real default sink"]
     fn live_mute_latency() {
@@ -1217,7 +1174,6 @@ pub fn unmute() {
     let _ = set_system_muted(false);
 }
 
-// The bridge mirrors this state for the pill; the Application applies it directly.
 static ANDROID_MUTE_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -1247,7 +1203,6 @@ fn update_android_media_mute(muted: bool) -> bool {
 
     let result = (|| -> jni::errors::Result<()> {
         let context = ndk_context::android_context();
-        // ndk-context owns a process-lifetime Application global reference.
         let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast())? };
         let mut env = vm.attach_current_thread()?;
         let application = unsafe { JObject::from_raw(context.context().cast()) };
@@ -1257,7 +1212,6 @@ fn update_android_media_mute(muted: bool) -> bool {
             "(Z)V",
             &[JValue::Bool(muted.into())],
         );
-        // Never leave a pending Java exception on a Rust worker thread.
         if env.exception_check()? {
             env.exception_clear()?;
         }
@@ -1269,7 +1223,6 @@ fn update_android_media_mute(muted: bool) -> bool {
     result.is_ok()
 }
 
-/// Exclusive microphone access is macOS-only; no-op everywhere else.
 #[cfg(not(target_os = "macos"))]
 pub fn register_session() -> u64 {
     0
@@ -1453,8 +1406,6 @@ mod windows_mute_state_tests {
             |_| Ok(()),
         );
 
-        // Switching to an audible output, manually unmuting, or losing access
-        // to the audio server must not confirm silence from a saved lease.
         for current in [Ok(false), Err("audio server unavailable".into()), Ok(true)] {
             let expected = if current == Ok(true) {
                 MuteOutcome::AlreadyMuted

@@ -40,7 +40,6 @@ export const mentionCases = [
   [true, '"ping at sign maria. tomorrow"', '"ping at sign maria. tomorrow"'],
   [true, '`ping at sign maria. tomorrow`', '`ping at sign maria. tomorrow`'],
 ];
-// Each original scenario executes exactly once across independent workers.
 assert.equal(basicCases.length, 30);
 assert.equal(mentionCases.length, 6);
 assert.equal(new Set([...basicCases, ...mentionCases].map(([enabled, raw]) => JSON.stringify([enabled, raw]))).size, 36);

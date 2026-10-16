@@ -2,8 +2,6 @@ use base64::{display::Base64Display, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use serde::{Serialize, Serializer};
 
-/// Encode directly into the JSON serializer instead of allocating a second
-/// recording-sized base64 String beside the serialized request body.
 pub struct Base64Audio(pub Bytes);
 
 impl std::fmt::Debug for Base64Audio {
@@ -21,8 +19,6 @@ impl Serialize for Base64Audio {
     }
 }
 
-/// Reserve the encoded audio plus a bound for escaped metadata. Incremental
-/// base64 writes would otherwise grow the JSON buffer geometrically.
 pub fn json_request<T: Serialize>(
     request: reqwest::RequestBuilder,
     body: &T,

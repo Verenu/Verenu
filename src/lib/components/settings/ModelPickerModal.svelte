@@ -42,17 +42,11 @@
     local,
     origin = null,
   }: {
-    /**
-     * `select` replaces the active model; `fallback` only appends to the chain.
-     * Someone who opened "Add fallback" must not be able to clobber their
-     * default by clicking a row, so the row gesture changes with the mode.
-     */
     mode: 'select' | 'fallback';
     task: TaskType;
     context: PickerContext;
     defaultModel: string;
     fallbackModels: string[];
-    /** Only gates the hand-typed model-id footer, not the model list itself. */
     advancedModelUi: boolean;
     customDraft: string;
     onSelect: (id: string) => void;
@@ -61,13 +55,7 @@
     onAddCustomModel: (id: string) => void;
     onOpenApiKeys: () => void;
     onClose: () => void;
-    /**
-     * Downloading, deleting and prompt-editing local models happens here now,
-     * on the row for the model itself, rather than in a separate section that
-     * listed the same models a second time under different UI.
-     */
     local: LocalControls;
-    /** Centre of the button that opened this, so the dialog grows out of it. */
     origin?: { x: number; y: number } | null;
   } = $props();
 
@@ -75,19 +63,13 @@
   const isDownloading = (id: string) => localModel(id)?.is_downloading === true;
   const isDownloaded = (id: string) => localModel(id)?.is_downloaded === true;
 
-  /** The cleanup runtime is a one-time prerequisite shared by every local LLM. */
   const runtimePending = $derived(
     !!local.runtime && !local.runtime.info?.installed && !!local.runtime.info,
   );
 
   let modalEl = $state<HTMLElement | null>(null);
   let query = $state('');
-  // The unfiltered list is every provider's models (about 45 rows with inline
-  // logos). On a phone, open on the provider of the current choice instead: a
-  // fraction of the DOM to build, lay out and animate when the dialog opens.
   let providerFilter = $state<ProviderId | 'all'>(
-    // Read once on purpose: the filter is the user's from then on. Apple has no
-    // rows on phones, so a stored Apple choice must not open an empty tab.
     isAndroid
       ? untrack(() => {
           const provider = splitModelId(defaultModel)?.provider;
@@ -96,25 +78,11 @@
       : 'all',
   );
 
-  // Animate the dialog, not every catalog row. Live catalogs can contain
-  // hundreds of discoveries; per-row transitions force style/layout reads
-  // before the dialog can paint, even for rows outside the scroll viewport.
   const cardMotion = (node: Element, params: { origin?: { x: number; y: number }; duration?: number }) =>
     isAndroid
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
       : expandFromOrigin(node, params);
-  /**
-   * Everything a provider lists that Verenu hasn't vetted. Off by default —
-   * these come straight from the live `/v1/models` fetch, so a brand-new model
-   * shows up here the day it ships, but so does anything the modality filter
-   * couldn't rule out.
-   */
   let showUnverified = $state(false);
-  /**
-   * Settings is a full-screen page beside the rail, so centring on the whole
-   * window puts the dialog visibly left of the content it belongs to. Measure
-   * the panel and centre inside that instead.
-   */
   let panelLeft = $state(0);
 
   onMount(() => {
@@ -139,8 +107,6 @@
     ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
   const current = $derived(rowForSelection(defaultModel, context));
-  // Selections stay listed even after a provider drops them, so a dead choice
-  // still has somewhere to show its state and be swapped out.
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
   const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
@@ -166,7 +132,6 @@
       ? 'Some capability metadata is unavailable. Keeping known models.'
       : 'Model lists refresh daily. Your selections stay the same.');
   const unverified = $derived(unverifiedRows(context).filter(supportedHere));
-  /** What the search box says it searches — the collapsed tail isn't in it. */
   const listedCount = $derived(curated.length + (showUnverified ? unverified.length : 0));
 
   const needle = $derived(query.trim().toLowerCase());
@@ -187,9 +152,6 @@
   const inFilter = (row: ModelRow) =>
     providerFilter === 'all' || row.provider === providerFilter;
   const shown = $derived(searched.filter(inFilter));
-  // Provider discovery can add hundreds of compatible models. Build only a
-  // small batch of rows on open; search and provider counts still use the full
-  // catalog, including cached entries while a refresh is pending or offline.
   const ROW_BATCH = 20;
   let rowLimits = $state<Partial<Record<ProviderId, number>>>({});
   $effect(() => {
@@ -198,10 +160,8 @@
     showUnverified;
     rowLimits = {};
   });
-  /** How many the disclosure would add, counted for the tab you're on. */
   const hiddenCount = $derived(matchedUnverified.filter(inFilter).length);
 
-  /** Usable first, then anything needing setup, then anything gone. */
   const RANK: Record<ModelRow['state'], number> = {
     ready: 0,
     unverified: 1,
@@ -210,7 +170,6 @@
     'not-found': 4,
   };
 
-  /** Phones list the recommended 0.5B cleanup model first; the rest stay alphabetical. */
   const phonePreferred = (row: ModelRow) =>
     isAndroid && row.provider === 'local' && row.id === 'qwen2.5-0.5b-instruct' ? 0 : 1;
 
@@ -243,11 +202,7 @@
 
   function activate(row: ModelRow) {
     if (row.remedy === 'add-key') return onOpenApiKeys();
-    // A pinned pick this machine cannot run stays listed so it can be replaced,
-    // but it must not be re-selectable.
     if (row.provider === 'local' && row.state === 'unavailable') return;
-    // A model that isn't on disk yet can't be chosen, so the row's job is to
-    // fetch it. Selecting it afterwards is a second, deliberate click.
     if (row.remedy === 'download') return local.onDownload(row.id);
     if (row.provider === 'local' && runtimePending) {
       if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
@@ -271,15 +226,6 @@
     onAddFallback(row.key);
   }
 
-  /**
-   * Which provider a hand-typed id belongs to.
-   *
-   * Never parsed out of the id itself: plenty of ids contain a slash that is
-   * part of the name, not a provider — `qwen/qwen3.6-27b` is a *Groq* model.
-   * Splitting on `/` would file
-   * them under OpenAI. The rail's current filter is an explicit answer, and
-   * the active model's provider is the sensible default.
-   */
   const customProvider = $derived<ProviderId>(
     providerFilter !== 'all'
       ? providerFilter
@@ -293,9 +239,6 @@
     if (!value) return;
 
     const cache = context.cache[customProvider];
-    // Only reject when the provider has actually told us what it offers.
-    // Offline, or before the first fetch, a typo is indistinguishable from a
-    // brand-new model, so it goes through with an "unverified" note instead.
     if (customProvider !== 'local' && isTrustworthy(cache) && !cache!.ids.includes(value)) {
       customError = `${providerDisplayLabel(customProvider)} doesn't list a model called “${value}”.`;
       return;
@@ -312,7 +255,6 @@
   }
 
   $effect(() => {
-    // Clear a stale complaint as soon as the text changes.
     customDraft;
     customError = '';
   });
@@ -326,7 +268,6 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="picker-wrap" use:portal style="padding-left: {panelLeft}px">
   <div
     class="picker-backdrop"
@@ -714,7 +655,6 @@
     overflow: hidden;
   }
 
-  /* ── Header ─────────────────────────────── */
   .picker-head {
     display: flex;
     align-items: flex-start;
@@ -744,8 +684,6 @@
     height: 26px;
     display: grid;
     place-items: center;
-    /* Inherited button padding left less content box than the glyph needs, so
-       it overflowed the grid cell and drifted off centre. */
     padding: 0;
     box-sizing: border-box;
     border: 1px solid var(--line);
@@ -764,14 +702,11 @@
     color: var(--ink);
   }
 
-  /* ── Search ─────────────────────────────── */
   .picker-search-row {
     position: relative;
     padding: 4px 20px 14px;
   }
 
-  /* Centred against the input's box, not the row's: the row's padding is
-     uneven (4px top, 14px bottom), so a plain top:50% sits ~5px low. */
   .search-icon {
     position: absolute;
     left: 30px;
@@ -798,7 +733,6 @@
     outline-offset: -1px;
   }
 
-  /* ── Body: provider rail + list ─────────── */
   .picker-body {
     flex: 1;
     min-height: 0;
@@ -863,9 +797,6 @@
     color: var(--ink-faint);
   }
 
-  /* Marks are shown exactly as each brand draws them. A logo that already
-     carries its own background (Groq's orange square) fills the tile; the
-     rest sit bare, so nothing reads as an outline or a recolour. */
   .rail-logo,
   .row-logo {
     flex-shrink: 0;
@@ -900,8 +831,6 @@
     height: 18px;
   }
 
-
-  /* ── Model list ─────────────────────────── */
   .picker-list {
     overflow-y: auto;
     padding: 10px 12px 14px;
@@ -1067,7 +996,6 @@
     padding: 2px 10px 8px 46px;
   }
 
-  /* One line for the shared on-device runtime, not one per model. */
   .runtime-note {
     display: flex;
     align-items: center;
@@ -1117,8 +1045,6 @@
     color: var(--ink-mute);
   }
 
-  /* Sits at the foot of the list, not in the footer bar: it reveals more of
-     the same list rather than acting on the dialog. */
   .more-toggle {
     display: flex;
     align-items: baseline;
@@ -1160,7 +1086,6 @@
     color: var(--ink-mute);
   }
 
-  /* ── Footer ─────────────────────────────── */
   .picker-foot {
     padding: 12px 20px;
     border-top: 1px solid var(--line);
@@ -1231,8 +1156,6 @@
     cursor: default;
   }
 
-  /* Landscape phones: the stacked header, search and refresh rows used to
-     leave about one model row visible. Give the list the height back. */
   @media (max-height: 520px) {
     .picker-card {
       height: calc(100vh - 16px);
@@ -1267,8 +1190,6 @@
   @media (max-width: 640px) {
     .picker-body {
       grid-template-columns: 1fr;
-      /* The rail keeps its own height and the list takes the rest. Otherwise the
-         auto rows share the spare space and the chip row stretches to ~180px. */
       grid-template-rows: auto minmax(0, 1fr);
     }
 
@@ -1279,8 +1200,6 @@
       border-bottom: 1px solid var(--line);
     }
 
-    /* Chips keep their label width in the row; full width squeezed them into
-       tall, wrapped columns. */
     .picker-rail .rail-item {
       width: auto;
       flex-shrink: 0;
@@ -1298,8 +1217,6 @@
       padding-right: 14px;
     }
 
-    /* Long ids, tags and notes ("Not downloaded") otherwise run under the
-       row's Download/Delete button; wrap them and let the name wrap too. */
     .row-name {
       white-space: normal;
       overflow-wrap: anywhere;
@@ -1337,8 +1254,6 @@
       min-width: 0;
     }
 
-    /* A phone row has no room for the reason beside the id, so the reason takes
-       its own full-width line and wraps. The id stays secondary on the first line. */
     .row-sub {
       flex-wrap: wrap;
       row-gap: 2px;

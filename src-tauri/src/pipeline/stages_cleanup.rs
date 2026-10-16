@@ -1,18 +1,8 @@
-//! Cleanup stage: refusal/artifact guards, local cleanup requests, the
-//! cleanup-result cache, provider fallback chains, and the
-//! cleanup+snippet orchestration entrypoints.
-
 use super::stages_style::ensure_terminal_punctuation;
 use super::*;
 
-// Cleanup is an enhancement, not a reason to leave a completed dictation
-// blocked behind a provider that has accepted a request but stopped replying.
-// Normal cleanup completes in about a second, so retry once quickly and then
-// deliver the transcription without cleanup if both attempts stall.
 const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
-// Bump this whenever cleanup instructions change so previously generated
-// output cannot mask the new prompt through the cleanup-result cache.
 pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v11";
 
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
@@ -25,14 +15,6 @@ fn is_cleanup_soft_timeout(error: &anyhow::Error) -> bool {
     error.to_string().starts_with("CLEANUP_SOFT_TIMEOUT ")
 }
 
-/// Runtime safety net for a cleanup result that looks like the model
-/// answering/refusing instead of returning cleaned dictation. Differential:
-/// only acts if `cleaned` looks like a refusal AND `raw` does not (a real
-/// speaker can legitimately say "I cannot...").
-///
-/// Returns `Some(text)` for a usable cleaned result (safe to cache), or
-/// `None` if the retry also looks like a refusal/failed and the caller
-/// should skip cleanup entirely and use the pre-cleanup text.
 #[allow(clippy::too_many_arguments)]
 async fn run_local_cleanup_request(
     app: Option<&AppHandle>,
@@ -64,8 +46,6 @@ async fn run_local_cleanup_request(
         custom_template,
         alternate_transcript,
     );
-    // The runtime is launched with thinking disabled, so this budget is for
-    // visible cleanup output rather than hidden reasoning.
     let max_output_tokens = if intensity == "none" {
         alternate_transcript
             .map(|alternate| prompts::fusion_max_output_tokens(expanded, alternate))
@@ -89,23 +69,6 @@ async fn run_local_cleanup_request(
         .await
 }
 
-/// Refusal text ("I am an AI..."), leaked model internals (chat-template
-/// control tokens, chain-of-thought preamble), degenerate repetition,
-/// fabricated content (output sharing almost no words with what was
-/// actually dictated), excessive content loss (a "light"/"none" intensity
-/// result missing a large chunk of what was actually dictated), unwanted
-/// expansion (a "light"/"none" intensity result padded with extra words
-/// built mostly from vocabulary that genuinely appears in the input, so
-/// fabrication's word-overlap check doesn't catch it), and perspective flip
-/// (the model answers dictation that sounds like it's addressed to someone,
-/// swapping every "you" for "I" or vice versa — pronouns are too small a
-/// fraction of total words to move the fabrication/length checks) are all
-/// "the model didn't return usable cleaned dictation" — none of these are
-/// ever safe to inject as if they were the user's speech. `reference` is the
-/// text `text` is judged against for the fabrication/length/perspective
-/// checks (the actual LLM input); pass the same string for both when there's
-/// no meaningful baseline to compare against (e.g. judging the raw dictation
-/// on its own, where these checks relative to itself are moot).
 fn cleanup_output_is_unusable(intensity: &str, reference: &str, text: &str) -> bool {
     prompts::looks_like_refusal(text)
         || prompts::looks_like_model_artifact_leak(text)
@@ -132,9 +95,6 @@ pub(super) fn cleanup_output_is_unusable_against_candidates(
     let primary_failure = cleanup_output_is_unusable(intensity, primary, text);
     match alternate {
         Some(alternate) => {
-            // A reconciler is allowed to choose wording that only the
-            // alternate candidate supports. Reject it only when it fails
-            // against both untrusted candidates.
             primary_failure && cleanup_output_is_unusable(intensity, alternate, text)
         }
         None => primary_failure,
@@ -404,10 +364,6 @@ async fn run_cleanup_provider_chain(
                         retryable,
                         trim_err(&e.to_string())
                     );
-                    // A real provider error should move to the configured
-                    // fallback immediately. Only a silent stall gets the
-                    // same-provider retry, because the second connection is
-                    // often healthy even though the first one wedged.
                     if !is_local
                         && !is_apple
                         && !offline
@@ -433,9 +389,6 @@ async fn run_cleanup_provider_chain(
     (None, last_cleanup_err, saw_soft_timeout)
 }
 
-// Handles snippet fast-path, snippet instruction collection, LLM cleanup, and
-// instruction override application. Returns (final_text_before_dict,
-// dictionary entries, cache key, cleanup provider/model metadata).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_cleanup_and_snippets(
     app: &AppHandle,
@@ -528,9 +481,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         );
     }
 
-    // Fast path: an exact snippet trigger can skip the LLM unless a later
-    // cleanup instruction needs the expanded text to reach the model. Basic
-    // ignores those instructions, so they must not disable exact expansion.
     let pure_expansion = if cfg.cleanup_intensity == "rules" || snippet_instructions.is_empty() {
         snippets::try_pure_snippet_expand_from(raw, &db_snippets, db_handle)
     } else {
@@ -550,8 +500,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             snippets::expand_snippets_from(raw, &mut db_snippets, db_handle)
         }
     });
-    // Basic never uses a cleanup provider, fusion, preset prompt, tone or
-    // custom instructions. Other languages and Auto preserve the transcript.
     if cfg.cleanup_intensity == "rules" || (commands_active && expanded.trim().is_empty()) {
         return Ok((expanded, dict_entries, String::new(), String::new()));
     }
@@ -566,9 +514,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         raw,
         alternate.map(|candidate| candidate.text.as_str()),
     );
-    // Skill rules must not turn an exact snippet match into a reason to call
-    // the cleanup provider. The pure-expansion path remains local unless a
-    // separate user instruction already requires cleanup.
     let skill_parts = (cfg.cleanup_enabled
         && pure_expansion.is_none()
         && cfg.cleanup_intensity != "none")
@@ -578,7 +523,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 .and_then(|catalog| catalog.prompt_parts())
         })
         .flatten();
-    // Booleans only: never log dictated text, skill names, or workspace labels.
     log::debug!(
         "pipeline: t3 skill evidence catalog={} cleanup_enabled={} attached={}",
         cfg.t3_skill_catalog.is_some(),
@@ -598,11 +542,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         }
         dictionary_evidence.push_str(evidence);
     }
-    // A second candidate must not resurrect words removed by an explicit
-    // command. Apply the same preprocessing once, without counting snippet
-    // uses again; keep both original candidates outside this cleanup stage.
-    // Capture aliases before preprocessing: alternate-only triggers stay
-    // literal barriers there, and must remain barriers in model recovery too.
     let alternate_has_snippet = commands_active
         && alternate.is_some_and(|candidate| snippets::has_snippet_trigger(&candidate.text, &db_snippets));
     let processed_alternate = if commands_active {
@@ -683,9 +622,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             Some(context_fingerprint),
             Some(context_id),
         );
-        // Protected clipboard payloads are unique per invocation and must not
-        // reuse or populate the cleanup cache, even though the marker itself
-        // is intentionally stable enough to be safe in the prompt.
         let cache_key = if protected_instruction.is_some() || !cfg.cleanup_cache_enabled {
             String::new()
         } else {
@@ -702,9 +638,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 alternate.map(|candidate| candidate.text.as_str()),
             ) {
                 record_lookup(true);
-                // Cache rows do not retain provider provenance. Current settings
-                // cannot tell whether Apple/local cleanup or a cloud fallback
-                // generated this text, so do not infer an on-device attribution.
                 return Ok((overridden, dict_entries, cache_key, String::new()));
             }
             record_lookup(false);
@@ -760,7 +693,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             None => None,
         };
 
-        // Reject newly invented skill names before cache insertion or delivery.
         let guarded = guarded.filter(|cleaned| {
             let rejection = cfg.t3_skill_catalog
                 .as_ref()
@@ -791,36 +723,18 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                         .ok();
                     }
                 }
-                // These backstops enforce built-in style preferences. An edited
-                // preset may explicitly retain fillers, dashes, or omit periods.
-                // Meaning and safety guards above still apply to every result.
                 let use_default_style =
                     cfg.cleanup_intensity != "none" && !cfg.has_style_instructions(profile);
-                // Strip em dashes the model introduced (vs. ones the speaker
-                // actually dictated) before caching, so a poisoned-by-style
-                // result never gets baked into the cache.
                 let cleaned = if !use_default_style {
                     cleaned
                 } else {
                     crate::system::text::strip_unspoken_em_dashes(&expanded, &cleaned)
                 };
-                // Mechanical backstop for every non-Off intensity: the prompt
-                // already tells every model to remove filler/hesitation
-                // words, but small local models apply that rule
-                // unreliably — observed in practice: one "um" correctly
-                // stripped while others survived untouched in the same
-                // output. Deterministic removal guarantees these are gone
-                // regardless of model behavior. The helper only removes
-                // "you know" in an unambiguously discourse-filler position;
-                // meaningful uses remain intact.
                 let cleaned = if use_default_style {
                     crate::system::text::strip_filler_hesitations(&cleaned)
                 } else {
                     cleaned
                 };
-                // Punctuate before caching + overrides so the cache stores the
-                // normalized text and snippet "no period" instructions can still
-                // override it afterward.
                 let cleaned = if !use_default_style {
                     cleaned
                 } else {
@@ -878,8 +792,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 }
             }
             None if !provider_succeeded && last_cleanup_err.is_some() => {
-                // Completed speech must survive provider errors, even when
-                // neither cloud nor local cleanup can finish.
                 if let Some(app) = app {
                     app.emit(
                         "verenu:model-notice",

@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { summarizePlaywrightReport } from './playwright-summary.mjs';
 
-// Console diagnostics use the same privacy boundary as uploaded reports.
 export function summarizePlaywrightFailures(report) {
   return summarizePlaywrightReport(report).tests
     .filter(test => test.diagnostics?.length)

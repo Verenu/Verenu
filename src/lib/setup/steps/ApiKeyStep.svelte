@@ -29,7 +29,6 @@
     providerName: string;
     apiKeyDraft: string;
     showKey: boolean;
-    /** 'fork' asks whether they have a key; 'tutorial' walks them through making one. */
     mode?: 'fork' | 'tutorial' | 'paste';
     keySaved: boolean;
     keySaving: boolean;
@@ -39,11 +38,6 @@
 
   let guide = $derived(providerGuides[provider]);
 
-  // Screenshots are optional. Anything dropped into src/assets/setup/ gets
-  // picked up here by filename; a step with no matching file falls back to a
-  // placeholder frame, so an empty folder is a valid state.
-  // Root-absolute on purpose — a '../../../' glob does not resolve from inside
-  // a .svelte module and silently matched nothing.
   const shotModules = import.meta.glob('/src/assets/setup/*.png', {
     eager: true,
     query: '?url',
@@ -58,8 +52,6 @@
   }
 
   let slide = $state(0);
-  // The walkthrough ends on one extra slide that takes the key, so nobody has to
-  // leave the tutorial to paste it.
   const slideCount = $derived(guide.steps.length + 1);
   const safeSlide = $derived(Math.min(slide, Math.max(0, slideCount - 1)));
   const onPasteSlide = $derived(safeSlide === guide.steps.length);
@@ -84,7 +76,6 @@
     void cancelLocalModelDownload('parakeet-v3');
   }
 
-  // Reset the carousel when the provider changes underneath us.
   $effect(() => {
     void provider;
     slide = 0;
@@ -207,8 +198,6 @@
     </div>
 
   {:else if mode === 'fork'}
-    <!-- The old step dropped straight into a password field, which is a dead end
-         for anyone who has never made an account. Ask first. -->
     <div class="fork" in:fade={{ duration: motionMs(180) }}>
       <p class="fork-question">Do you already have a {providerName} API key?</p>
       <div class="fork-options">
@@ -246,9 +235,6 @@
             {:else if currentShot}
               <img class="shot-img" src={currentShot} alt={guide.steps[safeSlide]?.alt ?? ''} />
             {:else}
-              <!-- No screenshot for this step yet (see src/assets/setup/README.md).
-                   The step number and caption are both already in the row below,
-                   so this says only what it needs to. -->
               <div class="shot-placeholder">
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 15-5-5L5 20"/></svg>
                 <span class="shot-placeholder-text">Screenshot coming soon</span>
@@ -322,7 +308,6 @@
 <style>
   .apikey-step { gap: 16px; }
 
-  /* ── Fork ─────────────────────────────────────────────────────────── */
   .fork { display: flex; flex-direction: column; gap: 14px; }
 
   .fork-question {
@@ -363,13 +348,10 @@
 
   .fork-note { margin: 0; font-size: 11.5px; color: var(--ink-faint); text-align: center; line-height: 1.5; }
 
-  /* ── Tutorial carousel ────────────────────────────────────────────── */
   .tutorial { display: flex; flex-direction: column; gap: 10px; }
 
   .shot-frame {
     position: relative;
-    /* Height drives width. `width:100% + max-height` let aspect-ratio compute a
-       316px box that max-height then clipped, cutting the bottom off every shot. */
     height: clamp(220px, 38vh, 300px);
     aspect-ratio: 16 / 9;
     max-width: 100%;
@@ -380,8 +362,6 @@
     overflow: hidden;
   }
 
-  /* Absolute, not grid-stacked: an auto-sized grid row took its height from the
-     image's own aspect ratio and overflowed the max-height'd frame by ~56px. */
   .shot-inner { position: absolute; inset: 0; display: grid; place-items: center; }
 
   .shot-img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -414,8 +394,6 @@
     border: 1px solid var(--line-strong);
     background: transparent;
     color: var(--ink-mute);
-    /* SVG chevrons, not "‹"/"›" — the text glyphs have asymmetric side bearings
-       that no amount of centring fixes, so each arrow sat off-centre its own way. */
     display: flex;
     align-items: center;
     justify-content: center;
@@ -474,7 +452,6 @@
   .paste-slide-field { width: 100%; display: flex; flex-direction: column; gap: 9px; }
   .paste-slide-note { margin: 0; font-size: 11.5px; color: var(--ink-faint); text-align: center; }
 
-  /* ── Paste ────────────────────────────────────────────────────────── */
   .local-setup { display: flex; flex-direction: column; gap: 12px; }
   .local-intro { display: flex; flex-direction: column; gap: 5px; }
   .local-kicker {
@@ -596,8 +573,6 @@
     color: var(--ink-soft);
   }
 
-  /* An outlined glyph in the flow's accent, matching the pick-radio treatment —
-     the old solid disc with a text "✓" was the only filled badge in the wizard. */
   .status-glyph { color: var(--accent); flex-shrink: 0; }
   .key-status.is-bad .status-glyph { color: var(--danger); }
   .key-status.is-warn .status-glyph { color: var(--warning); }
@@ -624,8 +599,6 @@
     line-height: 1.45;
   }
 
-  /* These were 11.5px underlined links and read as fine print — the "where do I
-     get one?" escape hatch is the most-needed control on this screen. */
   .paste-help { display: flex; align-items: stretch; gap: 8px; }
 
   .help-btn {

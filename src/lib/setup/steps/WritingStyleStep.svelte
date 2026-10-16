@@ -9,8 +9,6 @@
     tone = $bindable(),
   }: { intensity: CleanupIntensity; tone: ToneId } = $props();
 
-  // Tone is a cleanup-LLM instruction, so with cleanup off it has nothing to act on.
-  // Mirrors how Style.svelte inerts the whole page when cleanup_enabled is false.
   const cleanupOff = $derived(intensity === 'none');
   const toneInactive = $derived(cleanupOff || intensity === 'rules');
   const preview = $derived(writingStylePreview(intensity, tone));
@@ -64,8 +62,6 @@
   </div>
 
   <div class="preview-box">
-    <!-- Stacked in one grid cell so the outgoing and incoming previews
-         cross-fade in place instead of the box snapping to a new height. -->
     <div class="preview-stack">
       {#key cleanupOff ? 'off' : `${intensity}-${tone}`}
         <div class="preview-slot" in:fade={{ duration: motionMs(180), delay: motionMs(70) }} out:fade={{ duration: motionMs(70) }}>
@@ -89,7 +85,6 @@
 
   .style-group { display: flex; flex-direction: column; gap: 8px; }
 
-  /* Fading rather than snapping when cleanup is switched off. */
   .style-group { transition: opacity 0.22s ease; }
   .style-group.disabled { opacity: 0.4; }
 
@@ -97,9 +92,6 @@
 
   .group-note { font-size: 11px; color: var(--ink-faint); font-style: italic; }
 
-  /* Both groups share one 12-column track so a 4-up row and a 3-up row line up
-     on the same left and right edges — previously they were separate grids at
-     different widths, which is what made the buttons look mismatched. */
   .style-grid {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -109,9 +101,6 @@
   .style-grid > :global(*) { grid-column: span 3; }
   .tone-grid > :global(*) { grid-column: span 4; }
 
-  /* Five cleanup cards as 3 + 2 rather than 4 + a lone fifth: the wider cards
-     wrap their descriptions onto fewer lines, which is what keeps the step
-     inside a 720px window. Order is unchanged, so Basic still reads last. */
   .cleanup-grid > :global(*) { grid-column: span 4; }
   .cleanup-grid > .wide { grid-column: span 6; }
 
@@ -128,8 +117,6 @@
     padding: 11px 14px;
     display: flex;
     align-items: stretch;
-    /* Tallest state (two wrapped lines) reserved up front, so switching
-       intensity cross-fades the text without resizing the box. */
     min-height: 62px;
     box-sizing: border-box;
   }
@@ -157,9 +144,6 @@
     .preview-arrow { display: none; }
   }
 
-  /* Short wizard windows (the 900x600 class): five cleanup cards wrap onto two
-     rows, so tighten card, group and preview chrome instead of letting the
-     step scroll. Choices, descriptions and tone stay visible. */
   @media (max-height: 660px) {
     .writing-style-step { gap: 12px; }
     .style-group { gap: 6px; }

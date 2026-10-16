@@ -61,11 +61,6 @@ export function alignActivity(daily: InsightsDay[], snapshot: GithubSnapshot | n
   });
 }
 
-/**
- * Smooth path through each run of known GitHub dates, using the same curve as
- * the words line. Unknown dates break the path; they are never filled as zero
- * or interpolated. `area` closes each run down to the baseline for the fill.
- */
 export function activityPath(
   counts: Array<number | null>,
   x: (index: number) => number,

@@ -1,5 +1,3 @@
-//! Context and context-scoped library commands.
-
 use super::*;
 
 #[tauri::command]
@@ -175,10 +173,6 @@ pub async fn get_context_websites(
         .await
 }
 
-/// DNS-only existence check — resolving the hostname is enough to confirm the
-/// domain is real without the cost/fragility of an actual HTTP request (which
-/// can fail for reasons unrelated to the domain existing, like no HTTPS
-/// server or a firewall). Never errors: a lookup failure just means "no".
 #[tauri::command]
 pub async fn check_domain_exists(domain: String) -> Result<bool, String> {
     let host = domain.trim().to_string();

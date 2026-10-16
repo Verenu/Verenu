@@ -25,9 +25,6 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
 
   let dismissedVersion: string | null = null;
   let notifiedVersion: string | null = null;
-  // Resolve each lookup independently so a single failed setting read doesn't
-  // wipe out the other — otherwise one failure could re-show a dismissed
-  // update or re-fire an already-sent notification.
   try {
     [dismissedVersion, notifiedVersion] = await Promise.all([
       invoke<string | null>('get_setting', { key: 'update_dismissed_version' }).catch((error) => {
@@ -57,13 +54,8 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
   if (!(await ensureNotificationPermission())) return;
 
   try {
-    // Deliver through Rust so Windows attributes the toast to Verenu rather
-    // than the WebView host process, which can be PowerShell in development.
     await invoke('notify_update_available', { version: update.version });
   } catch (error) {
-    // Don't persist the notified version if delivery failed — otherwise the
-    // user never sees a notification yet we'd mark it as notified and never
-    // retry on the next check.
     console.warn('Update notification failed:', error);
     return;
   }
@@ -81,10 +73,6 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
 export function startAutomaticUpdateChecks(): () => void {
   let active = true;
   const check = () => { void checkForAutomaticUpdates(() => active); };
-  // Fire the first check in the background rather than awaiting it, so this
-  // function can return the cleanup synchronously. That removes the unmount
-  // race the caller would otherwise have to guard against — the interval is
-  // registered before we return, so cleanup can always clear it.
   check();
 
   const timer = window.setInterval(() => {

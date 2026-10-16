@@ -21,9 +21,6 @@ fn main() {
     {
         panic!("native testing features are forbidden in release builds");
     }
-    // The public PostHog ingestion token is compiled into desktop builds only
-    // when the local/release environment provides it. No administrative key
-    // is accepted or logged here.
     println!("cargo:rerun-if-env-changed=POSTHOG_PROJECT_TOKEN");
     println!("cargo:rerun-if-env-changed=POSTHOG_HOST");
     if std::env::var("POSTHOG_PROJECT_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
@@ -55,18 +52,11 @@ fn main() {
             .compile("verenu_macos_ax_text_marker");
     }
 
-    // Oboe's default C++ mode links libc++_static, but Rust's linker does not
-    // use the C++ driver to add libc++abi automatically. Ask the NDK linker to
-    // add its static ABI archive so exception and guard symbols resolve.
     if target_os == "android" {
         println!("cargo:rustc-link-arg=-lc++abi");
     }
 
     println!("cargo:rerun-if-changed=Info.plist");
-    // Tauri merges this file for `npm run tauri dev`. Its capability rules are
-    // compiled into the executable, so a dev-config-only ACL change must also
-    // rerun this build script instead of leaving the previous authority table
-    // embedded in the debug binary.
     println!("cargo:rerun-if-changed=tauri.dev.conf.json");
     println!("cargo:rerun-if-changed=tauri.dev.windows.conf.json");
     println!("cargo:rerun-if-changed=permissions");
@@ -75,11 +65,6 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/verenu-mark.svg");
     println!("cargo:rerun-if-changed=src/generated_icon_geometry.rs");
 
-    // Keep Android Keystore commands as a plugin ACL. Putting them in the app
-    // `permissions/` root previously created `__app-acl__` with a narrow
-    // `[default]` set, which forced ACL checks on every custom command and made
-    // `save_setting` fail with "not allowed. Command not found" during
-    // `tauri dev` (Vite is still a local origin relative to `devUrl`).
     let mut attributes =
         tauri_build::Attributes::new().plugin("verenu-security", tauri_build::InlinedPlugin::new());
     if target_os == "windows" {
@@ -99,9 +84,6 @@ fn link_windows_manifest() {
         return;
     }
 
-    // tauri-build normally embeds this manifest only in binary targets. The
-    // library test executable also initializes native dialogs, so it needs the
-    // Common Controls v6 activation context as well.
     const MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
     <dependentAssembly>
@@ -218,8 +200,6 @@ fn build_windows_titlebar() {
         }
     }
 
-    // The Tauri executable is the deployment host. Stage the pinned Windows App SDK
-    // framework payload beside it so packaged builds never rely on a developer runtime.
     let packages = env::var_os("NUGET_PACKAGES")
         .map(PathBuf::from)
         .unwrap_or_else(|| {

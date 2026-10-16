@@ -1,9 +1,6 @@
 import { test, expect } from './fixtures.mjs';
 
 test('capability discoveries survive reload without changing selected models', async ({ page, session, cachedCatalogs }) => {
-  // Complete first-open migration before recording established selections.
-  // Legacy single-provider settings may store a bare ID while priority settings
-  // store provider/ID; both must identify the same model.
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.models"]').click();
   await expect.poll(async () => {
@@ -26,8 +23,6 @@ test('capability discoveries survive reload without changing selected models', a
     'synthetic/incompatible': { label: 'Synthetic incompatible model', tasks: [] },
   };
   try {
-    // Real native settings storage, with a fresh cache to make this regression
-    // deterministic without intercepting provider or IPC responses.
     await session.invoke('save_setting', { key: 'provider_model_cache', value: cache });
     await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
     await page.reload();

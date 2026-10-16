@@ -23,7 +23,6 @@ describe('isFunctional', () => {
 		expect(
 			isFunctional({ ...functional, accessibility_service: 'not_asked' }),
 		).toBe(false);
-		// OEM battery managers and notification opt-outs never block dictation.
 		expect(
 			isFunctional({ ...functional, battery_exemption: 'granted', notifications: 'granted' }),
 		).toBe(true);

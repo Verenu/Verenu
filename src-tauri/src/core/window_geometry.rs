@@ -1,9 +1,3 @@
-//! Native target-window geometry used to choose the dictation pill's display.
-//!
-//! Coordinates intentionally stay in each platform's desktop coordinate space:
-//! physical pixels on Windows and Core Graphics logical coordinates on macOS.
-//! Those are the coordinate spaces expected by Tauri's `monitor_from_point`.
-
 use crate::core::window_context;
 use tauri::{Runtime, WebviewWindow};
 
@@ -13,16 +7,10 @@ pub struct DesktopPoint {
     pub y: f64,
 }
 
-/// The native focus target used for injection plus the display anchor captured
-/// at dictation start. The id is an HWND on Windows and an application PID on
-/// macOS.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WindowTarget {
     pub id: usize,
     pub display_point: Option<DesktopPoint>,
-    /// Hyprland's stable client address and metadata captured *before* audio
-    /// processing. Other platforms leave this empty and keep their HWND/PID
-    /// identity in `id`.
     #[cfg(target_os = "linux")]
     pub linux: Option<LinuxWindowTarget>,
 }
@@ -40,8 +28,6 @@ pub struct LinuxWindowTarget {
 }
 
 impl WindowTarget {
-    /// Context lookup must use the same window snapshot as insertion. A PID
-    /// alone cannot distinguish two browser windows in the same process.
     pub fn process_name(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
         if let Some(window) = &self.linux {
@@ -69,8 +55,6 @@ impl WindowTarget {
     #[cfg(target_os = "linux")]
     fn from_hyprland(window: crate::core::hyprland::ActiveWindow) -> Self {
         Self {
-            // Kept for existing target-id contracts; Linux-native operations
-            // consume the typed identity below.
             id: window.pid as usize,
             display_point: (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
                 x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,
@@ -111,8 +95,6 @@ impl WindowTarget {
         }
     }
 
-    /// Re-read geometry for retries in case the target window moved. Retain the
-    /// original point if the native window is no longer queryable.
     pub fn refreshed(self) -> Self {
         #[cfg(target_os = "linux")]
         if let Some(linux) = &self.linux {
@@ -130,8 +112,6 @@ impl WindowTarget {
     }
 }
 
-/// Returns the center of a Tauri webview window in the platform coordinate
-/// space used by `WindowTarget::display_point`.
 pub fn capture_webview_center<R: Runtime>(window: &WebviewWindow<R>) -> Option<DesktopPoint> {
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
@@ -294,7 +274,7 @@ mod context_snapshot_tests {
                 title: "Public fixture".into(),
                 at: [-100, 20],
                 size,
-                workspace: crate::core::hyprland::Workspace { id: 2, name: "2".into() },
+                workspace: crate::core::hyprland::Workspace { id: 2 },
                 monitor: 3,
                 tags: vec!["terminal".into()],
             };
