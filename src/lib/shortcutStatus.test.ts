@@ -27,7 +27,6 @@ it('loads persistent shortcut failures and clears them after native recovery', a
   vi.mocked(invoke).mockResolvedValueOnce([failure]);
   await loadDesktopShortcuts();
   expect(desktopShortcut('dictation')).toEqual(failure);
-  // Opening Settings or reloading must retain the backend's failure reason.
   vi.mocked(invoke).mockResolvedValueOnce([failure]);
   await loadDesktopShortcuts();
   expect(desktopShortcut('dictation')?.note).toContain('An app id is required');

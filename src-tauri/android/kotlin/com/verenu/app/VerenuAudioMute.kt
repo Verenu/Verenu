@@ -6,7 +6,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 
-/** Temporarily quiet media without changing ring, call, or alarm audio. */
 class VerenuAudioMute(context: Context) {
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)

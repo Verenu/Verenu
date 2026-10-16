@@ -1,8 +1,3 @@
-//! Small macOS helpers around the frontmost application, shared by
-//! `window_context` (capture), `injection` (re-focus before paste) and
-//! `auto_learn` (focus check). Uses runtime `msg_send!` against AppKit classes
-//! that are already loaded into the process by Tauri/Cocoa, so no `objc2-app-kit`
-//! dependency is needed.
 
 #![cfg(target_os = "macos")]
 
@@ -23,10 +18,6 @@ extern "C" {}
 #[link(name = "UserNotifications", kind = "framework")]
 extern "C" {}
 
-// The global hotkey now uses Carbon `RegisterEventHotKey` (see
-// `core::hotkey::mac`), which needs no Input Monitoring permission, so the old
-// IOKit HID-listen probing has been removed. The only remaining macOS
-// permissions are Accessibility (Cmd+V injection / AX reads) and Microphone.
 
 const APP_ICON_ICNS: &[u8] = include_bytes!("../../icons/icon.icns");
 
@@ -37,9 +28,6 @@ const POLICY_REGULAR: u8 = 2;
 static LAST_APPLIED_POLICY: AtomicU8 = AtomicU8::new(POLICY_UNKNOWN);
 static RUNTIME_DOCK_ICON: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
 
-// Compatibility latch used by the AX text/context probes. It records that a
-// real cross-process AX read succeeded during this process lifetime; the
-// Permissions page itself always uses a fresh AXIsProcessTrusted() query.
 static ACCESSIBILITY_VERIFIED: AtomicBool = AtomicBool::new(false);
 
 pub fn mark_accessibility_verified() {
@@ -154,16 +142,10 @@ pub fn float_pill_window(ns_window: *mut std::ffi::c_void) {
     }
     autoreleasepool(|_| unsafe {
         let win = ns_window as *mut AnyObject;
-        // NSStatusWindowLevel keeps the pill above ordinary app windows while
-        // staying below system menus.
         let level: isize = 25;
         let _: () = msg_send![win, setLevel: level];
-        // NSWindowCollectionBehaviorCanJoinAllSpaces (1<<0) |
-        // NSWindowCollectionBehaviorFullScreenAuxiliary (1<<8): show on the
-        // active Space and over full-screen apps without switching Spaces.
         let behavior: usize = (1 << 0) | (1 << 8);
         let _: () = msg_send![win, setCollectionBehavior: behavior];
-        // Order front even though Verenu is not the active application.
         let _: () = msg_send![win, orderFrontRegardless];
     })
 }
@@ -175,7 +157,6 @@ pub fn activate_current_app() -> bool {
         if app.is_null() {
             return false;
         }
-        // NSApplicationActivateIgnoringOtherApps = 1 << 1
         let options: usize = 1 << 1;
         let ok: bool = msg_send![app, activateWithOptions: options];
         ok
@@ -624,7 +605,6 @@ pub async fn request_notifications() -> Result<(), String> {
             }
             return;
         }
-        // alert | sound | badge; request is only called from an explicit UI action.
         let handler = block2::RcBlock::new(
             move |_granted: objc2::runtime::Bool, error: *mut AnyObject| {
                 if let Ok(mut guard) = tx.lock() {
@@ -691,7 +671,6 @@ pub async fn request_notifications_on_main_thread(app: &AppHandle) -> Result<(),
     }
 }
 
-// UTI for plain UTF-8 text - the value of `NSPasteboardTypeString`.
 const PASTEBOARD_TYPE_STRING: &str = "public.utf8-plain-text";
 
 /// PID of the frontmost (active) application, or `None` if unavailable.
@@ -750,7 +729,6 @@ pub fn activate_pid(pid: i32) -> bool {
         if app.is_null() {
             return false;
         }
-        // NSApplicationActivateIgnoringOtherApps = 1 << 1
         let options: usize = 1 << 1;
         let ok: bool = msg_send![app, activateWithOptions: options];
         ok
@@ -870,7 +848,6 @@ pub fn pasteboard_write_string(s: &str) -> Result<isize, isize> {
     })
 }
 
-/// Convert an `NSString*` (as `AnyObject*`) to a Rust `String` via `-UTF8String`.
 unsafe fn nsstring_to_string(ns: *mut AnyObject) -> Option<String> {
     if ns.is_null() {
         return None;

@@ -1,7 +1,3 @@
-// Sub-apps: a place inside an app (a Discord server, a VS Code project)
-// matched by a window-title rule. Matching mirrors the Rust resolver in
-// src-tauri/src/data/db/sub_apps.rs so the sheet's live check agrees with
-// what dictation will do.
 import { isMac } from './platform';
 import type { TitleMatchMode } from './stores';
 

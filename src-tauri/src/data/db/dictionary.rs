@@ -1,4 +1,3 @@
-//! Dictionary entries, auto-learn events/candidates, and pending corrections.
 
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
@@ -197,11 +196,6 @@ fn query_dictionary_conn(
         .into_iter()
         .map(|(id, mut legacy)| {
             let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
-            // A scoped query must never fall back to the old global
-            // projection.  v26 migrates it into child rows and clears
-            // `dictionary.mistake`; ignoring the projection here also
-            // keeps a stale value from an interrupted/remote legacy write
-            // from leaking a correction learned in another Context.
             if context_id.is_some() {
                 legacy.mistake = None;
                 legacy.auto_learned = false;
@@ -220,9 +214,6 @@ fn materialize_dictionary_entry(
     corrections: Vec<DictionaryCorrection>,
 ) -> DictionaryEntry {
     if corrections.is_empty() {
-        // This fallback is only for a pre-v26/partially repaired row. v26
-        // clears the global projection, and all writes after v26 populate the
-        // child table, so a healthy database cannot leak it into a Context.
         return DictionaryEntry {
             id,
             term: legacy.term,
@@ -344,10 +335,6 @@ pub fn move_dictionary_corrections_conn(
             .optional()?;
 
         if let Some((target_id, target_auto_learned)) = exact_target {
-            // A manual mapping is authoritative. If the source mapping is
-            // manual and the target was automatic, transfer that authority;
-            // otherwise retain the existing target row and only accumulate
-            // automatic evidence.
             if !source_auto_learned && target_auto_learned {
                 conn.execute(
                     "UPDATE dictionary_corrections
@@ -397,10 +384,6 @@ pub fn move_dictionary_corrections_conn(
             continue;
         }
 
-        // The unique Context/variant index cannot represent two canonical
-        // terms for the same spelling. Keep the pre-existing Everywhere row;
-        // this is the same deterministic conflict policy used during legacy
-        // migration and default seeding.
         let variant_conflict: bool = conn.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM dictionary_corrections
@@ -462,9 +445,6 @@ pub fn remove_dictionary_corrections_for_context_conn(
             purge_auto_learn_evidence_for_pair_conn(conn, context_id, variant, &term)?;
         }
     }
-    // Evidence can outlive its promoted child row after a rejection or a
-    // partially completed import. Removing the canonical assignment must
-    // purge that evidence even when no mapping row remains to enumerate it.
     if let Some(term) = term.as_deref() {
         purge_auto_learn_evidence_for_term_conn(conn, context_id, term)?;
     }
@@ -578,10 +558,6 @@ fn find_dictionary_mistake_conflict(
         return Ok(None);
     }
 
-    // v26 makes child rows the only Context-aware source of corrections.
-    // Deliberately do not consult `dictionary.mistake`: it is retained only
-    // as a legacy compatibility column and a stale value must not block or
-    // leak a mapping in a different Context.
     let mut stmt = conn.prepare(
         "SELECT d.id, d.term, c.mistake
            FROM dictionary_corrections c
@@ -619,10 +595,6 @@ fn normalized_mistake_list(mistake: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Inserts the context-owned child mappings for one canonical term.  The
-/// caller must perform the context conflict check first.  A mapping row is
-/// intentionally one variant, not the legacy comma-separated field, because
-/// the row id is the rejection/sync identity.
 fn insert_correction_mappings_conn(
     conn: &rusqlite::Connection,
     context_id: i64,
@@ -683,8 +655,6 @@ pub fn insert_dictionary_entry_returning(
         validate_char_limit("Often mistranscribed as", m, DICTIONARY_ENTRY_CHAR_LIMIT)?;
     }
 
-    // Insert, assign, and read last_insert_rowid under a single lock to prevent
-    // another thread's insert racing between the two acquisitions.
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let everywhere_id = ensure_everywhere_context_conn(&tx)?;
@@ -726,9 +696,6 @@ pub fn insert_dictionary_entry_returning(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)",
             params![target_context, id],
         )?;
-        // The legacy projection is no longer authoritative. Clear it
-        // when an existing row is touched so later legacy consumers
-        // cannot observe a stale correction that has no scoped owner.
         tx.execute(
             "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![id],
@@ -745,9 +712,6 @@ pub fn insert_dictionary_entry_returning(
                 last_seen_at: None,
             },
         )?;
-        // Keep the legacy global field as a compatibility projection for
-        // the standalone pre-Context sync path. Context-aware consumers
-        // use dictionary_corrections as the source of truth and ignore it.
         if target_context == everywhere_id {
             tx.execute(
                 "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
@@ -791,8 +755,6 @@ pub fn insert_dictionary_entry_returning(
             last_seen_at: None,
         },
     )?;
-    // See the compatibility projection note above. This is only populated for
-    // Everywhere, never for a targeted Context.
     if target_context == everywhere_id {
         tx.execute(
             "UPDATE dictionary SET mistake = ?2 WHERE id = ?1",
@@ -891,15 +853,6 @@ pub fn move_dictionary_entry_by_term_to_context(
 /// only where the real user database opens (`main.rs`).
 pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
     const MARKER: &str = "verenu_dictionary_v1";
-    // Zarinu is evidenced live: Cohere (local STT) consistently rendered
-    // "Verenu" with a leading Z across multiple dictations in the same
-    // session (confirmed by the speaker directly: "Cohere is trying to say
-    // it with a Z sometimes"). Berenu/Ferenu/Werenu/Verinu extend the same
-    // voiced/voiceless and vowel-substitution confusions the existing list
-    // already covers (B/V, F/V, W/V, e/i) — invented non-words, so they
-    // carry no real-word collision risk the way a plausible English word
-    // would. Varineu is also evidenced live: Cohere transcribed "named
-    // Verenu" as "named Varineu" verbatim in both raw and cleaned text.
     const KNOWN_VARIANTS: [&str; 16] = [
         "Varinu", "Verena", "Virinu", "Varino", "Varinew", "Varina", "Verminu", "Varinian",
         "Marino", "Zarinu", "Berenu", "Ferenu", "Werenu", "Verinu", "Varineu", "Verino",
@@ -1124,10 +1077,6 @@ pub fn insert_dictionary_entry_auto_learned_for_context(
             tx.last_insert_rowid()
         }
     };
-    // Manual correction mappings are authoritative only in their owning
-    // Context. A manual mapping for the same canonical term elsewhere must
-    // not poison this Context, but an automatic mapping must not overwrite a
-    // manual mapping here either.
     let manual_mapping_exists: bool = tx.query_row(
         "SELECT EXISTS(
            SELECT 1 FROM dictionary_corrections
@@ -1268,18 +1217,9 @@ pub fn upsert_auto_learn_candidate_for_context(
 /// Outcome of an [`auto_learn_promote_for_context`] attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoLearnPromoteResult {
-    /// The pair was promoted to the dictionary (or its existing auto-learned
-    /// entry was reinforced) and the candidate's `promoted_at` gate claimed.
     Promoted,
-    /// Pending-correction count hasn't reached the threshold yet. The pending
-    /// row was recorded so the next session counts toward the threshold.
     BelowThreshold { pending_count: i64 },
-    /// A manual dictionary entry for the same term blocks auto-learn. The
-    /// candidate gate was NOT claimed, so removing the manual entry later lets
-    /// the pair be learned anew.
     Blocked,
-    /// A concurrent monitor (or a rejection that already purged the candidate)
-    /// won the promotion claim first. The pair must not promote again.
     AlreadyPromoted,
 }
 
@@ -1317,11 +1257,6 @@ pub fn auto_learn_promote_for_context(
         anyhow::bail!("Context {context_id} was not found");
     }
 
-    // Rejection and manual-removal paths purge the candidate row. Check that
-    // the still-unclaimed, Context-scoped candidate exists before adding a
-    // pending observation. Without this guard, a promotion that starts after
-    // rejection could recreate fresh pending evidence, then discover that its
-    // candidate was gone and leave stale state that immediately re-promotes.
     let candidate_available: bool = tx.query_row(
         "SELECT EXISTS(
              SELECT 1 FROM auto_learn_candidates
@@ -1360,8 +1295,6 @@ pub fn auto_learn_promote_for_context(
         return Ok(AutoLearnPromoteResult::BelowThreshold { pending_count });
     }
 
-    // A manual entry must block auto-learn WITHOUT claiming the candidate, so
-    // that deleting the manual entry later allows the pair to be learned anew.
     let manual_exists: i64 = tx.query_row(
         "SELECT COUNT(*)
            FROM dictionary_corrections c
@@ -1377,10 +1310,6 @@ pub fn auto_learn_promote_for_context(
         return Ok(AutoLearnPromoteResult::Blocked);
     }
 
-    // A Context may already use this mistranscription for another canonical
-    // term. Treat that as a normal AutoLearn block, before claiming the
-    // candidate gate, so the candidate remains eligible only if the competing
-    // mapping is later removed. Database failures still propagate normally.
     let existing_dictionary_id: Option<i64> = tx
         .query_row(
             "SELECT id FROM dictionary WHERE term = ?1",
@@ -1395,9 +1324,6 @@ pub fn auto_learn_promote_for_context(
         return Ok(AutoLearnPromoteResult::Blocked);
     }
 
-    // Atomic claim on the candidate. 0 rows means the candidate is already
-    // promoted (a concurrent monitor won the race) or was purged by a
-    // rejection / manual delete — either way this pair must not promote again.
     let claimed = tx.execute(
         "UPDATE auto_learn_candidates
          SET promoted_at = datetime('now')
@@ -1410,9 +1336,6 @@ pub fn auto_learn_promote_for_context(
         return Ok(AutoLearnPromoteResult::AlreadyPromoted);
     }
 
-    // Ensure the shared canonical identity exists. The actual correction
-    // mapping below is Context-owned, so an existing canonical row from
-    // another Context is not a conflict and a different mistake can coexist.
     tx.execute(
         "INSERT INTO dictionary
            (term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at)
@@ -1674,8 +1597,6 @@ fn update_dictionary_entry_for_context_conn(
     )?;
     require_row_changed(changed, "Dictionary entry", id)?;
 
-    // An explicit edit is manual authority for this Context. Remove any
-    // automatic mappings/evidence only in this scope before replacing them.
     purge_auto_learn_evidence_for_dictionary_conn(conn, context_id, id)?;
     conn.execute(
         "DELETE FROM dictionary_corrections WHERE context_id = ?1 AND dictionary_id = ?2",
@@ -1693,9 +1614,6 @@ fn update_dictionary_entry_for_context_conn(
             last_seen_at: None,
         },
     )?;
-    // Lower-stack compatibility: the old dictionary sync payload only knows
-    // about dictionary.mistake. The Context-aware runtime ignores this
-    // projection and reads the child mapping instead.
     conn.execute(
         "UPDATE dictionary
             SET mistake = CASE WHEN EXISTS(
@@ -1731,9 +1649,6 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
         if !exists {
             anyhow::bail!("Dictionary entry {id} was not found");
         }
-        // The lower-stack legacy sync path can deliver a canonical dictionary
-        // row before its Context aggregate. Preserve the old Dictionary-page
-        // behavior by treating an unassigned existing row as Everywhere.
         let everywhere_id: i64 = conn.query_row(
             "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
             [],
@@ -1840,9 +1755,6 @@ pub fn move_dictionary_entry_to_context(
         anyhow::bail!("Dictionary entry {dictionary_id} is already assigned to the target context");
     }
 
-    // Preflight the target so a move cannot transfer some variants and then
-    // fail on a later collision. A wrong spelling may belong to only one
-    // canonical term in a Context.
     let source_mistakes: Vec<String> = tx
         .prepare(
             "SELECT mistake FROM dictionary_corrections
@@ -1921,9 +1833,6 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
 
-    // Capture the canonical term and every Context-owned correction before
-    // deleting. The old global `dictionary.mistake` projection is NULL after
-    // v26, so looking only at that column would leave stale scoped evidence.
     let info: Option<(String, Option<String>, i64)> = tx
         .query_row(
             "SELECT term, mistake, auto_learned FROM dictionary WHERE id=?1",
@@ -1957,9 +1866,6 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
         }
     }
 
-    // A v26 canonical row can legitimately have no child mapping after a
-    // context-scoped rejection or partial import. Purge by canonical term as
-    // well, otherwise stale evidence could recreate the row after this delete.
     if let Some((term, _, _)) = &info {
         for context_id in &assigned_contexts {
             purge_auto_learn_evidence_for_term_conn(&tx, *context_id, term)?;
@@ -1983,8 +1889,6 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
     Ok(())
 }
 
-// Remove a canonical row only when rejection has left an automatically
-// created entry with neither a mapping nor another Context assignment.
 pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
     conn: &rusqlite::Connection,
     context_id: i64,
@@ -2014,10 +1918,6 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
         return Ok(());
     }
 
-    // There is no remaining mapping that can identify a narrower pair, so
-    // clear every stale evidence row for this canonical term in the rejected
-    // Context before removing its last assignment. This is intentionally
-    // scoped: another Context may still have an independently learned pair.
     purge_auto_learn_evidence_for_term_conn(conn, context_id, &term)?;
     conn.execute(
         "DELETE FROM dictionary_contexts WHERE dictionary_id = ?1",
@@ -2065,8 +1965,6 @@ pub fn delete_auto_learned_corrections_by_ids(
             )
             .optional()?;
         let Some((dictionary_id, mistake, term)) = mapping else {
-            // This also makes repeated rejection notifications idempotent and
-            // keeps a manual row with a stale/incorrect target ID protected.
             continue;
         };
 
@@ -2081,9 +1979,6 @@ pub fn delete_auto_learned_corrections_by_ids(
         deleted += changed;
         dictionary_ids.insert(dictionary_id);
 
-        // Child rows normally contain one variant, but accepting the legacy
-        // comma-separated representation here keeps cleanup correct for a
-        // partially migrated database as well.
         for variant in dictionary_mistake_variants(&mistake) {
             purge_auto_learn_evidence_for_pair_conn(&tx, context_id, variant, &term)?;
         }

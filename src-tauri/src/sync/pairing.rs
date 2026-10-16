@@ -73,9 +73,6 @@ fn encrypt_identity(
     Ok((ciphertext, nonce_bytes.to_vec()))
 }
 
-/// Decryption failure means the two sides derived different keys - in other
-/// words, the codes didn't match (or someone interfered). Both surface as the
-/// same friendly error.
 fn decrypt_identity(
     cipher: &ChaCha20Poly1305,
     ciphertext: &[u8],
@@ -160,7 +157,6 @@ where
     if outcome.device_uuid != expected_peer_uuid {
         return Err(anyhow!("pairing peer identity changed mid-handshake"));
     }
-    // The responder confirms it stored us.
     match read_message(stream).await? {
         Message::PairComplete => {}
         Message::Error { message } => return Err(anyhow!("pairing failed: {message}")),

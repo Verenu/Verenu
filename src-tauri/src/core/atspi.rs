@@ -32,7 +32,6 @@ const ROLE_PAGE_TAB_LIST: u32 = 38;
 const ROLE_DOCUMENT_FRAME: u32 = 82;
 const ROLE_DOCUMENT_WEB: u32 = 95;
 
-/// Per-call ceiling. A hung application must not stall injection.
 const METHOD_TIMEOUT: Duration = Duration::from_millis(150);
 /// Upper bound on objects visited by the fallback tree walk.
 const WALK_BUDGET: usize = 600;
@@ -209,8 +208,6 @@ fn root(bus: &str) -> Option<ObjRef> {
     })
 }
 
-/// Accessibility application roots owned by `pid`. Chromium and Electron
-/// register from the browser process, which is the process Hyprland reports.
 fn app_roots_for_pid(conn: &Connection, pid: u32) -> Vec<ObjRef> {
     let Some(registry) = root(REGISTRY) else {
         return Vec::new();
@@ -232,17 +229,13 @@ fn app_roots_for_pid(conn: &Connection, pid: u32) -> Vec<ObjRef> {
         .collect()
 }
 
-/// One in-process query on toolkits that implement Collection (atk-bridge,
-/// used by GTK3, Firefox, Chromium and Electron).
 fn focused_via_collection(conn: &Connection, scope: &ObjRef) -> Option<ObjRef> {
-    // Browsers also mark their document container focused. Matching EDITABLE
-    // here prevents the one-result limit from hiding the actual text field.
     let focused_bits = [(1i32 << STATE_FOCUSED) | (1i32 << STATE_EDITABLE), 0i32];
     let rule = (
         focused_bits.to_vec(),
-        1i32, // ALL
+        1i32,
         HashMap::<String, String>::new(),
-        1i32, // ALL with no attributes imposes no restriction; 0 is INVALID.
+        1i32,
         Vec::<i32>::new(),
         1i32,
         Vec::<String>::new(),
@@ -257,7 +250,6 @@ fn focused_via_collection(conn: &Connection, scope: &ObjRef) -> Option<ObjRef> {
         .map(|(bus, path)| ObjRef { bus, path })
 }
 
-/// Bounded depth-first walk limited to showing objects in the active window.
 fn focused_via_walk(conn: &Connection, app: &ObjRef) -> Option<ObjRef> {
     let mut frames = children(conn, app);
     if let Some(active) = frames
@@ -336,7 +328,6 @@ fn read_text_at_depth(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32, de
         return FocusProbe::Unavailable;
     };
     let role: u32 = call(conn, obj, ACCESSIBLE, "GetRole", &()).unwrap_or(0);
-    // Never read secrets out of password fields.
     if role == ROLE_PASSWORD_TEXT || !has(s, STATE_EDITABLE) {
         return FocusProbe::NonTextFocus;
     }
@@ -387,9 +378,6 @@ fn read_text_at_depth(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32, de
     let Some(text) = call::<_, String>(conn, obj, TEXT, "GetText", &(start, end)) else {
         return FocusProbe::NonTextFocus;
     };
-    // Rich contenteditable fields expose paragraphs as embedded objects. The
-    // outer caret points at that object, not at the character inside it.
-    // Follow only the object at the caret and require its own valid caret.
     let anchor = caret.min(count - 1);
     if selection.is_none() && text.chars().nth((anchor - start) as usize) == Some('\u{fffc}') {
         let embedded = (|| {
@@ -411,11 +399,8 @@ fn read_text_at_depth(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32, de
                 return FocusProbe::Text(focused);
             }
         }
-        // A replacement character is not real cursor text. Do not infer a
-        // sentence start or spacing from an unresolved rich-text container.
         return FocusProbe::Unavailable;
     }
-    // Some toolkits return fewer characters than requested (embedded objects).
     let len = text.chars().count();
     let local = |offset: i32| ((offset - start).max(0) as usize).min(len);
     FocusProbe::Text(FocusedText {
@@ -444,16 +429,12 @@ pub fn read_focused(pid: u32, radius: i32) -> FocusProbe {
         if matches!(probe, FocusProbe::Text(_)) {
             return Some(probe);
         }
-        // Renderer activation is asynchronous. Give it one short retry on
-        // the first read; the outer injection timeout still bounds this work.
         std::thread::sleep(Duration::from_millis(35));
         Some(read())
     })
     .unwrap_or(FocusProbe::Unavailable)
 }
 
-/// Compatibility entry point for native fixtures. Production uses the
-/// captured title as well as the PID to distinguish browser windows.
 #[cfg(test)]
 fn read_address_bar(pid: u32) -> Option<String> {
     read_address_bar_for_window(pid, "")
@@ -467,9 +448,6 @@ fn address_bar_identifier(attributes: &HashMap<String, String>) -> bool {
 }
 
 fn frame_matches(active: bool, name: Option<&str>, title: &str) -> bool {
-    // Chromium on Wayland can omit ACTIVE even for the compositor's focused
-    // window. The caller validates its stable Hyprland address around this
-    // read; an exact, unique frame title identifies the captured window here.
     if title.is_empty() { active } else { name == Some(title) }
 }
 
@@ -494,9 +472,6 @@ fn address_bar_via_collection(conn: &Connection, frame: &ObjRef) -> Option<Optio
     let rule = (
         vec![1i32 << STATE_SHOWING, 0i32], 1i32,
         HashMap::from([("class".to_string(), "OmniboxViewViews".to_string())]), 1i32,
-        // Collection's D-Bus roles are 32-bit bitset words, unlike the
-        // libatspi constructor's enum array. Entry 79 is word 2, bit 15.
-        // https://github.com/GNOME/at-spi2-core/blob/main/xml/Collection.xml
         vec![0i32, 0i32, 1i32 << (ROLE_ENTRY - 64), 0i32], 1i32,
         Vec::<String>::new(), 1i32, false,
     );
@@ -563,16 +538,12 @@ fn read_address_bar_inner(pid: u32, title: &str) -> Option<String> {
             }).collect();
             if frames.len() != 1 { continue; }
             if let Some(text) = address_bar_via_collection(conn, &frames[0]) { return text; }
-            // Toolbar nodes are visited before siblings such as tab strips.
-            // Never walk inactive frames when none matches the capture.
             let mut stack: Vec<(ObjRef, bool, Option<u32>)> = frames.into_iter().rev().map(|obj| (obj, false, None)).collect();
             let mut visited = 0;
             let mut fallback = None;
             let mut ambiguous = false;
             while let Some((obj, in_toolbar, cached_role)) = stack.pop() {
                 visited += 1;
-                // Runs on the recording-start path: bound total time as well
-                // as node count so a slow browser cannot delay dictation.
                 if visited > WALK_BUDGET || started.elapsed() > ADDRESS_BAR_DEADLINE {
                     break;
                 }
@@ -588,9 +559,6 @@ fn read_address_bar_inner(pid: u32, title: &str) -> Option<String> {
                     let text = get_property::<i32>(conn, &obj, TEXT, "CharacterCount")
                         .filter(|count| (1..=2048).contains(count))
                         .and_then(|count| call::<_, String>(conn, &obj, TEXT, "GetText", &(0i32, count)));
-                    // A known omnibox is authoritative, including an empty
-                    // value, a search query, or an internal browser page.
-                    // Another toolbar input cannot replace that answer.
                     if exact { return text; }
                     if let Some(text) = text {
                         if crate::core::browser_probe::extract_domain(&text).is_some() {
@@ -608,8 +576,6 @@ fn read_address_bar_inner(pid: u32, title: &str) -> Option<String> {
                         let role = call::<_, u32>(conn, &child, ACCESSIBLE, "GetRole", &());
                         next.push((child, in_toolbar || role == Some(ROLE_TOOL_BAR), role));
                     }
-                    // The tree is normally small once page documents and
-                    // tab strips are excluded. Prefer toolbars at each level.
                     next.sort_by_key(|(_, _, role)| *role == Some(ROLE_TOOL_BAR));
                     stack.extend(next);
                 }
@@ -660,8 +626,6 @@ mod tests {
         }
     }
 
-    /// Regression: calling from a tokio worker used to panic inside zbus's
-    /// blocking API and strand dictation in `Starting`.
     #[test]
     fn calls_from_a_tokio_runtime_do_not_panic() {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -708,7 +672,6 @@ mod tests {
 
     impl Drop for DiscoveryChild {
         fn drop(&mut self) {
-            // Also reap on parsing errors or unwinding. No discovery thread is detached.
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
@@ -730,9 +693,6 @@ mod tests {
 
     fn discover_fixture_in_process(deadline: std::time::Instant) -> Option<ObjRef> {
         use std::io::Read;
-        // Synchronous zbus setup/calls can block beyond their method timeout.
-        // Keep them in an owned process, cancellable at the same absolute deadline.
-        // Inherit the tester's process group so runner cancellation covers both.
         let mut child = DiscoveryChild(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "core::atspi::tests::formatting_fixture_discovery_worker", "--ignored", "--nocapture"])
             .stdin(std::process::Stdio::null())
@@ -805,7 +765,6 @@ mod tests {
         }
     }
 
-    /// Opt-in verification against a disposable GTK entry, never a user's document.
     #[test]
     #[ignore]
     fn atspi_live_formats_disposable_entry() {
@@ -848,8 +807,6 @@ mod tests {
         }
     }
 
-    /// Live desktop check: `cargo test atspi_live -- --ignored --nocapture`
-    /// with a text field focused in the active window. Prints lengths only.
     #[test]
     #[ignore]
     fn atspi_live_reads_active_focus() {
@@ -896,7 +853,6 @@ mod live_address_bar {
         }).as_deref(), Some("https://example.org"));
     }
 
-    /// `VERENU_ATSPI_PID=<browser pid> cargo test atspi_live_address -- --ignored --nocapture`
     #[test]
     #[ignore = "requires an owned focused browser and VERENU_ATSPI_EXPECTED_DOMAIN"]
     fn atspi_live_address_bar() {

@@ -19,7 +19,6 @@ export function requiredCiRulesetPayload(current, contexts) {
     target: 'branch',
     enforcement: 'active',
     conditions: { ref_name: { include: ['refs/heads/master'], exclude: [] } },
-    // Required CI applies to every actor; never add a bypass exemption.
     bypass_actors: [],
     rules,
   };

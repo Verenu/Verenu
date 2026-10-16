@@ -35,11 +35,9 @@
   function remove(model: string) { values = values.filter(v => v !== model); input?.focus(); }
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ',') {
-      // Enter adds another ID instead of submitting the whole form.
       e.preventDefault();
       commit();
     } else if (e.key === 'Escape' && draft) {
-      // Clear the draft first; a second Escape closes the drawer.
       e.preventDefault(); e.stopPropagation(); draft = '';
     } else if (e.key === 'Backspace' && !draft && values.length) {
       values = values.slice(0, -1);
@@ -57,7 +55,6 @@
 
 <div class="mid">
   <label for={id}>{label}</label>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="box" role="presentation" class:disabled onclick={() => input?.focus()}>
     {#each values as v (v)}
       <span class="tag" animate:flip={{ duration: dur(), easing: cubicOut }} in:scale={{ start: 0.85, duration: dur(), easing: cubicOut }} out:scale={{ start: 0.85, duration: motionMs(100) }}>

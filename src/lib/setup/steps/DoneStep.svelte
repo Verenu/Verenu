@@ -38,9 +38,6 @@
   const cleanupOff = $derived(cleanupName === 'Off');
   const isLocal = $derived(providerName === 'On this device' || providerName === 'Local');
 
-  // The wizard no longer asks about these individually — it turns them all on.
-  // Naming them here is the disclosure: auto-learn watches the focused field for
-  // corrections.
   const smartProcessing = 'Noise reduction, spacing, capitalization, and correction learning are on.';
 
   let checkAnimating = $state(false);
@@ -179,8 +176,6 @@
   }
   .quick-step { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; text-align: left; }
   .quick-step > span:last-child { display: flex; flex-direction: column; gap: 2px; }
-  /* Flex centering with an explicit line box keeps the digit optically centred;
-     the previous grid + 1ch inner span sat the glyph off-centre. */
   .quick-number {
     display: flex;
     align-items: center;
@@ -213,7 +208,6 @@
     overflow: hidden;
   }
 
-  /* One compact row per choice: what it is, what you picked, and the detail. */
   .summary-group {
     display: grid;
     grid-template-columns: 76px minmax(0, 1fr) auto;

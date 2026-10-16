@@ -19,8 +19,6 @@
   function normalizeHost(input: string): string {
     const trimmed = input.trim().toLowerCase();
     if (!trimmed) return '';
-    // Strip only the leading scheme; split('://').pop() would latch onto a
-    // nested URL in the query string (e.g. ...?redirect=https://other.com).
     const withoutScheme = trimmed.includes('://') ? trimmed.slice(trimmed.indexOf('://') + 3) : trimmed;
     const host = withoutScheme.split(/[/?#]/)[0]?.split('@').pop()?.split(':')[0] ?? '';
     return host.replace(/^\.+|\.+$/g, '');
@@ -38,8 +36,6 @@
 
   let dataUri = $state<string | null>(null);
 
-  // The row never waits on this: it renders with the fallback glyph and swaps
-  // in the real icon whenever the (usually already cached) lookup resolves.
   $effect(() => {
     dataUri = null;
     let cancelled = false;
@@ -53,8 +49,6 @@
 </script>
 
 {#if dataUri}
-  <!-- onerror is a belt-and-braces net: the backend validates PNG bytes, but
-       if the webview still fails to decode, fall back to the glyph. -->
   <img
     class="site-icon"
     src={dataUri}

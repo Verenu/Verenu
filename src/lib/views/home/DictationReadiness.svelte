@@ -88,8 +88,6 @@
     checking = false;
   }
 
-  // Home remains mounted behind Settings. Refresh after it closes and after a
-  // setting, credential, imported backup, or local model changes.
   $effect(() => {
     const isOnline = appStore.isOnline;
     if (!appStore.settingsOpen && mounted) void refresh(isOnline);

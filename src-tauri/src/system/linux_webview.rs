@@ -1,10 +1,7 @@
-//! Memory policy for the two persistent Linux application webviews.
 
 use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
 
 pub(super) fn configure(webview: &webkit2gtk::WebView) {
-    // Both windows render a single local Svelte document. Navigation between
-    // app pages does not need a browser resource cache or back/forward cache.
     if let Some(context) = webview.context() {
         context.set_cache_model(webkit2gtk::CacheModel::DocumentViewer);
     }
@@ -47,9 +44,6 @@ pub fn set_input_region(window: &tauri::WebviewWindow, rect: Option<[i32; 4]>) -
         }
         None => Region::create(),
     };
-    // Store the shape on GTK too so configure/resize cannot replace it with
-    // the default full-window input region. Empty is distinct from None,
-    // which removes the restriction and accepts input over the whole window.
     gtk_window.input_shape_combine_region(Some(&region));
     surface.input_shape_combine_region(&region, 0, 0);
     true

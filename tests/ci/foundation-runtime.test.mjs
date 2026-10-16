@@ -15,8 +15,6 @@ test('FoundationModels stages the back-deployment runtime for bundling, dev and 
     const swift = path.join(temp, 'toolchain', 'usr', 'bin', 'swiftc');
     const runtime = path.join(temp, 'toolchain', 'usr', 'lib', 'swift-5.5', 'macosx', 'libswift_Concurrency.dylib');
     for (const dir of [manifest, out, bin, path.dirname(swift), path.dirname(runtime)]) fs.mkdirSync(dir, { recursive: true });
-    // Fake compiler tools exercise the real Rust build helper's staging and
-    // failure paths. They do not prove Mach-O linkage or macOS compatibility.
     fs.writeFileSync(path.join(bin, 'xcrun'), '#!/bin/sh\ncase "$1" in\n--sdk) echo "$VERENU_TEST_SDK";;\n--find) echo "$VERENU_TEST_SWIFT";;\nar) exit 0;;\n*) exit 1;;\nesac\n', { mode: 0o700 });
     fs.writeFileSync(swift, '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do last="$1"; shift; done\n: > "$last"\n', { mode: 0o700 });
     const payload = Buffer.from('synthetic back-deployment runtime');

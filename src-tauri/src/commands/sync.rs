@@ -1,4 +1,3 @@
-//! Tauri commands for LAN device sync - the Settings - Sync surface.
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -25,7 +24,6 @@ pub struct SyncStatusDto {
 pub async fn sync_get_status(app: AppHandle) -> Result<SyncStatusDto, String> {
     let manager = manager(&app)?;
     let snapshot = manager.snapshot();
-    // A listener startup failure does not establish that a firewall blocked it.
     let last_error_hint = if snapshot.listener_failed {
         Some(
             "Verenu couldn't start sync. Restart Verenu and check that your system keyring is unlocked. If it persists, check Verenu's diagnostics for a listener or discovery startup error."

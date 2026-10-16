@@ -11,17 +11,12 @@ export type T3Connection = {
 export type T3Status = { minimumVersion: string; connection: T3Connection | null; skills: T3Skill[] };
 export const t3State = $state({
   status: null as T3Status | null,
-  // Any user-visible operation in flight, including the daily/manual pulls.
   loading: false,
-  // A pairing link is being exchanged. Set only by connectT3, never by background polls.
   connecting: false,
   error: '',
   notice: '',
 });
 
-// Requests are numbered when issued. Pairing, selection, and disconnect results
-// take precedence over reads. Reads must start outside a mutation and remain
-// within the same mutation epoch, so an in-flight poll cannot restore old data.
 let sequence = 0;
 let appliedSequence = 0;
 let pending = 0;
@@ -62,7 +57,6 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
     pending++;
     t3State.loading = true;
     t3State.error = '';
-    // connectT3 owns the pairing notice; other actions replace it.
     if (command !== 'connect_t3') t3State.notice = '';
   }
   try {
@@ -105,6 +99,5 @@ export async function connectT3(pairingLink: string): Promise<boolean> {
 }
 
 export function startT3Refresh(): () => void {
-  // The backend enforces a daily network pull and bounded failure retries.
   return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 15 * 60_000 }).stop;
 }

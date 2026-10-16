@@ -49,7 +49,7 @@
   onMount(() => {
     let active = true;
     let lastSampleAt = -Infinity;
-    try { memoryBaseline = parseMemoryBaseline(localStorage.getItem(MEMORY_BASELINE_KEY)); } catch { /* Storage may be unavailable. */ }
+    try { memoryBaseline = parseMemoryBaseline(localStorage.getItem(MEMORY_BASELINE_KEY)); } catch {   }
     const refresh = async () => {
       try {
         const next = await invoke<number>('get_memory_mb');
@@ -60,7 +60,7 @@
           lastSampleAt = now;
           if (updated !== memoryBaseline) {
             memoryBaseline = updated;
-            try { localStorage.setItem(MEMORY_BASELINE_KEY, JSON.stringify(updated)); } catch { /* Keep the session baseline when storage is unavailable. */ }
+            try { localStorage.setItem(MEMORY_BASELINE_KEY, JSON.stringify(updated)); } catch {   }
           }
         }
         if (active && next !== rawMemoryMb) {
@@ -68,7 +68,7 @@
           rawMemoryMb = next;
           memoryMb.set(next);
         }
-      } catch { /* dev mode */ }
+      } catch {   }
     };
     const poll = startPolling(refresh, MEMORY_SAMPLE_INTERVAL_MS);
     return () => { active = false; poll.stop(); };
@@ -83,27 +83,17 @@
     { id: 'style',      label: 'Style',      icon: 'pencil', locked: false },
   ] as const;
 
-  // Dictionary and Snippets are no longer primary nav — Contexts (Everywhere)
-  // is the primary vocabulary/snippet surface now. The old pages still exist
-  // as routes, surfaced here only once Settings > General > Legacy is on —
-  // which also hides Contexts, since Legacy mode means "manage app tones,
-  // vocabulary, and snippets the old way" and running both surfaces at once
-  // would just mean two conflicting places to edit the same data.
   const LEGACY_NAV_ITEMS = [
     { id: 'dictionary', label: 'Dictionary', icon: 'book',     locked: false },
     { id: 'snippets',   label: 'Snippets',   icon: 'scissors', locked: false },
   ] as const;
 
-  // Contexts are no longer a nav button — they live in their own section of
-  // the rail below, built from the user's actual context groups.
   const navItems = $derived(
     appStore.legacyFeaturesEnabled
       ? [...HOME_NAV_ITEMS, ...LEGACY_NAV_ITEMS, ...STYLE_NAV_ITEMS]
       : [...HOME_NAV_ITEMS, ...STYLE_NAV_ITEMS]
   );
 
-  // The rail is shared: it shows app navigation normally and swaps to the
-  // settings sections while settings is open, so the sidebar never unmounts.
   const settingsGroups = $derived(
     visibleSettingsSections({ isMac, devMode: appStore.devModeEnabled, legacyMode: appStore.legacyFeaturesEnabled, syncEnabled: appStore.syncEnabled })
   );
@@ -112,10 +102,6 @@
     | { kind: 'label'; key: string; label: string }
     | { kind: 'section'; key: string; id: SettingsSectionId; label: string; icon: keyof typeof icons };
 
-  /*
-   * Settings and app navigation use separate lists so outgoing and incoming
-   * entries can overlap in the same grid cell during the mode transition.
-   */
   const settingsEntries = $derived<RailEntry[]>(
     settingsGroups.flatMap((group) => [
       { kind: 'label' as const, key: `label:${group.group}`, label: group.group },
@@ -152,16 +138,6 @@
     );
   });
 
-  /*
-   * Purely horizontal: entries slide in from the rail's left edge and leave the
-   * same way, so the sidebar reads as one axis of movement while the content
-   * area moves on the other. The stagger (not the per-item duration) is what
-   * makes the cascade legible; it's capped so the 9-entry settings rail doesn't
-   * take much longer to resolve than the 4-entry app rail.
-   *
-   * Everything here shares cubicOut with pageSwap and the pill so the whole
-   * morph settles on one curve — mixing easings was what made it feel uneven.
-   */
   const RAIL_IN_MS = 260;
   const RAIL_OUT_MS = 180;
   const RAIL_IN_DELAY_MS = 40;
@@ -174,10 +150,6 @@
     return motionMs(base + Math.min(index, RAIL_STAGGER_CAP) * step);
   }
 
-  /* Search results can change both position and height as a broad query is
-     refined. Standard FLIP scales between those rectangles, which stretches
-     text when a whole section loses several matches at once. Search only needs
-     translation: rows glide to their new slot without being resized. */
   function searchResultReorder(
     _node: Element,
     { from, to }: { from: DOMRect; to: DOMRect },
@@ -217,7 +189,6 @@
 
   function backToApp() { appStore.settingsOpen = false; }
 
-  // ── Download panel ──────────────────────────────────────────────────────
   const activeDownloads = $derived(getActiveDownloads());
   const doneDownloads = $derived.by(() => {
     const activeKeys = new Set(activeDownloads.map((item) => item.key));
@@ -225,8 +196,6 @@
   });
   const showDownloadPanel = $derived(activeDownloads.length > 0 || doneDownloads.length > 0);
 
-  // The "ready" list lingers until the user opens and closes Settings, so clear
-  // it on the settings-close transition (true → false).
   let prevSettingsOpen = appStore.settingsOpen;
   $effect(() => {
     const open = appStore.settingsOpen;
@@ -234,16 +203,10 @@
     prevSettingsOpen = open;
   });
 
-  // ── Sliding active highlight ────────────────────────────────────────────
-  // A single pill positioned against the active rail item rather than a
-  // per-item background, so the highlight travels when the selection moves —
-  // including across the morph, where it slides up from the Settings button.
   let sidebarEl = $state<HTMLElement | null>(null);
   let navSectionEl = $state<HTMLElement | null>(null);
   let pillTop = $state(0);
   let pillHeight = $state(0);
-  // Suppresses the CSS transition for one frame so the pill can be teleported
-  // to a new origin (or placed on first paint) without animating from nowhere.
   let pillSnap = $state(true);
 
   function activeRailButton(): HTMLElement | null {
@@ -276,7 +239,6 @@
   }
 
   $effect(() => {
-    // Re-measure whenever the rail contents or the selection change.
     appStore.settingsOpen;
     appStore.currentPage;
     appStore.settingsSection;
@@ -285,13 +247,6 @@
     requestAnimationFrame(() => movePillTo(activeRailButton()));
   });
 
-  // ── Contexts section ────────────────────────────────────────────────────
-  // Legacy mode swaps Contexts back out for the standalone Dictionary and
-  // Snippets pages, so the section is hidden there for the same reason the
-  // old nav item was.
-  // Kept mounted while settings is open (just hidden) rather than unmounted —
-  // unmounting replayed every row's entrance transition on the way back,
-  // making rows appear to drop in from the wrong spot before settling.
   const showContexts = $derived(!appStore.legacyFeaturesEnabled);
   const contextRows = $derived(orderedContexts(contextsStore.contexts));
   let ctxSectionEl = $state<HTMLElement | null>(null);
@@ -326,10 +281,6 @@
 
   onMount(() => { void loadContexts(); });
 
-  // Only pinned rows carry an icon stack — that is what makes pinning worth
-  // doing, and it keeps every other row a clean single line. Four icons at
-  // rest, up to eight revealed on hover, and anything past that stays behind a
-  // residual count so a long app list can't push the stack out of the rail.
   const STACK_COMPACT = 4;
   const STACK_EXPANDED = 8;
   /** Per-icon stagger for the hover reveal, in ms. */
@@ -364,9 +315,6 @@
     closeContextMenu();
   }
 
-  // ── Context row menu (kebab and right-click open the same one) ───────────
-  // Positioned by top/left and then clamped into the viewport once mounted —
-  // right-clicking near the rail's left edge used to push the menu off-screen.
   let contextMenu = $state<{ id: number; top: number; left: number; alignRight: boolean } | null>(null);
   let contextMenuEl = $state<HTMLElement | null>(null);
   let contextDeleteArmed = $state(false);
@@ -393,24 +341,15 @@
 
   function toggleContextMenuFromKebab(id: number, trigger: HTMLElement) {
     const rect = trigger.getBoundingClientRect();
-    // Right-aligned to the button; the clamp effect resolves the real left
-    // once the menu's width is known.
     openContextMenu(id, rect.bottom + 4, rect.right, true);
   }
 
   function handleContextRowContextMenu(id: number, event: MouseEvent) {
     event.preventDefault();
-    // Fresh position on every right-click, even if the menu was already open
-    // on this row from a previous click elsewhere.
     contextMenu = null;
     openContextMenu(id, event.clientY + 4, event.clientX, false);
   }
 
-  /*
-   * Measures the mounted menu and pulls it fully on-screen. offsetWidth/Height
-   * rather than getBoundingClientRect: the entry transition scales and shifts
-   * the box, and a mid-flight rect would clamp against the wrong size.
-   */
   $effect(() => {
     const el = contextMenuEl;
     const menu = contextMenu;
@@ -677,11 +616,6 @@
   </div>
 
   {#if showContexts}
-    <!--
-      The section owns the rail's free vertical space: header and footer stay
-      fixed, only .ctx-list scrolls, and it only scrolls when the rows actually
-      overflow (min-height:0 + overflow-y:auto).
-    -->
     <div bind:this={ctxSectionEl} class="ctx-section" class:ctx-section-hidden={appStore.settingsOpen} inert={appStore.settingsOpen}>
       <div class="ctx-head">
         <span class="ctx-head-label">Contexts</span>
@@ -695,12 +629,6 @@
         <p class="ctx-error" role="alert">{contextError}</p>
       {/if}
 
-      <!--
-        Two keyed lists rather than one: an `animate:` directive has to be the
-        only child of its each block, so the group labels can't live inside it.
-        Splitting also means pin/unpin reads as a row leaving one group and
-        entering the other, which is what actually happened.
-      -->
       {#snippet contextRow(context: Context)}
         {@const pinned = isPinned(context)}
         {@const stack = pinned ? stackEntries(context.id) : []}
@@ -723,8 +651,6 @@
               </span>
               <span class="ctx-name">{context.name}</span>
               {#if stack.length > 0}
-                <!-- Spans from grid column 1, so the first icon lines up under
-                     the context icon rather than under the name. -->
                 <span class="ctx-stack" aria-hidden="true">
                   {#each shown as entry, iconIndex (entry.key)}
                     <span
@@ -749,9 +675,6 @@
               {/if}
             </button>
 
-            <!-- Fixed right-hand column: the age reserves a constant width so
-                 the pin lands at the same x whether the row reads "1w" or
-                 "1mo", and both give way to one overflow control on hover. -->
             <span class="ctx-tail">
               {#if pinned}
                 <span class="ctx-pin" title="Pinned">
@@ -787,11 +710,6 @@
           </div>
         {/each}
 
-        <!--
-          "More contexts", not "Everything else": these are the same kind of
-          thing as the rows above, just not pinned. A catch-all noun made the
-          group read as a separate category sitting outside contexts.
-        -->
         {#if unpinnedRows.length > 0 && pinnedRows.length > 0}
           <div class="ctx-subhead">
             <span class="ctx-subhead-label">More contexts</span>
@@ -854,11 +772,6 @@
     </div>
   {/if}
 
-  <!--
-    One persistent button rather than a swapped pair: it is the pill's origin
-    when opening settings, and keeping it mounted means there is never a moment
-    with two of it in the DOM during a fast close/reopen.
-  -->
   <div class="sidebar-foot">
     <button
       type="button"
@@ -925,8 +838,6 @@
     <button class="ui-dropdown-option" type="button" role="menuitem" onclick={() => void togglePin(menuContext)}>
       {menuContext.pinned_at ? 'Unpin' : 'Pin'}
     </button>
-    <!-- Everywhere is the fallback the pipeline resolves to when nothing else
-         matches, so it is the one context that cannot be removed. -->
     {#if !menuContext.is_everywhere}
       <button
         class="ui-dropdown-option ctx-menu-delete"
@@ -946,8 +857,6 @@
     width: var(--sidebar-w);
     background: var(--sidebar-bg);
     border-right: 1px solid var(--line);
-    /* .body keeps its bottom gutter for the content column; pull the sidebar
-       through it so it runs flush into the bottom-left window corner. */
     margin-bottom: calc(-1 * var(--app-gutter));
     position: relative;
     display: flex;
@@ -956,15 +865,6 @@
     overflow: hidden;
   }
 
-  /*
-   * The settings wash (.settings-overlay, z-index 60) covers the whole app so
-   * click-outside still works in the left gutter; the rail has to sit above it
-   * to stay visible and interactive. .app is position:relative with z-index
-   * auto and .body is static, so both compare in the same stacking context.
-   */
-  /* Always above the settings overlay (z-index 60) — including while the
-     overlay is mid-exit-transition after closing settings, otherwise the
-     sidebar briefly loses its elevation and the opaque overlay paints over it. */
   .sidebar {
     z-index: 61;
   }
@@ -981,17 +881,7 @@
     padding-bottom: calc(var(--safe-bottom) + 20px);
   }
 
-  /*
-   * Both rail lists occupy the same grid cell so the outgoing and incoming sets
-   * cross-fade in place instead of stacking and shoving each other down. The
-   * cell is as tall as the taller list mid-morph; .sidebar-spacer absorbs that,
-   * so the footer never moves.
-   */
   .nav-section {
-    /* The settings rail sits 12px below the brand block; the app nav starts
-       a bit lower (24px) so the clickable list reads as stepped down from the
-       brand without floating. The rail's grid cell absorbs the taller list
-       during the settings morph. */
     padding: 12px 8px 4px;
     display: grid;
     position: relative;
@@ -1000,15 +890,11 @@
   .sidebar:not(.rail-settings) .nav-section { padding-top: 18px; }
   .rail-settings .nav-section { padding-top: 20px; }
 
-  /* No Windows-specific nav offset: the brand block owns the rail header on
-     every platform, and its min-height matches the native titlebar height, so
-     the first nav target always starts below the caption. */
 
   .rail-list {
     grid-area: 1 / 1;
     display: flex;
     flex-direction: column;
-    /* Keeps the selected pill and a hovered neighbour from fusing into one block. */
     gap: 2px;
     min-width: 0;
   }
@@ -1030,11 +916,6 @@
   .sidebar:not(.rail-settings) .settings-rail-content { top: 0; }
   .rail-settings .rail-list-settings { position: static; }
 
-  /* Shares the app list's grid cell so the outgoing settings rail (search bar
-     + list) overlaps the incoming app nav instead of stacking into a second
-     grid row — without this the search bar would linger in its own row,
-     visibly growing the rail, until its outro finished and everything below
-     it (the Contexts section) snapped up. */
   .settings-rail-content {
     grid-area: 1 / 1;
     display: flex;
@@ -1044,9 +925,6 @@
     position: relative;
   }
 
-  /* The section rows have global rail outros for the settings-page morph. Hide
-     their retained outro nodes while search owns this space so results never
-     paint on top of the old navigation list. */
   .settings-rail-content.searching .rail-list-settings {
     visibility: hidden;
     pointer-events: none;
@@ -1192,24 +1070,13 @@
     line-height: 1.3;
   }
 
-  /*
-   * Single travelling highlight. Positioned against .sidebar (the nearest
-   * positioned ancestor) from the active item's offsetTop, so it slides between
-   * rail entries — and up from the Settings button when settings opens.
-   * Rail buttons are position:relative and come later in tree order, so they
-   * paint above this without needing a z-index.
-   */
   .rail-pill {
     position: absolute;
     left: 8px;
     right: 8px;
     border-radius: 7px;
-    /* Softer than the selected context row: page nav is the weaker selection,
-       the open context is the thing that actually matters. */
     background: var(--control-hover);
     pointer-events: none;
-    /* cubic-bezier(0.33, 1, 0.68, 1) is the CSS form of cubicOut, which the rail
-       items and pageSwap both use — one curve across the whole morph. */
     transition:
       top var(--rail-pill-ms) cubic-bezier(0.33, 1, 0.68, 1),
       height var(--rail-pill-ms) cubic-bezier(0.33, 1, 0.68, 1);
@@ -1217,8 +1084,6 @@
 
   .rail-pill.rail-pill-snap { transition: none; }
 
-  /* Contexts have their own per-row selected background, so the shared pill
-     steps aside instead of sitting on a nav item that isn't the active page. */
   .rail-pill.rail-pill-hidden { opacity: 0; }
   .rail-pill { opacity: 1; transition: opacity 160ms ease, top var(--rail-pill-ms) cubic-bezier(0.33, 1, 0.68, 1), height var(--rail-pill-ms) cubic-bezier(0.33, 1, 0.68, 1); }
 
@@ -1228,11 +1093,6 @@
     .sidebar { --rail-pill-ms: 170ms; }
   }
 
-  /*
-   * App nav, settings sections and the back button share one set of metrics so
-   * the rail reads as the same list changing contents rather than two different
-   * lists trading places.
-   */
   .nav-item,
   .settings-nav-item,
   .settings-back {
@@ -1259,7 +1119,6 @@
   .settings-back :global(svg) {
     opacity: 0.75;
     flex-shrink: 0;
-    /* Weight and opacity travel with the pill instead of snapping ahead of it. */
     transition: opacity var(--rail-pill-ms) ease, stroke-width var(--rail-pill-ms) ease;
   }
 
@@ -1281,13 +1140,6 @@
     outline-offset: -2px;
   }
 
-  /*
-   * No background here — .rail-pill supplies it so the highlight can travel.
-   * The active item deliberately keeps its :hover background too: both are the
-   * same opaque --control-hover, so nothing darkens where they stack, and
-   * clearing it blinked the highlight off the item under the cursor for the
-   * whole 300ms the pill spent travelling to it.
-   */
   .nav-item.active,
   .settings-nav-item.active {
     color: var(--ink);
@@ -1316,7 +1168,6 @@
     border: 0;
   }
 
-  /* The version line lives on the settings page itself now, not in the rail. */
 
   .nav-item:disabled {
     color: var(--ink-faint);
@@ -1340,23 +1191,17 @@
 
   .sidebar-spacer { flex: 1; }
 
-  /* ── Contexts section ──────────────────────────────────────────────────
-     Takes the rail's leftover height. Header and the rest of the sidebar stay
-     put; only .ctx-list scrolls, and only once the rows outgrow the space. */
   .ctx-section {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    /* Small breathing gap between the primary nav and this section. */
     padding: 10px 8px 0;
     opacity: 1;
     transform: translateX(0);
     visibility: visible;
   }
 
-  /* Keep the section mounted so its layout is already final when it enters.
-     It travels only on the horizontal axis and cannot push the rail downward. */
   .ctx-section-hidden {
     visibility: hidden;
     pointer-events: none;
@@ -1378,8 +1223,6 @@
     color: var(--ink-mute);
   }
 
-  /* Anchors the section rather than letting the label float; stops short of
-     the + so the control keeps its own breathing room. */
   .ctx-head-rule {
     flex: 1;
     min-width: 8px;
@@ -1418,7 +1261,6 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-    /* Keep the subtle scrollbar off the row content when it does appear. */
     scrollbar-width: thin;
     scrollbar-color: var(--line-strong) transparent;
   }
@@ -1430,8 +1272,6 @@
 
   .ctx-row-wrap { position: relative; }
 
-  /* One level down from the CONTEXTS header: same anchored-rule shape, but
-     smaller and dimmer so it divides without announcing itself. */
   .ctx-subhead {
     display: flex;
     align-items: center;
@@ -1454,14 +1294,6 @@
     background: color-mix(in srgb, var(--line-soft) 70%, transparent);
   }
 
-  /*
-   * One grid for every row, so nothing is positioned by eye:
-   *   column 1  fixed icon gutter
-   *   column 2  name, and - on pinned rows - the icon stack directly beneath it
-   * The metadata lane is absolute (a button cannot nest inside a button) but is
-   * locked to the same first-row box, so it centres against the name on both
-   * row heights.
-   */
   .ctx-row {
     width: 100%;
     border: 0;
@@ -1488,17 +1320,11 @@
     --ctx-gutter-gap: 7px;
     --ctx-row-pad-x: 6px;
     --ctx-row-pad-y: 5px;
-    /* Both grid rows are fixed, so a pinned row is the same height whether it
-       holds one favicon or eight. */
     --ctx-line-h: 18px;
   }
 
-  /* Just enough extra beneath the stack to acknowledge the second line
-     without making pinned rows feel bulky. */
   .ctx-row.has-stack { padding-bottom: calc(var(--ctx-row-pad-y) + 3px); }
   .ctx-row:hover { background: var(--control-hover); color: var(--ink-strong); --stack-ring: var(--control-hover); }
-  /* The strongest selected state in the rail: a filled surface plus a hairline
-     edge, so the open context reads as a card rather than a tint. */
   .ctx-row.active {
     background: var(--control-active);
     box-shadow: inset 0 0 0 1px var(--line);
@@ -1508,18 +1334,12 @@
   .ctx-row.active .ctx-name { font-weight: 500; color: var(--ink-strong); }
   .ctx-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-  /*
-   * Fixed optical box with every glyph rendered at the same 14px and stroke
-   * weight, so the leading icons share one column even though they come from
-   * different sources (shared icon set, per-context choice, inline fallbacks).
-   */
   .ctx-icon {
     display: grid;
     place-items: center;
     width: var(--ctx-gutter);
     height: var(--ctx-line-h);
     color: var(--ink-faint);
-    /* Inactive leading icons sit well back; hover and selection bring them up. */
     opacity: 0.7;
     transition: opacity 170ms ease, color 170ms ease;
   }
@@ -1538,12 +1358,6 @@
     white-space: nowrap;
   }
 
-  /*
-   * Second grid row, spanning from column 1 - so the first icon sits under the
-   * context icon rather than under the name. justify-self keeps the box to its
-   * contents, which is also the hover target for the reveal: stretching it
-   * across the row made the reveal fire whenever the cursor merely crossed it.
-   */
   .ctx-stack {
     grid-column: 1 / -1;
     display: flex;
@@ -1554,9 +1368,6 @@
     --stack-dwell: 500ms;
   }
 
-  /* The ring separates overlapping icons; it tracks whatever surface the row
-     is currently painting, so it doesn't halo against a hovered or selected
-     background. */
   .ctx-stack-item {
     display: grid;
     place-items: center;
@@ -1566,9 +1377,6 @@
   }
   .ctx-stack-item + .ctx-stack-item { margin-left: -4px; }
 
-  /* Icons past the resting four collapse to zero width and unfurl on hover,
-     staggered by --reveal-delay so they cascade rather than pop. Collapsing
-     back carries no delay, so leaving feels immediate. */
   .ctx-stack-item.is-extra {
     max-width: 0;
     opacity: 0;
@@ -1597,9 +1405,6 @@
     overflow: hidden;
     transition: opacity 150ms ease, max-width 200ms ease, margin-left 200ms ease;
   }
-  /* The resting "+N" gives way to the revealed icons, and a residual count for
-     anything past the reveal cap slides into its place. Both collapse their own
-     width rather than just fading, so the hidden one leaves no gap behind. */
   .ctx-stack:hover .ctx-stack-more {
     opacity: 0;
     max-width: 0;
@@ -1618,11 +1423,6 @@
     transition-delay: calc(var(--stack-dwell) + 140ms);
   }
 
-  /*
-   * Metadata lane. Locked to the first grid row's box, so it centres on the
-   * name identically on one- and two-line rows. Inert by default so clicks land
-   * on the row underneath; only the kebab takes pointer events.
-   */
   .ctx-tail {
     position: absolute;
     top: var(--ctx-row-pad-y);
@@ -1639,14 +1439,10 @@
     place-items: center;
     width: 10px;
     height: 10px;
-    /* Timestamps and pins are the quietest thing in the row. */
     color: color-mix(in srgb, var(--ink-faint) 70%, transparent);
     transition: opacity 150ms ease;
   }
 
-  /* Fixed width, right-aligned, and no wider than the longest age it has to
-     hold ("11mo") — the pin keeps a constant x without drifting away from the
-     value it sits next to. */
   .ctx-age {
     width: 23px;
     text-align: right;
@@ -1686,8 +1482,6 @@
     transform: translateY(-50%) scale(1);
   }
 
-  /* Age and pin both give way to a single overflow control in the same lane,
-     so hover always resolves to one thing regardless of row type. */
   .ctx-row-wrap:hover .ctx-age,
   .ctx-row-wrap:focus-within .ctx-age,
   .ctx-row-wrap.menu-open .ctx-age,
@@ -1715,9 +1509,6 @@
 
   .ctx-menu {
     position: fixed;
-    /* .ui-dropdown-menu pins right:0 for its normal absolute usage; this popup
-       is placed with an inline left, so right has to be released or the box
-       stretches to the viewport edge. */
     right: auto;
     z-index: 70;
     min-width: 132px;
@@ -1728,7 +1519,6 @@
   .ctx-menu-delete.is-armed { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
 
 
-  /* Download panel: sits just above the foot button, slides in from the left. */
   .dl-panel {
     margin: 0 8px 6px;
     padding: 10px 11px;

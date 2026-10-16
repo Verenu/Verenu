@@ -10,7 +10,6 @@ static SDK_VERSION: OnceLock<i32> = OnceLock::new();
 pub fn initialize() -> anyhow::Result<()> {
     use jni::objects::{JObject, JString};
     let context = ndk_context::android_context();
-    // ndk-context holds a process-lifetime Application global reference.
     let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast())? };
     let mut env = vm.attach_current_thread()?;
     let application = unsafe { JObject::from_raw(context.context().cast()) };
@@ -63,8 +62,6 @@ pub fn supported() -> bool {
 
 #[cfg(target_os = "android")]
 pub fn ensure_onnx_runtime() -> anyhow::Result<()> {
-    // Initialization happens before the shared STT engine or VAD can invoke ort.
-    // Serialize the first load; allow a failed load to be retried.
     static READY: OnceLock<()> = OnceLock::new();
     static LOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOAD

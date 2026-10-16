@@ -44,7 +44,6 @@ fn canonical_relaunch_bundle(bundle: String) -> String {
     }
 }
 
-// ---------- macOS permissions ----------
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,8 +99,6 @@ pub struct TccResetResult {
     pub steps: Vec<TccResetStep>,
 }
 
-/// Core permissions are granted once both Accessibility and Microphone are
-/// authorized. (The hotkey no longer needs a separate permission.)
 fn core_permissions_granted(accessibility: &str, microphone: &str) -> bool {
     accessibility == "authorized" && microphone == "authorized"
 }
@@ -195,9 +192,6 @@ fn now_rfc3339() -> String {
 
 #[cfg(target_os = "macos")]
 fn accessibility_permission_status() -> String {
-    // Always ask TCC for the current state. A previous successful AX operation
-    // only proves that access existed at that moment; treating it as a permanent
-    // grant makes revocations invisible until the app is restarted.
     if check_accessibility_permission(false) {
         log::info!("[permissions] accessibility API=AXIsProcessTrusted raw=true state=authorized");
         "authorized".to_string()

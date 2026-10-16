@@ -23,7 +23,6 @@ class VerenuAppInfoWorkerTest {
                     try {
                         release.await(5, TimeUnit.SECONDS)
                     } catch (_: InterruptedException) {
-                        // Model a platform call finishing after shutdown.
                     } finally {
                         finished.countDown()
                     }

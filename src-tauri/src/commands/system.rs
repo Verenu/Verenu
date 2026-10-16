@@ -1,8 +1,6 @@
-//! Window management, memory, hotkey, autostart, connectivity, dev logs.
 
 use super::*;
 
-// ---------- window management ----------
 
 /// Completes the startup handshake for the window that has just mounted its
 /// frontend. This is intentionally reported by the frontend rather than
@@ -23,16 +21,12 @@ pub fn frontend_ready(
             .store(true, std::sync::atomic::Ordering::Release),
         label => return Err(format!("Unknown frontend window: {label}")),
     }
-    // The first state may have been emitted while a lazily-created GTK/WebKit
-    // pill was still installing its listeners. Replay the backend's current
-    // state after readiness so a mapped overlay can never remain blank.
     if window.label() == "pill" {
         crate::pipeline::replay_pill_state(&app);
     }
     Ok(())
 }
 
-// ---------- local model platform support ----------
 
 /// Lets the frontend show an explanatory notice in place of the local
 /// STT/LLM download UI up front, instead of only discovering it's blocked
@@ -46,7 +40,6 @@ pub async fn local_models_supported_on_this_platform() -> bool {
     !crate::system::platform::is_macos_intel()
 }
 
-// ---------- memory ----------
 
 #[tauri::command]
 pub async fn get_memory_mb() -> u64 {
@@ -110,7 +103,6 @@ pub async fn get_hardware_capabilities() -> HardwareCapabilities {
     })
 }
 
-// ---------- developer diagnostics ----------
 
 #[tauri::command]
 pub fn set_diagnostics_monitoring(enabled: bool) {
@@ -176,9 +168,6 @@ pub async fn get_diagnostics_snapshot(
     .await
 }
 
-/// Reads only the recording session's atomics and the same configured gate
-/// threshold used by the pipeline. The lock is held for one short snapshot;
-/// no audio buffers, transcripts, or PCM are retained or copied.
 fn recording_audio_diagnostics(app: &AppHandle, state: &SharedState) -> Option<serde_json::Value> {
     use std::sync::atomic::Ordering;
 
@@ -217,10 +206,6 @@ fn recording_audio_diagnostics(app: &AppHandle, state: &SharedState) -> Option<s
     }))
 }
 
-/// Collects the expensive resource signals only when the diagnostics view or
-/// an explicit recording has enabled the profiler. The result intentionally
-/// uses `None` for unsupported platform fields instead of presenting a fake
-/// zero as a healthy measurement.
 fn collect_resource_sample_if_enabled() {
     if !crate::system::diagnostics::should_sample_resources() {
         return;
@@ -381,9 +366,6 @@ fn collect_windows_process_metrics(sample: &mut crate::system::diagnostics::Reso
             )
             .collect();
 
-        // Aggregate process CPU deltas over the bounded tree. The previous
-        // sample is replaced wholesale, so terminated/replaced child PIDs
-        // cannot accumulate in diagnostics state.
         let mut current_cpu = HashMap::with_capacity(sample.child_processes.len() + 1);
         if let Some(ticks) = process_cpu_ticks(process, filetime_ticks) {
             current_cpu.insert(root, ticks);
@@ -407,11 +389,6 @@ fn collect_windows_process_metrics(sample: &mut crate::system::diagnostics::Reso
                         .iter()
                         .map(|(pid, ticks)| ticks.saturating_sub(*old_cpu.get(pid).unwrap_or(&0)))
                         .sum::<u64>();
-                    // GetProcessTimes ticks are per-core (100% = one full core saturated),
-                    // but the UI reads "CPU %" as "share of the whole machine", same as Task
-                    // Manager. Dividing by the logical core count converts one convention to
-                    // the other; without it, a handful of light WebView2 helper processes on
-                    // a many-core machine summed to a misleadingly large percentage.
                     let logical_cpus = *LOGICAL_CPU_COUNT.get_or_init(|| {
                         std::thread::available_parallelism()
                             .map(|n| n.get() as u64)
@@ -471,9 +448,6 @@ pub async fn download_diagnostics_bundle(
     .await
 }
 
-/// Keeps the text export useful in a terminal or bug report while retaining
-/// the JSON bundle for machine processing. Every source field is already
-/// metadata-first/redacted before it reaches this formatter.
 fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSnapshot) -> String {
     use std::fmt::Write;
 
@@ -566,7 +540,6 @@ fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSn
     output
 }
 
-// ---------- hotkey ----------
 
 #[tauri::command]
 pub async fn set_hotkey_capture(active: bool) -> Result<(), String> {
@@ -602,9 +575,6 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
         return Ok(false);
     }
     if crate::is_dev_session() {
-        // Dev sessions explicitly disable host shortcut integration. Validate
-        // the platform's supported chord shape without requiring Hyprland,
-        // Carbon, or RegisterHotKey to be available in the test environment.
         return crate::core::hotkey::validate_hotkey(&keys);
     }
     crate::core::hotkey::is_hotkey_available(&keys)
@@ -628,8 +598,6 @@ pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String
                 vec!["ControlLeft".into(), "MetaLeft".into()]
             }
         });
-    // Dev sessions persist only in their isolated store, without registering
-    // lasting host shortcuts.
     if !crate::is_dev_session() {
         crate::core::hotkey::update_keys(&ids)?;
     }
@@ -648,13 +616,9 @@ pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String
     .await
 }
 
-// ---------- autostart ----------
 
 #[tauri::command]
 pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String> {
-    // Registry/file/process operations below are all blocking I/O - run them
-    // off the async executor so a slow disk or registry call can't stall
-    // other Tokio tasks (audio capture, hotkey handling, etc.).
     #[cfg(target_os = "windows")]
     {
         tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -665,9 +629,6 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
                 HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
             };
 
-            // Quote the path: a Run value is a command line, so an unquoted path
-            // containing spaces (e.g. "C:\Program Files\Verenu\verenu.exe") would be
-            // parsed as multiple arguments and fail to launch.
             let app_path = format!(
                 "\"{}\"",
                 std::env::current_exe()
@@ -730,7 +691,6 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
         .map_err(|e| e.to_string())??;
     }
 
-    // macOS: write/remove a LaunchAgent plist that launches the app at login.
     #[cfg(target_os = "macos")]
     {
         let app_handle = _app.clone();
@@ -841,12 +801,9 @@ fn run_launchctl(args: &[&str]) -> Result<(), String> {
         format!("exit status {}", output.status)
     };
 
-    // Deliberately no `{:?}` of args: the service target embeds the local
-    // plist path. stderr/stdout keep the diagnostic value for the user.
     Err(format!("launchctl failed: {detail}"))
 }
 
-// ---------- connectivity ----------
 
 #[tauri::command]
 pub async fn check_connectivity() -> bool {
@@ -896,7 +853,6 @@ async fn native_connectivity_check() -> Option<bool> {
     crate::system::connectivity::check_native()
 }
 
-// ---------- developer logs ----------
 
 #[tauri::command]
 pub fn get_recent_logs(limit: Option<usize>) -> Vec<String> {
@@ -931,7 +887,6 @@ pub fn get_dev_logging_enabled() -> bool {
     crate::system::logger::is_verbose()
 }
 
-// ---------- system notifications ----------
 
 #[tauri::command]
 pub fn notify_update_available(app: AppHandle, version: String) -> Result<(), String> {

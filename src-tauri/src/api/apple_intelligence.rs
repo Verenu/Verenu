@@ -78,8 +78,6 @@ pub async fn cleanup(
     max_tokens: u32,
 ) -> anyhow::Result<String> {
     anyhow::ensure!(model == MODEL, "Unsupported Apple Intelligence model");
-    // This is a memory bound, not an estimated token window. FoundationModels
-    // enforces its actual context limit and returns a recoverable overflow.
     anyhow::ensure!(
         prompt.len().saturating_add(input.len()) <= 64 * 1024,
         "Apple Intelligence input exceeds the size limit; the dictation was not truncated"

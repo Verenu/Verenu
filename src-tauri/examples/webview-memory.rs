@@ -1,6 +1,3 @@
-//! Opt-in Linux display/IPC/PSS comparison for independent and related views.
-//! No app settings, audio, credentials, hotkeys, or provider calls are used.
-//! Run with `-- shared` or `-- separate`; each run exits after its probes.
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
@@ -176,7 +173,6 @@ mod probe {
                     let mut samples = Vec::new();
                     let mut renderers = 0;
                     for _ in 0..3 {
-                        // Match the production app's idle native allocator trim.
                         #[cfg(target_env = "gnu")]
                         unsafe { libc::malloc_trim(0); }
                         let (pss_kb, count) = pss_tree(std::process::id());

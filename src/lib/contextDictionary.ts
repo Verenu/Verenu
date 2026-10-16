@@ -157,8 +157,6 @@ export function normalizeContextDictionaryEntry(value: unknown, contextId: numbe
       })();
 
   return {
-    // Keep `id` canonical so existing Contexts/legacy selectors and assignment
-    // commands continue to address the dictionary row, never the mapping row.
     id: dictionaryId,
     dictionary_id: dictionaryId,
     context_id: contextId,

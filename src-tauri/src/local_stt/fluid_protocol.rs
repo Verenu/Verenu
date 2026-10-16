@@ -1,4 +1,3 @@
-//! Compact little-endian float PCM for the private helper pipe.
 use crate::api::base64_audio::Base64Audio;
 use bytes::Bytes;
 use serde::Serialize;

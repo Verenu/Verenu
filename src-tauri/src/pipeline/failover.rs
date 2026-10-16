@@ -128,11 +128,6 @@ fn slot_dir(root: &Path, live: bool) -> PathBuf {
     root.join(if live { LIVE_DIR } else { COMMITTED_DIR })
 }
 
-/// Keep a durable live prefix from being overwritten by the next fresh take.
-/// The live slot is intentionally left in place while the failure is surfaced;
-/// move it to the committed slot only when a subsequent recording needs the
-/// live slot. This avoids rewriting PCM and preserves crash recovery even when
-/// the original failure was caused by a slow/full disk.
 fn preserve_previous_live(root: &Path, current_id: &str) {
     let live = slot_dir(root, true);
     let Some(meta) = load_session(&live.join(SESSION_FILE)) else {
@@ -281,9 +276,6 @@ fn inspection_passes_gates(slot: &SlotInspection) -> bool {
     if slot.usable_samples * 1000 / u64::from(TARGET_RATE) < MIN_RECORDING_MS {
         return false;
     }
-    // New files publish RMS in metadata, so startup can select a winner
-    // without decoding every candidate. A zero value is retained as a
-    // conservative compatibility fallback for pre-metadata files.
     slot.meta.rms == 0.0 || slot.meta.rms >= MIN_RECORDING_RMS
 }
 
@@ -432,8 +424,6 @@ fn id_prefix(id: &str) -> &str {
 /// Startup restore: pick the best candidate, validate it fully, then delete
 /// the alternative and return it.
 pub fn restore_choice(root: &Path, now_unix: i64) -> Option<LoadedTake> {
-    // Inspect sidecars and file lengths first. This avoids decoding both a
-    // stale committed take and a newer live take just to discard one of them.
     let live = inspect_slot(root, true);
     let committed = inspect_slot(root, false);
     let live = live.filter(|slot| {
@@ -463,17 +453,11 @@ pub fn restore_choice(root: &Path, now_unix: i64) -> Option<LoadedTake> {
             return None;
         }
     };
-    // Decode and re-check the selected winner before touching the alternative.
-    // Metadata inspection is only a cheap filter; the decoded PCM is the
-    // authoritative validation.
     if let Some(take) = load_slot(root, winner_live).filter(LoadedTake::passes_gates) {
         delete_slot(root, !winner_live);
         return Some(take);
     }
 
-    // A candidate can pass the sidecar gates but fail after decoding (for
-    // example, if its PCM was damaged after the last sidecar checkpoint).
-    // Preserve the alternative long enough to recover it in that case.
     delete_slot(root, winner_live);
     let alternative_live = !winner_live;
     let alternative_is_valid_candidate = if alternative_live {
@@ -508,16 +492,7 @@ fn loaded_to_capture(take: LoadedTake) -> CancelledCapture {
         origin,
         created_at_rfc3339,
         started_at_unix,
-        // Recovered after a crash/restart, so there is no live foreground
-        // window to reuse — the watchdog's resume goes through the same
-        // resume_cancelled_capture path, which re-captures the (now current)
-        // foreground window whenever the stored target is the zero default.
         target: WindowTarget::default(),
-        // Older crash-recovery sidecars did not persist the originating
-        // Context. Use the safe fallback rather than resolving a new Context
-        // from whatever window happens to be focused during recovery. New
-        // sidecars carry only the stable local ID; the label is diagnostic
-        // because restore runs before the database is opened.
         context: take
             .meta
             .context_id
@@ -613,9 +588,6 @@ pub fn commit_capture_with_context(
     }
 }
 
-/// Promote the already durable live spool instead of rewriting the full take
-/// after capture stops. The sidecar is updated atomically before the directory
-/// is moved, so a crash can leave either a valid live or committed candidate.
 fn promote_live(
     root: &Path,
     id: &str,
@@ -943,8 +915,6 @@ impl DurableSink for AsyncLiveWriter {
             match tx.try_send(WriterMessage::Samples(samples_16k.to_vec())) {
                 Ok(()) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    // A slow disk must stop the take, not make the audio
-                    // processing worker wait behind a bounded queue.
                     log::warn!("failover: recovery writer queue is full");
                     self.failed.store(true, Ordering::Release);
                     return Err(DurableSinkError::Backpressure);
@@ -963,9 +933,6 @@ impl DurableSink for AsyncLiveWriter {
 
     fn finish(&mut self) -> DurableSinkResult {
         if let Some(tx) = self.tx.take() {
-            // Finish is best-effort and deliberately nonblocking as well. If
-            // the queue is full, dropping the sender lets the writer drain its
-            // already accepted prefix before it performs its final sync.
             let _ = tx.try_send(WriterMessage::Finish);
         }
         if let Some(handle) = self.handle.take() {
@@ -1092,8 +1059,6 @@ pub fn flush_on_exit(app: &AppHandle) {
                         result.sample_rate,
                         result.duration_ms,
                     );
-                    // Exit flush must preserve the Context captured when the
-                    // recording started; focus may already have changed.
                     commit_capture_with_context(
                         &audio,
                         &id,
@@ -1195,8 +1160,6 @@ mod tests {
             None,
         )
         .unwrap();
-        // Make the next sidecar write fail while leaving the already-published
-        // PCM prefix and its metadata intact.
         fs::create_dir(slot_dir(&root, true).join("session.json.tmp")).unwrap();
         assert_eq!(writer.extend(&loud_ms(1000)), Err(DurableSinkError::Disk));
         let _ = writer.finish();
@@ -1391,7 +1354,6 @@ mod tests {
             LiveWriter::open(root.clone(), "new-id".into(), Some(&short), None, None).unwrap();
         let _ = w.finish();
         drop(w);
-        // 200ms fails gates, so restore_choice drops live and keeps committed.
         let restored = restore_choice(&root, now_unix()).unwrap();
         assert_eq!(restored.meta.id, "old-id");
         delete_all(&root);
@@ -1437,8 +1399,6 @@ mod tests {
         )
         .unwrap();
 
-        // Keep the sidecar's optimistic RMS, but make the selected live PCM
-        // fail the full decoded-audio gate.
         fs::write(
             slot_dir(&root, true).join(AUDIO_FILE),
             vec![0_u8; live.len() * 2],

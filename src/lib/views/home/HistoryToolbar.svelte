@@ -38,9 +38,6 @@
   let expanded = $derived(uiExpanded || filtersActive);
 
   async function expandSearch() {
-    // Replacing the focused icon button with the input emits focusout before
-    // the new input can receive focus. Keep the group open through that one
-    // DOM transition so keyboard and automation users can type immediately.
     preserveExpanded = true;
     uiExpanded = true;
     await tick();
@@ -225,9 +222,6 @@
   .history-app-trigger[aria-expanded='true'] { background: var(--control-hover); border-color: transparent; }
 
   .history-app-menu { width: max-content; min-width: 180px; max-width: 280px; }
-  /* WebView2 reserves a native scrollbar gutter even while the custom thumb is
-     transparent. That leaves the selected row looking clipped on Windows.
-     The menu remains wheel/trackpad-scrollable without the gutter. */
   :global(.app-windows) .history-app-menu {
     scrollbar-width: none;
   }
@@ -248,9 +242,6 @@
     .history-search-group.expanded { flex-basis: 100%; max-width: none; }
   }
 
-  /* A compositor-backed reveal keeps the menu animation visible in WebKit,
-     including the macOS Tauri window. The Svelte transition still provides
-     the matching exit animation. */
   .history-app-menu { animation: history-app-menu-enter var(--ui-duration-fast) var(--ui-ease-out); transform-origin: top right; will-change: opacity, transform; }
 
   @keyframes history-app-menu-enter {

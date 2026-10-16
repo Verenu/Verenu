@@ -1,9 +1,3 @@
-/*
- * Brand marks for custom provider presets, from SVGL (svgl.app), light-theme cuts only (they sit on a white tile), unmodified apart
- * from stripped XML headers and namespaced ids. Logos belong to their companies;
- * showing one does not imply endorsement or support. Presets without an entry
- * fall back to a monogram tile.
- */
 
 export type PresetLogo = { viewBox: string; light: string };
 

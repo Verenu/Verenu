@@ -15,12 +15,6 @@
 		{ id: 'insights', label: 'Insights', icon: 'chart' },
 	] as const;
 
-	/*
-	 * Contexts (or the legacy Dictionary/Snippets pair it replaced) are reached
-	 * from the sidebar rail on desktop. That rail is hidden here, so without
-	 * these entries the whole surface is unreachable on a phone. Mirrors the
-	 * same legacy switch App.svelte routes on.
-	 */
 	const LIBRARY = [{ id: 'contexts', label: 'Contexts', icon: 'layers' }] as const;
 	const LEGACY_LIBRARY = [
 		{ id: 'dictionary', label: 'Words', icon: 'book' },
@@ -35,7 +29,6 @@
 	]);
 
 	function openSettings() {
-		// A tap on the Settings tab always lands on the section list.
 		appStore.settingsMobileList = true;
 		appStore.settingsOpen = true;
 	}
@@ -76,8 +69,6 @@
 </nav>
 
 <style>
-	/* Material-style bar: a tonal pill behind the active icon, labels always
-	   shown. Height is mirrored by --mobile-nav-h in App.svelte. */
 	.mobile-nav {
 		display: flex;
 		gap: 4px;
@@ -89,9 +80,6 @@
 		border-top: 1px solid var(--line);
 		position: sticky;
 		bottom: 0;
-		/* Above the settings overlay (z-index 60). Settings is a page on mobile,
-		   not a dialog, and the sidebar's "Back to app" button that normally
-		   closes it is hidden here. */
 		z-index: 70;
 	}
 
@@ -124,7 +112,6 @@
 		transition: color 180ms ease;
 	}
 
-	/* The tonal pill grows out of the icon instead of switching on. */
 	.mobile-nav-icon::before {
 		content: '';
 		position: absolute;

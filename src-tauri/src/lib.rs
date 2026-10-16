@@ -1,7 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-// Compiled everywhere so shared pipeline code can look up the managed state;
-// only registered on desktop (Android reports through VerenuAnalytics.kt).
 #[allow(dead_code)]
 mod analytics;
 mod android;
@@ -57,8 +55,6 @@ pub(crate) fn is_dev_session() -> bool {
     false
 }
 
-// Startup helpers live in app_setup.rs; re-exported here so the rest of the
-// crate can keep using `crate::` paths.
 #[cfg(target_os = "macos")]
 pub(crate) use app_setup::hide_main_window;
 pub(crate) use app_setup::{
@@ -69,9 +65,6 @@ pub(crate) use app_setup::{
 pub(crate) use app_setup::{cleanup_update_helper_if_requested, wait_for_relaunch_parent_exit};
 pub(crate) use app_tray::apply_runtime_icons;
 
-/// Long-lived installs need the same bounded maintenance that startup used to
-/// provide.  Keep it off the UI/runtime threads and make every operation
-/// best-effort so a busy or read-only database cannot interrupt dictation.
 fn start_storage_maintenance(
     app: tauri::AppHandle,
     db: DbHandle,
@@ -153,7 +146,6 @@ fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
         .l()?;
     let global = env.new_global_ref(application)?;
     let raw = global.as_obj().as_raw();
-    // Intentionally leaked: ndk-context keeps the pointer for the whole process.
     std::mem::forget(global);
     unsafe { ndk_context::initialize_android_context(context.java_vm, raw.cast()) };
     Ok(())
@@ -207,12 +199,6 @@ pub fn run() {
         failover_started_at_unix: 0,
     }));
 
-    // The logger must be live before the database opens: a corrupt DB.
-    // Android path resolution happens inside setup before this open.
-    // failed migration, or quarantine decision happens before Tauri's setup
-    // callback, where the AppHandle (and thus `verenu:log` emission) first
-    // exists. init_early captures those records in the ring buffer;
-    // attach_app in setup enables frontend forwarding.
     crate::system::logger::init_early();
     pipeline::failover::restore_into_state(&shared);
     let local_cleanup_manager = crate::local_llm::LocalLlmManager::new();
@@ -282,9 +268,6 @@ pub fn run() {
                     || arg == "--verenu-hotkey-handsfree"
                     || arg == "--verenu-capture-sub-app"
             }) {
-                // A handoff helper that reaches first-instance startup has no
-                // recording target. Do not turn it into an orphaned normal
-                // window when the primary process (or its dev server) is gone.
                 app.handle().exit(0);
                 return Ok(());
             }
@@ -374,8 +357,6 @@ pub fn run() {
                             crate::core::hotkey::mapped_codes(codes).ok()
                         });
                         if ids.as_ref().is_none_or(|ids| crate::core::hotkey::update_keys(ids).is_err()) {
-                            // Keep defaults when migrating a binding unsupported by
-                            // this platform. Never truncate a saved combination.
                             #[cfg(target_os = "macos")]
                             let defaults = ["AltLeft", "Space"];
                             #[cfg(not(target_os = "macos"))]
@@ -456,8 +437,6 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             {
-                // Non-critical: a temp-dir write failure here must not abort
-                // startup, it only skips the themed toast identity.
                 match app_tray::prepare_windows_shell_icon(app.handle()) {
                     Ok(shell_icon) => {
                         crate::system::notify::prepare_windows_notification_identity(
@@ -470,8 +449,6 @@ pub fn run() {
                 }
             }
 
-            // LAN device sync: identity, mDNS discovery, listener, sessions.
-            // Soft-fails internally — never blocks startup.
             let sync_enabled = settings
                 .get(crate::data::store::SYNC_ENABLED)
                 .and_then(|value| value.as_bool())
@@ -484,10 +461,6 @@ pub fn run() {
             } else {
                 log::info!("sync: disabled by setting");
             }
-            // Android overlay service bridge (loopback): the Kotlin
-            // AccessibilityService drives recording and insertion through
-            // this; see crate::android::bridge. Soft-fails like sync —
-            // a bridge failure must never block startup.
             #[cfg(target_os = "android")]
             {
                 match crate::android::bridge::start_bridge(app.handle().clone()) {
@@ -519,14 +492,10 @@ pub fn run() {
                         let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
                         tauri::Error::Setup(source.into())
                     })?;
-                // AppWindow initialization can restore the executable-derived taskbar icon.
-                // Apply the generated runtime icons only after custom chrome owns the window.
                 app_tray::apply_runtime_icons(app.handle(), theme);
             }
             app_hotkey::setup_hotkey(app, shared.clone());
             media::mic_mute_trigger::setup(app, shared.clone());
-            // setup_tray() already applies runtime icons (both platforms) via
-            // apply_runtime_icons() — no need to call it again here.
             #[cfg(target_os = "macos")]
             {
                 crate::system::mac_app::set_accessory_activation_policy_on_main_thread(
@@ -567,8 +536,6 @@ pub fn run() {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     pipeline::release_expired_capture_audio(&capture_state);
-                    // && (not ||): either manager signalling shutdown on its
-                    // own must not stop monitoring the other still-active one.
                     if local_stt_manager
                         .shutdown_signal
                         .load(std::sync::atomic::Ordering::Relaxed)
@@ -592,11 +559,6 @@ pub fn run() {
                         log::warn!("local models: idle unload maintenance failed: {error}");
                     }
 
-                    // Proactive safety unload: don't wait out the configured
-                    // idle timeout if the system is genuinely low on RAM or
-                    // (NVIDIA) VRAM right now — e.g. launching a demanding
-                    // game shouldn't have to wait 15 minutes for Verenu to
-                    // give back memory its local models are holding.
                     let stt_loaded = local_stt_manager
                         .current_model_id
                         .lock()
@@ -608,11 +570,6 @@ pub fn run() {
                         .map(|guard| guard.is_some())
                         .unwrap_or(false);
                     if stt_loaded || llm_loaded {
-                        // detect_resource_pressure() does blocking process
-                        // I/O (bounded by its own internal timeout) — run it
-                        // off the async worker thread so a slow/wedged
-                        // nvidia-smi can never stall this loop or other
-                        // tasks sharing the runtime.
                         let pressure = tauri::async_runtime::spawn_blocking(
                             crate::system::memory::detect_resource_pressure,
                         )
@@ -642,13 +599,6 @@ pub fn run() {
             if window.label() == "main" {
                 match event {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
-                        // The OS is tearing the session down (Windows logoff or
-                        // shutdown): let the window actually close instead of
-                        // hiding to tray, or the process outlives the session
-                        // (Windows waits ~5s then force-kills it, which also
-                        // skips RunEvent::Exit and can orphan llama-server.exe).
-                        // On other platforms the session helper reports false
-                        // and the normal hide-to-tray path below runs.
                         if crate::system::session::system_is_shutting_down() {
                             return;
                         }
@@ -689,34 +639,14 @@ pub fn run() {
                             .unwrap_or("system")
                             == "system"
                         {
-                            // apply_runtime_icons() already applies runtime icons
-                            // internally — no separate call needed here.
                             apply_runtime_icons(app, Some(*theme));
                         }
                     }
                     #[cfg(target_os = "windows")]
                     tauri::WindowEvent::Moved(_) => {
-                        // Intentionally a no-op. Dragging changes neither the
-                        // title-bar geometry the frontend mirrors
-                        // (height/insets/scale are DPI- and theme-dependent,
-                        // not position-dependent) nor the themed icon artwork
-                        // (theme/accent/DPI-dependent). Refreshing either here
-                        // re-ran WinRT title-bar updates, child-window
-                        // enumeration, full icon rasterization, and a frontend
-                        // style recalc on every mouse-move event of a drag —
-                        // the stutter when jiggling the window. A
-                        // cross-monitor move that changes DPI arrives
-                        // separately as ScaleFactorChanged below.
                     }
                     #[cfg(target_os = "windows")]
                     tauri::WindowEvent::Resized(_) => {
-                        // A live resize delivers one event per frame;
-                        // refreshing the native title bar synchronously here
-                        // (WinRT calls plus child-window enumeration) stalls
-                        // the drag. Coalesce to a single refresh once the size
-                        // settles so maximize/snap changes are still picked
-                        // up. Icons are size-independent — they refresh on
-                        // ScaleFactorChanged/ThemeChanged/settings instead.
                         schedule_settled_titlebar_refresh(window.app_handle());
                     }
                     #[cfg(target_os = "windows")]
@@ -992,11 +922,6 @@ mod linux_webkit_renderer_tests {
 #[cfg(target_os = "windows")]
 static TITLEBAR_REFRESH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Re-read native title-bar metrics once the window size has settled (150ms
-/// with no further `Resized` event). A live resize delivers one event per
-/// frame, so each event just bumps the generation and schedules a check —
-/// only the last one in a burst performs the refresh. See the `Resized` arm
-/// in `on_window_event`.
 #[cfg(target_os = "windows")]
 fn schedule_settled_titlebar_refresh(app: &tauri::AppHandle) {
     use std::sync::atomic::Ordering;

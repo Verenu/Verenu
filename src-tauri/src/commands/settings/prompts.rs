@@ -16,9 +16,6 @@ pub struct PromptTestReport {
     pub live_warnings: Vec<String>,
 }
 
-/// (case name, dictation input) pairs used by [`test_cleanup_prompt`] to probe
-/// refusal leaks, pronoun swaps, prompt injection, dropped conditions, and
-/// missed self-corrections.
 const PROMPT_TEST_CASES: &[(&str, &str)] = &[
     (
         "details",
@@ -105,8 +102,6 @@ pub async fn test_cleanup_prompt(
         });
     }
 
-    // Audit the same composed system prompt used by the production pipeline.
-    // Existing edits to the other dimension remain active during the probe.
     let template = if let Some(cfg) = config.as_mut() {
         cfg.cleanup_intensity = intensity.clone();
         let key = if tone.is_some() {
@@ -259,7 +254,6 @@ fn resolve_prompt_test_style(
     Ok((intensity.to_string(), profile.to_string()))
 }
 
-/// Heuristic pass/fail for one [`PROMPT_TEST_CASES`] case's live output.
 fn evaluate_prompt_test_case(name: &str, output: &str) -> (bool, String) {
     if output.trim().is_empty() {
         return (false, "Model returned an empty response.".to_string());

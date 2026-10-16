@@ -1,11 +1,9 @@
 <script lang="ts">
   import { MOTION_MS, reducedMotionEnabled } from '../../motion';
 
-  // 0 = maximum accuracy (left) … 1 = maximum efficiency (right).
   let { position = 0.5 }: { position?: number } = $props();
 
   const clamped = $derived(Number.isFinite(position) ? Math.min(1, Math.max(0, position)) : 0.5);
-  // Reduced motion: snap instead of gliding the marker between cards.
   const durationMs = $derived(reducedMotionEnabled() ? 0 : MOTION_MS.panel);
 </script>
 
@@ -43,9 +41,6 @@
     position: relative;
     height: 6px;
     border-radius: 999px;
-    /* Use the accent scale so this legend follows the selected accent,
-       including the adaptive black/white defaults. Deep = accuracy (left),
-       light = efficiency (right). */
     background: linear-gradient(
       to right,
       var(--jap-600) 0%,

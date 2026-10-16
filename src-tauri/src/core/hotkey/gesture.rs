@@ -1,4 +1,3 @@
-//! Physical key ownership and dictation gestures for the Windows hook.
 const CHORD_TAP_MAX_HOLD_MS: u64 = 200;
 const CHORD_DOUBLE_TAP_WINDOW_MS: u64 = 300;
 const STALE_KEY_RECONCILIATION_GRACE_MS: u64 = 100;
@@ -17,8 +16,6 @@ pub(super) enum KeyEdge {
     Up,
 }
 
-// The shared "Fire" prefix reads clearly as "fire this callback" at each call
-// site; not worth losing that for clippy's glob-import naming heuristic.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ChordAction {
@@ -195,13 +192,6 @@ impl ChordStateMachine {
 
         let was_down = std::mem::replace(self.key_down_mut(key), true);
         if was_down {
-            // Autorepeat. If this key is chord-owned, Verenu already claimed
-            // it and must keep suppressing it (this is the actual fix for the
-            // original bug: a handsfree trigger deliberately leaves
-            // `chord_down` false while the keys may still be held, so without
-            // this explicit already-down check a repeat could otherwise look
-            // like a fresh edge and re-enter chord-formed handling). If it's
-            // not chord-owned, it was never ours to begin with.
             return if self.key_was_chord(key) {
                 ChordOutcome::suppress(None)
             } else {
@@ -213,42 +203,18 @@ impl ChordStateMachine {
         if !self.keys.iter().all(|key| key.down) {
             if self.passthrough_if_incomplete[key.0] {
                 self.mark_key_passed_through(key);
-                // Modifier prefixes remain usable while waiting for the rest
-                // of the chord.
                 return ChordOutcome::passthrough();
             }
 
-            // Claim regular keys immediately. If we forwarded one here, the
-            // focused app could receive its character before the chord formed.
             self.set_key_was_chord(key, true);
             return ChordOutcome::suppress(None);
         }
 
-        // Chord-formed edge: both keys just became down together, regardless
-        // of press order. This is the second key's down-edge; the first
-        // already passed through above.
         for key in &mut self.keys {
             key.was_chord = true;
         }
 
         if self.chord_down {
-            // Re-formation, not a new press — reclaim ownership and stop.
-            //
-            // A chord-forming edge normally implies a key went up and back
-            // down, and that keyup would have cleared `chord_down`. So finding
-            // it still set means something cleared a key's bookkeeping while it
-            // was still physically held: `reconcile_stale_key` doing its job on
-            // a keyup the hook never received, or `force_release_win_key`
-            // wiping all of it before a paste. The key then autorepeats (it IS
-            // still down), and that repeat arrives here looking like a fresh
-            // chord.
-            //
-            // Restoring ownership above is right. Restarting the hold clock is
-            // not: `held_ms` in on_key_up is measured from `chord_first_down_ms`,
-            // so a chord held for seconds would be measured from this repeat,
-            // come out under CHORD_TAP_MAX_HOLD_MS, and be classified as a tap
-            // — firing FireCancel and throwing the dictation away. That is the
-            // "every dictation gets cancelled" bug.
             return ChordOutcome::suppress(None);
         }
 
@@ -257,9 +223,6 @@ impl ChordStateMachine {
         if let TapState::AwaitingSecondTap { deadline_start_ms } = self.tap {
             if now_ms.saturating_sub(deadline_start_ms) <= CHORD_DOUBLE_TAP_WINDOW_MS {
                 self.tap = TapState::None;
-                // Handsfree is a discrete toggle, not a held chord — leave
-                // chord_down false so the user's fingers coming off both keys
-                // afterward needs no further chord bookkeeping here.
                 return ChordOutcome::suppress(Some(ChordAction::FireHandless));
             }
         }
@@ -317,8 +280,6 @@ impl ChordStateMachine {
         let key_passed_through = std::mem::replace(self.key_passed_through_mut(key), false);
 
         if !self.key_was_chord(key) {
-            // Never claimed as part of a chord — always pass through, or an
-            // ordinary Ctrl/Windows release could get silently swallowed.
             return ChordOutcome::passthrough();
         }
         self.set_key_was_chord(key, false);
@@ -335,15 +296,6 @@ impl ChordStateMachine {
             }
         }
 
-        // The double-tap clock starts at the first release following a quick
-        // chord tap. This deliberately does NOT require the *other* key to
-        // also be up: holding one key down continuously and quick-tapping the
-        // other twice (e.g. hold Ctrl, double-click Win) must also arm the
-        // second tap, since a remapped mouse button can only ever send taps
-        // of a single key, never hold one key while tapping another. When
-        // both keys happen to release together (the classic "double-tap the
-        // whole chord" gesture) this still starts the window at the first of
-        // the two releases, which are normally only a few ms apart.
         if matches!(self.tap, TapState::WaitingForFullRelease) {
             self.tap = TapState::AwaitingSecondTap {
                 deadline_start_ms: now_ms,
@@ -430,24 +382,12 @@ mod chord_tests {
 
     #[test]
     fn long_hold_still_releases_after_ownership_is_reconciled_away() {
-        // Regression: every dictation got cancelled instead of transcribed.
-        //
-        // `reconcile_stale_key` (and `force_release_win_key`, which does the
-        // same thing wholesale before a paste) can clear a key's down/ownership
-        // bookkeeping while the user is still physically holding the chord —
-        // that is the entire point of it, for keyups the hook never received.
-        // But the key keeps autorepeating, and the next repeat then looked like
-        // a brand-new chord-forming edge, which reset `chord_first_down_ms` to
-        // "now". The hold length is measured from that field, so a chord held
-        // for seconds measured as a sub-200ms tap and fired FireCancel.
         let mut m = fresh();
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.on_key_event(ChordKey::Key2, KeyEdge::Down, 5);
         assert_eq!(m.chord_first_down_ms, 5);
 
-        // Something reconciles key2's ownership away mid-hold.
         m.reconcile_stale_key(ChordKey::Key2, false, 3_000);
-        // ...and key2 autorepeats, since it is still physically down.
         let repeat = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 3000);
         assert_eq!(
             repeat.action, None,
@@ -458,7 +398,6 @@ mod chord_tests {
             "re-forming the chord mid-hold must not restart the hold clock"
         );
 
-        // The real release, seconds after the real press, is a hold.
         let up = m.on_key_event(ChordKey::Key1, KeyEdge::Up, 4000);
         assert_eq!(up.action, Some(ChordAction::FireRelease));
     }
@@ -476,17 +415,14 @@ mod chord_tests {
     #[test]
     fn autorepeat_after_handless_trigger_does_not_refire() {
         let mut m = fresh();
-        // First tap.
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.on_key_event(ChordKey::Key2, KeyEdge::Down, 5);
         m.on_key_event(ChordKey::Key1, KeyEdge::Up, 50);
         m.on_key_event(ChordKey::Key2, KeyEdge::Up, 55);
-        // Second tap within window -> handsfree.
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 100);
         let second = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 105);
         assert_eq!(second.action, Some(ChordAction::FireHandless));
         assert!(!m.chord_down);
-        // Both physical keys still held -> autorepeat must not refire anything.
         let repeat1 = m.on_key_event(ChordKey::Key1, KeyEdge::Down, 130);
         let repeat2 = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 160);
         assert_eq!(repeat1.action, None);
@@ -533,20 +469,15 @@ mod chord_tests {
 
     #[test]
     fn held_key_double_tap_of_other_key_triggers_handless() {
-        // Hold key1 continuously (e.g. Ctrl), quick-tap key2 (e.g. Win) twice
-        // without ever releasing key1 — the gesture a mouse button remapped
-        // to double-click a single key needs, since it can never hold one
-        // key while tapping another.
         let mut m = fresh();
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.on_key_event(ChordKey::Key2, KeyEdge::Down, 5);
         let cancel = m.on_key_event(ChordKey::Key2, KeyEdge::Up, 50);
         assert_eq!(cancel.action, Some(ChordAction::FireCancel));
-        // key1 never released; key2 taps down again within the window.
         let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 100);
         assert_eq!(outcome.action, Some(ChordAction::FireHandless));
         assert!(!m.chord_down);
-        assert!(m.keys[0].down); // key1 still physically held throughout
+        assert!(m.keys[0].down);
     }
 
     #[test]
@@ -555,25 +486,22 @@ mod chord_tests {
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.on_key_event(ChordKey::Key2, KeyEdge::Down, 5);
         m.on_key_event(ChordKey::Key1, KeyEdge::Up, 50);
-        m.on_key_event(ChordKey::Key2, KeyEdge::Up, 55); // full release at 55
+        m.on_key_event(ChordKey::Key2, KeyEdge::Up, 55);
         let second = m.on_key_event(ChordKey::Key1, KeyEdge::Down, 300);
-        let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 340); // 340-50=290 <= 300
+        let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 340);
         assert_eq!(second.action, None);
         assert_eq!(outcome.action, Some(ChordAction::FireHandless));
     }
 
     #[test]
     fn window_measured_from_first_release() {
-        // The double-tap clock starts at the FIRST release of the pair (not
-        // the last), so the solo-hold gesture above has a well-defined start
-        // point even though the held key may never release at all.
         let mut m = fresh();
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.on_key_event(ChordKey::Key2, KeyEdge::Down, 5);
-        m.on_key_event(ChordKey::Key1, KeyEdge::Up, 50); // first release -> deadline starts here
-        m.on_key_event(ChordKey::Key2, KeyEdge::Up, 130); // second released 80ms later
+        m.on_key_event(ChordKey::Key1, KeyEdge::Up, 50);
+        m.on_key_event(ChordKey::Key2, KeyEdge::Up, 130);
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 340);
-        let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 345); // 345-50=295 <= 300
+        let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 345);
         assert_eq!(outcome.action, Some(ChordAction::FireHandless));
     }
 
@@ -620,8 +548,6 @@ mod chord_tests {
         assert_eq!(space_up.action, None);
         assert_eq!(space_up.disposition, KeyDisposition::Suppress);
 
-        // Releasing the original hold keys must not fire the normal release
-        // action after Space has converted the session.
         let key1_up = m.on_key_event(ChordKey::Key1, KeyEdge::Up, 100);
         let key2_up = m.on_key_event(ChordKey::Key2, KeyEdge::Up, 105);
         assert_eq!(key1_up.action, None);
@@ -656,12 +582,9 @@ mod chord_tests {
     #[test]
     fn stale_key_bookkeeping_does_not_fire_on_lone_press() {
         let mut m = fresh();
-        // Simulate a missed keyup: key1 (e.g. Ctrl) is marked down internally
-        // but the OS no longer reports it held.
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 0);
         m.reconcile_stale_key(ChordKey::Key1, false, 1_000);
         assert!(!m.keys[0].down);
-        // A lone press of key2 must not look like a chord-forming edge.
         let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 100);
         assert_eq!(outcome.action, None);
         assert_eq!(outcome.disposition, KeyDisposition::Passthrough);
@@ -682,8 +605,6 @@ mod chord_tests {
         let mut m = fresh();
         m.on_key_event(ChordKey::Key1, KeyEdge::Down, 10);
 
-        // A mouse remapping button can deliver Ctrl's hook event before the
-        // async-state query made while processing Win sees that first edge.
         m.reconcile_stale_key(ChordKey::Key1, false, 11);
         let outcome = m.on_key_event(ChordKey::Key2, KeyEdge::Down, 11);
         assert_eq!(outcome.action, Some(ChordAction::FirePress));
@@ -699,14 +620,10 @@ mod chord_tests {
         m.reset_gesture_state();
         assert!(!m.chord_down);
         assert_eq!(m.tap, TapState::None);
-        // Physical/ownership state must survive the reset.
         assert!(m.keys[0].down);
         assert!(m.keys[1].down);
         assert!(m.keys[0].was_chord);
         assert!(m.keys[1].was_chord);
-        // The first key's down-edge was passed through before the chord formed,
-        // so its matching keyup must pass through too. The second key remains
-        // fully owned by Verenu.
         let up1 = m.on_key_event(ChordKey::Key1, KeyEdge::Up, 10);
         let up2 = m.on_key_event(ChordKey::Key2, KeyEdge::Up, 15);
         assert_eq!(up1.disposition, KeyDisposition::Passthrough);

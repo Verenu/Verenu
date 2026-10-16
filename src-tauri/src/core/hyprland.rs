@@ -1,9 +1,3 @@
-//! Small, bounded Hyprland IPC seam.
-//!
-//! Hyprland deliberately exposes window identity through its authenticated
-//! compositor IPC. Keeping the one `hyprctl -j` fallback here prevents string
-//! addresses from leaking into the dictation pipeline. It is used only at
-//! recording start/retry and insertion, never while audio callbacks run.
 
 #[cfg(target_os = "linux")]
 use serde::de::DeserializeOwned;
@@ -52,7 +46,7 @@ pub(crate) struct Workspace {
     #[serde(default)]
     pub id: i32,
     #[serde(default)]
-    #[allow(dead_code)] // Part of the Hyprland workspace response schema.
+    #[allow(dead_code)]
     pub name: String,
 }
 
@@ -112,8 +106,6 @@ fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     if let Some(response) = socket_request(&format!("j/{}", args[1..].join(" "))) {
         return serde_json::from_slice(&response.ok()?).ok();
     }
-    // The command is synchronous but used on a non-audio path. Do not include
-    // output in diagnostics: titles/classes can be private.
     let output = std::process::Command::new("hyprctl")
         .args(args)
         .stdout(std::process::Stdio::piped())
@@ -355,8 +347,6 @@ fn owned_pill_window(clients: &serde_json::Value, pid: u32) -> Option<ActiveWind
         .as_array()?
         .iter()
         .find(|w| {
-            // PID and our non-localized title identify this process's pill.
-            // Executable/AppImage renaming must never break placement.
             w.get("title").and_then(|v| v.as_str()) == Some("Verenu Dictation Pill")
                 && w.get("pid").and_then(|v| v.as_u64()) == Some(u64::from(pid))
         })
@@ -409,7 +399,6 @@ pub(crate) fn ensure_window_rules() -> Result<(), String> {
     let output = std::process::Command::new("hyprctl").arg("configerrors").output()
         .map_err(|e| format!("cannot validate Hyprland window rules: {e}"))?;
     if !output.status.success() || !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
-        // Config error contents may contain private user commands or paths.
         return Err("Hyprland reports configuration errors. Run hyprctl configerrors to inspect them.".into());
     }
     Ok(())
@@ -485,7 +474,6 @@ pub(crate) fn ensure_global_shortcut_binding(
     Ok(())
 }
 
-/// Replaces only a complete, correctly ordered managed block.
 #[cfg(target_os = "linux")]
 fn replace_managed_block(current: &str, start: &str, end: &str, block: &str) -> Result<String, String> {
     match (current.find(start), current.find(end)) {
@@ -551,9 +539,9 @@ fn sub_app_capture_binding_block(chord: &str, capture_command: &str) -> String {
 #[cfg(target_os = "linux")]
 const NON_COMBO_KEYCODES: &[u32] = &[
     9, 65, 66, 37, 105, 50, 62, 64, 108, 133, 134,
-    121, 122, 123, // mute, volume down/up
-    171, 172, 173, 174, 208, 209, 215, // next/play/pause/previous/stop
-    232, 233, 236, 237, 238, 251, 252, 256, // display/keyboard brightness, mic mute
+    121, 122, 123,
+    171, 172, 173, 174, 208, 209, 215,
+    232, 233, 236, 237, 238, 251, 252, 256,
 ];
 
 #[cfg(target_os = "linux")]
@@ -706,23 +694,16 @@ fn global_shortcut_binding_block(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    // Rejecting another shortcut's modifier prefix is distinct from Escape:
-    // the backend ignores this action during hands-free and processing.
     let cancel_portal_id = press_portal_id.rsplit_once(':').map_or_else(
         || "cancel-chord".to_string(),
         |(scope, _)| format!("{scope}:cancel-chord"),
     );
-    // Keys that never mean "this is another shortcut": every modifier (the
-    // chord is made of them), the chord's own keys, Space (hands-free) and
-    // Escape (cancel).
     let ignored_keycodes = release_keycodes
         .iter()
         .chain(NON_COMBO_KEYCODES.iter())
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    // Commands are interpolated into Lua string literals, so escape both
-    // backslashes and quotes before inserting them into the template.
     let release_command = release_command.replace('\\', "\\\\").replace('"', "\\\"");
     let handsfree_command = handsfree_command.replace('\\', "\\\\").replace('"', "\\\"");
     GLOBAL_SHORTCUT_TEMPLATE
@@ -796,8 +777,6 @@ mod tests {
     #[test]
     fn window_policy_matches_release_identity_and_size_contract() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
-        // Keep GTK's default registration behavior: headless dev sessions
-        // and the installed app must not share a remote GtkApplication.
         assert_ne!(config["app"]["enableGTKAppId"], true);
         assert_eq!(config["identifier"], "com.verenu.app");
         assert_eq!(super::WINDOW_CLASS, "Verenu");

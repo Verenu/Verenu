@@ -52,9 +52,6 @@ test('deleting the last sidebar cleanup override refreshes Home readiness', asyn
     await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');
     await page.screenshot({ path: testInfo.outputPath(`home-cleanup-override-before-delete-${compactViewport ? 'phone' : 'desktop'}.png`) });
 
-    // The phone layout has no sidebar context menu. Keep the real phone state
-    // asserted, resize only to perform the same Rust-backed deletion, then
-    // return to phone and verify the cleared readiness state there as well.
     if (compactViewport && originalViewport) {
       await page.setViewportSize({ width: 1320, height: originalViewport.height });
       await expect(notice).toContainText('Optional cleanup model readiness-missing-cleanup is not installed.');

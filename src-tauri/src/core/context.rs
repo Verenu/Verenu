@@ -1,4 +1,3 @@
-//! Foreground executable to content-context resolution.
 
 use anyhow::Result;
 
@@ -57,9 +56,6 @@ pub fn resolve_context_with_title(
     domain: Option<&str>,
     window_title: Option<&str>,
 ) -> Result<(Context, Option<db::ContextSubApp>)> {
-    // App bundles/installers commonly replace their executable name on every
-    // update. Refresh a target lazily on the dictation path so users do not
-    // need to reopen the Contexts screen after a nightly release changes.
     let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
     db::reconcile_context_targets(db, &installed_apps)?;
     db::resolve_context_with_sub_app(db, executable, domain, window_title)
@@ -128,8 +124,6 @@ fn resolve_alias_with_title(
         return Ok(resolved);
     }
     let alias_match = db::resolve_context_with_sub_app(db, alias, domain, title)?;
-    // A sub-app is more specific than a website/app. Otherwise keep
-    // a class or website assignment ahead of an executable alias.
     if alias_match.1.is_some() || resolved.0.is_everywhere {
         Ok(alias_match)
     } else {

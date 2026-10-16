@@ -25,10 +25,8 @@ test('Apple cleanup uses native availability, preserves selection and completes 
     assert.equal(status.available, status.state === 'available');
   });
   const calls = [];
-  // Speech is a public synthetic HTTP fixture; Apple cleanup, when available,
-  // is real FoundationModels inference through the production pipeline.
   const server = http.createServer(async (req, res) => {
-    for await (const _ of req) { /* Drain synthetic audio without retaining it. */ }
+    for await (const _ of req) {   }
     calls.push(req.url);
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ text: 'please send the note tomorrow' }));
@@ -72,8 +70,6 @@ test('Apple cleanup uses native availability, preserves selection and completes 
     await t.test('One exact new history row retains speech and cleanup attribution', () => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0].clean_text, result.text);
-      // RecentEntry intentionally omits provider metadata. Inspect only this
-      // owned session's matching persisted row; never the installed database.
       const database = new DatabaseSync(path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), 'data', 'verenu.db'), { readOnly: true });
       try {
         const history = database.prepare('SELECT clean_text, api_used FROM transcriptions WHERE id = ?').get(rows[0].id);

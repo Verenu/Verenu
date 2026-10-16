@@ -76,9 +76,6 @@ export function applyAccentTheme(
     return;
   }
 
-  // The chosen color stays exact at --accent. The rest of the scale mixes
-  // against the current theme tokens, so one custom color remains readable in
-  // both light and dark mode without maintaining two saved palettes.
   const soft = (amount: number) => `color-mix(in srgb, ${accent} ${amount}%, var(--paper))`;
   const ink = (amount: number) => `color-mix(in srgb, ${accent} ${amount}%, var(--ink))`;
   const palette: Record<(typeof ACCENT_PROPERTIES)[number], string> = {

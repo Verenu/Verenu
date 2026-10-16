@@ -1,6 +1,3 @@
-//! Wire protocol for Verenu LAN sync: length-prefixed JSON messages over a
-//! mutually-authenticated TLS stream. Boring on purpose - every message is a
-//! serde struct, framed with a 4-byte big-endian length prefix.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -171,8 +168,6 @@ pub enum Message {
     },
     DictationMuteAck {
         enabled: bool,
-        /// The receiver is opted in but its bounded active-lease pool is full.
-        /// Older peers omit this field and are treated as a non-retryable decline.
         #[serde(default)]
         busy: bool,
     },
@@ -190,14 +185,12 @@ pub enum Message {
         seq: i64,
     },
     SyncDone,
-    /// Best-effort notification that the sender removed us as a peer.
     Unpair {
         device_uuid: String,
     },
     Error {
         message: String,
     },
-    // ---- pairing (only before trust exists) ----
     PairRequest {
         device_uuid: String,
         device_name: String,

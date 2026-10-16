@@ -95,10 +95,6 @@ export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {},
   const distance = params.distance ?? motionPx(MOTION_PX.page);
   const isOutro = options.direction === 'out';
 
-  // Apply the visibility state atomically when the transition is created, not
-  // on the first tick: an outgoing page must be inert + aria-hidden from the
-  // instant it starts leaving (the smoke contract reads it mid-transition),
-  // and an incoming page must be interactive from the instant it mounts.
   if (isOutro) {
     node.inert = true;
     node.setAttribute('aria-hidden', 'true');
@@ -196,7 +192,6 @@ export function animateWidth(node: HTMLElement, params: AnimateWidthParams = { t
     const { min = 0, max = Infinity } = params;
     const prevWidth = node.style.width;
 
-    // Let the browser compute the natural width — no manual font measurement
     node.style.transition = 'none';
     node.style.width = 'max-content';
     const natural = node.getBoundingClientRect().width;

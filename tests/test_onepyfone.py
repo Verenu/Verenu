@@ -20,7 +20,6 @@ SPEC.loader.exec_module(runner)
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
-        # Synthetic summary output must not look like a real suite skip.
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)

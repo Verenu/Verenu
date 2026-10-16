@@ -2,7 +2,6 @@ import test from 'node:test';
 import { runBasicCases } from './helpers/basic-cleanup.mjs';
 
 test('production commands preserve embedded periods and Basic repairs sentence-initial stutters', { timeout: 180_000 }, async () => {
-  // Independent default-30 worker: do not add admissions to Basic's existing30.
   await runBasicCases([
     [true, 'open report.md', 'open report.md'],
     [true, 'visit example.com', 'visit example.com'],

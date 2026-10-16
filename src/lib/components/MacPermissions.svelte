@@ -154,14 +154,10 @@
     ),
   );
 
-  // Keep the bindable flag in sync with the core OS permissions.
   $effect(() => {
     allGranted = snapshot.allCoreGranted;
   });
 
-  // Provider settings can arrive after this component mounts. Run the full
-  // Verenu-owned Keychain coverage check once when that provider becomes
-  // available, rather than depending on mount timing.
   $effect(() => {
     const currentProvider = keychainProvider;
     if (
@@ -236,8 +232,6 @@
     if (!silent) permissionsError = '';
     try {
       const next = await invoke<MacPermissionSnapshot>('get_macos_permission_snapshot', { provider: null });
-      // A request can finish after a newer refresh/request. Never let stale
-      // native data overwrite the newest coherent snapshot.
       if (generation === refreshGeneration && active) applySnapshot(next, null);
     } catch {
       if (!silent) {
@@ -265,19 +259,12 @@
     }
   }
 
-  // This component only exists while the Permissions surface is visible. Keep
-  // reconciling with macOS for that lifetime so grants and revocations appear
-  // without relying on a focus event (System Settings can remain over Verenu),
-  // and so slower users are not abandoned after a short timeout.
   const WATCH_INTERVAL_MS = 1500;
 
   function startWatch() {
     if (!isMac) return;
     if (permissionPoll !== null) return;
     permissionPoll = startPolling(async () => {
-      // Do not let a passive poll race an explicit native permission prompt.
-      // The prompt handlers own the next snapshot generation and will apply
-      // their post-request result when the OS callback completes.
       if (permissionsLoading || accessibilityPrompting || microphoneRequesting || notificationRequesting) return;
       await refreshMacPermissions(true);
     }, WATCH_INTERVAL_MS, { immediate: false });
@@ -339,7 +326,6 @@
       permissionsError = 'Could not relaunch automatically — please quit and reopen Verenu.';
     }, 5000);
     void invoke('restart_app').catch(() => {
-      // Ignore immediate IPC disconnection errors during restart.
     });
   }
 
@@ -370,9 +356,6 @@
     notificationRequesting = true;
     permissionsError = '';
     try {
-      // The watcher may refresh while the native prompt is open. The result
-      // of this explicit user action is still a fresh authoritative query and
-      // must be applied when this component is active.
       ++refreshGeneration;
       const notifications = await invoke<NotificationPermission>('request_notification_permission');
       if (active) snapshot = { ...snapshot, notifications };
@@ -410,19 +393,15 @@
     await Promise.all([refreshMacPermissions(), refreshKeychainAccess()]);
   }
 
-  // Returning from System Settings refocuses the window — re-check immediately.
   function onWindowFocus() {
     if (!permissionsLoading) void refreshMacPermissions();
   }
 
   onMount(() => {
     if (!isMac) return;
-    // Check immediately, then keep the visible surface synchronized with TCC.
     void refreshMacPermissions();
     startWatch();
     window.addEventListener('focus', onWindowFocus);
-    // Permission failures also trigger an immediate refresh instead of waiting
-    // for the next reconciliation tick.
     listen<string>('verenu:error', (ev) => {
       if (active && typeof ev.payload === 'string' && looksLikePermissionError(ev.payload)) {
         void refreshMacPermissions(true);
@@ -459,11 +438,7 @@
 {/snippet}
 
 {#if isMac}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- Escape collapses the open diagnostics panel no matter which control
-       inside it has focus (setup wizard, settings), one layer at a time.
-       preventDefault marks the key as handled for Settings' window guard. -->
-  <div class="mac-permissions" onkeydown={(event) => { if (event.key === 'Escape' && showDiagnostics) { event.preventDefault(); showDiagnostics = false; } }}>
+  <div class="mac-permissions" role="presentation" onkeydown={(event) => { if (event.key === 'Escape' && showDiagnostics) { event.preventDefault(); showDiagnostics = false; } }}>
   {#if invalidDevLaunch}
     <div class="permission-warning" role="alert">
       <strong>This is not the canonical signed development app.</strong>
@@ -480,7 +455,6 @@
   {/if}
 
   <div class="perm-list">
-    <!-- Accessibility -->
     <div class="perm-row perm-row-animated">
       <div class="perm-row-main">
         <div class="perm-row-title">Accessibility</div>
@@ -501,7 +475,6 @@
       </div>
     </div>
 
-    <!-- Microphone -->
     <div class="perm-row perm-row-animated">
       <div class="perm-row-main">
         <div class="perm-row-title">Microphone</div>
@@ -525,7 +498,6 @@
       </div>
     </div>
 
-    <!-- Notifications (optional capability) -->
     <div class="perm-row perm-row-animated">
       <div class="perm-row-main">
         <div class="perm-row-title">Notifications</div>
@@ -668,8 +640,6 @@
 {/if}
 
 <style>
-  /* Single block root so the component lays out in normal flow regardless of the
-     parent (Settings is a block container; the Setup shell centers a flex row). */
   .mac-permissions { display: block; width: 100%; }
 
   .permission-warning {
@@ -685,8 +655,6 @@
 
   .permission-warning strong { display: block; color: var(--ink-strong); margin-bottom: 2px; }
 
-  /* Flat row list — mirrors the app's .setting-row pattern so Permissions feels
-     native in both Settings and the Setup wizard. */
   .permission-success {
     display: flex;
     align-items: center;
@@ -767,7 +735,6 @@
     flex-wrap: wrap;
   }
 
-  /* Status: a small dot + label, matching the app's restrained accent usage. */
   .perm-status {
     display: inline-flex;
     align-items: center;
@@ -822,7 +789,6 @@
 
   @keyframes success-sheen { to { transform: translateX(110%); } }
 
-  /* Action buttons — mirror the global .btn-ghost so they read as native. */
   .perm-action {
     background: transparent;
     border: 1px solid var(--line-strong);
@@ -854,8 +820,6 @@
     .perm-row-animated { opacity: 1; }
   }
 
-  /* Repair action, shown inside the expanded Details section when Accessibility
-     isn't granted — resets a stale TCC grant and re-requests. */
   .permission-repair {
     display: flex;
     align-items: center;
@@ -952,14 +916,6 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .refresh-spin { animation: spin 0.52s cubic-bezier(0.2, 0.8, 0.2, 1) 1; display: inline-block; }
 
-  /*
-   * Two queries for one rule. This component renders both in settings (inside
-   * the .panel-inner measure) and in the Setup wizard (inside a 560px step with
-   * no container), so neither query alone covers both: the container query is
-   * what makes the rule mean "the column is narrow" in settings, and the
-   * viewport query preserves the original behaviour in Setup. They can both
-   * match in a narrow settings window, which is harmless — same declarations.
-   */
   @container settings-panel (max-width: 560px) {
     .perm-row { flex-direction: column; align-items: stretch; gap: 8px; }
     .perm-row-side { justify-content: flex-start; }

@@ -235,8 +235,6 @@ impl SettingsHandle {
         for (key, value) in pending {
             next.insert(key, value);
         }
-        // Keep the exact disk bytes, which need not match a runtime snapshot
-        // after a caller used set() without save(). Also preserve file absence.
         let previous = match std::fs::read(&*self.path) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -348,7 +346,6 @@ fn legacy_settings_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         let root = PathBuf::from(appdata);
-        // Prefer production config when both identifier-scoped copies exist.
         out.push(root.join("com.verenu.app").join(SETTINGS_FILE));
         out.push(root.join("com.verenu.app.dev").join(SETTINGS_FILE));
     }
@@ -384,8 +381,6 @@ fn read_settings_file(path: &Path) -> Result<Map<String, Value>, String> {
     if raw.trim().is_empty() {
         return Ok(Map::new());
     }
-    // A corrupted or non-object settings.json must not crash the app at startup.
-    // Back up the bad file so settings can be recovered manually, then start fresh.
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(map)) => Ok(map),
         Ok(_) => {
@@ -403,11 +398,8 @@ fn read_settings_file(path: &Path) -> Result<Map<String, Value>, String> {
 
 fn backup_corrupt_settings(path: &Path) {
     let backup_path = path.with_extension("json.bak");
-    // Clear any prior backup first so the rename can't be blocked by a stale
-    // .bak on platforms/filesystems where replace-on-rename isn't guaranteed.
     let _ = std::fs::remove_file(&backup_path);
     if let Err(e) = std::fs::rename(path, &backup_path) {
-        // Non-critical startup cleanup — warn and continue rather than fail.
         log::warn!("Failed to back up corrupt settings.json: {e}");
     }
 }
@@ -423,18 +415,12 @@ fn write_settings_bytes(path: &Path, json: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| settings_write_error("Failed to create settings directory", &e))?;
     }
-    // The temporary name is shared by every SettingsHandle for this file.
-    // Serialize the complete write-and-rename sequence so separate handles
-    // cannot overwrite or remove one another's settings.json.tmp.
     let _write_guard = SETTINGS_FILE_WRITE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| "Settings write lock was poisoned".to_string())?;
-    // Write to a temp file then atomically rename so an interrupted write
-    // (crash, power loss, disk full) can't truncate the live settings.json.
     let tmp_path = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp_path, json) {
-        // A failed/partial write shouldn't leave a stale temp file behind.
         let _ = std::fs::remove_file(&tmp_path);
         return Err(settings_write_error(
             "Failed to write temporary settings file",
@@ -442,7 +428,6 @@ fn write_settings_bytes(path: &Path, json: &[u8]) -> Result<(), String> {
         ));
     }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
-        // Don't leave the temp file behind if the swap failed.
         let _ = std::fs::remove_file(&tmp_path);
         return Err(settings_write_error(
             "Failed to replace settings.json atomically",
@@ -580,7 +565,6 @@ pub const GITHUB_USERNAME: &str = "github_username";
 pub(crate) const T3_CONNECTION: &str = "t3_connection";
 pub(crate) const T3_INTEGRATION: &str = "t3_integration";
 pub(crate) const KEY_T3_INTEGRATION: &str = "key_t3_integration";
-// Derived local counts, deliberately excluded from IPC settings and exports.
 pub(crate) const GITHUB_COMMIT_CACHE: &str = "github_commit_cache";
 pub const AUTOSTART_ENABLED: &str = "autostart_enabled";
 pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
@@ -647,8 +631,6 @@ pub fn migrate_contextual_formatting(settings: &SettingsHandle) -> Result<(), St
     let legacy = |key: &str| settings.get(key).and_then(|v| v.as_bool());
     let (caps, spacing) = (legacy(CONTEXTUAL_CAPS), legacy(AUTO_SPACING));
     if caps.is_none() && spacing.is_none() {
-        // Fresh install: no legacy value to fold, so leave the key unset and
-        // let the normal default apply.
         return Ok(());
     }
 

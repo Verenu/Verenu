@@ -33,8 +33,6 @@ fn cleanup_api_metadata_is_kept_for_normal_transcriptions() {
 
 #[test]
 fn preview_text_redacts_dictation_content_when_not_verbose() {
-    // Verbose logging is off by default; dictation text must never appear in
-    // the rendered preview (it would otherwise reach the log buffer + export).
     let out = preview_text("my secret dictated password is hunter2", 140);
     assert!(!out.contains("secret"));
     assert!(!out.contains("hunter2"));
@@ -131,9 +129,6 @@ fn hallucination_gate_catches_common_whisper_artifacts() {
 
 #[test]
 fn hallucination_gate_catches_pure_glossary_echo_on_silence() {
-    // After switching Whisper/Groq priming to vocabulary-only text (no more
-    // "Return only spoken words" for the model to echo), silent audio is
-    // expected to instead echo the vocabulary list itself.
     assert!(is_transcription_hallucination(
         "Verenu. Tauri. Svelte. Groq. Gemini. OpenAI."
     ));
@@ -198,8 +193,6 @@ fn strip_hallucinated_suffix_does_not_break_on_internal_periods() {
 
 #[test]
 fn strip_hallucinated_suffix_preserves_legitimate_trailing_sentences() {
-    // These start with the same short, generic phrases as known Whisper
-    // hallucinations, but are real dictated speech and must survive.
     let raw_subscribe = "We have a new blog post. Please subscribe to our newsletter.";
     assert_eq!(strip_hallucinated_suffix(raw_subscribe), raw_subscribe);
 
@@ -215,9 +208,6 @@ fn strip_hallucinated_suffix_still_strips_bare_hallucination_sentence() {
 
 #[test]
 fn strip_hallucinated_suffix_finds_boundary_after_cjk_fullwidth_period() {
-    // CJK sentences end with a fullwidth terminator and no trailing space, so
-    // the ASCII "punctuation + whitespace" boundary rule alone would miss the
-    // split point and fail to isolate the trailing English hallucination.
     let raw = "今晩予定がある。Thank you for watching!";
     assert_eq!(strip_hallucinated_suffix(raw), "今晩予定がある。");
 }
@@ -511,7 +501,6 @@ fn terminal_punctuation_uses_fullwidth_period_for_cjk() {
         ensure_terminal_punctuation("コーヒーを飲む", "casual", "medium"),
         "コーヒーを飲む。"
     );
-    // Already terminated with a fullwidth period stays untouched.
     assert_eq!(
         ensure_terminal_punctuation("今晩予定がある。", "casual", "medium"),
         "今晩予定がある。"
@@ -529,7 +518,6 @@ fn mapping(exe: &str, profile: &str, cleanup_intensity: Option<&str>) -> AppMapp
 
 #[test]
 fn app_mapping_override_applies_for_matching_app() {
-    // base_config(): default_tone = "casual", cleanup_intensity = "medium".
     let mut cfg = base_config();
     let m = mapping("appa.exe", "very_casual", Some("high"));
     let profile = apply_app_style_overrides(&mut cfg, Some(&m), None);
@@ -539,9 +527,6 @@ fn app_mapping_override_applies_for_matching_app() {
 
 #[test]
 fn app_mapping_no_match_leaves_global_defaults_untouched() {
-    // Regression for issue #144: when no mapping matches the active app, the
-    // effective tone falls back to default_tone and the global cleanup
-    // intensity must NOT be mutated by a different app's override.
     let mut cfg = base_config();
     let profile = apply_app_style_overrides(&mut cfg, None, None);
     assert_eq!(profile, "casual");
@@ -596,7 +581,6 @@ fn resolve_app_mapping_is_scoped_to_matching_exe() {
     assert_eq!(matched.profile, "very_casual");
     assert_eq!(matched.cleanup_intensity.as_deref(), Some("high"));
 
-    // A different foreground app must not resolve App A's mapping.
     assert!(resolve_app_mapping(Some(&snap), "appb.exe").is_none());
 }
 
@@ -953,7 +937,6 @@ struct LocalModelsTestGuard {
 
 impl Drop for LocalModelsTestGuard {
     fn drop(&mut self) {
-        // Tests hold the harness lock while this override is active.
         unsafe {
             match &self.previous_override {
                 Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
@@ -976,7 +959,6 @@ fn install_local_models(downloaded_model_ids: &[&str]) -> LocalModelsTestGuard {
         previous_override: previous_override.clone(),
     };
     std::fs::create_dir_all(root.join("models").join("stt")).expect("create local model root");
-    // Tests hold the harness lock while this override is active.
     unsafe {
         std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &root);
     }
@@ -1232,11 +1214,6 @@ async fn pipeline_fixture_uses_transcription_fallback_for_retryable_errors() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pipeline_fixture_falls_back_past_a_non_retryable_transcription_error() {
-    // A non-retryable error (missing/invalid key, bad request, etc.) on the
-    // primary provider says nothing about whether a *different* fallback
-    // provider would succeed — e.g. a cloud primary with no API key saved
-    // and a local fallback that needs no key at all. The chain must still
-    // try the fallback instead of aborting outright.
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
     set_enabled(true);
@@ -1400,8 +1377,6 @@ async fn pipeline_fixture_retries_then_falls_back_on_model_refusal() {
     let result = run_pipeline_fixture(base_request(base_config()))
         .await
         .expect("model refusal should fall back to pre-cleanup text");
-    // Cleanup refused, so the pipeline falls back to the pre-cleanup text via
-    // the non-cleaned path — which is intentionally left unpunctuated.
     assert_eq!(
         result.final_text_before_dictionary,
         "what time is it in tokyo right now"
@@ -1555,13 +1530,8 @@ async fn pipeline_fixture_applies_instruction_snippets_and_dictionary_last() {
     let result = run_pipeline_fixture(request)
         .await
         .expect("instruction and dictionary path should succeed");
-    // Casual cleanup now guarantees a terminal period (so consecutive
-    // dictations capitalize); the "all capitals" override still applies.
     assert_eq!(result.final_text_before_dictionary, "ACME ALERT.");
     assert_eq!(result.injected_text, "Verenu ALERT.");
-    // History must match what was actually injected, dictionary correction
-    // included — it previously saved final_text_before_dictionary instead,
-    // so a correction that changed what got pasted never showed up here.
     assert_eq!(result.history_entry.clean_text, "Verenu ALERT.");
     reset();
 }
@@ -1588,8 +1558,6 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
         error_message: None,
     });
 
-    // Setting on + Caps Lock on -> uppercase the injected text and the
-    // persisted history record, but not the pre-dictionary cleanup value.
     let mut config = base_config();
     config.caps_lock_uppercase_enabled = true;
     let mut request = base_request(config.clone());
@@ -1601,7 +1569,6 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
     assert_eq!(result.injected_text, "SEND THE REPORT NOW.");
     assert_eq!(result.history_entry.clean_text, "SEND THE REPORT NOW.");
 
-    // Setting on + Caps Lock off -> unchanged.
     let mut request = base_request(config);
     request.caps_lock_on = false;
     let result = run_pipeline_fixture(request)
@@ -1610,7 +1577,6 @@ async fn pipeline_fixture_uppercases_output_only_when_setting_and_caps_lock_both
     assert_eq!(result.injected_text, "Send the report now.");
     assert_eq!(result.history_entry.clean_text, "Send the report now.");
 
-    // Setting off -> unchanged regardless of Caps Lock state.
     let mut request = base_request(base_config());
     request.caps_lock_on = true;
     let result = run_pipeline_fixture(request)
@@ -2018,7 +1984,6 @@ async fn pipeline_fixture_uses_cleanup_cache_on_repeat_runs() {
         fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
         1
     );
-    // A disabled cache bypasses existing rows and never populates new ones.
     request.config.cleanup_cache_enabled = false;
     for _ in 0..2 {
         let result = run_pipeline_fixture(request.clone()).await.unwrap();
@@ -2174,15 +2139,12 @@ fn cleanup_cache_rejects_fabrication_and_preserves_cached_style() {
     .unwrap();
     assert!(super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).is_none());
     assert_eq!(crate::data::db::cleanup_cache_count(&db).unwrap(), 0);
-    // Cached output has already passed style processing. A hit must not add
-    // punctuation removed by an edited preset.
     crate::data::db::cleanup_cache_insert_new(&db, "key", raw, "2999-01-01 00:00:00", false)
         .unwrap();
     assert_eq!(
         super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_deref(),
         Some(raw)
     );
-    // Dual fusion may legitimately use the alternate candidate's wording.
     assert!(super::cache::cleanup_cache_hit_text(
         &db,
         "key",
@@ -2219,10 +2181,6 @@ fn cleanup_cache_fingerprint_covers_provider_prompt_rules_and_context() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pipeline_evicts_a_poisoned_cleanup_cache_entry_instead_of_serving_it() {
-    // A cache entry written before the artifact-leak guard existed (or by
-    // any future bug) must not be served forever just because it's a cache
-    // hit — cache hits skip generation entirely, so they also skip the
-    // guard that would otherwise have caught it.
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
     set_enabled(true);
@@ -2250,7 +2208,6 @@ async fn pipeline_evicts_a_poisoned_cleanup_cache_entry_instead_of_serving_it() 
         .expect("first run should succeed");
     assert!(!first.cleanup_cache_key.is_empty());
 
-    // Simulate a stale poisoned entry sitting at that same cache key.
     crate::data::db::cleanup_cache_insert_new(
         request.db.as_ref().expect("shared test db"),
         &first.cleanup_cache_key,
@@ -2266,7 +2223,6 @@ async fn pipeline_evicts_a_poisoned_cleanup_cache_entry_instead_of_serving_it() 
 
     assert!(!second.injected_text.contains("Thinking Process"));
     assert_eq!(second.injected_text, "Cache me please.");
-    // Regenerated rather than served from the poisoned entry.
     assert_eq!(
         fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
         2
@@ -2276,16 +2232,10 @@ async fn pipeline_evicts_a_poisoned_cleanup_cache_entry_instead_of_serving_it() 
 
 #[test]
 fn orphaned_session_pill_hides_only_when_idle_with_session_state() {
-    // The stuck-pill case: release found no session, backend Idle, pill still
-    // showing a session-bound state — nothing else will hide it.
     assert!(should_hide_orphaned_pill(true, "recording"));
     assert!(should_hide_orphaned_pill(true, "handsfree"));
-    // A stray release while another task owns the lifecycle must never
-    // clobber that task's pill.
     assert!(!should_hide_orphaned_pill(false, "recording"));
     assert!(!should_hide_orphaned_pill(false, "handsfree"));
-    // Idle toasts (error/cancelled/interrupted) must never be cut short by a
-    // stray release with no session behind it.
     for state in [
         "idle",
         "error",

@@ -52,9 +52,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-// ---------------------------------------------------------------------------
-// Insertion outbox (app-handle-free so the injection path can publish)
-// ---------------------------------------------------------------------------
 
 /// How the pipeline wants the text fitted to the caret. Kotlin reads the text
 /// around the caret at insertion time and asks for it via `/v1/insertion/format`.
@@ -196,16 +193,6 @@ pub(crate) fn clear_outbox_for_tests() {
     outbox().lock().unwrap_or_else(|e| e.into_inner()).current = None;
 }
 
-// ---------------------------------------------------------------------------
-// Keystore pending sync (Rust → Kotlin, single delivery)
-// ---------------------------------------------------------------------------
-//
-// API keys are memory-only in Rust on Android; durable storage is the Kotlin
-// `VerenuKeystore` (EncryptedSharedPreferences + AndroidKeyStore). The main
-// app saves through the `android_keystore_save` command, which stashes the
-// rotation here. Kotlin notices `keystore_pending` in `GET /v1/state`,
-// fetches it once via `GET /v1/keystore/pending` (cleared on read — the
-// secret is never written to disk by Rust), and persists it.
 
 fn keystore_pending_cell() -> &'static Mutex<Option<(String, String)>> {
     static PENDING: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
@@ -252,9 +239,6 @@ pub(crate) fn clear_keystore_rotation_for_tests() {
     clear_keystore_rotation();
 }
 
-// ---------------------------------------------------------------------------
-// Bridge state
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FocusReport {
@@ -284,9 +268,6 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// ---------------------------------------------------------------------------
-// Minimal HTTP/1.1 handling (loopback only, one request per connection)
-// ---------------------------------------------------------------------------
 
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
@@ -336,13 +317,10 @@ pub(crate) fn parse_head(head: &str, token: &str) -> Result<(String, String, usi
     if method.is_empty() || raw_path.is_empty() {
         return Err("malformed request line".to_string());
     }
-    // Strip query strings; reject path traversal attempts outright.
     let path = raw_path.split('?').next().unwrap_or("").to_string();
     if !path.starts_with("/v1/") || path.contains("..") {
         return Err("unknown path".to_string());
     }
-    // We only implement Content-Length bodies; chunked requests are rejected
-    // rather than half-parsed.
     if header_value(head, "transfer-encoding").is_some() {
         return Err("chunked requests are not supported".to_string());
     }
@@ -379,9 +357,6 @@ fn ok(body: Value) -> Vec<u8> {
     http_response(200, "OK", &Value::Object(map))
 }
 
-// ---------------------------------------------------------------------------
-// Route handlers
-// ---------------------------------------------------------------------------
 
 fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
     use crate::data::store;
@@ -392,8 +367,6 @@ fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
     {
         return false;
     }
-    // Use the pipeline's resolver so legacy selections and defaults agree.
-    // Custom providers may be on the LAN; the setting is their explicit override.
     let cfg = store::load_pipeline_config(settings);
     let local_primary = store::parse_model_id(&cfg.transcription_default_model)
         .is_some_and(|(provider, _)| provider == store::LOCAL);
@@ -406,15 +379,9 @@ fn hide_pill_offline(settings: &crate::data::store::SettingsSnapshot) -> bool {
                 })
         })
     });
-    // Cleanup is optional. A local speech path keeps recording available even
-    // when cloud cleanup must be skipped and the raw transcript delivered.
     !local_primary && !ready_local_fallback
 }
 
-/// Maps a drag-to-snap report from the overlay onto the setting it updates.
-/// `target` is `position` (while the keyboard or a screen anchor governs the
-/// pill) or `dock` (while it rests with no keyboard). Anything else, or a value
-/// outside that setting's vocabulary, is rejected.
 fn pill_position_update(target: &str, value: &str) -> Result<&'static str, String> {
     use crate::data::store;
     let (key, allowed): (&'static str, &[&str]) = match target {
@@ -433,8 +400,6 @@ fn pill_position_update(target: &str, value: &str) -> Result<&'static str, Strin
 }
 
 fn state_payload(state: &BridgeState) -> Value {
-    // The Android client polls this route frequently. Read the settings store
-    // once for the entire payload instead of cloning its snapshot per field.
     let settings = state
         .app
         .as_ref()
@@ -444,9 +409,6 @@ fn state_payload(state: &BridgeState) -> Value {
             .try_state::<crate::pipeline::SharedState>()
             .and_then(|shared| {
                 shared.lock().ok().map(|st| {
-                    // Coarse lifecycle for the overlay poller; fine-grained
-                    // transcribe/clean/insert stages ride on `pillStage`
-                    // below (see note_pill_stage).
                     let name = if st.lifecycle.is_idle() {
                         "idle"
                     } else if st.lifecycle.is_recording() {
@@ -506,8 +468,6 @@ fn state_payload(state: &BridgeState) -> Value {
                 .get(crate::data::store::ANDROID_PILL_COVER_KEYBOARD_MIC)
                 .and_then(Value::as_bool)
         })
-        // On by default: the pill sits over the keyboard's own mic key instead
-        // of floating over the text being typed.
         .unwrap_or(true);
     let appearance_mode = settings
         .as_ref()
@@ -560,9 +520,6 @@ fn sync_muting_enabled_value(settings: Option<&crate::data::store::SettingsSnaps
     enabled(crate::data::store::SYNC_ENABLED) && enabled(crate::data::store::SYNC_MUTING_ENABLED)
 }
 
-/// A deliberately small settings summary for pseudonymous product analytics.
-/// Keep this allowlist boolean/category-only: never expose prompts, targets,
-/// model names, microphone names, hotkeys, credentials, or app context.
 fn analytics_settings_from_snapshot(
     settings: &crate::data::store::SettingsSnapshot,
     context_group_count: i64,
@@ -642,9 +599,6 @@ fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> b
         .unwrap_or(true)
 }
 
-// ---------------------------------------------------------------------------
-// Pill-stage mirror (fed by pipeline::pill::emit_pill_stage)
-// ---------------------------------------------------------------------------
 
 fn pill_stage_cell() -> &'static Mutex<String> {
     static STAGE: OnceLock<Mutex<String>> = OnceLock::new();
@@ -666,9 +620,6 @@ pub(crate) fn last_pill_stage() -> String {
         .clone()
 }
 
-// ---------------------------------------------------------------------------
-// Dictation target (the app and site the recording started in)
-// ---------------------------------------------------------------------------
 
 /// What Kotlin reported when the recording started: the foreground package and,
 /// in a browser, the page's host. The pipeline has no window handle on Android,
@@ -711,9 +662,6 @@ pub(crate) fn dictation_domain() -> Option<String> {
     (!target.domain.is_empty()).then_some(target.domain)
 }
 
-// ---------------------------------------------------------------------------
-// Error mirror (fed by pipeline::pill::show_error_pill)
-// ---------------------------------------------------------------------------
 
 struct BridgeError {
     message: String,
@@ -753,9 +701,6 @@ pub(crate) fn last_bridge_error() -> Option<(String, u64)> {
         .map(|e| (e.message.clone(), now_unix_ms().saturating_sub(e.at_ms)))
 }
 
-// ---------------------------------------------------------------------------
-// Audio-level mirror (fed by pipeline::session::spawn_level_emitter)
-// ---------------------------------------------------------------------------
 
 fn audio_level_cell() -> &'static std::sync::atomic::AtomicU32 {
     static LEVEL: OnceLock<std::sync::atomic::AtomicU32> = OnceLock::new();
@@ -859,8 +804,6 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
                     "recording unavailable in this context",
                 );
             };
-            // A fresh dictation supersedes any previous terminal error and
-            // stale visualizer stage from the prior session.
             clear_bridge_error();
             note_pill_stage("");
             note_audio_level(0.0);
@@ -881,19 +824,9 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
                 );
             };
             let action = app.state::<crate::pipeline::SharedState>();
-            // Android must use the shared full pipeline here. The desktop
-            // `stop_and_transcribe_input` command is intentionally a
-            // transcribe-only helper for the in-app mic button: it returns
-            // the lifecycle to idle and hands the text back to its caller.
-            // Using it for Android made the native pill reset immediately and
-            // skipped cleanup, history, and the accessibility insertion
-            // outbox. The full pipeline owns those stages and publishes the
-            // final text through `inject_text` on Android.
             match crate::commands::stop_handless_mode(app.clone(), action).await {
                 Ok(()) => ok(json!({})),
                 Err(e) => {
-                    // Mirror command-level failures too, so a native Android
-                    // pill cannot remain on Transcribing without feedback.
                     note_bridge_error(&e);
                     err(500, "Internal Server Error", &e)
                 }
@@ -965,7 +898,6 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
                 }
                 AckOutcome::Cleared | AckOutcome::KeptForRetry => {}
             }
-            // Package + strategy are diagnostics only — never field contents.
             log::info!(
                 "android bridge: insertion ack seq={seq} success={success} discard={discard} strategy={} package={} error={}",
                 if strategy.is_empty() { "-" } else { &strategy },
@@ -992,15 +924,12 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
             let Some(app) = state.app.clone() else {
                 return err(503, "Service Unavailable", "backend not ready");
             };
-            // Same path as the Settings screen, so validation, storage and
-            // any change bookkeeping cannot drift between the two writers.
             if let Err(message) =
                 crate::commands::save_setting(app.clone(), key.to_string(), json!(value)).await
             {
                 log::warn!("android bridge: pill position save failed: {message}");
                 return err(500, "Internal Server Error", "could not save pill position");
             }
-            // Settings may be open (or about to be): tell it the pill moved.
             let _ = app.emit(
                 "verenu:android-pill-position-changed",
                 json!({ "key": key, "value": value }),
@@ -1014,7 +943,6 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
                 Ok(input) => input,
                 Err(message) => return err(400, "Bad Request", &message),
             };
-            // Length only in logs — never the secret itself.
             log::info!(
                 "android bridge: credential push provider={provider} key_len={}",
                 key.len()
@@ -1023,9 +951,6 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
             ok(json!({}))
         }
         ("POST", "/v1/credentials/clear") => {
-            // Lock/revocation path: clear both the active cache and any
-            // not-yet-delivered Keystore rotation. Never leave a secret in
-            // Rust memory just because the native service disconnected.
             crate::android::clear_credentials();
             clear_keystore_rotation();
             log::info!("android bridge: cleared in-memory credentials");
@@ -1033,7 +958,6 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
         }
         ("GET", "/v1/keystore/pending") => {
             match take_keystore_rotation() {
-                // Single delivery: cleared on read, never persisted by Rust.
                 Some((provider, key)) => ok(json!({ "provider": provider, "key": key })),
                 None => ok(json!({ "provider": Value::Null })),
             }
@@ -1042,15 +966,8 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
     }
 }
 
-/// Delay before answering an unauthenticated request. The token has 256
-/// bits of entropy, so this is defense-in-depth that makes loopback probing
-/// expensive for any other app that somehow reaches the port.
 const UNAUTH_DELAY_MS: u64 = 150;
-/// Bound for a single connection's lifetime; a client that stalls mid-head
-/// or mid-body is dropped instead of holding a slot.
 const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Cap on concurrent connections. The only client is the overlay service
-/// (short poll connections); anything beyond this is a bug or a probe.
 const MAX_CONNECTIONS: usize = 16;
 
 async fn serve_connection(
@@ -1058,8 +975,6 @@ async fn serve_connection(
     mut stream: tokio::net::TcpStream,
 ) -> io::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    // Chunked reads (not byte-at-a-time): a poll connection's head arrives
-    // in one or two packets, and junk past the bound is dropped, not stored.
     let mut head_buf = Vec::with_capacity(4096);
     let mut chunk = [0u8; 4096];
     let head_len = loop {
@@ -1089,16 +1004,11 @@ async fn serve_connection(
         }
     };
     if !authorized {
-        // Throttle first, and never spend body-read work on strangers.
         tokio::time::sleep(std::time::Duration::from_millis(UNAUTH_DELAY_MS)).await;
         let resp = err(401, "Unauthorized", "unauthorized");
         stream.write_all(&resp).await?;
         return Ok(());
     }
-    // The header read may have already consumed some or all of the body in
-    // the same TCP packet. Preserve those prefetched bytes before waiting
-    // for the remainder; otherwise a normal small JSON request can deadlock
-    // until the client timeout expires.
     let mut body = vec![0u8; content_length];
     let prefetched = &head_buf[head_len..];
     let copied = prefetched.len().min(content_length);
@@ -1124,9 +1034,6 @@ fn find_head_end(buf: &[u8]) -> Option<usize> {
         .map(|pos| pos + 4)
 }
 
-// ---------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------
 
 /// Path of the connection file Kotlin reads after boot. Same-UID private
 /// storage; written `0600` on unix so no other app can steal the token.
@@ -1141,8 +1048,6 @@ fn write_connection_file(port: u16, token: &str) -> anyhow::Result<()> {
         &json!({ "port": port, "token": token, "updatedUnixMs": now_unix_ms() }),
     )?;
     let tmp = dir.join("android_bridge.json.tmp");
-    // Atomic publish (write-temp + rename) so Kotlin never reads a torn
-    // file; 0600 on unix so only this UID can steal the token.
     #[cfg(unix)]
     {
         use std::io::Write as _;
@@ -1154,7 +1059,6 @@ fn write_connection_file(port: u16, token: &str) -> anyhow::Result<()> {
             .mode(0o600)
             .open(&tmp)?
             .write_all(&payload)?;
-        // Enforce 0600 even if the file already existed with wider perms.
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
     #[cfg(not(unix))]
@@ -1174,9 +1078,6 @@ pub fn start_bridge(app: AppHandle) -> anyhow::Result<std::net::SocketAddr> {
     listener.set_nonblocking(true)?;
     let addr = listener.local_addr()?;
     write_connection_file(addr.port(), &token)?;
-    // Resolved path in the log (never the token): on Android this rests on
-    // $HOME, so a surprising value here is the first sign of a storage
-    // misconfiguration worth investigating before blaming the bridge.
     log::info!(
         "android bridge: listening on {addr}, connection file {}",
         connection_file_path().display()
@@ -1203,7 +1104,6 @@ pub fn start_bridge(app: AppHandle) -> anyhow::Result<std::net::SocketAddr> {
                     let permit = slots.clone().try_acquire_owned();
                     let state = state.clone();
                     tauri::async_runtime::spawn(async move {
-                        // At capacity: fail fast instead of queueing strangers.
                         let Ok(_permit) = permit else {
                             use tokio::io::AsyncWriteExt as _;
                             let mut stream = stream;
@@ -1341,7 +1241,6 @@ mod tests {
         assert_eq!(dictation_package().as_deref(), Some("com.android.chrome"));
         assert_eq!(dictation_domain().as_deref(), Some("mail.google.com"));
 
-        // A later dictation in a non-browser app must not inherit the old site.
         set_dictation_target("com.slack", "");
         assert_eq!(dictation_package().as_deref(), Some("com.slack"));
         assert_eq!(dictation_domain(), None);
@@ -1412,8 +1311,6 @@ mod tests {
         assert!(sync_muting_enabled_value(Some(&settings(true, true))));
     }
 
-    /// Spin a test server (no AppHandle) on an ephemeral port for
-    /// end-to-end protocol tests over real TCP.
     async fn spawn_test_server() -> (std::net::SocketAddr, String) {
         let token = mint_token();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1530,7 +1427,6 @@ mod tests {
         note_bridge_error("No speech detected — try again");
         let (message, _) = last_bridge_error().unwrap();
         assert_eq!(message, "No speech detected — try again");
-        // Long messages are truncated, never balloon the poll payload.
         note_bridge_error(&"x".repeat(1000));
         assert!(last_bridge_error().unwrap().0.chars().count() <= 240);
         clear_bridge_error();
@@ -1545,10 +1441,8 @@ mod tests {
         let snap = peek_outbox().unwrap();
         assert_eq!(snap.seq, seq);
         assert_eq!(snap.text, "hello");
-        // Failed delivery keeps the text for retry.
         assert_eq!(ack_outbox(seq, false), AckOutcome::KeptForRetry);
         assert!(peek_outbox().is_some());
-        // Stale acks never clear a newer handoff.
         let seq2 = publish_android_insertion("world");
         assert_eq!(
             ack_outbox(seq, true),
@@ -1602,7 +1496,6 @@ mod tests {
     #[tokio::test]
     async fn bridge_focus_drives_overlay_decision() {
         let (addr, token) = spawn_test_server().await;
-        // Keyboard open over an editable field → visible.
         let (status, body) = roundtrip(
             addr,
             &authed(
@@ -1615,7 +1508,6 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert_eq!(body["visible"], true);
-        // Keyboard closed → hidden, and GET /state agrees (no permanent bubble).
         let (status, body) = roundtrip(
             addr,
             &authed(
@@ -1641,7 +1533,6 @@ mod tests {
         let (_, state) = roundtrip(addr, &authed(&token, "GET", "/v1/state", "")).await;
         assert_eq!(state["pendingInsertion"]["seq"], seq);
         assert_eq!(state["pendingInsertion"]["text"], "dictated text");
-        // Ack with the wrong seq is a conflict, never a silent clear.
         let (status, _) = roundtrip(
             addr,
             &authed(
@@ -1675,7 +1566,6 @@ mod tests {
             pill_position_update("dock", "screen-bottom-right"),
             Ok(store::ANDROID_PILL_DOCK_POSITION)
         );
-        // The dock only rests on the screen: a keyboard anchor has no meaning there.
         assert!(pill_position_update("dock", "keyboard-left").is_err());
         assert!(pill_position_update("position", "somewhere").is_err());
         assert!(pill_position_update("cover", "screen-top").is_err());
@@ -1696,7 +1586,6 @@ mod tests {
         )
         .await;
         assert_eq!(status, 400);
-        // A valid request with no backend is an honest 503, not a panic.
         let (status, _) = roundtrip(
             addr,
             &authed(
@@ -1721,7 +1610,6 @@ mod tests {
 
     #[tokio::test]
     async fn bridge_recording_routes_need_an_app() {
-        // No AppHandle in tests → honest 503, not a panic.
         let (addr, token) = spawn_test_server().await;
         for path in [
             "/v1/recording/start",
@@ -1775,8 +1663,6 @@ mod tests {
         assert_eq!(status, 400);
         assert_eq!(body["ok"], false);
 
-        // Lock/revocation clears both the active cache and a staged rotation;
-        // neither secret may survive the authenticated native request.
         stage_keystore_rotation("openai", "sk-staged");
         let (status, body) =
             roundtrip(addr, &authed(&token, "POST", "/v1/credentials/clear", "{}")).await;
@@ -1792,7 +1678,6 @@ mod tests {
         let _serial = crate::android::test_serial();
         clear_keystore_rotation_for_tests();
         let (addr, token) = spawn_test_server().await;
-        // Nothing staged → null provider, and state agrees.
         let (_, empty) = roundtrip(addr, &authed(&token, "GET", "/v1/keystore/pending", "")).await;
         assert!(empty["provider"].is_null());
         let (_, state) = roundtrip(addr, &authed(&token, "GET", "/v1/state", "")).await;
@@ -1801,7 +1686,6 @@ mod tests {
         stage_keystore_rotation("openai", "sk-test");
         let (_, state) = roundtrip(addr, &authed(&token, "GET", "/v1/state", "")).await;
         assert_eq!(state["keystorePending"], true);
-        // Single delivery: first fetch carries the rotation, second is null.
         let (_, first) = roundtrip(addr, &authed(&token, "GET", "/v1/keystore/pending", "")).await;
         assert_eq!(first["provider"], "openai");
         assert_eq!(first["key"], "sk-test");
@@ -1833,8 +1717,6 @@ mod tests {
             roundtrip(addr, &authed(&token, "POST", "/v1/focus", "not-json{{{")).await;
         assert_eq!(status, 400);
         let (status, _) = roundtrip(addr, &authed(&token, "GET", "/v1/nope", "")).await;
-        // Path routing happens before authZ detail: unknown non-/v1/ paths are 400,
-        // unknown /v1/ paths are 404.
         assert!(status == 400 || status == 404, "{status}");
         let (status, _) = roundtrip(
             addr,

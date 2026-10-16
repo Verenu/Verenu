@@ -3,8 +3,6 @@ import { PACE_TICKS, PACE_TICK_W, paceScale, paceTickOffset } from './helpers';
 
 describe('pace meter scale', () => {
   it('never leaves a lone tick trailing past the best marker', () => {
-    // The regression: best 245 on a 250 ceiling put the marker one tick short
-    // of the end, so a single orphan hairline sat after it.
     for (let best = 1; best <= 600; best++) {
       const { bestTick } = paceScale(best);
       expect(bestTick, `best=${best}`).not.toBe(PACE_TICKS - 2);
@@ -14,7 +12,7 @@ describe('pace meter scale', () => {
   });
 
   it('grows the ceiling past the best instead of pinning it to the last tick', () => {
-    expect(paceScale(120).max).toBe(200); // floor, so slow talkers keep a stable scale
+    expect(paceScale(120).max).toBe(200);
     expect(paceScale(245).max).toBe(250);
     expect(paceScale(251).max).toBe(250);
     expect(paceScale(254).bestTick).toBe(PACE_TICKS - 1);
@@ -26,8 +24,6 @@ describe('pace meter scale', () => {
 });
 
 describe('pace meter tick placement', () => {
-  // 1.25 and 1.5 are the Windows display-scaling factors where whole CSS
-  // pixels are not whole device pixels.
   it('puts every tick on a device pixel once measured', () => {
     for (const dpr of [1, 1.25, 1.5, 2, 3]) {
       for (const width of [159, 186, 237, 268, 348, 428, 486.7]) {

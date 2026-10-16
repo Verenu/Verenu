@@ -1,7 +1,3 @@
-//! Tauri command handlers, split by domain into submodules. Everything is
-//! re-exported here so the `commands::*` paths used by `generate_handler!` in
-//! `main.rs` stay stable. Shared imports are re-exported as `pub(crate) use` so
-//! each submodule picks them up via `use super::*`.
 
 pub(crate) use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -205,9 +201,6 @@ mod tests {
 
     #[test]
     fn validate_setting_hotkey_rejects_unknown_key_codes() {
-        // An imported/edited settings.json must not be able to store a hotkey
-        // no backend can register — that would silently disable dictation at
-        // startup (both codes map to VK 0).
         let err = validate_setting(crate::data::store::HOTKEY, &json!(["Foo", "Bar"]))
             .expect_err("unknown hotkey codes should fail");
         assert!(err.contains("Invalid or unsupported setting"));
@@ -220,7 +213,6 @@ mod tests {
             &json!(["ControlLeft", "MetaLeft"])
         )
         .is_ok());
-        // macOS single-key hotkeys store an empty second slot.
         assert!(validate_setting(crate::data::store::HOTKEY, &json!(["F5", ""])).is_ok());
         assert!(validate_setting(crate::data::store::HOTKEY, &json!(["AltLeft", "Space"])).is_ok());
     }

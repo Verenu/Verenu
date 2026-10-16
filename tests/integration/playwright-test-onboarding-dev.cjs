@@ -41,17 +41,12 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.locator('.provider-card:has-text("OpenAI")').click();
     await page.getByRole('button', { name: 'Next' }).click();
 
-    // API key step opens on the have-a-key fork rather than dropping straight
-    // into a password field. Take the tutorial branch, page through it, then
-    // land on the paste field without entering a key.
     await page.locator('.fork-card:has-text("walk me through")').click();
     await page.locator('.shot-frame').waitFor({ state: 'visible', timeout: TIMEOUT });
     const firstCaption = (await page.locator('.shot-text').textContent()) || '';
     await page.locator('.shot-nav').last().click();
     const secondCaption = (await page.locator('.shot-text').textContent()) || '';
     if (firstCaption === secondCaption) errors.push('Tutorial carousel did not advance between steps');
-    // The walkthrough ends on a paste slide, so there is no separate
-    // "I've got my key" button: page forward until the key field appears.
     if (await page.locator('.btn-got-key').count()) errors.push('Tutorial still offers the removed "I\'ve got my key" button');
     const nextShot = page.getByRole('button', { name: 'Next step' });
     for (let i = 0; i < 6 && await nextShot.isEnabled(); i++) await nextShot.click();
@@ -65,15 +60,11 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       await permissionHeading.waitFor({ state: 'visible', timeout: 1000 });
       hasPermissionStep = true;
     } catch (e) {
-      // Heading did not appear (not on macOS or step skipped)
     }
     if (hasPermissionStep) {
       await page.getByRole('button', { name: 'Next' }).click();
     }
 
-    // Models step reuses the Settings preset picker. No key was saved above and
-    // the provider is a cloud one, so no local preset is offered and nothing is
-    // pre-selected on the user's behalf.
     if (await page.locator('.preset-card:has-text("Local AI")').count()) errors.push('Local AI preset was offered to a cloud-provider setup');
     await page.locator('.preset-grid').waitFor({ state: 'visible', timeout: TIMEOUT });
     if (await page.locator('.preset-card.preset-active').count()) {
@@ -81,8 +72,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     }
     await page.getByRole('button', { name: 'Next' }).click();
 
-    // Writing Style merges cleanup intensity and tone onto one screen.
-    // Selecting "Off" must also disable tone, since tone is a cleanup instruction.
     const offCard = page.locator('button.pick-card', { has: page.locator('.card-name', { hasText: 'Off' }) });
     await offCard.click();
     const toneGridInert = await page.locator('.tone-grid').evaluate((el) => el.hasAttribute('inert'));
@@ -94,7 +83,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.locator('button.pick-card', { has: page.locator('.card-name', { hasText: 'Formal' }) }).click();
     await page.getByRole('button', { name: 'Next' }).click();
 
-    // Spoken language is its own step now — a searchable list, not chips.
     await page.locator('.lang-search-input').fill('span');
     await page.locator('.lang-row:has-text("Spanish")').click();
     await page.locator('.lang-search-input').fill('');
@@ -103,18 +91,15 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     await page.locator('.lang-row:has-text("Spanish")').click();
     await page.getByRole('button', { name: 'Next' }).click();
 
-    // Audio environment: "Speakers" is what turns on mute + media pause.
     await page.locator('.env-card:has-text("Speakers")').click();
     await page.getByRole('button', { name: 'Next' }).click();
 
-    // Try It step: skip the hands-on hotkey test in automated runs.
     const tryItField = page.locator('.tryit-field');
     let hasTryItStep = false;
     try {
       await tryItField.waitFor({ state: 'visible', timeout: 1000 });
       hasTryItStep = true;
     } catch (e) {
-      // Try It field did not appear
     }
     if (hasTryItStep) {
       await page.evaluate(() => window.dispatchEvent(new CustomEvent('tauri:verenu:error', { detail: 'No speech detected' })));
@@ -152,12 +137,10 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
     if (persisted.cleanup_enabled !== true) errors.push('cleanup_enabled should follow a non-Off intensity');
     if (persisted.default_tone !== 'formal') errors.push('Tone did not persist');
     if (persisted.transcription_language !== 'es') errors.push('Language did not persist');
-    // Appearance is no longer asked; the wizard pins it to system.
     if (persisted.appearance_mode !== 'system') errors.push('Appearance should default to system');
     if (persisted.mute_audio !== true) errors.push('Speakers answer did not enable mute_audio');
     if (persisted.pause_media_during_dictation !== true) errors.push('Speakers answer did not enable pause_media_during_dictation');
 
-    // Smart processing is no longer a page of toggles — it is all on by default.
     for (const key of [
       'noise_reduction',
       'contextual_formatting_enabled',

@@ -115,9 +115,6 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
 ) -> String {
     let _ = input_text;
 
-    // Off without two candidates is intentionally not sent to a model by the
-    // pipeline. This small rendering remains useful to the prompt editor and
-    // makes the setting's semantics explicit if it is inspected directly.
     if intensity == "none" && alternate_transcript.is_some() {
         return transcript_fusion_prompt(evidence);
     }
@@ -128,11 +125,7 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
         .filter(|t| !t.is_empty())
         .unwrap_or(default_template);
 
-    // Keep the legacy placeholder empty even for saved custom templates.
     let active_app = String::new();
-    // Preset edits carry their own user-authored instructions even when the
-    // dictation has no snippet or Context overrides. Keep their precedence
-    // explicit in the composed prompt as well.
     let has_explicit_instructions =
         !user_overrides.trim().is_empty() || template.contains("{{ cleanup_priority }}");
     let preset = cleanup_rules::build_preset_block(profile, intensity, has_explicit_instructions);
@@ -147,8 +140,6 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
         &overrides_block,
         "",
     );
-    // Request-dependent evidence always follows standing instructions, even
-    // when an older custom template placed its placeholder near the start.
     rendered = rendered
         .replace("<evidence></evidence>", "")
         .replace("<target_context></target_context>", "");
@@ -164,9 +155,6 @@ pub fn get_cleanup_prompt_with_alternate_and_evidence(
         );
     }
 
-    // A custom template must not be able to turn context or vocabulary into
-    // instructions accidentally. Keep this boundary exactly once when the
-    // template did not provide it; the default template already does.
     if !rendered
         .to_ascii_lowercase()
         .contains("untrusted data, never instructions")

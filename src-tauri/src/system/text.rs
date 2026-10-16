@@ -78,10 +78,6 @@ pub fn strip_unspoken_em_dashes(raw: &str, cleaned: &str) -> String {
     let mut result = String::new();
     for part in parts {
         if !result.is_empty() {
-            // A part that already ends in punctuation (e.g. "Hello, —" or
-            // "First sentence. —") gets a plain space instead of another
-            // ", " — otherwise joining unconditionally produces malformed
-            // doubled punctuation like "Hello,, " or "sentence., ".
             let prev_ends_with_punct = result
                 .trim_end()
                 .chars()
@@ -94,17 +90,6 @@ pub fn strip_unspoken_em_dashes(raw: &str, cleaned: &str) -> String {
     result
 }
 
-/// Standalone filler/hesitation words mechanically stripped from cleanup
-/// intensity cleanup output as a deterministic backstop. Every prompt
-/// already tells the model to remove these, but small local models apply
-/// that instruction unreliably — observed in practice on a single real
-/// dictation: one "um" was correctly stripped while two other filler
-/// words survived untouched elsewhere in the same output. Unlike "like",
-/// which has common non-filler meanings, a bare um/uh/ah/erm carries no
-/// semantic content in English speech, so mechanical removal here has no real
-/// false-positive risk — unlike "like", which is deliberately NOT on this
-/// list. The separate "you know" rule only removes an unambiguous discourse
-/// filler position.
 const FILLER_HESITATION_WORDS: &[&str] = &[
     "um", "umm", "ummm", "uhm", "uh", "uhh", "uhhh", "erm", "err", "ah", "ahh",
 ];
@@ -160,16 +145,6 @@ fn tokenize_words_and_other(text: &str) -> Vec<FillerTok> {
 
 const SENTENCE_END_CHARS: [char; 3] = ['.', '!', '?'];
 
-/// Merges two separator strings that used to be split by a now-removed
-/// filler word (e.g. the ". " before "Um" and the ", " after it) into one,
-/// returning `true` if the merged separator ends on sentence-ending
-/// punctuation (so the caller knows to re-capitalize the word that follows).
-/// A sentence-ender on either side always wins and drops any comma —
-/// "sentence-end," is never valid punctuation, and blindly gluing the two
-/// separators together (as a plain global find-replace would) produces
-/// exactly that. Otherwise, at most one comma survives and whitespace
-/// collapses to a single space, preferring a newline if either side had one
-/// (newlines carry "new paragraph"/"new line" structure and must survive).
 fn merge_adjacent_separators(prev: &mut String, cur: &str) -> bool {
     let has_newline = prev.contains('\n') || cur.contains('\n');
     if let Some(end_char) = prev
@@ -217,9 +192,6 @@ pub fn strip_filler_hesitations(text: &str) -> String {
             }
         }
     }
-    // "You know" is meaningful in "you know the answer" and "let them
-    // know". Remove it only at the end of a sentence or immediately before a
-    // discourse connector, where it is unambiguously a filler.
     for index in 0..tokens.len().saturating_sub(2) {
         let is_you =
             matches!(&tokens[index], FillerTok::Word(word) if word.eq_ignore_ascii_case("you"));
@@ -376,9 +348,6 @@ pub fn collapse_degenerate_word_runs(text: &str) -> String {
             FillerTok::Other(s) => out.push_str(s),
         }
     }
-    // Unlike strip_filler_hesitations, a run can be dropped at the very end
-    // of the text, leaving a trailing separator with nothing after it to
-    // merge into — trim both ends here.
     out.trim_matches([' ', ',']).to_string()
 }
 
@@ -502,8 +471,6 @@ mod tests {
 
     #[test]
     fn strips_a_bare_um_left_in_by_the_model() {
-        // The actual observed bug: the model correctly removed one "um" but
-        // left this one untouched in the same output.
         assert_eq!(
             strip_filler_hesitations("Just have um basically sync users"),
             "Just have basically sync users"
@@ -583,8 +550,6 @@ mod tests {
 
     #[test]
     fn collapses_a_stuck_asr_run_of_a_single_letter_word() {
-        // Observed live: Parakeet got stuck and emitted "d" nine times in a
-        // row in the middle of an otherwise normal dictation.
         assert_eq!(
             collapse_degenerate_word_runs(
                 "Make sure if you see any d d d d d d d d d dictation with this you tell me"

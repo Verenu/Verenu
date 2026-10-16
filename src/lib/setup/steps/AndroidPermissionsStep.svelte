@@ -14,11 +14,6 @@
 		type PermissionGrant,
 	} from '../../android/permissions';
 
-	// Android runtime-permission onboarding. Mirrors the macOS PermissionsStep
-	// contract (`bind:allCoreGranted` gates the wizard's Continue button) but
-	// for the four Android gates: microphone, accessibility service, battery
-	// exemption, and notifications. Rationale copy matches the backend
-	// (`android_permission_rationale`) so the wizard and Settings agree.
 	let { allCoreGranted = $bindable(false) }: { allCoreGranted?: boolean } = $props();
 
 	let snapshot = $state<AndroidPermissionSnapshot>({
@@ -49,7 +44,6 @@
 				if (id in rationale && entry.rationale) rationale[id] = entry.rationale;
 			}
 		} catch {
-			// Backend unreachable (browser dev): keep fallback copy.
 		}
 		try {
 			const nativeSnapshot = await invoke<Partial<Record<AndroidPermissionId, string>>>(
@@ -57,7 +51,6 @@
 			);
 			updateSnapshot(nativeSnapshot);
 		} catch {
-			// The browser preview has no Android permission manager.
 		}
 		try {
 			const result = await invoke<{ functional: boolean }>('android_evaluate_permissions', {
@@ -75,8 +68,6 @@
 		note = '';
 		try {
 			await invoke('android_request_permission', { permission });
-			// Kotlin answers asynchronously via verenu:android-permission-snapshot.
-			// If it never arrives (desktop dev), the row keeps its recovery copy.
 		} catch {
 			note = 'Could not open the system prompt. Use the Settings shortcut below instead.';
 		} finally {
@@ -136,7 +127,6 @@
 		};
 	});
 
-	// Desktop/browser preview: lets QA walk the wizard without a device.
 	function simulateGranted() {
 		snapshot = {
 			microphone: 'granted',

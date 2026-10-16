@@ -1,8 +1,6 @@
 import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
 
-// Supplemental transport fixture recreates losing availability after Models.
-// Settings still use the owned native worker; this does not prove Mac inference.
 test('Finish rechecks native Apple availability before saving setup choices', async ({ page, session }) => {
   const saved = await session.invoke('get_all_settings');
   const fresh = { state: 'intelligence-disabled', available: false, message: 'Presentation fixture: disabled after Models' };
@@ -12,8 +10,6 @@ test('Finish rechecks native Apple availability before saving setup choices', as
   let startedRefresh;
   const refreshStarted = new Promise(resolve => { startedRefresh = resolve; });
   try {
-    // This missing-key presentation case must not depend on synthetic provider
-    // credentials used by earlier production checks. No credentials are changed.
     const keyStatus = await session.invoke('get_api_key_status');
     const missingKeys = Object.fromEntries(Object.keys(keyStatus).map(provider => [provider, provider === 'local']));
     await page.route('**/__verenu_dev/invoke', async route => {
@@ -94,7 +90,6 @@ test('onboarding uses native eligibility for the cleanup-only Apple option', asy
       await expect(choice).toHaveCount(0);
       await expect(page.getByText('Clean up with Apple Intelligence', { exact: true })).toHaveCount(0);
     }
-    // Merely offering cleanup never changes the persisted speech selection.
     expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toEqual(saved.transcription_default_model);
     expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).toEqual(saved.cleanup_default_model);
   } finally {
@@ -103,7 +98,6 @@ test('onboarding uses native eligibility for the cleanup-only Apple option', asy
   }
 });
 
-// A renderer-only transition fixture: this does not establish native Mac support.
 test('presentation fixture can clear a chosen cleanup after availability checking fails', async ({ page, session }) => {
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
@@ -142,8 +136,6 @@ test('presentation fixture can clear a chosen cleanup after availability checkin
   }
 });
 
-// Supplemental presentation regression. Native eligibility is tested above;
-// this state fixture cannot establish supported-Mac behavior or inference.
 test('presentation fixture keeps Apple cleanup inactive when onboarding cleanup is Off', async ({ page, session }) => {
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);

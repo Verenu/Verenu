@@ -89,7 +89,6 @@
 
   function currentResource() { return snapshot.current_resource ?? null; }
 
-  /* Same curve language as Insights DailyChart: Catmull-Rom area + stroke. */
   const resourceChartW = 600;
   const resourceChartH = 110;
   const resourcePadTop = 8;
@@ -165,19 +164,6 @@
   }
   function subsystemOptions() { return [{ value: 'all', label: 'All subsystems' }, ...subsystems().map((s) => ({ value: s, label: subsystemLabel(s) }))]; }
 
-  // Runtime stages mirror the real backend span order emitted by the pipeline
-  // (see start_span calls in src-tauri/src/pipeline/mod.rs: capture ->
-  // context -> vad -> transcription -> cleanup -> injection). There is no
-  // "reconciliation", "persistence", or "auto-learn" span — a fixed fake list
-  // just froze in the wrong order and lit every downstream node at once the
-  // moment recording stopped. Microphone is the one node with no span; it
-  // tracks the live recording atomics instead (see stage() below).
-  // audio.active and active_pipelines come from the polled backend snapshot,
-  // not the frontend pill's local `appStore.pillState` — the dictation pill
-  // runs in its own window with its own local state that never syncs back to
-  // this one, so pillState reads 'idle' here even mid-dictation. This view
-  // must never create its own audio processing or retained buffers alongside
-  // the real recording session.
   const RUNTIME_STAGES: { id: string | null; label: string }[] = [
     { id: null, label: 'Microphone' },
     { id: 'capture', label: 'Capture' },
@@ -193,14 +179,8 @@
   function spanForStage(stageId: string) {
     const trace = currentTrace();
     if (!trace) return undefined;
-    // Dual transcription starts two parallel spans under the same stage —
-    // the most recently started one is the representative one to show.
     return [...trace.spans].reverse().find((s) => s.stage === stageId);
   }
-  // The pill runs in its own window with unsynced local state, so the main
-  // window's appStore.pillState reads 'idle' even mid-dictation. Prefer the
-  // backend snapshot (live recording atomics, then active traces) and only
-  // fall back to the local pill state when neither reports anything.
   function pillLabel(): string {
     if (audioActive()) return 'recording';
     if (pipelineActive()) return 'processing';
@@ -226,9 +206,6 @@
     return formatDuration(span.duration_ms);
   }
 
-  // Frontend invokes and backend pipeline operations come from different
-  // sources (frontendIpcActivity vs the Rust operation tracker) and are
-  // interesting to scan separately rather than interleaved by duration.
   function groupedOperations() {
     const rows = operationRows();
     const frontend = rows.filter((r) => r.operation.startsWith('frontend.invoke:'));
@@ -349,10 +326,6 @@
 
   onMount(() => {
     let active = true;
-    // A whole dictation runs end to end in well under a fixed 2.5s poll gap, so at
-    // the idle rate every Runtime stage node appeared to jump straight to "done" in
-    // one snapshot. Ramp the interval down while a dictation is actually in flight
-    // so each stage transition lands in its own poll instead of getting skipped.
     const IDLE_POLL_MS = 2_500;
     const ACTIVE_POLL_MS = 150;
     function scheduleNext() {
@@ -375,9 +348,6 @@
     listen<StructuredLogEntry>('verenu:diagnostics', (event) => {
       if (paused) return;
       snapshot = { ...snapshot, logs: [...snapshot.logs.slice(-999), event.payload] };
-      // Each structured log line is a real backend lifecycle transition — refresh
-      // on receipt too, so the ramp from idle to fast polling doesn't miss the
-      // first stage change while waiting for the next scheduled tick.
       void refresh();
     }).then((unlisten) => { if (active) unlistenDiagnostics = unlisten; else unlisten(); }).catch(() => {});
     Promise.all([
@@ -474,7 +444,7 @@
   {:else if view === 'activity'}
     <section class="diag-panel" data-setting-target="developer-activity"><div class="panel-title"><h3>Activity / operations</h3><span class="muted">backend + frontend invoke metrics</span></div>{#each groupedOperations() as group}<h4 class="operation-group-h">{group.label}</h4><div class="operation-table"><div class="operation-head"><span>Operation</span><span>Calls / min</span><span>Total</span><span>Avg</span><span>p95</span><span>Failures</span><span>Active</span></div>{#each group.rows.slice(0, 40) as operation}<div class="operation-row"><code>{operation.operation}</code><span>{operation.calls_per_minute}</span><span>{formatDuration(operation.total_duration_ms)}</span><span>{formatDuration(operation.average_duration_ms)}</span><span>{formatDuration(operation.p95_duration_ms)}</span><span class:bad={operation.failure_count > 0}>{operation.failure_count}</span><span>{operation.currently_running}</span></div>{/each}</div>{/each}{#if frontendMetrics.some((metric) => metric.failures > 0)}<div class="frontend-errors"><h4 class="operation-group-h">Latest frontend IPC errors</h4>{#each frontendMetrics.filter((metric) => metric.failures > 0 && metric.last_error) as metric}<div class="frontend-error-row"><code>{metric.command}</code><span>{metric.last_error}</span></div>{/each}</div>{/if}</section>
   {:else if view === 'storage'}
-    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Resource timeline</h3><span class="muted">{snapshot.resource_samples.length} points</span></div><!-- svelte-ignore a11y_no_noninteractive_element_interactions --><div class="resource-chart" role="img" aria-label={resourceChart.summary} onpointermove={onResourceMove} onpointerleave={() => (resourceHover = null)}>{#if resourceChart.linePath}<svg viewBox="0 0 {resourceChartW} {resourceChartH}" preserveAspectRatio="none"><defs><linearGradient id={resourceGradientId} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stop-color="white" stop-opacity="0" /><stop offset="4%" stop-color="white" stop-opacity="1" /><stop offset="96%" stop-color="white" stop-opacity="1" /><stop offset="100%" stop-color="white" stop-opacity="0" /></linearGradient><mask id="{resourceGradientId}-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={resourceChartW} height={resourceChartH}><rect x="0" y="0" width={resourceChartW} height={resourceChartH} fill="url(#{resourceGradientId})" /></mask></defs><line x1="0" y1={resourceChartH - resourcePadBottom} x2={resourceChartW} y2={resourceChartH - resourcePadBottom} stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke" /><path d={resourceChart.areaPath} fill="color-mix(in srgb, var(--accent) 18%, transparent)" mask="url(#{resourceGradientId}-mask)" class="resource-area" /><path d={resourceChart.linePath} fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="resource-line" />{#if resourceHover !== null && resourceSamples.length > 0}{@const hx = resourceSamples.length <= 1 ? resourceChartW / 2 : (resourceHover / (resourceSamples.length - 1)) * resourceChartW}<line x1={hx} y1={resourcePadTop - 4} x2={hx} y2={resourceChartH - resourcePadBottom} stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3" opacity="0.55" vector-effect="non-scaling-stroke" />{/if}</svg>{#if resourceHoverSample}<div class="resource-tooltip"><strong>{formatBytes(resourceHoverSample.snapshot.resident_bytes)}</strong><span>{shortTime(resourceHoverSample.observed_at_ms)}</span></div>{/if}{:else}<p class="muted resource-empty">No samples yet.</p>{/if}</div><div class="key-lines"><div><span>Peak resident</span><b>{formatBytes(currentResource()?.peak_resident_bytes)}</b></div><div><span>GPU signal</span><b>{formatBytes(currentResource()?.gpu_memory_bytes)}</b></div><div><span>Collector samples</span><b>{snapshot.health.collector_samples}</b></div><div><span>Cleanup cache</span><b>{unknown(snapshot.runtime.cleanup_cache?.entry_count)}</b></div><div><span>Sync log / peers</span><b>{unknown(snapshot.runtime.sync?.log_entries)} / {unknown(snapshot.runtime.sync?.peer_count)}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Bounded retention</h3><span class="muted">health</span></div><div class="key-lines"><div><span>Logs</span><b>{snapshot.health.retained_log_count} / dropped {snapshot.health.dropped_logs}</b></div><div><span>Failures</span><b>{snapshot.health.retained_failure_count} / dropped {snapshot.health.dropped_failures}</b></div><div><span>Traces</span><b>{snapshot.health.retained_trace_count} / dropped {snapshot.health.dropped_traces}</b></div><div><span>Resource samples</span><b>{snapshot.health.retained_resource_sample_count} / dropped {snapshot.health.dropped_resource_samples}</b></div><div><span>Auto-learn promotions</span><b>{unknown(snapshot.runtime.auto_learn?.promotions)}</b></div></div></section></div>
+    <div class="two-col"><section class="diag-panel"><div class="panel-title"><h3>Resource timeline</h3><span class="muted">{snapshot.resource_samples.length} points</span></div> <div class="resource-chart" role="img" aria-label={resourceChart.summary} onpointermove={onResourceMove} onpointerleave={() => (resourceHover = null)}>{#if resourceChart.linePath}<svg viewBox="0 0 {resourceChartW} {resourceChartH}" preserveAspectRatio="none"><defs><linearGradient id={resourceGradientId} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stop-color="white" stop-opacity="0" /><stop offset="4%" stop-color="white" stop-opacity="1" /><stop offset="96%" stop-color="white" stop-opacity="1" /><stop offset="100%" stop-color="white" stop-opacity="0" /></linearGradient><mask id="{resourceGradientId}-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={resourceChartW} height={resourceChartH}><rect x="0" y="0" width={resourceChartW} height={resourceChartH} fill="url(#{resourceGradientId})" /></mask></defs><line x1="0" y1={resourceChartH - resourcePadBottom} x2={resourceChartW} y2={resourceChartH - resourcePadBottom} stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke" /><path d={resourceChart.areaPath} fill="color-mix(in srgb, var(--accent) 18%, transparent)" mask="url(#{resourceGradientId}-mask)" class="resource-area" /><path d={resourceChart.linePath} fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="resource-line" />{#if resourceHover !== null && resourceSamples.length > 0}{@const hx = resourceSamples.length <= 1 ? resourceChartW / 2 : (resourceHover / (resourceSamples.length - 1)) * resourceChartW}<line x1={hx} y1={resourcePadTop - 4} x2={hx} y2={resourceChartH - resourcePadBottom} stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3" opacity="0.55" vector-effect="non-scaling-stroke" />{/if}</svg>{#if resourceHoverSample}<div class="resource-tooltip"><strong>{formatBytes(resourceHoverSample.snapshot.resident_bytes)}</strong><span>{shortTime(resourceHoverSample.observed_at_ms)}</span></div>{/if}{:else}<p class="muted resource-empty">No samples yet.</p>{/if}</div><div class="key-lines"><div><span>Peak resident</span><b>{formatBytes(currentResource()?.peak_resident_bytes)}</b></div><div><span>GPU signal</span><b>{formatBytes(currentResource()?.gpu_memory_bytes)}</b></div><div><span>Collector samples</span><b>{snapshot.health.collector_samples}</b></div><div><span>Cleanup cache</span><b>{unknown(snapshot.runtime.cleanup_cache?.entry_count)}</b></div><div><span>Sync log / peers</span><b>{unknown(snapshot.runtime.sync?.log_entries)} / {unknown(snapshot.runtime.sync?.peer_count)}</b></div></div></section><section class="diag-panel"><div class="panel-title"><h3>Bounded retention</h3><span class="muted">health</span></div><div class="key-lines"><div><span>Logs</span><b>{snapshot.health.retained_log_count} / dropped {snapshot.health.dropped_logs}</b></div><div><span>Failures</span><b>{snapshot.health.retained_failure_count} / dropped {snapshot.health.dropped_failures}</b></div><div><span>Traces</span><b>{snapshot.health.retained_trace_count} / dropped {snapshot.health.dropped_traces}</b></div><div><span>Resource samples</span><b>{snapshot.health.retained_resource_sample_count} / dropped {snapshot.health.dropped_resource_samples}</b></div><div><span>Auto-learn promotions</span><b>{unknown(snapshot.runtime.auto_learn?.promotions)}</b></div></div></section></div>
   {:else if view === 'faults'}
     <section class="diag-panel" data-setting-target="developer-simulations"><div class="panel-title"><h3>Fault injection</h3><span class="muted">reversible previews and controlled failures</span></div><div class="fault-grid"><button class="btn-ghost btn-compact" onclick={simulateProviderDown}>Provider Down</button><button class="btn-ghost btn-compact" onclick={simulateWifiOffline}>Wi-Fi Offline</button><button class="btn-ghost btn-compact" onclick={simulateGlobalMessage}>Global Message</button><button class="btn-ghost btn-compact" onclick={simulateDriveFull}>Drive Full</button><button class="btn-ghost btn-compact" data-setting-target="developer-notifications" onclick={() => void testNotifications()}>Send Notification</button><button class="btn-ghost btn-compact" data-setting-target="developer-installer" onclick={() => void testInstaller()}>Reinstall Latest Stable</button><button class="btn-ghost btn-compact" data-setting-target="developer-status" onclick={() => void checkProviderStatus()}>Run Check</button></div><div class="fault-row"><div class="fault-provider">
       <span class="fault-provider-label">Provider</span>
@@ -500,7 +470,6 @@
 </section>
 
 {#if privacyModalOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (privacyModalOpen = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
     class="modal-card"
@@ -537,8 +506,6 @@
   .frontend-error-row { display:grid; grid-template-columns:minmax(150px, .35fr) minmax(0, 1fr); gap:12px; padding:8px 0; border-top:1px solid var(--line-soft); font-size:11.5px; }
   .frontend-error-row code { color:var(--ink-soft); }
   .frontend-error-row span { color:var(--danger, #ef4444); overflow-wrap:anywhere; }
-  /* The tab bar's own bottom border already separates it from the view below —
-     a first section's top hairline would just double that line 18px later. */
   .diag-view > .diag-panel:first-child,
   .diag-view > .two-col:first-child { border-top:0; }
 
@@ -550,8 +517,6 @@
   .stage-live[data-state="done"] .node-dot { background:var(--accent); }
   @keyframes diag-pulse { 0%, 100% { opacity:1; } 50% { opacity:.4; } }
 
-  /* One bounded stat table, not eight separate cards — internal hairlines
-     carry the grouping instead of a box per metric. */
   .metric-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-radius:var(--r-md); overflow:hidden; }
   .metric { padding:14px; display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
   .metric:nth-child(4n) { border-right:0; }
@@ -561,7 +526,6 @@
   .metric strong { font:600 18px var(--sans); color:var(--ink); font-variant-numeric:tabular-nums; }
   .metric small { font:10px var(--mono); }
 
-  /* Flat, titled sections divided by a single hairline — no card boxes. */
   .diag-panel { padding-top:16px; margin-top:22px; min-width:0; border-top:1px solid var(--line); }
   .diag-panel:first-child { margin-top:0; }
   .diag-panel h3 { font-size:13px; margin:0; color:var(--ink); font-weight:600; }
@@ -624,15 +588,12 @@
   .level-warn { color:var(--warning); }
   .level-info { color:var(--ink-mute); }
 
-  /* Wraps instead of scrolling sideways — every stage stays visible at once. */
   .runtime-flow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:12px 0; }
   .runtime-node { flex:1 1 110px; padding:9px 10px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--bg-elev); display:flex; flex-direction:column; gap:4px; transition:border-color var(--ui-duration-base, 220ms) var(--ui-ease-out, ease), opacity var(--ui-duration-base, 220ms) var(--ui-ease-out, ease); }
   .flow-arrow { color:var(--ink-faint); font-size:12px; flex:0 0 auto; }
   .node-head { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-soft); }
   .node-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--ink-faint); flex-shrink:0; transition:background-color var(--ui-duration-base, 220ms) var(--ui-ease-out, ease); }
   .runtime-node small { color:var(--ink-mute); font:9px var(--mono); padding-left:12px; }
-  /* active = this span is running right now; done = it already finished —
-     kept visually quiet so the eye lands on whichever node is actually active. */
   .runtime-node[data-state="active"] { border-color:var(--success); }
   .runtime-node[data-state="active"] .node-dot { background:var(--success); animation:diag-pulse 1.2s ease-in-out infinite; }
   .runtime-node[data-state="done"] { border-color:var(--line); opacity:.6; }

@@ -1,7 +1,4 @@
 <script lang="ts" generics="T extends string | number">
-  // The compact select used in the Insights header: a bordered compact
-  // trigger with a chevron and a padded menu that flies in. Use this for a
-  // small single-choice control; DESIGN.md "Dropdowns" describes the anatomy.
   import { fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import Dropdown from './Dropdown.svelte';

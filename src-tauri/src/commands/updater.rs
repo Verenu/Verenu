@@ -1,4 +1,3 @@
-//! Update check + in-app install, with pre-update DB backup.
 
 use super::*;
 #[cfg(any(target_os = "macos", windows))]
@@ -7,7 +6,6 @@ use tauri_plugin_shell::ShellExt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InstallOutcome {
-    // Linux returns after replacement; Windows exits and macOS opens a DMG.
     #[cfg(target_os = "linux")]
     Installed,
     #[cfg(target_os = "android")]
@@ -15,7 +13,6 @@ pub enum InstallOutcome {
     DownloadOpened,
 }
 
-// ---------- updates ----------
 
 #[tauri::command]
 pub async fn check_for_update(
@@ -75,23 +72,12 @@ pub async fn install_update(
     let _attempt = INSTALL_LOCK.try_lock().map_err(|_| {
         "An update is already in progress. Wait for it to finish before trying again.".to_owned()
     })?;
-    // Defense-in-depth: `download_url` ultimately originates from a GitHub
-    // release asset (`browser_download_url`), but this command accepts it
-    // straight from the frontend and either opens it (macOS) or downloads and
-    // executes it (Windows). Refuse anything that isn't an official release
-    // asset URL so a compromised/spoofed frontend can't turn this into an
-    // arbitrary download-and-execute primitive.
     if !crate::api::updater::is_authorized_release_asset_url(&download_url) {
         return Err("Verenu blocked this update because it is not from an official release. Check for updates again in Settings > About.".into());
     }
 
     #[cfg(target_os = "macos")]
     {
-        // `Shell::open` is soft-deprecated in favour of tauri-plugin-opener,
-        // but the shell plugin is already the only one wired up here and
-        // opening the verified release URL in the user's browser to start the
-        // DMG download is exactly what we want. Allow the deprecation rather
-        // than pulling in (and configuring capabilities for) another plugin.
         #[allow(deprecated)]
         app.shell()
             .open(download_url, None)
@@ -146,14 +132,7 @@ pub async fn install_update(
             .await
             .map_err(|error| crate::api::updater::request_error_message(&error))?;
 
-        // Everything from here on is blocking file/registry/process I/O -
-        // run it off the async executor so it can't stall other Tokio tasks
-        // (audio capture, hotkey handling, etc.) while the installer stages.
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            // Back up the database before touching anything. Derive the path from
-            // the canonical app-data helper (NOT app.path().app_data_dir(), which
-            // resolves against the bundle identifier and may point at a different
-            // file).
             let db_path = crate::app_db_path();
             if db_path.exists() {
                 let lock_result = db.lock();
@@ -174,12 +153,6 @@ pub async fn install_update(
             }
             drop(f);
 
-            // Start a second copy of Verenu in a private helper mode. Unlike the
-            // old `.cmd` launcher, this never invokes cmd.exe or PowerShell, and
-            // it waits for both this process and the NSIS installer before it
-            // relaunches the installed binary. The old handoff only slept for
-            // two seconds, so it could reopen Verenu while files were still
-            // being replaced.
             let current_exe = match std::env::current_exe() {
                 Ok(exe) => exe,
                 Err(error) => {
@@ -228,7 +201,6 @@ pub async fn install_update(
         .await
         .map_err(|e| e.to_string())??;
 
-        // Exit immediately so the binary is free before the installer starts.
         log::logger().flush();
         std::process::exit(0)
     }
@@ -251,9 +223,6 @@ pub(crate) fn run_update_helper_if_requested() -> bool {
 
     if let Err(err) = apply_downloaded_update(&args, helper_exe.as_deref()) {
         early_update_helper_warn(&err);
-        // A failed install should still leave Verenu usable when the original
-        // process has already exited. Do not launch a second copy while the
-        // parent is still alive after a wait timeout.
         if !process_is_running(args.parent_pid) {
             let _ = relaunch_installed_app(&args.target, helper_exe.as_deref());
         }
@@ -449,11 +418,6 @@ fn is_silent_nsis_setup_url(url: &str) -> bool {
         .is_some_and(|parsed| parsed.path().to_ascii_lowercase().ends_with("-setup.exe"))
 }
 
-// Uses SQLite's Online Backup API rather than copying the .db/-wal files
-// directly: a raw file copy of a live WAL-mode database isn't atomic, so a
-// concurrent write or checkpoint between copying the two files could leave
-// them mismatched. The Backup API produces one consistent, complete .db
-// file regardless of what else the connection is doing.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn backup_sqlite_database(
     conn: &rusqlite::Connection,
@@ -462,11 +426,6 @@ pub fn backup_sqlite_database(
     let mut backup_conn = rusqlite::Connection::open(backup_path).map_err(|e| e.to_string())?;
     let backup =
         rusqlite::backup::Backup::new(conn, &mut backup_conn).map_err(|e| e.to_string())?;
-    // A negative page count backs up everything in one step instead of the
-    // paced small-batch-with-delay loop run_to_completion uses for live
-    // databases - holding the source lock for the duration is fine here
-    // since the caller already holds the app's only connection and is about
-    // to exit right after this call, so there's nothing else to avoid blocking.
     match backup.step(-1).map_err(|e| e.to_string())? {
         rusqlite::backup::StepResult::Done => Ok(()),
         other => Err(format!(

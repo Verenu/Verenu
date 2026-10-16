@@ -65,8 +65,6 @@ fn guarded_snapshot_orders_policy_action_before_concurrent_save() {
             attempt_rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
-            // The policy cannot change in the gap between checking it and
-            // finishing the protected action. This assertion needs no sleep.
             assert!(settings.values.try_write().is_err());
             assert!(!saved.load(std::sync::atomic::Ordering::SeqCst));
             Ok(())
@@ -153,7 +151,6 @@ fn migrate_legacy_settings_prefers_production_copy() {
     std::fs::write(&production, r#"{"transcription_provider":"groq"}"#).unwrap();
     std::fs::write(&development, r#"{"transcription_provider":"openai"}"#).unwrap();
 
-    // Simulate the Windows candidate order used by migrate_legacy_settings_file.
     for candidate in [&production, &development] {
         if shared.exists() {
             break;
@@ -167,9 +164,6 @@ fn migrate_legacy_settings_prefers_production_copy() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// Regression test: the atomic write must overwrite an existing settings.json
-// on every platform (std::fs::rename replaces the destination, including on
-// Windows). A second save to the same path must succeed, not fail.
 #[test]
 fn write_settings_file_overwrites_existing() {
     let path = unique_tmp_path();
@@ -244,8 +238,6 @@ fn storage_full_errors_are_recognized() {
     assert!(!is_storage_full_error("permission denied"));
 }
 
-// A corrupt settings.json must not surface an error; it is backed up and the
-// app starts from empty defaults.
 #[test]
 fn read_settings_file_recovers_from_corrupt_json() {
     let path = unique_tmp_path();
@@ -294,8 +286,6 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
     let _ = std::fs::remove_file(path);
 }
 
-// The new volume setting takes precedence, while the old boolean setting
-// remains a one-time compatibility fallback for existing users.
 #[test]
 fn load_audio_config_sound_effects_volume_default_and_legacy_override() {
     let empty = SettingsSnapshot::from_pairs([]);
@@ -331,10 +321,7 @@ fn load_audio_config_pause_media_default_and_override() {
     );
 }
 
-// ── setting_audit_* regression tests (targeted by the OnePyFone harness) ──
 
-/// Fresh install (empty settings.json) must resolve to the documented
-/// product defaults, not empty strings or false positives.
 #[test]
 fn setting_audit_empty_store_resolves_to_documented_defaults() {
     let empty = SettingsSnapshot::from_pairs([]);
@@ -376,9 +363,6 @@ fn setting_audit_empty_store_resolves_to_documented_defaults() {
     assert!(audio.device.is_none());
 }
 
-/// A legacy `transcription_model`/`cleanup_model` (provider-prefixed) must
-/// migrate into the new `*_default_model` resolution even when the new key
-/// is absent. Older builds always wrote the full `provider/model` id.
 #[test]
 fn setting_audit_legacy_model_keys_migrate_to_default() {
     let store = SettingsSnapshot::from_pairs([
@@ -393,10 +377,6 @@ fn setting_audit_legacy_model_keys_migrate_to_default() {
     assert_eq!(cfg.cleanup_default_model, "openai/gpt-4o-mini");
 }
 
-/// An unparseable model id must not panic or pass through. Resolution
-/// prefers new key → legacy key → provider default; a legacy key that is
-/// absent resolves to the groq default (the legacy default), so an invalid
-/// new key with no legacy value also lands on the groq default.
 #[test]
 fn setting_audit_malformed_model_id_resolves_to_safe_default() {
     let store = SettingsSnapshot::from_pairs([
@@ -511,8 +491,6 @@ fn unsupported_google_cleanup_models_migrate_to_flash_lite() {
     );
 }
 
-/// Unknown enum values must be coerced back to the backend default rather
-/// than passed through to the pipeline.
 #[test]
 fn setting_audit_unknown_enum_values_fall_back_to_default() {
     let store = SettingsSnapshot::from_pairs([
@@ -531,8 +509,6 @@ fn setting_audit_unknown_enum_values_fall_back_to_default() {
     assert_eq!(cfg.transcription_language, "en");
 }
 
-/// `mic_gain` stored outside the valid range must be clamped at load time,
-/// matching the slider's 1.0..=8.0 contract.
 #[test]
 fn setting_audit_mic_gain_clamped_at_load() {
     let below = SettingsSnapshot::from_pairs([(MIC_GAIN.to_string(), json!(0.2))]);
@@ -545,15 +521,12 @@ fn setting_audit_mic_gain_clamped_at_load() {
     assert_eq!(load_audio_config(&in_range).mic_gain, 4.5);
 }
 
-/// A corrupt `mic_gain` type (string) must fall back to the default, not panic.
 #[test]
 fn setting_audit_mic_gain_wrong_type_falls_back_to_default() {
     let store = SettingsSnapshot::from_pairs([(MIC_GAIN.to_string(), json!("loud"))]);
     assert_eq!(load_audio_config(&store).mic_gain, default_mic_gain());
 }
 
-/// Phones start louder than desktops, and the starting gain is a value the
-/// Settings slider can actually represent.
 #[test]
 fn android_default_mic_gain_is_higher_and_inside_the_slider_range() {
     assert!(DEFAULT_ANDROID_MIC_GAIN > DEFAULT_MIC_GAIN);
@@ -566,8 +539,6 @@ fn android_default_mic_gain_is_higher_and_inside_the_slider_range() {
     assert_eq!(default_mic_gain(), expected);
 }
 
-/// history_retention_days must map every supported label and return None
-/// (never prune) for "Forever" and anything unrecognized.
 #[test]
 fn setting_audit_history_retention_days_mapping() {
     assert_eq!(history_retention_days("7 days"), Some(7));
@@ -578,8 +549,6 @@ fn setting_audit_history_retention_days_mapping() {
     assert_eq!(history_retention_days(""), None);
 }
 
-/// The cleanup prompt override must be inert unless Advanced Models is on,
-/// and a whitespace-only override must be ignored.
 #[test]
 fn setting_audit_cleanup_override_gated_by_advanced_ui() {
     let base = PipelineConfig {
@@ -650,8 +619,6 @@ fn style_prompt_override_follows_effective_intensity_without_advanced_ui() {
         .contains("legal terminology"));
 }
 
-/// An edit saved under the retired per-model map still applies after the
-/// upgrade — losing a hand-written prompt to a schema change is not acceptable.
 #[test]
 fn legacy_per_model_cleanup_override_migrates() {
     let store = SettingsSnapshot::from_pairs([(

@@ -50,7 +50,6 @@ describe('Apple Intelligence cleanup', () => {
     expect(curatedRows(ctx, ['apple-intelligence/system']).some(row => row.provider === 'apple-intelligence')).toBe(false);
     expect(curatedRows(ctx).some(row => row.provider === 'apple-intelligence')).toBe(false);
     expect(unverifiedRows(ctx).some(row => row.provider === 'apple-intelligence')).toBe(false);
-    // Readiness still reports the stored choice, and never requests an API key.
     const issues = dictationReadiness({ ...readiness, appleIntelligence: hidden });
     expect(issues).toHaveLength(1);
     expect(issues[0].section).toBe('models');

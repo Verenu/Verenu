@@ -1,6 +1,3 @@
-//! Client for the Verenu website's status API (`api.verenu.com`) — provider
-//! outage alerts filtered to the models the user actually has selected, plus
-//! a plain up/down health check of that same API.
 
 use serde::{Deserialize, Serialize};
 
@@ -8,10 +5,6 @@ const PROVIDER_STATUS_URL: &str = "https://api.verenu.com/v1/provider-status";
 const GLOBAL_MESSAGE_URL: &str = "https://api.verenu.com/v1/global-message";
 const HEALTH_URL: &str = "https://api.verenu.com/v1/health";
 
-// The shared client (api/client.rs) already caps every request at 120s, but
-// these are lightweight background polls (every 5-20 min), not long-running
-// LLM calls — a much shorter timeout keeps a slow/hanging connection from
-// tying up a poll cycle for anywhere near that long.
 const STATUS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
@@ -73,8 +66,6 @@ fn filter_global_message(response: GlobalMessageResponse, now_ms: i64) -> Option
 }
 
 fn normalize_timestamp_millis(timestamp: i64) -> i64 {
-    // The API historically used milliseconds, but accept Unix seconds too.
-    // Current millisecond timestamps are already above this threshold.
     if timestamp.unsigned_abs() < 100_000_000_000 {
         timestamp.saturating_mul(1_000)
     } else {
@@ -82,11 +73,6 @@ fn normalize_timestamp_millis(timestamp: i64) -> i64 {
     }
 }
 
-/// Keeps only provider entries worth surfacing to the user: the backend must have
-/// flagged them (`showToUsers`), the status must not be `operational` or
-/// `unknown` ("unknown" means the provider doesn't publish a
-/// machine-readable feed we can check — it is not a signal that something is
-/// actually broken), and the provider must be one the user has selected.
 fn filter_alerts(
     providers: Vec<ProviderStatusEntry>,
     selected_providers: &[String],
@@ -204,9 +190,6 @@ mod tests {
 
     #[test]
     fn entry_deserializes_when_optional_fields_are_missing() {
-        // The backend is expected to omit severity/userMessage/detailsUrl/
-        // showToUsers for providers with nothing to report — this must not
-        // fail deserialization for the whole batch.
         let json = r#"{"id":"groq","name":"Groq","status":"operational"}"#;
         let entry: ProviderStatusEntry =
             serde_json::from_str(json).expect("missing optional fields must not fail");
@@ -267,8 +250,6 @@ mod tests {
 
     #[test]
     fn unknown_never_alerts_even_when_flagged() {
-        // "unknown" means Google doesn't publish a machine-readable feed —
-        // it must not be treated as a real problem.
         let providers = vec![entry("google", "unknown", true)];
         assert!(filter_alerts(providers, &["google".to_string()]).is_empty());
     }

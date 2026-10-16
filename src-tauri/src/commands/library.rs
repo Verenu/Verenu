@@ -1,13 +1,9 @@
-//! App mappings, snippets, and dictionary (the user content library).
 
 use super::*;
 
-// ---------- app mappings ----------
 
 #[tauri::command]
 pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
-    // Android has no executables to scan; the Kotlin plugin lists the apps
-    // that appear in the launcher, keyed by package name.
     #[cfg(target_os = "android")]
     {
         #[derive(serde::Deserialize)]
@@ -52,7 +48,6 @@ pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
 /// per-row loading keeps that bulk list light.
 #[tauri::command]
 pub async fn get_app_icon(app: AppHandle, exe: String) -> Option<String> {
-    // Android: the Kotlin plugin renders the package's launcher icon.
     #[cfg(target_os = "android")]
     {
         #[derive(serde::Deserialize)]
@@ -109,7 +104,6 @@ pub async fn save_app_mappings(app: AppHandle, mappings: Vec<AppMapping>) -> Res
     .await
 }
 
-// ---------- snippets ----------
 
 #[tauri::command]
 pub async fn get_snippets(app: AppHandle) -> Result<Vec<db::Snippet>, String> {
@@ -169,7 +163,6 @@ pub async fn remove_snippet(app: AppHandle, id: i64) -> Result<(), String> {
     run_db(&app, "remove_snippet", move |db| db::delete_snippet(db, id)).await
 }
 
-// ---------- dictionary ----------
 
 #[tauri::command]
 pub async fn get_dictionary(app: AppHandle) -> Result<Vec<db::DictionaryEntry>, String> {
@@ -213,10 +206,6 @@ pub async fn edit_dictionary_entry(
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "edit_dictionary_entry", move |db| {
-        // The mapping ids are accepted for forward/backward IPC compatibility
-        // and diagnostics, but the canonical row plus Context is the actual
-        // edit target. The backend re-reads authoritative child mappings in a
-        // transaction so stale frontend ids cannot widen the edit scope.
         let _ = (dictionary_id, correction_id, correction_ids);
         let result = match context_id {
             Some(context_id) => db::update_dictionary_entry_for_context(

@@ -10,8 +10,6 @@ async fn live_t3_pairing_and_catalog_pull() {
         .find(|word| word.starts_with("http") && word.contains("token="))
         .expect("Pairing link missing")
         .trim_end_matches(|c: char| c.is_control());
-    // CLI pairing links may advertise LAN HTTP. The fixture explicitly uses
-    // the caller's loopback endpoint so credentials never cross that transport.
     let mut url = Url::parse(link).expect("Invalid private pairing link");
     if let Ok(base) = std::env::var("VERENU_T3_TEST_BASE") {
         let base = Url::parse(&base).expect("Invalid fixture base");
@@ -45,7 +43,6 @@ async fn live_t3_pairing_and_catalog_pull() {
         "No skills returned"
     );
     assert!(catalogs.iter().all(t3_skills::valid_catalog));
-    // Report counts only, never labels, workspace paths, names, or credentials.
     println!(
         "Live T3 metadata pull: {} catalogs, {} skills",
         catalogs.len(),

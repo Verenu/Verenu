@@ -40,7 +40,6 @@ fn is_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '\'' || ch == '\u{2019}' || ch == '-'
 }
 
-/// Strip all non-alphanumeric characters and collapse whitespace for fuzzy trigger matching.
 fn strip_punctuation_for_matching(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut last_was_space = true;
@@ -59,9 +58,6 @@ fn strip_punctuation_for_matching(s: &str) -> String {
     result
 }
 
-/// Split a trigger field into individual trigger phrases.
-/// A trigger field may contain multiple phrases separated by commas,
-/// e.g. "Gemini Goal, Gemini Gold". Empty segments are filtered out.
 fn parse_triggers(trigger: &str) -> impl Iterator<Item = &str> {
     trigger
         .split(',')
@@ -159,9 +155,6 @@ fn prepare_snippets(snippets: &[db::Snippet]) -> Arc<PreparedSnippetTriggers> {
 }
 
 fn collect_trigger_matches(text: &str, prepared: &PreparedSnippetTriggers) -> Vec<Match> {
-    // Flatten all aliases into individual targets sorted by needle length descending.
-    // This prevents a shorter alias from one snippet shadowing a longer trigger from another
-    // snippet, which snippet-level sorting by max-length cannot guarantee.
     let (haystack, source_map) = lowercase_with_source_map(text);
     let mut all_matches: Vec<Match> = Vec::new();
 
@@ -426,7 +419,6 @@ pub fn apply_cleanup_instruction_overrides(text: &str, instructions: &str) -> St
         result = ensure_final_exclamation(&result);
     }
 
-    // Always collapse consecutive trailing periods — prevents "expansion." + LLM "." = ".."
     if !wants_final_exclamation(&normalized) && !wants_no_final_period(&normalized) {
         result = dedup_trailing_periods(&result);
     }
@@ -487,15 +479,11 @@ fn strip_final_periods(text: &str) -> String {
     format!("{body}{trailing_ws}")
 }
 
-/// Remove duplicate consecutive trailing periods (e.g. ".." → ".").
-/// Called unconditionally so a snippet expansion that already has a period
-/// doesn't gain a second one from the LLM.
 fn dedup_trailing_periods(text: &str) -> String {
     let trimmed_len = text.trim_end().len();
     let trailing_ws = &text[trimmed_len..];
     let mut body = text[..trimmed_len].to_string();
 
-    // Pop extras, keep exactly one if multiple periods trail.
     let mut period_count = 0usize;
     while body.ends_with('.') {
         body.pop();

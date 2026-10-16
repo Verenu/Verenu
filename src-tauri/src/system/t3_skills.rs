@@ -73,8 +73,6 @@ pub fn supported_version(version: &str) -> bool {
     let Some(parts) = parts else {
         return false;
     };
-    // T3 reports 0.0.46; the public requirement uses the shorter 0.46 label.
-    // Prereleases share the basic release floor; pairing also checks the protocol.
     let base = match parts.as_slice() {
         [0, release] => (0, 0, *release),
         [major, minor, patch] => (*major, *minor, *patch),
@@ -139,8 +137,6 @@ pub fn merged_catalog(environment_id: &str, catalogs: &[Catalog]) -> Option<Cata
             let merged = skills
                 .entry(skill.name.to_ascii_lowercase())
                 .or_insert_with(|| skill.clone());
-            // Fill missing metadata from another copy without combining conflicting
-            // descriptions into instructions. Source ordering keeps this stable.
             if merged
                 .display_name
                 .as_ref()
@@ -161,8 +157,6 @@ pub fn merged_catalog(environment_id: &str, catalogs: &[Catalog]) -> Option<Cata
         return None;
     }
     let skills: Vec<_> = skills.into_values().collect();
-    // Hash the actual merged metadata, so refreshing a different source also
-    // invalidates cleanup cache entries, while source reordering does not.
     let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&skills).ok()?));
     Some(Catalog {
         environment_id: environment_id.into(),
@@ -309,8 +303,6 @@ impl Catalog {
         if self.skills.is_empty() {
             return None;
         }
-        // Send every imported identifier. The cleanup model owns relevance,
-        // fuzzy matching and disambiguation; metadata and skill bodies stay local.
         let names: Vec<_> = self
             .skills
             .iter()

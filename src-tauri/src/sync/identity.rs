@@ -34,7 +34,7 @@ impl DeviceIdentity {
     }
 
     /// SHA-256 of the certificate DER, hex encoded - the fingerprint peers pin.
-    #[allow(dead_code)] // exercised by the pairing tests
+    #[allow(dead_code)]
     pub fn cert_fingerprint(&self) -> String {
         fingerprint_of(self.cert_der.as_ref())
     }
@@ -86,8 +86,6 @@ pub fn load_or_create(
         }
     }
 
-    // Missing, expired, or corrupt: re-issue the whole identity, keeping the
-    // known uuid when there is one.
     let identity = create_identity(known_uuid)?;
     secrets::store_identity_key(app_data_dir, &identity.key_der)
         .map_err(|e| anyhow!("failed to store sync identity key: {e}"))?;
@@ -105,9 +103,6 @@ fn validate_key(key_der: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// The certificate carries no parseable expiry check without an X.509 parser;
-/// the file's modification time is written once at creation, so its age tells
-/// us when to rotate. A missing mtime forces re-issue (safe default).
 fn cert_file_fresh(cert_path: &std::path::Path) -> bool {
     let Ok(meta) = std::fs::metadata(cert_path) else {
         return false;
@@ -118,9 +113,6 @@ fn cert_file_fresh(cert_path: &std::path::Path) -> bool {
     let age_days = std::time::SystemTime::now()
         .duration_since(modified)
         .map(|d| d.as_secs() as f64 / 86_400.0)
-        // A future mtime cannot establish that the certificate is still
-        // valid; rotate conservatively rather than treating it as fresh
-        // indefinitely after a clock adjustment or file copy.
         .unwrap_or(f64::INFINITY);
     age_days < CERT_DAYS as f64 * REISSUE_FRACTION
 }
@@ -136,12 +128,9 @@ fn create_identity(known_uuid: Option<String>) -> Result<DeviceIdentity> {
     params
         .distinguished_name
         .push(rcgen::DnType::OrganizationName, "Verenu");
-    // Small back-dated start so a slightly skewed peer clock still accepts it.
     let now = chrono::Utc::now();
     let this_year = now.year() as i64;
     let month = now.month() as u8;
-    // Start on the first of the current month so certificate creation is
-    // stable across month lengths and remains slightly back-dated.
     params.not_before = rcgen::date_time_ymd((this_year - 1) as i32, month, 1);
     params.not_after = rcgen::date_time_ymd((this_year - 1 + CERT_YEARS) as i32, month, 1);
     let cert = params
@@ -180,12 +169,9 @@ fn hostname_raw() -> Option<String> {
 #[cfg(not(target_os = "windows"))]
 fn hostname_raw() -> Option<String> {
     let mut buf = [0u8; 256];
-    // libc is already a macOS dependency; gethostname needs no permissions.
     if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } != 0 {
         return None;
     }
-    // POSIX does not guarantee a terminator when the hostname fills the
-    // supplied buffer.
     *buf.last_mut()? = 0;
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8(buf[..end].to_vec()).ok()
@@ -195,9 +181,6 @@ fn hostname_raw() -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Restart persistence: the same app data dir + known uuid must yield the
-    /// same certificate (and thus the same fingerprint peers pin), and a lost
-    /// keychain must re-issue without changing the uuid.
     #[test]
     fn identity_survives_restart() {
         let dir = std::env::temp_dir().join(format!(
@@ -216,7 +199,6 @@ mod tests {
             "certificate (and pin) must survive restart"
         );
 
-        // Keychain wiped: a new key + certificate, same uuid.
         secrets::delete_identity_key(&dir);
         let reissued = load_or_create(&dir, Some(first.uuid.clone())).expect("reissue");
         assert_eq!(reissued.uuid, first.uuid, "uuid survives key loss");

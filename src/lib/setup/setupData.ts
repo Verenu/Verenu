@@ -1,7 +1,5 @@
 import type { AppearanceMode, CleanupIntensity, ProviderId, ToneId } from '../settings';
 
-// OpenRouter and xAI are bring-your-own providers set up from Settings, so the
-// wizard has no card or key tutorial for them.
 export type WizardProviderId = Exclude<ProviderId, 'openrouter' | 'xai' | 'apple-intelligence'>;
 
 type SetupProvider = {
@@ -11,8 +9,6 @@ type SetupProvider = {
   desc: string;
 };
 
-// Recommended default first. Local sits last because it is the only option that
-// can't dictate until a separate model download finishes.
 export const providers: SetupProvider[] = [
   {
     id: 'groq',
@@ -53,8 +49,6 @@ export const providerGuides: Record<WizardProviderId, ProviderGuide> = {
       { caption: 'You can add a cloud cleanup provider later', alt: 'Cloud cleanup provider setting' },
     ],
   },
-  // Captions are the carousel's step text and pair 1:1 with the screenshots in
-  // src/assets/setup/<provider>-<n>-*.png — keep the two in step.
   groq: {
     url: 'console.groq.com/keys',
     steps: [
@@ -111,7 +105,6 @@ export const toneCards: ToneCard[] = [
   { id: 'very_casual', name: 'Very Casual', desc: 'Mostly lowercase, minimal readable punctuation, and preserved emphasis' },
 ];
 
-/** Illustrative-only before→after preview text. Not API-driven — a static approximation. */
 const SAMPLE_RAW = 'um so like i think we should um ship it tomorrow maybe';
 
 const cleanupPreview: Record<CleanupCard['id'], string> = {

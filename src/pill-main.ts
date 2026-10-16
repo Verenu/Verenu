@@ -7,7 +7,7 @@ import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyThe
 import { CUSTOM_THEME_CHANGE_EVENT, normalizeCustomTheme, type CustomTheme } from './lib/customTheme';
 import './theme.css';
 
-disableBrowserContextMenu(); // The pill webview lives until the process exits.
+disableBrowserContextMenu();
 
 type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 const isAppearanceMode = (value: unknown): value is AppearanceMode =>

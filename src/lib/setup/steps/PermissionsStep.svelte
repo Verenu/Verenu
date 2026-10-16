@@ -10,7 +10,5 @@
 </div>
 
 <style>
-  /* Wider than the default 560px step so each permission row has room for its
-     description plus status and action buttons (mirrors QuickSettingsStep). */
   .perm-step { max-width: 680px; }
 </style>

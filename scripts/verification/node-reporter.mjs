@@ -21,8 +21,6 @@ function nodeFailure(error, file) {
   };
 }
 
-// Node's reporter stream keeps skipped cases visible without publishing errors,
-// invocation arguments, console output, or private session paths.
 export default async function* reporter(events) {
   const tests = [];
   for await (const event of events) {

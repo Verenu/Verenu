@@ -40,7 +40,6 @@ impl ServerCertVerifier for AcceptAnyServer {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        // Encryption only; identity is pinned at the protocol layer.
         Ok(ServerCertVerified::assertion())
     }
 
@@ -182,7 +181,6 @@ pub fn peer_fingerprint(certs: &[CertificateDer<'_>]) -> Result<String> {
 }
 
 pub fn server_name_for(uuid: &str) -> ServerName<'static> {
-    // The certificate's SAN is the device uuid; SNI just needs a valid name.
     ServerName::try_from(uuid.to_string())
         .unwrap_or_else(|_| ServerName::try_from("verenu.local".to_string()).expect("static name"))
 }

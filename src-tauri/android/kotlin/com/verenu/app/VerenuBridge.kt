@@ -51,7 +51,6 @@ data class BridgeStateSnapshot(
     val analyticsEnabled: Boolean,
     val pillPosition: String = VerenuPillPlacement.DEFAULT_POSITION,
     val pillDockPosition: String = VerenuPillPlacement.DEFAULT_DOCK_POSITION,
-    // On by default, like the Rust setting: the pill sits over the keyboard's mic key.
     val coverKeyboardMic: Boolean = true,
     val hidePillOffline: Boolean = true,
     val appearanceMode: String = "system",
@@ -69,7 +68,6 @@ class VerenuBridge(appContext: Context) {
 
     @Volatile private var cached: BridgeConnection? = null
 
-    /** Forget the cached connection (token rotates every boot). */
     fun invalidate() {
         cached = null
     }
@@ -110,8 +108,6 @@ class VerenuBridge(appContext: Context) {
             urlConn.requestMethod = method
             urlConn.connectTimeout = timeoutMs
             urlConn.readTimeout = timeoutMs
-            // The WebView never calls this client; CORS is irrelevant, but a
-            // permissive header costs nothing if the policy ever changes.
             urlConn.setRequestProperty("Authorization", "Bearer ${conn.token}")
             if (body != null) {
                 val bytes = body.toString().toByteArray(Charsets.UTF_8)
@@ -122,8 +118,6 @@ class VerenuBridge(appContext: Context) {
             }
             val code = urlConn.responseCode
             if (code == 401 || code == 403) {
-                // Token rotated (backend restarted): drop the cache so the
-                // next call re-reads the connection file.
                 invalidate()
                 return null
             }
@@ -131,10 +125,6 @@ class VerenuBridge(appContext: Context) {
             val text = stream?.bufferedReader()?.readText() ?: "{}"
             JSONObject(text)
         } catch (e: Exception) {
-            // The accessibility service can start before Rust republishes the
-            // current boot's port, leaving a stale connection cached from a
-            // previous process. Re-read the private connection file on the
-            // next request instead of retrying a dead port forever.
             invalidate()
             Log.w(TAG, "$method $path failed", e)
             null
@@ -185,10 +175,6 @@ class VerenuBridge(appContext: Context) {
         )
     }
 
-    /**
-     * Saves where a drag left the pill (the same setting Settings edits).
-     * `target` is [VerenuPillPlacement.TARGET_POSITION] or [VerenuPillPlacement.TARGET_DOCK].
-     */
     fun savePillPosition(target: String, position: String): Boolean =
         request(
             "POST",
@@ -196,7 +182,6 @@ class VerenuBridge(appContext: Context) {
             JSONObject().put("target", target).put("value", position),
         )?.optBoolean("ok") == true
 
-    /** Reports IME + focus; returns the overlay decision (visible/state). */
     fun postFocus(keyboardVisible: Boolean, hasEditableFocus: Boolean): JSONObject? =
         request(
             "POST", "/v1/focus",
@@ -245,12 +230,6 @@ class VerenuBridge(appContext: Context) {
                 .put("discard", discard),
         )
 
-    /**
-     * Ask Rust to fit the pending dictation to the caret (smart capitalization
-     * and spacing). The text around the caret goes to the local loopback bridge
-     * only, is used for this one decision and is never stored or logged.
-     * Returns null when the bridge is unreachable or the entry is gone.
-     */
     fun formatInsertion(
         seq: Long,
         left: String,
@@ -270,14 +249,12 @@ class VerenuBridge(appContext: Context) {
             timeoutMs = timeoutMs.coerceIn(1, 500),
         )?.optString("text", "")?.takeIf { it.isNotEmpty() }
 
-    /** Push one Keystore-unlocked credential into Rust's memory cache. */
     fun pushCredential(provider: String, key: String): JSONObject? =
         request(
             "POST", "/v1/credential",
             JSONObject().put("provider", provider).put("key", key),
         )
 
-    /** Clear Rust's transient credential cache on lock or service revocation. */
     fun clearCredentials(): JSONObject? = request("POST", "/v1/credentials/clear")
 
     /**

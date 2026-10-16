@@ -2,7 +2,6 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 use chrono::{SecondsFormat, Utc};
 
-// ---------- recording session helpers ----------
 
 #[derive(Clone, Copy, Default)]
 pub struct RecordingStartOptions {
@@ -96,14 +95,6 @@ pub fn start_recording_session_ex_with_context(
 
     #[cfg(target_os = "macos")]
     {
-        // `AXIsProcessTrustedWithOptions` can return a stale cached `false` for the
-        // life of the process. Check Accessibility strictly rather than using
-        // hotkey liveness as a proxy.
-        // The global hotkey is Carbon `RegisterEventHotKey`, which needs no
-        // permission at all — so a working hotkey does NOT prove Accessibility
-        // is granted. Without Accessibility, synthetic Cmd+V (posting events to
-        // the HID tap) silently fails. Using the real TCC check ensures we
-        // surface the error instead of recording and never pasting.
         if !crate::system::mac_app::is_accessibility_verified()
             && !crate::commands::check_accessibility_permission(false)
         {
@@ -140,15 +131,7 @@ pub fn start_recording_session_ex_with_context(
             None
         };
 
-    // Resolve the Context while the recording target is still the target the
-    // user selected. This identity is immutable for the whole dictation; the
-    // processing path must not infer it again from whichever window happens
-    // to be focused after recording or while AutoLearn is monitoring.
     let target = lock_state(state).map(|st| st.target.clone()).unwrap_or_default();
-    // An interrupted processing task hands its audio to a replacement
-    // recording through `recording_context`. Prefer that state handoff when
-    // no explicit resume payload was supplied. Fresh reservations clear the
-    // slot, so ordinary recordings still resolve against their start target.
     let captured_context = captured_context.or_else(|| {
         lock_state(state)
             .ok()
@@ -217,9 +200,6 @@ pub fn start_recording_session_ex_with_context(
             st.failover_started_at_unix = 0;
             None
         };
-        // Register under the lifecycle lock: cancelling Starting invalidates
-        // this claim before a new reservation can appear. A cancelled opener
-        // must not create a fresh mute claim after releasing the lock.
         let mute_claim = mute_audio.then(crate::media::sound::claim_local_mute);
         (durable_id, prepend_audio, mute_claim)
     };
@@ -239,9 +219,6 @@ pub fn start_recording_session_ex_with_context(
         .map(|audio| audio.samples_16k.len());
     let max_output_samples =
         prepend_samples.map(|samples| audio::MAX_RECORDING_SAMPLES.saturating_sub(samples));
-    // "Mute PC Audio": the output is muted, and the mute confirmed, before the
-    // microphone opens so playing audio cannot leak into the recording. The
-    // wait is bounded; on timeout or failure recording starts unmuted.
     let (started, mute_report) = crate::media::mute_gate::start_after_mute(
         mute_claim.map(|claim| claim.task()),
         crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
@@ -366,13 +343,6 @@ pub fn start_recording_session_ex_with_context(
                 manager.monitor_muting();
             }
             if options.show_recording_pill {
-                // Queued before show_pill (not after): show_pill's
-                // cross-monitor move animates and defers its own pill-state
-                // emission until the tween lands, well after this call
-                // returns — queuing here, before that reveal ever happens,
-                // is what makes the profile available in time regardless of
-                // which reveal path this particular call takes (see
-                // PENDING_PILL_CONTEXT for the full ordering rationale).
                 show_pill(app, pill_state);
             }
             spawn_stream_error_watcher(
@@ -398,9 +368,6 @@ pub fn start_recording_session_ex_with_context(
             if pause_media {
                 crate::system::media_control::begin_dictation_media_pause();
             }
-            // A confirmed mute would swallow the cue, so skip it rather than
-            // hold the mute back until the cue has played. Without a confirmed
-            // mute the cue still plays.
             if let Some(delay_ms) = options
                 .start_cue_delay_ms
                 .filter(|_| !mute_report.gate.is_confirmed())
@@ -448,12 +415,9 @@ pub async fn cancel_recording_with_resume(
     let Some(stopped_capture) =
         stop_and_capture_audio(app, session, exclusive_mic_session_id).await
     else {
-        // stop_and_capture_audio already hid the pill on failure.
         return;
     };
     if stopped_capture.recovery_write_failed {
-        // The take is still valid in memory, but a cancelled capture cannot
-        // be resumed safely once its recovery spool has failed.
         log::warn!("recording: cancelled capture not offered for resume after recovery failure");
         if state_is_idle(state) {
             hide_pill(app);
@@ -504,8 +468,6 @@ pub async fn cancel_recording_with_resume(
         if start_stop_sounds_enabled(app) {
             crate::media::sound::play(crate::media::sound::SoundCue::Cancel);
         }
-        // A new dictation may have started while we were awaiting
-        // stop_and_capture_audio — don't hide that session's pill.
         if state_is_idle(state) {
             hide_pill(app);
         }
@@ -522,7 +484,6 @@ pub async fn cancel_recording_with_resume(
     );
 }
 
-/// True when the recording lifecycle is currently `Idle`.
 fn state_is_idle(state: &SharedState) -> bool {
     lock_state(state).is_ok_and(|st| st.lifecycle.is_idle())
 }
@@ -548,11 +509,6 @@ pub fn stash_cancelled_capture(
     }
     let outcome = match lock_state(state) {
         Ok(st) => {
-            // Only stash while the system is genuinely idle. Between
-            // `stop_and_capture_audio` (which released the Recording
-            // lifecycle) and this call the user may have already started a
-            // new dictation — overwriting the capture or forcing the pill
-            // into "Cancelled" would clobber that fresh session.
             if !st.lifecycle.is_idle() {
                 StashOutcome::SessionActive
             } else {
@@ -572,14 +528,7 @@ pub fn stash_cancelled_capture(
                     CaptureOrigin::UserCancelled => super::failover::FailoverKind::Cancelled,
                     CaptureOrigin::Interrupted => super::failover::FailoverKind::Recording,
                 };
-                // Captured before dropping the lock: this is the original
-                // dictation's focus target, still valid here because nothing
-                // has happened yet to move focus to Verenu's own window. See
-                // CancelledCapture::target for why resume must reuse it
-                // instead of re-capturing the foreground later.
                 let target = st.target.clone();
-                // Drop the state lock before disk I/O so hotkey/UI paths are
-                // not stalled on fsync.
                 drop(st);
                 super::failover::commit_capture_with_context(
                     &audio,
@@ -636,13 +585,9 @@ pub fn stash_cancelled_capture(
             }
         }
         StashOutcome::SessionActive => {
-            // A newer dictation owns the pill now — don't touch it, and
-            // don't offer a resume that would fight the live session.
             log::debug!("skipping cancelled-capture pill: a new session is active");
         }
         StashOutcome::LockPoisoned => {
-            // Poisoned lock: the pill's Continue button would offer a resume
-            // that can't work since nothing was stashed. Hide the pill.
             log::warn!("failed to stash cancelled capture (state lock poisoned)");
             hide_pill(app);
         }
@@ -720,8 +665,6 @@ pub fn spawn_level_emitter(
     emit_globally: bool,
 ) {
     tauri::async_runtime::spawn(async move {
-        // Give WebView2 a brief head start to wake up and process the
-        // "recording" state event before we flood the IPC with 16ms updates.
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
         let emit_raw_level = |raw_level_val: f32| {
@@ -754,14 +697,10 @@ pub fn spawn_level_emitter(
             emit_raw_level(raw_level_val);
         };
 
-        // The pill is the only consumer of the envelope, so this never goes out
-        // globally even when the level does -- no other window needs 100
-        // floats a second.
         let emit_envelope = |batch: &[f32]| {
             if batch.is_empty() {
                 return;
             }
-            // The native Android pill reads the same envelope over its bridge.
             #[cfg(target_os = "android")]
             crate::android::bridge::note_audio_envelope(batch);
             if let Some(pill) = app.get_webview_window("pill") {
@@ -776,9 +715,6 @@ pub fn spawn_level_emitter(
             }
             let level_val = f32::from_bits(level.load(Ordering::Relaxed));
             let raw_level_val = f32::from_bits(raw_level.load(Ordering::Relaxed));
-            // Mirror for the Android overlay poller (same pattern as the
-            // pill-stage mirror): the native pill can't see WebView events
-            // when the main activity is dead. One atomic store per tick.
             crate::android::bridge::note_audio_level(level_val);
             emit_level(level_val, raw_level_val);
             envelope.drain_into(&mut envelope_batch);
@@ -786,7 +722,6 @@ pub fn spawn_level_emitter(
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
-        // Emit final reset to ensure level goes to 0 regardless of timing
         emit_envelope(&envelope.drain());
         crate::android::bridge::note_audio_level(0.0);
         emit_level(0.0, 0.0);

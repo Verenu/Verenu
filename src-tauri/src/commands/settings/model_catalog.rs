@@ -1,4 +1,3 @@
-//! Provider availability plus public capabilities. Metadata hosts receive no keys or user data.
 use super::*;
 use std::collections::BTreeMap;
 
@@ -123,7 +122,6 @@ fn has(modalities: Option<&serde_json::Value>, kind: &str) -> bool {
         .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(kind)))
 }
 
-/// Audio modalities do not make Realtime compatible with audio/transcriptions.
 fn capability(
     provider: &str,
     id: &str,
@@ -132,7 +130,6 @@ fn capability(
     output: Option<&serde_json::Value>,
 ) -> Option<ModelCapability> {
     let lower = id.to_lowercase();
-    // Dedicated STT output differs from audio-input chat, which uses another endpoint.
     if provider == store::OPENROUTER && has(input, "audio") && has(output, "transcription") {
         return Some(ModelCapability {
             label: label.chars().take(200).collect(),
@@ -252,8 +249,6 @@ pub async fn get_provider_model_catalog(
             )?
         }
     };
-    // Only providers without discovery, or Google's separate Interactions API,
-    // may add ids through the exceptions catalog.
     if provider == store::ASSEMBLYAI && !overrides.is_empty() {
         ids.clear();
     }
@@ -262,8 +257,6 @@ pub async fn get_provider_model_catalog(
             continue;
         }
         if !ids.contains(&id) {
-            // New endpoint families require application support. This build
-            // knows Google's dedicated Interactions transcriber specifically.
             if provider == store::GOOGLE && id != "gemini-3.5-transcribe" {
                 continue;
             }

@@ -113,7 +113,6 @@ fn read_clipboard_snapshot() -> anyhow::Result<ClipboardSnapshot> {
     if sources.is_empty() {
         Ok(ClipboardSnapshot::Empty)
     } else {
-        // Match arboard's Linux hint so clipboard history skips this restore.
         sources.push(MimeSource {
             source: Source::Bytes(b"secret".to_vec().into_boxed_slice()),
             mime_type: MimeType::Specific("x-kde-passwordManagerHint".to_string()),
@@ -138,13 +137,9 @@ async fn restore_clipboard(sources: Vec<MimeSource>) -> anyhow::Result<()> {
 }
 
 pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
-    // An explicit copy is the user's own clipboard content; let history keep it.
     write_clipboard(text.to_owned(), false).await
 }
 
-/// Transient paste payloads and clipboard restores carry the KDE password
-/// manager hint, which Omarchy and other clipboard histories skip, matching the
-/// Windows exclusion from clipboard history.
 async fn write_clipboard(text: String, exclude_from_history: bool) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || {
         let mut clipboard = Clipboard::new().map_err(|e| anyhow::anyhow!("Wayland clipboard unavailable: {e}"))?;
@@ -186,7 +181,6 @@ mod chunk_native_tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
         let target = crate::core::window_geometry::WindowTarget::capture_foreground();
         assert_eq!(target.linux.as_ref().unwrap().address, address);
-        // Release the lock before calling the production injection function.
         drop(_lock);
         let original = snapshot_clipboard().await.unwrap();
         let sentinel = "Public synthetic clipboard sentinel";
@@ -200,7 +194,6 @@ mod chunk_native_tests {
     }
 }
 
-// Keep the existing injection arguments explicit across native backends.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn inject_text(
     text: &str,
@@ -223,8 +216,6 @@ pub(super) async fn inject_text(
     let mut probe = if contextual_caps || auto_spacing {
         crate::core::context_probe::read_linux_injection_context_probe_async(linux_target.pid).await
     } else { unavailable_injection_probe() };
-    // AT-SPI context probing is intentionally best effort; a failed probe
-    // never prevents insertion.
     if probe.target_id != 0 && probe.target_id != linux_target.pid as usize { probe = unavailable_injection_probe(); }
     log::info!(
         "injection: Linux cursor formatting enabled={} source={} control={} left_reliable={} right_reliable={}",
@@ -237,8 +228,6 @@ pub(super) async fn inject_text(
     let (adjusted, context_kind, case_decision) = apply_probe_adjustments(
         text, contextual_caps, auto_spacing, profile, language, protected_initial_case, &probe,
     );
-    // Preserving the existing clipboard is best effort. A broken or unusually
-    // large clipboard must not prevent the dictated text from being inserted.
     let saved = match tokio::time::timeout(SNAPSHOT_TIMEOUT, snapshot_clipboard()).await {
         Ok(Ok(snapshot)) => Some(snapshot),
         Ok(Err(err)) => {
@@ -265,7 +254,6 @@ pub(super) async fn inject_text(
     crate::core::hyprland::dispatch_paste_for_target(&linux_target.class_name, &linux_target.tags)
         .map_err(anyhow::Error::msg)?;
     tokio::time::sleep(PASTE_SETTLE).await;
-    // Do not overwrite a user copy performed while the paste settled.
     let current = tokio::task::spawn_blocking(|| {
         let mut clipboard = Clipboard::new().ok()?;
         clipboard.get().clipboard(LinuxClipboardKind::Clipboard).text().ok()

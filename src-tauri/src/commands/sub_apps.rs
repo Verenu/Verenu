@@ -1,4 +1,3 @@
-//! Sub-app commands and the capture-hotkey snapshot.
 
 use super::*;
 use std::sync::Mutex;
@@ -33,8 +32,6 @@ pub fn capture_foreground() -> Option<SubAppCapture> {
         .window_title()
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty())?;
-    // The shared cache is empty until its first background scan finishes;
-    // this runs off the hotkey loop, so scan directly in that case.
     let (cached, _) = crate::system::apps::list_installed_apps_cached_with_status();
     let scanned;
     let installed: &[crate::system::apps::InstalledApp] = if cached.is_empty() {

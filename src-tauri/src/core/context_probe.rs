@@ -149,15 +149,9 @@ impl MacosProbeGuard {
 
         let now = get_monotonic_ms();
 
-        // Retry loop: if a concurrent probe is released between our load and the
-        // CAS, the CAS fails with the new (zero) value; loop to re-evaluate
-        // instead of incorrectly reporting busy.
         let mut active_time = MACOS_PROBE_START_TIME.load(Ordering::SeqCst);
         loop {
             if active_time != 0 {
-                // Block if the active probe hasn't timed out. Also block when
-                // now < active_time: a thread with a later timestamp already
-                // acquired the guard between our load and CAS — treat it as live.
                 if now < active_time || now - active_time < 2000 {
                     return None;
                 }
@@ -189,7 +183,6 @@ impl Drop for MacosProbeGuard {
     }
 }
 
-// Linux injection probes the captured target pid directly.
 #[cfg(not(target_os = "linux"))]
 pub async fn read_injection_context_probe() -> InjectionContextProbe {
     #[cfg(windows)]
@@ -206,8 +199,6 @@ pub async fn read_injection_context_probe() -> InjectionContextProbe {
             );
         };
 
-        // Move the guard into the background task thread. This holds the active lock
-        // state while the AX call runs, preventing re-entrant AX calls on short timeouts.
         let task = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             crate::core::context_probe_macos::read_injection_context_probe_sync()
@@ -276,8 +267,6 @@ pub(crate) fn read_linux_injection_context_probe(pid: u32) -> InjectionContextPr
     InjectionContextProbe {
         context: resolve_context_from_tail(focused.field_empty, Some(&tail)),
         source,
-        // A window that does not reach the field edge is still reliable: it
-        // holds real text next to the caret.
         left_reliable: focused.field_empty || !tail.is_empty() || focused.starts_at_field_start,
         right_reliable: focused.field_empty || !head.is_empty() || focused.ends_at_field_end,
         context_tail: tail,

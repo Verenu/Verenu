@@ -10,7 +10,6 @@ pub const SCORE_NORMALIZED: u8 = 2;
 pub const SCORE_CASEFOLD: u8 = 3;
 pub const SCORE_EXACT: u8 = 4;
 
-/// Longer prefixes first so "headset microphone" wins over "headset".
 const ROLE_PREFIXES: &[&str] = &[
     "headset microphone",
     "headset mic",

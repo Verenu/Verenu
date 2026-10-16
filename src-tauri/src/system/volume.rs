@@ -17,16 +17,13 @@ use windows::Win32::System::Com::{
 /// returned when the output really is silent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuteOutcome {
-    /// Verenu muted the output and, where the platform allows, read it back.
     Muted,
-    /// The output was already muted (by the user or by an earlier dictation).
     AlreadyMuted,
     /// The mute request was delivered, but the platform cannot report whether
     /// the output actually went silent (Android applies it in Kotlin and may
     /// leave the volume up after a user override).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     Requested,
-    /// The output could not be muted; dictation continues unmuted.
     Failed,
 }
 
@@ -48,8 +45,6 @@ static MUTED_ENDPOINT: Mutex<WindowsMuteState> = Mutex::new(WindowsMuteState::ne
 #[cfg(any(windows, test))]
 const MAX_PENDING_WINDOWS_RESTORES: usize = 8;
 
-/// Tracks the endpoint for the current mute owner separately from endpoints
-/// whose restoration failed. A stale endpoint must not block muting a new one.
 #[cfg(any(windows, test))]
 #[derive(Default)]
 struct WindowsMuteState {
@@ -168,7 +163,6 @@ enum MacRestoreState {
     },
 }
 
-// ---- exclusive microphone access (macOS hog mode) ----
 
 #[cfg(target_os = "macos")]
 static HOG_STATE: Mutex<HogState> = Mutex::new(HogState::Idle);
@@ -236,7 +230,6 @@ fn restore_windows_endpoint(endpoint: &str) -> Result<(), String> {
     }
 }
 
-/// Resolve the default again rather than trusting the endpoint saved for restore.
 #[cfg(windows)]
 fn confirm_current_windows_mute() -> Result<bool, String> {
     unsafe {
@@ -638,7 +631,6 @@ mod macos {
             return Ok(None);
         }
 
-        // Hog mode owner is a pid_t; pass our pid to acquire, -1 to release.
         let our_pid = std::process::id() as i32;
         set_i32_property(
             device_id,
@@ -655,8 +647,6 @@ mod macos {
         if owner == our_pid {
             Ok(Some(device_id))
         } else {
-            // The HAL declined or another process holds the device — we own
-            // nothing, so there is nothing to release later.
             Ok(None)
         }
     }
@@ -759,13 +749,10 @@ mod linux {
         mut read_mute: impl FnMut(&Sink) -> Result<bool, String>,
         mut current: impl FnMut(&Sink) -> Result<Sink, String>,
     ) -> Result<MuteOutcome, String> {
-        // The outer gate bounds recording's wait even if an OS read stalls.
-        // Also bound churn so a changing default cannot create an endless task.
         for _ in 0..3 {
             let (sink, already_muted) = snapshot()?;
             if !already_muted {
                 set_mute(&sink)?;
-                // Keep restoration ownership even if confirmation fails.
                 if !muted_sinks.contains(&sink) {
                     muted_sinks.push(sink.clone());
                 }
@@ -1159,9 +1146,6 @@ mod linux_tests {
         String::from_utf8_lossy(&out.stdout).contains("[MUTED]")
     }
 
-    /// Real-hardware measurement: `cargo test live_mute_latency -- --ignored --nocapture`.
-    /// Briefly mutes the default sink a few times and checks the state
-    /// independently with `wpctl`. Skips when the sink is already muted.
     #[test]
     #[ignore = "mutes the real default sink"]
     fn live_mute_latency() {
@@ -1217,7 +1201,6 @@ pub fn unmute() {
     let _ = set_system_muted(false);
 }
 
-// The bridge mirrors this state for the pill; the Application applies it directly.
 static ANDROID_MUTE_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -1247,7 +1230,6 @@ fn update_android_media_mute(muted: bool) -> bool {
 
     let result = (|| -> jni::errors::Result<()> {
         let context = ndk_context::android_context();
-        // ndk-context owns a process-lifetime Application global reference.
         let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast())? };
         let mut env = vm.attach_current_thread()?;
         let application = unsafe { JObject::from_raw(context.context().cast()) };
@@ -1257,7 +1239,6 @@ fn update_android_media_mute(muted: bool) -> bool {
             "(Z)V",
             &[JValue::Bool(muted.into())],
         );
-        // Never leave a pending Java exception on a Rust worker thread.
         if env.exception_check()? {
             env.exception_clear()?;
         }
@@ -1453,8 +1434,6 @@ mod windows_mute_state_tests {
             |_| Ok(()),
         );
 
-        // Switching to an audible output, manually unmuting, or losing access
-        // to the audio server must not confirm silence from a saved lease.
         for current in [Ok(false), Err("audio server unavailable".into()), Ok(true)] {
             let expected = if current == Ok(true) {
                 MuteOutcome::AlreadyMuted

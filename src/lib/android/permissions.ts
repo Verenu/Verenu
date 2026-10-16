@@ -1,10 +1,3 @@
-// Android permission onboarding model. Mirrors the Rust
-// `crate::android::{AndroidPermission, permission_rationale,
-// permission_is_required}` contract so the wizard, the Settings recovery
-// card, and the backend gate all agree on what "ready" means.
-//
-// Side-effectful parts (invoke/listen, opening system settings) stay in the
-// Svelte step component; everything here is pure and unit-tested.
 
 export type AndroidPermissionId =
 	| 'microphone'

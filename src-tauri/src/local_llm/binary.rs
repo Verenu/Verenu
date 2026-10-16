@@ -43,13 +43,6 @@ impl LlamaBackend {
         }
     }
 
-    /// Release asset URLs for this backend, each paired with the SHA256
-    /// GitHub computed for that exact asset at upload time (from the
-    /// release's `digest` field via the GitHub API — not project-published,
-    /// not computed locally, since that would mean downloading every
-    /// multi-hundred-MB asset just to populate this table). CUDA ships its
-    /// cudart DLLs as a separate archive from the main build; every other
-    /// backend is one file.
     fn assets(self) -> Vec<RuntimeAsset> {
         let base =
             format!("https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_TAG}");
@@ -265,20 +258,12 @@ async fn download_to_file(
         .send()
         .await?
         .error_for_status()?;
-    // A runtime backend can contain multiple archives. Once bytes from a
-    // previous archive are included, the current response length is no
-    // longer a valid aggregate denominator. Report the later assets as
-    // indeterminate rather than letting progress exceed the current file's
-    // total and stick at 100% prematurely.
     let aggregate_total = if *aggregate_downloaded == 0 {
         aggregate_total.or(response.content_length())
     } else {
         aggregate_total
     };
 
-    // Async file I/O (rather than std::fs + sync write_all) so each chunk
-    // write can't block the Tokio executor worker thread during a
-    // multi-hundred-MB runtime archive download.
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(dest).await?;
     let mut response = response;
@@ -389,9 +374,6 @@ pub async fn ensure_llama_server_binary(
     {
         let result = ensure_llama_server_binary_inner(app, cancel).await;
         if result.is_err() {
-            // The runtime is considered installed solely by the presence of its
-            // server binary. Remove an incomplete multi-asset extraction so a
-            // later attempt cannot mistake one archive for a complete runtime.
             let root = runtime_root();
             let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(root)).await;
         }
@@ -437,16 +419,6 @@ async fn ensure_llama_server_binary_inner(
         )
         .await?;
 
-        // Verify before extracting — an unverified archive must never reach
-        // the extractor, since the binary inside it (llama-server.exe) gets
-        // executed later. A mismatch here means either a corrupted download
-        // or a tampered/substituted asset; either way, the .tmp dir (and
-        // anything already extracted from a prior asset in this loop) is
-        // discarded so no partially-verified install can be used.
-        // Hashing (up to ~600MB) and extraction are heavy synchronous CPU/disk
-        // work — run them off the Tokio worker thread so they can't stall the
-        // async executor (audio capture, hotkey handling, etc.) for seconds
-        // at a time.
         let hash_path = archive_path.clone();
         let actual =
             tokio::task::spawn_blocking(move || super::download::sha256_hex(&hash_path)).await??;
@@ -569,11 +541,6 @@ mod tests {
 
     #[test]
     fn every_runtime_asset_has_a_well_formed_sha256() {
-        // The runtime binary gets executed (llama-server.exe), so every
-        // asset must carry a checksum verified before extraction — and it
-        // must actually look like a SHA256 hex digest, not a typo, since a
-        // malformed value would make every download fail verification
-        // forever.
         for backend in [
             LlamaBackend::Cuda,
             LlamaBackend::Vulkan,

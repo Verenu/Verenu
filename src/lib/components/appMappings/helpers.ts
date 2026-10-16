@@ -40,7 +40,6 @@ export function rankAppMatches(apps: InstalledApp[], search: string, android = i
   const query = search.trim().toLowerCase();
   if (!query) return apps;
   const compactQuery = query.replace(/[^a-z0-9]/g, '');
-  // Desktop keeps its established behaviour: filter only, in the platform's order.
   if (!android) return apps.filter((app) => matchesSearch(app, query, compactQuery, false));
   const score = (name: string) => {
     if (name.startsWith(query)) return 0;

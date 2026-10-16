@@ -15,8 +15,6 @@ function checkMetadata(expected, metadata, initial) {
   }
 }
 
-// File-local interaction contracts stay on one worker. Independent files get
-// separate default-30 workers; no retry, counter reset or quota override.
 export async function runNodeSessions(files, { identity, start, execute, metadata, live = false }) {
   if (!files.length || new Set(files).size !== files.length
     || files.some(file => !/^[A-Za-z0-9_-]+\.test\.mjs$/.test(file))) {

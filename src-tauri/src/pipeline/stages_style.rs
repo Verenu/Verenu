@@ -1,5 +1,3 @@
-//! Style resolution: App Mappings, Context overrides, and the tone/intensity
-//! priority chain that decides the cleanup profile for a dictation.
 
 use super::*;
 use crate::core::window_geometry::WindowTarget;
@@ -63,16 +61,11 @@ pub(super) fn resolve_context_for_window(
     target: &WindowTarget,
 ) -> Option<crate::core::context::ResolvedContextIdentity> {
     let process_name = target.process_name().unwrap_or_default();
-    // Read the domain from the captured browser window as well as the exe.
-    // This keeps website-only context groups accurate on the recording pill;
-    // the bounded UIA probe remains best-effort and falls back to exe lookup.
     let browser_domain = if window_context::is_browser_target(&process_name, target.id) {
         crate::core::browser_probe::read_browser_domain_for_target(target)
     } else {
         None
     };
-    // Sub-app rules match on the captured window's title. It is read here
-    // only and never stored or logged.
     let window_title = target.window_title();
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
     let (context, sub_app) = crate::core::context::resolve_context_for_captured_window(
@@ -133,10 +126,7 @@ pub(super) fn ensure_terminal_punctuation(
     let trimmed = text.trim_end();
     match trimmed.chars().next_back() {
         Some(last) if last.is_alphanumeric() => {
-            // Chinese/Japanese text uses the full-width period; a Western "."
-            // reads as out of place after CJK ideographs or kana.
             let punct = if is_cjk(last) { "。" } else { "." };
-            // Preserve any trailing whitespace the model emitted after the word.
             format!("{trimmed}{punct}{}", &text[trimmed.len()..])
         }
         _ => text.to_owned(),
@@ -145,9 +135,9 @@ pub(super) fn ensure_terminal_punctuation(
 
 fn is_cjk(c: char) -> bool {
     matches!(c,
-        '\u{4e00}'..='\u{9fff}'   // CJK Unified Ideographs
-        | '\u{3400}'..='\u{4dbf}' // CJK Unified Ideographs Extension A
-        | '\u{3040}'..='\u{309f}' // Hiragana
-        | '\u{30a0}'..='\u{30ff}' // Katakana
+        '\u{4e00}'..='\u{9fff}'
+        | '\u{3400}'..='\u{4dbf}'
+        | '\u{3040}'..='\u{309f}'
+        | '\u{30a0}'..='\u{30ff}'
     )
 }

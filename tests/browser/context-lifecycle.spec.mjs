@@ -5,12 +5,10 @@ test('Context creation, editing and deletion persist through the UI without touc
   const name = `Synthetic flow ${Date.now()}`;
   let created;
   const open = async (id) => {
-    // Desktop Context labels collapse at narrow widths; the ID remains stable.
     await page.locator(`[data-debug-id="context.${id}"]`).click();
   };
   const actions = async (id, label) => {
     if (page.viewportSize().width < 700) {
-      // The compact rail exposes the row's context menu instead of a kebab.
       await page.locator(`[data-debug-id="context.${id}"]`).click({ button: 'right' });
     } else await page.getByRole('button', { name: `More actions for ${label}`, exact: true }).click();
   };
@@ -37,7 +35,6 @@ test('Context creation, editing and deletion persist through the UI without touc
     await open(created.id);
     await actions(created.id, renamed);
     await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
-    // The first click arms deletion; it must not mutate data yet.
     expect((await session.invoke('get_contexts')).some(row => row.id === created.id)).toBe(true);
     await page.getByRole('menuitem', { name: 'Confirm delete', exact: true }).click();
     await expect.poll(async () => (await session.invoke('get_contexts')).some(row => row.id === created.id)).toBe(false);

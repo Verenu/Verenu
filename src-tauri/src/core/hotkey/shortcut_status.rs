@@ -1,4 +1,3 @@
-//! Effective desktop shortcuts, distinct from the user's saved preferences.
 
 use serde::Serialize;
 use std::sync::Mutex;

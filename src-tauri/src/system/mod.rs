@@ -43,7 +43,7 @@ pub mod windows_titlebar {
 
     #[cfg(target_os = "linux")]
     #[tauri::command]
-    #[allow(clippy::too_many_arguments)] // Preserve the frontend IPC argument contract.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_native_titlebar_theme(
         window: tauri::WebviewWindow,
         dark: bool,

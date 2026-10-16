@@ -1,14 +1,3 @@
-// Adaptive window-size classes for the Android shell (and any narrow
-// desktop window). Mirrors the Rust `crate::android::width_class_for_dp`
-// breakpoints exactly — both sides use 600/840dp so backend layout hints and
-// the Svelte shell never disagree.
-//
-// Uses live window dimensions, never hard-coded device categories: rotation,
-// folding/unfolding, split-screen, and freeform windows all reclassify
-// without restart. Hinge/fold posture comes from the CSS `screen-fold`
-// feature where the WebView supports it; otherwise the width class alone
-// drives the layout (compact → single column + bottom nav, expanded →
-// list-detail multi-pane).
 
 export type WidthClass = 'compact' | 'medium' | 'expanded';
 
@@ -62,8 +51,6 @@ export function snapshotForSize(
 
 /** Whether the main shell should use the multi-pane (list-detail) layout. */
 export function shouldUseMultiPane(snapshot: ViewportSnapshot): boolean {
-	// Half-opened foldables keep single-column even when wide: the hinge
-	// area makes a spanning detail pane unreadable.
 	if (snapshot.foldPosture === 'half-opened') return false;
 	return snapshot.widthClass === 'expanded';
 }

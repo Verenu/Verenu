@@ -182,8 +182,6 @@ pub fn classify_context_tail(text: &str) -> SentenceContext {
         return SentenceContext::NewSentence;
     }
     for (idx, ch) in text.char_indices().rev() {
-        // Check newlines before is_invisible_prefix_char: is_control() includes \n/\r,
-        // so they would be skipped by the continue below and never reach the \n/\r arm.
         if matches!(ch, '\n' | '\r') {
             return SentenceContext::NewSentence;
         }
@@ -661,10 +659,6 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
             .any(is_cjk);
     let uses_spaces =
         language_uses_interword_spaces(context.language) && !auto_detected_no_space_script;
-    // A joiner touching either caret edge means the insertion is part of a
-    // path, URL, handle, identifier, or compound token. Treat the whole caret
-    // as token-local so we never create a half-broken value such as
-    // `path/value file`.
     let token_local = (context.left_reliable && left_immediate.is_some_and(is_token_joiner))
         || (context.right_reliable && right_immediate.is_some_and(is_token_joiner));
 
@@ -1082,8 +1076,6 @@ mod tests {
 
     #[test]
     fn context_tail_newline_is_sentence_boundary() {
-        // Newlines must be checked before is_invisible_prefix_char because
-        // is_control() returns true for \n/\r and would otherwise skip them.
         assert_eq!(
             classify_context_tail("hello\n"),
             SentenceContext::NewSentence

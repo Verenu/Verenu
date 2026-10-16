@@ -1,6 +1,3 @@
-//! App-level system notifications. Native Linux delivery acknowledges the
-//! daemon's result outside the async runtime; native Windows delivery keeps
-//! Verenu's app identity instead of the WebView host process.
 
 use tauri::AppHandle;
 #[cfg(windows)]
@@ -11,13 +8,11 @@ use tauri_plugin_notification::NotificationExt;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// User-visible Windows toast branding stays "Verenu" even when the process
-// identifier is com.verenu.app.dev for single-instance isolation.
 #[cfg(windows)]
 const WINDOWS_TOAST_APP_ID: &str = "com.verenu.app";
 
 #[cfg(windows)]
-#[allow(dead_code)] // written during prepare/refresh; toast AUMID no longer branches on it
+#[allow(dead_code)]
 static WINDOWS_TOAST_IDENTITY_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(windows, debug_assertions))]
@@ -150,9 +145,6 @@ mod linux_tests {
         }
     }
 
-    // Uses a disposable daemon, never the user's notification service:
-    // dbus-run-session -- cargo test --manifest-path src-tauri/Cargo.toml \
-    //   linux_notification_delivery_from_tokio -- --ignored
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an isolated D-Bus session via dbus-run-session"]
     async fn linux_notification_delivery_from_tokio() {
@@ -174,7 +166,6 @@ mod linux_tests {
             .await
             .unwrap();
 
-        // The old plugin panicked here and reported success without delivery.
         show_linux(linux_notification(
             "Model ready",
             "Synthetic model is ready.",
@@ -331,9 +322,6 @@ pub fn prepare_windows_notification_identity(themed_icon: &std::path::Path) {
 
 #[cfg(target_os = "windows")]
 pub fn refresh_windows_notification_identity(themed_icon: &std::path::Path) {
-    // A refresh that succeeds must also mark the identity ready: the initial
-    // prepare call may have failed transiently, and without this a later
-    // success would still leave notifications on the fallback identity.
     #[cfg(debug_assertions)]
     {
         remove_obsolete_windows_dev_branded_shortcut();
@@ -395,8 +383,6 @@ fn sync_windows_toast_shortcut_icon(themed_icon: &std::path::Path) -> Result<(),
 #[cfg(all(windows, debug_assertions))]
 fn ensure_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), String> {
     let shortcut = toast_shortcut_path()?;
-    // Never rewrite an existing Start Menu shortcut: the installed app's
-    // Verenu.lnk must keep launching production.
     if shortcut.exists() {
         return Ok(());
     }
@@ -539,8 +525,6 @@ fn install_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), S
                 .Load(PCWSTR(shortcut_wide.as_ptr()), STGM_READ)
                 .map_err(|err| err.to_string())?;
         }
-        // Heap-allocated: two 32 KiB stack arrays would eat 128 KiB of stack
-        // in one frame for a check that runs once per icon change.
         let mut target_buffer = vec![0_u16; 32768];
         let mut icon_buffer = vec![0_u16; 32768];
         let mut find_data = WIN32_FIND_DATAW::default();
@@ -567,8 +551,6 @@ fn install_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), S
                 .map_err(|err| err.to_string())?;
             let result = if value.Anonymous.Anonymous.vt == VT_LPWSTR {
                 let pwsz = value.Anonymous.Anonymous.Anonymous.pwszVal;
-                // A null string pointer with a string type tag would fault
-                // on conversion; treat it as an empty AppID.
                 if pwsz.is_null() {
                     String::new()
                 } else {
@@ -583,9 +565,6 @@ fn install_windows_toast_shortcut(themed_icon: &std::path::Path) -> Result<(), S
         log::info!(
             "Windows toast shortcut saved: target={saved_target}, icon={saved_icon},{icon_index}, aumid={app_id}"
         );
-        // The shell may echo the icon path back with different casing or
-        // separators than the path we set, so compare a normalized form
-        // (backslash separators, case-insensitive) rather than exact bytes.
         let normalize_icon_path = |path: &std::path::Path| {
             path.as_os_str()
                 .to_string_lossy()

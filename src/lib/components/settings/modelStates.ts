@@ -69,10 +69,6 @@ export type LocalModelInfo = {
  */
 export type LocalControls = {
   models: LocalModelInfo[];
-  /**
-   * False on hardware where on-device models haven't been validated. Apple
-   * Speech and whisper.cpp transcription remain offered (see `localModelOffered`).
-   */
   supported: boolean;
   downloadProgress: Record<string, { progress?: number } | undefined>;
   downloadStage: Record<string, string | undefined>;
@@ -106,7 +102,6 @@ export function appleIntelligenceVisible(ctx: Pick<PickerContext, 'appleIntellig
   return appleIntelligenceSupported(ctx.appleIntelligence ?? appleIntelligence.status);
 }
 
-/** Providers whose absence from a list means something. Local has no list. */
 const LISTED_PROVIDERS = CLOUD_PROVIDERS;
 const GOOGLE_DEDICATED_TRANSCRIBER = 'gemini-3.5-transcribe';
 
@@ -152,8 +147,6 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return { ...base, state: 'unavailable', note: UNSUPPORTED_LOCAL_NOTE };
   }
 
-  // Apple Speech has no download; its permission and language assets are
-  // checked when dictation starts, so it is selectable as soon as it is listed.
   if (info?.install_kind === 'system_managed') {
     return { ...base, note: 'Managed by macOS · permission and language assets required' };
   }
@@ -166,7 +159,6 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
   return { ...base, note: 'Installed' };
 }
 
-/** A picked local model this machine cannot run (imported settings, another device). */
 function unsupportedLocalPick(id: string, ctx: PickerContext): boolean {
   const parsed = splitModelId(id);
   if (parsed?.provider !== 'local' || ctx.localModels.length === 0) return false;
@@ -184,17 +176,12 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return row(entry, 'needs-setup', 'No API key', 'add-key');
   }
 
-  // Interactions API models are not returned by Google's generateContent
-  // model listing. Keep the dedicated transcriber selectable when the key is
-  // present instead of misclassifying it as retired.
   if (entry.provider === 'google' && entry.id === GOOGLE_DEDICATED_TRANSCRIBER) {
     return row(entry, 'ready');
   }
 
   const cache = ctx.cache[entry.provider];
   if (!isTrustworthy(cache)) {
-    // A key alone isn't proof the model exists, but refusing to offer anything
-    // until a fetch lands would leave a fresh install with an empty picker.
     return row(entry, 'ready', `Not verified against ${providerDisplayLabel(entry.provider)} yet`);
   }
   if (cache!.ids.includes(entry.id)) return row(entry, 'ready');
@@ -251,7 +238,6 @@ export function discoveredRows(ctx: PickerContext): ModelRow[] {
  */
 export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   const transcriptionish = /whisper|transcribe|speech|[-/]stt\b/i;
-  // Neither task can use these, and a provider list is full of them.
   const otherModality =
     /\b(tts|text-to-speech|embed|embedding|rerank|moderation|guard|safeguard|image|vision|video|veo|imagen|lyria|dall-e|sora|robotics|orpheus|playai)\b/i;
   const rows: ModelRow[] = [];
@@ -330,7 +316,6 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     : { ...base, state: 'not-found', note: `Not in ${providerDisplayLabel(parsed.provider)}'s model list` };
 }
 
-// ── Deprecation ────────────────────────────────────────────────────────────
 
 export type UnavailableReason = 'deprecated' | 'not-found';
 
@@ -339,7 +324,6 @@ export type UnavailableSelection = {
   provider: ProviderId;
   model: string;
   reason: UnavailableReason;
-  /** 'default', or the model's 0-based index in the fallback chain. */
   position: 'default' | number;
   suggestion: string | null;
 };
@@ -368,8 +352,6 @@ export function unavailableSelections(
     const parsed = splitModelId(id);
     if (!parsed) return;
     if (!LISTED_PROVIDERS.includes(parsed.provider)) return;
-    // AssemblyAI's list is a static const on the Rust side, so a model missing
-    // from it is a Verenu bug, not a provider deprecation.
     if (parsed.provider === 'assemblyai') return;
     if (parsed.provider === 'google' && parsed.model === GOOGLE_DEDICATED_TRANSCRIBER) return;
 

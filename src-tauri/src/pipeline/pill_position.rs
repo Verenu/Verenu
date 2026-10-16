@@ -3,8 +3,6 @@ use tauri::{Runtime, WebviewWindow};
 
 const PILL_BOTTOM_GAP_POINTS: f64 = 16.0;
 
-// Linux placement uses Hyprland's logical monitor coordinates. Other
-// platforms use Tauri's physical monitor coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 struct MonitorSnapshot {
@@ -91,9 +89,6 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     let monitor = choose_monitor(target_monitor, primary_monitor)?;
     let placement = placement_for_monitor(monitor, width_points, height_points);
 
-    // Temporary diagnostic for issue #161 (pill clipped on first cross-monitor
-    // reveal) - coordinates/scale factors only, nothing sensitive, so this is
-    // safe at the normal verbose-logging privacy bar.
     if crate::system::logger::is_verbose() {
         log::debug!(
             "pill resolve_pill_placement: target_point={target_point:?} used_target_monitor={} monitor={monitor:?} -> placement={placement:?}",
@@ -111,7 +106,6 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     width_points: f64,
     height_points: f64,
 ) -> Option<PillPlacement> {
-    // A NaN selects the focused/first fallback in the same monitors snapshot.
     let point = target_point.unwrap_or(DesktopPoint { x: f64::NAN, y: f64::NAN });
     let monitor = crate::core::hyprland::logical_monitor_for_point(point.x, point.y)?;
     Some(placement_for_linux_monitor(
@@ -335,10 +329,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
                     );
                 }
 
-                // Temporary diagnostic for issue #161: compare the placement
-                // we asked for against what Tauri reads back from the HWND
-                // immediately after SetWindowPos returns, to catch any
-                // post-call DPI-driven override of our explicit size/position.
                 if crate::system::logger::is_verbose() {
                     let actual = current_placement(pill);
                     log::debug!(
@@ -351,9 +341,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 
     #[cfg(target_os = "linux")]
     {
-        // A mapped Wayland client has one geometry owner: the compositor.
-        // Mixing GTK size requests with Hyprland resize dispatches races
-        // configure events and leaves the painted surface at an older size.
         if let Some(window) = crate::core::hyprland::pill_window() {
             if window.size != [placement.width, placement.height] {
                 if let Err(error) = crate::core::hyprland::resize_window(
@@ -388,8 +375,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 
     #[cfg(target_os = "macos")]
     {
-        // The shared Tauri monitor path stores physical pixels; AppKit's Tauri
-        // size API consumes logical points.
         let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
         if needs_resize {
             pill.set_size(tauri::LogicalSize::new(
@@ -534,8 +519,6 @@ mod tests {
 
     #[test]
     fn content_width_places_narrower_pill_centered() {
-        // A content-sized pill (e.g. 92px for the bare recording capsule)
-        // must still be centered on the work area, not anchored left.
         let placement = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 44.0);
 
         assert_eq!(placement.width, 92);
@@ -553,8 +536,6 @@ mod tests {
 
     #[test]
     fn taller_pill_window_rises_off_the_work_area_bottom() {
-        // A taller window (profile label floating above the capsule) keeps its
-        // bottom pinned to the same work-area gap as the 44px default.
         let tall = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 64.0);
         let normal = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 44.0);
 
@@ -606,7 +587,6 @@ mod tests {
 
     #[test]
     fn does_not_animate_same_monitor_recenter_when_width_changes() {
-        // Growing 380→480 recenters x by 50px.
         let current = placement(770, 1000, 380, 44);
         let target = placement(720, 1000, 480, 44);
 

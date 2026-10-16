@@ -1,8 +1,5 @@
 import { test, expect } from './fixtures.mjs';
 
-// Dev sessions prohibit sync networking. These checks reveal the Sync page and
-// feed it synthetic status snapshots, so they cover presentation and local
-// interaction only. Native device tests separately exercise real pairing.
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const snapshot = (overrides = {}) => ({
   this_device: { uuid: 'synthetic-this', name: 'Studio PC', port: 48211, tailscale_ips: ['100.101.102.103'] },
@@ -54,7 +51,6 @@ test('Tailscale setup is a stepwise disclosure that copies, validates, and fits'
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   const panel = page.locator('#sync-setup-panel');
   await expect(panel.locator('ol.steps > li')).toHaveCount(3);
-  // The raw connection string stays out of the way unless copying fails.
   await expect(panel.getByText(/verenu-sync:\/\//)).toHaveCount(0);
   await expect(panel.getByText('100.101.102.103')).toBeVisible();
 
@@ -108,7 +104,6 @@ test('Connection editor opens inside its device, closes with Escape, and returns
 
 test('Device rows, long names, errors and status fit at this width', async ({ page }) => {
   await openSync(page);
-  // Two paired devices plus one nearby device.
   await expect(page.locator('.device')).toHaveCount(3);
   for (const device of await page.locator('.device').all()) {
     expect(await fitsWidth(device)).toEqual({ scrolls: false, overflowing: [] });
@@ -131,7 +126,6 @@ test('Pairing dialog walks through connecting, code, and verifying', async ({ pa
   await expect(dialog.locator('.digit:not(.placeholder)')).toHaveText(['1', '2', '3', '4', '5', '6']);
   await expect(dialog.getByText(/Waiting for Kitchen laptop/)).toBeVisible();
   expect(await fitsWidth(dialog)).toEqual({ scrolls: false, overflowing: [] });
-  // The dialog must sit above the sidebar rail and inside the window.
   await page.waitForTimeout(400);
   const placement = await dialog.evaluate((element) => {
     const box = element.getBoundingClientRect();
@@ -173,7 +167,6 @@ test('Motion plays when motion is allowed', async ({ page }) => {
   expect(await page.locator('.sync-glyph.spin').evaluate((node) => getComputedStyle(node).animationName)).toMatch(/sync-spin$/);
   const toggle = page.getByRole('button', { name: /Connect through Tailscale/ });
   await toggle.click();
-  // The panel is mid-slide shortly after opening, then settles at full height.
   const heights = await page.evaluate(async () => {
     const panel = document.querySelector('#sync-setup-panel');
     const samples = [];

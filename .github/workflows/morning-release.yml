@@ -2,9 +2,6 @@ name: Morning Nightly Release
 
 on:
   schedule:
-    # GitHub schedules run on the default branch. This workflow inspects master.
-    # The timezone keeps 08:00 local time
-    # across daylight-saving changes.
     - cron: '0 8 * * *'
       timezone: America/Vancouver
   workflow_dispatch:

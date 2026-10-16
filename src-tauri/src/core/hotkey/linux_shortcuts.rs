@@ -1,4 +1,3 @@
-//! Omarchy-visible auxiliary shortcuts and temporary dictation controls.
 
 use std::{fs, path::PathBuf};
 
@@ -18,7 +17,6 @@ pub(super) fn ensure_copy_binding(portal_id: &str, chord: &str) -> Result<(), St
         fs::write(&tmp, next).map_err(|e| format!("cannot write bindings: {e}"))?;
         fs::rename(&tmp, &path).map_err(|e| format!("cannot replace bindings: {e}"))?;
     }
-    // Resolve the action again even when a reconnect kept the same portal ID.
     let output = std::process::Command::new("hyprctl")
         .arg("reload")
         .output()

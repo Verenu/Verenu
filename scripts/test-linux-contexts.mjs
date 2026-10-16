@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Native browser fixtures need a real Wayland window. They never use the
-// installed browser profile, user tabs, clipboard, microphone, or credentials.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';

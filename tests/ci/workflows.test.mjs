@@ -15,7 +15,6 @@ test('required CI aggregate cannot pass when a job fails, skips or is cancelled'
   assert.equal(gate.if, 'always()');
   for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
   const step = gate.steps[0];
-  // Execute the gate's actual command against adverse job results.
   const source = step.run.match(/node -e '([\s\S]+)'/)?.[1];
   assert.ok(source);
   const evaluate = new Function('process', 'console', source);
@@ -80,7 +79,6 @@ test('nightly version snapshot preserves CRLF files and still rejects trailing s
     assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_sha=${releaseSha}`));
     for (const [file, contents] of Object.entries(originals)) assert.equal(fs.readFileSync(path.join(checkout, file), 'utf8'), contents);
 
-    // Exercise the exact workflow check again with a real trailing-space defect.
     const check = step.run.split('\n').find(line => line.includes('diff --check')).trim();
     fs.writeFileSync(path.join(checkout, 'package.json'), originals['package.json'].replace('0.20.0"', '0.20.0" '));
     const invalid = spawnSync('bash', ['-c', check], { cwd: checkout, encoding: 'utf8', timeout: 10_000 });

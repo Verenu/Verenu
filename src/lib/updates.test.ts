@@ -25,7 +25,6 @@ it('coalesces online events while a check is running and retries when back onlin
   expect(invoke).toHaveBeenCalledTimes(1);
   resolve(null);
   await vi.waitFor(() => expect(state.updateInfo).toBe(null));
-  // Drain the pending check's finally before the next connectivity event.
   await Promise.resolve();
   await Promise.resolve();
   browser.dispatchEvent(new Event('online'));

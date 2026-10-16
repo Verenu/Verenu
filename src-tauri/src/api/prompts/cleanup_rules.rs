@@ -99,9 +99,6 @@ pub(super) fn render_cleanup_template(
     snippet_overrides: &str,
     evidence: &str,
 ) -> String {
-    // Resolve placeholders in one pass. A data value such as a window title
-    // or transcript evidence may itself contain `{{ ... }}` and must never be
-    // interpreted as another template token.
     let placeholders = [
         ("{{ cleanup_preset }}", cleanup_preset),
         (
@@ -114,7 +111,6 @@ pub(super) fn render_cleanup_template(
         ),
         (
             "{{ cleanup_tone }}",
-            // Priority is injected independently when composing edited presets.
             cleanup_preset
                 .split_once('\n')
                 .map(|(_, tone)| tone.split("\nPriority:").next().unwrap_or(tone))

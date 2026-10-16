@@ -56,9 +56,6 @@
 
   .provider-cards { display: flex; flex-direction: column; gap: 8px; }
 
-  /* Icon, text column, radio on one row, all vertically centred against the
-     card — the description used to sit in its own row under a 40px indent and
-     the radio hung off the first line, so neither edge lined up. */
   .provider-card {
     flex-direction: row;
     align-items: center;

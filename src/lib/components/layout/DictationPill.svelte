@@ -71,7 +71,6 @@
   .pill.processing { width: 152px; padding-right: 8px; gap: 6px; }
   .pill.handsfree  { width: 112px; padding: 0 5px; gap: 4px; }
 
-  /* Waveform bars */
   .bars {
     display: flex;
     align-items: center;
@@ -93,7 +92,6 @@
     50%       { height: 14px; }
   }
 
-  /* Processing dots */
   .dots {
     display: flex;
     align-items: center;
@@ -118,7 +116,6 @@
     50%       { opacity: 1;    }
   }
 
-  /* Spinner */
   .spinner {
     width: 11px;
     height: 11px;
@@ -131,7 +128,6 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Handsfree buttons */
   .hf-btn {
     width: 18px; height: 18px;
     background: transparent; border: 0;
@@ -145,8 +141,6 @@
   .hf-btn.cancel:hover  { color: var(--pill-muted-strong); }
   .hf-btn.confirm:hover { color: var(--pill-fg); }
 
-  /* Touch: meet the minimum touch-target size without changing the pill's
-     visual footprint — the hit area grows, the artwork doesn't. */
   @media (pointer: coarse) {
     .pill {
       min-height: var(--touch-target-min);

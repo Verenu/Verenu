@@ -69,8 +69,6 @@ impl WindowTarget {
     #[cfg(target_os = "linux")]
     fn from_hyprland(window: crate::core::hyprland::ActiveWindow) -> Self {
         Self {
-            // Kept for existing target-id contracts; Linux-native operations
-            // consume the typed identity below.
             id: window.pid as usize,
             display_point: (window.size[0] > 0 && window.size[1] > 0).then_some(DesktopPoint {
                 x: f64::from(window.at[0]) + f64::from(window.size[0]) / 2.0,

@@ -1,6 +1,3 @@
-//! Application startup glue: readiness handshake, watchdog, data-directory
-//! resolution, and relaunch/update-helper handling. Split out of main.rs so
-//! main.rs stays focused on module wiring and the Tauri builder.
 
 use std::sync::{atomic::AtomicBool, Arc};
 use tauri::{AppHandle, Manager};
@@ -109,18 +106,12 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let reveal_windows = || {
-            // The main window is the startup gate. Create the pill only after
-            // the main UI is healthy because a hidden WebView2 renderer can
-            // suspend before it reports its own readiness.
             show_main_window(&app);
             if !crate::pipeline::failover::offer_restored_capture_pill(&app) {
                 crate::pipeline::show_pill(&app, "idle");
             }
         };
 
-        // WebView2 normally mounts in well under a second. This grace period
-        // leaves room for a cold Vite/WebView2 start without delaying normal
-        // startup or flashing a recovery window.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
         while tokio::time::Instant::now() < deadline {
             if readiness.main_ready() {
@@ -136,11 +127,6 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
             return;
         }
 
-        // In development, the WebView can fail its first navigation while
-        // Vite is restarting or optimizing dependencies. Reload the existing
-        // windows once the server is reachable before restarting the entire
-        // process. This also avoids creating an orphaned app if the parent
-        // `tauri dev` session has already stopped its Vite child.
         #[cfg(debug_assertions)]
         if wait_for_dev_frontend().await {
             readiness.reset();
@@ -310,18 +296,9 @@ pub(crate) fn wait_for_relaunch_parent_exit() {
             }
         };
 
-        // The old instance may take longer than 5 s to exit (slow model
-        // unload during RunEvent::Exit). Waiting on the same handle in slices
-        // up to a 15 s total budget keeps this bounded while still refusing to
-        // open the database while the parent holds it: two live connections to
-        // the same SQLite file would let the single-instance plugin hand off
-        // to the dying parent and leave the user with no running app.
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let wait_result = loop {
             let result = WaitForSingleObject(handle, 5_000);
-            // WAIT_TIMEOUT means the parent is still alive: keep waiting up to
-            // the deadline. Any other result is terminal (signaled, or a
-            // WAIT_FAILED that would otherwise busy-spin), so leave the loop.
             if result != WAIT_TIMEOUT || std::time::Instant::now() >= deadline {
                 break result;
             }

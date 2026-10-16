@@ -1,5 +1,3 @@
-//! Deterministic allocation comparison. No provider calls or credentials.
-//! Run: cargo run --manifest-path src-tauri/Cargo.toml --example audio-request-memory
 
 #[path = "../src/api/base64_audio.rs"]
 mod base64_audio;

@@ -1,8 +1,3 @@
-// Aggregates every in-flight local-model download (STT, cleanup LLM, and the
-// LLM runtime) into one list the sidebar download panel can render, plus a
-// short-lived "recently completed" list that lingers until the user next opens
-// and closes Settings. It reads the existing local stores rather than owning
-// any download state — the only new state here is the completed list.
 
 import { listen } from './tauri';
 import { localSttStore, cancelLocalModelDownload } from './localSttStore.svelte';
@@ -47,8 +42,6 @@ function llmName(id: string): string {
   return localLlmStore.models.find((model) => model.id === id)?.name ?? id;
 }
 
-// Reads the live stores, so calling this inside a $derived/template tracks the
-// underlying download state reactively.
 export function getActiveDownloads(): ActiveDownload[] {
   const out: ActiveDownload[] = [];
 

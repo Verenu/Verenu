@@ -33,7 +33,6 @@ class VerenuKeystore(appContext: Context) {
         const val PREFS_FILE = "verenu_secrets"
         const val MAX_CREDENTIAL_BYTES = 16 * 1024
 
-        /** Provider ids must match `src-tauri/src/data/store` keys. */
         val KNOWN_PROVIDERS = listOf("groq", "openai", "google", "assemblyai")
 
         fun keyFor(provider: String): String =
@@ -73,7 +72,6 @@ class VerenuKeystore(appContext: Context) {
 
     fun read(provider: String): String = prefs.getString(keyFor(provider), "") ?: ""
 
-    /** Status-only lookup for the Settings UI; the secret never crosses IPC. */
     fun has(provider: String): Boolean = read(provider).isNotEmpty()
 
     fun readAll(): Map<String, String> =
@@ -85,17 +83,9 @@ class VerenuKeystore(appContext: Context) {
         }
     }
 
-    /**
-     * Push every stored credential into Rust's memory cache. Called at
-     * service connect (unlock) and after any rotation, so a Rust restart
-     * behind a live service rehydrates without asking the user again.
-     */
     fun pushAll(bridge: VerenuBridge) {
         for (provider in KNOWN_PROVIDERS) {
             val key = read(provider)
-            // Send empty values too. This is the revocation path: without it,
-            // deleting a key from EncryptedSharedPreferences left the old
-            // value alive in Rust's memory cache until the next process boot.
             bridge.pushCredential(provider, key)
         }
     }

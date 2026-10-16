@@ -171,7 +171,7 @@ int32_t ffi_guard(Callback&& callback) noexcept {
     }
 }
 
-} // namespace
+}
 
 int32_t verenu_enable_extended_titlebar(
     intptr_t hwnd,

@@ -43,10 +43,6 @@ impl RejectionTarget {
 }
 
 fn rejection_monitor_key(injected_text: &str, target: &RejectionTarget) -> String {
-    // A global active-monitor set must distinguish identical injected text in
-    // two resolved Contexts. Cache invalidation has no Context scope, while a
-    // dictionary rejection does, so only the latter contributes its stable
-    // Context ID to the key.
     let prefix = target.monitor_key_prefix();
     let key_context = target
         .context_id()
@@ -154,8 +150,6 @@ fn run_rejection_monitor(
             }
 
             let Some((baseline, anchor)) = baseline else {
-                // Missing text can mean focus moved to another field in the same
-                // app. Without an observed insertion there is no proof of deletion.
                 log::debug!("{prefix}: no verified baseline, skipping");
                 return;
             };

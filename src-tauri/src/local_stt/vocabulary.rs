@@ -1,5 +1,3 @@
-//! Immutable recording-local hints. Only canonical terms from the captured
-//! Context enter this snapshot; corrections and other Contexts never do.
 use std::collections::HashSet;
 use std::sync::Arc;
 

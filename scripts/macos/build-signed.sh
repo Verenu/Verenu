@@ -19,20 +19,15 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOCAL_ENV="${OPENFLOW_SIGNING_ENV:-$HOME/.openflow-signing/env.sh}"
-# shellcheck source=/dev/null
 [[ -f "$LOCAL_ENV" ]] && source "$LOCAL_ENV"
 
 export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Open Flow Self-Signed}"
 KEYCHAIN_PATH="${OPENFLOW_SIGNING_KEYCHAIN:-$HOME/Library/Keychains/openflow-build.keychain-db}"
 
-# 1. Verify the canonical identity exists (imports it if you've provided a p12).
 "$SCRIPT_DIR/ensure-signing-identity.sh"
 
-# 2. Make sure the signing keychain is in the search list and unlocked, so the
-#    Tauri bundler's codesign call runs without a GUI prompt.
 if [[ -f "$KEYCHAIN_PATH" ]]; then
   if ! security list-keychains -d user | grep -qF "$KEYCHAIN_PATH"; then
-    # Prepend the build keychain to the user search list without dropping others.
     EXISTING_ARR=()
     while IFS= read -r line; do
       EXISTING_ARR+=("$line")
@@ -45,8 +40,6 @@ if [[ -f "$KEYCHAIN_PATH" ]]; then
     # Keep the keychain unlocked for the whole build (it can otherwise auto-relock
     # mid-compile, making the final codesign fail with errSecInternalComponent).
     security set-keychain-settings "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-    # Authorise codesign to use the private key non-interactively. Without this the
-    # bundler's codesign call fails with errSecInternalComponent in a non-GUI shell.
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
       -k "$OPENFLOW_SIGNING_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
   else
@@ -56,5 +49,4 @@ fi
 
 echo "build-signed: building with APPLE_SIGNING_IDENTITY='$APPLE_SIGNING_IDENTITY'"
 
-# 3. Build. APPLE_SIGNING_IDENTITY overrides tauri.conf.json's "-" (ad-hoc).
 npm run tauri build -- "$@"

@@ -256,18 +256,15 @@ mod tests {
         let start = Instant::now();
         let mut det =
             DigitalSilenceDetector::new(Duration::from_millis(200), Duration::from_millis(100));
-        // Seed with non-silent so the first mute is a real transition.
         assert!(det.push_samples(&noise(512, 0.01), start).is_none());
         assert!(!det.is_muted());
 
-        // Fill the window with zeros so the earlier noise ages out.
         assert!(det
             .push_samples(&zeros(2048), start + Duration::from_millis(50))
             .is_none());
         assert!(det
             .push_samples(&zeros(2048), start + Duration::from_millis(220))
             .is_none());
-        // Window is now all zeros; debounce still needs to elapse.
         assert_eq!(
             det.push_samples(&zeros(2048), start + Duration::from_millis(330)),
             Some(SilenceTransition::BecameMuted)
@@ -280,7 +277,6 @@ mod tests {
         let start = Instant::now();
         let mut det =
             DigitalSilenceDetector::new(Duration::from_millis(200), Duration::from_millis(100));
-        // ~0.001 is far above 1/32768 (~3e-5) but still "quiet".
         let quiet = noise(2048, 0.001);
         assert!(det.push_samples(&quiet, start).is_none());
         assert!(det
@@ -312,7 +308,6 @@ mod tests {
             Some(SilenceTransition::BecameMuted)
         );
 
-        // A single non-zero sample inside an otherwise silent window must not unmute.
         let mut mostly_silent = zeros(1000);
         mostly_silent[0] = 0.05;
         assert!(det
@@ -324,7 +319,6 @@ mod tests {
         assert!(det
             .push_samples(&open, start + Duration::from_millis(350))
             .is_none());
-        // Age out silent chunks and complete unmute debounce.
         assert_eq!(
             det.push_samples(&open, start + Duration::from_millis(560)),
             Some(SilenceTransition::BecameUnmuted)
@@ -341,7 +335,6 @@ mod tests {
         assert!(deb
             .observe(false, start + Duration::from_millis(50))
             .is_none());
-        // Bounce back before debounce completes.
         assert!(deb
             .observe(true, start + Duration::from_millis(60))
             .is_none());

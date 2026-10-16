@@ -1,6 +1,3 @@
-// Lightweight platform detection for UI labels. Uses the WebView user-agent so
-// no extra Tauri plugin/dependency is required. The backend remains the source
-// of truth for actual platform behavior.
 const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
 const uaDataPlatform =
 	typeof navigator !== 'undefined'
@@ -32,9 +29,6 @@ const isTouchOnlyRuntime =
 		(typeof window !== 'undefined' &&
 			typeof window.matchMedia === 'function' &&
 			window.matchMedia('(pointer: coarse)').matches));
-// The desktop shell enforces a 900px minimum width. A phone WebView can
-// therefore be identified safely from its CSS viewport even when its UA and
-// native bridge are unavailable during the first cold render.
 const isPhoneViewport =
 	typeof window !== 'undefined' &&
 	Math.min(window.innerWidth, window.innerHeight) <= 600 &&

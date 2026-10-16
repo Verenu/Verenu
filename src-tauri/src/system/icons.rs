@@ -57,7 +57,6 @@ pub fn get_icon_data_uri(app: &tauri::AppHandle, exe: &str) -> Option<String> {
     if let Some(uri) = theme_png.as_deref().and_then(png_bytes_to_data_uri) {
         return Some(uri);
     }
-    // Keep the file fallback when a desktop theme is unavailable.
     let path = linux::resolve_icon_path(&icon)?;
     let bytes = std::fs::read(&path).ok()?;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
@@ -76,15 +75,10 @@ fn run_icon_work<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), ()>,
 ) -> Option<T> {
-    // GTK's theme and pixbuf APIs are unsafe to call before GTK initialization.
-    // Let the caller use its filesystem fallback without dispatching or waiting.
     if !gtk_initialized {
         return None;
     }
 
-    // Tao dispatches UI callbacks on GTK's initialized thread even when that
-    // thread does not own the default GLib context. Use GTK's thread marker to
-    // avoid queueing work to, then synchronously blocking, the same UI thread.
     if gtk::is_initialized_main_thread() {
         return Some(work());
     }
@@ -128,8 +122,6 @@ mod linux {
     }
 
     fn named_theme_icon_png(theme: &gtk::IconTheme, icon: &str) -> Option<Vec<u8>> {
-        // GTK expects theme names without image suffixes, but reverse-DNS
-        // names must retain their final component and original case.
         let name = match Path::new(icon).extension().and_then(|ext| ext.to_str()) {
             Some(ext) if ["png", "svg", "xpm"].iter().any(|known| ext.eq_ignore_ascii_case(known)) => {
                 icon.rsplit_once('.')?.0
@@ -264,8 +256,6 @@ mod linux {
                 entries.push((id, contents));
             }
         }
-        // A user override entry (e.g. one named after the Wayland app id) can
-        // omit Icon=. Fall back to another entry for the same binary.
         let binary = entries
             .iter()
             .find(|(id, contents)| entry_matches(contents, id, exe))
@@ -354,8 +344,6 @@ mod linux {
         if direct.is_absolute() {
             return direct.is_file().then(|| direct.to_path_buf());
         }
-        // Reverse-DNS theme names (`org.vinegarhq.Sober`) also have an
-        // "extension", so only treat known image suffixes as file names.
         let has_image_ext = direct
             .extension()
             .and_then(|e| e.to_str())
@@ -411,10 +399,6 @@ pub fn get_icon_data_uri(_app: &tauri::AppHandle, _exe: &str) -> Option<String> 
     None
 }
 
-/// Encodes PNG bytes as a data URI, rejecting anything that isn't a PNG.
-/// Guards against truncated cache files (e.g. an interrupted write): serving
-/// those would render a permanently broken image in the webview instead of
-/// the fallback glyph.
 fn png_bytes_to_data_uri(bytes: &[u8]) -> Option<String> {
     use base64::Engine;
     if bytes.len() < 8 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -429,7 +413,6 @@ fn png_bytes_to_data_uri(bytes: &[u8]) -> Option<String> {
 fn cache_file_path(app: &tauri::AppHandle, exe: &str) -> Option<PathBuf> {
     use tauri::Manager;
     let dir = app.path().app_data_dir().ok()?.join("icon-cache");
-    // FNV-1a: stable, dependency-free filename hash — not a security context.
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in exe.as_bytes() {
         hash ^= *b as u64;
@@ -655,7 +638,7 @@ mod win {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: width,
-                    biHeight: -height, // negative = top-down DIB
+                    biHeight: -height,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -678,7 +661,6 @@ mod win {
                 return None;
             }
 
-            // GetDIBits returns BGRA; PNG/image crate wants RGBA.
             for px in pixels.chunks_exact_mut(4) {
                 px.swap(0, 2);
             }
@@ -706,9 +688,6 @@ mod mac {
     use objc2::{class, msg_send, Encode, Encoding};
     use objc2_foundation::NSString;
 
-    /// `CGSize` (two `CGFloat`s). Not exposed by the `objc2-foundation`
-    /// feature set already enabled for this crate, so encode it by hand —
-    /// same approach `mac_app.rs` uses for `NSApplicationActivationPolicy`.
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct CGSize {
@@ -719,9 +698,6 @@ mod mac {
         const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
     }
 
-    /// Requested render size before rasterizing to PNG. NSWorkspace icons
-    /// carry multiple representations; setting the image's size selects which
-    /// one `TIFFRepresentation` rasterizes from.
     const ICON_SIZE: f64 = 128.0;
 
     /// NSBitmapImageFileTypePNG. `NSBitmapImageFileType` is `NSUInteger` in
@@ -825,9 +801,6 @@ mod mac {
             if length == 0 {
                 return None;
             }
-            // `-bytes` is declared `const void *` in the SDK ('^v'); objc2
-            // enforces the exact encoding, so `*const u8` ('*', a C string)
-            // is rejected even though the bit pattern is identical.
             let ptr: *const std::ffi::c_void = msg_send![png_data, bytes];
             if ptr.is_null() {
                 return None;
@@ -837,7 +810,6 @@ mod mac {
     }
 }
 
-// ---------- website favicons ----------
 
 /// Fetched favicons are disk-cached alongside app icons. `None` is cached as a
 /// zero-byte marker so a site with no reachable icon is not re-fetched on every
@@ -854,8 +826,6 @@ pub fn normalize_favicon_host(input: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    // Strip only the leading scheme. split("://").last() would latch onto a
-    // nested URL in the query (e.g. "...?redirect=https://other.com").
     let without_scheme = match trimmed.split_once("://") {
         Some((_, rest)) => rest,
         None => &trimmed,
@@ -879,7 +849,6 @@ pub async fn get_site_icon_data_uri(app: &tauri::AppHandle, domain: &str) -> Opt
     let host = normalize_favicon_host(domain)?;
     let cache_path = favicon_cache_path(app, &host)?;
     if let Ok(bytes) = std::fs::read(&cache_path) {
-        // Zero bytes is the "we tried, there is nothing" marker.
         return if bytes.is_empty() {
             None
         } else {
@@ -892,9 +861,6 @@ pub async fn get_site_icon_data_uri(app: &tauri::AppHandle, domain: &str) -> Opt
         let _ = std::fs::create_dir_all(parent);
     }
     match bytes {
-        // Validate before caching: a captive portal or proxy can hand back
-        // HTML/ICO garbage, and a cached non-PNG file would lock that domain
-        // out of retries forever.
         Some(bytes) => match png_bytes_to_data_uri(&bytes) {
             Some(uri) => {
                 let _ = std::fs::write(&cache_path, &bytes);
@@ -902,9 +868,6 @@ pub async fn get_site_icon_data_uri(app: &tauri::AppHandle, domain: &str) -> Opt
             }
             None => None,
         },
-        // Only definitive misses get the 0-byte negative marker. Transient
-        // failures (offline, timeouts) stay unwritten so the next lookup
-        // retries instead of being poisoned forever.
         None if definitive => {
             let _ = std::fs::write(&cache_path, []);
             None
@@ -913,13 +876,6 @@ pub async fn get_site_icon_data_uri(app: &tauri::AppHandle, domain: &str) -> Opt
     }
 }
 
-/// Google's favicon service is used rather than guessing `/favicon.ico`,
-/// because most sites declare their icon in HTML rather than serving it from a
-/// predictable path. Only the bare hostname leaves the machine, and only once
-/// per site — the result is cached on disk from then on.
-///
-/// Returns the PNG bytes plus whether the outcome is definitive: `false`
-/// marks a transient failure that must not be negative-cached.
 async fn fetch_favicon(host: &str) -> (Option<Vec<u8>>, bool) {
     let url = format!(
         "https://www.google.com/s2/favicons?sz=64&domain={}",
@@ -935,8 +891,6 @@ async fn fetch_favicon(host: &str) -> (Option<Vec<u8>>, bool) {
         Err(_) => return (None, false),
     };
     if !response.status().is_success() {
-        // Resolver-level trouble; a genuinely unknown domain still gets a 200
-        // with the fallback glyph, so treat this as transient.
         return (None, false);
     }
     let bytes = match response.bytes().await {
@@ -949,8 +903,6 @@ async fn fetch_favicon(host: &str) -> (Option<Vec<u8>>, bool) {
     (Some(bytes.to_vec()), true)
 }
 
-/// Hostnames are already restricted to URL-safe characters by
-/// `normalize_favicon_host`; anything else is dropped rather than escaped.
 fn urlencoding_host(host: &str) -> String {
     host.chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
@@ -1008,13 +960,11 @@ mod tests {
                 None
             );
         }
-        // A dotted theme name is not a file name.
         assert!(super::linux::resolve_icon_path("org.vinegarhq.NoSuchIcon").is_none());
         assert_eq!(
             super::linux::exec_basename("\"/opt/My App/bin/T3Code\" %u").as_deref(),
             Some("t3code")
         );
-        // Live resolution against the installed theme, when present.
         if std::path::Path::new("/usr/share/icons/hicolor/256x256/apps/t3code-nightly.png").exists() {
             assert!(super::linux::resolve_icon_path("t3code-nightly").is_some());
         }

@@ -185,8 +185,6 @@ pub fn local_ai_supported_on_android() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsertionStrategy {
-    /// The accessibility node accepts `ACTION_SET_TEXT`/`ACTION_PASTE` — the
-    /// preferred path. Preserves cursor/selection via `ACTION_SET_SELECTION`.
     DirectAccessibility,
     /// The app blocks direct accessibility edits (banking apps, some
     /// WebViews, DRM fields). Fall back to clipboard insertion and tell the
@@ -455,9 +453,6 @@ pub fn width_class_for_dp(width_dp: f32) -> WidthClass {
     }
 }
 
-// ---------------------------------------------------------------------------
-// In-memory credential cache (Android only, by convention on all targets)
-// ---------------------------------------------------------------------------
 
 /// API keys are small opaque tokens. Bound native bridge input before it can
 /// become process-resident secret material or a memory-amplification vector.
@@ -593,9 +588,6 @@ mod tests {
 
     #[test]
     fn pill_positions_stay_in_step_with_the_kotlin_overlay() {
-        // Kotlin cannot import these constants, so the quoted names in its
-        // placement table must match them exactly or a saved position would be
-        // silently treated as unknown on the device.
         let kotlin = include_str!("../../android/kotlin/com/verenu/app/VerenuPillPlacement.kt");
         for position in ANDROID_PILL_POSITIONS {
             assert!(
@@ -645,8 +637,6 @@ mod tests {
             OverlayState::Error.on_keyboard_hidden(),
             OverlayState::Hidden
         );
-        // In-flight dictation survives keyboard churn; the pill re-anchors
-        // when the keyboard returns instead of dropping the recording.
         assert_eq!(
             OverlayState::Recording.on_keyboard_hidden(),
             OverlayState::Recording
@@ -679,8 +669,6 @@ mod tests {
 
     #[test]
     fn rapid_keyboard_cycles_settle_hidden() {
-        // Gboard flicker / fast app switching: show → hide → show → hide must
-        // end hidden with no dictation active.
         let mut state = OverlayState::Hidden;
         for _ in 0..5 {
             state = state.on_keyboard_shown();
@@ -740,7 +728,6 @@ mod tests {
             battery_exemption: PermissionGrant::Denied,
             notifications: PermissionGrant::NotAsked,
         };
-        // Battery + notifications are recommended, never blocking.
         assert!(functional.is_functional());
         assert!(functional.missing_required().is_empty());
     }
@@ -781,7 +768,6 @@ mod tests {
             context_label_for_package(""),
             ("Everywhere".to_string(), true)
         );
-        // Unknown packages degrade to a readable segment, never raw PII.
         let (label, generic) = context_label_for_package("com.example.my_notes");
         assert_eq!(label, "My notes".to_string());
         assert!(generic);
@@ -791,13 +777,10 @@ mod tests {
     fn width_classes_follow_window_not_device() {
         assert_eq!(width_class_for_dp(360.0), WidthClass::Compact);
         assert_eq!(width_class_for_dp(599.0), WidthClass::Compact);
-        // Tall/narrow outer foldable display stays compact.
         assert_eq!(width_class_for_dp(500.0), WidthClass::Compact);
-        // Unfolded Fold / Pixel Fold inner display and tablets expand.
         assert_eq!(width_class_for_dp(601.0), WidthClass::Medium);
         assert_eq!(width_class_for_dp(839.0), WidthClass::Medium);
         assert_eq!(width_class_for_dp(841.0), WidthClass::Expanded);
-        // Landscape phone in split-screen can be medium, not compact.
         assert_eq!(width_class_for_dp(700.0), WidthClass::Medium);
     }
 

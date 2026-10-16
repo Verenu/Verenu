@@ -7,8 +7,6 @@ use uuid::Uuid;
 
 mod backup_file;
 
-// Stats are included in the backup for informational reference only; they derive
-// from transcription history which is not backed up and cannot be restored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct ExportStats {
     pub total_words: i64,
@@ -254,10 +252,6 @@ pub async fn export_data(
             },
             settings: serde_json::Value::Object(settings_map),
             dictionary,
-            // v2 stores snippets under their owning Context, just like
-            // context-specific correction mappings. Keeping this top-level
-            // vector empty prevents a shared snippet from being broadened to
-            // Everywhere during a restore.
             snippets: Vec::new(),
             contexts,
             sub_apps: export_unassigned_sub_apps(&db).map_err(|e| e.to_string())?,
@@ -326,7 +320,6 @@ pub async fn import_data(
                             }
                         }
                     }
-                    // Mirrored frontend settings refresh only after both stores succeed.
                     let _ = app.emit("verenu:settings-imported", ());
                 },
             )
@@ -392,9 +385,6 @@ fn import_payload(
                     if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
                         appearance_setting_applied = true;
                     }
-                    // Mirror save_setting's side effect: a backup that
-                    // tightens history retention must prune immediately,
-                    // not silently wait for the next app restart.
                     if key == store::HISTORY_RETENTION {
                         history_prune_days = value.as_str().and_then(store::history_retention_days);
                     }
@@ -410,11 +400,6 @@ fn import_payload(
 
     let mut library_stats = LibraryImportStats::default();
 
-    // Bulk-import dictionary entries and snippets inside a single
-    // transaction (and a single lock acquisition) instead of one
-    // implicit transaction per row - hundreds of individually committed
-    // inserts each force a disk sync, which is slow, and leaves a
-    // partially-imported database if the process dies mid-import.
     {
         let mut conn = db
             .lock()
@@ -427,25 +412,15 @@ fn import_payload(
         } else {
             import_contextual_library_conn(&tx, &payload, installed_apps, &mut library_stats)
                 .map_err(|e| e.to_string())?;
-            // A hand-authored v2 payload may omit the Context graph. In
-            // that case retain the same safe fallback as v1. A v2 payload
-            // that does contain Contexts never imports its top-level
-            // snippets, because doing so would leak targeted content to
-            // Everywhere.
             if payload.contexts.is_empty() {
                 import_legacy_snippets_conn(&tx, &payload.snippets, &mut library_stats)
                     .map_err(|e| e.to_string())?;
             }
         }
 
-        // Rows remain uncommitted if settings persistence fails. On a
-        // returned commit error, restore disk settings before returning;
-        // runtime settings remain unpublished throughout both steps.
         settings.save_values_with_commit(
             pending_settings,
             |previous| {
-                // Compare, delete, persist and publish under one settings
-                // write lock, excluding concurrent endpoint-bound key writes.
                 if let Some(providers) = restored_providers {
                     clear_provider_keys(previous, &providers)?;
                 }
@@ -504,7 +479,6 @@ fn import_payload(
     })
 }
 
-// Keep every restore side effect behind complete decoding and version checks.
 fn with_import_payload<T>(
     json: &str,
     apply: impl FnOnce(ExportPayload) -> Result<T, String>,
@@ -526,15 +500,7 @@ mod import_safety_tests;
 #[cfg(test)]
 mod cross_store_tests;
 
-// ---------------------------------------------------------------------------
-// Context-aware library backup helpers
-// ---------------------------------------------------------------------------
 
-/// Export the persistent vocabulary graph without exporting AutoLearn's
-/// short-lived evidence.  The canonical dictionary row is emitted once, while
-/// assignments and correction mappings live under the Context that owns them.
-/// This mirrors the runtime data model and means a restore cannot accidentally
-/// turn a targeted mapping into an Everywhere mapping.
 fn export_contextual_library(
     db: &db::Db,
 ) -> AnyhowResult<(Vec<ExportDictionaryEntry>, Vec<ExportContext>)> {
@@ -552,8 +518,6 @@ fn export_contextual_library(
                 Ok(ExportDictionaryEntry {
                     uuid: row.get(0)?,
                     term: row.get(1)?,
-                    // v2 never uses the retired global projection. Scoped mappings
-                    // are carried below in each Context.
                     mistake: None,
                     auto_learned: row.get::<_, i64>(2)? != 0,
                     correction_count: row.get(3)?,
@@ -740,7 +704,6 @@ fn export_sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportSu
     })
 }
 
-/// Sub-apps waiting in the list, not assigned to a Context.
 fn export_unassigned_sub_apps(db: &db::Db) -> AnyhowResult<Vec<ExportSubApp>> {
     let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
     let mut stmt = conn.prepare(
@@ -837,9 +800,6 @@ fn import_contextual_library_conn(
 ) -> AnyhowResult<()> {
     let mut dictionary_ids: HashMap<String, i64> = HashMap::new();
 
-    // Create canonical rows first.  The canonical term remains globally unique
-    // and shared; Context-specific correction rows are restored in the second
-    // pass below.
     for entry in &payload.dictionary {
         let Some(dictionary_id) = import_canonical_dictionary_conn(conn, entry, stats)? else {
             continue;
@@ -848,9 +808,6 @@ fn import_contextual_library_conn(
     }
 
     if payload.contexts.is_empty() {
-        // A v2-shaped hand-authored payload without a Context graph has no safe
-        // targeted owner. Treat its top-level rows as a legacy Everywhere
-        // backup, preserving compatibility without inventing a target Context.
         let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
         for entry in &payload.dictionary {
             let dictionary_id =
@@ -901,7 +858,6 @@ fn import_contextual_library_conn(
         context_ids.insert(context_key(context), context_id);
     }
 
-    // Context-owned vocabulary and correction mappings.
     for context in &payload.contexts {
         let Some(context_id) = context_ids.get(&context_key(context)).copied() else {
             continue;
@@ -1019,10 +975,6 @@ fn import_contextual_library_conn(
                 |row| row.get(0),
             )?;
             if existing {
-                // The contextual import is idempotent. Avoid calling the
-                // insert helper for an assignment that is already present:
-                // it intentionally rejects duplicate Context membership and
-                // would otherwise misclassify a successful no-op as skipped.
                 stats.snippets_already_existed += 1;
                 continue;
             }
@@ -1058,12 +1010,9 @@ struct ResolvedImportTarget {
     app_name: Option<String>,
     developer: Option<String>,
     platform: Option<String>,
-    /// True when the target was rebound to a different local app.
     matched: bool,
 }
 
-/// Whether an executable identity has the shape this OS uses: `.exe` on
-/// Windows, `.app` bundles on macOS, suffix-less desktop ids/classes on Linux.
 fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
     match platform {
         Some("windows") => executable.ends_with(".exe"),
@@ -1073,10 +1022,6 @@ fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
     }
 }
 
-/// Maps a backed-up app target onto this device. Targets from this platform
-/// are restored verbatim; targets from another platform (or an unresolved
-/// sync marker) are rebound to the closest installed app, and dropped when
-/// nothing is close enough so the Context still imports cleanly.
 fn resolve_import_target(
     target: &ExportContextTarget,
     installed_apps: &[crate::system::apps::InstalledApp],
@@ -1128,8 +1073,6 @@ fn resolve_import_target(
     })
 }
 
-/// Rebinds a backed-up sub-app to a local app (same matching as app targets)
-/// and inserts it, assigned to `context_id` or left in the list.
 fn import_sub_app_conn(
     conn: &Connection,
     sub_app: &ExportSubApp,
@@ -1247,10 +1190,6 @@ fn import_context_conn(
     let existing: Option<i64> = existing_by_uuid.or(existing_by_name);
 
     if let Some(id) = existing {
-        // A UUID identifies the local Context even when another local Context
-        // already owns the imported name. Preserve that stable identity and
-        // local name rather than aborting the whole import on the UNIQUE name
-        // constraint; the remaining settings still import deterministically.
         if existing_by_name.is_none() || existing_by_name == Some(id) {
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
@@ -1338,10 +1277,6 @@ fn import_context_conn(
             Ok(Some(conn.last_insert_rowid()))
         }
         Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
-            // A backup can carry a UUID already used by a different local
-            // record. The name is the conservative fallback; if it also
-            // conflicts, skip the graph rather than merging into the wrong
-            // Context.
             let by_name: Option<i64> = conn
                 .query_row(
                     "SELECT id FROM contexts WHERE name = ?1 COLLATE NOCASE",
@@ -1462,9 +1397,6 @@ fn import_correction_conn(
         |row| row.get(0),
     )?;
     if competing {
-        // One wrong spelling cannot mechanically map to two canonical terms in
-        // a Context. Preserve the effective local mapping instead of letting a
-        // backup import silently change dictation behavior.
         stats.dictionary_corrections_skipped += 1;
         return Ok(());
     }
@@ -1502,9 +1434,6 @@ fn import_correction_conn(
             return Ok(());
         }
         if !correction.auto_learned && existing_auto {
-            // An explicit manual import is allowed to promote an existing
-            // automatic mapping to manual authority in this Context. The
-            // reverse (automatic over manual) is never allowed.
             conn.execute(
                 "UPDATE dictionary_corrections
                     SET auto_learned = 0, correction_count = 0,
@@ -1538,8 +1467,6 @@ fn import_correction_conn(
                 ],
             )?;
         }
-        // Existing manual data remains authoritative, including when the
-        // backup also contains a manual copy of the same mapping.
         stats.dictionary_corrections_skipped += 1;
         return Ok(());
     }
@@ -1847,7 +1774,6 @@ mod tests {
         .expect("native target kept");
         assert_eq!(resolved.executable, "obsidian.exe");
         assert!(!resolved.matched);
-        // Untagged legacy targets are judged by their shape.
         assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("windows")).is_some());
         assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("linux")).is_none());
     }
@@ -1875,10 +1801,8 @@ mod tests {
                 .id,
             );
         }
-        // Two are assigned; "Loose" stays in the list.
         db::assign_sub_app(&source, ids[0], Some(work.id)).expect("assign");
         db::assign_sub_app(&source, ids[1], Some(work.id)).expect("assign");
-        // The Photoshop rule was captured on a Mac.
         source
             .lock()
             .expect("lock")
@@ -1912,7 +1836,6 @@ mod tests {
         assert_eq!(acme.icon.as_deref(), Some("briefcase"));
         let loose = imported.iter().find(|s| s.label == "Loose").expect("loose");
         assert!(loose.context_id.is_none(), "unassigned sub-app returns to the list");
-        // The macOS-only .app has no match off macOS and is left out.
         let expected_dropped = if cfg!(target_os = "macos") { 0 } else { 1 };
         assert_eq!(stats.sub_apps_dropped, expected_dropped);
         assert_eq!(stats.sub_apps_imported, 3 - expected_dropped);
