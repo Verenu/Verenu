@@ -72,7 +72,7 @@ for (const task of ['transcription', 'cleanup']) {
       await expect(dialog.getByText('synthetic/model-0649', { exact: true }).first()).toBeVisible();
       await dialog.getByRole('button', { name: 'Refresh models', exact: true }).click();
       await expect.poll(() => pending.length).toBeGreaterThan(0);
-      await expect(dialog.getByText('Refreshing model lists…', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('status')).toContainText('Refreshing model lists…');
       await failPending();
       await expect(dialog.getByText('Refresh unavailable. Keeping cached models.', { exact: true })).toBeVisible();
       await dialog.locator('.picker-search').fill('');
