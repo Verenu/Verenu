@@ -171,11 +171,6 @@ fn forwarded_relaunch_args() -> Vec<std::ffi::OsString> {
     filtered
 }
 
-/// Rendered icon artwork for the most recent `apply_runtime_icons` call.
-/// Re-asserting icons happens on window focus, theme/DPI changes, and settings
-/// writes; the tray glyph's 32x supersampled renderer costs hundreds of
-/// thousands of pixel ops per call, so repeat calls with unchanged inputs
-/// re-send the cached bytes instead of re-running the rasterizers.
 #[derive(Clone)]
 struct CachedIconArt {
     theme: IconTheme,
@@ -209,9 +204,6 @@ fn cached_icon_art(theme: IconTheme, tray_size: u32) -> CachedIconArt {
 }
 
 pub(crate) fn apply_runtime_icons(app: &AppHandle, theme_hint: Option<Theme>) {
-    // TrayIcon wraps Rc<RefCell<_>>. Even obtaining/dropping a tray clone must
-    // happen on the UI thread; queuing only set_icon still races its refcount
-    // against focus/theme callbacks when save_setting runs on a Tokio worker.
     let owner = app.clone();
     if let Err(error) = app.run_on_main_thread(move || apply_runtime_icons_on_main_thread(&owner, theme_hint)) {
         log::warn!("Failed to schedule runtime icon update: {error}");
@@ -227,11 +219,6 @@ fn apply_runtime_icons_on_main_thread(app: &AppHandle, theme_hint: Option<Theme>
     #[cfg(not(target_os = "windows"))]
     let tray_size = 32;
 
-    // Re-send the cached artwork when the inputs are unchanged — the handles
-    // are re-asserted (AppWindow can lose them), but the rasterizers,
-    // notably the tray glyph's 32x supersampled renderer, are skipped.
-    // Moved (not cloned) out of the cache entry: these buffers are built
-    // once per input change and only read here.
     let CachedIconArt {
         window_rgba,
         tray_rgba,
@@ -299,7 +286,6 @@ fn apply_native_main_window_chrome(app: &AppHandle, theme_hint: Option<Theme>) {
     if let Some(w) = app.get_webview_window("main") {
         let icon_theme = resolve_icon_theme(app, theme_hint);
         let foreground = runtime_icon_foreground(icon_theme);
-        // Same --paper value as theme.css, recolored onto the native caption.
         let bg = match icon_theme {
             IconTheme::Dark => colorref(20, 17, 14),
             IconTheme::Light => colorref(249, 247, 243),
@@ -325,13 +311,6 @@ fn apply_native_main_window_chrome(app: &AppHandle, theme_hint: Option<Theme>) {
                     &bg as *const _ as *const _,
                     std::mem::size_of::<COLORREF>() as u32,
                 );
-                // Decouple the caption icon from the taskbar icon. A WS_SYSMENU window always
-                // paints *something* in its caption-icon slot, and the taskbar falls back to
-                // the small icon when ICON_BIG is unset — so nulling the icon either shows a
-                // default glyph or blanks the taskbar. Instead, give the taskbar its own real
-                // icon (ICON_BIG) and make only the caption's small icon fully transparent.
-                // WM_SETICON state survives — unlike the window's extended style, which tao
-                // resets after our call (so WS_EX_DLGMODALFRAME did not stick here).
                 replace_taskbar_icons(hwnd, icon_theme, foreground);
             }
         }
@@ -378,9 +357,6 @@ fn replace_taskbar_icons(
         }
     };
     let key = taskbar_hwnd.0 as isize;
-    // Snapshot the cached handles under a short lock hold. Rendering the
-    // supersampled bitmaps, encoding the ICO, and pumping Win32 messages
-    // below must not block other callers on this mutex.
     let cached = CURRENT
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -426,12 +402,6 @@ fn replace_taskbar_icons(
         unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.unwrap_or(taskbar_hwnd);
     let dpi = unsafe { GetDpiForWindow(dpi_source) }.max(96);
     let big_size = unsafe { GetSystemMetricsForDpi(SM_CXICON, dpi) }.max(32) as u32;
-    // SM_CXSMICON is the Win10-era small-icon metric (20px at 120 DPI), but the Windows 11
-    // taskbar draws app icons at 24 logical px — 30 physical at 125%. Feeding it a 20px
-    // HICON made Explorer upscale 20 -> 30, and a 1.5x non-integer stretch lands some bars
-    // a pixel lower or wider than their neighbours, which is the "uneven bars" this kept
-    // coming back as. Render at the size the shell actually paints; anything that wants the
-    // classic small icon (caption, Alt+Tab) downscales from this, which is lossless-looking.
     let shell_icon_size = (24 * dpi).div_ceil(96);
     let small_size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) }
         .max(16)
@@ -456,12 +426,6 @@ fn replace_taskbar_icons(
         log::warn!("Failed to create Windows taskbar icons: hwnd=0x{key:X}, big={big_size}px, small={small_size}px");
         return;
     }
-    // Anchor the ladder on exact integer multiples of the size the taskbar paints. The
-    // shell asks for the large icon (40px here) and scales it into its 30px slot; with an
-    // arbitrary ladder that is a 0.75x scale, which puts every bar on a different sub-pixel
-    // phase (measured pitch 5,4,4,5). With 30/60/120 the shell's pick always divides down by
-    // exactly 2 or 4, so every bar keeps the same width, pitch and baseline. 256 stays for
-    // genuinely large surfaces.
     let ladder = [
         shell_icon_size,
         shell_icon_size * 2,
@@ -525,8 +489,6 @@ fn replace_taskbar_icons(
             log::warn!("Windows rejected a runtime taskbar icon handle for hwnd=0x{key:X}");
         }
     }
-    // Publish the new handles under a short lock hold; the displaced
-    // handles are destroyed after the lock is released.
     let old = CURRENT
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -644,18 +606,6 @@ const FULL_ICO_SIZES: [u32; 15] = [16, 18, 20, 22, 24, 26, 28, 30, 32, 40, 48, 6
 
 #[cfg(target_os = "windows")]
 fn runtime_ico_bytes(theme: IconTheme, accent: [u8; 4], sizes: &[u32]) -> Result<Vec<u8>, String> {
-    // Below 40px, Explorer's own large-icon proportions (windows_taskbar_icon_image) read as
-    // thin and crooked — the micro renderer used by the tray is optically tuned for these
-    // native sizes and keeps the shell-sourced taskbar button matching the tray glyph.
-    //
-    // The small sizes are deliberately dense (every even value 16-32, not just the four
-    // classic ICO sizes): AppWindow.SetTaskbarIcon picks a frame from this file by whatever
-    // physical pixel size the taskbar surface actually wants, which doesn't always land on
-    // 16/20/24/32 — a miss forces the shell to rescale the nearest frame itself, and that
-    // second, uncontrolled resize is exactly the kind of blur/ringing this file exists to
-    // avoid. Every frame is cheap to render, so there's no reason not to cover the gaps.
-    // Anything the shell realistically paints small gets the pixel-snapped micro glyph;
-    // only genuinely large surfaces (Start menu, file properties) use the detailed artwork.
     const MICRO_CUTOFF: u32 = 48;
     let mut frames = Vec::with_capacity(sizes.len());
     for size in sizes.iter().copied() {
@@ -693,11 +643,6 @@ fn runtime_ico_bytes(theme: IconTheme, accent: [u8; 4], sizes: &[u32]) -> Result
     Ok(ico)
 }
 
-/// The window/Alt+Tab logo, drawn separately from [`runtime_icon_image`] so native
-/// Windows roles can be rendered directly at their requested size.
-///
-/// The packaged `icon.ico`, Explorer, the taskbar, and the tray all use uniform
-/// presentations of the canonical mark. Only their tile and overall scale vary.
 #[cfg(target_os = "windows")]
 fn windows_taskbar_icon_image(
     theme: IconTheme,
@@ -739,7 +684,7 @@ fn make_hicon(rgba: &[u8], size: i32) -> isize {
     if rgba.len() < size_usize * size_usize * 4 {
         return 0;
     }
-    let stride_bytes = size_usize.div_ceil(16) * 2; // 1bpp row, padded to a WORD
+    let stride_bytes = size_usize.div_ceil(16) * 2;
     let mut and_mask = vec![0_u8; stride_bytes * size_usize];
     let mut bgra = rgba.to_vec();
     for y in 0..size_usize {
@@ -754,7 +699,6 @@ fn make_hicon(rgba: &[u8], size: i32) -> isize {
             }
         }
     }
-    // SAFETY: CreateIcon copies the AND/colour buffers, which outlive the call.
     unsafe { CreateIcon(None, size, size, 1, 32, and_mask.as_ptr(), bgra.as_ptr()) }
         .map(|h| h.0 as isize)
         .unwrap_or(0)
@@ -809,17 +753,12 @@ fn runtime_tray_icon_image(
     windows_micro_icon_image(theme, accent, size)
 }
 
-// Pure software rasterization with no OS calls, so the Linux CI build (which
-// exists only to run tests) also compiles it for tests: that lets the tray
-// geometry tests exercise the exact artwork Windows ships.
 #[cfg(any(target_os = "windows", all(test, target_os = "linux")))]
 fn windows_micro_icon_image(
     theme: IconTheme,
     accent: [u8; 4],
     size: u32,
 ) -> tauri::image::Image<'static> {
-    // Define the silhouette on the final physical-pixel grid, then render it
-    // at 32x. This keeps straight edges intentional while retaining smooth caps.
     let factor = 32;
     let render_size = size * factor;
     let mut rgba = vec![0_u8; (render_size * render_size * 4) as usize];
@@ -837,15 +776,9 @@ fn windows_micro_icon_image(
         background,
     );
 
-    // Snap the canonical mark's presentation width on the native grid before
-    // supersampling, keeping tiny icons on stable pixel pitches.
     let glyph_width = ((size * 336) / 512).max(1) * factor;
     draw_canonical_mark(&mut rgba, render_size, accent, glyph_width);
 
-    // Box-average downsample (mean of each factor x factor block), not Lanczos: at a 32x
-    // ratio Lanczos's negative lobes ring on the bars' sharp edges, most visibly on the
-    // tallest bar, turning its flat rounded cap into a crooked point. A plain average is
-    // exactly what "supersample then downsample" anti-aliasing calls for and can't ring.
     let mut output = vec![0_u8; (size * size * 4) as usize];
     let samples = factor * factor;
     for oy in 0..size {
@@ -875,9 +808,6 @@ fn runtime_tray_icon_image(
     _accent: [u8; 4],
     size: u32,
 ) -> tauri::image::Image<'static> {
-    // Linux builds exist only for CI: under test, render through the same
-    // micro renderer the Windows tray uses so the geometry tests validate
-    // real artwork instead of the large-icon fallback.
     #[cfg(test)]
     {
         windows_micro_icon_image(theme, _accent, size)
@@ -894,8 +824,6 @@ mod windows_icon_tests {
     use super::{runtime_ico_bytes, windows_taskbar_icon_image, FULL_ICO_SIZES};
     use super::{runtime_icon_foreground, runtime_tray_icon_image, IconTheme};
 
-    /// Normalized accent-glyph bounds of an RGBA buffer, as fractions of the image:
-    /// `(width, height, centre_x, centre_y)`.
     fn glyph_bounds(rgba: &[u8], size: u32) -> (f64, f64, f64, f64) {
         let (mut l, mut t, mut r, mut b) = (size, size, 0_u32, 0_u32);
         for y in 0..size {
@@ -925,15 +853,6 @@ mod windows_icon_tests {
         )
     }
 
-    /// Per-bar heights of the foreground glyph, normalized so the tallest bar is 1.0.
-    ///
-    /// This — not the glyph's bounding-box aspect — is what makes the taskbar mark
-    /// read as the same logo as the tray. Bar width, gap and overall scale are
-    /// deliberately different between the two.
-    ///
-    /// Columns are grouped into contiguous runs of white pixels; each run is one bar.
-    /// Only meaningful at 256px, where the bars are ~28px wide with ~11px gaps and so
-    /// cannot merge — at 32px a gap is one pixel and antialiasing bridges it.
     fn bar_height_ratios(rgba: &[u8], size: u32) -> Vec<f64> {
         let column_height = |x: u32| -> u32 {
             let (mut top, mut bottom) = (size, 0_u32);
@@ -973,9 +892,6 @@ mod windows_icon_tests {
         bars.into_iter().map(|h| f64::from(h) / tallest).collect()
     }
 
-    /// Asserts a glyph's bar height ratios match the tray's, sampled at 256px so the
-    /// bars are resolvable. Everything else about the taskbar glyph — bar width, gap,
-    /// overall scale — is allowed to differ.
     fn assert_matches_tray_ratios(label: &str, actual: &[f64]) {
         let tray = bar_height_ratios(
             runtime_tray_icon_image(
@@ -1001,9 +917,6 @@ mod windows_icon_tests {
         }
     }
 
-    /// Pulls one frame out of `icon.ico` by its pixel size. Frames are PNG-encoded
-    /// by `scripts/generate-icons.ps1`, so this also proves the file really holds
-    /// what we think it does rather than trusting the generator.
     fn ico_frame(bytes: &[u8], want: u32) -> Vec<u8> {
         let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
         for i in 0..count {
@@ -1032,14 +945,6 @@ mod windows_icon_tests {
         panic!("icon.ico has no {want}x{want} frame");
     }
 
-    /// Windows Explorer and the taskbar use the generated `icon.ico`; the runtime
-    /// tray icon is rendered separately. Both derive from the canonical mark.
-    ///
-    /// This checks the FINAL raster, not source coordinates — so it also proves
-    /// `scripts/generate-icons.ps1` was actually re-run after the SVG changed.
-    ///
-    /// The package changes the taskbar envelope for optical sizing while
-    /// preserving the canonical bar-height ratios.
     #[test]
     fn taskbar_ico_is_centered_and_keeps_tray_bar_ratios() {
         let ico = include_bytes!("../icons/icon.ico");
@@ -1052,13 +957,9 @@ mod windows_icon_tests {
             decoded
         };
 
-        // Ratios are measured at 256px: at 32px a gap is one pixel and antialiasing
-        // bridges the bars into one blob.
         let large = decode(256);
         assert_matches_tray_ratios("icon.ico", &bar_height_ratios(large.as_raw(), 256));
 
-        // Size envelope and centring are checked on the 32px frame, the one the shell
-        // actually picks at normal DPI, so rounding there cannot hide a regression.
         let small = decode(32);
         let (w, h, cx, cy) = glyph_bounds(small.as_raw(), 32);
         assert!(
@@ -1073,15 +974,12 @@ mod windows_icon_tests {
             (cx - 0.5).abs() <= 0.02,
             "taskbar glyph is not horizontally centred: cx {cx:.3}"
         );
-        // Uniform centring keeps all presentations aligned.
         assert!(
             (0.48..=0.52).contains(&cy),
             "taskbar glyph centre-y {cy:.3} is not centred"
         );
     }
 
-    /// The native window and hover-preview icons use this geometry independently of
-    /// Explorer's registered application-group icon.
     #[cfg(target_os = "windows")]
     #[test]
     fn taskbar_hicon_matches_the_ico_geometry() {
@@ -1095,7 +993,6 @@ mod windows_icon_tests {
 
         assert_matches_tray_ratios("taskbar hicon", &bar_height_ratios(taskbar.rgba(), size));
 
-        // The taskbar glyph is a uniform presentation of the canonical mark.
         assert!(
             (0.70..=0.74).contains(&w),
             "taskbar hicon width {w:.3} outside 0.70..0.74"
@@ -1140,11 +1037,6 @@ mod windows_icon_tests {
         );
     }
 
-    /// The Windows micro glyph must occupy the tiny native surface instead of
-    /// collapsing into one-pixel sticks — while keeping the classic tray
-    /// envelope (roughly 2:1 tile-to-glyph margins, not edge to edge).
-    /// Runs on Linux CI too: the fallback delegates to this same micro
-    /// renderer under cfg(test), so both platforms validate identical bytes.
     #[test]
     fn tray_geometry_is_optically_sized() {
         let (w, h, cx, cy) = glyph_bounds(
@@ -1245,9 +1137,6 @@ fn runtime_icon_image(theme: IconTheme, size: u32) -> tauri::image::Image<'stati
     tauri::image::Image::new_owned(rgba, size, size)
 }
 
-/// Draw the canonical mark with one uniform scale and a centered bounding box.
-/// Every coordinate, width, height, and radius comes from the generated copy of
-/// `icons/verenu-mark.svg`.
 fn draw_canonical_mark(rgba: &mut [u8], canvas_size: u32, color: [u8; 4], target_width: u32) {
     use canonical_mark::{CANONICAL_BARS, CANONICAL_MARK_HEIGHT, CANONICAL_MARK_WIDTH};
 
@@ -1377,8 +1266,6 @@ mod icon_theme_tests {
         let second = cached_icon_art(IconTheme::Dark, 20);
         assert_eq!(first.window_rgba, second.window_rgba);
         assert_eq!(first.tray_rgba, second.tray_rgba);
-        // A different tray size (e.g. after a DPI change) must re-render at
-        // the new size, not serve the old size's bytes.
         let other_size = cached_icon_art(IconTheme::Dark, 24);
         assert_eq!(other_size.tray_rgba.len(), 24 * 24 * 4);
         assert_eq!(other_size.window_rgba, first.window_rgba);

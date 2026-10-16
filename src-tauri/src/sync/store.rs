@@ -1,6 +1,3 @@
-//! SQLite access for sync bookkeeping: peers, the change log, remote lifetime
-//! counters, and settings sync timestamps. Schema lives in `data/db/schema.rs`
-//! (v19); this module is the only place that touches those tables.
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -53,8 +50,6 @@ pub fn ensure_self_identity(conn: &Connection, uuid: &str, name: &str) -> Result
         Some(existing) if existing == uuid => {
             conn.execute("UPDATE sync_identity SET name = ?1", params![name])?;
         }
-        // A changed uuid (keychain wiped and regenerated) keeps the row single:
-        // old log entries keep their original origin, which stays valid history.
         _ => {
             conn.execute("DELETE FROM sync_identity", [])?;
             conn.execute(
@@ -162,9 +157,6 @@ fn truncate_error(error: &str) -> String {
 /// peer, and whether the peer still needs a full snapshot (new pairing, or its
 /// cursor points before our oldest retained log entry).
 pub fn peer_send_position(conn: &Connection, device_uuid: &str) -> Result<(i64, bool)> {
-    // A missing row (peer removed mid-session, or a defensive caller) means
-    // "start over from a snapshot" rather than a hard error - the trust check
-    // happened before the session started.
     let row = conn
         .query_row(
             "SELECT send_cursor, needs_snapshot FROM sync_peers WHERE device_uuid = ?1",

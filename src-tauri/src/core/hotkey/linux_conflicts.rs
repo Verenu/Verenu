@@ -1,4 +1,3 @@
-//! Conservative conflict checks against compositor bindings, never app text.
 
 use serde::Deserialize;
 
@@ -177,7 +176,6 @@ pub(super) fn choose(
 }
 
 pub(super) fn control_key(bindings: &[Binding], requested: &str) -> Option<String> {
-    // Unavailable controls must not migrate to an unrequested function key.
     choose(bindings, requested, &[], true)
 }
 

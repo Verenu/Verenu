@@ -21,7 +21,6 @@
     restoreFocus: () => HTMLElement | null;
   } = $props();
 
-  // One confirmation is open at a time, so fixed ids keep test selectors stable.
   let cancelButton = $state<HTMLButtonElement | null>(null);
 
   function onWindowKeydown(event: KeyboardEvent) {
@@ -72,9 +71,6 @@
 </div>
 
 <style>
-  /* A native button backs the backdrop so it can be dismissed from the keyboard. */
-  /* The portal moves these to the body, outside Settings' z-index 60 layer, so they
-     sit at the same level as the sync dialogs. The shared shell stays at 50/51. */
   .integration-confirm-backdrop { border: 0; cursor: default; padding: 0; z-index: 70; }
   .integration-confirm { z-index: 71; }
 </style>

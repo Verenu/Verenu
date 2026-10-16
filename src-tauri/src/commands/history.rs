@@ -1,8 +1,6 @@
-//! Transcription history, stats, and cleanup-cache status.
 
 use super::*;
 
-// ---------- history / stats ----------
 
 #[tauri::command]
 pub async fn get_recent(
@@ -27,10 +25,6 @@ pub async fn get_recent(
                 app_name.as_deref(),
             )
         } else {
-            // Compatibility for older clients. The current Home view always
-            // supplies before_id after its first page, so normal scrolling
-            // never pays the deep-OFFSET cost. The first page also uses this
-            // shape so an app filter can use its index.
             db::query_recent_page(db, limit, offset, search.as_deref(), app_name.as_deref())
         }
     })
@@ -111,8 +105,6 @@ pub async fn retry_transcription(
 ) -> Result<db::RecentEntry, String> {
     pipeline::retry_transcription_impl(&app, &state)
         .await
-        // The pill shows its own sanitized message; the command return must
-        // not leak the raw provider context (AUTH_401 wire format, bodies).
         .map_err(|e| crate::api::user_facing_error(&e))
 }
 

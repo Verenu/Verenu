@@ -6,9 +6,6 @@
   export let setupIncomplete = false;
   export let shortcutUnavailable = false;
 
-  // Svelte's legacy prop bridge can briefly supply the default value while
-  // the Android WebView is bootstrapping. Read the platform directly as well
-  // so the primary Android instruction never falls back to desktop copy.
   $: showAndroid = android || isAndroid;
 </script>
 

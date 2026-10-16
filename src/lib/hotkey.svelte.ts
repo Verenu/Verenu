@@ -1,12 +1,3 @@
-// Single source of truth for the *user's* dictation hotkey in the UI.
-//
-// Before this module, four places each had their own idea of the chord: two
-// hardcoded `fn + Control` strings (the pre-migration macOS default), and two
-// that read `defaultHotkey` and never looked at the saved setting. Rebinding
-// the hotkey in Settings left the setup wizard advertising keys that do nothing.
-//
-// Codes are `KeyboardEvent.code` values, exactly as `save_hotkey` stores them.
-// Legacy single-key bindings may have an empty second slot.
 import { emit, invoke } from './tauri';
 import { defaultHotkey, formatKeyLabel } from './platform';
 import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
@@ -38,11 +29,9 @@ export async function loadHotkey(): Promise<void> {
 			await emit('verenu:hotkey-changed', state.codes);
 		}
 	} catch {
-		// Keep the platform default; a missing hotkey is not worth surfacing.
 	}
 }
 
-/** Left/Right modifier variants are the same physical intent to a user pressing the chord. */
 function codeVariants(code: string): string[] {
 	const modifier = ['Alt', 'Control', 'Meta', 'Shift'].find(
 		(prefix) => code === prefix || code === `${prefix}Left` || code === `${prefix}Right`,

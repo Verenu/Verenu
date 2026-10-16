@@ -64,7 +64,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
       errors.push('Picker did not mark the installed local cleanup model as installed');
     }
 
-    // Installed weights still need the shared engine before activation.
     await picker.getByRole('button', { name: 'Install engine', exact: true }).waitFor({ state: 'visible', timeout: TIMEOUT });
     await installedLocalRow.locator('.row-main').click();
     await picker.locator('.runtime-note').filter({ hasText: 'Fetching' }).waitFor({ state: 'visible', timeout: TIMEOUT });
@@ -101,8 +100,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     await gemmaRow.locator('[data-testid="cancel-model-download"]').click();
     await gemmaRow.locator('[data-testid="download-model"]').waitFor({ state: 'visible', timeout: TIMEOUT });
 
-    // One cleanup prompt covers every model now, so it is edited from the tile
-    // rather than from a per-model button inside the picker.
     await picker.locator('.picker-close').click();
     await picker.waitFor({ state: 'hidden', timeout: TIMEOUT });
     await cleanupTile.locator('.tile-btn', { hasText: 'Edit prompt' }).click();

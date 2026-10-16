@@ -1,4 +1,3 @@
-//! Contexts, foreground executable targets, and content assignments.
 
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
@@ -85,8 +84,6 @@ pub fn current_platform_tag() -> Option<&'static str> {
     } else if cfg!(target_os = "macos") {
         Some("macos")
     } else if cfg!(target_os = "linux") {
-        // Linux targets are desktop ids/window classes; keep them apart from
-        // synced `.exe` and `.app` targets that can never match here.
         Some("linux")
     } else {
         None
@@ -144,9 +141,6 @@ fn normalize_executable(executable: &str) -> Result<String> {
     Ok(normalized)
 }
 
-/// Strips a scheme/path/port from a pasted URL down to a bare domain, so
-/// users can paste `https://mail.google.com/mail/u/0` or type `google.com`
-/// interchangeably.
 fn normalize_domain(domain: &str) -> Result<String> {
     let trimmed = require_nonempty_trimmed("Website", domain)?.to_lowercase();
     let without_scheme = trimmed.split("://").last().unwrap_or(&trimmed);
@@ -154,8 +148,8 @@ fn normalize_domain(domain: &str) -> Result<String> {
         .split(['/', '?', '#'])
         .next()
         .unwrap_or(without_scheme);
-    let host = host.split('@').next_back().unwrap_or(host); // strip user@ prefix
-    let host = host.split(':').next().unwrap_or(host); // strip :port
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
     let normalized = require_nonempty_trimmed("Website", host)?;
     validate_char_limit("Website", &normalized, CONTEXT_DOMAIN_CHAR_LIMIT)?;
     Ok(normalized)
@@ -500,8 +494,6 @@ pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
 /// engine (which applies remote context deletions with identical semantics:
 /// scoped vocabulary moves to Everywhere so nothing is orphaned).
 pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
-    // Remote sync batches already own a transaction. A savepoint makes the
-    // same deletion atomic both inside those batches and for local callers.
     conn.execute_batch("SAVEPOINT delete_context")?;
     let result = delete_context_contents(conn, context_id);
     match result {
@@ -516,13 +508,7 @@ pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
 
 fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
     let everywhere_id = ensure_everywhere_context_conn(tx)?;
-    // Vocabulary assignments move to Everywhere when a Context is deleted;
-    // move the Context-owned correction mappings in the same transaction so
-    // learned substitutions do not disappear or remain orphaned.
     move_dictionary_corrections_conn(tx, context_id, everywhere_id)?;
-    // Evidence is transient and its original Context is being removed. Drop
-    // it rather than allowing a later promotion to invent an Everywhere
-    // origin after the source Context no longer exists.
     tx.execute(
         "DELETE FROM pending_corrections WHERE context_id = ?1",
         params![context_id],
@@ -541,17 +527,10 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
          SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
-    // Historical transcription analytics must follow the same reparenting
-    // semantics as the context's other children. Updating raw rows first lets
-    // the context summary triggers move detailed, unpruned history while the
-    // deleted context UUID is still resolvable.
     tx.execute(
         "UPDATE transcriptions SET context_id = ?1 WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
-    // The raw update above lets the context-daily triggers subtract and add
-    // only the still-detailed rows. Merge the remaining old-UUID buckets now;
-    // those are the already-pruned rows that have no raw trigger to move them.
     let everywhere_uuid: String = tx.query_row(
         "SELECT uuid FROM contexts WHERE id = ?1",
         params![everywhere_id],
@@ -581,8 +560,6 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
         "DELETE FROM transcription_context_daily_stats WHERE context_uuid = ?1",
         params![deleted_uuid],
     )?;
-    // Rollups no longer have a raw transcription to reattribute, so merge
-    // them explicitly into Everywhere before removing the old context.
     tx.execute(
         "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
          SELECT day, hour, ?1, SUM(total_words)
@@ -962,9 +939,6 @@ pub fn set_dictionary_context_assignment(
         anyhow::bail!("Dictionary entry {dictionary_id} was not found");
     }
     if assigned {
-        // Sharing a canonical vocabulary item intentionally shares only the
-        // canonical identity. Context-specific correction mappings are not
-        // copied; callers can create an explicit mapping in this Context.
         tx.execute(
             "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![dictionary_id],
@@ -1734,13 +1708,6 @@ mod tests {
         assert_eq!(targets[0].context_id, second.id);
     }
 
-    /// A target the sync resolver couldn't match to any app installed on
-    /// this device (stored with the "?::" unresolved marker) must never
-    /// surface as a chip: a context group synced in from another platform
-    /// can legitimately contain apps that plainly don't exist here, and
-    /// showing a dead "(not found)" entry for every one of them is worse
-    /// than just not showing it. The row itself stays in the table so a
-    /// later reconciliation pass can still resolve it once a match exists.
     #[test]
     fn query_context_targets_hides_unresolved_sync_rows() {
         let db = open(":memory:").expect("db");
@@ -2158,9 +2125,6 @@ mod tests {
             insert_dictionary_entry_returning(&db, "Boot", Some("grok bot"), Some(source.id))
                 .expect("source dictionary entry");
 
-        // Assignment is explicit sharing of the canonical term. It must not
-        // copy the source Context's private correction into the target, so a
-        // same spelling in the target can remain owned by its existing term.
         set_dictionary_context_assignment(&db, target.id, second.id, true)
             .expect("canonical assignment should not copy source mapping");
         assert_eq!(

@@ -15,8 +15,6 @@
 
   let open = $state(false);
 
-  // Disabled items stay focusable so arrow-key navigation never lands on a gap;
-  // they simply do nothing when chosen.
   function choose(item: (typeof items)[number]) {
     if (item.disabled) return;
     open = false;

@@ -16,10 +16,6 @@ pub struct LocalSttExtractionProgressPayload {
     pub progress: f32,
 }
 
-/// Reports extraction progress as the fraction of the compressed archive's
-/// bytes read so far. The archive is read sequentially front-to-back by the
-/// gzip/tar decoders, so this tracks wall-clock progress closely even though
-/// the unpacked output is larger than the compressed input.
 struct ProgressReader<'a, R> {
     inner: R,
     app: &'a AppHandle,
@@ -33,21 +29,6 @@ struct ProgressReader<'a, R> {
 
 impl<'a, R: Read> Read for ProgressReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // `tar::Archive::unpack()` is a single blocking call with no
-        // cancellation hook of its own — without this check, clicking Cancel
-        // mid-extraction had no effect until the unpack finished or errored
-        // on its own (confirmed via logs: ~10 Cancel clicks over 8s did
-        // nothing while a 650MB entry was mid-read). Checking here means
-        // cancellation takes effect within one read buffer (~128KB), not just
-        // between download/extraction phases.
-        //
-        // MUST NOT use ErrorKind::Interrupted: that kind specifically tells
-        // io::copy (which tar's entry extraction uses internally) to retry
-        // the read immediately rather than propagate — since this check runs
-        // before any real I/O, that turned into an infinite zero-throughput
-        // CPU-spin loop on cancellation (confirmed: 0 MB/s/0 Mbps in Task
-        // Manager while a core pegged at 100%). ErrorKind::Other is never
-        // auto-retried by std's io combinators.
         if self.cancel.load(Ordering::Relaxed) {
             return Err(std::io::Error::other("download cancelled"));
         }
@@ -135,11 +116,6 @@ fn verify_checksum_if_present(
                 expected,
                 actual
             );
-            // Otherwise the corrupted file stays on disk at its full size; a
-            // retry's range-resume request would then get back a 416 (Range
-            // Not Satisfiable, since there's nothing left to fetch), read
-            // that as "already complete", skip straight to verification, and
-            // fail this exact same check forever with no way to recover.
             let _ = std::fs::remove_file(archive_path);
             anyhow::bail!(
                 "checksum mismatch for {}: expected {}, got {}",
@@ -163,11 +139,6 @@ fn verify_checksum_if_present(
     Ok(())
 }
 
-/// True for macOS's AppleDouble sidecar files (`._filename`) and
-/// `.DS_Store`, which `tar` faithfully extracts as ordinary top-level
-/// entries. These archives are packed on macOS (confirmed via
-/// `blob.handy.computer` archive listings), so every extraction gets them
-/// alongside the real payload.
 fn is_macos_extraction_junk(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("._") || name == ".DS_Store"
@@ -517,11 +488,6 @@ pub async fn download_model(
         tokio::fs::rename(&partial_path, &final_path).await?;
     }
 
-    // NOTE: the `local-stt-model-download-complete` event is intentionally NOT
-    // emitted here. The spawning task in manager.rs emits it *after* clearing
-    // the active-download guard, so the frontend's refresh sees is_downloading
-    // already false. Emitting it here would resurrect the stuck "Downloading 0%"
-    // race (guard still Some at this point).
     log::info!(
         "local-stt: download_model complete id={} total_elapsed_ms={}",
         manifest.id,
@@ -595,9 +561,6 @@ mod tests {
 
     #[test]
     fn flattens_a_wrapped_folder_even_with_a_sibling_appledouble_file() {
-        // The exact live bug: a real single wrapper folder plus a `._<name>`
-        // AppleDouble sidecar makes 2 top-level entries, which used to make
-        // the single-entry check bail without flattening.
         let dir = temp_dir("flatten-nested-with-junk");
         let nested = dir.join("cohere-int8");
         fs::create_dir_all(&nested).unwrap();

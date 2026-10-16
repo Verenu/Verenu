@@ -111,16 +111,13 @@ type SettingsValueMap = {
   sound_effects_volume: number;
   mic_gain: number;
   setup_complete: boolean;
-  /** Unfinished wizard position; cleared (null) once setup completes. */
   setup_progress: import('./setup/setupProgress').SetupProgress | null;
   force_setup_on_launch: boolean;
   ruin_accessibility: boolean;
   dev_mode_on_startup: boolean;
   auto_learn_enabled: boolean;
   contextual_formatting_enabled: boolean;
-  /** @deprecated Compatibility mirror for one downgrade cycle. */
   contextual_caps_enabled: boolean;
-  /** @deprecated Compatibility mirror for one downgrade cycle. */
   auto_spacing_enabled: boolean;
   caps_lock_uppercase_enabled: boolean;
   clipboard_phrase_enabled: boolean;
@@ -134,23 +131,17 @@ type SettingsValueMap = {
   beta_updates_enabled: boolean;
   verenu_service_checks_enabled: boolean;
   appearance_mode: AppearanceMode;
-  /** Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S"; unset means the platform default. */
   sub_app_capture_hotkey: string | null;
   linux_cancel_key: string | null;
   linux_handsfree_key: string | null;
   accent_color: string | null;
-  /** Hex palette for the Custom appearance mode. */
   custom_theme: CustomTheme | null;
-  /** Named palettes the user created in the theme editor. */
   custom_themes: SavedTheme[] | null;
   android_pill_position: AndroidPillPosition;
   android_pill_dock_position: AndroidPillScreenPosition;
-  /** Android: sit the pill over the keyboard's own mic button when it can be found. */
   android_pill_cover_keyboard_mic: boolean;
-  /** Android: hide offline if any active selected model needs a network provider. */
   android_pill_hide_offline: boolean;
   advanced_model_ui: boolean;
-  /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;
   style_prompt_instructions: Partial<Record<Exclude<CleanupIntensity, 'none'> | ToneId, string>>;
   /** Derived cache of each provider's live model list. Written only by modelCatalogStore. */

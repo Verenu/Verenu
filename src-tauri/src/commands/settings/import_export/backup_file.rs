@@ -19,9 +19,6 @@ pub(super) fn write_backup(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn stage_backup(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    // Exclusive creation prevents concurrent exports or stale staging files
-    // from sharing a writer. Staging beside the destination keeps rename on
-    // the same filesystem. Never open the destination for writing.
     let mut created = None;
     for _ in 0..32 {
         let candidate = parent.join(format!(
@@ -123,7 +120,6 @@ mod tests {
             .unwrap();
         assert_eq!(status.code(), Some(73));
         assert_eq!(fs::read(destination).unwrap(), b"previous good backup");
-        // Abrupt process death can leave staging behind, but cannot publish it.
         assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
     }
 

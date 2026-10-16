@@ -326,7 +326,6 @@ mod tests {
         );
         assert_eq!(propose_title_pattern("[12] Inbox", None), "Inbox");
         assert_eq!(propose_title_pattern("notes.md*", None), "notes.md");
-        // A bracketed word is content, not an unread counter.
         assert_eq!(propose_title_pattern("[WIP] Plan", None), "[WIP] Plan");
     }
 

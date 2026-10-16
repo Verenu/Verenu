@@ -44,7 +44,6 @@ export type ModelTier = 'premium' | 'standard';
 
 export type CatalogEntry = {
   provider: ProviderId;
-  /** Wire id, exactly as the provider names it. */
   id: string;
   label: string;
   tasks: TaskType[];
@@ -84,8 +83,6 @@ export const CATALOG: CatalogEntry[] = [
   { provider: 'google', id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', tasks: ['cleanup'], tags: ['fast', 'cheap'] },
   { provider: 'assemblyai', id: 'universal-3-5-pro', label: 'Universal 3.5 Pro', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
   { provider: 'assemblyai', id: 'universal-2', label: 'Universal-2', tasks: ['transcription'], tags: ['fast', 'cheap'], tier: 'standard' },
-  // OpenRouter and xAI carry no tier: they are bring-your-own endpoints, so the
-  // one-click presets never pick them. They are chosen in the model picker.
   { provider: 'openrouter', id: 'openai/whisper-large-v3', label: 'Whisper Large v3', tasks: ['transcription'], tags: ['accurate'] },
   { provider: 'openrouter', id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', tasks: ['cleanup'], tags: ['fast', 'cheap'] },
   { provider: 'xai', id: 'grok-voice-transcribe-2.0', label: 'Grok Voice Transcribe 2.0', tasks: ['transcription'], tags: ['accurate'] },

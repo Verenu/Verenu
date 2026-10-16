@@ -25,7 +25,6 @@ export type CustomProviderPreset = {
   supports_cleanup: boolean;
   transcription_models: string[];
   cleanup_models: string[];
-  /** Brand color for the monogram tile. */
   color: string;
   /** Overrides the generated initials. */
   mark?: string;
@@ -114,7 +113,6 @@ export function monogram(name: string): string {
 export function presetForUrl(url: string, protocol: string): CustomProviderPreset | undefined {
   const host = displayHost(url);
   if (!host) return undefined;
-  // Local servers are saved with whatever address reached them, so match those by port.
   const port = (() => { try { return new URL(url).port; } catch { return ''; } })();
   const hostname = host.split(':')[0];
   if (port && (hostname === 'localhost' || /^[\d.]+$/.test(hostname) || hostname.endsWith('.local'))) {

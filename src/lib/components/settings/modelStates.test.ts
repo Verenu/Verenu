@@ -99,7 +99,6 @@ function providerCache(overrides: Partial<ProviderCache> = {}): ProviderCache {
   };
 }
 
-/** Two confirmed misses — the threshold `unavailableSelections` looks for. */
 function missed(id: string) {
   return { [id]: { count: 2, lastCountedAt: T0 } };
 }
@@ -133,15 +132,12 @@ describe('curatedRows', () => {
     const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'], missing: missed('groq/whisper-large-v3-turbo') }) };
     const rows = curatedRows(ctx({ cache }));
     expect(rows.find((r) => r.key === 'groq/whisper-large-v3')!.state).toBe('ready');
-    // A model the provider no longer lists simply drops out — the picker shows
-    // what you can pick, and a retired model is not one of those.
     expect(rows.find((r) => r.key === 'groq/whisper-large-v3-turbo')).toBeUndefined();
   });
 
   it('keeps a retired model listed while it is still selected', () => {
     const cache: ModelCatalogCache = { groq: providerCache({ ids: ['whisper-large-v3'], missing: missed('groq/whisper-large-v3-turbo') }) };
     const rows = curatedRows(ctx({ cache }), ['groq/whisper-large-v3-turbo']);
-    // Otherwise a dead selection has nowhere to show its state or be replaced.
     expect(rows.find((r) => r.key === 'groq/whisper-large-v3-turbo')?.state).toBe('unavailable');
   });
 

@@ -71,8 +71,6 @@ try {
   const identity = await browser.execute('return { native: !!window.__TAURI_INTERNALS__, mocks: !!window.__wdio_mocks__ && Object.keys(window.__wdio_mocks__).length > 0 };');
   assert.equal(identity.native, true); assert.equal(identity.mocks, false);
   if (process.platform === 'linux') {
-    // Exercise the renderer transition that crashed the GTK UI process.
-    // Real clicks drive Svelte, native IPC, titlebar refresh and compositing.
     assert.equal(await browser.execute(`
       const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Settings');
       button?.click(); return !!button;
@@ -95,7 +93,6 @@ try {
           assert.ok(Date.now() < settled, `Native theme did not persist: ${label}`);
           await new Promise(resolve => setTimeout(resolve, 100));
         }
-        // Let the next composited frame arrive before the next switch.
         await browser.executeAsync(done => requestAnimationFrame(() => requestAnimationFrame(() => done(true))));
         while (await browser.execute('return !!document.querySelector(".appearance-option[aria-disabled=true]");')) {
           assert.ok(Date.now() < settled, `Native theme selection stayed busy: ${label}`);

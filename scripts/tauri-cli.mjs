@@ -33,10 +33,6 @@ if (
   args.splice(1, 0, ...configArgs, '--runner', macDevRunner);
 }
 
-// Keep Windows development isolated from an installed production app without
-// rebranding the UI as "Verenu Development" (macOS still uses that name).
-// Without this merge, the dev binary uses com.verenu.app and single-instance
-// forwards launches to the installed executable.
 if (
   process.platform === 'win32' &&
   args[0] === 'dev' &&

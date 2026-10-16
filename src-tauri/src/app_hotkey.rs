@@ -22,18 +22,13 @@ enum HotkeyEvent {
     Release,
     HandlessToggle,
     Cancel,
-    #[allow(dead_code)] // Emitted only by the Linux compositor watcher.
+    #[allow(dead_code)]
     ChordCancel,
     EscapeCancel,
     CopyLast,
-    // The sub-app capture hotkey: snapshot the foreground window for review.
     CaptureSubApp,
 }
 
-/// A hands-free stop is itself a quick tap, so the next click can still be
-/// part of the same physical double-click. Without this fence, resetting the
-/// hook's tap state makes that second click look like a fresh Press, which can
-/// interrupt the transcription that the first click just started.
 const HANDSFREE_STOP_GUARD: Duration = Duration::from_millis(350);
 
 /// Space can convert a hold-to-talk recording into hands-free while the
@@ -158,7 +153,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
             log::error!("Hotkey hook failed to start: {e}");
             let app_h = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // Give the webview a moment to initialise before emitting.
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 app_h
                     .emit(
@@ -180,14 +174,9 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
         while let Some(event) = hotkey_rx.recv().await {
             let now = Instant::now();
             if handsfree_conversion_guard.expired(now) {
-                // Once the handoff window has elapsed, the next genuine
-                // hands-free stop must not be mistaken for the original hold
-                // release by the lifecycle marker.
                 pipeline::clear_handless_hold_marker(&state_hk);
             }
             if handsfree_conversion_guard.suppresses(event, now) {
-                // This event belongs to the chord that was converted by
-                // Space, not to a new hands-free stop gesture.
                 pipeline::clear_handless_hold_marker(&state_hk);
                 log::debug!("hotkey: ignored stale input after Space hands-free conversion");
                 continue;
@@ -219,9 +208,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                                     None => PressAction::None,
                                 }
                             }
-                            // Recording/Starting: already busy. Stopping/Finalizing:
-                            // short-lived, deliberately dropped — see the UX note
-                            // in the plan (no queueing, no concurrent recording).
                             _ => PressAction::None,
                         }
                     };
@@ -229,10 +215,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         PressAction::None => {}
                         PressAction::Fresh => {
                             if pipeline::reserve_starting(&state_hk).is_ok() {
-                                // Capture the target window before recording starts
-                                // so inject_text can restore focus to it after the
-                                // pipeline, even if the user switched windows
-                                // during transcription.
                                 let target = WindowTarget::capture_foreground();
                                 if let Some(mut st) = lock_app_state(&state_hk) {
                                     st.target = target;
@@ -242,10 +224,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             }
                         }
                         PressAction::Interrupt(active) => {
-                            // Informational — the old task already lost ownership
-                            // of this generation the instant it was taken above,
-                            // so its own ownership checks fail regardless of
-                            // whether it observes this signal in time.
                             let _ = active.cancel_tx.send(true);
                             let target = WindowTarget::capture_foreground();
                             if let Some(mut st) = lock_app_state(&state_hk) {
@@ -292,17 +270,10 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             crate::system::media_control::end_dictation_media_pause();
                         }
                     } else if has_session && pipeline::promote_recording_to_handless(&state_hk) {
-                        // Space converts an active hold-to-talk recording in
-                        // place. The existing session stays open, and the
-                        // hook suppresses the original chord release.
                         handsfree_conversion_guard.arm(Instant::now());
                         crate::core::hotkey::set_handless_active(true);
                         pipeline::update_pill_state(&app_hk, "handsfree");
                     } else if !has_session {
-                        // Double-taps normally promote the first tap's open
-                        // capture above. An explicit hands-free gesture can
-                        // also arrive after a longer hold entered processing;
-                        // interrupt that attempt and carry its audio forward.
                         let started = {
                             let Some(st) = lock_app_state(&state_hk) else {
                                 continue;
@@ -326,17 +297,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             }
                         };
                         if started {
-                            // Lossless release-then-double-tap conversion: on
-                            // Linux the chord contains Space, so no key can
-                            // convert a live hold in place the way Windows'
-                            // Space key does. Releasing to stop and
-                            // immediately double-tapping is the closest
-                            // gesture — carry the just-cancelled audio into
-                            // the new hands-free session instead of leaving
-                            // it behind as a pill Continue offer. Tightly
-                            // bounded (seconds, not the full resume window)
-                            // so an unrelated older stash is never silently
-                            // prepended to a fresh dictation.
                             let carried = pipeline::peek_cancelled_capture_if_fresh(&state_hk)
                                 .filter(|capture| {
                                     capture.captured_at.elapsed()
@@ -359,10 +319,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                                 && lock_app_state(&state_hk)
                                     .is_some_and(|st| st.lifecycle.is_recording())
                             {
-                                // The stash was adopted: retire the Continue
-                                // offer (the pill morphs cancelled ->
-                                // handsfree) instead of leaving a stale
-                                // resume behind.
                                 pipeline::clear_cancelled_capture(&state_hk);
                                 pipeline::emit_cancelled_capture_cleared(&app_hk);
                             }
@@ -375,14 +331,10 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         !st.lifecycle.is_recording() || st.lifecycle.is_handless_recording()
                     }) =>
                 {
-                    // A queued modifier-prefix rejection cannot cancel a
-                    // session that has since converted to hands-free.
                     continue;
                 }
 
                 HotkeyEvent::Cancel | HotkeyEvent::ChordCancel => {
-                    // A discarded first tap (or a quick handsfree stop) must not
-                    // let the pending start cue sound.
                     crate::media::sound::cancel_pending_start();
                     if pipeline::consume_handless_hold_stop(&state_hk) {
                         log::debug!(
@@ -397,9 +349,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         st.lifecycle.is_handless_recording()
                     };
                     if is_handless {
-                        // Quick tap while in handsfree = stop. Clear chord state
-                        // immediately so the still-open double-tap window can't
-                        // re-trigger a fresh handsfree session.
                         handsfree_stop_guard.arm(Instant::now());
                         crate::core::hotkey::set_handless_active(false);
                         crate::core::hotkey::reset_chord_state();
@@ -408,10 +357,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             state_hk.clone(),
                         ));
                     } else {
-                        // First click of a double-tap gesture outside handsfree:
-                        // cancel the short recording that just started, but
-                        // stash its audio (if long/loud enough) so the pill's
-                        // Continue button can resume it instead of losing it.
                         let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
                         if let Some((
                             session,
@@ -441,14 +386,8 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
 
                 HotkeyEvent::EscapeCancel => {
                     crate::core::hotkey::set_handless_active(false);
-                    // If escape lands before the start cue fired, suppress it.
                     crate::media::sound::cancel_pending_start();
 
-                    // Cancel in-flight processing outright — no append, no
-                    // insertion. Distinct from the pre-Release recording-cancel
-                    // path below (a dictation can be in at most one of the two).
-                    // Its audio already cleared the pipeline's own quality gate
-                    // to get this far, so stash it unconditionally for Continue.
                     if let Some(active) = pipeline::take_active_pipeline_for_escape(&state_hk) {
                         let _ = active.cancel_tx.send(true);
                         pipeline::stash_cancelled_capture(
@@ -461,9 +400,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         continue;
                     }
 
-                    // Cancel sound cue (if any) is now played inside
-                    // cancel_recording_with_resume/stash_cancelled_capture,
-                    // consistently across every cancel path.
                     let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
                     if let Some((
                         session,
@@ -486,10 +422,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             .await;
                         });
                     } else {
-                        // Nothing was recording/processing — if the pill is
-                        // currently showing a pending "Cancelled -> Undo"
-                        // offer, Escape dismisses it (same as clicking the
-                        // pill's own dismiss button).
                         if pipeline::take_cancelled_capture_if_fresh(&state_hk).is_some() {
                             pipeline::failover::discard_durable();
                             pipeline::emit_cancelled_capture_cleared(&app_hk);
@@ -499,12 +431,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                 }
 
                 HotkeyEvent::CopyLast => {
-                    // Global fallback for a paste that failed silently (not
-                    // caught by the pipeline's own detection): re-copy the
-                    // most recent dictation to the clipboard on demand.
-                    // try_state — a hotkey can fire during teardown when
-                    // managed state is already gone, and panicking in the
-                    // hook thread would take the app down.
                     let Some(db_handle) = app_hk.try_state::<DbHandle>() else {
                         log::warn!("CopyLast hotkey: DbHandle not managed, skipping");
                         continue;
@@ -547,8 +473,6 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                 }
 
                 HotkeyEvent::CaptureSubApp => {
-                    // Capture shells out to the compositor/accessibility APIs,
-                    // so keep it off the async hotkey loop.
                     let app = app_hk.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         crate::commands::handle_capture_hotkey(&app);

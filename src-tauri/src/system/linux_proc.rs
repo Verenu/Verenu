@@ -1,7 +1,3 @@
-//! /proc parsers used by Linux diagnostics and memory pressure checks.
-//!
-//! The parsers are OS-independent so they can be unit-tested from fixtures.
-//! Live collection walks `/proc` and is compiled only on Linux.
 
 #[cfg(target_os = "linux")]
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -49,11 +45,11 @@ pub(crate) fn parse_stat(text: &str) -> Option<ProcStat> {
     Some(ProcStat {
         pid,
         comm,
-        ppid: rest.nth(1)?.parse().ok()?,        // field 4
-        utime: rest.nth(9)?.parse().ok()?,       // field 14
-        stime: rest.next()?.parse().ok()?,       // field 15
-        num_threads: rest.nth(4)?.parse().ok()?, // field 20
-        rss_pages: rest.nth(3)?.parse().ok()?,   // field 24
+        ppid: rest.nth(1)?.parse().ok()?,
+        utime: rest.nth(9)?.parse().ok()?,
+        stime: rest.next()?.parse().ok()?,
+        num_threads: rest.nth(4)?.parse().ok()?,
+        rss_pages: rest.nth(3)?.parse().ok()?,
     })
 }
 
@@ -138,8 +134,6 @@ pub(crate) fn process_tree_memory_bytes(root: u32) -> Option<u64> {
     (total > 0).then_some(total)
 }
 
-/// Prefer PSS so shared WebKit/GPU mappings are not counted once per process.
-/// Fall back to anonymous RSS, then total RSS, if rollup is unreadable.
 #[cfg(target_os = "linux")]
 fn process_accounted_kb(pid: u32) -> Option<u64> {
     if let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")) {
@@ -214,7 +208,6 @@ pub(crate) fn fill_resource_snapshot(
         }
     }
 
-    // Keep the command's existing whole-MB rounding and unknown-zero semantics.
     let resident_mb = resident_total / (1024 * 1024);
     sample.resident_bytes = (resident_mb > 0).then_some(resident_mb.saturating_mul(1024 * 1024));
     sample.thread_count = (thread_count > 0).then_some(thread_count);

@@ -87,8 +87,6 @@
   }
 
   .toggle.error {
-    /* Revert snaps instantly so the shake/X play on an already-settled
-       toggle, instead of racing the position/background transitions. */
     transition: none;
     background: var(--danger);
     animation: toggle-shake 0.4s ease-out;

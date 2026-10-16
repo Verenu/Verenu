@@ -1440,8 +1440,6 @@ fn update_operation_metric(
 
 fn public_operation_metric(state: &OperationMetricState, now: u64) -> OperationMetric {
     let mut metric = state.metric.clone();
-    // The queue is already capped on every write. Count live entries without
-    // cloning it; p95 is likewise maintained when a duration is recorded.
     metric.calls_per_minute = state
         .call_times
         .iter()

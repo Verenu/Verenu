@@ -1,5 +1,3 @@
-//! CoreML lives in a private, separately deployed macOS 14 helper. The host
-//! binary has no loader dependency on FluidAudio and still supports macOS 11.
 use super::vocabulary::Vocabulary;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -49,8 +47,6 @@ impl FluidEngine {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
         let resources = include_bytes!(env!("VERENU_FLUID_RESOURCES"));
-        // SwiftPM resolves Bundle.module next to the helper executable. Keep
-        // the exact package resource names alongside every embedded build.
         tar::Archive::new(&resources[..]).unpack(&runtime)?;
         let helper = runtime.join(format!("VerenuFluidSpeech-{hash}"));
         if !helper.exists() || std::fs::read(&helper)?.as_slice() != binary {

@@ -21,6 +21,5 @@
 <style>
   .custom-context-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 4px; font-weight: 650; line-height: 1; white-space: nowrap; letter-spacing: -.03em; }
   .emoji { letter-spacing: 0; overflow: hidden; }
-  /* Softened badge: the chosen colors stay distinct but sit lightly on any theme. */
   .letters { background: color-mix(in srgb, var(--badge-bg) 82%, transparent); color: color-mix(in srgb, var(--badge-fg) 94%, transparent); }
 </style>

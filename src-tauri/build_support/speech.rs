@@ -50,8 +50,6 @@ fn build_fluid_helper() {
         .expect("Swift 6.2+ is required to build FluidAudio");
     assert!(status.success(), "FluidAudio native helper failed to build");
     let helper = scratch.join("release/VerenuFluidSpeech");
-    // Sign before embedding so library validation and hardened runtime retain
-    // the same team identity as the host. The helper has no eager host linkage.
     let configured_identity = std::env::var("APPLE_SIGNING_IDENTITY").ok();
     let identity = speech_signing::identity(configured_identity.as_deref());
     let signed = Command::new("codesign")

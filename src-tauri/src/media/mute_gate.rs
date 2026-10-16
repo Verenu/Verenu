@@ -68,7 +68,6 @@ where
             Ok(MuteOutcome::Requested) => MuteGate::Unconfirmed,
             Ok(outcome) => MuteGate::Confirmed(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => MuteGate::TimedOut,
-            // The mute thread died without reporting back.
             Err(mpsc::RecvTimeoutError::Disconnected) => MuteGate::Failed,
         },
     };
@@ -104,7 +103,6 @@ where
     let mute_to_record = mute_settled.elapsed();
     let level = match report.gate {
         MuteGate::Failed | MuteGate::TimedOut => {
-            // Recording went ahead unmuted; make that visible in the log.
             log::Level::Warn
         }
         _ => log::Level::Info,
@@ -140,7 +138,6 @@ mod tests {
         let (mute_log, start_log) = (log.clone(), log.clone());
         let (_, report) = start_after_mute(
             Some(move || {
-                // Slow enough that a start that did not wait would run first.
                 std::thread::sleep(Duration::from_millis(60));
                 push(&mute_log, "mute-confirmed");
                 MuteOutcome::Muted
@@ -185,7 +182,6 @@ mod tests {
             elapsed >= Duration::from_millis(80) && elapsed < Duration::from_secs(2),
             "wait must be bounded by the timeout, took {elapsed:?}"
         );
-        // The detached mute is not abandoned: it still finishes afterwards.
         release.send(()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && log.lock().unwrap().len() < 2 {

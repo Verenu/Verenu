@@ -1,4 +1,3 @@
-// WebKitGTK reports the Super keys as OSLeft/OSRight, even without metaKey.
 function normalizeCode(code: string): string {
   return code === 'OSLeft' ? 'MetaLeft' : code === 'OSRight' ? 'MetaRight' : code;
 }
@@ -9,8 +8,6 @@ export class HotkeyCapture {
 
   press(code: string, repeat = false, modifiers: Partial<Record<'Control' | 'Alt' | 'Shift' | 'Meta', boolean>> = {}): string[] {
     code = normalizeCode(code);
-    // Modifier flags also cover keys held before clicking the capture button
-    // and webviews that report only the trigger's keydown.
     for (const modifier of ['Control', 'Alt', 'Shift', 'Meta'] as const) {
       if (modifiers[modifier] && ![...this.held].some((held) => held.startsWith(modifier))) {
         this.held.add(code.startsWith(modifier) ? code : `${modifier}Left`);

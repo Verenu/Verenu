@@ -456,11 +456,6 @@ fn fluid_manifest(
 mod tests {
     use super::*;
 
-    /// Locks in the exact wire format of `LocalSttEngineType`'s serde
-    /// `snake_case` serialization, since the frontend (`src/lib/tauri.ts`)
-    /// hand-maintains a matching TypeScript union rather than generating it
-    /// — a silent mismatch here would only surface at runtime as an
-    /// unrecognized `engine_type` string in the UI.
     #[test]
     fn engine_type_serializes_to_expected_snake_case() {
         let cases = [

@@ -1,6 +1,3 @@
-// State and actions for the theme editor dock. The dock lives at the app root
-// so it survives navigation; this module owns the draft, the live preview, and
-// the rules for leaving it (cancel restores exactly what was applied before).
 import { appStore } from './stores';
 import {
   applyPalette,
@@ -27,7 +24,6 @@ type Draft = { name: string; palette: CustomTheme; accent: string | null };
 
 export const themeEditor = $state({
   open: false,
-  /** Bumped on every open so the dock rebuilds its text fields. */
   session: 0,
   editingId: null as string | null,
   draft: { name: '', palette: { background: '#FFFFFF', foreground: '#000000', sidebar: null, surface: null }, accent: null } as Draft,
@@ -54,7 +50,6 @@ export function isThemeEditorDirty(): boolean {
   );
 }
 
-/** Paints the draft across the app without saving anything. */
 function previewDraft() {
   appStore.appearanceMode = 'custom';
   appStore.customTheme = themeColors(themeEditor.draft.palette);
@@ -103,8 +98,6 @@ export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTh
   themeEditor.saving = false;
   themeEditor.session += 1;
   themeEditor.open = true;
-  // Editing an existing theme previews it right away; a new one starts from
-  // its seed, which the user has usually already seen.
   previewDraft();
 }
 

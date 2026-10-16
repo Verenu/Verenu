@@ -1,4 +1,3 @@
-//! Keeps clipboard phrase data out of model, history, and correction paths.
 
 #[derive(Clone, Debug)]
 pub(super) struct ClipboardPhrasePlan {

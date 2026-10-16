@@ -215,8 +215,6 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
-// Fallback for any other platform (e.g. Linux CI): inert no-op shims so the
-// crate still builds. Mirrors the public contract above.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod noop {
     pub fn suspend_shortcuts(_active: bool) -> Result<(), String> {

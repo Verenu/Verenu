@@ -1,6 +1,3 @@
-// Custom appearance mode: a palette the user types in as hex codes. It is
-// converted into the same shape as an Omarchy palette, so one mapping
-// (applyOmarchyPalette) themes the whole UI for both.
 import { normalizeAccentColor, relativeLuminance } from './accentTheme';
 import type { OmarchyTheme } from './omarchyTheme';
 
@@ -92,11 +89,6 @@ export function customPalette(custom: CustomTheme | null): OmarchyTheme | null {
   return { name: 'custom', mode: isDarkColor(theme.background) ? 'dark' : 'light', colors, customText: true };
 }
 
-// ── Saved theme library ──────────────────────────────────────────────────
-// The active palette stays in `custom_theme` (colors only) and the accent in
-// `accent_color`. Named themes the user creates live in the separate
-// device-local `custom_themes` list, so revisiting or editing one never loses
-// it and the active-palette shape stays unchanged.
 
 export type SavedTheme = {
   id: string;

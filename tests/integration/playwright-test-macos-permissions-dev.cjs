@@ -10,9 +10,6 @@ async function reachPermissionsStep(page) {
   await page.getByRole('button', { name: 'Get Started' }).click();
   await page.getByRole('button', { name: 'Next' }).click();
   await page.getByRole('button', { name: 'Next' }).click();
-  // The API-key step uses "I'll add it later" in the default fork mode and
-  // "Continue" after a provider/key has been selected. Both paths lead to
-  // the permissions step, so keep this helper independent of that choice.
   await page.getByRole('button', { name: /^(Continue|I'll add it later)$/ }).click();
   await page.getByRole('heading', { name: 'Check your macOS permissions' }).waitFor({ state: 'visible', timeout: TIMEOUT });
 }
@@ -59,8 +56,6 @@ async function reachPermissionsStep(page) {
       saved.global_input_seen = true;
       localStorage.setItem('verenu:dev-settings', JSON.stringify(saved));
     });
-    // The visible permission surface must reconcile with macOS on its own;
-    // returning from System Settings must not require a manual refresh click.
     await page.locator('.setup-actionbar .btn-primary:has-text("Next")').waitFor({ state: 'visible', timeout: TIMEOUT });
     if (await primary.isDisabled()) {
       errors.push('Permission step Next button stayed disabled after all core permissions were granted.');

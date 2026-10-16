@@ -4,7 +4,6 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-/** Bounded Activity-owned work; closing settles queued and running requests once. */
 internal class VerenuAppInfoWorker {
     private val lock = Any()
     private val pending = HashSet<Request>()

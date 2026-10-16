@@ -6,7 +6,6 @@ internal interface VerenuMediaMutePersistence {
     fun clearOwnedVolume(): Boolean
 }
 
-/** Media volume ownership, independent of Android services and the network. */
 internal class VerenuMediaMute(
     private val isMuted: () -> Boolean,
     private val readVolume: () -> Int,
@@ -31,8 +30,6 @@ internal class VerenuMediaMute(
 
             val savedVolume = persistence.readOwnedVolume()
             if (savedVolume != null) {
-                // A nonzero level means the user changed volume while this
-                // service was away. Keep that choice and discard stale state.
                 if (readVolume() != 0) {
                     clearOwnedVolumeOrThrow()
                     userOverrideUntilUnmuted = true
@@ -64,8 +61,6 @@ internal class VerenuMediaMute(
             userOverrideUntilUnmuted = false
             return
         }
-        // A user volume change takes precedence over the saved value. After a
-        // process restart this also avoids overwriting a newer volume choice.
         if (readVolume() == 0) writeVolume(volume)
         clearOwnedVolumeOrThrow()
         previousVolume = null

@@ -1,5 +1,3 @@
-//! Opt-in display check. GTK/WebKit must initialize on the process main thread,
-//! rather than a Rust test worker, including for clean WebKit shutdown.
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]

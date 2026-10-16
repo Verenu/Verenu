@@ -1,4 +1,3 @@
-//! Temporary, connection-scoped mute leases. Content sync never stores these.
 use super::*;
 
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -130,9 +129,6 @@ fn classify_mute_ack<E>(
     }
 }
 
-/// Retry transport failures with a capped exponential backoff. This gives an
-/// older peer time to finish without ACK support while still recovering from
-/// a transient close during the current recording.
 fn transport_retry_delay(consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures
         .saturating_sub(1)
@@ -168,9 +164,6 @@ struct CandidateScan<T, A> {
     attempted_candidate: bool,
 }
 
-/// Try candidate routes in order. A wrong certificate rejects only that route,
-/// so a stale saved route cannot prevent a later LAN address from matching.
-/// Rejected routes are retained for the current recording and not retried.
 async fn first_pinned_candidate<A, T, Candidates, Continue, Attempt, AttemptFuture>(
     candidates: Candidates,
     rejected: &std::collections::HashSet<A>,
@@ -245,7 +238,6 @@ impl SyncManager {
             let manager = self.clone();
             let active = active.clone();
             tauri::async_runtime::spawn(async move {
-                // A mute failure must never stop or delay microphone capture.
                 let _ = manager.send_mute(&uuid, active.clone()).await;
                 release_mute_session(
                     &mut manager
@@ -274,8 +266,6 @@ impl SyncManager {
         let mut rejected_routes = std::collections::HashSet::new();
         let mut transport_failures = 0u32;
         loop {
-            // Use the same saved-route and LAN fallback candidates as content sync.
-            // A TLS pin mismatch rejects that address, not the remaining candidates.
             let addresses = self.addr_candidates_for_peer(uuid)?;
             let connector_for_candidates = connector.clone();
             let peer_uuid = uuid.to_string();
@@ -381,7 +371,6 @@ impl SyncManager {
             let ack = tokio::time::timeout(CONNECT_TIMEOUT, read_message(&mut tls)).await;
             match classify_mute_ack(&ack) {
                 MuteAckDisposition::Enabled => {
-                    // The sender transitions to the lease heartbeat loop.
                 }
                 MuteAckDisposition::Busy => {
                     transport_failures = 0;
@@ -404,9 +393,6 @@ impl SyncManager {
                     return Ok(());
                 }
                 MuteAckDisposition::Declined => {
-                    // Only an explicit negative ACK represents the peer's
-                    // current opt-out. Older peers and transport failures
-                    // still get bounded retries for this recording.
                     wait_for_recording_to_end(|| {
                         sender_is_authorized(
                             || enabled(&self.inner.app) && same_recording(&self.inner.app, &active),
@@ -477,7 +463,6 @@ pub(super) async fn receive(
     fingerprint: String,
     incoming_permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    // Unknown devices and certificate mismatches cannot control system audio.
     if !trusted(&inner, &uuid, &fingerprint) {
         return;
     }
@@ -559,8 +544,6 @@ async fn wait_for_release<R: tokio::io::AsyncRead + Unpin>(
         if !consent() || last_heartbeat.elapsed() >= lease_timeout {
             return;
         }
-        // Keep the same read alive across state checks; cancelling partial frame
-        // reads would desynchronize framing on a slow connection.
         let read = read_message(stream);
         tokio::pin!(read);
         loop {
@@ -762,7 +745,6 @@ mod tests {
             MuteAckDisposition::RetryTransport
         );
         assert_eq!(classify_mute_ack(&declined), MuteAckDisposition::Declined);
-        // Older ACKs default `busy` to false and remain an explicit decline.
         assert_eq!(
             classify_mute_ack(&legacy_declined),
             MuteAckDisposition::Declined

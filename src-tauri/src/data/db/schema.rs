@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-//! Database schema definition, connection `open`, and versioned migrations.
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
@@ -286,10 +285,6 @@ pub fn open_with_recovery(path: impl AsRef<std::path::Path>) -> Result<Db> {
     match open(path.as_ref()) {
         Ok(db) => Ok(db),
         Err(first_err) => {
-            // Quarantine only genuine corruption. A transient failure (file
-            // locked or busy, an unwritable directory, an I/O error) is not
-            // corruption: moving a healthy database aside would silently
-            // discard the user's history in favor of a fresh empty file.
             if !open_error_is_corruption(&first_err) || !quarantine_corrupt_db_files(path.as_ref())
             {
                 return Err(first_err);
@@ -343,8 +338,6 @@ pub(crate) fn quarantine_corrupt_db_files(db_path: &std::path::Path) -> bool {
         let mut quarantined = candidate.clone();
         quarantined.set_extension(format!("{extension}.corrupt-{nanos}"));
         if let Err(err) = std::fs::rename(&candidate, &quarantined) {
-            // File name only — the full path is a user-local file location
-            // that must not appear in logs.
             log::warn!(
                 "failed to quarantine corrupt database file {:?}: {err}",
                 candidate.file_name()
@@ -357,13 +350,8 @@ pub(crate) fn quarantine_corrupt_db_files(db_path: &std::path::Path) -> bool {
 
 pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     let db_path = path.as_ref();
-    // Connection::open creates the file if it doesn't exist, so this check
-    // must run before open() - otherwise it's always true (even on a brand
-    // new install) and a pointless db.bak gets created on first launch.
     let db_existed_before_open = db_path.exists();
     let mut conn = Connection::open(db_path)?;
-    // This must be set before the first table is created. Existing databases
-    // keep their current auto-vacuum mode and are handled by maintenance.
     if !db_existed_before_open {
         conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
     }
@@ -371,11 +359,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // default. Context-owned correction/evidence rows use cascading foreign
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-    // user_version lives in the file header, so it's readable before SCHEMA
-    // is applied. Read it here (and take the pre-migration backup) before any
-    // statement touches the file, so db.bak is a true snapshot of what the
-    // user had - not a copy already overwritten by SCHEMA's CREATE TABLE IF
-    // NOT EXISTS statements.
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
@@ -403,8 +386,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
              CREATE INDEX IF NOT EXISTS idx_pending_words
                ON pending_corrections(wrong_word, correct_word);",
         );
-        // Migrate dictionary to final schema: term (required) + mistake (optional).
-        // Handles all prior states (original wrong/correct columns, or already migrated).
         let _ = conn.execute_batch(
             "BEGIN;
              CREATE TABLE IF NOT EXISTS dictionary_v3 (
@@ -426,14 +407,10 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
              ALTER TABLE dictionary_v3 RENAME TO dictionary;
              COMMIT;",
         );
-        // Clean up any dangling transaction left by a failed migration above.
         let _ = conn.execute_batch("ROLLBACK;");
         conn.execute_batch("PRAGMA user_version = 2;")?;
     }
     if user_version == 2 {
-        // Older v2 databases can have the legacy dictionary shape and a
-        // snippets table that predates the instructions column. Re-run the
-        // idempotent v2 repair before advancing through later migrations.
         run_migration(&mut conn, apply_v2_migration)?;
     }
     if user_version < 3 {
@@ -549,10 +526,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
         }
     }
     if user_version < 9 {
-        // Seed the lifetime word counter from existing history so upgrading
-        // users don't see it reset to zero. From here on it's only ever
-        // incremented on insert, never recomputed from transcriptions, so
-        // history retention pruning can't shrink it.
         let res = conn.execute_batch(
             "BEGIN;
              INSERT OR IGNORE INTO lifetime_stats (id, total_words)
@@ -566,11 +539,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
         }
     }
     if user_version < 10 {
-        // Per-call API usage records for the Insights cost card. Written
-        // from the pipeline at finalize time; historical transcriptions
-        // predating this table simply have no cost data. Also declared in
-        // SCHEMA above so an interrupted migration can't leave a database
-        // without the table (the CREATE TABLE IF NOT EXISTS self-heals).
         let res = conn.execute_batch(
             "BEGIN;
              CREATE TABLE IF NOT EXISTS api_calls (
@@ -595,12 +563,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
         }
     }
     if user_version < 11 {
-        // Real lifetime counter for dictionary substitutions actually
-        // applied to dictations (incremented from the pipeline with the
-        // `applied_dict_ids` count). Mirrors `total_words`: never recomputed
-        // from history, so retention pruning can't shrink it. The column is
-        // declared in SCHEMA for fresh databases; ensure_table_column is
-        // idempotent for databases that already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -622,11 +584,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 13 {
         log::info!("db: migrating schema {user_version} -> 13");
-        // Per-dictation foreground app (the lowercase executable name, e.g.
-        // "outlook.exe") so History can filter/annotate by app. The value was
-        // never persisted before v13, so past rows keep NULL and simply have
-        // no app metadata. Declared in SCHEMA for fresh databases;
-        // ensure_table_column is idempotent for databases that already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -644,11 +601,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 14 {
         log::info!("db: migrating schema {user_version} -> 14");
-        // Per-context icon/tone/cleanup override and website-domain targets,
-        // so a context can be activated by browser domain (not just exe) and
-        // can override the global tone/cleanup intensity while active.
-        // Columns declared in SCHEMA for fresh databases; ensure_table_column
-        // is idempotent for databases that already have them.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -684,11 +636,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 15 {
         log::info!("db: migrating schema {user_version} -> 15");
-        // Per-context accent color (a small curated swatch, picked via
-        // right-click on the context's sidebar icon) so contexts can be
-        // told apart at a glance in the rail. Column declared in SCHEMA for
-        // fresh databases; ensure_table_column is idempotent for databases
-        // that already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -702,10 +649,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 16 {
         log::info!("db: migrating schema {user_version} -> 16");
-        // Per-context free-text instructions sent directly to the cleanup LLM
-        // alongside the tone/cleanup overrides. Column declared in SCHEMA for
-        // fresh databases; ensure_table_column is idempotent for databases
-        // that already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -719,10 +662,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 17 {
         log::info!("db: migrating schema {user_version} -> 17");
-        // Pin timestamp for the sidebar's context list: NULL means unpinned,
-        // and pinned rows sort newest-pin-first above the creation-ordered
-        // rest. Column declared in SCHEMA for fresh databases;
-        // ensure_table_column is idempotent for databases that already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -736,13 +675,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 18 {
         log::info!("db: migrating schema {user_version} -> 18");
-        // Which context a dictation ran under, so the context page and the
-        // Insights filter can show real per-context totals. Deliberately not a
-        // foreign key: deleting a context must not delete its history, and a
-        // stale id simply stops matching. Rows dictated before v18 keep NULL
-        // and count toward nothing. Column declared in SCHEMA for fresh
-        // databases; ensure_table_column is idempotent for databases that
-        // already have it.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -781,11 +713,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 21 {
         log::info!("db: migrating schema {user_version} -> 21");
-        // Which OS an exe target was assigned on. NULL (all pre-v21 rows) means
-        // "unknown platform" and is treated as visible everywhere — sync keeps
-        // syncing the raw executable string across devices regardless, but a
-        // tagged row is only shown/offered for removal on the device whose OS
-        // produced that executable naming convention.
         run_migration(&mut conn, |conn| {
             ensure_table_column(
                 conn,
@@ -799,11 +726,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
     if user_version < 22 {
         log::info!("db: migrating schema {user_version} -> 22");
-        // History retention is device-local. Older sync builds logged every
-        // retention prune as a transcription delete, which let one device's
-        // shorter retention window erase history on its peers. Existing
-        // tombstones are retention deletes (there is no user-facing history
-        // delete action), so discard them and stop creating new ones.
         run_migration(&mut conn, |conn| {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS trg_sync_transcriptions_del;
@@ -992,8 +914,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     if user_version < 29 {
         log::info!("db: migrating schema {user_version} -> 29");
         run_migration(&mut conn, |conn| {
-            // SCHEMA already created `context_sub_apps` on this open; the
-            // version marks sub-app support for downgrade diagnostics.
             conn.execute_batch("PRAGMA user_version = 29;")?;
             Ok(())
         })?;
@@ -1001,9 +921,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     if user_version < 30 {
         log::info!("db: migrating schema {user_version} -> 30");
         run_migration(&mut conn, |conn| {
-            // Sub-apps became a standalone list: context assignment is
-            // optional (deleting a context returns them to the list) and each
-            // has an icon. Early v29 development tables required a context.
             let has_icon: bool = conn
                 .prepare("SELECT 1 FROM pragma_table_info('context_sub_apps') WHERE name = 'icon'")?
                 .exists([])?;
@@ -1057,11 +974,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
-    // SCHEMA executes before migrations so it can safely create missing
-    // tables, but it cannot create a context-aware index against a legacy
-    // pre-v26 table. The v26 rebuild above installs these indexes for an
-    // upgrade, and this idempotent check keeps fresh and already-v26 files
-    // equally healthy on every reopen.
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_transcriptions_context_created_at
            ON transcriptions(context_id, created_at);
@@ -1073,44 +985,21 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
            ON auto_learn_candidates(context_id, last_seen_at);",
     )?;
     ensure_dictionary_correction_membership_trigger(&conn)?;
-    // Early v20 development databases created sync_peers before receive and
-    // send cursors were split. Their version marker is already 20, so the
-    // migration above will not run again. Repair that partial v20 shape on
-    // every open before pairing can write or query the missing cursor.
     ensure_table_column(
         &conn,
         "sync_peers",
         "recv_cursor",
         "ALTER TABLE sync_peers ADD COLUMN recv_cursor INTEGER NOT NULL DEFAULT 0;",
     )?;
-    // Triggers can run before the async sync manager finishes loading the
-    // keychain identity. Keep a provisional UUID in place so early writes are
-    // captured; initialize() replaces it with the durable identity UUID.
     ensure_sync_identity_placeholder(&conn)?;
-    // A partially completed v26 install may have created correction rows but
-    // not reached the trigger bundle before its process stopped. Repair their
-    // stable identities before re-installing the idempotent trigger set. The
-    // UUID backfill intentionally precedes the triggers so repair itself does
-    // not create a user-visible sync edit.
     backfill_canonical_uuids(&conn, "dictionary_corrections")?;
     conn.execute_batch(SYNC_TRIGGER_SQL)?;
     ensure_cleanup_cache_schema(&conn)?;
-    // Index only needed by existing databases: the SCHEMA above declares it
-    // for fresh installs, and the v10 migration block adds it for databases
-    // created between v10 and v11. This line heals any database that predates
-    // the column's index.
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_api_calls_transcription_id
            ON api_calls(transcription_id);",
     )?;
 
-    // Self-heal: some databases ended up with user_version >= 7 without the
-    // spoken_words column from that migration actually landing (an
-    // interrupted migration during the Verenu rename/update). The column
-    // addition and backfill run in one transaction so a failed backfill
-    // rolls back the column too, letting this retry on the next launch.
-    // Errors are propagated: without this column, every transcription
-    // insert fails, so running in this state is worse than failing to open.
     if !table_has_column(&conn, "transcriptions", "spoken_words")? {
         let tx = conn.transaction()?;
         let res = (|| -> Result<()> {
@@ -1130,9 +1019,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
 
     ensure_stats_summary_triggers(&conn)?;
-    // Refund pre-fix inflated `words` (raw whitespace splits) down to spoken
-    // counts. Runs after the triggers above so daily summaries adjust in the
-    // same transaction; see repair_inflated_word_counts.
     repair_inflated_word_counts(&mut conn)?;
     ensure_history_fts(&conn);
 
@@ -1148,9 +1034,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
 const API_CALL_COMPACTION_DAYS: i64 = 90;
 
 pub fn sqlite_disk_maintenance(db: &Db) -> Result<()> {
-    // API calls are detail records too. Compact them even when detailed
-    // transcription retention is Forever, otherwise that setting leaves an
-    // unbounded analytics table behind.
     compact_api_calls_older_than(db, API_CALL_COMPACTION_DAYS)?;
     let conn = lock_conn(db)?;
     let _: (i64, i64, i64) = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
@@ -1211,26 +1094,6 @@ pub fn compact_api_calls_older_than(db: &Db, max_age_days: i64) -> Result<usize>
     Ok(changed)
 }
 
-/// Adds the LAN device-sync layer (v20) without changing any existing row
-/// shapes:
-///
-/// - Every syncable table gains a `uuid` column (backfilled with canonical
-///   hyphenated UUIDs)
-///   plus a unique index, so records have stable identities that mean the same
-///   thing on every paired device. Local integer ids stay the primary keys.
-/// - `sync_log` records one row per captured mutation (table, row uuid, op,
-///   timestamp, originating device). Peers pull deltas by log position, so
-///   content deletes propagate exactly and no tombstone rows pollute the main
-///   tables. Transcription history is append-only for sync: retention cleanup
-///   is local to each device and never becomes a delete op.
-/// - AFTER triggers on the syncable tables append to `sync_log`. The triggers
-///   stay silent while `sync_state.applying` is 1 - that flag is how the sync
-///   engine applies a remote change and records it in the log once (with the
-///   remote's original timestamp/origin) instead of echoing it as a local edit.
-/// - `sync_peers` holds pairing/trust state, `sync_remote_stats` holds other
-///   devices' lifetime counters, `sync_setting_meta` holds per-key sync
-///   timestamps for settings.json, and `sync_identity` mirrors this device's
-///   uuid so trigger bodies can stamp the origin.
 fn apply_v20_sync_migration(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sync_state (
@@ -1286,8 +1149,6 @@ fn apply_v20_sync_migration(conn: &Connection) -> Result<()> {
          );",
     )?;
 
-    // Stable identities for existing rows. Everywhere gets a fixed
-    // well-known uuid so its (editable) name/style syncs as one record.
     for (table, _) in [
         ("dictionary", "id"),
         ("snippets", "id"),
@@ -1314,26 +1175,10 @@ fn apply_v20_sync_migration(conn: &Connection) -> Result<()> {
          WHERE is_everywhere = 1;",
     )?;
 
-    // Change-capture triggers. `ts_ms` is wall-clock millis; ties between two
-    // devices are broken by (origin, origin_seq), which the sync engine
-    // compares as a tuple. The `sync_state.applying` guard keeps engine-applied
-    // remote changes from being re-captured as local edits (the engine logs
-    // them itself, preserving the remote origin, so peers can dedup exactly).
     conn.execute_batch(SYNC_TRIGGER_SQL)?;
     Ok(())
 }
 
-/// Migrate AutoLearn's formerly-global state to the current Context model.
-///
-/// The canonical `dictionary` row remains shared and keeps its stable identity.
-/// Explicit manual mappings are copied to each existing Context assignment;
-/// legacy automatic mappings are retained only in an existing Everywhere
-/// assignment because their originating Context was never persisted. Candidate
-/// and pending rows are deliberately not copied: pre-v26 rows have no
-/// originating Context, so retaining them would let ambiguous history promote a
-/// correction into an arbitrary Context.  They are short-lived learning state,
-/// unlike already-promoted dictionary data, which is migrated to Everywhere
-/// when that is the historical assignment.
 fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "INSERT OR IGNORE INTO contexts (id, name, is_everywhere)
@@ -1359,9 +1204,6 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
            ON dictionary_corrections(context_id, dictionary_id);",
     )?;
 
-    // Existing installs have the old tables, whose rows cannot be attributed to
-    // a Context. Rename-and-recreate is required instead of ALTER TABLE because
-    // both the foreign key and the candidate uniqueness constraint changed.
     rebuild_scoped_pending_corrections(conn)?;
     rebuild_scoped_auto_learn_candidates(conn)?;
     ensure_table_column(
@@ -1371,9 +1213,6 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
         "ALTER TABLE auto_learn_events ADD COLUMN context_id INTEGER REFERENCES contexts(id) ON DELETE SET NULL;",
     )?;
 
-    // v12 assigned all pre-Contexts dictionary rows to Everywhere. Heal any
-    // partially migrated database with an unassigned canonical row before
-    // copying its old global correction field, preserving the old behavior.
     let everywhere_id: i64 = conn.query_row(
         "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
         [],
@@ -1389,11 +1228,6 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
         params![everywhere_id],
     )?;
 
-    // `dictionary.mistake` was one comma-separated value for every assignment.
-    // Expand it once per assigned Context. Manual rows are processed before old
-    // automatic rows so a malformed legacy database cannot let an automatic
-    // mapping displace a manual correction when both claim the same variant.
-    // Within one authority tier, the stable dictionary id is the tie-breaker.
     struct LegacyDictionaryMigrationRow {
         dictionary_id: i64,
         mistake: Option<String>,
@@ -1444,18 +1278,12 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
             continue;
         }
         let context_sql = if auto_learned != 0 {
-            // A pre-v26 automatic correction has no persisted originating
-            // Context. Historically AutoLearn promoted into Everywhere, so
-            // retain it there when that assignment exists; never guess that
-            // an unrelated targeted assignment was its origin.
             "SELECT dc.context_id
                FROM dictionary_contexts dc
                INNER JOIN contexts c ON c.id = dc.context_id
               WHERE dc.dictionary_id = ?1 AND c.is_everywhere = 1
               ORDER BY dc.context_id"
         } else {
-            // Manual sharing is explicit in dictionary_contexts, so preserve
-            // the old mapping in every Context to which the user assigned it.
             "SELECT context_id FROM dictionary_contexts
               WHERE dictionary_id = ?1 ORDER BY context_id"
         };
@@ -1466,9 +1294,6 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
 
         for context_id in context_ids {
             for (index, variant) in variants.iter().enumerate() {
-                // The old counter represented the whole comma-separated entry.
-                // Keep it on one deterministic child row rather than multiplying
-                // lifetime counts by the number of variants.
                 let child_count = if index == 0 { correction_count } else { 0 };
                 let inserted = conn.execute(
                     "INSERT OR IGNORE INTO dictionary_corrections
@@ -1495,13 +1320,8 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
         }
     }
 
-    // From v26 onward the child table is the only mutable source of correction
-    // mappings.  Leaving the old global projection populated would allow a
-    // legacy query to leak one Context's correction into another.
     conn.execute("UPDATE dictionary SET mistake = NULL", [])?;
     backfill_canonical_uuids(conn, "dictionary_corrections")?;
-    // v20-created databases already have the older trigger set. Re-run the
-    // idempotent bundle so upgrades install the correction-row triggers too.
     conn.execute_batch(SYNC_TRIGGER_SQL)?;
     ensure_dictionary_correction_membership_trigger(conn)?;
     Ok(())
@@ -1612,9 +1432,6 @@ fn ensure_sync_identity_placeholder(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Keep UUIDs in the canonical hyphenated form used by `Uuid::to_string()`.
-/// Older partial migrations generated bare hex strings with SQLite's
-/// `randomblob`, which would compare unequal to UUIDs created by Rust.
 fn backfill_canonical_uuids(conn: &Connection, table: &str) -> Result<()> {
     const EVERYWHERE_UUID: &str = "everywhere-0000-0000-0000-000000000001";
     let mut stmt = conn.prepare(&format!("SELECT rowid, uuid FROM {table}"))?;
@@ -1656,13 +1473,6 @@ fn backfill_canonical_uuids(conn: &Connection, table: &str) -> Result<()> {
     Ok(())
 }
 
-/// All change-capture triggers. Insert triggers on content tables first ensure
-/// the row has a uuid (app code never sets one), then log - the log references
-/// the row by re-reading its uuid after the backfill UPDATE. Matching UPDATE
-/// triggers use `WHEN NEW.uuid IS OLD.uuid` so a uuid-backfill UPDATE (which
-/// changes the uuid) is not itself captured as an edit. Junction/target
-/// triggers attribute the change to the parent context, whose full aggregate
-/// (row + targets + memberships) is what syncs.
 const SYNC_TRIGGER_SQL: &str = "
 CREATE TRIGGER IF NOT EXISTS trg_sync_dictionary_ins AFTER INSERT ON dictionary BEGIN
   UPDATE dictionary SET uuid = lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(6))) WHERE id = NEW.id AND uuid IS NULL;
@@ -2037,10 +1847,6 @@ fn run_migration(conn: &mut Connection, f: impl FnOnce(&Connection) -> Result<()
     Ok(())
 }
 
-/// The schema work of the v2 migration, shared between the `user_version < 2`
-/// path (which bumps the version marker afterwards) and the self-heal path for
-/// databases stranded by the legacy non-transactional v2 migration. Must run
-/// inside a transaction; every statement is idempotent.
 fn apply_v2_migration(conn: &Connection) -> Result<()> {
     ensure_table_column(
         conn,
@@ -2058,16 +1864,10 @@ fn apply_v2_migration(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_pending_words
            ON pending_corrections(wrong_word, correct_word);",
     )?;
-    // Migrate dictionary to final schema: term (required) + mistake (optional).
-    // No-op when the modern shape is already present.
     rebuild_legacy_dictionary(conn)?;
     Ok(())
 }
 
-/// Adds context scoping without changing the existing dictionary/snippet rows.
-/// The one-time reassignment is deliberately part of the same transaction as
-/// the schema work so an interrupted upgrade cannot strand content without an
-/// active context.
 fn apply_v12_context_migration(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS contexts (
@@ -2112,10 +1912,6 @@ fn apply_v12_context_migration(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Rebuilds `dictionary` into the modern `term`/`mistake` shape when the table
-/// still has the pre-v3 `wrong`/`correct` columns. No-op when `term` already
-/// exists; errors when the shape is undetectable so the caller can surface it
-/// instead of silently corrupting data.
 fn rebuild_legacy_dictionary(conn: &Connection) -> Result<()> {
     if table_has_column(conn, "dictionary", "term")? {
         return Ok(());
@@ -2144,9 +1940,6 @@ fn rebuild_legacy_dictionary(conn: &Connection) -> Result<()> {
         DROP TABLE dictionary;
         ALTER TABLE dictionary_v3 RENAME TO dictionary;",
     )?;
-    // Complete the modern shape: the v3-era rebuild DDL predates the v4
-    // columns, and a legacy table may or may not have gained them before the
-    // rebuild ran. Both ensures are idempotent no-ops when already present.
     ensure_table_column(
         conn,
         "dictionary",
@@ -2198,8 +1991,6 @@ fn ensure_table_column(
 }
 
 fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
-    // Old keys contain readable, lossy normalized input. Results are disposable;
-    // discard them rather than retaining unsafe keys after an upgrade.
     conn.execute(
         "DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%'",
         [],
@@ -2449,8 +2240,6 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
 /// FTS is optional at runtime because system SQLite builds may omit FTS5.
 /// When present, the trigram index makes substring history search seekable.
 pub(super) fn ensure_history_fts(conn: &Connection) {
-    // Remove the obsolete vocabulary index. History index installation and
-    // repair below publish their triggers and readiness flag together.
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS transcription_fts_meta (
            name TEXT PRIMARY KEY,
@@ -2463,9 +2252,6 @@ pub(super) fn ensure_history_fts(conn: &Connection) {
          DROP TABLE IF EXISTS transcriptions_vocab_fts;",
     );
 
-    // FTS vocabulary tokenization cannot reproduce the product's word rules:
-    // it splits hyphenated words and folds accents. Insights therefore keeps
-    // its established streaming tokenizer; history search alone uses FTS.
     let result = (|| -> Result<()> {
         conn.execute_batch("BEGIN IMMEDIATE;")?;
         let build = (|| -> Result<()> {
@@ -2484,9 +2270,6 @@ pub(super) fn ensure_history_fts(conn: &Connection) {
                      DROP TRIGGER IF EXISTS trg_transcriptions_fts_del;
                      DROP TRIGGER IF EXISTS trg_transcriptions_fts_upd;",
                 )?;
-                // Populate before triggers exist. The FTS rebuild command is
-                // atomic with the metadata flag and makes external content
-                // tables consistent without replaying application writes.
                 conn.execute(
                     "INSERT INTO transcriptions_fts(transcriptions_fts) VALUES ('rebuild')",
                     [],
@@ -2527,11 +2310,7 @@ pub(super) fn ensure_history_fts(conn: &Connection) {
         Ok(())
     })();
     if let Err(error) = result {
-        // COMMIT itself can fail, leaving the transaction open.
         let _ = conn.execute_batch("ROLLBACK;");
-        // Rollback may have restored an old readiness flag or incomplete
-        // triggers. Disable both atomically before allowing unindexed writes.
-        // A later successful repair must rebuild those intervening writes.
         let disabled = conn.execute_batch(
             "BEGIN IMMEDIATE;
              UPDATE transcription_fts_meta SET populated = 0 WHERE name = 'history';
@@ -2591,10 +2370,6 @@ fn snippet_cache() -> &'static Mutex<Vec<SnippetCacheEntry>> {
     SPOKEN_WORD_SNIPPET_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Snippet triggers change rarely compared with transcription inserts. Keep a
-/// per-connection snapshot so normal inserts do not reload every full snippet
-/// row. The snapshot contains the existing `Snippet` shape because the shared
-/// matcher already consumes it; it is invalidated by every snippet mutation.
 fn cached_snippet_rows(db: &Db) -> Result<Arc<Vec<Snippet>>> {
     let db_ptr = Arc::as_ptr(db);
     {
@@ -2607,9 +2382,6 @@ fn cached_snippet_rows(db: &Db) -> Result<Arc<Vec<Snippet>>> {
         }
     }
 
-    // Keep the DB lock while publishing the freshly loaded snapshot. Snippet
-    // writers invalidate the cache while holding the same DB lock, preventing
-    // a concurrent edit from being hidden by a stale insertion into the cache.
     let conn = lock_conn(db)?;
     let snippets = Arc::new(load_snippet_trigger_rows(&conn)?);
     let mut cache = snippet_cache()
@@ -2629,7 +2401,6 @@ pub(crate) fn invalidate_snippet_cache() {
 
 pub fn compute_spoken_words(db: &Db, raw_text: &str) -> Result<i64> {
     let snippets = cached_snippet_rows(db)?;
-    // `cached_snippet_rows` releases the DB mutex before this matcher runs.
     Ok(crate::data::snippets::count_words_without_snippet_triggers(
         raw_text, &snippets,
     ))
@@ -2668,8 +2439,6 @@ fn backfill_spoken_words(conn: &Connection) -> Result<()> {
                 )
             })
             .collect::<Vec<_>>();
-        // Callers run migration/self-healing inside their own transaction;
-        // keep each batch bounded without opening a nested transaction.
         let mut update =
             conn.prepare("UPDATE transcriptions SET spoken_words = ?2 WHERE id = ?1")?;
         for (id, spoken_words) in updates {
@@ -2692,9 +2461,6 @@ fn backfill_spoken_words(conn: &Connection) -> Result<()> {
 ///
 /// `pub(crate)` for the repair regression test in `db::tests`.
 pub(crate) fn repair_inflated_word_counts(conn: &mut Connection) -> Result<()> {
-    // Snippet triggers may have changed since old dictations, so recomputed
-    // spoken counts for aged rows are an approximation — still strictly
-    // closer to what was spoken than the raw split count.
     backfill_spoken_words(conn)?;
     let needs_repair: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM transcriptions

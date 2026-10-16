@@ -76,8 +76,6 @@ unsafe extern "C" {
 }
 
 fn c_buf_to_string(buf: &[c_char], preserve_whitespace: bool) -> String {
-    // Find the null terminator within the buffer bounds to avoid a buffer
-    // overread if the Objective-C shim fails to write a trailing null byte.
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     let u8_bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, len) };
     let value = String::from_utf8_lossy(u8_bytes).to_string();
@@ -125,7 +123,6 @@ pub fn read_injection_context_probe_sync() -> InjectionContextProbe {
         head: [0; 512],
     };
 
-    // SAFETY: The shim fills the provided POD struct and does not retain Rust memory.
     let ok = unsafe { verenu_macos_read_context_probe(LOOKBEHIND_CHARS, &mut raw) };
     if ok == 0 {
         return InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "ffi_failed");
@@ -137,11 +134,6 @@ pub fn read_injection_context_probe_sync() -> InjectionContextProbe {
         return InjectionContextProbe::unavailable(source, "invalid_pid");
     }
 
-    // A response other than "permission missing" / "unavailable" means the AX API
-    // returned real data for another app's focused element — authoritative proof
-    // Accessibility is granted, even if `AXIsProcessTrusted()` is reporting a stale
-    // `false` after an ad-hoc rebuild. Latch it so the permissions snapshot can
-    // self-heal the same way the microphone and Input Monitoring signals do.
     if !matches!(
         source,
         ContextProbeSource::PermissionMissing | ContextProbeSource::Unavailable

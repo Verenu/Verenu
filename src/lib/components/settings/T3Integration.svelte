@@ -14,7 +14,6 @@
   let replacing = $state(false);
   let showSkills = $state(false);
   let showDetails = $state(false);
-  // The confirmation body is captured when it opens so it stays stable while the dialog closes.
   let confirmDisconnect = $state<string | null>(null);
   let countButton = $state<HTMLButtonElement | null>(null);
   const connection = $derived(t3State.status?.connection);
@@ -23,9 +22,7 @@
   const skillNoun = $derived(skillCount === 1 ? 'skill' : 'skills');
   const expired = $derived(!!connection && connection.expiresAt * 1000 <= Date.now());
   const error = $derived(t3State.error || connection?.error || '');
-  // Cached skills are "saved" only after a refresh failure. Expiry alone just needs a reconnect.
   const usingSavedSkills = $derived(skillCount > 0 && !!connection?.error);
-  // Only concise, actionable states reach the card. A healthy connection shows nothing extra.
   const attention = $derived.by(() => {
     if (!connection) return '';
     if (usingSavedSkills) {
@@ -52,7 +49,6 @@
   function startReconnect() {
     replacing = true;
     draft = '';
-    // The menu releases focus after it closes; move it into the form once the input exists.
     void tick().then(() => document.getElementById('t3-pairing-link')?.focus());
   }
 
@@ -73,8 +69,6 @@
     if (await connectT3(link)) replacing = false;
   }
 
-  // Escape closes the details disclosure. Settings and dialogs ignore Escape while
-  // a disclosure is open, so this is the layer that answers the key.
   function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && showDetails && !showSkills && confirmDisconnect === null) showDetails = false;
   }
@@ -107,7 +101,6 @@
   </header>
 
   {#if connection}
-    <!-- Stays visible while replacing: the current connection remains active until a new link succeeds. -->
     <div class="integration-body">
       <button bind:this={countButton} type="button" class="skill-count ui-focus-ring" aria-haspopup="dialog" onclick={() => (showSkills = true)}>
         {skillCount} {skillNoun}

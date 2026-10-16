@@ -16,9 +16,6 @@ export function fmtNumber(n: number): string {
 /** Compact form for hero tiles: 1.2k, 3.4M. Exact below 1000. */
 export function fmtCompact(n: number): { value: string; suffix: string } {
   const abs = Math.abs(n);
-  // Each tier's threshold accounts for the rounding of the tier below it:
-  // 999.6 renders as "1.0k" (not "1000") and 999_950 as "1.0M" (not
-  // "1000.0k").
   if (Math.round(abs / 1000) >= 1000) return { value: (n / 1e6).toFixed(1), suffix: 'M' };
   if (Math.round(abs) >= 1000) return { value: (n / 1000).toFixed(1), suffix: 'k' };
   return { value: String(Math.round(n)), suffix: '' };
@@ -27,16 +24,10 @@ export function fmtCompact(n: number): { value: string; suffix: string } {
 export function fmtUsd(n: number | null): string {
   if (n === null) return '—';
   if (n === 0) return '$0.00';
-  // Only small *positive* amounts render as "<$0.01" — a negative amount
-  // must format normally instead of being swallowed by the tiny-value branch.
-  // Keep sub-cent estimates visible. Significant digits avoid turning a tiny
-  // but real API charge into either $0.00 or an unhelpful "under one cent".
   if (n > 0 && n < 0.01) {
     return subCentUsd.format(n);
   }
   if (n < 0) {
-    // Keep the minus before the dollar sign, and let a value that rounds to
-    // zero (e.g. -0.004) render as plain $0.00 rather than "$-0.00".
     const abs = n.toFixed(2).replace('-', '');
     return abs === '0.00' ? '$0.00' : `-$${abs}`;
   }
@@ -45,8 +36,6 @@ export function fmtUsd(n: number | null): string {
 
 /** "3h 12m" / "12m 04s" / "48s" */
 export function fmtDuration(ms: number): string {
-  // Guard non-finite/negative inputs — Math.floor of a negative would
-  // produce malformed strings like "-5s".
   if (!Number.isFinite(ms) || ms < 0) return '0s';
   const totalSeconds = Math.round(ms / 1000);
   const h = Math.floor(totalSeconds / 3600);
@@ -71,8 +60,6 @@ export function bookEquivalent(words: number): number {
 export function niceCeiling(max: number): number {
   if (!Number.isFinite(max) || max <= 0) return 1;
   const magnitude = 10 ** Math.floor(Math.log10(max));
-  // IEEE-754 rounding can nudge an exact boundary (0.2/0.1) just past it, so
-  // compare with a small tolerance instead of raw <=.
   const normalized = max / magnitude;
   let step: number;
   if (normalized <= 1 + 1e-9) {
@@ -90,15 +77,10 @@ export function niceCeiling(max: number): number {
 /** Parse a local "YYYY-MM-DD" without the UTC shift `new Date(str)` would apply. */
 export function parseLocalDay(day: string): Date {
   const [y, m, d] = day.split('-').map(Number);
-  // Guard malformed/empty strings: `new Date(0, 0, 1)` silently becomes the
-  // year 1900 rather than throwing, so the callers' try/catch fallback would
-  // never fire. Reject with an Invalid Date so `toLocaleDateString` throws
-  // and `fmtDay`/`fmtDayLong` fall back to the raw string.
   if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d) || y < 1) {
     return new Date(NaN);
   }
   const date = new Date(y, m - 1, d);
-  // Reject invalid calendar dates (e.g. month 13, day 32) that JS normalizes.
   return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d
     ? date
     : new Date(NaN);
@@ -172,8 +154,6 @@ export const PACE_TICKS = 44;
 export function paceScale(bestWpm: number, ticks = PACE_TICKS): { max: number; bestTick: number } {
   const max = Math.min(250, Math.max(200, Math.ceil(bestWpm / 50) * 50));
   if (bestWpm <= 0) return { max, bestTick: -1 };
-  // Lower clamp: a best under half a tick still deserves a marker on tick 0
-  // rather than rounding away to "no best".
   const tick = Math.max(0, Math.round((bestWpm / max) * ticks) - 1);
   return { max, bestTick: tick >= ticks - 2 ? ticks - 1 : tick };
 }

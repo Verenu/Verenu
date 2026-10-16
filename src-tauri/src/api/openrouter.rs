@@ -1,4 +1,3 @@
-//! OpenRouter's public model catalog, used as the source for estimate rates.
 
 use std::collections::BTreeMap;
 
@@ -62,9 +61,6 @@ pub async fn fetch_model_pricing() -> Result<Vec<ModelPricing>> {
     Ok(rates)
 }
 
-/// Turns the catalog into one canonical row per model. OpenRouter can return
-/// paid/free/batch variants with the same base id; the plain model wins, and
-/// a lexical tie-breaker keeps the result deterministic.
 fn parse_model_pricing(records: Vec<ModelRecord>) -> Vec<ModelPricing> {
     let mut by_base_id = BTreeMap::<String, (String, ModelPricing)>::new();
     for record in records {
@@ -86,17 +82,11 @@ fn parse_model_pricing(records: Vec<ModelRecord>) -> Vec<ModelPricing> {
         }
 
         let candidate = ModelPricing {
-            // Store the canonical base id even when the catalog only exposes
-            // a variant, so client lookups do not depend on `:free`, `:nitro`,
-            // or another provider-specific suffix.
             model_id: base_id.to_string(),
             prompt_usd_per_token: prompt,
             completion_usd_per_token: completion,
         };
         let replace = by_base_id.get(base_id).is_none_or(|existing| {
-            // Prefer the unsuffixed paid model over a variant. If both are
-            // variants, use the lexical order so API ordering cannot change
-            // which duplicate survives.
             let existing_plain = existing.0.eq_ignore_ascii_case(base_id);
             let candidate_plain = model_id.eq_ignore_ascii_case(base_id);
             (candidate_plain && !existing_plain)

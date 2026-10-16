@@ -1,23 +1,5 @@
 'use strict';
 
-/*
- * Full-screen settings coverage.
- *
- * The frozen smoke tests in tests/smoke/ still describe settings in its old
- * modal terms — they assert .settings-page goes visible/hidden, that the
- * backdrop fades, and that a click in the window gutter dismisses it. All of
- * that still holds and must keep holding, so those files are left alone.
- *
- * What they cannot describe is what actually changed: the rail now lives in the
- * sidebar and morphs, settings renders as a page rather than a card, the
- * outgoing view animates out, and the version line is a centred footer shown
- * only on About. This file covers that, and guards the two regressions that
- * were easy to reintroduce (duplicate contract elements on a fast reopen, and
- * settings rows spanning the full window with no measure).
- *
- * Assertions are structural and directional on purpose — durations, easings and
- * exact offsets are design tuning and are deliberately not pinned here.
- */
 
 const { chromium } = require('playwright');
 const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
@@ -28,20 +10,16 @@ const SECTION_LABELS = ['General', 'App Mappings', 'Providers', 'Models', 'Priva
 const errors = [];
 const check = (ok, message) => { if (!ok) errors.push(message); };
 
-// Only report a step as ok when nothing failed since the previous step, so the
-// running log can't claim success for a group that just recorded a failure.
 let notedErrors = 0;
 const note = (message) => {
   if (errors.length === notedErrors) console.log(`  ok  ${message}`);
   notedErrors = errors.length;
 };
 
-// Clicks carry an explicit timeout so a missing rail fails in seconds rather
-// than sitting on Playwright's 30s default.
 async function openSettings(page) {
   await page.locator('.nav-item:has-text("Settings")').click({ timeout: TIMEOUT });
   await page.locator('.settings-page').waitFor({ state: 'visible', timeout: TIMEOUT });
-  await page.waitForTimeout(600); // let the morph settle
+  await page.waitForTimeout(600);
 }
 
 async function gotoSection(page, label) {
@@ -72,7 +50,6 @@ async function gotoSection(page, label) {
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
     await page.locator('.nav-item').first().waitFor({ state: 'visible', timeout: TIMEOUT });
 
-    // ── 1. The rail swaps its contents in place ───────────────────────────
     check(
       (await page.locator('.sidebar .settings-nav-item').count()) === 0,
       'Settings sections should not be in the rail before settings is opened',
@@ -99,7 +76,6 @@ async function gotoSection(page, label) {
     );
     note(`rail morphs in place (${railSections} sections, app nav replaced)`);
 
-    // ── 2. The rail stays above the wash and stays interactive ────────────
     const layering = await page.evaluate(() => {
       const z = (sel) => {
         const el = document.querySelector(sel);
@@ -114,8 +90,6 @@ async function gotoSection(page, label) {
     );
     note(`sidebar stacks above the wash (${layering.sidebar} > ${layering.wash})`);
 
-    // Incoming pairing is global, but it commonly arrives while both devices
-    // have Settings open. Its prompt must not be hidden under the settings wash.
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('tauri:verenu:sync-pair-request', {
         detail: { uuid: 'pairing-test-device', name: 'Nearby MacBook' },
@@ -146,7 +120,6 @@ async function gotoSection(page, label) {
     await pairingDialog.locator('button:has-text("Reject")').click();
     await pairingDialog.waitFor({ state: 'detached', timeout: 3_000 });
 
-    // ── 3. Settings presents as a page, not a floating card ───────────────
     const surface = await page.evaluate(() => {
       const s = getComputedStyle(document.querySelector('.settings-page'));
       return { bg: s.backgroundColor, borderWidth: s.borderTopWidth };
@@ -157,7 +130,6 @@ async function gotoSection(page, label) {
       `Settings should not draw a card border (got ${surface.borderWidth})`);
     note('settings renders as a page surface, not a card');
 
-    // ── 4. The content column keeps a readable measure ────────────────────
     const measure = await page.evaluate(() => {
       const inner = document.querySelector('.panel-inner');
       const panel = document.querySelector('.panel');
@@ -178,7 +150,6 @@ async function gotoSection(page, label) {
       note(`content column ${measure.width}px, centred`);
     }
 
-    // ── 5. The outgoing view actually animates out ────────────────────────
     const outgoing = await page.evaluate(() => {
       const el = document.querySelector('.content');
       const s = getComputedStyle(el);
@@ -190,7 +161,6 @@ async function gotoSection(page, label) {
       'The app view should translate on the vertical axis when settings opens, not just disappear');
     note(`app view exits (opacity 0, translateY ${outgoing.y}px)`);
 
-    // ── 6. The travelling highlight ───────────────────────────────────────
     check((await page.locator('.rail-pill').count()) === 1,
       'Expected exactly one .rail-pill highlight in the rail');
 
@@ -198,7 +168,6 @@ async function gotoSection(page, label) {
       const pill = document.querySelector('.rail-pill');
       const target = [...document.querySelectorAll('.settings-nav-item')]
         .find((b) => b.textContent.includes('Privacy'));
-      // Report rather than throw, so a broken rail fails with a readable message.
       if (!pill || !target) return null;
       const top = () => parseFloat(getComputedStyle(pill).top);
       const before = top();
@@ -214,10 +183,6 @@ async function gotoSection(page, label) {
       });
       const active = document.querySelector('.settings-nav-item.active');
       const rail = document.querySelector('.nav-section');
-      // Measure the active item exactly the way Sidebar.movePillTo positions the
-      // pill (item rect minus rail rect). offsetTop is relative to the nearest
-      // positioned ancestor, which became .settings-rail-content in #399, so it
-      // no longer shares the pill's coordinate space.
       return {
         before,
         distinct: seen.size,
@@ -237,7 +202,6 @@ async function gotoSection(page, label) {
       note(`highlight slides ${pillTravel.before} -> ${pillTravel.end} across ${pillTravel.distinct} positions`);
     }
 
-    // ── 7. Version footer belongs to About and nowhere else ───────────────
     await gotoSection(page, 'General');
     check((await page.locator('.settings-foot').count()) === 0,
       'Version footer should not render outside the About section');
@@ -263,9 +227,6 @@ async function gotoSection(page, label) {
       `Version footer should sit at the bottom of the page (gap ${footOnAbout.gapFromBottom}px)`);
     note(`version footer centred on About only (off-centre ${footOnAbout.offCentre}px)`);
 
-    // ── 8. No duplicate contract elements on a fast close/reopen ──────────
-    // Two {#if} branches used to leave outgoing rail entries mounted alongside
-    // incoming ones, which resolves as a Playwright strict-mode violation.
     const peaks = await page.evaluate(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const byText = (sel, text) =>
@@ -294,7 +255,6 @@ async function gotoSection(page, label) {
     }
     note('no duplicate contract elements across fast close/reopen');
 
-    // ── 9. Back to app restores the rail ──────────────────────────────────
     await page.locator('.settings-back').click();
     await page.locator('.settings-page').waitFor({ state: 'hidden', timeout: TIMEOUT });
     await page.waitForTimeout(500);

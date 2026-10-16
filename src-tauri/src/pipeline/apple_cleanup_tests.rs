@@ -7,8 +7,6 @@ async fn apple_cleanup_uses_own_identity_without_key_or_implicit_fallback() {
     set_enabled(true);
     let mut config = base_config();
     config.cleanup_default_model = "apple-intelligence/system".into();
-    // A configured cloud candidate makes the chain ready on Linux. The first
-    // Apple adapter is independently exercised with a deterministic fixture.
     config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
     assert_eq!(config.key_for(store::APPLE_INTELLIGENCE), "");
     assert!(!config.provider_has_auth(store::APPLE_INTELLIGENCE));
@@ -169,8 +167,6 @@ async fn apple_cleanup_cache_does_not_infer_unknown_provider() {
     set_enabled(true);
     let mut config = base_config();
     config.cleanup_default_model = "apple-intelligence/system".into();
-    // A configured recovery candidate makes cleanup ready on non-Mac test
-    // hosts. Only the Apple fixture may be called, including on repeated runs.
     config.cleanup_fallback_models = vec!["openai/gpt-4o-mini".into()];
     fixture(
         "transcription",

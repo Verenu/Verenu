@@ -92,7 +92,6 @@ PROFILE_SUITES = {
     "full": SUITE_ORDER,
 }
 
-# These tests create isolated browser contexts and do not mutate shared files.
 PARALLEL_SAFE_SUITES = {"ui", "accessibility", "state", "animation"}
 
 
@@ -205,8 +204,6 @@ JS_TESTS: List[TestEntry] = [
     entry("pipeline.provider-smoke", "pipeline", "Configured provider transcription", command=["cargo", "test", "--manifest-path", str(CARGO_TOML), "live_transcription_regression", "--", "--ignored", "--nocapture", "--test-threads=1"], timeout_s=240, required=False, expected="The configured transcription provider transcribes the optional known WAV fixture", regression_area="provider transcription pipeline"),
 ]
 
-# This legacy script calls provider APIs directly. The live profile uses the
-# native credential-aware Rust regression checks instead.
 UNREGISTERED_SCRIPT_EXCLUSIONS = {
     "smoke/playwright-test-pipeline.cjs": "Superseded by pipeline.provider-smoke and pipeline.prompt-live",
 }
@@ -288,9 +285,6 @@ class SettingsContractCheck(PythonTest):
             match.group(2)
             for match in re.finditer(r'pub const ([A-Z0-9_]+): &str = "([^"]+)";', rust_text)
             if not match.group(2).startswith("api_key_")
-            # cleanup_prompt_overrides is the retired per-model prompt map. It is
-            # read once to migrate an existing edit onto cleanup_prompt_override
-            # and never written, so it has no frontend or payload counterpart.
             and match.group(2) not in {
                 "credentials_migrated_v1",
                 "auto_learn_event_mode",
@@ -391,7 +385,6 @@ COMMAND_TESTS = [
     entry("pipeline.prompt-live", "pipeline", "Configured model prompt regressions", command=["cargo", "test", "--manifest-path", str(CARGO_TOML), "live_prompt_regression", "--", "--ignored", "--nocapture", "--test-threads=1"], timeout_s=360, required=False, expected="Configured cleanup model obeys semantic prompt invariants", regression_area="prompt and model behavior"),
 ]
 
-# Bind the audio implementation to its declarative registry entry.
 next(test for test in JS_TESTS if test.id == "pipeline.audio-fixture").python_test = AudioFixtureCheck()
 ALL_TESTS: List[TestEntry] = PYTHON_ENTRIES + COMMAND_TESTS + JS_TESTS
 
@@ -800,7 +793,6 @@ def merge_loop_results(accumulated: Dict[str, TestResult], current: Dict[str, Te
 
 
 def cleanup_artifacts() -> int:
-    # Preserve evidence in RUN_DIR. Never remove another session's artifacts.
     return 0
 
 

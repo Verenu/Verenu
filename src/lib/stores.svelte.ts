@@ -33,9 +33,7 @@ export interface DictionaryCorrection {
 
 export interface DictionaryEntry {
   id: number;
-  /** Canonical dictionary row id for Context-scoped DTOs. */
   dictionary_id?: number;
-  /** Context that supplies the effective row, when returned by a Context API. */
   context_id?: number | null;
   /** Context-owned correction mapping id used by rejection/deletion paths. */
   correction_id?: number | null;
@@ -132,44 +130,23 @@ export interface GlobalMessage {
 export const appStore = $state({
   currentPage: 'home' as PageId,
   settingsOpen: false,
-  // Android: show the section list instead of a section (phone drill-down).
   settingsMobileList: false,
-  // Android phone-width window: Settings shows one screen at a time (list OR section).
   mobileCompact: false,
-  // The settings rail lives in the Sidebar but the panel lives in Settings, so
-  // the active section and its swap direction have to be shared state.
   settingsSection: 'general' as SettingsSectionId,
   settingsAnimDir: 1 as 1 | -1,
   appVersion: '',
   devModeEnabled: false,
   devModeOnStartup: false,
-  // Developer-only: dump diagnostics into the OS accessibility tree for agent
-  // SnapShots. Off by default. Real screen-reader use is unusable while on.
   ruinAccessibility: false,
   appearanceMode: 'system' as AppearanceMode,
   accentColor: null as string | null,
-  /** Sub-app capture chord ("Ctrl+Alt+Shift+S"); null means the platform default. */
   subAppCaptureHotkey: null as string | null,
-  // Active Omarchy palette (Linux desktop only); drives the Omarchy appearance mode.
   omarchyTheme: null as OmarchyTheme | null,
-  // Hex palette for the Custom appearance mode (all desktop platforms).
   customTheme: null as CustomTheme | null,
-  // Named palettes from the theme editor, and the one applied this session
-  // (breaks ties between saved themes that share colors).
   savedThemes: [] as SavedTheme[],
   activeThemeId: null as string | null,
-  // True while an appearance change is being saved; selections made meanwhile are ignored.
   appearanceSaving: false,
-  // Mirrors the `cleanup_enabled` setting. Shared here (rather than owned
-  // privately by GeneralSection) so Style.svelte and the App Mappings
-  // settings page can react live to the toggle without their own
-  // fetch/listener plumbing — both are inert once cleanup is off, since
-  // profile/tone/per-app cleanup-intensity overrides only ever feed the
-  // cleanup LLM call that this setting skips entirely.
   cleanupEnabled: true,
-  // Mirrors `legacy_features_enabled`. Gates App Mappings in Settings and the
-  // Dictionary/Snippets pages in the sidebar nav — both superseded by Contexts,
-  // kept reachable for anyone still relying on the old per-page workflow.
   legacyFeaturesEnabled: false,
   syncEnabled: false,
   pillState: 'idle' as PillState,

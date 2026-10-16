@@ -22,9 +22,6 @@ const REDACTED_TEXT_FIELD_TOKENS: &[&str] = &[
     "clean_text=",
     "dictation=",
     "clipboard=",
-    // Preview fields log the first N chars of dictated/cleaned text. The
-    // values are quoted, so redact_quoted_field_value_ci only ever strips
-    // real dictation content — never bare numbers like raw_rms=.
     "raw=",
     "raw_preview=",
     "final_preview=",
@@ -139,9 +136,6 @@ pub fn export_to_downloads(app: &AppHandle) -> Result<String, String> {
 }
 
 fn redact_message(input: &str) -> String {
-    // Most accepted log lines contain only metadata. Avoid cloning and running
-    // every redaction pass for those lines while keeping the same redaction
-    // passes for anything that contains a sensitive marker.
     const MARKERS: &[&str] = &[
         "authorization:",
         "bearer ",
@@ -167,9 +161,6 @@ fn redact_message(input: &str) -> String {
     out = redact_after_token_ci(&out, "api_key=");
     out = redact_after_token_ci(&out, "x-api-key:");
     out = redact_after_token_ci(&out, "x-goog-api-key:");
-    // Google's legacy query-param key. Match the `?key=`/`&key=` URL markers
-    // specifically: avoids a per-message lowercase allocation and won't clobber
-    // unrelated params like `cache_key=` the way a bare `key=` would.
     out = redact_after_token_ci(&out, "?key=");
     out = redact_after_token_ci(&out, "&key=");
     out = redact_json_key_ci(&out, "api_key");
@@ -251,7 +242,6 @@ fn redact_quoted_field_value_ci(input: &str, token: &str) -> String {
             }
         }
 
-        // Advance by a whole char so cursor stays on a UTF-8 boundary.
         cursor = remaining[value_start..]
             .char_indices()
             .nth(1)
@@ -325,13 +315,6 @@ impl Log for SessionLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        // Non-verbose mode keeps info/warn/error only. Debug/trace is gated
-        // behind the explicit Developer-panel toggle. The app's own debug
-        // logs (per-poll detail, stage internals, per-request metadata) must
-        // not flood the ring buffer by default — they would crowd out the
-        // info-level lifecycle events that make a session reconstructable.
-        // Level ordinals: Error=1 < Warn=2 < Info=3 < Debug=4 < Trace=5, so
-        // debug/trace are the levels AT OR ABOVE Debug in ordinal terms.
         let verbose = is_verbose();
         if !verbose && record.level() >= log::Level::Debug {
             return;
@@ -394,9 +377,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    /// Serializes tests that mutate the process-global VERBOSE_MODE flag and
-    /// the shared ring buffer; in parallel they race and intermittently fail
-    /// (e.g. a debug record slipping past set_verbose(false)).
     static LOGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_buffer() {
@@ -416,9 +396,6 @@ mod tests {
         super::SessionLogger.log(&record);
     }
 
-    /// Registers the session logger so `log::info!` etc. inside the code under
-    /// test actually reach the ring buffer (the app normally does this in
-    /// `init()` with a real AppHandle, which tests don't have).
     fn ensure_logger_registered() {
         static REGISTERED: std::sync::Once = std::sync::Once::new();
         REGISTERED.call_once(|| {
@@ -557,7 +534,6 @@ mod tests {
 
     #[test]
     fn redact_leaves_unquoted_raw_metrics_alone() {
-        // raw= followed by a number (no quote) must not be clobbered.
         let input = "pipeline: raw=7 rms=0.0042 raw_rms=0.0012";
         let out = super::redact_message(input);
         assert!(out.contains("raw=7"));
@@ -566,10 +542,6 @@ mod tests {
 
     #[test]
     fn provider_body_previews_keep_diagnostics_but_redact_secrets() {
-        // Provider error bodies pass through `body_preview="..."` fields. The
-        // 180-char cap in api/mod.rs prevents payload dumps, and the content
-        // is diagnostic (account/model errors), so it must SURVIVE redaction —
-        // but any embedded secret still gets caught by the generic tokens.
         let input = r#"transcription: unauthorized body_preview="{\"error\":\"model not found\"}""#;
         let out = super::redact_message(input);
         assert!(
@@ -581,8 +553,6 @@ mod tests {
 
     #[test]
     fn redacts_auth_urls_within_body_previews() {
-        // Even if a provider body ever echoed a key back (defense in depth),
-        // the generic key tokens still fire inside body_preview values.
         let input = r#"cleanup: error body_preview="{\"detail\":\"invalid ?key=AIzaSECRET\"}""#;
         let out = super::redact_message(input);
         assert!(!out.contains("AIzaSECRET"));

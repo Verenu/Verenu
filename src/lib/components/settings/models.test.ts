@@ -14,8 +14,6 @@ import {
 describe('buildRecommended', () => {
   it('gives every task/provider pair both tiers', () => {
     for (const section of providerSections) {
-      // Bring-your-own providers are never picked by a preset, so they carry
-      // no tiers; they appear only in the model picker.
       if (section.id === 'openrouter' || section.id === 'xai') continue;
       for (const task of section.tasks) {
         const tiers = recommendedModels[task][section.id];
@@ -50,7 +48,6 @@ describe('buildRecommended', () => {
 describe('catalogFor', () => {
   it('only returns models that declare the task', () => {
     expect(catalogFor('cleanup').every((entry) => entry.tasks.includes('cleanup'))).toBe(true);
-    // AssemblyAI is transcription-only, so it must never appear under cleanup.
     expect(catalogFor('cleanup', 'assemblyai')).toEqual([]);
   });
 
@@ -87,8 +84,6 @@ describe('catalogFor', () => {
 });
 
 describe('modelDisplayLabel', () => {
-  // Every id the old hand-written switch knew, with the name it produced. If
-  // the catalog loses one of these, local rows silently regress to raw ids.
   const LEGACY_LABELS: Record<string, string> = {
     'groq/qwen/qwen3.6-27b': 'Qwen3.6 27B',
     'assemblyai/universal-3-5-pro': 'Universal 3.5 Pro',

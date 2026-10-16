@@ -14,8 +14,6 @@
   } = $props();
 
   const presets = [
-    // Keep Default on a theme token that applyAccentTheme never overrides, so
-    // the swatch still shows black/white while a custom accent is active.
     { label: 'Default', value: null, color: 'var(--accent-theme-default)' },
     { label: 'Blue', value: '#4F7FD8', color: '#4F7FD8' },
     { label: 'Teal', value: '#398E94', color: '#398E94' },

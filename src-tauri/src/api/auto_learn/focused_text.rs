@@ -37,7 +37,6 @@ impl MonitorIdentity {
         }
         #[cfg(target_os = "macos")]
         {
-            // Compare native objects, not a hash of their labels or contents.
             if self.element.is_null() || other.element.is_null() {
                 false
             } else if self.element == other.element {
@@ -407,9 +406,6 @@ impl FocusedTextReader {
             TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
         };
 
-        // Baseline capture finds the injected range, while later reads use the
-        // caret. Collapse the baseline range to its end first so both local
-        // windows have the same origin in long documents.
         let collapsed = range.Clone().ok()?;
         collapsed
             .MoveEndpointByRange(
@@ -460,17 +456,11 @@ impl FocusedTextReader {
                         {
                             return None;
                         }
-                        // Keep the complete injected range and stable context
-                        // on both sides. A long dictation must not be cut out
-                        // of the very baseline that anchors it.
                         return Self::read_local_range(&first, 0);
                     }
                 }
             }
 
-            // Single-line native edits often expose ValuePattern only. Keep
-            // that established fallback for compatibility; those controls do
-            // not provide a range API from which a nearby window can be read.
             let value = element
                 .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                 .ok()?
@@ -525,9 +515,6 @@ impl FocusedTextReader {
                 }
             }
 
-            // Preserve support for native single-line edits that expose a
-            // value but no usable caret/selection range. Fetch this whole
-            // value only after a bounded TextPattern read was unavailable.
             element
                 .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                 .ok()
@@ -672,8 +659,6 @@ impl FocusedTextReader {
             let mut context_edges: Option<ContextEdges> = None;
             let mut source = ContextProbeSource::UnsupportedControl;
 
-            // TextPattern selection is authoritative for both collapsed carets
-            // and replacement selections, and gives us both insertion edges.
             if let Some(pattern) = &text_pattern {
                 if let Ok(selection) = pattern.GetSelection() {
                     if let Ok(len) = selection.Length() {
@@ -767,10 +752,6 @@ impl FocusedTextReader {
                     left_reliable = true;
                     right_reliable = true;
                 } else {
-                    // Two empty edge strings are not proof of an empty editor.
-                    // Providers may return an empty TextPattern range when the
-                    // caret read failed. Require independent ValuePattern
-                    // confirmation before allowing sentence-start casing.
                     source = ContextProbeSource::AmbiguousSelection;
                     left_reliable = false;
                     right_reliable = false;
@@ -783,8 +764,6 @@ impl FocusedTextReader {
             );
             let selection_state = describe_selection_state(range_seen, range_collapsed);
 
-            // Structural diagnostics for "blank box reads as full" (Antigravity /
-            // Chromium controls). App-control metadata only — never tail content.
             log::debug!(
                 "injection: probe detail control_type={control_type} class={class_name} automation_id={automation_id} value_empty={value_is_empty:?} read_only={read_only:?} caret_active={range_seen} collapsed={range_collapsed} source={} context={} tail_len={} head_len={} left_reliable={} right_reliable={} tail_newline={}",
                 source.as_str(),
@@ -1100,7 +1079,6 @@ fn macos_focused_text(injected_text: &str) -> Option<MonitorText> {
     let mut pid = 0;
     let mut identity = std::ptr::null();
     let radius = 2048 + injected_text.encode_utf16().count().min(14_336) as i32;
-    // The shim writes bounded UTF-8 and does not retain any Rust memory.
     let ok = unsafe {
         verenu_macos_read_focused_text(
             radius,

@@ -1,4 +1,3 @@
-//! Input normalization and validation helpers shared across the db submodules.
 
 use anyhow::Result;
 
@@ -8,7 +7,7 @@ pub const SNIPPET_INSTRUCTIONS_CHAR_LIMIT: usize = 4_000;
 pub const DICTIONARY_ENTRY_CHAR_LIMIT: usize = 120;
 pub const CONTEXT_NAME_CHAR_LIMIT: usize = 30;
 pub const CONTEXT_EXECUTABLE_CHAR_LIMIT: usize = 260;
-pub const CONTEXT_DOMAIN_CHAR_LIMIT: usize = 253; // max legal DNS name length
+pub const CONTEXT_DOMAIN_CHAR_LIMIT: usize = 253;
 pub const CONTEXT_CUSTOM_INSTRUCTIONS_CHAR_LIMIT: usize = 300;
 
 pub fn require_nonempty_trimmed(field: &str, value: &str) -> Result<String> {

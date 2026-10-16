@@ -17,31 +17,16 @@ export type SettingsSectionId =
 
 interface SettingsSection {
   id: SettingsSectionId;
-  /** Rail label. Smoke tests match sections by this exact string. */
   label: string;
   icon: keyof typeof icons;
   group: string;
-  /** Only render on macOS. */
-  /** macOS permissions; Android shows its own permission list in the same tab. */
   macOnly?: boolean;
-  /** Only render once Developer mode is unlocked. */
   devOnly?: boolean;
-  /** Only render when Legacy features are enabled. */
   legacyOnly?: boolean;
-  /** Only render when the LAN Sync beta is enabled. */
   syncOnly?: boolean;
-  /** Needs desktop windows and global shortcuts; hidden on Android. */
   desktopOnly?: boolean;
 }
 
-/**
- * Single source of truth for the settings rail: order, labels, icons, grouping.
- * Consumed by Sidebar (renders the rail) and Settings (renders the panel), and
- * re-exported through motion.ts as SETTINGS_SECTION_ORDER for swap direction.
- *
- * Note `advanced` is labelled "Microphone" — the id predates the rename and is
- * persisted in the deep-link event payload, so the mismatch is intentional.
- */
 const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'general',     label: 'General',      icon: 'sliders', group: 'Settings' },
   { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings', desktopOnly: true },

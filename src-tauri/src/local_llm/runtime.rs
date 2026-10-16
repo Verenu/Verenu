@@ -131,7 +131,6 @@ fn start_server_process(
             "2",
             "--threads-batch",
             "2",
-            // Avoid busy waits on thermally constrained mobile CPUs.
             "--poll",
             "0",
             "--poll-batch",
@@ -156,8 +155,6 @@ fn start_server_process(
         .arg(port.to_string())
         .arg("--ctx-size")
         .arg("4096")
-        // Disable thinking at the runtime boundary; the output token budget
-        // below is therefore available for the dictated text.
         .arg("--reasoning")
         .arg("off")
         .arg("--reasoning-budget")
@@ -364,8 +361,6 @@ async fn send_chat_completion(endpoint: &str, body: &ChatReq) -> anyhow::Result<
         .filter(|s| !s.is_empty());
     let finish_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
 
-    // Diagnostic only — character counts and the finish_reason enum value,
-    // never the generated text itself (cleaned text must not be logged).
     log::debug!(
         "local-llm: chat completion status={status} finish_reason={finish_reason:?} content_chars={}",
         content.as_ref().map(|s| s.chars().count()).unwrap_or(0),
@@ -377,20 +372,6 @@ async fn send_chat_completion(endpoint: &str, body: &ChatReq) -> anyhow::Result<
     })
 }
 
-/// finish_reason="length" means the server hard-cut generation at the token
-/// budget — never that the model decided to stop on its own, which always
-/// reports finish_reason="stop" instead. So this alone is an unambiguous
-/// truncation signal regardless of how much of the input length the output
-/// reached before being cut off. Previously this also required the content
-/// to be under half the input length, on the theory that a deliberately
-/// brief "high" intensity result hitting its (small, proportional) budget
-/// wasn't really truncated — but that ratio gate had a real blind spot: a
-/// cleanup that got cut off after reaching 50-99% of the input length (a
-/// dropped trailing clause, not a dropped paragraph) reported finish_reason
-/// "length" just the same and went completely undetected. The budget is
-/// already computed proportional to the input for every intensity (see
-/// `cleanup_max_output_tokens`), so hitting it is always premature, never a
-/// sign of "the model deliberately chose to be this short."
 fn looks_truncated(attempt: &ChatAttempt, input_chars: usize) -> bool {
     attempt.finish_reason.as_deref() == Some("length")
         && attempt
@@ -399,9 +380,6 @@ fn looks_truncated(attempt: &ChatAttempt, input_chars: usize) -> bool {
             .is_some_and(|output| input_chars > 20 && !output.is_empty())
 }
 
-/// Combines the truncation, fabrication, and perspective-flip checks into a
-/// single "is this attempt worth retrying" decision, returning a short
-/// reason for logging (never the text itself).
 fn retry_reason(attempt: &ChatAttempt, input_texts: &[&str]) -> Option<&'static str> {
     let primary = input_texts.first().copied().unwrap_or_default();
     if looks_truncated(attempt, primary.chars().count()) {
@@ -463,10 +441,6 @@ pub async fn request_cleanup_with_alternate(
         }],
         max_tokens,
         cache_prompt: true,
-        // Small non-zero temperature: greedy decoding (0.0) has no
-        // randomness to escape a repetition loop once it enters one, which
-        // is exactly the failure mode observed (the same word repeated
-        // dozens of times). Still low enough to stay close to deterministic.
         temperature: 0.15,
         repeat_penalty: 1.1,
         stop,
@@ -506,7 +480,6 @@ mod tests {
 
     #[test]
     fn truncation_detected_when_length_cutoff_and_content_far_shorter_than_input() {
-        // The actual observed bug: a 256-char dictation cleaned down to 57 chars.
         let result = attempt(Some(&"x".repeat(57)), Some("length"));
         assert!(looks_truncated(&result, 256));
     }
@@ -519,19 +492,12 @@ mod tests {
 
     #[test]
     fn flagged_even_when_content_is_comparable_length_to_input() {
-        // The actual gap this closed: a cleanup that got cut off after
-        // reaching 78% of the input length (a dropped trailing clause, not a
-        // dropped paragraph) used to slip through undetected because the old
-        // check required content under half the input length. finish_reason
-        // "length" alone already means the server cut it off mid-generation
-        // — there's no length ratio at which that stops being true.
         let result = attempt(Some(&"x".repeat(200)), Some("length"));
         assert!(looks_truncated(&result, 256));
     }
 
     #[test]
     fn not_flagged_for_tiny_inputs_even_if_short() {
-        // Avoid false positives on trivially short dictations.
         let result = attempt(Some("hi"), Some("length"));
         assert!(!looks_truncated(&result, 10));
     }
@@ -556,8 +522,6 @@ mod tests {
 
     #[test]
     fn gemma_stop_sequence_matches_its_real_turn_marker() {
-        // Gemma's chat template ends a turn with <end_of_turn>, not </s> —
-        // this is the specific marker this fix exists to enforce.
         assert_eq!(
             stop_sequences_for_family(LocalLlmPromptFamily::Gemma4),
             vec!["<end_of_turn>".to_string()]

@@ -130,8 +130,6 @@ export function isTrustworthy(cache: ProviderCache | undefined): boolean {
 
 export function shouldRefresh(cache: ProviderCache | undefined, now: number): boolean {
   if (!cache) return true;
-  // A failed attempt earns a short cooldown, not a full day of silence — and a
-  // successful one must not be retried every time Settings opens.
   if (cache.lastError !== null) return now - cache.lastAttemptAt >= CATALOG_RETRY_MS;
   return now - cache.lastSuccessAt >= CATALOG_TTL_MS;
 }
@@ -164,11 +162,9 @@ export function applySuccess(
   for (const id of tracked) {
     const parsed = id.startsWith(`${provider}/`) ? id.slice(provider.length + 1) : null;
     if (parsed === null) continue;
-    if (live.has(parsed)) continue; // Reappeared, or never gone — counter resets.
+    if (live.has(parsed)) continue;
     const prior = before.missing[id];
     if (degraded) {
-      // Carry the counter forward untouched: this response can't be trusted to
-      // prove absence, but it also shouldn't erase what we'd already observed.
       if (prior) missing[id] = prior;
       continue;
     }
@@ -180,7 +176,6 @@ export function applySuccess(
   }
 
   return {
-    // A truncated 200 must not make the picker drop known models.
     ids: degraded ? Array.from(new Set([...before.ids, ...ids])) : ids,
     everSeen,
     lastSuccessAt: now,
@@ -202,7 +197,6 @@ export function applyFailure(
   return { ...before, lastAttemptAt: now, lastError: error };
 }
 
-// ── Store ──────────────────────────────────────────────────────────────────
 
 export const modelCatalogStore = $state<{ cache: ModelCatalogCache; refreshing: Partial<Record<ProviderId, boolean>> }>({ cache: {}, refreshing: {} });
 
@@ -214,8 +208,6 @@ let hydrated = false;
 let hydration: Promise<void> | undefined;
 
 export function hydrateCatalogCache(raw: unknown) {
-  // An in-flight refresh can finish while Models loads settings. Keep its
-  // newer result instead of replacing it with an older persisted snapshot.
   const saved = mergeCatalogCache(raw);
   for (const provider of CLOUD_PROVIDERS) {
     const current = modelCatalogStore.cache[provider];
@@ -232,7 +224,6 @@ async function ensureHydrated() {
 }
 
 function persist() {
-  // Always writes the whole object, never one provider's slice.
   const snapshot = JSON.parse(JSON.stringify(modelCatalogStore.cache)) as ModelCatalogCache;
   writeChain = writeChain
     .then(() => saveSetting('provider_model_cache', snapshot))
@@ -258,7 +249,6 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
         trackedIds([...tracked, ...Object.keys(modelCatalogStore.cache[provider]?.missing ?? {})], CATALOG),
         now,
       );
-      // Retain capabilities on a metadata outage, including across restarts.
       updated.metadata = { ...updated.metadata, ...parseMetadata(catalog.metadata) };
       updated.warning = catalog.warning;
       modelCatalogStore.cache[provider] = updated;
@@ -275,7 +265,6 @@ export function refreshCatalog(provider: ProviderId, tracked: string[], now = Da
       );
     })
     .then(() => {
-      // Never replace a saved cache with an empty snapshot after a failed read.
       if (loaded) return persist();
     })
     .finally(() => {
@@ -293,8 +282,6 @@ export async function refreshStaleCatalogs(
   tracked: string[],
   now = Date.now(),
 ) {
-  // Decide freshness after loading the persisted cache. Otherwise opening
-  // Settings launches requests before hydration and refetches on every visit.
   await ensureHydrated();
   return Promise.all(
     CLOUD_PROVIDERS
