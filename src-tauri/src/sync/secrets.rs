@@ -38,14 +38,6 @@ pub fn load_identity_key(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 pub fn delete_identity_key(app_data_dir: &std::path::Path) {
-    #[cfg(all(target_os = "windows", not(test)))]
-    {
-        let _ = win_store::delete(WIN_TARGET);
-    }
-    #[cfg(all(target_os = "macos", not(test)))]
-    {
-        let _ = mac_store::delete(MAC_SERVICE, MAC_ACCOUNT);
-    }
     let _ = std::fs::remove_file(fallback_path(app_data_dir));
 }
 
@@ -90,8 +82,7 @@ mod win_store {
     use std::path::Path;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Security::Credentials::{
-        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
-        CRED_TYPE_GENERIC,
+        CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
     fn encode(bytes: &[u8]) -> Vec<u16> {
@@ -167,13 +158,6 @@ mod win_store {
             decode(&blob)
         }
     }
-
-    #[allow(dead_code)]
-    pub fn delete(target: &str) -> Result<(), String> {
-        let target_wide = wide(target);
-        unsafe { CredDeleteW(PCWSTR(target_wide.as_ptr()), CRED_TYPE_GENERIC, Some(0)) }
-            .map_err(|e| format!("CredDeleteW failed: {e}"))
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -182,8 +166,6 @@ mod mac_store {
         delete_generic_password, get_generic_password, set_generic_password,
     };
     use std::path::Path;
-
-    const NOT_FOUND: i32 = -25300;
 
     pub fn store(
         service: &str,
@@ -211,15 +193,5 @@ mod mac_store {
             Ok(bytes) => Some(bytes),
             Err(_) => super::load_fallback(app_data_dir),
         }
-    }
-
-    pub fn delete(service: &str, account: &str) -> Result<(), String> {
-        delete_generic_password(service, account).map_err(|e| {
-            if e.code() == NOT_FOUND {
-                String::new()
-            } else {
-                e.to_string()
-            }
-        })
     }
 }
