@@ -321,7 +321,6 @@ fn load_audio_config_pause_media_default_and_override() {
     );
 }
 
-
 #[test]
 fn setting_audit_empty_store_resolves_to_documented_defaults() {
     let empty = SettingsSnapshot::from_pairs([]);

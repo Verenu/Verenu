@@ -1,16 +1,6 @@
 import { invoke } from './tauri';
 import type { DictionaryCorrection, DictionaryEntry } from './stores';
 
-/**
- * The canonical dictionary row is still identified by `dictionary_id` (and
- * exposed as `id` for the legacy Dictionary surface).  A Context row may also
- * carry the id of the Context-owned correction mapping that supplied its
- * effective mistake/confidence fields.
- *
- * The backend should return these fields from `get_context_dictionary`.  The
- * normalizer below also accepts the pre-migration row shape so a frontend
- * update can be deployed alongside an older backend during development.
- */
 export type ContextDictionaryEntry = DictionaryEntry & {
   context_id: number;
   dictionary_id: number;
@@ -97,11 +87,6 @@ function normalizeCorrection(value: unknown, dictionaryId: number, contextId: nu
   };
 }
 
-/**
- * Convert a context vocabulary DTO into the stable frontend row shape.
- * Context identity comes from the request, not from a later process/domain
- * lookup; this prevents a stale or malformed response from changing scope.
- */
 export function normalizeContextDictionaryEntry(value: unknown, contextId: number): ContextDictionaryEntry {
   const row = recordOf(value);
   if (!row) throw new Error('Context dictionary returned an invalid row.');
@@ -194,11 +179,6 @@ export function dictionaryEntryCorrectionId(entry: Pick<DictionaryEntry, 'correc
   return dictionaryEntryCorrectionIds(entry)[0] ?? null;
 }
 
-/**
- * `undefined` means the event has no scope and should refresh the selected
- * Context.  `null` is an explicit global/default update and also refreshes the
- * selected Context because it may change a canonical row it displays.
- */
 export function dictionaryUpdateContextId(payload: unknown): number | null | undefined {
   const row = recordOf(payload);
   if (!row) return undefined;
@@ -241,12 +221,6 @@ export async function removeContextDictionaryEntry(entry: ContextDictionaryIdent
   });
 }
 
-/**
- * Moving is distinct from sharing: the backend transfers the Context-owned
- * mapping atomically, then removes the source assignment.  Sharing continues
- * to use `set_dictionary_context_assignment` and intentionally does not copy a
- * private correction mapping.
- */
 export async function moveContextDictionaryEntry(
   entry: ContextDictionaryIdentity,
   sourceContextId: number,

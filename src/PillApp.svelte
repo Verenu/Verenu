@@ -269,16 +269,6 @@
 
   let stageWidthByLabel: Record<string, number> = {};
   const STAGE_FALLBACK_W = 72;
-  // The live label being measured against sits in .stage-sizer, a plain
-  // (untransformed) element — but the ACTIVE label the width actually has to
-  // fit lives inside .stage-roll, which carries a permanent `transform:
-  // translateY(...)` for the counter-roll effect. That transform promotes it
-  // to its own compositing layer, and text on a composited layer measures a
-  // little wider in Chromium than the same text laid out normally — measured
-  // at ~0.7–1.4px in testing. Small and constant, not a transition artifact,
-  // so it doesn't resolve on its own; it read as every stage label having its
-  // last pixel or two of tail (often the "…") shaved off, permanently. A
-  // small fixed pad absorbs it without the pill visibly gaining width.
   const STAGE_WIDTH_SAFETY_PX = 3;
 
   function readStageWidths(node: HTMLElement) {

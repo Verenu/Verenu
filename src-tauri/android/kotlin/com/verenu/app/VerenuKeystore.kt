@@ -7,26 +7,6 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.util.Locale
 
-/**
- * Durable credential storage: `EncryptedSharedPreferences` backed by the
- * Android Keystore. This is the ONLY place API keys rest on Android — the
- * Rust backend holds them in memory alone (see `src-tauri/src/android/`).
- *
- * Sync protocol with Rust (all over the authed loopback bridge):
- * - Boot/unlock: [pushAll] reads every known provider and POSTs it to
- *   `/v1/credential`, populating Rust's memory cache.
- * - Save/delete from the main app: Rust stages a rotation; the service sees
- *   `keystorePending` in the state poll, fetches it once via
- *   [VerenuBridge.takeKeystorePending], and persists it here.
- * - Revocation: clearing here + [pushAll] with empty values drops Rust's copy.
- *
- * Fail-closed: if the Keystore is unusable (broken TEE on some OEM builds),
- * reads/writes throw and the caller surfaces onboarding recovery instead of
- * silently downgrading to plaintext.
- *
- * Requires `androidx.security:security-crypto` (added to the app module by
- * `scripts/android-sync.mjs`).
- */
 class VerenuKeystore(appContext: Context) {
     companion object {
         const val TAG = "VerenuKeystore"

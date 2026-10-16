@@ -942,7 +942,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         null
     }
 
-    /** How far below the screen a still-sliding keyboard window currently hangs (0 once docked). */
     private fun slideOverhang(raw: android.graphics.Rect): Int {
         val overhang = raw.bottom - realScreenHeightPx()
         return if (overhang > 2 && overhang < raw.height()) overhang else 0
@@ -2005,12 +2004,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * A focused editable app field may receive the dictation. System UI and
-     * keyboard windows must never become targets. Package hints from window
-     * events cannot veto the actual field: privacy indicators and toasts can
-     * change those hints while the user is still editing the same app.
-     */
     private fun insertionTargetAvailable(node: AccessibilityNodeInfo): Boolean {
         val owner = node.packageName?.toString().orEmpty()
         return VerenuFocusPackages.isInsertionField(owner, defaultImePackage())

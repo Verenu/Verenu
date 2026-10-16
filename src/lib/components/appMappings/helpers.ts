@@ -30,12 +30,6 @@ function matchesSearch(app: InstalledApp, query: string, compactQuery: string, n
     || (compactQuery.length > 0 && appExe.replace(/[^a-z0-9]/g, '').includes(compactQuery));
 }
 
-/**
- * Apps matching `search`. Android only: best first — names that start with the query, then
- * names with a word that starts with it, then any other match. Ties keep the
- * input order (the platform lists apps alphabetically). An empty query keeps
- * the list as is.
- */
 export function rankAppMatches(apps: InstalledApp[], search: string, android = isAndroid): InstalledApp[] {
   const query = search.trim().toLowerCase();
   if (!query) return apps;

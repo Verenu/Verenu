@@ -1,6 +1,3 @@
-
-/// True while Windows is logging off or shutting down. This lets the close
-/// handler exit instead of hiding to tray and keeping the process alive.
 #[cfg(target_os = "windows")]
 pub fn system_is_shutting_down() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};

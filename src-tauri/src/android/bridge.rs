@@ -542,10 +542,6 @@ pub(crate) fn last_pill_stage() -> String {
         .clone()
 }
 
-
-/// What Kotlin reported when the recording started: the foreground package and,
-/// in a browser, the page's host. The pipeline has no window handle on Android,
-/// so Context resolution reads these instead. Hostname only, never a URL.
 #[derive(Default, Clone)]
 struct DictationTarget {
     package: String,

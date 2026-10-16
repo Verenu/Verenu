@@ -115,15 +115,6 @@ pub fn set_regular_activation_policy_on_main_thread(app: &AppHandle) {
     });
 }
 
-/// Float the pill window above other apps' windows *without* activating Open
-/// Flow. Tauri's `show()` maps to `-[NSWindow orderFront:]`, which AppKit
-/// suppresses for a background (non-active) app - so the pill only appeared
-/// while Verenu was frontmost. We instead:
-///   1. raise the window level above normal windows (NSStatusWindowLevel = 25),
-///   2. let it appear on every Space and over full-screen apps,
-///   3. order it front with `orderFrontRegardless`, which ignores active state.
-///
-/// `ns_window` is the `*mut NSWindow` obtained from `WebviewWindow::ns_window()`.
 pub fn float_pill_window(ns_window: *mut std::ffi::c_void) {
     if ns_window.is_null() {
         return;
@@ -514,9 +505,6 @@ pub async fn request_microphone_via_device_input(app: &AppHandle) -> Result<bool
     Err("macOS did not produce a microphone authorization decision within 60 seconds".to_string())
 }
 
-/// Returns the raw values from UNUserNotificationCenter. This is deliberately
-/// separate from the Tauri notification plugin's boolean helper: the
-/// Permissions page needs Apple's authorization and presentation settings.
 pub async fn notification_settings() -> Result<[i64; 6], String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let tx = std::sync::Mutex::new(Some(tx));
@@ -646,12 +634,6 @@ pub async fn request_notifications_on_main_thread(app: &AppHandle) -> Result<(),
 
 const PASTEBOARD_TYPE_STRING: &str = "public.utf8-plain-text";
 
-/// PID of the frontmost (active) application, or `None` if unavailable.
-///
-/// Reverted to using AppKit's `NSWorkspace` because `CGWindowListCopyWindowInfo`
-/// triggers a system-wide Screen Recording permission prompt on macOS 15 Sequoia,
-/// which is highly undesirable for a dictation app. `NSWorkspace` is thread-safe
-/// since macOS 10.6 and safe to call from background threads.
 pub fn frontmost_pid() -> Option<i32> {
     autoreleasepool(|_| unsafe {
         let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];

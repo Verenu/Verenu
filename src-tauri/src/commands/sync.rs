@@ -48,8 +48,6 @@ pub async fn sync_set_device_name(app: AppHandle, name: String) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
-/// A persistent, device-local Tailscale route for an already trusted peer.
-/// An empty address restores LAN discovery. Pairing authentication is unchanged.
 #[tauri::command]
 pub async fn sync_set_peer_address(
     app: AppHandle,
@@ -66,8 +64,6 @@ pub async fn sync_pair_connection(app: AppHandle, details: String) -> Result<Str
     manager(&app)?.pair_connection(&details).await.map_err(|e| e.to_string())
 }
 
-/// Starts pairing with a discovered device. Returns the 6-digit code to show
-/// on this screen; the other device's user types it.
 #[tauri::command]
 pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<String, String> {
     let result = manager(&app)?
@@ -128,7 +124,6 @@ pub async fn sync_remove_device(app: AppHandle, device_uuid: String) -> Result<(
         .map_err(|e| e.to_string())
 }
 
-/// Manual sync. `deviceUuid = null` syncs every visible paired device.
 #[tauri::command]
 pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(), String> {
     let sync_manager = manager(&app)?;

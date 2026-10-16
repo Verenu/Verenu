@@ -128,8 +128,4 @@ export function writingStylePreview(intensity: CleanupCard['id'], tone: ToneCard
   return { before: SAMPLE_RAW, after: intensity === 'rules' || intensity === 'none' ? cleanupPreview[intensity] : tonePreview[tone](cleanupPreview[intensity]) };
 }
 
-/**
- * The wizard no longer asks about appearance — it is not a first-run decision,
- * and Settings → General has a live 3-way picker. Setup writes 'system'.
- */
 export const SETUP_APPEARANCE_MODE: AppearanceMode = 'system';

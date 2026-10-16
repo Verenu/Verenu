@@ -21,9 +21,6 @@
     primaryLabel: string;
     secondaryLabel?: string;
     size?: number;
-    /** CostBreakdown's own table repeats every legend row (name + cost) in
-     *  more detail right below the ring on narrow layouts — set false there
-     *  so the same numbers aren't listed twice in a row. */
     showLegend?: boolean;
   } = $props();
 

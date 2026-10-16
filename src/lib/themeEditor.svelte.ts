@@ -32,7 +32,6 @@ export const themeEditor = $state({
   saving: false,
   error: '',
   confirmingDelete: false,
-  /** Set while the user is asked whether to throw away unsaved changes. */
   pendingAction: null as (() => void) | null,
 });
 
@@ -78,7 +77,6 @@ function close() {
   themeEditor.saving = false;
 }
 
-/** Opens the editor on a saved theme, or starts a new one from `seed`. */
 export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTheme; name: string; accent?: string | null }) {
   const keepBaseline = themeEditor.open ? themeEditor.baseline : null;
   const draft: Draft = 'theme' in source
@@ -113,24 +111,18 @@ export function updateThemeDraft(patch: Partial<Draft>) {
   if (appearanceChanged) previewDraft();
 }
 
-/** Closes without saving and puts back what was applied before editing. */
 export function cancelThemeEditor() {
   if (!themeEditor.open) return;
   restoreBaseline();
   close();
 }
 
-/** Escape / Close: clean drafts close at once, dirty ones ask first. */
 export function requestCloseThemeEditor() {
   if (!themeEditor.open || themeEditor.saving) return;
   if (isThemeEditorDirty()) themeEditor.pendingAction = () => {};
   else cancelThemeEditor();
 }
 
-/**
- * Runs `action` once it is safe to leave the editor. With unsaved changes the
- * dock asks first; the action runs only if the user discards.
- */
 export function guardThemeEditor(action: () => void) {
   if (!themeEditor.open) return action();
   if (themeEditor.saving) return;

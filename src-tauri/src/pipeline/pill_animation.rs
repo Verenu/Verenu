@@ -72,10 +72,6 @@ pub(super) fn animate_pill_placement<R: Runtime>(
     let pill = pill.clone();
     let step_count = (TWEEN_DURATION_MS / TWEEN_STEP_MS).max(1) as u32;
     let mut frames = build_tween_frames(from, to, step_count);
-    // Every animated frame except the final one can be posted asynchronously.
-    // The last resize must be confirmed before the WebView is revealed: on a
-    // mixed-DPI move Windows can otherwise still be using the old, shorter
-    // client area, which clips the bottom of the pill on its first frame.
     let final_frame = frames.pop().expect("tween always has at least one frame");
 
     tauri::async_runtime::spawn(async move {

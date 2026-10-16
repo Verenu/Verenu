@@ -4,7 +4,6 @@ import { customProvider, isCustomProviderId } from '../../customProviders.svelte
 export type TaskType = 'transcription' | 'cleanup';
 export type UiProviderId = 'groq' | 'openai' | 'google' | 'assemblyai' | 'openrouter' | 'xai';
 
-/** Every provider the settings schema accepts, in picker order. */
 export const ALL_PROVIDER_IDS: ProviderId[] = [
   'groq',
   'openai',
@@ -26,7 +25,6 @@ export type ProviderSection = {
   id: UiProviderId;
   label: string;
   storeProvider: ProviderId;
-  /** Which tasks this provider's models can be selected for — AssemblyAI is transcription-only. */
   tasks: TaskType[];
 };
 
@@ -48,23 +46,9 @@ export type CatalogEntry = {
   label: string;
   tasks: TaskType[];
   tags: ModelTag[];
-  /**
-   * Presets index models by tier, so every (task, provider, tier) triple must
-   * resolve to exactly one entry — see `buildRecommended`. Local models and any
-   * future extras carry no tier and never take part in preset matching.
-   */
   tier?: ModelTier;
 };
 
-/**
- * The models Verenu vouches for: display name, which task they serve, and how
- * they trade accuracy for speed.
- *
- * Deliberately short. It is not a mirror of what each provider offers — the
- * live `/v1/models` fetch supplies that, and the picker shows anything a
- * provider returns that isn't listed here under "All models". Adding a model
- * to the curated list is a data edit here, never a UI change.
- */
 export const CATALOG: CatalogEntry[] = [
   { provider: 'apple-intelligence', id: 'system', label: 'Apple Intelligence', tasks: ['cleanup'], tags: [] },
   { provider: 'groq', id: 'whisper-large-v3', label: 'Whisper Large v3', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
@@ -129,13 +113,6 @@ export function catalogFor(task: TaskType, provider?: ProviderId): CatalogEntry[
   );
 }
 
-/**
- * Derives the `{ premium, standard }` shape the preset code indexes directly.
- *
- * Throws on a duplicate (task, provider, tier) rather than letting array order
- * silently pick a winner — a preset quietly changing model during an unrelated
- * catalog edit is exactly the bug this guards.
- */
 export function buildRecommended(
   catalog: CatalogEntry[],
 ): Record<TaskType, Partial<Record<UiProviderId, { premium: string; standard: string }>>> {
@@ -267,10 +244,6 @@ export function qualifiedModelLabel(provider: ProviderId, model: string): string
   return label.toLowerCase().startsWith(prefix.toLowerCase()) ? label : `${prefix} ${label}`;
 }
 
-/**
- * Pretty name for a model, or the raw wire id when it isn't curated — the
- * "All models" section shows plenty of ids Verenu has never heard of.
- */
 export function modelDisplayLabel(provider: ProviderId, model: string): string {
   return catalogEntry(provider, model)?.label ?? model;
 }

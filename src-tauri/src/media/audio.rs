@@ -793,9 +793,6 @@ impl RecordingSession {
             let stream_error_cb = Arc::clone(&stream_error_w);
             let active_cb = Arc::clone(&active_w);
             let err_fn = move |e| {
-                // CPAL may invoke this from an audio-related thread. Keep the
-                // callback allocation-free and nonblocking: a failed stream
-                // must be observed by the session owner, not handled here.
                 log::error!("Audio stream error: {e}");
                 stream_error_cb.store(true, Ordering::Release);
                 active_cb.store(false, Ordering::Release);

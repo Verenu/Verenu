@@ -1,9 +1,3 @@
-//! Native target-window geometry used to choose the dictation pill's display.
-//!
-//! Coordinates intentionally stay in each platform's desktop coordinate space:
-//! physical pixels on Windows and Core Graphics logical coordinates on macOS.
-//! Those are the coordinate spaces expected by Tauri's `monitor_from_point`.
-
 use crate::core::window_context;
 use tauri::{Runtime, WebviewWindow};
 

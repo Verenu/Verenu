@@ -57,11 +57,8 @@
   };
 
   type Props = {
-    /** True once Accessibility + Microphone are both granted. */
     allGranted?: boolean;
-    /** 'setup' shows a success banner once all granted; 'settings' is steady-state. */
     variant?: 'setup' | 'settings';
-    /** When provided, also surfaces the Keychain Access row for that provider. */
     provider?: ProviderId | null;
   };
 

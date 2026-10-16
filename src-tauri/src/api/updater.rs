@@ -113,18 +113,6 @@ fn update_status_error_message(status: u16) -> &'static str {
     }
 }
 
-/// Returns true only for URLs that point at an official release asset for
-/// [`RELEASE_REPO`]. GitHub serves release assets from
-/// `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>` — exactly
-/// six path segments. Used by the `install_update` command to reject arbitrary
-/// URLs before we open/download/execute them.
-///
-/// Validation is done segment-by-segment rather than by prefix-matching the raw
-/// path, because `Url::parse` only normalizes *literal* `..` segments — it
-/// leaves percent-encoded traversal sequences (`%2e`, `%2f`, `%5c`) intact,
-/// which a server or proxy could later decode into a traversal to a different
-/// repo. Requiring exactly six segments, pinning the fixed ones, and rejecting
-/// dot/encoded-traversal segments closes every such bypass.
 pub fn is_authorized_release_asset_url(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;

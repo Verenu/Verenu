@@ -1,7 +1,3 @@
-
-// The bridge server only starts on Android (see main.rs setup) and is
-// exercised by unit tests everywhere else; allow its (then-)unused surface
-// on desktop non-test builds so `clippy -D warnings` stays green there.
 #[cfg_attr(not(any(test, target_os = "android")), allow(dead_code))]
 pub mod bridge;
 
@@ -72,13 +68,6 @@ pub mod security_plugin {
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-/// Minimum SDK Verenu supports on Android.
-///
-/// API 26 (Android 8.0) is the floor: `EncryptedSharedPreferences` + current
-/// `androidx.security` MasterKey paths, notification channels, and the
-/// `AccessibilityService.SoftKeyboardController` show/hide callbacks Verenu's
-/// overlay relies on are all available from here.
-/// Placements anchored to the screen rather than the keyboard.
 pub const ANDROID_PILL_SCREEN_POSITIONS: [&str; 10] = [
     "screen-top-left",
     "screen-top",

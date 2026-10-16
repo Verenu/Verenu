@@ -10,7 +10,11 @@ test('Context creation, editing and deletion persist through the UI without touc
   const actions = async (id, label) => {
     if (page.viewportSize().width < 700) {
       await page.locator(`[data-debug-id="context.${id}"]`).click({ button: 'right' });
-    } else await page.getByRole('button', { name: `More actions for ${label}`, exact: true }).click();
+    } else {
+      const menuButton = page.getByRole('button', { name: `More actions for ${label}`, exact: true });
+      await expect(menuButton).toHaveCount(1);
+      await menuButton.click();
+    }
   };
   try {
     await page.getByRole('button', { name: 'New context group', exact: true }).click();

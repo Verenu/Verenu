@@ -580,14 +580,6 @@ fn place_linux_pill(app: &AppHandle, wait_for_map: bool) {
     }
 }
 
-/// GTK/Wayland maps and configures a shown WebView asynchronously. Hyprland can
-/// acknowledge the first z-order request while that configure is still in
-/// flight, then place the committed surface back below the previously focused
-/// window, or apply its own default floating placement after our first move.
-/// Re-assert placement and z-order after mapping and after the frontend's
-/// first layout pass so neither a teleported nor a buried pill survives.
-/// Generation and visibility checks prevent a stale retry from raising an idle
-/// pill or a superseded state.
 #[cfg(target_os = "linux")]
 fn schedule_linux_raise(app: &AppHandle) {
     let app = app.clone();

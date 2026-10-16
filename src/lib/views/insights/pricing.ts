@@ -1,6 +1,5 @@
 import type { InsightsProviderUsage } from './types';
 
-
 type Rate =
   | { kind: 'audio'; usd_per_hour: number }
   | { kind: 'token'; usd_per_m_in: number; usd_per_m_out: number };
@@ -103,14 +102,12 @@ function modelCost(usage: InsightsProviderUsage, index: RateIndex): number | nul
 
 export interface CostRow extends InsightsProviderUsage {
   cost: number | null;
-  /** Fraction of the priced total, 0–1. Zero for unpriced models. */
   share: number;
 }
 
 export interface CostSummary {
   rows: CostRow[];
   total: number;
-  /** True when at least one model had no rate, so `total` understates reality. */
   hasUnpriced: boolean;
 }
 

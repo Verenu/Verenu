@@ -19,7 +19,6 @@
   const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-
   interface GridCell { day: string; words: number; noData: boolean; streakDays: number }
 
   function streakColor(days: number, longest: number): string {

@@ -75,11 +75,6 @@ struct HyprMonitor {
 #[cfg(target_os = "linux")]
 impl HyprMonitor {
     fn logical_work_area(&self) -> LogicalMonitor {
-        // Hyprland reports width/height as mode pixels, while x/y and window
-        // geometry use compositor layout coordinates. Convert the mode size
-        // before combining it with the layout origin. Dividing the final
-        // absolute coordinate instead breaks vertically or horizontally offset
-        // scaled monitors and was placing the pill below the visible desktop.
         let scale = self.scale.max(0.1);
         let logical_width = f64::from(self.width) / scale;
         let logical_height = f64::from(self.height) / scale;
@@ -274,12 +269,6 @@ pub(crate) fn move_window(address: &str, x: i32, y: i32) -> Result<(), String> {
     )
 }
 
-/// Raises a floating window without focusing it. Wayland does not guarantee
-/// that Tauri's always-on-top hint reaches the compositor, so the pill needs
-/// an explicit Hyprland z-order update each time it is revealed.
-/// Floating clients cannot resize themselves reliably under Hyprland (the
-/// non-resizable GTK pill stayed at Hyprland's 200x200 default), so size is
-/// set by the compositor, like position. Units are layout (logical) pixels.
 #[cfg(target_os = "linux")]
 pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<(), String> {
     let selector = format!("address:{address}");
@@ -293,16 +282,6 @@ pub(crate) fn resize_window(address: &str, width: i32, height: i32) -> Result<()
     )
 }
 
-/// Lets the pointer reach a window that a user rule marked `no_focus`.
-///
-/// Hyprland excludes `no_focus` windows from pointer hit-testing altogether, so
-/// the pill's Cancel/Confirm/Dismiss/Retry/Copy buttons never saw a click when
-/// a rule such as the one long suggested in the install notes was present. The
-/// rule is applied at map time, which is what keeps the pill from taking
-/// keyboard focus away from the dictation target, so clearing the runtime
-/// property afterwards keeps that benefit and only restores the pointer.
-/// Clicking the pill may focus it; text injection re-focuses the original
-/// target before pasting.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_pointer_input(address: &str, interactive: bool) -> Result<(), String> {
     let selector = format!("address:{address}");
@@ -398,12 +377,6 @@ pub(crate) fn ensure_window_rules() -> Result<(), String> {
     Ok(())
 }
 
-/// `pill_window()` right after `show()` races Hyprland: the Wayland client is
-/// mapped asynchronously, so `hyprctl clients` can still miss it for a beat.
-/// A miss here used to fall through silently (no retry, `.ok()`-swallowed
-/// error), leaving the pill wherever Hyprland's default floating placement
-/// put it — which reads as "spawns in the middle of the screen" and made the
-/// move look random. Poll briefly for the client to appear before giving up.
 #[cfg(target_os = "linux")]
 pub(crate) fn pill_window_after_show() -> Option<ActiveWindow> {
     for attempt in 0..10 {

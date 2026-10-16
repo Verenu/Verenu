@@ -1,6 +1,5 @@
 'use strict';
 
-
 const url = process.argv[2] || 'http://localhost:1420';
 const BUDGET_MS = Number(process.env.WARMUP_TIMEOUT_MS || 90_000);
 

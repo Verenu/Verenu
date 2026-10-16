@@ -257,10 +257,6 @@ class VerenuBridge(appContext: Context) {
 
     fun clearCredentials(): JSONObject? = request("POST", "/v1/credentials/clear")
 
-    /**
-     * Fetch a staged Keystore rotation (single delivery — the backend clears
-     * it on read and never persists it). Returns null when nothing is staged.
-     */
     fun takeKeystorePending(): Pair<String, String>? {
         val json = request("GET", "/v1/keystore/pending") ?: return null
         if (json.isNull("provider")) return null

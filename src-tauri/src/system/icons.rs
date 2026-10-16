@@ -712,16 +712,6 @@ mod mac {
         None
     }
 
-    /// Extracts the app's icon at `bundle_path` via `NSWorkspace`, encodes it
-    /// as PNG, and downsizes it to a sane on-disk/wire size.
-    ///
-    /// `-[NSImage setSize:]` does not constrain what `-TIFFRepresentation`
-    /// rasterizes at — every icon comes back as the bundle's native 1024×1024
-    /// representation regardless (measured: a 1024×1024 PNG runs 1.5–2.5MB).
-    /// Sent as a data URI to the frontend for every row in the app picker,
-    /// that made the picker unusable — dozens of multi-megabyte IPC payloads
-    /// in flight at once, appearing to the user as icons that simply never
-    /// load. Resizing here, before caching or returning, is the fix.
     pub fn extract_icon_png(bundle_path: &str) -> Option<Vec<u8>> {
         let raw = extract_icon_png_native(bundle_path)?;
         let resized = image::load_from_memory(&raw).ok()?.resize(

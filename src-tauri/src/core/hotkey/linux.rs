@@ -142,11 +142,6 @@ impl PortalGesture {
                 .pressed_at
                 .is_some_and(|pressed_at| now.duration_since(pressed_at) > STALE_CHORD_TIMEOUT)
         {
-            // Hyprland can emit another activation while a chord is still
-            // held. Do not re-anchor the hold clock here. Doing that made a
-            // multi-second hold look like a fresh quick tap when the eventual
-            // deactivation arrived, which armed hands-free by accident on the
-            // next Ctrl+Space press.
             if let Some(pressed_at) = self.pressed_at {
                 log::info!(
                     "linux hotkey: ignored repeated activation after {}ms",
@@ -494,9 +489,6 @@ fn suspend_shortcuts_snippet(active: bool) -> String {
     )
 }
 
-/// Called by the Linux single-instance handoff from Hyprland's keyboard-event
-/// release watcher. This avoids the broken global-shortcuts release event for
-/// modifier-only chords while preserving the same gesture classification.
 pub fn notify_release() {
     if super::capture_active() {
         return;

@@ -6,7 +6,6 @@ export const SUB_APP_CAPTURE_FAILED_EVENT = 'verenu:sub-app-capture-failed';
 export const SUB_APP_LABEL_LIMIT = 60;
 export const SUB_APP_PATTERN_LIMIT = 200;
 
-/** Platform default; mirrors `Chord::default_for_platform` in Rust. */
 export const DEFAULT_SUB_APP_CAPTURE_HOTKEY = isMac ? 'Alt+Shift+Super+S' : 'Ctrl+Alt+Shift+S';
 
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Super'] as const;
@@ -17,7 +16,6 @@ function modifierLabel(modifier: Modifier): string {
   return modifier === 'Super' ? 'Super' : modifier;
 }
 
-/** Display keys for a stored chord, e.g. ["Ctrl", "Alt", "Shift", "S"]. */
 export function subAppCaptureKeys(chord: string | null | undefined): string[] {
   const parts = (chord || DEFAULT_SUB_APP_CAPTURE_HOTKEY).split('+').map((part) => part.trim());
   const key = parts.find((part) => !MODIFIER_ORDER.includes(part as Modifier)) ?? 'S';
@@ -25,11 +23,6 @@ export function subAppCaptureKeys(chord: string | null | undefined): string[] {
   return [...modifiers.map(modifierLabel), key];
 }
 
-/**
- * Canonical chord from a key press, or null while only modifiers are held or
- * the chord would hijack typing (needs Ctrl, Alt, or Super). Mirrors
- * `Chord::parse` in src-tauri/src/core/hotkey/chord.rs.
- */
 export function chordFromKeyboardEvent(event: KeyboardEvent): string | null {
   let key: string | null = null;
   const letter = /^Key([A-Z])$/.exec(event.code);
@@ -49,7 +42,6 @@ export function chordFromKeyboardEvent(event: KeyboardEvent): string | null {
   return parts.join('+');
 }
 
-/** What the capture hotkey saw. `window_title` is shown once and never stored. */
 export type SubAppCapture = {
   executable: string;
   app_name: string;
@@ -76,7 +68,6 @@ export function titleRuleMatches(pattern: string, mode: TitleMatchMode, title: s
   return t.includes(p);
 }
 
-/** A readable default name: the first meaningful segment of the pattern. */
 export function suggestLabel(pattern: string): string {
   const first = pattern.split(/\s[-—–|]\s/)[0]?.trim() ?? '';
   return (first || pattern.trim()).slice(0, SUB_APP_LABEL_LIMIT);

@@ -193,7 +193,6 @@
     cleanupCacheError = `Cache status unavailable. ${formatIpcError(err)}`;
   });
 
-
   type ImportSummary = {
     settings_applied: number;
     settings_skipped: number;

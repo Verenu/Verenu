@@ -10,7 +10,6 @@ export type SettingsSearchEntry = {
   target: string;
   fallbackTarget?: string;
   keywords?: string[];
-  /** Only searchable on Android, where the matching row exists. */
   androidOnly?: boolean;
 };
 

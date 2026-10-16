@@ -6,9 +6,7 @@ export const CUSTOM_THEME_CHANGE_EVENT = 'verenu:custom-theme-changed';
 export type CustomTheme = {
   background: string;
   foreground: string;
-  /** Sidebar and pill surface. Derived from the background when absent. */
   sidebar?: string | null;
-  /** Raised surfaces such as cards, menus, and modals. Derived when absent. */
   surface?: string | null;
 };
 
@@ -48,12 +46,10 @@ export function isDarkColor(hex: string): boolean {
   return relativeLuminance(hex) <= 0.4;
 }
 
-/** A readable text color for a background, used while the palette is automatic. */
 export function deriveForeground(background: string): string {
   return isDarkColor(background) ? '#E8E8E8' : '#1A1A1A';
 }
 
-/** True when the palette sets anything the basic editor would have chosen itself. */
 export function hasPaletteOverrides(theme: CustomTheme): boolean {
   const background = normalizeAccentColor(theme.background);
   const foreground = normalizeAccentColor(theme.foreground);
@@ -61,17 +57,11 @@ export function hasPaletteOverrides(theme: CustomTheme): boolean {
   return !background || !foreground || foreground.toLowerCase() !== deriveForeground(background).toLowerCase();
 }
 
-/**
- * Starting point when Custom is first chosen (and on Reset): the background and
- * text of the preset matching the current light/dark look. Sidebar and surface
- * stay derived, so editing the background never leaves a stale surface behind.
- */
 export function defaultCustomTheme(dark: boolean): CustomTheme {
   const { background, foreground } = (dark ? CUSTOM_THEME_PRESETS[0] : CUSTOM_THEME_PRESETS[4]).theme;
   return { background, foreground, sidebar: null, surface: null };
 }
 
-/** The editor's automatic palette for a mode: sidebar and surface derived, text chosen for contrast. */
 export function basicThemePalette(dark: boolean): CustomTheme {
   const { background } = (dark ? CUSTOM_THEME_PRESETS[0] : CUSTOM_THEME_PRESETS[4]).theme;
   return { background, foreground: deriveForeground(background), sidebar: null, surface: null };
@@ -89,12 +79,10 @@ export function customPalette(custom: CustomTheme | null): OmarchyTheme | null {
   return { name: 'custom', mode: isDarkColor(theme.background) ? 'dark' : 'light', colors, customText: true };
 }
 
-
 export type SavedTheme = {
   id: string;
   name: string;
   palette: CustomTheme;
-  /** Accent the theme applies; null keeps the theme's own default accent. */
   accent: string | null;
 };
 
@@ -125,7 +113,6 @@ export function normalizeSavedThemes(value: unknown): SavedTheme[] {
   return themes;
 }
 
-/** Only the colors, the shape stored in `custom_theme`. */
 export function themeColors(theme: CustomTheme): CustomTheme {
   return {
     background: theme.background,
@@ -141,7 +128,6 @@ export function sameThemeColors(a: CustomTheme | null | undefined, b: CustomThem
     (normalizeAccentColor(a[id])?.toLowerCase() ?? null) === (normalizeAccentColor(b[id])?.toLowerCase() ?? null));
 }
 
-/** Returns an error message, or null when the name can be saved. */
 export function validateThemeName(name: string, themes: SavedTheme[], selfId: string | null): string | null {
   const trimmed = name.trim();
   if (!trimmed) return 'Give the theme a name.';
@@ -156,7 +142,6 @@ export function upsertSavedTheme(themes: SavedTheme[], theme: SavedTheme): Saved
     : [...themes, theme];
 }
 
-/** First "Name", then "Name 2", "Name 3" … that no saved theme uses. */
 export function uniqueThemeName(base: string, themes: SavedTheme[]): string {
   const root = base.trim().slice(0, THEME_NAME_MAX - 3) || 'Custom theme';
   const used = new Set(themes.map((t) => t.name.toLowerCase()));
@@ -168,10 +153,6 @@ export function uniqueThemeName(base: string, themes: SavedTheme[]): string {
   return root;
 }
 
-/**
- * The saved theme the active palette corresponds to. `hintId` (the theme last
- * applied this session) breaks ties between saved themes with identical colors.
- */
 export function findActiveSavedTheme(
   themes: SavedTheme[],
   active: CustomTheme | null,
@@ -182,7 +163,6 @@ export function findActiveSavedTheme(
   return matches.find((t) => t.id === hintId) ?? matches[0] ?? null;
 }
 
-/** Concrete colors for a miniature preview, derived like applyOmarchyPalette does. */
 export function previewColors(theme: CustomTheme): { background: string; foreground: string; sidebar: string; surface: string } {
   const background = normalizeAccentColor(theme.background) ?? '#FFFFFF';
   const foreground = normalizeAccentColor(theme.foreground) ?? '#000000';
@@ -194,7 +174,6 @@ export function previewColors(theme: CustomTheme): { background: string; foregro
   };
 }
 
-/** Stock Light and Dark colors, only for drawing preview cards. */
 export const STOCK_PREVIEWS = {
   light: { background: '#FCFCFA', foreground: '#111110', sidebar: '#FBFBF9', surface: '#FFFFFE' },
   dark: { background: '#161514', foreground: '#F5F4F0', sidebar: '#10100F', surface: '#1C1B1A' },

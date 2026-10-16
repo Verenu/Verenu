@@ -137,16 +137,12 @@ pub fn android_decide_insertion(
     android::decide_insertion_strategy(has_editable_focus, supports_set_text)
 }
 
-/// Context label for the foreground package (package name only — never field
-/// contents). Used for per-app Context resolution on Android.
 #[tauri::command]
 pub fn android_context_for_package(package: String) -> serde_json::Value {
     let (label, is_generic) = android::context_label_for_package(&package);
     serde_json::json!({ "package": package, "label": label, "isGeneric": is_generic })
 }
 
-/// Kotlin pushes a Keystore-unlocked credential into Rust's memory-only cache.
-/// Never writes to disk; durable storage stays in Kotlin `VerenuKeystore`.
 #[tauri::command]
 pub fn android_provide_credential(provider: String, key: String) -> Result<(), String> {
     let (provider, key) = android::credential_input(&provider, &key)?;
@@ -228,13 +224,6 @@ pub async fn android_insert_text_result(
     Ok(())
 }
 
-/// Save (or delete, when `key` is empty) an API key on Android.
-///
-/// Writes Rust's memory-only cache immediately so the pipeline can use the
-/// key, and stages a rotation that the Kotlin `VerenuKeystore` fetches once
-/// via `GET /v1/keystore/pending` and persists to `EncryptedSharedPreferences`
-/// (AndroidKeyStore). The frontend calls this instead of `save_api_key` on
-/// Android — `save_api_key` stays memory-only there by design.
 #[tauri::command]
 pub fn android_keystore_save(provider: String, key: String) -> Result<(), String> {
     let (provider, normalized) = crate::android::credential_input(&provider, &key)?;
