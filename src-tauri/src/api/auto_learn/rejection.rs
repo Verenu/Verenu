@@ -192,8 +192,6 @@ fn run_rejection_monitor(
                 };
 
                 if rejected {
-                    // Guard against false positives from window switches: only fire
-                    // if the original injection window is still in the foreground.
                     let still_focused = is_target_window_focused(target_hwnd);
                     if still_focused {
                         log::info!("{prefix}: deletion detected, firing rejection");
