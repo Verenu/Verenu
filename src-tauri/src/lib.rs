@@ -123,9 +123,6 @@ fn start_storage_maintenance(
     });
 }
 
-/// Registers the Application context with ndk-context (needed by CPAL/Oboe).
-/// The Application outlives every Activity, so unlike the Activity pointer tao
-/// hands out it never goes stale.
 #[cfg(target_os = "android")]
 fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
     use jni::objects::JObject;
@@ -220,9 +217,6 @@ pub fn run() {
         builder = builder.plugin(crate::android::permissions_plugin::init());
         builder = builder.plugin(crate::android::security_plugin::init());
         builder = builder.plugin(crate::android::updater::init());
-        // Android WebView can report a desktop UA and full physical-pixel
-        // viewport. Set an immutable document-start marker so the frontend
-        // knows the target before any platform-dependent module is evaluated.
         builder = builder.append_invoke_initialization_script(
             "Object.defineProperty(window, '__VERENU_ANDROID__', { value: true, configurable: false });",
         );
@@ -277,21 +271,9 @@ pub fn run() {
             }
             #[cfg(target_os = "android")]
             {
-                // CPAL's Android/Oboe backend uses ndk-context from its audio
-                // worker (recording and device enumeration). tao's activity
-                // reference is freed when the Activity is destroyed, but this
-                // setup closure runs once per process, so handing ndk-context
-                // that reference leaves a stale pointer after the user backs
-                // out and reopens the app (JNI aborts the process). Give it a
-                // process-lifetime global reference to the Application
-                // context instead.
                 init_android_audio_context()?;
                 crate::android::local_ai::initialize()?;
             }
-            // Android does not provide a useful HOME environment variable.
-            // Resolve the canonical shared data directory through Tauri while
-            // an AppHandle is available, before opening SQLite or the bridge
-            // connection file. Desktop paths remain unchanged.
             #[cfg(target_os = "android")]
             {
                 let data_dir = app
@@ -503,14 +485,6 @@ pub fn run() {
                 );
             }
             start_frontend_watchdog(app.handle(), frontend_readiness.clone());
-            // macOS logout sends SIGTERM to the app. Tauri delivers
-            // RunEvent::Exit only for its own quit paths, so without this
-            // hook a SIGTERM would kill the process without unloading the
-            // local cleanup model, orphaning llama-server. Routing it through
-            // app.exit(0) runs the normal Exit cleanup (see the `run` closure
-            // below). Unix-only: console signals do not reach Windows GUI
-            // apps, and Windows logoff is handled separately in
-            // on_window_event.
             #[cfg(unix)]
             {
                 use tokio::signal::unix::{signal, SignalKind};
@@ -860,12 +834,6 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = _event {
                 log::info!("app exit requested");
             }
-            // Local cleanup runs llama-server.exe as a real child OS process
-            // (unlike local_stt, which is in-process). Child processes are
-            // not automatically killed when their parent exits on Windows —
-            // without this, quitting Verenu while a local cleanup model is
-            // loaded would orphan llama-server.exe, leaving it running
-            // indefinitely and holding the loaded model's RAM/VRAM.
             if let tauri::RunEvent::Exit = _event {
                 crate::media::sound::release_all_mutes_on_exit();
                 log::info!("app exiting; unloading local models");

@@ -74,9 +74,6 @@
       }
 
       if (isAndroid) {
-        // Persist directly through the native Keystore plugin so this does
-        // not depend on AccessibilityService being enabled and connected.
-        // Rust's Android command remains the memory-only pipeline cache.
         try {
           await invoke('plugin:verenu-security|saveCredential', { provider, key });
         } catch (error) {
@@ -102,9 +99,6 @@
     } catch (e) {
       console.error('save_api_key failed', e);
       keyValidation[provider] = { status: 'idle', message: '' };
-      // Credential-store errors never include the key. Surface the native
-      // cause so Linux users can unlock/start Secret Service instead of being
-      // sent through an unhelpful generic retry loop.
       keyErrors[provider] = formatIpcError(e, 'Could not save this API key on this device');
     } finally {
       keySaving[provider] = false;

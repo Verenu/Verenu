@@ -36,7 +36,7 @@ pub fn load_identity_key(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn delete_identity_key(app_data_dir: &std::path::Path) {
     #[cfg(all(target_os = "windows", not(test)))]
     {

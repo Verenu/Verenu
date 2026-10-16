@@ -148,8 +148,6 @@ fn scrub_history(path: &Path) -> anyhow::Result<()> {
 
 #[derive(Clone)]
 struct Bridge {
-    // Axum clones its state on multiple worker threads. Share the native
-    // handle instead of cloning Wry's main-thread Rc state in each request.
     app: Arc<AppHandle>,
     token: String,
     origins: Vec<String>,
@@ -652,8 +650,6 @@ async fn dispatch(app: &Arc<AppHandle>, command: Command) -> Result<Value, Strin
     let (tx, rx) = tokio::sync::oneshot::channel();
     let owner = Arc::clone(app);
     app.run_on_main_thread(move || {
-        // Window lookup and command dispatch clone native runtime state. Keep
-        // those operations on the same thread as Tauri's native IPC handler.
         let request = (|| {
             let window = owner
                 .get_webview_window("main")

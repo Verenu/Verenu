@@ -149,11 +149,6 @@ fn create_header() -> gtk::HeaderBar {
     header
 }
 
-/// Reparents the existing Tauri/wry content box into a `GtkOverlay` and adds
-/// native GTK window controls as a top-right overlay child.
-///
-/// This runs on GTK's main thread during Tauri setup, before the frontend asks
-/// for theme synchronization. Repeated calls are harmless.
 pub fn enable(window: &WebviewWindow) -> Result<(), String> {
     let gtk_window = window.gtk_window().map_err(|error| error.to_string())?;
     let content = window.default_vbox().map_err(|error| error.to_string())?;

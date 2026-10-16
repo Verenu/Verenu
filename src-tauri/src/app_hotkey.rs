@@ -22,7 +22,7 @@ enum HotkeyEvent {
     Release,
     HandlessToggle,
     Cancel,
-    #[allow(dead_code)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     ChordCancel,
     EscapeCancel,
     CopyLast,

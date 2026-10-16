@@ -52,8 +52,6 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("app.zen_browser.zen", "Zen Browser"),
 ];
 
-/// The focus target to refocus before paste. On Windows this is the foreground
-/// `HWND`; on macOS it is the frontmost application's PID (both fit in a `usize`).
 pub fn get_foreground_hwnd() -> usize {
     #[cfg(windows)]
     unsafe {
@@ -62,12 +60,6 @@ pub fn get_foreground_hwnd() -> usize {
     }
     #[cfg(target_os = "macos")]
     {
-        // Avoid CGWindowListCopyWindowInfo on the hotkey/keypress path — it
-        // communicates synchronously with WindowServer for all on-screen windows
-        // and introduces several ms of typing latency, which can trigger the
-        // macOS event tap watchdog timeout. frontmost_pid() is a single fast
-        // NSWorkspace call and sufficient for both focus-target tracking and the
-        // "same window?" comparisons in injection.rs (pid & 0xFFFFFFFF).
         crate::system::mac_app::frontmost_pid()
             .map(|p| p as usize)
             .unwrap_or(0)

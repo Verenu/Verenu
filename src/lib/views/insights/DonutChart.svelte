@@ -40,15 +40,6 @@
   interface Point { x: number; y: number }
   interface Fillet { filletCenter: Point; flatFacePoint: Point; ringPoint: Point; angle: number }
 
-  /**
-   * atan2 always returns a value in (-π, π], but segment boundaries are
-   * cumulative and range well past that (a ring can sweep past 3π/2 before
-   * wrapping back to 12 o'clock). Re-expressing the wrapped result as the
-   * angle nearest `reference` keeps boundaries monotonically increasing
-   * across the whole sweep — without this, any segment whose end crossed
-   * the ±π seam got a start/end pair that looked "backwards" and silently
-   * failed to render.
-   */
   function unwrapNear(angle: number, reference: number): number {
     let a = angle;
     while (a - reference > Math.PI) a -= TAU;

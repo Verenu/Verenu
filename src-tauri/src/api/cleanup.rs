@@ -673,11 +673,6 @@ pub fn chain_entry_supports_cleanup(
     }
 }
 
-/// Whether a selected cleanup backend satisfies the dictation reasoning
-/// policy. Google Gemini 3.x is the deliberate exception to "off": it is
-/// accepted only when the request can carry the supported minimum level.
-/// Provider-chain selection uses this so unsupported models are skipped before
-/// a request is made.
 pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str) -> bool {
     match provider {
         ProviderId::Groq => openai_compat_model_supports_no_reasoning("Groq", model),
@@ -815,8 +810,6 @@ fn build_openai_compat_request_with_alternate(
         max_tokens,
         temperature: 0.0,
         reasoning_effort: is_no_thinking.then_some("none"),
-        // Only the native OpenAI adapter receives this routing field.
-        // Compatible third-party endpoints may reject unknown parameters.
         prompt_cache_key: provider_label
             .eq_ignore_ascii_case("OpenAI")
             .then_some("verenu-cleanup-v2"),

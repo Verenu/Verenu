@@ -343,9 +343,16 @@ pub(super) fn resolve_injection_context(
 
 #[cfg(windows)]
 struct FocusedTextState {
-    // Reader drops before COM guard because fields drop in declaration order.
     reader: Option<Option<FocusedTextReader>>,
     com: Option<ComGuard>,
+}
+
+#[cfg(windows)]
+impl Drop for FocusedTextState {
+    fn drop(&mut self) {
+        self.reader.take();
+        self.com.take();
+    }
 }
 
 #[cfg(windows)]

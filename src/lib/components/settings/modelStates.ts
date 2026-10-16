@@ -189,12 +189,6 @@ export function discoveredRows(ctx: PickerContext): ModelRow[] {
   return rows;
 }
 
-/**
- * Ids a provider returned that aren't in the catalog.
- *
- * Groq's and OpenAI's lists have no modality fields. IDs without capability
- * metadata use a name heuristic and remain under Show more models.
- */
 export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   const transcriptionish = /whisper|transcribe|speech|[-/]stt\b/i;
   const otherModality =

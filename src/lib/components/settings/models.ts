@@ -233,11 +233,6 @@ export function providerDisplayLabel(provider: ProviderId): string {
   }
 }
 
-/**
- * "Provider Model", without saying the provider twice. Gemini's models are
- * literally named "Gemini 3.7 Flash", so a blind prefix reads "Gemini Gemini
- * 3.7 Flash"; AssemblyAI's don't, so they need the prefix to be identifiable.
- */
 export function qualifiedModelLabel(provider: ProviderId, model: string): string {
   const label = modelDisplayLabel(provider, model);
   const prefix = providerDisplayLabel(provider);

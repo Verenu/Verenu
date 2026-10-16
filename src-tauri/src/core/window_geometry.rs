@@ -7,16 +7,10 @@ pub struct DesktopPoint {
     pub y: f64,
 }
 
-/// The native focus target used for injection plus the display anchor captured
-/// at dictation start. The id is an HWND on Windows and an application PID on
-/// macOS.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WindowTarget {
     pub id: usize,
     pub display_point: Option<DesktopPoint>,
-    /// Hyprland's stable client address and metadata captured *before* audio
-    /// processing. Other platforms leave this empty and keep their HWND/PID
-    /// identity in `id`.
     #[cfg(target_os = "linux")]
     pub linux: Option<LinuxWindowTarget>,
 }
@@ -280,7 +274,7 @@ mod context_snapshot_tests {
                 title: "Public fixture".into(),
                 at: [-100, 20],
                 size,
-                workspace: crate::core::hyprland::Workspace { id: 2, name: "2".into() },
+                workspace: crate::core::hyprland::Workspace { id: 2 },
                 monitor: 3,
                 tags: vec!["terminal".into()],
             };

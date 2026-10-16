@@ -54,10 +54,6 @@ interface SettingsSectionGroup {
   items: SettingsSection[];
 }
 
-/**
- * Gated sections are omitted entirely rather than hidden with CSS — the
- * dev-mode smoke test asserts the Developer rail item has count 0 before unlock.
- */
 export function visibleSettingsSections(opts: {
   isMac: boolean;
   devMode: boolean;

@@ -362,9 +362,6 @@ pub(super) fn current_anchored_span<'a>(
     Some(&current[anchor.start..new_end])
 }
 
-/// Bounded UI Automation reads may start at different offsets after an edit.
-/// Anchor the span using text immediately beside the injected range instead of
-/// assuming both windows have a shared document origin.
 fn current_span_from_surrounding_context<'a>(
     baseline: &str,
     current: &'a str,

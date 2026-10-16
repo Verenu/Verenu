@@ -39,26 +39,6 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
-/**
- * The Android dictation pill: the touch equivalent of the desktop pill
- * (`src/PillApp.svelte` + `DictationPill.svelte`).
- *
- * - A near-black capsule in both color schemes (a pale pill vanishes against a
- *   light keyboard, and the dark scheme gets a hairline border so it still
- *   reads against a dark one). [setDark] follows Verenu's own appearance
- *   setting rather than only the OS night mode.
- * - Idle → recording → transcribing → cleaning → inserting, plus error (retry)
- *   and cancelled, mirroring `src/lib/android/overlay.ts`. Between states the
- *   capsule morphs its width and cross-fades its content.
- * - The recording row is the desktop's envelope visualizer: 12 mirrored bars
- *   where distance from the middle means AGE, driven by the recorder's 10 ms
- *   peak envelope and redrawn every display frame (see [WaveView]).
- * - [setCompact] is the docked form used while a dictation continues without
- *   the keyboard: smaller, just the wave and stop button.
- *
- * Rendering only — the [Listener] (implemented by
- * [VerenuAccessibilityService]) owns recording, insertion, and bridge calls.
- */
 class VerenuOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,

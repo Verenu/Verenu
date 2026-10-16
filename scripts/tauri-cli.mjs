@@ -13,8 +13,6 @@ const macDevRunner = path.join(__dirname, 'tauri-macos-dev-runner.mjs');
 const macDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.conf.json');
 const windowsDevConfig = path.join(repoRoot, 'src-tauri', 'tauri.dev.windows.conf.json');
 
-// Tauri's child process does not otherwise read the repository .env file.
-// Load only the two explicitly supported, non-secret analytics build values.
 loadAnalyticsEnv();
 
 const args = process.argv.slice(2);

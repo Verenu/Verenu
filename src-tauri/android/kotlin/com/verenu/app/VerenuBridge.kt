@@ -7,17 +7,6 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * HTTP client for Verenu's loopback bridge (see `src-tauri/src/android/bridge.rs`,
- * which is the protocol's source of truth — this file mirrors it).
- *
- * The Rust backend listens on 127.0.0.1 with a per-boot token published in
- * `android_bridge.json` inside the app-private files dir (same UID, MODE_PRIVATE
- * storage). Every request carries `Authorization: Bearer <token>`.
- *
- * Only Android SDK + org.json APIs are used here — no Tauri, no OkHttp, no
- * coroutines — so this compiles against any AGP with `minSdk 26`.
- */
 data class BridgeConnection(val port: Int, val token: String)
 
 data class BridgeOverlay(

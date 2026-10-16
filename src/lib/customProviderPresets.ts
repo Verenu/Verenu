@@ -1,10 +1,5 @@
 import type { CustomProvider } from './customProviders.svelte';
 
-/**
- * Starting points for the custom provider editor. These are conveniences, not
- * endorsements: Verenu does not test or officially support these vendors, and
- * model IDs change often, so every value stays editable before saving.
- */
 export type PresetGroup = 'cloud' | 'gateway' | 'local' | 'blank';
 
 export type PresetAlternate = {

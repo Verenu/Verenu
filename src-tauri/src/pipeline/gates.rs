@@ -8,8 +8,6 @@ pub(super) fn has_deliverable_cleanup(text: &str, cfg: &store::PipelineConfig, c
             && text.chars().all(|c| matches!(c, '\n' | '\r' | ' ' | '\t')))
 }
 
-/// Minimum recording length before any API is called. Shorter clips make
-/// Whisper hallucinate, so they're rejected outright.
 pub(super) const MIN_RECORDING_MS: u64 = 700;
 
 pub(super) const MIN_RECORDING_RMS: f32 = 0.005;
@@ -57,13 +55,6 @@ pub(super) fn effective_recording_rms(processed_rms: f32, raw_rms: f32, active_g
 
 const GLOSSARY_TERMS: &[&str] = &["verenu", "tauri", "svelte", "groq", "gemini", "openai"];
 
-/// Returns true when the transcription looks like a Whisper prompt-echo or
-/// a well-known silent-audio hallucination rather than actual speech.
-///
-/// Whisper sometimes outputs literal phrases from its own system prompt
-/// (e.g. "Return only spoken words.") when the audio contains no
-/// recognisable speech.  We catch these before the cleanup step so they
-/// are never injected and never populate the cleanup cache.
 pub(super) fn is_transcription_hallucination(text: &str) -> bool {
     let t = text.trim().to_lowercase();
     const PATTERNS: &[&str] = &[
@@ -116,12 +107,6 @@ fn is_pure_glossary_echo(lowercased_trimmed: &str) -> bool {
     enough_matches && !remainder.chars().any(|c| c.is_alphanumeric())
 }
 
-/// Whisper can return a slightly garbled version of one of the vocabulary
-/// terms when it is prompted by noise rather than speech. Keep this narrow:
-/// only a single token, only a non-exact match, and only within one edit of a
-/// glossary term. That catches
-/// artifacts such as "svlet" -> "svelte" without
-/// rejecting ordinary multi-word dictation or an exact single-word term.
 fn is_fuzzy_glossary_echo(lowercased_trimmed: &str) -> bool {
     let mut tokens = lowercased_trimmed.split_whitespace();
     let Some(token) = tokens.next() else {
@@ -212,15 +197,6 @@ pub(super) fn strip_trailing_hallucination(text: &str) -> String {
     text.to_string()
 }
 
-/// Removes a trailing sentence that matches a known Whisper hallucination
-/// pattern, leaving any real speech before it intact.
-///
-/// Whisper sometimes bolts one of these phrases onto the *end* of an
-/// otherwise-correct transcription when the recording has a tail of
-/// near-silent or background audio after the user finishes talking (e.g. the
-/// mic keeps capturing for a moment before the hotkey is released). That
-/// differs from `is_transcription_hallucination`, which only catches the
-/// case where the *entire* output is one of these phrases.
 pub(super) fn strip_hallucinated_suffix(text: &str) -> String {
     let mut current = text.trim().to_string();
 
