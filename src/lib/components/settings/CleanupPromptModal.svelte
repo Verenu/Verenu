@@ -368,14 +368,6 @@
 </div>
 
 <style>
-  /*
-   * Fixed and portalled to the body: the settings page animates with a
-   * transform, which would otherwise become this dialog's containing block.
-   * The card also no longer borrows .ui-modal-card — that class is
-   * position:fixed with left/top:50% and translate:-50% -50%, and those offsets
-   * survived the local position:relative override, which is what parked the
-   * dialog in the bottom-right corner.
-   */
   .prompt-modal-wrap {
     position: fixed;
     inset: 0;

@@ -333,10 +333,6 @@ pub async fn dismiss_cancelled_capture(
     Ok(())
 }
 
-/// Puts a failed dictation's text back on the clipboard so the user can
-/// paste it manually — called from the pill's "Paste failed" Copy button.
-/// The text itself never crosses to the frontend; only this command's
-/// success/failure result does.
 #[tauri::command]
 pub async fn copy_paste_failure_to_clipboard(
     state: tauri::State<'_, SharedState>,
@@ -351,11 +347,6 @@ pub async fn copy_paste_failure_to_clipboard(
     Ok(())
 }
 
-/// Flip the floating pill between click-through and interactive without
-/// touching window decorations. Used when delayed controls mount (handsfree /
-/// paste-failed buttons). Backend reveal/hide own the same path; the pill
-/// window's ACL does not grant `setIgnoreCursorEvents` / `setDecorations`,
-/// and decorations must stay backend-hardened to avoid the pale caption flash.
 #[tauri::command]
 pub fn set_pill_interactive(
     app: AppHandle,
@@ -382,9 +373,6 @@ pub fn native_test_pill(
     )
 }
 
-/// Frontend auto-dismiss (error / cancelled / copied toasts) owns the hide
-/// timer so a newer recording cannot be stolen by a stale timeout. On Linux
-/// the native window must actually unmap; Windows leave it shown and idle.
 #[tauri::command]
 pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
     crate::pipeline::hide_pill(&app);
@@ -442,10 +430,6 @@ pub fn set_pill_size(
     }
 }
 
-/// Reports the pill's visible content rectangle (CSS px, viewport-relative) so
-/// the Linux window can accept clicks only over the capsule instead of its
-/// transparent margin. A no-op elsewhere, where the native
-/// window itself is content-sized.
 #[tauri::command]
 pub fn set_pill_hit_rect(
     app: AppHandle,

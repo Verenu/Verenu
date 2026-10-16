@@ -16,7 +16,6 @@
     id: string;
     label: string;
     values: string[];
-    /** Text typed but not yet turned into a tag; the parent folds it in on save. */
     draft: string;
     placeholder?: string;
     suggestions?: string[];

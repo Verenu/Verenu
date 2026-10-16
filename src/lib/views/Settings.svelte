@@ -291,10 +291,6 @@
 
   function onWindowKeydown(e: KeyboardEvent) {
     if (appStore.settingsOpen && e.key === 'Escape') {
-      // An inner layer already consumed the key (dropdown, disclosure, tile,
-      // hotkey capture). Svelte-delegated element handlers flush state before
-      // this window listener runs, so the DOM guards below can no longer see
-      // the layer that handled it — defaultPrevented is the reliable signal.
       if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) {

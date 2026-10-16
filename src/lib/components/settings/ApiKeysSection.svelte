@@ -39,9 +39,6 @@
       let status = await invoke<KeyStatus>('get_api_key_status');
       if (isAndroid) {
         try {
-          // Rust's Android cache is intentionally memory-only and may be empty
-          // until AccessibilityService reconnects. Ask the native Keystore for
-          // booleans only so a durable key does not look lost in Settings.
           const durable = await invoke<Partial<KeyStatus>>('plugin:verenu-security|getCredentialStatus');
           status = { ...status, ...durable };
         } catch (err) {

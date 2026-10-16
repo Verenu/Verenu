@@ -10,7 +10,6 @@ export type DownloadKind = 'stt' | 'llm' | 'runtime';
 export type DownloadStage = 'downloading' | 'verifying' | 'extracting';
 
 export type ActiveDownload = {
-  /** Stable unique key across all three sources: `${kind}:${id}`. */
   key: string;
   kind: DownloadKind;
   id: string;
@@ -103,7 +102,6 @@ export function cancelDownload(item: ActiveDownload) {
   }
 }
 
-/** Clears the "ready" list — called when Settings is closed. */
 export function acknowledgeDownloads() {
   if (downloadUi.completed.length) downloadUi.completed = [];
 }

@@ -4,22 +4,16 @@ import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
 
 const state = $state<{ codes: string[] }>({ codes: defaultHotkey });
 
-/** The current hotkey codes — reactive; reads `defaultHotkey` until `loadHotkey()` resolves. */
 export function hotkeyCodes(): string[] {
   const desktop = desktopShortcut('dictation');
   return desktop ? desktop.codes : state.codes;
 }
 
-/** Display labels for the chord, empty slots dropped (e.g. `['Ctrl', 'Windows']`). */
 export function hotkeyLabels(): string[] {
   if (desktopShortcut('dictation')?.active === null) return ['Unavailable'];
 	return hotkeyCodes().filter(Boolean).map(formatKeyLabel);
 }
 
-/**
- * Loads the saved hotkey. Safe to call repeatedly — the backend returns null
- * when the user has never set one, in which case the platform default stands.
- */
 export async function loadHotkey(): Promise<void> {
 	await loadDesktopShortcuts();
 	try {
@@ -43,12 +37,10 @@ function codeVariants(code: string): string[] {
 	return [code];
 }
 
-/** Every `KeyboardEvent.code` that should be tracked to detect the chord. */
 export function hotkeyWatchCodes(): Set<string> {
 	return new Set(hotkeyCodes().filter(Boolean).flatMap(codeVariants));
 }
 
-/** True when `pressed` satisfies every slot of the chord. */
 export function matchesHotkey(pressed: Set<string>): boolean {
 	const slots = hotkeyCodes().filter(Boolean);
 	if (slots.length === 0) return false;

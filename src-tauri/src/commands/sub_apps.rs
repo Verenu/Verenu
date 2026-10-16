@@ -122,7 +122,6 @@ pub async fn create_sub_app(
     .await
 }
 
-/// Assigns a sub-app to a Context, or returns it to the list with `null`.
 #[tauri::command]
 pub async fn assign_sub_app(
     app: AppHandle,

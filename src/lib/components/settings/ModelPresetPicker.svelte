@@ -14,7 +14,6 @@
     onOpenApiKeys,
     onCancelPreset,
     onDeletePreset,
-    /** The note points at the Advanced panel, which only exists in Settings. */
     showCustomNote = true,
     options = {},
     onUseFallback,
@@ -26,21 +25,17 @@
   }: {
     showCustomNote?: boolean;
     options?: PresetOptions;
-    /** Display-only view of each preset (e.g. onboarding's Apple cleanup override). Actions still receive the original preset. */
     transformPreset?: (preset: Preset) => Preset;
     onUseFallback?: (preset: Preset) => void;
     onTestLocal?: (preset: Preset) => void;
     testingLocal?: boolean;
-    /** The preset whose download the user started, if any. */
     pendingPresetId?: string | null;
     selectionMode?: 'manual' | 'fastest' | 'balanced' | 'quality';
     apiKeyStatus: Record<ProviderId, boolean>;
     hardware: Hardware;
     localSupported: boolean;
     activeConfig: ActiveConfig;
-    /** Downloaded local model ids, per task. */
     installedLocal: { transcription: string[]; cleanup: string[] };
-    /** The local model id currently downloading per task, if any. */
     downloadingLocal: { transcription: string | null; cleanup: string | null };
     onApplyPreset: (preset: Preset) => void;
     onOpenApiKeys: () => void;

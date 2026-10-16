@@ -49,15 +49,12 @@ export const isAndroid = detectedAndroid;
 // A desktop-style Android UA may still match /Windows/; the explicit native
 // marker above must win so all platform labels agree on the real target.
 export const isWindows = isWindowsUserAgent && !isAndroid;
-/** Phone/tablet/foldable shell: touch-first layout, bottom nav, safe-area insets. */
 export const isMobile = isAndroid;
-/** Coarse pointers need larger hit targets regardless of OS. */
 export const isTouchDevice =
 	typeof window !== 'undefined' &&
 	typeof window.matchMedia !== 'undefined' &&
 	window.matchMedia('(pointer: coarse)').matches;
 
-/** Human label for a `KeyboardEvent.code`, OS-aware (⌘/⌃/⌥ + fn on macOS). */
 export function formatKeyLabel(code: string): string {
 	if (isMac) {
 		const mac: Record<string, string> = {
@@ -104,7 +101,6 @@ export const defaultHotkey: string[] = isMac
 	? ['AltLeft', 'Space']
 	: ['ControlLeft', 'MetaLeft'];
 
-/** Platform label for the fixed copy-last-dictation shortcut. */
 export const copyLastHotkey: string[] = isMac
 	? ['AltLeft', 'MetaLeft', 'KeyC']
 	: ['ControlLeft', 'AltLeft', 'KeyC'];

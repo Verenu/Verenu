@@ -209,11 +209,7 @@ async fn wait_until_ready(
             .map(|guard| guard.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         if started_at.elapsed() > Duration::from_secs(45) {
-            // child.kill() on a `Child` that's still running is the only way
-            // to stop it — dropping the handle on the `?` in start_server()
-            // does NOT kill the process, it just detaches the handle, which
-            // previously left an orphaned llama-server.exe holding the
-            // loaded model's GPU/RAM allocation with no way to clean it up.
+            // Dropping a std::process::Child does not stop the process; kill() does.
             let _ = child.kill();
             let _ = child.wait();
             anyhow::bail!(
@@ -266,32 +262,6 @@ struct ChatReq {
     max_tokens: u32,
     cache_prompt: bool,
     temperature: f32,
-    // Greedy decoding (temperature 0) has no randomness to escape a
-    // repetition loop once it enters one — observed in practice on a small
-    // quantized local model: the same word repeated dozens of times in a
-    // row. `repeat_penalty` (a llama-server extension to the OpenAI-compatible
-    // endpoint, not part of the official spec) directly discourages
-    // re-emitting recently used tokens; cloud providers are unaffected since
-    // this struct/endpoint is local-only.
-    //
-    // Deliberately the gentle ~1.1 most llama.cpp guides recommend, not a
-    // stronger value: llama.cpp's repeat penalty applies over the trailing
-    // token window regardless of whether those tokens came from the prompt
-    // or the completion-so-far, and for a "lightly edit this dictation" task
-    // the <raw_dictation> text sits at the very end of the prompt — well
-    // inside that window for any non-trivial penalty strength. A stronger
-    // value (this was 1.3) actively suppresses the logits for the speaker's
-    // own words, which pushes the model toward paraphrasing with different
-    // vocabulary just to avoid the penalty even on a short, simple
-    // dictation — exactly backwards for a cleanup pass that's supposed to
-    // preserve almost everything verbatim, and it shows up downstream as
-    // `looks_like_fabricated_content` rejecting otherwise-fine output
-    // because word overlap with the input collapsed. The original
-    // degenerate-repetition risk this guarded against is now also caught
-    // independently by `looks_like_degenerate_repetition` plus the pipeline's
-    // hardened-retry/raw-text-fallback path, so a milder penalty here doesn't
-    // remove the safety net, just stops it from firing constantly on normal
-    // input.
     repeat_penalty: f32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,

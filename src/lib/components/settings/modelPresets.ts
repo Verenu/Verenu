@@ -18,16 +18,10 @@ import {
 } from './models';
 
 export type Hardware = {
-  /** Native platform capability, independent of the window width or user-agent. */
   isAndroid?: boolean;
   totalRamMb: number;
   freeRamMb: number;
   gpus: { vramTotalMb: number; vramUsedMb: number }[];
-  /**
-   * True when the backend read failed (or an older backend lacks the command).
-   * In that case we assume a capable machine and offer every preset rather than
-   * hiding local options behind a phantom "not enough RAM".
-   */
   unknown: boolean;
 };
 
@@ -40,23 +34,19 @@ export type PresetTarget = {
   dualTranscription: boolean;
   transcriptionFallbacks: string[];
   cleanupFallbacks: string[];
-  /** Local model ids that must be on disk before this preset can run. */
   requiredLocalModels: RequiredLocalModel[];
 };
 
 export type Preset = {
   id: string;
-  /** 'preset' = selectable config; 'add-key' = an inert prompt to add a key. */
   kind: 'preset' | 'add-key';
   name: string;
   tagline: string;
-  /** 0 = maximum accuracy … 1 = maximum efficiency; positions the bar marker. */
   position: number;
   offline: boolean;
   target: PresetTarget | null;
 };
 
-/** What the live settings currently look like — compared against preset targets. */
 export type ActiveConfig = {
   transcriptionDefaultModel: string;
   cleanupEnabled: boolean;
@@ -80,9 +70,7 @@ export type PresetOptions = {
   localModels?: LocalSttModelInfo[];
   installedLocal?: { transcription: string[]; cleanup: string[] };
   localCleanupReady?: boolean;
-  /** Offer a speech-only local choice for the setup wizard. */
   includeTranscriptionOnly?: boolean;
-  /** Keep the wizard's local provider choice on local models even when cloud keys exist. */
   localOnly?: boolean;
   cache?: ModelCatalogCache;
   performance?: ModelPerformance[];
@@ -305,7 +293,6 @@ function cleanupModelFor(provider: UiProviderId | undefined, tier: 'standard' | 
   }
   return modelId(provider, entry[tier]);
 }
-
 
 /**
  * The one local engine that stays offered where the blanket on-device gate is

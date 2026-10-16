@@ -3,7 +3,6 @@
 const path = require('path');
 const os = require('os');
 
-
 const { chromium } = require('playwright');
 const { tauriMock } = require('../smoke/_tauri-mock.cjs');
 

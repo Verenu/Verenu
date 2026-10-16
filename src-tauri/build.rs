@@ -84,9 +84,6 @@ fn link_windows_manifest() {
         return;
     }
 
-    // tauri-build normally embeds this manifest only in binary targets. The
-    // library test executable also initializes native dialogs, so it needs the
-    // Common Controls v6 activation context as well.
     const MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
     <dependentAssembly>

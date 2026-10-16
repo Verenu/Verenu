@@ -7,7 +7,6 @@ import type { CustomProvider } from './customProviders.svelte';
  */
 export type PresetGroup = 'cloud' | 'gateway' | 'local' | 'blank';
 
-/** A second wire format the same vendor accepts, e.g. an Anthropic-style endpoint. */
 export type PresetAlternate = {
   protocol: CustomProvider['protocol'];
   base_url: string;
@@ -26,19 +25,13 @@ export type CustomProviderPreset = {
   transcription_models: string[];
   cleanup_models: string[];
   color: string;
-  /** Overrides the generated initials. */
   mark?: string;
-  /** Placeholder for the API key field. */
   key_hint?: string;
-  /** One line shown under the picker tile and in the editor. */
   note: string;
-  /** Where the user finds their key or setup instructions. */
   docs?: string;
-  /** Other API formats this vendor supports. The preset's own protocol is the recommended one. */
   alt?: PresetAlternate;
 };
 
-/** Cards shown first, in order. They are omitted from their home group to avoid repeats. */
 export const POPULAR_PRESET_IDS = ['ollama', 'lm-studio', 'mistral', 'deepseek', 'together', 'fireworks', 'cerebras', 'anthropic', 'cloudflare'];
 
 export const PRESET_GROUPS: { id: PresetGroup; label: string; hint: string }[] = [
@@ -96,7 +89,6 @@ export const CUSTOM_PROVIDER_PRESETS: CustomProviderPreset[] = [
 
 export const presetById = (id: string) => CUSTOM_PROVIDER_PRESETS.find(p => p.id === id);
 
-/** Host portion for display, without scheme, path, or port noise. */
 export function displayHost(url: string): string {
   try { return new URL(url).host; } catch { return url; }
 }
@@ -109,7 +101,6 @@ export function monogram(name: string): string {
   return (inner ? words[0][0] + inner[0] : words[0].slice(0, 2)).toUpperCase();
 }
 
-/** Closest preset by hostname, so existing providers keep a recognizable tile. */
 export function presetForUrl(url: string, protocol: string): CustomProviderPreset | undefined {
   const host = displayHost(url);
   if (!host) return undefined;

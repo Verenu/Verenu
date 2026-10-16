@@ -276,9 +276,6 @@ fn microphone_permission_status_string() -> String {
 
 #[cfg(target_os = "macos")]
 async fn keychain_status_for_provider(_provider: Option<String>) -> String {
-    // Keychain is intentionally not a passive permission query. Reading a
-    // credential can prompt and only proves access to one item. It is checked
-    // exclusively by the explicit Check Access action below.
     "not_checked".to_string()
 }
 
@@ -425,9 +422,6 @@ fn write_debug_probe(snapshot: &MacPermissionSnapshot) {
 #[cfg(not(debug_assertions))]
 fn write_debug_probe(_snapshot: &MacPermissionSnapshot) {}
 
-/// Whether Verenu is trusted for the Accessibility API (needed for Cmd+V
-/// injection and auto-learn). When `prompt` is true, macOS shows the system
-/// permission dialog. Always true on non-macOS platforms.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn check_accessibility_permission(prompt: bool) -> bool {
@@ -612,8 +606,6 @@ fn write_microphone_request_trace(
 ) {
 }
 
-/// Request notification authorization only after an explicit user action,
-/// then re-query UNNotificationSettings for the authoritative result.
 #[tauri::command]
 pub async fn request_notification_permission(
     app: tauri::AppHandle,
@@ -796,10 +788,6 @@ pub async fn reset_macos_core_permissions() -> TccResetResult {
     }
 }
 
-/// Reads the stored API key for `provider` from the system credential store to check
-/// whether the app has been granted Keychain access. On macOS this triggers the native
-/// Keychain dialog if the app hasn't been granted "Always Allow" yet.
-/// Returns "authorized" | "not_configured" | "denied".
 #[tauri::command]
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub async fn check_keychain_access(

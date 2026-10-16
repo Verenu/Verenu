@@ -16,9 +16,6 @@ use windows::Win32::System::Com::{
 pub enum MuteOutcome {
     Muted,
     AlreadyMuted,
-    /// The mute request was delivered, but the platform cannot report whether
-    /// the output actually went silent (Android applies it in Kotlin and may
-    /// leave the volume up after a user override).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     Requested,
     Failed,

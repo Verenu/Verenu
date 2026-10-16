@@ -97,14 +97,6 @@ export async function openLocalModelsFolder() {
 let listenersStarted = false;
 let currentSession = 0;
 
-/**
- * Registers local-STT Tauri event listeners for the app's lifetime, independent
- * of any Settings sub-section's mount state. ModelsSection.svelte used to own
- * these listeners directly and tore them down in onDestroy — but Settings.svelte
- * wraps sub-sections in a `{#key section}` block, so switching tabs mid-download
- * killed the listeners and silently dropped the eventual completion event,
- * leaving the UI stuck showing stale download progress.
- */
 export function startLocalSttListeners(): () => void {
   if (listenersStarted) {
     return () => {};

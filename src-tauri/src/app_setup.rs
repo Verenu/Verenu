@@ -6,10 +6,6 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 
-/// Startup readiness reported by each Tauri WebView after its frontend has
-/// mounted successfully. A backend can be fully alive while WebView2 is
-/// showing a stale connection-refused page, so backend liveness alone is not
-/// enough to declare startup successful.
 #[derive(Clone, Default)]
 pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
@@ -205,12 +201,6 @@ pub(crate) fn app_db_path() -> std::path::PathBuf {
     app_data_dir().join("verenu.db")
 }
 
-/// Reports a fatal startup error where a packaged user can see it before
-/// aborting. Debug builds reach stderr via the panic; Windows release builds
-/// have no console (`windows_subsystem = "windows"`), so the error also goes
-/// to a message box — otherwise an unwritable data directory or a
-/// non-quarantinable database fails the app with no visible reason. Only the
-/// message is shown, never full user-local paths.
 pub(crate) fn fatal_startup_error(message: &str) -> ! {
     log::error!("{message}");
     #[cfg(target_os = "windows")]

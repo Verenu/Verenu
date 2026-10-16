@@ -20,13 +20,11 @@ export const ANDROID_PERMISSION_ORDER: AndroidPermissionId[] = [
 	'notifications',
 ];
 
-/** Permissions without which dictation cannot function. */
 export const REQUIRED_ANDROID_PERMISSIONS: AndroidPermissionId[] = [
 	'microphone',
 	'accessibility_service',
 ];
 
-/** Fallback rationale shown if the backend rationale command is unreachable. */
 export const FALLBACK_RATIONALE: Record<AndroidPermissionId, string> = {
 	microphone:
 		'Verenu needs microphone access to record your dictation. Audio is transcribed and then discarded.',
@@ -38,7 +36,6 @@ export const FALLBACK_RATIONALE: Record<AndroidPermissionId, string> = {
 		'Verenu posts a status notification while recording so you can see — and stop — a dictation from anywhere.',
 };
 
-/** Where each recovery action deep-links. Opened by the step component. */
 export const PERMISSION_SETTINGS_TARGET: Record<AndroidPermissionId, string> = {
 	microphone: 'app-details',
 	accessibility_service: 'accessibility-settings',
@@ -46,14 +43,12 @@ export const PERMISSION_SETTINGS_TARGET: Record<AndroidPermissionId, string> = {
 	notifications: 'app-notification-settings',
 };
 
-/** Dictation can function: mic + accessibility granted. */
 export function isFunctional(snapshot: AndroidPermissionSnapshot): boolean {
 	return (
 		snapshot.microphone === 'granted' && snapshot.accessibility_service === 'granted'
 	);
 }
 
-/** Required gates still missing, in onboarding order. */
 export function missingRequired(snapshot: AndroidPermissionSnapshot): AndroidPermissionId[] {
 	const missing: AndroidPermissionId[] = [];
 	if (snapshot.microphone !== 'granted') missing.push('microphone');
@@ -61,11 +56,6 @@ export function missingRequired(snapshot: AndroidPermissionSnapshot): AndroidPer
 	return missing;
 }
 
-/**
- * Recovery copy for a denied gate. `permanently_denied` means the system will
- * no longer show the prompt — the user must flip it in Settings, so say so
- * explicitly instead of offering a dead "ask again" button.
- */
 export function recoveryCopy(
 	permission: AndroidPermissionId,
 	grant: PermissionGrant,
@@ -94,7 +84,6 @@ export function recoveryCopy(
 	}
 }
 
-/** Parse a grant id from Kotlin (snake_case or camelCase). */
 export function parseGrant(id: string): PermissionGrant {
 	switch (id) {
 		case 'granted':

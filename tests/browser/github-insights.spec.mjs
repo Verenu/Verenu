@@ -24,6 +24,12 @@ test('daily counts remain inside the chart at both date edges', async ({ page, s
     await expect(plot).toHaveAttribute('aria-valuenow', '0');
     await page.keyboard.press('ArrowRight');
     await expect(plot).toHaveAttribute('aria-valuenow', '1');
+    await page.keyboard.press('ArrowUp');
+    await expect(plot).toHaveAttribute('aria-valuenow', '2');
+    await page.keyboard.press('ArrowDown');
+    await expect(plot).toHaveAttribute('aria-valuenow', '1');
+    await page.keyboard.press('ArrowLeft');
+    await expect(plot).toHaveAttribute('aria-valuenow', '0');
     await page.keyboard.press('End');
     await expect(plot).toHaveAttribute('aria-valuenow', await plot.getAttribute('aria-valuemax'));
     await expect(plot).toHaveAttribute('aria-valuetext', new RegExp(`${new Intl.NumberFormat('en-US').format(dayWords)} words`));

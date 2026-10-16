@@ -68,14 +68,6 @@ enum CursorContextState {
     },
 }
 
-// Post-paste verification text helpers. Pure functions (no UIA/OS access) so
-// they're unit-testable on every platform; the Windows injection path drives
-// the actual reads and owns the retry timing. They exist because Chromium/
-// ProseMirror-style editors (ChatGPT, Claude, Slack, ...) commit a paste to
-// their own state before the accessibility tree catches up — a caret-local
-// read taken too early still sees the pre-paste text, which used to flag a
-// *successful* paste as failed (the false positives reported in Chrome).
-
 #[cfg_attr(not(windows), allow(dead_code))]
 const PASTE_VERIFY_SUFFIX_CHARS: usize = 20;
 

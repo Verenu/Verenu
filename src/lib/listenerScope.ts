@@ -1,4 +1,3 @@
-/** Own async event registrations, including ones that finish after disposal. */
 export function createListenerScope() {
   let disposed = false;
   const unlisteners: Array<() => void> = [];

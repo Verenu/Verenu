@@ -1,5 +1,3 @@
-/** Compact developer-only accessibility dump for T3 Code SnapShots. */
-
 export const RUIN_ACCESSIBILITY_EVENT = 'verenu:ruin-accessibility-changed';
 export const DUMP_REGION_ATTR = 'data-verenu-ax-dump-region';
 export const DUMP_ANNOTATION_ATTR = 'data-verenu-ax-dump';

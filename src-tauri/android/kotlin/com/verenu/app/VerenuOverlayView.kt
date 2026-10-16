@@ -201,7 +201,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = false)
     }
 
-
     fun updateState(next: State) {
         if (state == next) return
         state = next
@@ -324,7 +323,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         wave?.stop()
         super.onDetachedFromWindow()
     }
-
 
     private fun paletteFor(dark: Boolean) = Palette(
         bg = if (dark) 0xE00F0E0E.toInt() else 0xE6FFFFFF.toInt(),
@@ -543,7 +541,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-
     private class IconView(context: Context, val kind: Kind, color: Int) : View(context) {
         enum class Kind { MIC, CLOSE, RETRY, UNDO, ALERT }
 
@@ -630,7 +627,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-
     private class ShineTextView(context: Context, private val text: String, private val color: Int, sizeSp: Float) : View(context) {
         private val density = context.resources.displayMetrics.density
         private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -706,7 +702,6 @@ class VerenuOverlayView @JvmOverloads constructor(
             canvas.drawText(text, 0f, baseline, shine)
         }
     }
-
 
     private class WaveView(context: Context, color: Int, private val compact: Boolean) : View(context) {
         private val density = context.resources.displayMetrics.density

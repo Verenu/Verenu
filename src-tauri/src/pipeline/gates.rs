@@ -55,19 +55,6 @@ pub(super) fn effective_recording_rms(processed_rms: f32, raw_rms: f32, active_g
     processed_rms.max(raw_rms * gain)
 }
 
-/// Returns true when the transcription looks like a Whisper prompt-echo or
-/// a well-known silent-audio hallucination rather than actual speech.
-///
-/// Whisper sometimes outputs literal phrases from its own system prompt
-/// (e.g. "Return only spoken words.") when the audio contains no
-/// recognisable speech.  We catch these before the cleanup step so they
-/// are never injected and never populate the cleanup cache.
-/// Vocabulary terms from the transcription priming prompt
-/// (api/prompts/transcription.rs's TRANSCRIPTION_GLOSSARY). Kept here too —
-/// duplicated rather than shared across the api/pipeline module boundary,
-/// matching this file's existing self-contained-constant style — so silent
-/// audio that echoes the prompt's own vocabulary list can be recognized as a
-/// hallucination instead of pasted as if it were spoken content.
 const GLOSSARY_TERMS: &[&str] = &["verenu", "tauri", "svelte", "groq", "gemini", "openai"];
 
 /// Returns true when the transcription looks like a Whisper prompt-echo or
@@ -109,15 +96,6 @@ pub(super) fn has_spoken_content(text: &str) -> bool {
     text.chars().any(|character| character.is_alphanumeric())
 }
 
-/// True when the entire (trimmed, lowercased) output is made up of nothing
-/// but the transcription prompt's own vocabulary terms — e.g. silent audio
-/// echoing "Verenu. Tauri. Svelte." verbatim. A single match on "verenu"
-/// alone still counts (dictating just the app's own name is effectively
-/// never real user speech, and it's the term most likely to leak from
-/// priming), but any other single glossary term requires a second distinct
-/// match before triggering — otherwise a genuine single-word dictation of
-/// one brand/tech name (e.g. someone just saying "Svelte") would be
-/// misidentified as a hallucinated prompt echo.
 fn is_pure_glossary_echo(lowercased_trimmed: &str) -> bool {
     if lowercased_trimmed.is_empty() {
         return false;
@@ -197,27 +175,6 @@ fn damerau_levenshtein_distance(left: &str, right: &str) -> usize {
     distance[left_chars.len()][right_chars.len()]
 }
 
-/// Trims a trailing Whisper prompt-echo off the end of an otherwise-genuine
-/// transcription. `is_transcription_hallucination` above only catches the
-/// case where the *entire* output is the echoed prompt (silent/near-silent
-/// audio); this catches the case where Whisper transcribes real speech
-/// correctly and then appends a verbatim or garbled echo of its own prompt
-/// afterward — confirmed via a real transcription where the model continued
-/// past genuine content with "...is really fun. Return only spoken words.
-/// Prenz, Gremi, OpenAI." ("Prenz, Gremi, OpenAI" being a garbled echo of
-/// the prompt's vocabulary list "Groq, Gemini, OpenAI").
-///
-/// Deliberately conservative to avoid clipping genuine speech that happens
-/// to mention these phrases (e.g. "I want Verenu to return only spoken
-/// words" or "The prompt says return only spoken words" are real sentences,
-/// not hallucinations — confirmed false positives from an earlier, looser
-/// version of this function). A match only triggers a trim when BOTH:
-///   1. it's preceded by a hard sentence boundary (start of text, `.`, `!`,
-///      `?`, or a newline) — not just appearing mid-sentence, and
-///   2. either nothing follows it (the echo is the last thing said, which is
-///      the typical shape of this artifact), or whatever follows looks like
-///      a glossary echo (an exact vocabulary term, or the same trigger
-///      phrase repeating) rather than ordinary continued speech.
 pub(super) fn strip_trailing_hallucination(text: &str) -> String {
     const TRAILING_PATTERNS: &[&str] = &[
         "return only spoken words",

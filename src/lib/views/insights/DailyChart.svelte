@@ -37,10 +37,13 @@
   }
 
   function onKey(event: KeyboardEvent) {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !daily.length) return;
+    const step = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1
+      : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1
+      : 0;
+    if ((step === 0 && event.key !== 'Home' && event.key !== 'End') || !daily.length) return;
     event.preventDefault();
     hover = event.key === 'Home' ? 0 : event.key === 'End' ? daily.length - 1
-      : Math.max(0, Math.min(daily.length - 1, (hover ?? 0) + (event.key === 'ArrowRight' ? 1 : -1)));
+      : Math.max(0, Math.min(daily.length - 1, (hover ?? 0) + step));
     plotWidth = (event.currentTarget as HTMLElement).clientWidth;
     cursor.set(hover, { instant: true });
   }

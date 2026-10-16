@@ -39,16 +39,11 @@
     onOpenApiKeys,
     onChooseCloudProvider,
   }: {
-    /** The provider chosen earlier. Local presets only appear when it is 'local'. */
     provider: ProviderId;
     apiKeyStatus: Record<ProviderId, boolean>;
-    /** The chosen preset. Written to settings by Setup's finish(), not here. */
     preset: Preset | null;
-    /** Explicit opt-in to cleanup on Apple Intelligence. Cleanup only; speech is unchanged. */
     appleCleanup?: boolean;
-    /** False when no AI cleanup runs (Off or Basic). The Apple choice is kept but not applied, required, or downloaded. */
     cleanupRequested?: boolean;
-    /** True when the inactive cleanup is Basic on-device cleanup rather than Off. Copy only. */
     basicCleanup?: boolean;
     onOpenApiKeys: () => void;
     onChooseCloudProvider: (localSupport: 'unsupported' | 'unknown') => void;

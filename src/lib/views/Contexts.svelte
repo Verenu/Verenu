@@ -73,7 +73,6 @@
   const CONTEXT_TAB_ORDER = CONTEXT_TABS.map((t) => t.id);
   type ContextTab = (typeof CONTEXT_TABS)[number]['id'];
 
-
   const CONTEXT_COLOR_CHOICES = [
     { id: 'orange', label: 'Orange', value: 'var(--accent)' },
     { id: 'sage', label: 'Sage', value: 'oklch(0.65 0.09 150)' },

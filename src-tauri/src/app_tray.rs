@@ -298,13 +298,6 @@ fn apply_native_main_window_chrome(app: &AppHandle, theme_hint: Option<Theme>) {
                     &bg as *const _ as *const _,
                     std::mem::size_of::<COLORREF>() as u32,
                 );
-                // Match the title text color to the caption background instead of blanking the
-                // title string. Setting an empty title hides the caption text but also blanks
-                // the Taskbar/Alt+Tab label and the window's accessible name; this way the real
-                // title ("Verenu", from tauri.conf.json) stays intact for those, it's just
-                // visually invisible against the caption. Confirmed via screenshot this doesn't
-                // affect the minimize/maximize/close glyphs — Windows colors those independently
-                // based on the caption color's luminance, not DWMWA_TEXT_COLOR.
                 let _ = DwmSetWindowAttribute(
                     hwnd,
                     DWMWA_TEXT_COLOR,
@@ -392,12 +385,6 @@ fn replace_taskbar_icons(
         }
     }
 
-    // Query DPI from the real Shell_TrayWnd, not our own window's ancestor — on a
-    // multi-monitor mixed-DPI setup those can disagree, and any mismatch between the
-    // HICON's native size and the size Explorer actually displays it at gets a low-quality
-    // legacy stretch (CreateIcon-built icons don't go through the shell's normal per-DPI
-    // icon loader), which is what turned a mathematically flat shared baseline into visibly
-    // uneven bars. windows_tray_icon_size() already gets this right for the tray.
     let dpi_source =
         unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.unwrap_or(taskbar_hwnd);
     let dpi = unsafe { GetDpiForWindow(dpi_source) }.max(96);
@@ -670,13 +657,6 @@ fn windows_taskbar_icon_image(
     tauri::image::Image::new_owned(rgba, size, size)
 }
 
-/// Builds an HICON from an RGBA buffer (returning the raw handle as `isize`, `0` on failure).
-/// The AND mask is a proper 1-bit-per-pixel bitmap (rows padded to a `WORD` boundary, same
-/// packing as [`make_transparent_hicon`]) derived from the alpha channel; the colour bits are
-/// the pixels swizzled to BGRA, zeroed wherever the AND mask marks the pixel transparent so
-/// Windows has nothing to XOR against the background there. `CreateIcon` always expects a
-/// 1bpp AND mask regardless of the XOR mask's bit depth — an earlier byte-per-pixel version
-/// of this mask was read as a packed bitfield by Windows, corrupting transparency.
 #[cfg(target_os = "windows")]
 fn make_hicon(rgba: &[u8], size: i32) -> isize {
     use windows::Win32::UI::WindowsAndMessaging::CreateIcon;

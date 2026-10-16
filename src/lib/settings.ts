@@ -21,7 +21,6 @@ export type CleanupIntensity = 'none' | 'rules' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 
-/** Pill placements anchored to the screen. Mirrors `ANDROID_PILL_SCREEN_POSITIONS` in Rust. */
 export type AndroidPillScreenPosition =
   | 'screen-top-left'
   | 'screen-top'
@@ -34,7 +33,6 @@ export type AndroidPillScreenPosition =
   | 'screen-bottom-right'
   | 'punch-hole';
 
-/** Where the Android dictation pill sits. Mirrors `ANDROID_PILL_POSITIONS` in Rust. */
 export type AndroidPillPosition =
   | 'keyboard-center'
   | 'keyboard-left'
@@ -62,7 +60,6 @@ export const ANDROID_PILL_POSITION_OPTIONS: { id: AndroidPillPosition; label: st
 ];
 
 export const DEFAULT_ANDROID_PILL_POSITION: AndroidPillPosition = 'keyboard-center';
-/** Where the pill rests when a dictation outlives the keyboard. */
 export const DEFAULT_ANDROID_PILL_DOCK_POSITION: AndroidPillScreenPosition = 'screen-bottom';
 export type LocalModelMemoryPolicy =
   | 'keep_loaded'
@@ -144,19 +141,16 @@ type SettingsValueMap = {
   advanced_model_ui: boolean;
   cleanup_prompt_override: string;
   style_prompt_instructions: Partial<Record<Exclude<CleanupIntensity, 'none'> | ToneId, string>>;
-  /** Derived cache of each provider's live model list. Written only by modelCatalogStore. */
   provider_model_cache: Record<string, unknown>;
   legacy_features_enabled: boolean;
   sync_enabled: boolean;
   sync_muting_enabled: boolean;
-  /** Per-peer Tailscale routes, written only by SyncManager's validated command. */
   sync_peer_addresses: Record<string, string> | null;
 };
 
 type SettingKey = keyof SettingsValueMap;
 type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
 
-/** Nullable persisted values; callers retain their own UI defaults. No cache. */
 export type SettingsSnapshot = {
   [K in Exclude<SettingKey, 'default_tone' | 'cleanup_intensity' | 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
 };

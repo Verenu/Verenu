@@ -2,7 +2,6 @@ const STIFFNESS = 600;
 const DAMPING = 43;
 const MAX_SPEED = 26;
 
-/** How far a digit travels per roll, in em — one slot of the wheel. */
 export const ROLL_TRAVEL = 0.85;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));

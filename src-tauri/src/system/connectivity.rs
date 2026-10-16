@@ -1,21 +1,3 @@
-
-//!
-//! Windows reads cached state from the Network List Manager, which Windows
-//! itself populates by periodically probing Microsoft's NCSI endpoints (the
-//! same signal behind the taskbar Wi-Fi icon) — querying it is a local COM
-//! call, no network traffic from this process at all.
-//!
-//! macOS has no equivalent public API for a verified "is the internet actually
-//! up" flag, so this only checks local route reachability via
-//! `SCNetworkReachability` (zero network traffic, but a positive result just
-//! means "there's a default route", not "the WAN is actually up" — e.g. a
-//! captive portal with no real internet still reads as reachable).
-//!
-//! Both platforms can also report false negatives (VPNs, enterprise proxies,
-//! or NCSI getting stuck) — so callers should only trust a confirmed
-//! `Some(true)` and treat `Some(false)`/`None` alike as "unknown, fall back
-//! to an active probe" rather than concluding "offline".
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static OFFLINE_CONFIRMED_AT: AtomicU64 = AtomicU64::new(0);

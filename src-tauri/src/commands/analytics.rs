@@ -52,8 +52,6 @@ pub fn analytics_setup_event(
     Ok(())
 }
 
-/// Records only a fixed frontend error family. The WebView never passes an
-/// Error object, message, URL, rejected value, or JavaScript stack across IPC.
 #[tauri::command]
 pub fn analytics_frontend_exception(
     app: AppHandle,

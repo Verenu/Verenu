@@ -1,16 +1,3 @@
-
-/// True only for a native Intel (x86_64) macOS build — never Windows, never
-/// Apple Silicon macOS.
-///
-/// Local on-device STT/LLM inference (`local_stt`, `local_llm`) is
-/// deliberately gated off entirely on this platform: it has zero real-world
-/// testing (neither the maintainer nor any current tester owns an Intel
-/// Mac), and Intel Macs are old enough now that they're both increasingly
-/// uncommon and generally underpowered for local LLM inference specifically
-/// — running it there for the first time on a real user's machine, unable to
-/// know whether it works at all, is a worse outcome than clearly saying "not
-/// yet" and pointing at cloud providers instead. Revisit once there's an
-/// actual Intel Mac to validate against (see docs/ROADMAP.md).
 pub fn is_macos_intel() -> bool {
     cfg!(all(target_os = "macos", not(target_arch = "aarch64")))
 }

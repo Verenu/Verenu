@@ -1,10 +1,5 @@
 use super::*;
 
-
-/// Completes the startup handshake for the window that has just mounted its
-/// frontend. This is intentionally reported by the frontend rather than
-/// inferred from backend process liveness because WebView2 can display a
-/// connection-refused page while the Rust process continues working.
 #[tauri::command]
 pub fn frontend_ready(
     window: tauri::WebviewWindow,
@@ -789,24 +784,11 @@ fn run_launchctl(args: &[&str]) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn check_connectivity() -> bool {
-    // Prefer the OS's own network state (see system/connectivity.rs) — on
-    // Windows this is a local COM call with zero network traffic; on macOS
-    // it's a local routing-table check. Only short-circuit on a confirmed
-    // "online" (Some(true)): both NCSI and SCNetworkReachability can report
-    // false negatives behind certain VPNs/enterprise proxies, so a "false" or
-    // unavailable native result still falls through to the HTTP probe rather
-    // than risking a wrong "no internet" banner.
     if let Some(true) = native_connectivity_check().await {
         crate::system::connectivity::note_online();
         return true;
     }
 
-    // Probe github.com (a host Verenu already contacts for release downloads)
-    // rather than a third-party beacon like google.com, so the connectivity check
-    // doesn't quietly phone a separate domain. Deliberately NOT api.github.com:
-    // at a 60s poll that would consume the entire 60/hr unauthenticated GitHub
-    // API budget and starve the updater's release checks with 403s. Reuses the
-    // shared client for connection pooling; GitHub requires a User-Agent.
     let online = crate::api::client::get()
         .head("https://github.com")
         .header("User-Agent", "verenu")

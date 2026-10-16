@@ -1,6 +1,3 @@
-/** Bound the data-URI strings retained after icon components unmount.
- * Eviction only removes the cache's reference; mounted icons keep their image.
- */
 export function createIconCache(maxEntries = 128, maxBytes = 4 * 1024 * 1024) {
   const entries = new Map<string, { promise: Promise<string | null>; bytes: number }>();
   let bytes = 0;

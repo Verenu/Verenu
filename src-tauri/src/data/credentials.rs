@@ -579,8 +579,6 @@ pub fn delete(provider: &str) -> Result<(), String> {
     set(provider, "")
 }
 
-/// Returns `Ok(true)` if a key exists and is readable, `Ok(false)` if absent, `Err` on access failure.
-/// On macOS this triggers the Keychain prompt if the app hasn't been granted Always Allow yet.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 pub fn read_for_status(provider: &str) -> Result<bool, String> {

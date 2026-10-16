@@ -1,11 +1,3 @@
-//! Cross-build single-instance handoff for Windows.
-//!
-//! Tauri's single-instance plugin intentionally keeps the first process and
-//! exits the second one. That is the wrong direction for an updater relaunch,
-//! and its identifier-based namespace also lets dev and packaged builds run
-//! side by side. This small mutex/event pair gives the newest process the
-//! ownership instead.
-
 use std::time::Duration;
 
 use windows::core::PCWSTR;

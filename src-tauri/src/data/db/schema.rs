@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
@@ -274,13 +273,6 @@ CREATE TABLE IF NOT EXISTS openrouter_pricing (
 );
 ";
 
-/// Opens the database, and if it (or its WAL sidecar) is corrupt, quarantines
-/// the corrupt files and retries with a fresh database instead of failing the
-/// whole app. Used at startup: a `db::open` panic there would otherwise put
-/// Verenu in a crash loop (the startup-recovery relaunch re-panics on the
-/// same corrupt file), with no way for the user to recover besides manually
-/// deleting their database. Only a truly unwritable directory (fresh open also
-/// failing) is allowed to bubble up as a hard startup error.
 pub fn open_with_recovery(path: impl AsRef<std::path::Path>) -> Result<Db> {
     match open(path.as_ref()) {
         Ok(db) => Ok(db),
@@ -316,12 +308,6 @@ fn open_error_is_corruption(err: &anyhow::Error) -> bool {
     )
 }
 
-/// Renames the database file plus its WAL/SHM sidecars to
-/// `.corrupt-<nanos>` names so they are preserved for diagnosis but can never
-/// block a fresh open. Returns `false` (and leaves the files in place) if any
-/// rename fails, so the caller keeps the original error instead of masking it
-/// with a worse one. A database whose WAL file is wedged is just as
-/// un-openable as a bad main file, so all three are quarantined together.
 pub(crate) fn quarantine_corrupt_db_files(db_path: &std::path::Path) -> bool {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1022,12 +1008,6 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-/// Reclaim SQLite sidecar/free-page space. Existing databases often predate
-/// incremental auto-vacuum, so incremental_vacuum alone is a no-op for them.
-/// Only incremental auto-vacuum runs here. A full VACUUM must use an explicit
-/// user-idle maintenance flow because it holds the shared connection.
-/// API-call detail is retained for 90 days before being folded into the
-/// provider daily rollup; this is independent of transcription retention.
 const API_CALL_COMPACTION_DAYS: i64 = 90;
 
 pub fn sqlite_disk_maintenance(db: &Db) -> Result<()> {
@@ -2446,17 +2426,6 @@ fn backfill_spoken_words(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// One-time repair for inflated word counts. Rows stored before the
-/// spoken-count fix carry a raw whitespace-split count in `words`
-/// (punctuation-only tokens and snippet triggers included). This aligns them
-/// to `spoken_words` and refunds the overcount from the lifetime counter.
-/// Daily summaries follow automatically through
-/// `trg_transcriptions_daily_update`; the WPM update trigger nets to zero
-/// because old and new values resolve through the same
-/// `COALESCE(spoken_words, words)`. Idempotent: a repaired database reports
-/// zero overcount and this becomes one cheap aggregate query per open.
-///
-/// `pub(crate)` for the repair regression test in `db::tests`.
 pub(crate) fn repair_inflated_word_counts(conn: &mut Connection) -> Result<()> {
     backfill_spoken_words(conn)?;
     let needs_repair: bool = conn.query_row(

@@ -37,11 +37,6 @@ export function segmentsToPath(segments: Segment[]): string {
   return path;
 }
 
-/**
- * The point on the curve at a fractional data index, clamped to the ends so an
- * overshooting spring parks the indicator on the last day rather than off the
- * side of the plot.
- */
 export function pointOnSegments(segments: Segment[], at: number): Point {
   if (segments.length === 0) return { x: 0, y: 0 };
   const last = segments.length - 1;

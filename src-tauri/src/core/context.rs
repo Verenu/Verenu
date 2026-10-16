@@ -51,9 +51,6 @@ pub fn resolve_context_with_title(
     db::resolve_context_with_sub_app(db, executable, domain, window_title)
 }
 
-/// Linux window classes can differ from the executable targets already saved
-/// in Contexts. Prefer the class/domain match, then try the captured process's
-/// executable basename. Never inspect the live foreground for this fallback.
 #[cfg(test)]
 fn resolve_context_for_window(
     db: &Db,

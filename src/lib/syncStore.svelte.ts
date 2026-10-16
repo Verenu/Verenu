@@ -68,14 +68,12 @@ export function thisDeviceName(): string {
   return syncStore.status?.this_device.name ?? '';
 }
 
-/** Refresh history consumers after both content and lifetime counters commit. */
 export function listenForSyncCompletion(refresh: () => void): Promise<() => void> {
   return listen<{ state: string }>('verenu:sync-status', (event) => {
     if (event.payload.state === 'synced') refresh();
   });
 }
 
-/** Starts the backend event listeners. Returns a cleanup function. */
 export function startSyncListeners(): () => void {
   const poll = startPolling(refreshSyncStatus,
     () => syncStore.status?.pairing ? 1000 : 30_000,

@@ -327,14 +327,7 @@ pub async fn download_model(
                 response = Some(probe);
             }
             reqwest::StatusCode::RANGE_NOT_SATISFIABLE => {
-                // Per RFC 7233, 416 here means partial_size is already >= the
-                // remote resource's full length — there's nothing left to
-                // range over. This happens when a prior attempt finished the
-                // byte-download but never got to delete the .partial file
-                // (e.g. crashed or got stuck mid-extraction) — confirmed via
-                // logs: requesting `bytes=478517071-` on a 478517071-byte
-                // resource correctly 416s, and the old code treated that as
-                // a hard failure instead of "already fully downloaded."
+                // RFC 7233: 416 means bytes={partial_size}- starts past the end of the resource.
                 log::info!(
                     "local-stt: partial download id={} already covers the full resource (416), skipping byte download",
                     manifest.id

@@ -19,7 +19,6 @@ function broadcastCustomTheme(theme: CustomTheme | null) {
   });
 }
 
-/** Keeps the separate dictation-pill window in sync with an unsaved preview or rollback. */
 export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | null, accent: string | null) {
   broadcastCustomTheme(theme);
   void emit(ACCENT_CHANGE_EVENT, accent).catch((err) => {
@@ -30,7 +29,6 @@ export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | n
   });
 }
 
-/** Saves the active custom palette. Throws (after restoring `previous`) on failure. */
 export async function persistCustomTheme(next: CustomTheme | null, previous: CustomTheme | null = appStore.customTheme) {
   const colors = next ? themeColors(next) : null;
   appStore.customTheme = colors;
@@ -45,7 +43,6 @@ export async function persistCustomTheme(next: CustomTheme | null, previous: Cus
   }
 }
 
-/** Saves the named theme list. Leaves the store untouched on failure. */
 export async function persistSavedThemes(next: SavedTheme[]) {
   try {
     await saveSetting('custom_themes', next);
@@ -56,10 +53,6 @@ export async function persistSavedThemes(next: SavedTheme[]) {
   appStore.savedThemes = next;
 }
 
-/**
- * Switches appearance mode. `from` is the last persisted mode when a live
- * preview has already moved the store, so a failure restores the real one.
- */
 export async function setAppearanceMode(
   mode: AppearanceMode,
   from: { mode: AppearanceMode; customTheme: CustomTheme | null; accent: string | null } = {
@@ -107,7 +100,6 @@ export async function setAppearanceMode(
   }
 }
 
-/** Saves the accent with animation; restores the previous accent and returns false on failure. */
 export async function persistAccentColor(
   color: string | null,
   previous: string | null = appStore.accentColor,
@@ -152,10 +144,6 @@ export function snapshotAppearance(): AppearanceSnapshot {
   };
 }
 
-/**
- * Makes a palette (and optionally its accent) the active look. Everything
- * rolls back together if any save fails; returns whether it all stuck.
- */
 export async function applyPalette(
   palette: CustomTheme,
   options: { accent?: string | null; themeId?: string | null; from?: AppearanceSnapshot } = {},
@@ -205,10 +193,6 @@ async function restoreAppearance(
   broadcastAppearance(before.mode, before.customTheme, before.accent);
 }
 
-/**
- * Runs one appearance save at a time. A second request made while one is in
- * flight is ignored (resolves `undefined`) so saves never race each other.
- */
 export async function withAppearanceLock<T>(task: () => Promise<T>): Promise<T | undefined> {
   if (appStore.appearanceSaving) return undefined;
   appStore.appearanceSaving = true;

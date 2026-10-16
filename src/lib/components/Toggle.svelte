@@ -10,7 +10,6 @@
     onchange: (value: boolean) => void;
     label?: string;
     disabled?: boolean;
-    /** Set true to flash the toggle red with an X, e.g. when a save fails. Auto-resets itself. */
     error?: boolean;
   } = $props();
 

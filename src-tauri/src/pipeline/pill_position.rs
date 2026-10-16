@@ -205,11 +205,6 @@ pub(super) fn should_animate_cross_monitor_move(
     dx > recenter_budget || dy > recenter_budget
 }
 
-/// GTK/WebKit on Hyprland often refuses to shrink the pill below a ~200×200
-/// client. Content-fit placement still uses the measured capsule size, which
-/// parks that larger window so far below the work-area bottom that only the
-/// entrance animation is visible. Keep the requested bottom-center, then lift
-/// and recenter by the extra mapped pixels.
 #[cfg(target_os = "linux")]
 pub(crate) fn snap_linux_placement_to_mapped_size(
     requested: PillPlacement,
