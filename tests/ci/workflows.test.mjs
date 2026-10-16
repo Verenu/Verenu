@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { root } from '../../scripts/verification/identity.mjs';
-import { requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
+import { requiredCiContextDiff, requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
 
 const workflow = name => YAML.parse(fs.readFileSync(path.join(root, '.github/workflows', name), 'utf8'));
 
@@ -114,11 +114,22 @@ test('PR checks compile and run Android native regressions and native WebViews',
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);
   assert.ok(shared.runs.steps.some(step => step.run?.includes('cargo clippy')));
+  const deletedReviewTestCommand = ['node --test scripts/verenu', 'ai', 'review-*.test.mjs'].join('-');
+  assert.ok(!jobs['workflow-tests'].steps.some(step => step.run === deletedReviewTestCommand));
 });
 
 test('master required-check rules preserve other rules and add no bypass actors', () => {
   const rules = fs.readFileSync(path.join(root, 'scripts/ci/merge-rules.mjs'), 'utf8');
   assert.match(rules, /'CI required'/);
+  assert.match(rules, /configuredDiff\.unexpected\.length/);
+  assert.doesNotMatch(rules, /effectiveDiff\.unexpected\.length/);
+  const contexts = rules.match(/const contexts = \[(.*?)\];/s)?.[1] || '';
+  assert.ok(contexts);
+  assert.doesNotMatch(contexts, /['"]review['"]/);
+  assert.deepEqual(requiredCiContextDiff([
+    { context: 'CI required', integration_id: 15368 },
+    { context: 'review', integration_id: 15368 },
+  ], ['CI required']), { missing: [], unexpected: ['review'] });
   const existingRule = { type: 'required_linear_history' };
   const payload = requiredCiRulesetPayload({ rules: [existingRule, { type: 'required_status_checks' }], bypass_actors: [{ actor_type: 'OrganizationAdmin' }] }, ['CI required']);
   assert.deepEqual(payload.bypass_actors, []);

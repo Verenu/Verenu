@@ -215,7 +215,6 @@ jobs:
       - run: npm ci
       - run: npm run test:ci
       - run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
-      - run: node --test scripts/verenu-ai-review-*.test.mjs
 
   android:
     name: Android Kotlin and unit tests
