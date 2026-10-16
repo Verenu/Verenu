@@ -294,14 +294,6 @@ function cleanupModelFor(provider: UiProviderId | undefined, tier: 'standard' | 
   return modelId(provider, entry[tier]);
 }
 
-/**
- * The one local engine that stays offered where the blanket on-device gate is
- * closed (Intel Macs): Apple Speech, which ships with macOS and needs no Verenu
- * download. It must be listed by the backend as a system-managed engine, so an
- * unloaded, empty, or failed list stays conservative. Eligibility is not
- * permission or locale-asset readiness; those are checked when dictating.
- * Whisper, ONNX, GGML, Fluid and cleanup models are never admitted here.
- */
 export function eligibleSystemSpeechId(options: PresetOptions): string | null {
   const model = options.localModels?.find(m => m.engine_type === 'apple_speech' && m.install_kind === 'system_managed');
   return model && supportsLocalLanguage(model.id, options) ? model.id : null;

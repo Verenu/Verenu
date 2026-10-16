@@ -17,8 +17,6 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// Ctrl+Alt+Shift+S (Cmd+Option+Shift+S on macOS). Plain Ctrl+Alt+S is
-    /// JetBrains' Settings shortcut, which a global hook would steal.
     pub fn default_for_platform() -> Self {
         Self {
             ctrl: !cfg!(target_os = "macos"),

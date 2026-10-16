@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { appStore } from './lib/stores';
   import { cleanupPromptEditor } from './lib/stores.svelte';
-  import { isWindows, isLinux } from './lib/platform';
+  import { isWindows, isLinuxDesktop } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
   import DeferredView from './lib/components/DeferredView.svelte';
@@ -85,9 +85,7 @@
     const theme = effectiveTheme(appStore.appearanceMode);
     document.documentElement.dataset.theme = theme;
     applyOmarchyPalette(document.documentElement, activePalette());
-    // isLinux is UA-derived and Android's UA also contains "Linux", so it
-    // must be paired with !isAndroid before it means "Linux desktop".
-    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
+    if ((isWindows || isLinuxDesktop) && isTauriRuntime()) {
       const rootStyles = getComputedStyle(document.documentElement);
       const surface = rootStyles.getPropertyValue('--paper').trim();
       const text = rootStyles.getPropertyValue('--ink').trim();
@@ -289,7 +287,7 @@
     window.addEventListener('error', onWindowError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
 
-    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
+    if ((isWindows || isLinuxDesktop) && isTauriRuntime()) {
       invoke<NativeTitleBarMetrics>('get_native_titlebar_metrics')
         .then(applyNativeTitleBarMetrics)
         .catch((error) => console.error('Failed to read native title bar metrics:', error));
@@ -452,7 +450,7 @@
     }
 
     let stopOmarchyTheme: (() => void) | undefined;
-    if (isLinux && !isAndroid && isTauriRuntime()) {
+    if (isLinuxDesktop && isTauriRuntime()) {
       const setOmarchyTheme = (value: unknown) => {
         appStore.omarchyTheme = isOmarchyTheme(value) ? value : null;
       };
@@ -547,13 +545,13 @@
 <div
   class="app"
   class:app-windows={isWindows}
-  class:app-linux={isLinux && !isAndroid}
+  class:app-linux={isLinuxDesktop}
   data-android={isAndroid ? 'true' : 'false'}
   data-width-class={viewport.widthClass}
   data-compact-nav={compactNav ? 'true' : 'false'}
   data-keyboard={keyboardOpen ? 'open' : 'closed'}
 >
-  {#if isLinux && !isAndroid}
+  {#if isLinuxDesktop}
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
   {#if appStore.setupComplete === false}
@@ -750,11 +748,6 @@
     --mobile-nav-h: calc(68px + var(--safe-bottom));
   }
 
-  /* MainActivity applies the top/side WindowInsets to the WebView content root,
-     and reports only the part of the navigation bar the WebView really draws
-     under (--android-safe-bottom). Do not add the WebView's CSS env() values
-     again on Android, since some devices expose them inconsistently and would
-     otherwise double-pad. */
   .app[data-android='true'] {
     --safe-top: 0px;
     --safe-bottom: var(--android-safe-bottom, 0px);

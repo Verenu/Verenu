@@ -1,8 +1,3 @@
-//! Match a stored microphone name to WASAPI/CPAL device names.
-//!
-//! The same hardware often appears as `Microphone (Yeti Nano)`, `Yeti Nano`,
-//! or `Microphone (Yeti Nano) (2)` after a replug. Exact string equality
-//! misses those, so mute watching would bind the default input instead.
 
 pub const SCORE_NONE: u8 = 0;
 pub const SCORE_CONTAINS: u8 = 1;

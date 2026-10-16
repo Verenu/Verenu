@@ -51,11 +51,6 @@
     background: var(--arm-950);
   }
 
-  /*
-   * Covers the whole card and positions the gradient's centre, rather than
-   * being a smaller offset box: a box narrower than its own falloff clips the
-   * glow into a hard-edged rectangle down one side.
-   */
   .hero-photo::before {
     content: '';
     position: absolute;

@@ -658,9 +658,6 @@ fn linux_account(provider: &str) -> Result<String, String> {
     user_for(provider).ok_or_else(|| format!("Unknown provider: {provider}"))
 }
 
-/// Runs the maintained zbus Secret Service client outside Tauri's UI runtime.
-/// The older synchronous dbus client can crash current GNOME Keyring while it
-/// negotiates a plain session; this uses an encrypted DH session instead.
 #[cfg(target_os = "linux")]
 fn linux_secret_service<T>(
     future: impl std::future::Future<Output = Result<T, String>> + Send + 'static,

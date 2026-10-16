@@ -327,12 +327,48 @@ pub fn av_audio_microphone_permission_raw() -> Option<isize> {
     })
 }
 
-pub fn av_audio_microphone_permission_status() -> Option<&'static str> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MicrophonePermission {
+    Authorized,
+    NotDetermined,
+    Denied,
+    Restricted,
+    Unknown,
+}
+
+impl MicrophonePermission {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Authorized => "authorized",
+            Self::NotDetermined => "not_determined",
+            Self::Denied => "denied",
+            Self::Restricted => "restricted",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn microphone_permission_wire_strings() {
+    assert_eq!(
+        [
+            MicrophonePermission::Authorized,
+            MicrophonePermission::NotDetermined,
+            MicrophonePermission::Denied,
+            MicrophonePermission::Restricted,
+            MicrophonePermission::Unknown,
+        ].map(MicrophonePermission::as_str),
+        ["authorized", "not_determined", "denied", "restricted", "unknown"],
+    );
+}
+
+pub(crate) fn av_audio_microphone_permission_status() -> Option<MicrophonePermission> {
     av_audio_microphone_permission_raw().map(|status| match status {
-        AV_AUDIO_PERMISSION_GRANTED => "authorized",
-        AV_AUDIO_PERMISSION_UNDETERMINED => "not_determined",
-        AV_AUDIO_PERMISSION_DENIED => "denied",
-        _ => "unknown",
+        AV_AUDIO_PERMISSION_GRANTED => MicrophonePermission::Authorized,
+        AV_AUDIO_PERMISSION_UNDETERMINED => MicrophonePermission::NotDetermined,
+        AV_AUDIO_PERMISSION_DENIED => MicrophonePermission::Denied,
+        _ => MicrophonePermission::Unknown,
     })
 }
 
@@ -345,58 +381,17 @@ pub fn av_capture_microphone_permission_raw() -> isize {
     })
 }
 
-pub fn av_capture_microphone_permission_status() -> &'static str {
+pub(crate) fn av_capture_microphone_permission_status() -> MicrophonePermission {
     match av_capture_microphone_permission_raw() {
-        3 => "authorized",
-        0 => "not_determined",
-        1 => "restricted",
-        2 => "denied",
-        _ => "unknown",
+        3 => MicrophonePermission::Authorized,
+        0 => MicrophonePermission::NotDetermined,
+        1 => MicrophonePermission::Restricted,
+        2 => MicrophonePermission::Denied,
+        _ => MicrophonePermission::Unknown,
     }
 }
-
-/// Current macOS microphone permission status for the app.
-///
-/// Returns one of: `authorized`, `not_determined`, `denied`, `restricted`,
-/// or `unknown`.
-pub fn microphone_permission_status() -> &'static str {
-    // Runtime verification on macOS 26 showed AVCaptureDevice remaining
-    // `notDetermined` while System Settings was enabled and the current
-    // audio-specific API returned `grnt`. Use exactly one source by OS API
-    // availability: AVAudioApplication on macOS 14+, AVCaptureDevice only on
-    // older systems where AVAudioApplication does not exist.
+pub(crate) fn microphone_permission_status() -> MicrophonePermission {
     av_audio_microphone_permission_status().unwrap_or_else(av_capture_microphone_permission_status)
-}
-
-#[allow(dead_code)]
-pub async fn request_microphone() -> Result<bool, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = std::sync::Mutex::new(Some(tx));
-    autoreleasepool(|_| unsafe {
-        let handler = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
-            let granted = granted.as_bool();
-            if let Ok(mut guard) = tx.lock() {
-                if let Some(tx) = guard.take() {
-                    let _ = tx.send(granted);
-                }
-            }
-        });
-        // Keep the request paired with the same AVCaptureDevice API used for
-        // the authoritative UI status. The AVAudioApplication value is logged
-        // after completion as a diagnostic only.
-        let media_type = NSString::from_str("soun");
-        let _: () = msg_send![
-            class!(AVCaptureDevice),
-            requestAccessForMediaType: &*media_type,
-            completionHandler: &*handler
-        ];
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(60), rx)
-        .await
-        .map_err(|_| {
-            "macOS did not answer the microphone permission request within 60 seconds.".to_string()
-        })?
-        .map_err(|_| "macOS closed the microphone permission request unexpectedly.".to_string())
 }
 
 /// Starts the AVCaptureDevice request on AppKit's main thread. Calling this
@@ -433,9 +428,6 @@ pub async fn request_microphone_on_main_thread(app: &AppHandle) -> Result<bool, 
         .map_err(|_| "macOS closed the microphone permission request unexpectedly.".to_string())
 }
 
-/// macOS 14+ native record-permission request. AVCaptureDevice remains the
-/// authoritative status query; this API is used only to present/complete the
-/// consent transaction on current macOS releases.
 pub async fn request_audio_application_on_main_thread(app: &AppHandle) -> Result<bool, String> {
     let class = av_audio_application_class()
         .ok_or_else(|| "AVAudioApplication is unavailable on this macOS version".to_string())?;
@@ -497,8 +489,8 @@ pub async fn request_microphone_via_device_input(app: &AppHandle) -> Result<bool
 
     for _ in 0..240 {
         let status = microphone_permission_status();
-        if status != "not_determined" {
-            return Ok(status == "authorized");
+        if status != MicrophonePermission::NotDetermined {
+            return Ok(status == MicrophonePermission::Authorized);
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
@@ -548,44 +540,6 @@ pub async fn notification_settings() -> Result<[i64; 6], String> {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("Notification settings callback dropped".to_string()),
         Err(_) => Err("Timed out querying notification settings".to_string()),
-    }
-}
-
-#[allow(dead_code)]
-pub async fn request_notifications() -> Result<(), String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = std::sync::Mutex::new(Some(tx));
-    autoreleasepool(|_| unsafe {
-        let center: *mut AnyObject =
-            msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
-        if center.is_null() {
-            if let Ok(mut guard) = tx.lock() {
-                if let Some(tx) = guard.take() {
-                    let _ = tx.send(Err("UNUserNotificationCenter was unavailable".to_string()));
-                }
-            }
-            return;
-        }
-        let handler = block2::RcBlock::new(
-            move |_granted: objc2::runtime::Bool, error: *mut AnyObject| {
-                if let Ok(mut guard) = tx.lock() {
-                    if let Some(tx) = guard.take() {
-                        let result = if error.is_null() {
-                            Ok(())
-                        } else {
-                            Err("Notification authorization request failed".to_string())
-                        };
-                        let _ = tx.send(result);
-                    }
-                }
-            },
-        );
-        let _: () = msg_send![center, requestAuthorizationWithOptions: 7usize, completionHandler: &*handler];
-    });
-    match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err("Notification authorization callback dropped".to_string()),
-        Err(_) => Err("Timed out requesting notification authorization".to_string()),
     }
 }
 

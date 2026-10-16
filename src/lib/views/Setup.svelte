@@ -464,8 +464,6 @@
         () => saveSetting('auto_learn_enabled', true),
       ];
       for (const save of settingsToSave) await save();
-      // No autostart API on Android — background reliability comes from the
-      // battery-exemption grant (see AndroidPermissionsStep) instead.
       if (!isAndroid) await invoke('set_autostart', { enabled: true });
     } catch (err) {
       console.error('Failed to save setup settings:', err);

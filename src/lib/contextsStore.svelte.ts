@@ -81,11 +81,6 @@ export function loadContexts(force = false): Promise<void> {
   return inFlight;
 }
 
-/**
- * Compact creation age for the sidebar rows: `8s`, `3m`, `5h`, `6d`, `3w`,
- * `5mo`, `1y`. SQLite hands back `YYYY-MM-DD HH:MM:SS` in UTC with no zone
- * marker, so normalize before parsing.
- */
 export function compactAge(iso: string): string {
   const parsed = Date.parse(/(?:[Z+]|-\d{2}:?\d{2})$/.test(iso.slice(10)) ? iso : `${iso.replace(' ', 'T')}Z`);
   if (Number.isNaN(parsed)) return '';

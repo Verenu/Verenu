@@ -285,11 +285,6 @@ impl SettingsHandle {
 }
 
 pub fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    // Keep settings next to the SQLite DB under the stable Verenu data dir.
-    // Tauri AppData is bundle-id scoped, so Windows `tauri dev`
-    // (`com.verenu.app.dev`) would otherwise fork settings away from
-    // production while still sharing Credential Manager keys — dictation then
-    // fails with "No configured transcription backend is available".
     let _ = app;
     let dir = crate::app_data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create settings dir failed: {e}"))?;

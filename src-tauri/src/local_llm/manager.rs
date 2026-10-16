@@ -344,12 +344,6 @@ impl LocalLlmManager {
 
     pub fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
         self.cancel_runtime_download()?;
-        // The runtime binary (llama-server.exe) is a real OS executable —
-        // on Windows it's locked while running, so deleting its folder
-        // while a model is loaded would fail or partially fail. Stop it
-        // first regardless of memory policy, same as the resource-pressure
-        // unload path: the user explicitly asked to remove the runtime, so
-        // freeing it takes priority over "keep loaded".
         self.unload(app);
         super::binary::delete_runtime(&super::binary::runtime_root())?;
         let _ = app.emit(
@@ -456,19 +450,7 @@ impl LocalLlmManager {
             request_cleanup(&endpoint, model_id, prompt, primary_text, max_tokens).await
         };
         self.touch_activity();
-        output.map_err(|err| {
-            let tail = self
-                .server
-                .lock()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(|server| server.recent_log_tail()));
-            match tail {
-                Some(lines) if !lines.is_empty() => {
-                    anyhow::anyhow!("{err}{}", super::runtime::format_log_tail(&lines))
-                }
-                _ => err,
-            }
-        })
+        output
     }
 
     pub fn unload_if_idle(&self, app: &AppHandle) -> anyhow::Result<()> {

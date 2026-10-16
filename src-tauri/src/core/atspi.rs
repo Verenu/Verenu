@@ -449,9 +449,6 @@ fn is_browser_chrome(conn: &Connection, obj: &ObjRef, frame: &ObjRef) -> bool {
     false
 }
 
-/// Let the toolkit find known browser-owned controls in one query, avoiding
-/// a D-Bus round trip for every button/tab in a large Chromium window.
-/// Verify ancestry before reading text, since page CSS can reuse class names.
 fn address_bar_via_collection(conn: &Connection, frame: &ObjRef) -> Option<Option<String>> {
     let rule = (
         vec![1i32 << STATE_SHOWING, 0i32], 1i32,
@@ -472,9 +469,6 @@ fn address_bar_via_collection(conn: &Connection, frame: &ObjRef) -> Option<Optio
     None
 }
 
-/// Read browser chrome only. Activating Chromium's native placeholder is
-/// necessary even when renderer accessibility has not been requested yet.
-/// No page text, tab titles, or URL values are logged or cached.
 pub fn read_address_bar_for_window(pid: u32, title: &str) -> Option<String> {
     if pid == 0 {
         return None;

@@ -29,8 +29,6 @@ const CLIPBOARD_RESTORE_RETRY_MS: u64 = 60;
 #[cfg(target_os = "windows")]
 const CLIPBOARD_RESTORE_ATTEMPTS: usize = 3;
 
-// Settle time after SetForegroundWindow before writing to the clipboard; some
-// compositor/DWM frame cycles are needed before the HWND is fully active.
 #[cfg(target_os = "windows")]
 const REFOCUS_SETTLE_MS: u64 = 150;
 

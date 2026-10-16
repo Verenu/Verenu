@@ -119,9 +119,6 @@ pub fn list_input_devices() -> Vec<String> {
         .input_devices()
         .map(|iter| iter.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default();
-    // Android reports every input endpoint (built-in mic, telephony, bus, …)
-    // under the same product name, and devices are selected by name, so the
-    // duplicates are indistinguishable and only clutter the picker.
     #[cfg(target_os = "android")]
     let names = {
         let mut seen = std::collections::HashSet::new();
@@ -411,9 +408,6 @@ pub struct RecordingSession {
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
     pub speech_detected: Arc<AtomicBool>,
-    /// Set by CPAL's stream-error callback. The callback must not block or
-    /// touch lifecycle state; the pill/session watcher consumes this flag on
-    /// the async side and ends the recording cleanly.
     pub stream_error: Arc<AtomicBool>,
 }
 

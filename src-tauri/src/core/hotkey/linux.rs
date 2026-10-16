@@ -101,13 +101,6 @@ const TAP_MAX_HOLD: Duration = Duration::from_millis(700);
 const STALE_CHORD_TIMEOUT: Duration = Duration::from_secs(2);
 const PORTAL_SHORTCUT_ID: &str = "dictate";
 const PORTAL_SHORTCUT_DESCRIPTION: &str = "Verenu dictation";
-/// Second portal shortcut: the Escape-to-cancel action. Bound with NO
-/// preferred trigger (verified: the portal registers a trigger-less action
-/// fine) so there is nothing to collide with and no consent UI for a key the
-/// user never presses directly. Hyprland dispatches this action through a
-/// bare-Escape bind that only exists while a dictation is active (see
-/// `refresh_escape_listening`) — a static Escape bind would swallow Escape in
-/// every app, all the time.
 const PORTAL_CANCEL_ID: &str = "cancel";
 const PORTAL_CANCEL_DESCRIPTION: &str = "Verenu cancel";
 const PORTAL_CHORD_CANCEL_ID: &str = "cancel-chord";
@@ -624,8 +617,6 @@ pub fn notify_handless() {
         cb();
     }
 }
-#[allow(dead_code)]
-pub fn update_capture_keys(_k1: u32, _k2: u32) {}
 pub fn reset_chord_state() {
     HANDLESS.store(false, Ordering::SeqCst);
     refresh_escape_listening();
@@ -1362,8 +1353,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Match the identity registered on our portal connection. Descriptions and
-/// before/after differences alone cannot identify a live action after restart:
 /// Hyprland can retain entries from an editor-launched dev session.
 fn discover_portal_id(before: &[(String, String)], description: &str) -> Option<String> {
     let after = list_portal_shortcuts();

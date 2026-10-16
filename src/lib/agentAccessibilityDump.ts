@@ -2,7 +2,6 @@ export const RUIN_ACCESSIBILITY_EVENT = 'verenu:ruin-accessibility-changed';
 export const DUMP_REGION_ATTR = 'data-verenu-ax-dump-region';
 export const DUMP_ANNOTATION_ATTR = 'data-verenu-ax-dump';
 export const DEFAULT_WINDOW_TITLE = 'Verenu';
-/** T3 truncates the tree. Keep the dump small enough to survive. */
 export const MAX_DUMP_CHARS = 3_200;
 export const RECENT_EVENT_CAP = 12;
 

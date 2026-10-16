@@ -72,9 +72,6 @@
 
   const isAudioState = (value: PillState) => value === 'recording' || value === 'handsfree';
 
-  // Checked fresh per-transition (Svelte re-evaluates a `duration` function at
-  // the moment a transition starts), not cached — the user can flip the OS
-  // setting while the pill is open.
   const reducedMotion = () =>
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const rollEase = (t: number) => 1 - Math.pow(1 - t, 3);
@@ -420,26 +417,6 @@
     return { destroy: () => observer.disconnect() };
   }
 
-  // Snap CSS-px lengths to a whole number of device pixels. On fractional DPI
-  // scaling (e.g. 1.25×/1.5×) a hardcoded 3px bar maps to a fractional device
-  // width, and Chromium rounds each bar's edges independently — so neighboring
-  // bars rasterize at different physical widths and the row looks uneven. When
-  // every bar width/gap is an exact integer device-px, all edges land on the
-  // grid and every bar renders identically.
-  //
-  // `dpr` MUST track the monitor the pill is actually on. The pill window is
-  // created once and reused, so it first mounts on the user's primary display
-  // and is later moved to other monitors (which may have a different scale).
-  // A stale dpr is worse than none: snapping 3px with the *wrong* dpr produces
-  // a fractional CSS width (e.g. 3.2px) that then rounds unevenly at the real
-  // scale. WebView2 does not reliably fire matchMedia on a cross-monitor DPI
-  // change, so we also re-read devicePixelRatio live each animation frame
-  // (see refreshDpr / animateBars).
-  //
-  // `dpr` is passed explicitly into snap() so the reactive statements below name
-  // it as a dependency. Svelte's `$:` tracking is syntactic — if `snap` closed
-  // over `dpr` instead, `barW`/`barGap` would be computed once and never update
-  // when the pill moves to a monitor with a different scale.
   let dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
   const snap = (px: number, d: number) => Math.round(px * d) / d;
   $: barW = snap(3, dpr);
@@ -1086,18 +1063,6 @@
     font-family: var(--sans);
   }
 
-  /* Click-through is OFF for handsfree/error/cancelled/paste_failed (see
-     pill.rs's has_clickable_buttons) so their Retry/Dismiss/Confirm buttons
-     are real, clickable controls — which means WebView2 receives real mouse
-     events there, and nothing had ever told it not to behave like a normal
-     web page about it. Two default browser behaviors both rendered as a
-     stray blue rounded box floating behind the pill, easy to mistake for a
-     completely unrelated system overlay: dragging across the pill text
-     produced an ordinary text selection highlight, and clicking a button
-     left it holding focus, which draws Chromium's default blue
-     :focus-visible ring around the nearest focusable ancestor. This is a
-     floating notification overlay, not a page — nothing in it needs to be
-     selectable or keyboard-focused, so both are simply off. */
   :global(*) {
     user-select: none;
     -webkit-user-select: none;

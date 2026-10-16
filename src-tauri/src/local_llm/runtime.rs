@@ -1,20 +1,14 @@
 use super::model::{prompt_family_for_model, LocalLlmModelManifest, LocalLlmPromptFamily};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-
-const RECENT_LOG_CAPACITY: usize = 64;
 
 pub struct ManagedLocalLlmServer {
     child: Child,
     pub endpoint: String,
-    recent_log: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl ManagedLocalLlmServer {
@@ -24,22 +18,10 @@ impl ManagedLocalLlmServer {
         Ok(())
     }
 
-    pub fn recent_log_tail(&self) -> Vec<String> {
-        self.recent_log
-            .lock()
-            .map(|guard| guard.iter().cloned().collect())
-            .unwrap_or_default()
-    }
 }
 
 impl Drop for ManagedLocalLlmServer {
     fn drop(&mut self) {
-        // std::process::Child does NOT kill its process on drop. Every known
-        // call site already calls .stop() explicitly before replacing or
-        // dropping a server, but this is the backstop for any path that
-        // doesn't (app shutdown, a future call site, a panic mid-unload) —
-        // otherwise llama-server survives as an orphan, still holding the
-        // RAM/VRAM this whole manager exists to reclaim.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -115,7 +97,7 @@ fn start_server_process(
     binary: &Path,
     model_path: &Path,
     port: u16,
-) -> anyhow::Result<(Child, Arc<Mutex<VecDeque<String>>>)> {
+) -> anyhow::Result<Child> {
     let mut command = Command::new(binary);
     #[cfg(target_os = "android")]
     {
@@ -157,70 +139,26 @@ fn start_server_process(
         .arg("--reasoning-budget")
         .arg("0")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .stdin(Stdio::null());
-    let mut child = command.spawn()?;
-
-    // llama-server's own stderr is the only place that explains *why* a
-    // request produced nothing (missing chat template, sampling/EOS issues,
-    // GPU backend load failures, etc.) — at default verbosity it logs
-    // timing/status, not prompt or completion text, so this is safe to log.
-    let recent_log = Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_LOG_CAPACITY)));
-    if let Some(stderr) = child.stderr.take() {
-        let recent_log_writer = Arc::clone(&recent_log);
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                log::debug!("local-llm: runtime stderr: {line}");
-                if let Ok(mut guard) = recent_log_writer.lock() {
-                    if guard.len() >= RECENT_LOG_CAPACITY {
-                        guard.pop_front();
-                    }
-                    guard.push_back(line);
-                }
-            }
-        });
-    }
-
-    Ok((child, recent_log))
-}
-
-pub(super) fn format_log_tail(lines: &[String]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let tail: Vec<&str> = lines.iter().rev().take(6).map(String::as_str).collect();
-    format!(
-        " — recent runtime log: {}",
-        tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
-    )
+    Ok(command.spawn()?)
 }
 
 async fn wait_until_ready(
     endpoint: &str,
     child: &mut Child,
-    recent_log: &Arc<Mutex<VecDeque<String>>>,
 ) -> anyhow::Result<()> {
     let started_at = Instant::now();
     let url = format!("{endpoint}/v1/models");
     loop {
-        let tail = recent_log
-            .lock()
-            .map(|guard| guard.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
         if started_at.elapsed() > Duration::from_secs(45) {
-            // Dropping a std::process::Child does not stop the process; kill() does.
             let _ = child.kill();
             let _ = child.wait();
-            anyhow::bail!(
-                "local cleanup runtime timed out while starting{}",
-                format_log_tail(&tail)
-            )
+            anyhow::bail!("local cleanup runtime timed out while starting")
         }
         if let Some(status) = child.try_wait()? {
             anyhow::bail!(
-                "local cleanup runtime exited during startup with status {status}{}",
-                format_log_tail(&tail)
+                "local cleanup runtime exited during startup with status {status}"
             )
         }
 
@@ -245,13 +183,12 @@ pub async fn start_server(
     }
     let port = pick_local_port()?;
     let endpoint = format!("http://127.0.0.1:{port}");
-    let (child, recent_log) = start_server_process(&binary, &model_path, port)?;
+    let child = start_server_process(&binary, &model_path, port)?;
     let mut server = ManagedLocalLlmServer {
         child,
         endpoint,
-        recent_log,
     };
-    wait_until_ready(&server.endpoint, &mut server.child, &server.recent_log).await?;
+    wait_until_ready(&server.endpoint, &mut server.child).await?;
     Ok(server)
 }
 

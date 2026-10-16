@@ -147,13 +147,6 @@ function mergeManifest() {
       manifest = manifest.slice(0, lineEnd + 1) + '\n' + block + manifest.slice(lineEnd + 1);
     }
   }
-  // MainActivity's own tag is Tauri's template output, not ours, so it isn't
-  // marker-wrapped like the blocks above — patch its attribute in place
-  // instead. Edge-to-edge (MainActivity.kt's enableEdgeToEdge()) only lets
-  // content draw behind the status/nav bars; without this attribute the
-  // system still reserves the display cutout (camera hole-punch) as
-  // off-limits, so content laid out for the full edge-to-edge height gets
-  // clipped under the cutout instead of avoiding or padding around it.
   const cutoutAttr = 'android:windowLayoutInDisplayCutoutMode="shortEdges"';
   if (!manifest.includes('windowLayoutInDisplayCutoutMode')) {
     const activityAnchor = 'android:name=".MainActivity"';
