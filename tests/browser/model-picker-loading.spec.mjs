@@ -70,6 +70,7 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
         await expect(dialog.getByRole('searchbox', { name: 'Search models' })).toBeEnabled();
       }
       await openPromptly();
+      expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
       const rail = dialog.getByRole('navigation', { name: 'Filter by provider' });
       await rail.getByRole('button', { name: /OpenRouter/ }).click();
       await page.route('**/__verenu_dev/invoke', route);
@@ -89,6 +90,7 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await expect(dialog.getByRole('status')).toContainText('Refresh unavailable');
       await expect.poll(async () => (await session.invoke('get_setting', { key: 'provider_model_cache' })).openrouter.lastError).not.toBeNull();
       const failedAttempt = (await session.invoke('get_setting', { key: 'provider_model_cache' })).openrouter.lastAttemptAt;
+      expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
       // The picker renders cached catalogs in batches; keep proving the full
       // cached list remains searchable after the provider refresh fails.
       await search.fill('synthetic/model-499');
