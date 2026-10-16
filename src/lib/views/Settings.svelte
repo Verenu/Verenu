@@ -274,11 +274,6 @@
     if (searchHighlightTimer) clearTimeout(searchHighlightTimer);
   });
 
-  /**
-   * Settings is a page, not a dialog, so there is no focus trap — Tab is free to
-   * reach the rail in the sidebar. Focus still moves into the shell on open so
-   * keyboard users land on the content they just asked for.
-   */
   function firstFocusableInShell(): HTMLElement | null {
     if (!settingsPageEl) return null;
     const selector = [
@@ -486,7 +481,6 @@
     overflow: hidden;
   }
 
-
   .settings-footbar {
     flex-shrink: 0;
     padding: 0 calc(var(--page-pad-x) + var(--scrollbar-w)) 16px var(--page-pad-x);
@@ -501,7 +495,6 @@
   }
 
   .settings-tabs { display: none; }
-
 
   .settings-tab {
     display: inline-flex;
@@ -582,7 +575,6 @@
     container-type: inline-size;
     container-name: settings-panel;
   }
-
 
   .settings-body :global(.settings-h) {
     font-family: var(--sans);

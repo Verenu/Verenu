@@ -1,5 +1,3 @@
-//! Platform capability gates that span multiple feature modules (not
-//! specific to local STT or local LLM alone).
 
 /// True only for a native Intel (x86_64) macOS build — never Windows, never
 /// Apple Silicon macOS.

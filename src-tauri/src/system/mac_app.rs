@@ -1,4 +1,3 @@
-
 #![cfg(target_os = "macos")]
 
 use std::ffi::CStr;
@@ -17,7 +16,6 @@ extern "C" {}
 
 #[link(name = "UserNotifications", kind = "framework")]
 extern "C" {}
-
 
 const APP_ICON_ICNS: &[u8] = include_bytes!("../../icons/icon.icns");
 
@@ -46,7 +44,6 @@ unsafe impl objc2::Encode for NSApplicationActivationPolicy {
     const ENCODING: objc2::Encoding = isize::ENCODING;
 }
 
-/// Apply a generated RGBA image as the macOS application icon at runtime.
 pub fn apply_dock_icon(rgba: &[u8], width: u32, height: u32) -> bool {
     let Some(image) = image::RgbaImage::from_raw(width, height, rgba.to_vec()) else {
         return false;
@@ -92,15 +89,10 @@ fn apply_dock_icon_bytes(bytes: &[u8]) -> bool {
     })
 }
 
-/// Switch the app to macOS accessory mode so it stays out of the Dock.
-///
-/// This is the default for Verenu on macOS when the main window is hidden
-/// or shown from the menu bar/tray.
 pub fn set_accessory_activation_policy() -> bool {
     set_activation_policy(POLICY_ACCESSORY)
 }
 
-/// Dispatch `set_accessory_activation_policy()` onto the macOS main thread.
 pub fn set_accessory_activation_policy_on_main_thread(app: &AppHandle) {
     let app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -108,9 +100,6 @@ pub fn set_accessory_activation_policy_on_main_thread(app: &AppHandle) {
     });
 }
 
-/// Switch the app to regular mode so it appears in the Dock.
-///
-/// We use this while the main window is minimized.
 pub fn set_regular_activation_policy() -> bool {
     let ok = set_activation_policy(POLICY_REGULAR);
     if ok {
@@ -119,7 +108,6 @@ pub fn set_regular_activation_policy() -> bool {
     ok
 }
 
-/// Dispatch `set_regular_activation_policy()` onto the macOS main thread.
 pub fn set_regular_activation_policy_on_main_thread(app: &AppHandle) {
     let app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -150,7 +138,6 @@ pub fn float_pill_window(ns_window: *mut std::ffi::c_void) {
     })
 }
 
-/// Ask macOS to activate the current app and bring its windows forward.
 pub fn activate_current_app() -> bool {
     autoreleasepool(|_| unsafe {
         let app: *mut AnyObject = msg_send![class!(NSRunningApplication), currentApplication];
@@ -163,7 +150,6 @@ pub fn activate_current_app() -> bool {
     })
 }
 
-/// Dispatch `activate_current_app()` onto the macOS main thread.
 pub fn activate_current_app_on_main_thread(app: &AppHandle) {
     let app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -171,8 +157,6 @@ pub fn activate_current_app_on_main_thread(app: &AppHandle) {
     });
 }
 
-/// Override the live process name so macOS surfaces the friendly app name
-/// instead of the Rust binary name while running in dev mode.
 pub fn set_process_name(display_name: &str) -> bool {
     autoreleasepool(|_| unsafe {
         let process_info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
@@ -340,7 +324,6 @@ pub fn process_name() -> Option<String> {
     })
 }
 
-/// Modern Core Audio permission status, when the API exists on this macOS.
 pub fn av_audio_microphone_permission_raw() -> Option<isize> {
     let class = av_audio_application_class()?;
     autoreleasepool(|_| unsafe {
@@ -362,8 +345,6 @@ pub fn av_audio_microphone_permission_status() -> Option<&'static str> {
     })
 }
 
-/// Legacy AVFoundation status retained for macOS 11-13 compatibility and
-/// diagnostics when the two Apple frameworks disagree.
 pub fn av_capture_microphone_permission_raw() -> isize {
     autoreleasepool(|_| unsafe {
         let media_type = NSString::from_str("soun");
@@ -396,10 +377,6 @@ pub fn microphone_permission_status() -> &'static str {
     av_audio_microphone_permission_status().unwrap_or_else(av_capture_microphone_permission_status)
 }
 
-/// Request microphone access, showing the macOS consent prompt when the
-/// permission is undetermined. Fails after a bounded wait if AVFoundation never
-/// calls its completion handler, rather than leaving the permissions UI stuck.
-/// Safe to call when already authorized (no prompt is shown).
 #[allow(dead_code)]
 pub async fn request_microphone() -> Result<bool, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -499,10 +476,6 @@ pub async fn request_audio_application_on_main_thread(app: &AppHandle) -> Result
         .map_err(|_| "macOS closed the microphone permission request unexpectedly.".to_string())
 }
 
-/// Documented AVFoundation prompt path for a still-undetermined status:
-/// creating an AVCaptureDeviceInput automatically presents the consent UI.
-/// The input result is deliberately ignored; authorizationStatus remains the
-/// only permission truth and is polled for the user's decision.
 pub async fn request_microphone_via_device_input(app: &AppHandle) -> Result<bool, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
@@ -698,9 +671,6 @@ pub fn frontmost_pid() -> Option<i32> {
     })
 }
 
-/// Localized display name of the application owning a captured PID.
-/// Keeping this lookup tied to the captured process avoids re-reading the
-/// current frontmost application after focus has moved during processing.
 pub fn app_name_for_pid(pid: i32) -> Option<String> {
     if pid <= 0 {
         return None;
@@ -718,8 +688,6 @@ pub fn app_name_for_pid(pid: i32) -> Option<String> {
     })
 }
 
-/// Bring the application owning `pid` to the foreground, so a subsequent
-/// synthetic Cmd+V lands in the window the user was dictating into.
 pub fn activate_pid(pid: i32) -> bool {
     autoreleasepool(|_| unsafe {
         let app: *mut AnyObject = msg_send![
@@ -747,14 +715,6 @@ pub fn pasteboard_change_count() -> Option<isize> {
     })
 }
 
-/// Takes a conservative plain-text snapshot of the general pasteboard.
-///
-/// Do not eagerly call `dataForType:` for every advertised representation.
-/// Clipboard owners may advertise lazily generated formats and block that
-/// call indefinitely (observed with a live owner while dictation sat at
-/// "Pasting…" for five minutes). The caller also applies a wall-clock bound.
-/// Rich-only clipboards are deliberately not restored rather than risking a
-/// permanent paste hang.
 pub fn pasteboard_snapshot() -> Option<PasteboardSnapshot> {
     autoreleasepool(|_| unsafe {
         let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
@@ -778,9 +738,6 @@ pub fn pasteboard_snapshot() -> Option<PasteboardSnapshot> {
 }
 
 impl PasteboardSnapshot {
-    /// Restores only if nobody changed the pasteboard after Verenu wrote its
-    /// temporary payload. This prevents a user copy made during a slow paste
-    /// from being overwritten by the delayed restore.
     pub fn restore_if_unchanged(self, expected_change_count: isize) -> bool {
         autoreleasepool(|_| unsafe {
             let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];

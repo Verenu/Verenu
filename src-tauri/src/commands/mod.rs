@@ -1,4 +1,3 @@
-
 pub(crate) use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) use crate::data::{db, store};
@@ -7,10 +6,6 @@ pub(crate) use crate::pipeline::{self, SharedState};
 pub(crate) use crate::system::apps::{AppMapping, InstalledApp};
 pub(crate) use crate::DbHandle;
 
-/// Shown to the user (as a command error / toast) whenever they try to
-/// download a local STT/LLM model or runtime on an Intel Mac build. See
-/// `system::platform::is_macos_intel` for why this is gated off entirely
-/// rather than just discouraged.
 pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
     "Local on-device models aren't available on Intel Macs yet — this hasn't been tested on Intel hardware. Use a cloud provider (Groq, OpenAI, or Google) for now.";
 

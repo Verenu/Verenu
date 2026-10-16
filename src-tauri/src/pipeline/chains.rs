@@ -1,7 +1,5 @@
 use super::*;
 
-/// Custom endpoints can be LAN-hosted; loss of internet is not evidence that
-/// they are unreachable. Built-in cloud providers can be skipped when offline.
 pub(super) fn candidate_available_offline(provider: &str, offline: bool) -> bool {
     !offline
         || provider == store::LOCAL

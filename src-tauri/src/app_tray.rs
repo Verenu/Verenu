@@ -1089,7 +1089,6 @@ fn runtime_icon_foreground(theme: IconTheme) -> [u8; 4] {
     }
 }
 
-/// Whether the saved Custom palette is dark; `None` until one is saved.
 pub(crate) fn custom_theme_is_dark(app: &AppHandle) -> Option<bool> {
     crate::data::store::settings_handle(app)
         .ok()

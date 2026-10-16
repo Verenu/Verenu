@@ -3,8 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Owns one run's correlation across awaits and generation changes. Never
-/// look up the current recording's ID after another take may have started.
 pub(super) struct PipelineTelemetry {
     analytics: Option<Analytics>,
     run_id: Option<String>,

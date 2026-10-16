@@ -67,9 +67,6 @@ pub fn get_cleanup_prompt_with_extras(
     )
 }
 
-/// `provider` and `model` no longer steer the template — there is one for
-/// every model — but they stay in the signature because every caller already
-/// has them and a per-model divergence would land here if one is ever needed.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub fn get_cleanup_prompt_with_alternate(
@@ -97,9 +94,6 @@ pub fn get_cleanup_prompt_with_alternate(
     )
 }
 
-/// Renders a cleanup prompt with explicit user overrides and separately
-/// labeled corroborating evidence. Keeping those channels separate prevents a
-/// vocabulary example or window title from becoming a mandatory instruction.
 #[allow(clippy::too_many_arguments)]
 pub fn get_cleanup_prompt_with_alternate_and_evidence(
     _provider: &str,

@@ -92,7 +92,6 @@
     return { filletCenter, flatFacePoint, ringPoint, angle: unwrapNear(rawAngle, boundaryAngle) };
   }
 
-  /** Shortest-path arc between two points around a shared small-radius center — the fillet corners. */
   function minorArc(path: Path2D, center: Point, radius: number, from: Point, to: Point) {
     const a0 = Math.atan2(from.y - center.y, from.x - center.x);
     const a1raw = Math.atan2(to.y - center.y, to.x - center.x);
@@ -128,12 +127,6 @@
     return p;
   }
 
-  /**
-   * Keep the rounded treatment on slices that are too narrow for the full
-   * corner radius. The gap and radius are scaled together so a tiny slice
-   * still gets soft corners without the two ends folding back over each
-   * other.
-   */
   function adaptiveDonutSegmentPath(
     cx: number, cy: number, startBoundary: number, endBoundary: number,
     radius: number, width: number, gap: number, corner: number,
@@ -154,7 +147,6 @@
     );
   }
 
-  /** Exact annular sector, no fillet — only a last-resort geometry fallback. */
   function sectorPath(cx: number, cy: number, startBoundary: number, endBoundary: number, radius: number, width: number): Path2D {
     const outerRadius = radius + width / 2;
     const innerRadius = radius - width / 2;

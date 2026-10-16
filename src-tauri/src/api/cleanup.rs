@@ -661,9 +661,6 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
     true
 }
 
-/// Chain-level version of the reasoning-policy check that also understands
-/// custom providers. A deleted or cleanup-disabled custom provider is skipped.
-/// Custom models are not policed: the user chose the endpoint and the model.
 pub fn chain_entry_supports_cleanup(
     customs: &[super::custom::CustomProvider],
     provider: &str,
@@ -861,8 +858,6 @@ fn build_google_cleanup_request_with_alternate(
     }
 }
 
-/// Escapes dictation text for embedding inside the `<raw_dictation>` XML tag
-/// of prompts. Shared with the pipeline's local-cleanup path.
 pub fn escape_transcript_xml(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     let mut start = 0;
@@ -881,9 +876,6 @@ pub fn escape_transcript_xml(text: &str) -> String {
     escaped
 }
 
-/// Formats transcript candidates identically for every cleanup provider. The
-/// tags are labels for data; the system prompt defines how candidates are
-/// reconciled.
 pub fn format_transcript_input(primary: &str, alternate: Option<&str>) -> String {
     match alternate {
         Some(alternate) => format!(

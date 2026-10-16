@@ -11,10 +11,6 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) duration_ms: u64,
     pub(super) api_used: &'a str,
     pub(super) target_hwnd: usize,
-    /// The full captured target for injection backends that need more than
-    /// the raw id (notably the Linux backend, which pastes via the captured
-    /// Hyprland client address). Kept alongside `target_hwnd` so the id-only
-    /// readers (self-inject guard, AutoLearn monitors) stay untouched.
     pub(super) target: crate::core::window_geometry::WindowTarget,
     pub(super) cfg: &'a store::PipelineConfig,
     pub(super) profile: &'a str,
@@ -23,9 +19,6 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) captured_at: std::time::Instant,
     pub(super) event_only: bool,
     pub(super) caps_lock_on: bool,
-    /// The exact Context selected before asynchronous transcription/cleanup.
-    /// This is an owned identity snapshot so retry and AutoLearn cannot
-    /// silently resolve a different foreground target later.
     pub(super) context: ResolvedContextIdentity,
 }
 

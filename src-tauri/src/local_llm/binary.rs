@@ -3,8 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-/// Pinned llama.cpp release tag. Asset filenames below must match this
-/// tag's release assets exactly — bump deliberately when upgrading.
 const LLAMA_CPP_TAG: &str = "b9842";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -32,8 +30,6 @@ pub enum LlamaBackend {
 }
 
 impl LlamaBackend {
-    /// Approximate combined download size, shown to the user before they
-    /// confirm the one-time runtime download.
     pub fn approx_download_mb(self) -> u64 {
         match self {
             LlamaBackend::Cuda => 622,
@@ -102,11 +98,6 @@ struct RuntimeAsset {
     sha256: &'static str,
 }
 
-/// Detect the best backend for this machine. Windows: an NVIDIA GPU (via
-/// `nvidia-smi`) gets CUDA for best performance; everything else gets
-/// Vulkan, which accelerates AMD/Intel/NVIDIA GPUs without needing a CUDA
-/// toolkit install. macOS: Apple Silicon always gets Metal (built into the
-/// standard arm64 release); Intel Macs have no realistic GPU path and get CPU.
 pub fn detect_backend() -> LlamaBackend {
     #[cfg(windows)]
     {
@@ -457,17 +448,10 @@ async fn ensure_llama_server_binary_inner(
     Ok(binary_path)
 }
 
-/// Removes any partial download/extraction leftovers after a cancelled or
-/// failed runtime download. There is no resume support for these archives
-/// (unlike the resumable GGUF model downloads), so a stale partial is
-/// useless — always clean it up rather than leaving it on disk.
 pub fn cleanup_failed_runtime_download(root: &Path) {
     let _ = std::fs::remove_dir_all(root.join(".download-tmp"));
 }
 
-/// Removes the installed runtime binary and any DLLs that shipped alongside
-/// it, for users who want to reclaim the disk space. Safe to call even if
-/// nothing is installed.
 pub fn delete_runtime(root: &Path) -> anyhow::Result<()> {
     if cfg!(target_os = "android") {
         anyhow::bail!("The Android cleanup runtime is included with the app. Delete model downloads to reclaim storage.")

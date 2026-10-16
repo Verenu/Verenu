@@ -105,9 +105,6 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
     }
 }
 
-/// Where the clipping starts decides the fix. If the microphone signal already
-/// reaches full scale (or no gain is being applied) the system or hardware
-/// input level is too hot; otherwise the software gain is pushing it over.
 fn clipping_advice(stats: &InputLevelStats, gain: f32) -> &'static str {
     if gain <= 1.0 || stats.peak >= RAW_FULL_SCALE {
         "the microphone signal is already at full scale; lower the system microphone volume or the device's hardware gain"
@@ -333,24 +330,6 @@ impl FrameDenoiser {
     }
 }
 
-/// Short-window amplitude envelope for the recording visualizer.
-///
-/// The pill used to be driven by the single per-buffer RMS value alone, and one
-/// scalar every 50ms is fundamentally not enough to show audio *flowing*: RMS
-/// over a 50ms window exists precisely to average away everything that happens
-/// inside that window, so a sustained vowel produces a near-constant stream of
-/// identical numbers. The visualizer can carry that value outward across its
-/// bars all it likes -- with every bar holding the same number, the motion is
-/// invisible.
-///
-/// So the audio thread also keeps a compact envelope: the PEAK of each
-/// ENVELOPE_WINDOW_MS slice. Peak rather than RMS because it preserves
-/// transients and micro-variation instead of smoothing them away, and at 10ms a
-/// voiced vowel carries real pitch-period and vibrato structure (a 100Hz voice
-/// is one glottal pulse per window). That is what makes a held vowel visibly
-/// flow while its average level barely moves.
-///
-/// This is ~100 f32/sec, drained and shipped in small batches -- not PCM.
 pub const ENVELOPE_WINDOW_MS: u32 = 10;
 const ENVELOPE_QUEUE_CAP: usize = 512;
 
@@ -397,7 +376,6 @@ impl EnvelopeTap {
         }
     }
 
-    /// Drains everything captured since the last call, oldest first.
     pub fn drain_into(&self, out: &mut Vec<f32>) {
         out.clear();
         while let Some(v) = self.queue.pop() {
@@ -412,11 +390,6 @@ impl EnvelopeTap {
     }
 }
 
-/// Optional crash-recovery sink for a dictation. The audio worker pushes
-/// gain-adjusted, optionally denoised 16 kHz samples here; implementations
-/// must keep disk work off this worker and must not run on the CPAL callback.
-/// A sink failure only disables crash recovery for the current take. It must
-/// never make the in-memory recording unavailable to transcription.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurableSinkError {
     Disk,
@@ -426,9 +399,6 @@ pub enum DurableSinkError {
 pub type DurableSinkResult = std::result::Result<(), DurableSinkError>;
 
 pub trait DurableSink: Send {
-    /// Returns an error when the sink cannot accept more data. The processing
-    /// worker keeps capturing in memory after this error, but will not promise
-    /// that the take can be recovered after a crash.
     fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult;
     fn finish(&mut self) -> DurableSinkResult;
 }
@@ -440,8 +410,6 @@ pub struct RecordingSession {
     pub raw_level: Arc<AtomicU32>,
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
-    /// Latched by the audio worker when live VAD or its RMS fallback hears
-    /// speech in the current recording.
     pub speech_detected: Arc<AtomicBool>,
     /// Set by CPAL's stream-error callback. The callback must not block or
     /// touch lifecycle state; the pill/session watcher consumes this flag on
@@ -594,8 +562,6 @@ impl StreamingResampler {
 }
 
 impl RecordingSession {
-    /// Device-free resource for lifecycle tests; it captures no audio and
-    /// has no worker. Stopping it reports the disconnected result channel.
     #[cfg(test)]
     pub(crate) fn lifecycle_fixture() -> Self {
         let (stop_tx, _) = mpsc::sync_channel(1);

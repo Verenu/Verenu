@@ -2,14 +2,6 @@
 	import { appStore } from '../../stores';
 	import { icons } from '../../icons';
 
-	// Compact-width bottom navigation for the Android shell. The desktop rail
-	// (Sidebar.svelte) stays the navigation on medium/expanded windows; this
-	// bar renders only when App.svelte decides the window is compact. Entries
-	// mirror the rail's primary ones so the two never disagree.
-	//
-	// Icon-first: at phone widths a label per tab is more text than a bottom
-	// bar can carry legibly, so the icon leads and the label sits under it at
-	// caption size — the standard Android bottom-bar treatment.
 	const BASE = [
 		{ id: 'home', label: 'Home', icon: 'home' },
 		{ id: 'insights', label: 'Insights', icon: 'chart' },

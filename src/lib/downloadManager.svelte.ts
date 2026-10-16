@@ -1,4 +1,3 @@
-
 import { listen } from './tauri';
 import { localSttStore, cancelLocalModelDownload } from './localSttStore.svelte';
 import {

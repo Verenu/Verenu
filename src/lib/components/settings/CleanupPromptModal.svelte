@@ -164,7 +164,6 @@
     runLint(draft);
   }
 
-  /** Matching the default is how you clear the override, not a value to store. */
   async function persistDraft() {
     const override = draft.trim() === defaultText.trim() ? '' : draft;
     if (styleKey) {

@@ -1,4 +1,3 @@
-
 import { invoke } from '../../tauri';
 import type { ProviderId } from '../../settings';
 import { isAndroid } from '../../platform';
@@ -136,7 +135,6 @@ function measuredOrder(ids: string[], task: TaskType, options: PresetOptions): s
   return ordered;
 }
 
-
 const CAPABLE_DEFAULT: Hardware = { totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true };
 
 type RawHardware = {
@@ -165,7 +163,6 @@ export async function getHardware(): Promise<Hardware> {
   }
 }
 
-
 const OS_HEADROOM_MB = 3000;
 const RAM_FACTOR = 1.3;
 
@@ -177,7 +174,6 @@ function ramNeededMb(sizesMb: number[]): number {
 export function fitsHardware(hardware: Hardware, sizesMb: number[]): boolean {
   return hardware.unknown || hardware.totalRamMb >= ramNeededMb(sizesMb);
 }
-
 
 const STT_PARAKEET_V3 = { id: 'parakeet-v3', sizeMb: 456 };
 const STT_MOONSHINE_TINY = { id: 'moonshine-tiny', sizeMb: 31 };
@@ -287,7 +283,6 @@ function transcriptionOnlyPreset(hardware: Hardware): Preset {
     },
   };
 }
-
 
 type KeyStatus = Record<Exclude<ProviderId, 'apple-intelligence'>, boolean>;
 
@@ -493,7 +488,6 @@ function addKeyPreset(): Preset {
     target: null,
   };
 }
-
 
 function sameFallbacks(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;

@@ -1,42 +1,3 @@
-//! Android platform support for Verenu.
-//!
-//! This module is the single home for Android-specific business logic that has
-//! no Windows/macOS equivalent. Everything in here is deliberately pure (no
-//! `cpal`, no `transcribe-rs`, no `windows`/`objc2` crates) so it compiles on
-//! every target — including desktop CI — and is unit-testable without a device.
-//!
-//! # Architecture
-//!
-//! * The shared dictation pipeline (`crate::pipeline`), providers
-//!   (`crate::api`), SQLite storage (`crate::data`), and sync (`crate::sync`)
-//!   are reused unchanged on Android. See `docs/ANDROID.md` for the full map.
-//! * Android-only differences live behind the small surface in this module:
-//!   keyboard-visibility → overlay state machine, accessibility insertion
-//!   strategy (direct `ACTION_SET_TEXT` vs clipboard fallback), permission
-//!   rationale/status, foreground-package → Context labels, and the in-memory
-//!   credential cache described below.
-//! * Native Android code (Kotlin) lives under
-//!   `src-tauri/gen/android` and owns: the `AccessibilityService`, the
-//!   `TYPE_ACCESSIBILITY_OVERLAY` pill above the IME, `AudioRecord` fallback,
-//!   `EncryptedSharedPreferences` (Android Keystore) persistence, and runtime
-//!   permission flows. Rust never touches Android APIs directly.
-//!
-//! # Credentials
-//!
-//! API keys must never sit in plaintext on Android. Durable storage is the
-//! Kotlin `VerenuKeystore` (`EncryptedSharedPreferences` backed by
-//! AndroidKeyStore). Rust holds keys only in the in-memory
-//! [`AndroidCredentialCache`] below, populated at startup by Kotlin via the
-//! `android_provide_credential` command (or `POST /v1/credential`) and
-//! cleared on lock/revocation. Saves go through `android_keystore_save`,
-//! which updates this cache and stages a single-delivery rotation that
-//! Kotlin fetches from the bridge; Rust itself writes no secret to disk.
-//!
-//! # Local AI
-//!
-//! ONNX Runtime and an NDK-built llama-server are packaged with the APK.
-//! Model weights are optional, checksum-verified downloads in private app
-//! storage. The shared pipeline runs offline after download.
 
 // The bridge server only starts on Android (see main.rs setup) and is
 // exercised by unit tests everywhere else; allow its (then-)unused surface
@@ -50,10 +11,6 @@ pub mod local_ai;
 #[cfg(target_os = "android")]
 pub mod updater;
 
-/// Tauri mobile-plugin glue for Android's real permission prompts and
-/// settings intents. The Kotlin class is copied into the generated project by
-/// `scripts/android-sync.mjs`; keeping the registration here makes the Rust
-/// command path work in release builds as well as development builds.
 #[cfg(target_os = "android")]
 pub mod permissions_plugin {
     use serde::de::DeserializeOwned;
@@ -94,9 +51,6 @@ pub mod permissions_plugin {
     }
 }
 
-/// Tauri mobile-plugin glue for durable Android credential writes. The
-/// Accessibility service is intentionally not required for Settings to save a
-/// key; the Kotlin plugin writes EncryptedSharedPreferences directly.
 #[cfg(target_os = "android")]
 pub mod security_plugin {
     use tauri::{Manager, Runtime};
@@ -138,9 +92,6 @@ pub const ANDROID_PILL_SCREEN_POSITIONS: [&str; 10] = [
     "punch-hole",
 ];
 
-/// Placements for the dictation pill (stored in `android_pill_position`): the
-/// keyboard-relative ones, then every screen placement. Mirrored by the
-/// Settings dropdown and `VerenuPillPlacement.kt`.
 pub const ANDROID_PILL_POSITIONS: [&str; 13] = [
     "keyboard-center",
     "keyboard-left",
@@ -158,49 +109,27 @@ pub const ANDROID_PILL_POSITIONS: [&str; 13] = [
 ];
 pub const DEFAULT_ANDROID_PILL_POSITION: &str = "keyboard-center";
 
-/// Where the pill rests when there is no keyboard to sit on (a dictation that
-/// outlived the keyboard). Stored in `android_pill_dock_position`; any screen
-/// placement is valid. Set from Settings or by dragging the docked pill.
 pub const DEFAULT_ANDROID_PILL_DOCK_POSITION: &str = "screen-bottom";
 
 pub const ANDROID_MIN_SDK: u32 = 26;
 
-/// SDK Verenu targets. Kept in sync with `gen/android/app/build.gradle.kts`.
 pub const ANDROID_TARGET_SDK: u32 = 36;
 
-/// First-class ARM64 ABI. x86_64 emulator builds work for development, but
-/// release testing targets real ARM64 devices.
 pub const ANDROID_SUPPORTED_ABI: &str = "arm64-v8a";
 
-/// Recovery message for builds missing their APK-owned native libraries.
 pub const LOCAL_AI_ANDROID_UNSUPPORTED_REASON: &str = "Local AI needs Android 9 or newer and a build with bundled inference runtimes. Update Android or reinstall a build with local AI support. Cloud providers are still available.";
 
-/// Whether on-device transcription/cleanup runtimes are supported on Android.
-///
 pub fn local_ai_supported_on_android() -> bool {
     local_ai::supported()
 }
 
-/// How the final dictated text reaches the focused field on Android.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsertionStrategy {
     DirectAccessibility,
-    /// The app blocks direct accessibility edits (banking apps, some
-    /// WebViews, DRM fields). Fall back to clipboard insertion and tell the
-    /// user what happened so they can paste manually.
     ClipboardFallback,
 }
 
-/// Decide how to insert, from what the `AccessibilityService` observed.
-///
-/// * `has_editable_focus` — an editable `AccessibilityNodeInfo` currently has
-///   input focus.
-/// * `supports_set_text` — that node advertises `ACTION_SET_TEXT` (or a
-///   paste-compatible action).
-///
-/// Anything else → [`InsertionStrategy::ClipboardFallback`]. Pure so both
-/// Rust and the Kotlin service (mirrored logic) agree, and unit-tested here.
 pub fn decide_insertion_strategy(
     has_editable_focus: bool,
     supports_set_text: bool,
@@ -212,19 +141,10 @@ pub fn decide_insertion_strategy(
     }
 }
 
-/// Whether the overlay pill should be on screen.
-///
-/// The overlay is the Android equivalent of the desktop dictation pill: it
-/// appears **only** while an IME/soft keyboard is visible over an editable
-/// field, and disappears cleanly when the keyboard closes. There is never a
-/// permanent floating bubble.
 pub fn should_show_overlay(keyboard_visible: bool, has_editable_focus: bool) -> bool {
     keyboard_visible && has_editable_focus
 }
 
-/// Overlay pill lifecycle. Mirrors the desktop pill states
-/// (`PillApp.svelte`: recording → processing → error/cancelled/…) with an
-/// explicit `Hidden` terminal for the keyboard-closed case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayState {
@@ -239,12 +159,10 @@ pub enum OverlayState {
 }
 
 impl OverlayState {
-    /// Whether the pill is currently on screen in any form.
     pub fn is_visible(self) -> bool {
         !matches!(self, OverlayState::Hidden)
     }
 
-    /// Whether a dictation is in flight (mic open or pipeline running).
     pub fn is_dictation_active(self) -> bool {
         matches!(
             self,
@@ -255,9 +173,6 @@ impl OverlayState {
         )
     }
 
-    /// Keyboard closed: any non-dictating state hides cleanly; an in-flight
-    /// dictation keeps its state (audio keeps recording) but the decision to
-    /// render is left to the caller via [`should_show_overlay`].
     pub fn on_keyboard_hidden(self) -> OverlayState {
         match self {
             OverlayState::Recording
@@ -268,7 +183,6 @@ impl OverlayState {
         }
     }
 
-    /// Keyboard opened over an editable field: a hidden pill becomes idle.
     pub fn on_keyboard_shown(self) -> OverlayState {
         match self {
             OverlayState::Hidden => OverlayState::VisibleIdle,
@@ -277,7 +191,6 @@ impl OverlayState {
     }
 }
 
-/// Android runtime permissions/features Verenu needs, in onboarding order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AndroidPermission {
@@ -287,8 +200,6 @@ pub enum AndroidPermission {
     Notifications,
 }
 
-/// User-facing rationale for each permission. Shown verbatim in onboarding so
-/// the user knows exactly why Verenu asks.
 pub fn permission_rationale(permission: AndroidPermission) -> &'static str {
     match permission {
         AndroidPermission::Microphone => {
@@ -306,7 +217,6 @@ pub fn permission_rationale(permission: AndroidPermission) -> &'static str {
     }
 }
 
-/// Whether a permission is strictly required for dictation to function.
 pub fn permission_is_required(permission: AndroidPermission) -> bool {
     matches!(
         permission,
@@ -323,7 +233,6 @@ pub enum PermissionGrant {
     PermanentlyDenied,
 }
 
-/// Snapshot of the four Android gates, as reported by Kotlin.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AndroidPermissionSnapshot {
     pub microphone: PermissionGrant,
@@ -333,13 +242,11 @@ pub struct AndroidPermissionSnapshot {
 }
 
 impl AndroidPermissionSnapshot {
-    /// Dictation can function: mic + accessibility granted.
     pub fn is_functional(&self) -> bool {
         matches!(self.microphone, PermissionGrant::Granted)
             && matches!(self.accessibility_service, PermissionGrant::Granted)
     }
 
-    /// What's still missing before dictation works, in onboarding order.
     pub fn missing_required(&self) -> Vec<AndroidPermission> {
         let mut missing = Vec::new();
         if !matches!(self.microphone, PermissionGrant::Granted) {
@@ -352,8 +259,6 @@ impl AndroidPermissionSnapshot {
     }
 }
 
-/// Browser packages whose address bar Kotlin can read. Context websites only
-/// apply inside these.
 #[cfg(any(target_os = "android", test))]
 pub fn is_browser_package(package: &str) -> bool {
     matches!(
@@ -376,13 +281,6 @@ pub fn is_browser_package(package: &str) -> bool {
     )
 }
 
-/// Derive a human Context label from an Android foreground package name.
-///
-/// Returns `(label, is_generic)`: well-known packages map to friendly names
-/// ("com.google.android.gm" → "Gmail"); anything else falls back to the
-/// last package segment title-cased. Never includes field contents, URLs, or
-/// notification text — package name only, matching the desktop
-/// executable-name granularity.
 pub fn context_label_for_package(package: &str) -> (String, bool) {
     let package = package.trim();
     if package.is_empty() {
@@ -428,9 +326,6 @@ pub fn context_label_for_package(package: &str) -> (String, bool) {
     (title, true)
 }
 
-/// Compact/medium/expanded width classes, mirroring
-/// `src/lib/android/viewport.ts`. Both sides use the same 600/840dp
-/// breakpoints so Rust-driven layout hints and the Svelte shell agree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WidthClass {
@@ -439,10 +334,6 @@ pub enum WidthClass {
     Expanded,
 }
 
-/// Classify an available window width (density-independent pixels) into a
-/// Material 3–style window size class. Uses live window dimensions, never a
-/// hard-coded device category, so folding/unfolding, rotation, split-screen,
-/// and freeform windows all reclassify without restart.
 pub fn width_class_for_dp(width_dp: f32) -> WidthClass {
     if width_dp < 600.0 {
         WidthClass::Compact
@@ -453,14 +344,8 @@ pub fn width_class_for_dp(width_dp: f32) -> WidthClass {
     }
 }
 
-
-/// API keys are small opaque tokens. Bound native bridge input before it can
-/// become process-resident secret material or a memory-amplification vector.
 pub const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
 
-/// Canonicalize and validate credentials entering the Android bridge. The
-/// bridge is authenticated, but validating at its boundary keeps malformed or
-/// future-provider input from bypassing the normal credential command checks.
 pub fn credential_input(provider: &str, key: &str) -> Result<(String, String), String> {
     let canonical_provider = match provider.trim().to_ascii_lowercase().as_str() {
         crate::data::store::GROQ => crate::data::store::GROQ,
@@ -486,25 +371,15 @@ fn credential_cache() -> &'static Mutex<HashMap<String, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Providers with a just-saved value must not be overwritten by an
-/// asynchronous AccessibilityService hydration pass that is still carrying
-/// the previous Keystore value. The staged rotation writes the durable value;
-/// this guard keeps the active Rust cache on that new value until the next
-/// process/service lifecycle rehydrates from Android storage.
 fn protected_credential_providers() -> &'static Mutex<HashSet<String>> {
     static PROTECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     PROTECTED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// Normalize a provider id for cache keys. Unknown providers pass through so
-/// future providers don't need a Rust change to work.
 fn cache_key(provider: &str) -> String {
     provider.trim().to_lowercase()
 }
 
-/// Called by Kotlin (via `android_provide_credential`) after unlocking the
-/// Android Keystore, and by `credentials::set` on Android after the frontend
-/// saves a key. Memory-only: never persisted by Rust.
 pub fn provide_credential(provider: &str, key: &str) {
     let key = key.trim().to_string();
     let provider = cache_key(provider);
@@ -523,8 +398,6 @@ pub fn provide_credential(provider: &str, key: &str) {
     }
 }
 
-/// Replace a credential from the trusted frontend save path, even when an
-/// earlier rotation already protected this provider from stale hydration.
 pub fn replace_credential(provider: &str, key: &str) {
     let provider = cache_key(provider);
     let key = key.trim().to_string();
@@ -541,8 +414,6 @@ pub fn replace_credential(provider: &str, key: &str) {
         .insert(provider);
 }
 
-/// Read a cached key. Empty string when absent — same contract as
-/// `credentials::get` on desktop.
 pub fn cached_credential(provider: &str) -> String {
     credential_cache()
         .lock()
@@ -552,12 +423,10 @@ pub fn cached_credential(provider: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Whether a key is cached for `provider`.
 pub fn has_cached_credential(provider: &str) -> bool {
     !cached_credential(provider).is_empty()
 }
 
-/// Drop all cached keys (lock event, permission revocation, logout).
 pub fn clear_credentials() {
     credential_cache()
         .lock()
@@ -569,11 +438,6 @@ pub fn clear_credentials() {
         .clear();
 }
 
-/// Serializes tests that share process-global bridge state (credential
-/// cache, insertion outbox, keystore staging, pill mirrors). Rust runs tests
-/// on threads in one process, so without this two tests publishing to the
-/// same cell interleave and flake. Held across awaits: the test harness runs
-/// each test future to completion on one thread, so a std guard is safe.
 #[cfg(test)]
 pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

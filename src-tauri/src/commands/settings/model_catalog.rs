@@ -21,7 +21,6 @@ pub struct ProviderModelCatalog {
     warning: Option<String>,
 }
 
-/// Coalesce public requests across providers, with a shorter failure cooldown.
 async fn public_json(url: &'static str) -> Result<serde_json::Value, String> {
     type Snapshot = (std::time::Instant, Result<serde_json::Value, String>);
     static CACHE: std::sync::OnceLock<tokio::sync::Mutex<BTreeMap<&'static str, Snapshot>>> =

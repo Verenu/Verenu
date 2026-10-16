@@ -24,9 +24,6 @@ impl ManagedLocalLlmServer {
         Ok(())
     }
 
-    /// Last few lines the runtime process wrote to stderr, newest last.
-    /// Useful to surface alongside an empty/failed completion, since the
-    /// HTTP response alone often doesn't say why generation produced nothing.
     pub fn recent_log_tail(&self) -> Vec<String> {
         self.recent_log
             .lock()
@@ -323,11 +320,6 @@ struct MsgResp {
     content: String,
 }
 
-/// Each open-weight chat template ends a turn with a different marker.
-/// Passed as an explicit `stop` string (matched against decoded text, not
-/// raw token ids) so generation still terminates correctly even when a
-/// GGUF's tokenizer metadata is broken and llama.cpp's automatic
-/// end-of-generation detection can't find the model's real stop token.
 fn stop_sequences_for_family(family: LocalLlmPromptFamily) -> Vec<String> {
     match family {
         LocalLlmPromptFamily::Gemma4 => vec!["<end_of_turn>".to_string()],

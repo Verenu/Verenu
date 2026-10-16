@@ -1,8 +1,3 @@
-//! Omarchy theme integration. Omarchy writes the active palette to
-//! `~/.local/state/omarchy/current/theme/colors.toml` (older releases used
-//! `~/.config/omarchy/current/theme`). The "Omarchy" appearance mode maps that
-//! palette onto Verenu's surface tokens and follows `omarchy theme set` live.
-
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -12,10 +7,7 @@ pub const THEME_CHANGED_EVENT: &str = "verenu:omarchy-theme-changed";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OmarchyTheme {
     pub name: String,
-    /// "dark" or "light".
     pub mode: String,
-    /// Validated `#rrggbb` colors keyed by their `colors.toml` names
-    /// (background, foreground, accent, dark_background, red, ...).
     pub colors: BTreeMap<String, String>,
 }
 
@@ -37,9 +29,6 @@ pub(crate) fn luminance(hex: &str) -> f64 {
 const CUSTOM_REQUIRED: [&str; 2] = ["background", "foreground"];
 const CUSTOM_OPTIONAL: [&str; 2] = ["sidebar", "surface"];
 
-/// The Custom appearance palette: required `background` and `foreground`
-/// hex colors, optional `sidebar` and `surface` hex colors (or null), and
-/// nothing else.
 pub(crate) fn is_custom_theme(value: &serde_json::Value) -> bool {
     let Some(object) = value.as_object() else {
         return false;
@@ -53,14 +42,11 @@ pub(crate) fn is_custom_theme(value: &serde_json::Value) -> bool {
         })
 }
 
-/// Whether the saved Custom palette is dark, judged by its background.
 pub(crate) fn custom_is_dark(value: &serde_json::Value) -> Option<bool> {
     let background = value.get("background")?.as_str().filter(|v| is_hex_color(v))?;
     Some(luminance(background) <= 0.4)
 }
 
-/// Parses the flat `key = "value"` subset of TOML that `colors.toml` uses.
-/// Returns `None` unless it defines a usable background and foreground.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_colors(contents: &str, name: &str, light_marker: bool) -> Option<OmarchyTheme> {
     let mut colors = BTreeMap::new();
@@ -162,8 +148,6 @@ fn start_watcher(app: &tauri::AppHandle) {
         .ok();
 }
 
-/// Whether the Omarchy palette is dark. Used by native surfaces (tray and
-/// window icons) that cannot read CSS.
 pub fn is_dark() -> Option<bool> {
     current().map(|theme| theme.mode == "dark")
 }

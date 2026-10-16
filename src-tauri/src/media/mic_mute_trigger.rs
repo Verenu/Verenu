@@ -1,12 +1,3 @@
-//! Optional dictation trigger driven by the selected microphone's mute
-//! button. Watches, in parallel:
-//! - endpoint (mixer) mute bit
-//! - hardware mute subunits on the capture topology path
-//! - digital-silence PCM when hardware mute never flips a Windows mute bit
-//!
-//! Binds the selected capture device with relaxed name matching so WASAPI and
-//! CPAL labels for the same mic still resolve. Never calls SetMute.
-
 #[cfg(any(windows, target_os = "linux"))]
 fn pcm_stats(abs_samples: impl Iterator<Item = f32>) -> (u32, f32) {
     let mut silent = 0u32;
@@ -85,14 +76,8 @@ mod common {
     static EVENT_TX: OnceLock<
         std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<MuteTriggerEvent>>>,
     > = OnceLock::new();
-    /// Instant the selected mic last entered the muted bit, used to recognize
-    /// a mute→unmute pulse as a hands-free toggle.
     static PULSE_MUTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    /// Guards against endpoint+PCM both delivering the same unmute edge and
-    /// starting then immediately stopping dictation.
     static LAST_PULSE_AT: Mutex<Option<Instant>> = Mutex::new(None);
-    /// Idle digital-silence capture client. Taken/dropped before dictation
-    /// opens the same mic so the streams never overlap.
     static ACTIVE_PCM: Mutex<Option<PcmMonitorGuard>> = Mutex::new(None);
 
     pub(super) fn release_active_pcm() {
@@ -430,8 +415,6 @@ mod win {
     };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
-    /// Ignore PCM unmute/mute if endpoint already reported a matching transition
-    /// within this window — endpoint path wins.
     const ENDPOINT_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
 
     pub(super) fn watcher_loop(app: AppHandle, state: SharedState) {
@@ -1050,12 +1033,10 @@ mod win {
         emit_pcm_transition(transition);
     }
 
-
 }
 
 #[cfg(any(windows, target_os = "linux"))]
 pub use common::{reload, setup};
-
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
@@ -1063,23 +1044,6 @@ pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn reload(_app: &tauri::AppHandle) {}
 
-/// Linux (PipeWire) mic-mute-button dictation trigger.
-///
-/// Same user contract as the Windows watcher: a mute→unmute pulse on the
-/// selected microphone (held 10ms..3s) toggles hands-free dictation. Two
-/// independent mute sources are watched in parallel, because USB/headset
-/// hardware buttons disagree about where they report:
-///
-/// - PipeWire source mute (`pactl`), which covers mixer mutes and every
-///   hardware button that flips the graph mute flag. Watched event-driven
-///   via `pactl subscribe` with a slow poll as drift backstop.
-/// - Digital-silence PCM (CPAL idle capture + the shared
-///   `DigitalSilenceDetector`), which covers buttons that zero the samples
-///   without ever flipping a mute flag — common on USB mics.
-///
-/// Never mutes or unmutes anything itself; like the Windows watcher it only
-/// observes. The idle PCM client is released before dictation opens the mic
-/// so the streams never overlap.
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{common::*, pcm_stats};
@@ -1093,7 +1057,6 @@ mod linux {
     use tauri::AppHandle;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
-
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct PipeWireSource {

@@ -8,9 +8,6 @@ use std::time::{Duration, Instant};
 pub struct InstalledApp {
     pub name: String,
     pub exe: String,
-    /// Publisher/team identity when the platform exposes one. It is kept
-    /// optional because running processes and some unsigned apps do not have
-    /// one.
     #[serde(default)]
     pub developer: Option<String>,
 }
@@ -21,13 +18,10 @@ pub struct AppMapping {
     pub profile: String,
     #[serde(default)]
     pub name: String,
-    /// Per-app override for `cleanup_intensity`. `None` (or empty) falls back
-    /// to the global setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_intensity: Option<String>,
 }
 
-/// Discovers user-facing app registrations into a single deduplicated list.
 pub fn list_installed_apps() -> Vec<InstalledApp> {
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     return Vec::new();
@@ -361,10 +355,6 @@ fn is_user_facing_app(app: &InstalledApp) -> bool {
     !looks_like_installer_junk(&name)
 }
 
-/// Some installers register an Uninstall entry whose DisplayName embeds a
-/// build hash (e.g. "Antigravitysetup Stable Ecfbad74d93962fc8ca485d93ab9..."),
-/// which is meaningless to search by and often duplicates the real app entry.
-/// Detected as any run of 16+ contiguous hex characters in the name.
 #[cfg(windows)]
 fn looks_like_installer_junk(name: &str) -> bool {
     let mut run = 0usize;
@@ -590,10 +580,6 @@ fn installed_apps_cache() -> &'static InstalledAppsCacheCoordinator {
     })
 }
 
-/// Returns the cached inventory and whether this caller performed a refresh.
-/// The inventory is shared by `Arc`, so a hotkey cache hit does not clone every
-/// installed-app record. Waiters share one in-flight refresh instead of
-/// walking the registry or bundle directories concurrently.
 pub fn list_installed_apps_cached_with_status() -> (Arc<[InstalledApp]>, bool) {
     let cache = installed_apps_cache();
     loop {
@@ -711,9 +697,6 @@ mod linux_desktop_tests {
     }
 }
 
-/// Finds a replacement for a target whose executable/name no longer exists.
-/// Exact app identity is preferred, a known developer may lower the name
-/// threshold, and a conflicting known developer is never accepted.
 pub fn closest_installed_app<'a>(
     source_executable: &str,
     source_name: Option<&str>,

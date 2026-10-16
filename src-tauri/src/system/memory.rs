@@ -16,9 +16,6 @@ pub async fn reclaim_idle_memory(state: &crate::pipeline::SharedState) {
     let _ = state;
 }
 
-/// System-wide RAM availability (not just this process) — used to decide
-/// whether to proactively unload local models under memory pressure rather
-/// than waiting for their configured idle timeout.
 #[derive(Clone, Copy, Debug)]
 pub struct SystemMemoryStatus {
     pub available_mb: u64,
@@ -135,14 +132,6 @@ fn parse_vm_stat_free_bytes(text: &str) -> Option<u64> {
     Some(reclaimable_pages * page_size)
 }
 
-/// NVIDIA-only VRAM check via `nvidia-smi` (same tool used for GPU backend
-/// detection in local_llm::binary). No reliable cross-vendor equivalent
-/// exists without vendor SDKs (AMD/Intel), so this returns an empty `Vec`
-/// on non-NVIDIA systems or detection failure — callers must treat that as
-/// "no signal", not "VRAM is fine". One entry per GPU, in `nvidia-smi`'s
-/// own enumeration order — multi-GPU systems are common enough (and
-/// `CUDA_VISIBLE_DEVICES`/device selection varies enough) that we check
-/// every detected GPU rather than assuming index 0 is the relevant one.
 #[derive(Clone, Copy, Debug)]
 pub struct GpuVramStatus {
     pub index: u32,
@@ -244,13 +233,6 @@ const HIGH_RAM_LOAD_PERCENT: u32 = 92;
 const LOW_VRAM_THRESHOLD_MB: u64 = 512;
 const HIGH_VRAM_LOAD_PERCENT: u64 = 92;
 
-/// Returns `Some(reason)` describing why the system looks low on RAM or
-/// (NVIDIA) VRAM right now, for deciding whether to proactively unload
-/// local models rather than waiting out their idle timeout — e.g.
-/// launching a demanding game shouldn't have to wait out a 15-minute idle
-/// timer before Verenu gives back the RAM/VRAM its local models hold. This
-/// does blocking I/O (process spawn with a bounded wait); callers on an
-/// async runtime should run it via `spawn_blocking`.
 pub fn detect_resource_pressure() -> Option<String> {
     if let Some(mem) = system_memory_status() {
         if mem.available_mb < LOW_RAM_THRESHOLD_MB || mem.load_percent >= HIGH_RAM_LOAD_PERCENT {

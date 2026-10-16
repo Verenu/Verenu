@@ -12,12 +12,6 @@ export const CATALOG_RETRY_MS = 15 * 60 * 1000;
  * threshold during a single provider incident.
  */
 export const MISS_INTERVAL_MS = 15 * 60 * 1000;
-/**
- * A 200 that drops more than this share of the ids we knew about is treated as
- * a degraded response: recorded as a success, but it advances no miss counters.
- * A provider serving a truncated list is exactly what the two-miss rule exists
- * to survive, and it doesn't arrive as an HTTP error.
- */
 const SUSPICIOUS_SHRINK = 0.5;
 
 export type MissCounter = { count: number; lastCountedAt: number };
@@ -197,12 +191,9 @@ export function applyFailure(
   return { ...before, lastAttemptAt: now, lastError: error };
 }
 
-
 export const modelCatalogStore = $state<{ cache: ModelCatalogCache; refreshing: Partial<Record<ProviderId, boolean>> }>({ cache: {}, refreshing: {} });
 
-/** One in-flight request per provider, so overlapping triggers coalesce. */
 const inFlight = new Map<ProviderId, Promise<void>>();
-/** Serializes persistence: a per-provider refresh must never clobber another's entry. */
 let writeChain: Promise<unknown> = Promise.resolve();
 let hydrated = false;
 let hydration: Promise<void> | undefined;

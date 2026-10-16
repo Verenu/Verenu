@@ -1,4 +1,3 @@
-
 use super::*;
 
 mod api_keys;
@@ -634,9 +633,6 @@ mod setting_key_tests {
     }
 }
 
-/// Enables a process-local failure mode for exercising full-disk error UI.
-/// The flag intentionally never touches settings.json, so it can be disabled
-/// even while simulated saves are failing.
 #[tauri::command]
 pub fn set_storage_full_simulation(enabled: bool) -> Result<(), String> {
     store::set_storage_full_simulation(enabled);
@@ -1224,7 +1220,6 @@ mod provider_model_cache_tests {
     }
 }
 
-/// Applies device-local secondary key preferences without changing desktop config.
 #[cfg(target_os = "linux")]
 pub fn apply_linux_control_keys(app: &AppHandle) -> Result<(), String> {
     let settings = store::settings_handle(app)?;
@@ -1237,7 +1232,6 @@ pub fn apply_linux_control_keys(app: &AppHandle) -> Result<(), String> {
     )
 }
 
-/// Applies the saved sub-app capture chord (or the platform default).
 pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
     let chord = store::settings_handle(app)
         .ok()

@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use rusqlite::params;
@@ -66,10 +65,6 @@ pub fn insert_transcription_returning(
     Ok(entry)
 }
 
-/// Lifetime counter for dictionary substitutions actually applied to
-/// dictations. Like `total_words`, it is only ever incremented — never
-/// recomputed from history — so retention pruning can't shrink it. `count`
-/// is the number of dictionary substitution events from one dictation.
 pub fn increment_lifetime_dictionary_fixes(db: &Db, count: i64) -> Result<()> {
     if count <= 0 {
         return Ok(());
@@ -95,8 +90,6 @@ pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     Ok(rows)
 }
 
-/// Escapes `%`, `_`, and `\` so a user's search text is treated literally inside
-/// a `LIKE ... ESCAPE '\'` pattern instead of acting as wildcards.
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -171,15 +164,6 @@ fn query_recent_page_fts(
     Ok(rows)
 }
 
-/// Recent transcription history, newest-first. `search` (when present) matches
-/// case-insensitively against the cleaned text, the raw transcription, AND the
-/// app name — each whitespace-separated term must match at least one of those
-/// fields (multi-term AND), so typing an app name like "chrome" works straight
-/// in the search box; `app_name` (when present) narrows to a single app.
-/// Search/filtering lives in SQLite so pagination stays intact and the whole
-/// table never reaches the frontend — a `LIKE` scan over short dictation text
-/// is cheap even for large histories, and the `idx_transcriptions_app_name`
-/// index narrows app-filtered queries before the text scan runs.
 pub fn query_recent_page(
     db: &Db,
     limit: usize,
@@ -198,10 +182,6 @@ pub fn query_recent_page(
     )
 }
 
-/// Cursor-based history page. `before_id` is the last row already displayed;
-/// using the AUTOINCREMENT primary key keeps newest-first pagination stable
-/// when rows are inserted while the user is scrolling and avoids SQLite
-/// walking and discarding a deep OFFSET.
 #[allow(dead_code)]
 pub fn query_recent_page_before(
     db: &Db,
@@ -289,9 +269,6 @@ fn query_recent_page_conn(
     Ok(rows)
 }
 
-/// Distinct apps that have dictation history, for the History app filter. Only
-/// non-empty names are returned; pre-v13 rows have no app and simply appear
-/// under the unfiltered view.
 pub fn query_distinct_apps(db: &Db) -> Result<Vec<String>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare(
@@ -361,8 +338,6 @@ pub fn prune_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<usi
     prune_transcriptions_conn(&mut conn, max_age_days)
 }
 
-/// Check retention while holding settings stable through the destructive
-/// transaction. DB precedes settings, matching the backup-import lock order.
 pub fn prune_transcriptions_for_retention(
     db: &Db,
     settings: &crate::data::store::SettingsHandle,

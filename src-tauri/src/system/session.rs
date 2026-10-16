@@ -1,4 +1,3 @@
-//! OS session lifecycle helpers.
 
 /// True while Windows is logging off or shutting down. This lets the close
 /// handler exit instead of hiding to tray and keeping the process alive.

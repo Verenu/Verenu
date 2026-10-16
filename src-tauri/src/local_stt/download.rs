@@ -158,18 +158,6 @@ fn remove_macos_extraction_junk(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Archives commonly wrap their contents in a single top-level folder
-/// (e.g. `parakeet-tdt-0.6b-v3-int8/encoder-model.int8.onnx`). Model loaders
-/// expect the files directly inside the model directory, so hoist that
-/// folder's contents up one level when present.
-///
-/// The single-entry check below only works if AppleDouble junk (see
-/// `is_macos_extraction_junk`) is stripped first — the cohere archive wraps
-/// its payload in one real folder plus a `._<folder>` sidecar, which without
-/// this stripping counts as 2 top-level entries and silently skips
-/// flattening, leaving the model files a directory level too deep for
-/// `CohereModel::load` to find (observed live as a spurious "model not
-/// found" error immediately after a from-scratch download completed).
 fn flatten_single_nested_dir(dir: &Path) -> anyhow::Result<()> {
     remove_macos_extraction_junk(dir)?;
     let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
@@ -496,12 +484,6 @@ pub async fn download_model(
     Ok(())
 }
 
-/// Cleans up after a download/extraction that didn't finish. `discard_partial`
-/// should be `true` for an explicit user cancellation — the user asked Cancel
-/// to mean "stop and throw away what was downloaded," not "pause for resume"
-/// — and `false` for an incidental failure (network blip, disk error), where
-/// keeping the `.partial` file lets the next attempt resume instead of
-/// re-downloading from scratch.
 pub fn cleanup_failed_download_artifacts(
     manifest: &LocalSttModelManifest,
     root: &Path,

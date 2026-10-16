@@ -1,18 +1,11 @@
-
 use anyhow::Result;
 
 use crate::data::db::{self, Context, Db};
 
-/// The portion of a resolved Context that must survive asynchronous pipeline
-/// work.  Keep this separate from the full database row: an AutoLearn
-/// monitor only needs the stable identity and a safe display label for
-/// redacted diagnostics.  In particular, it must never reconstruct a Context
-/// later from the foreground executable or browser process.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResolvedContextIdentity {
     pub id: i64,
     pub label: String,
-    /// Immutable catalog selected at capture start; retries reuse it.
     pub t3_skills: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
 }
 
@@ -25,7 +18,6 @@ impl ResolvedContextIdentity {
         }
     }
 
-    /// Pill/diagnostic label for a sub-app match: "Work · #design".
     pub fn from_context_and_sub_app(context: &Context, sub_app: Option<&db::ContextSubApp>) -> Self {
         let mut identity = Self::from_context(context);
         if let Some(sub_app) = sub_app {
@@ -48,8 +40,6 @@ fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Co
     resolve_context_with_title(db, executable, domain, None).map(|(context, _)| context)
 }
 
-/// Like [`resolve_context`], but a window title lets a sub-app rule win over
-/// website and app targets.
 pub fn resolve_context_with_title(
     db: &Db,
     executable: &str,

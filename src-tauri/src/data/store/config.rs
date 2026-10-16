@@ -1,11 +1,8 @@
-
 use super::*;
 
-/// All settings values needed by run_pipeline, loaded in one place.
 #[derive(Clone, Debug, Default)]
 pub struct PipelineConfig {
     pub t3_skill_catalog: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
-    /// Ephemeral, captured Context hints. Never serialized to settings.
     pub speech_vocabulary: crate::local_stt::vocabulary::Vocabulary,
     pub transcription_provider: String,
     pub transcription_language: String,
@@ -24,15 +21,12 @@ pub struct PipelineConfig {
     pub key_assemblyai: String,
     pub key_openrouter: String,
     pub key_xai: String,
-    /// User-defined providers and their keys. A custom id with no key here
-    /// resolves to an empty key, never to a built-in provider's key.
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
     pub custom_keys: std::collections::HashMap<String, String>,
     pub default_tone: String,
     pub cleanup_intensity: String,
     pub auto_learn_enabled: bool,
     pub contextual_formatting_enabled: bool,
-    /// Context delivery preference, never a global setting.
     pub paste_in_chunks: bool,
     pub caps_lock_uppercase_enabled: bool,
     pub clipboard_phrase_enabled: bool,
@@ -226,8 +220,6 @@ impl PipelineConfig {
                 })
     }
 
-    /// Compose preset edits into the shared system template. Context-selected
-    /// intensity and tone are passed separately by the pipeline.
     pub fn cleanup_override(&self, profile: &str) -> Option<String> {
         let shared = self
             .advanced_model_ui
@@ -253,10 +245,6 @@ impl PipelineConfig {
     }
 }
 
-/// The one surviving template from the retired per-model override map.
-///
-/// Ordered so the result is stable across runs rather than whatever the JSON
-/// map iterates first — an arbitrary winner would flip between launches.
 fn legacy_cleanup_prompt_override(store: &SettingsSnapshot) -> Option<String> {
     let mut entries: Vec<(String, String)> = store
         .get(CLEANUP_PROMPT_OVERRIDES)?
@@ -472,13 +460,9 @@ pub fn is_valid_clipboard_phrase(value: &str) -> bool {
     (5..=80).contains(&count) && value.chars().any(char::is_alphanumeric)
 }
 
-/// Reference gain the recording gates are calibrated against.
 pub const DEFAULT_MIC_GAIN: f32 = 3.5;
-/// Phone microphones are far quieter at the app level than desktop ones, so a
-/// fresh Android install starts higher; the user's own choice still wins.
 pub const DEFAULT_ANDROID_MIC_GAIN: f32 = 4.5;
 
-/// The gain a profile with no saved `mic_gain` starts at.
 pub const fn default_mic_gain() -> f32 {
     if cfg!(target_os = "android") {
         DEFAULT_ANDROID_MIC_GAIN

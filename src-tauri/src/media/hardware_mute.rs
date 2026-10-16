@@ -46,7 +46,6 @@ impl TopologyMuteWatch {
         }
     }
 
-    /// Returns a debounced-ready raw mute bit when any path control changes.
     pub fn poll_edge(&mut self) -> Option<bool> {
         for (i, mute) in self.mutes.iter().enumerate() {
             let Ok(flag) = (unsafe { mute.GetMute() }) else {

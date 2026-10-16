@@ -12,9 +12,6 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
-/// Result of an attempt to mute the default output. Dictation waits for this
-/// before opening the microphone, so `Muted` and `AlreadyMuted` must only be
-/// returned when the output really is silent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuteOutcome {
     Muted,
@@ -162,7 +159,6 @@ enum MacRestoreState {
         previous_volume: f32,
     },
 }
-
 
 #[cfg(target_os = "macos")]
 static HOG_STATE: Mutex<HogState> = Mutex::new(HogState::Idle);
@@ -617,9 +613,6 @@ mod macos {
         }
     }
 
-    /// Acquires exclusive (hog-mode) ownership of the default input device for
-    /// this process. Returns the device id on success, `None` if hog mode isn't
-    /// settable or another process already owns the device (nothing to restore).
     pub fn snapshot_and_hog() -> Result<Option<AudioDeviceID>, String> {
         let device_id = default_input_device()?;
 
@@ -671,9 +664,6 @@ fn set_system_muted(_muted: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Default-sink mute through PipeWire (`wpctl`), with a PulseAudio `pactl`
-/// fallback. The sink is pinned by id when muting so a default-device change
-/// mid-dictation cannot leave a different sink muted.
 #[cfg(target_os = "linux")]
 mod linux {
     use super::MuteOutcome;
@@ -706,10 +696,6 @@ mod linux {
         })
     }
 
-    /// Returns the default sink and whether it is currently muted. The node id
-    /// is resolved first and the mute flag is read from that same id, so a
-    /// default-device change in between cannot pair one sink with another
-    /// sink's flag.
     pub fn default_sink() -> Result<(Sink, bool), String> {
         if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
             if let Some(id) = parse_wpctl_id(&inspect) {
@@ -726,8 +712,6 @@ mod linux {
         Ok((Sink::Pulse(name), mute.contains("yes")))
     }
 
-    /// Re-resolve identity after reading mute state, including on the
-    /// already-muted path. Do not pair a new default's flag with an old id.
     pub fn current_default(sink: &Sink) -> Result<Sink, String> {
         if matches!(sink, Sink::PipeWire(_)) {
             let inspect = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"])?;
@@ -779,7 +763,6 @@ mod linux {
         }
     }
 
-    /// Reads the sink's mute flag back from the audio server.
     pub fn is_muted(sink: &Sink) -> Result<bool, String> {
         match sink {
             Sink::PipeWire(id) => Ok(run("wpctl", &["get-volume", id])?.contains("[MUTED]")),
@@ -788,9 +771,6 @@ mod linux {
     }
 }
 
-/// The sinks Verenu muted. A sink that was already muted by the user is never
-/// recorded, so it is never unmuted on their behalf. More than one sink is
-/// possible when the default output changes while a mute is held.
 #[cfg(target_os = "linux")]
 static LINUX_MUTED_SINKS: Mutex<Vec<linux::Sink>> = Mutex::new(Vec::new());
 
@@ -899,9 +879,6 @@ pub fn unmute() {
     }
 }
 
-/// Reserves the microphone exclusively for this process (macOS hog mode), so no
-/// other app can capture it while dictating. Safe to call repeatedly — a no-op
-/// if exclusive access is already held.
 #[cfg(target_os = "macos")]
 pub fn register_session() -> u64 {
     let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -978,7 +955,6 @@ pub fn hog_mic(session_id: u64) {
     }
 }
 
-/// Releases exclusive microphone access taken by [`hog_mic`]. No-op if not held.
 #[cfg(target_os = "macos")]
 pub fn release_mic(session_id: u64) {
     let _ = ACTIVE_SESSION_ID.compare_exchange(session_id, 0, Ordering::SeqCst, Ordering::SeqCst);
@@ -1250,7 +1226,6 @@ fn update_android_media_mute(muted: bool) -> bool {
     result.is_ok()
 }
 
-/// Exclusive microphone access is macOS-only; no-op everywhere else.
 #[cfg(not(target_os = "macos"))]
 pub fn register_session() -> u64 {
     0

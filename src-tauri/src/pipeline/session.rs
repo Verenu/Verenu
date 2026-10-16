@@ -2,20 +2,14 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 use chrono::{SecondsFormat, Utc};
 
-
 #[derive(Clone, Copy, Default)]
 pub struct RecordingStartOptions {
     pub show_recording_pill: bool,
     pub emit_globally: bool,
     pub start_cue_delay_ms: Option<u64>,
-    /// Crash-recovery spool. Only hold-to-talk and hands-free dictation.
     pub durable: bool,
 }
 
-/// Starts a new recording session, stores it in shared state, shows the pill,
-/// and spawns the audio-level emitter task. The caller must already have
-/// reserved `DictationLifecycle::Starting` (via `state::reserve_starting` or
-/// `state::take_active_pipeline_for_interrupt`) before calling this.
 pub fn start_recording_session(
     app: &AppHandle,
     state: &SharedState,
@@ -57,8 +51,6 @@ pub fn start_recording_session(
     }
 }
 
-/// Generalized recording session function for normal dictation and recovery.
-/// The caller must already have reserved `DictationLifecycle::Starting`.
 pub fn start_recording_session_ex(
     app: &AppHandle,
     state: &SharedState,
@@ -69,10 +61,6 @@ pub fn start_recording_session_ex(
     start_recording_session_ex_with_context(app, state, pill_state, handless, options, None)
 }
 
-/// Starts a recording with an already-resolved Context identity. Resume paths
-/// use this entry point because focus may belong to Verenu's own pill by the
-/// time the user clicks Continue. The supplied identity is authoritative for
-/// the whole resumed dictation.
 pub fn start_recording_session_ex_with_context(
     app: &AppHandle,
     state: &SharedState,
@@ -392,16 +380,6 @@ pub fn start_recording_session_ex_with_context(
     }
 }
 
-/// Stops a just-cancelled recording session, and — if the captured audio is
-/// long/loud enough to clear the normal recording quality gates — stashes it
-/// as a `CancelledCapture` and shows the pill's "Cancelled" state (Continue
-/// button resumes hands-free with this audio prepended, see
-/// `state::peek_cancelled_capture_if_fresh`). Otherwise behaves like a plain
-/// discard: unmute, end any media pause, hide the pill.
-///
-/// Mirrors `stages::stop_and_capture_audio`'s gating (same constants
-/// `run_pipeline`/`transcribe_input_only` use), applied here instead of to a
-/// pipeline that's actually about to transcribe.
 pub async fn cancel_recording_with_resume(
     app: &AppHandle,
     state: &SharedState,
@@ -488,12 +466,6 @@ fn state_is_idle(state: &SharedState) -> bool {
     lock_state(state).is_ok_and(|st| st.lifecycle.is_idle())
 }
 
-/// Stores `audio` as the resumable `cancelled_capture`, plays the cancel
-/// cue, and shows the pill's "Cancelled" state. Callers are responsible for
-/// having already decided the audio is worth keeping
-/// (`cancel_recording_with_resume` applies the normal recording quality
-/// gates before calling this; a cancel mid-processing has already cleared
-/// the pipeline's own gate by the time it gets here).
 pub fn stash_cancelled_capture(
     app: &AppHandle,
     state: &SharedState,
@@ -594,9 +566,6 @@ pub fn stash_cancelled_capture(
     }
 }
 
-/// Releases a `Starting` reservation back to `Idle` when the mic failed to
-/// open — the carried prepend audio (if any) is simply dropped, not
-/// retained anywhere a later, unrelated dictation could inherit it.
 pub(crate) fn release_starting_reservation(state: &SharedState) {
     release_starting_reservation_for_claim(state, None);
 }
@@ -645,16 +614,6 @@ fn spawn_stream_error_watcher(
     });
 }
 
-/// Spawns a Tokio task that emits `audio-level` events to the pill every 50ms
-/// until the recording's `active` flag goes false.
-///
-/// Also drains the short-window envelope (see `EnvelopeTap` in media/audio.rs)
-/// and ships it as `audio-envelope`. That payload is what lets the pill show
-/// audio *flowing* rather than a level meter: one RMS scalar per tick averages
-/// away everything inside its own window, so a sustained vowel is a constant
-/// number no motion model can animate. Each batch is a handful of f32 peaks at
-/// a fixed ENVELOPE_WINDOW_MS cadence, ~100/sec -- small enough to send
-/// alongside the existing level without being PCM streaming.
 pub fn spawn_level_emitter(
     app: AppHandle,
     level: Arc<std::sync::atomic::AtomicU32>,
@@ -727,8 +686,6 @@ pub fn spawn_level_emitter(
         emit_level(0.0, 0.0);
     });
 }
-/// Whether dictation start/stop sound cues are enabled (defaults to true when
-/// the settings store cannot be read).
 pub(crate) fn start_stop_sounds_enabled(app: &AppHandle) -> bool {
     store::settings_snapshot(app)
         .map(|s| {

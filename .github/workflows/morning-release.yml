@@ -44,9 +44,6 @@ jobs:
           baseline_tag=""
           last_nightly=""
 
-          # A nightly tag points at a release-only metadata commit whose
-          # parent is the master snapshot it released. Find the newest such tag
-          # whose parent is still reachable from the current master branch.
           last_nightly_date=""
           while IFS= read -r candidate; do
             if [[ ! "$candidate" =~ ^Verenu-[0-9]+\.[0-9]+\.[0-9]+-nightly\.([0-9]{8})$ ]]; then
@@ -63,10 +60,6 @@ jobs:
             fi
           done < <(git tag --list 'Verenu-*-nightly.*')
 
-          # Nightlies use the version currently declared by master. Stable
-          # release tags are not a reliable source here: a release may be
-          # published without a matching stable tag, while an older tag can
-          # still be reachable from the branch.
           nightly_base_version="$(node <<'NODE'
           const fs = require('node:fs');
 
@@ -89,9 +82,6 @@ jobs:
           NODE
           )"
 
-          # Before the first nightly, use the newest release tag reachable
-          # from master. Tags are branch-agnostic, so reachability is the branch
-          # association we can verify safely.
           if [[ -z "$baseline_sha" ]]; then
             baseline_tag="$(git tag --merged "$master_sha" --list 'Verenu-*' | sort -V | tail -n 1 || true)"
             if [[ -z "$baseline_tag" ]]; then
@@ -105,9 +95,6 @@ jobs:
           changed_lines="${changed_lines:-0}"
           release_date="$(TZ=America/Vancouver date +%Y%m%d)"
 
-          # If a prior run created today's tag but failed while building or
-          # publishing, resume that exact dated release instead of creating a
-          # second release for the same master snapshot.
           resume_existing=false
           if [[ -n "$last_nightly" && "$baseline_sha" == "$master_sha" && "$last_nightly" =~ \.nightly\.${release_date}$ ]]; then
             resume_existing=true
@@ -281,9 +268,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The commit is intentionally not pushed to master. The tag
-          # contains the release-only version while its parent remains the
-          # exact master snapshot that was inspected above.
           git checkout --detach "$MASTER_SHA"
           version_files=(
             package.json
@@ -328,8 +312,6 @@ jobs:
           fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(tauriConf, null, 2) + '\n');
           NODE
 
-          # Version replacements preserve package.json's existing CRLF bytes.
-          # Accept CR at EOL while still rejecting spaces/tabs at EOL and EOF.
           git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check
           git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           git config user.name 'github-actions[bot]'
@@ -340,8 +322,6 @@ jobs:
           git tag -a "$RELEASE_TAG" "$release_sha" -m "Verenu $RELEASE_VERSION"
           git push origin "$RELEASE_TAG"
 
-          # The version bump belongs only to the tag snapshot. Restore the
-          # exact master values before this job exits, including on failure.
           restore_master_versions
           if ! git diff --quiet "$MASTER_SHA" -- "${version_files[@]}"; then
             echo 'Release-only version files did not roll back to master.' >&2

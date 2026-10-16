@@ -118,20 +118,10 @@ function row(entry: CatalogEntry, state: ModelState, note = '', remedy: Remedy =
   };
 }
 
-/**
- * Local speech models the backend only lists on hardware that supports them
- * (Apple Speech and FluidAudio on Macs, whisper.cpp off Android). Absence from
- * `list_models` therefore means "unsupported here", never "not downloaded".
- */
 const PLATFORM_GATED_LOCAL = (id: string) =>
   id === 'apple-speech' || id.startsWith('fluid-') || id.startsWith('whisper-');
 const UNSUPPORTED_LOCAL_NOTE = 'Not available on this device · choose another model';
 
-/**
- * Speech models that stay offered where the blanket on-device gate (Intel
- * Macs) is closed: Apple Speech ships with macOS and whisper.cpp is portable.
- * Availability itself still comes from the backend list.
- */
 const isPortableLocalSpeech = (id: string) => id === 'apple-speech' || id.startsWith('whisper-');
 
 /** Whether a local row may be listed given the picker's `supported` gate. */
@@ -316,7 +306,6 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     : { ...base, state: 'not-found', note: `Not in ${providerDisplayLabel(parsed.provider)}'s model list` };
 }
 
-
 export type UnavailableReason = 'deprecated' | 'not-found';
 
 export type UnavailableSelection = {
@@ -328,7 +317,6 @@ export type UnavailableSelection = {
   suggestion: string | null;
 };
 
-/** Two misses only count once they're far enough apart to mean anything. */
 function confirmedMissing(cache: ModelCatalogCache[ProviderId], id: string): boolean {
   const counter = cache?.missing[id];
   return !!counter && counter.count >= 2;

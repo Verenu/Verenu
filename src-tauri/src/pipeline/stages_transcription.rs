@@ -1,4 +1,3 @@
-
 use super::stages_style::{apply_app_style_overrides, resolve_app_mapping};
 use super::*;
 struct ExclusiveMicReleaseGuard(Option<u64>);
@@ -110,8 +109,6 @@ pub(super) async fn stop_and_capture_audio(
     })
 }
 
-/// Quality gate (min duration / near-silence RMS) against already-captured
-/// (and possibly prepend-merged) audio. Shows the rejection pill itself.
 pub(super) fn validate_captured_audio(
     app: &AppHandle,
     audio: &CapturedAudio,
@@ -137,11 +134,6 @@ pub(super) fn validate_captured_audio(
     true
 }
 
-/// Speech-presence decision made before any transcription API call. VAD is
-/// authoritative when available. RMS is only a fallback when VAD itself
-/// failed to load or run (`vad_result: None`), so loud non-speech cannot bypass
-/// a successful VAD rejection.
-/// Shows the rejection pill itself, matching `validate_captured_audio`.
 pub(super) fn passes_speech_gate(
     app: &AppHandle,
     rms: f32,
@@ -166,8 +158,6 @@ pub(super) fn passes_speech_gate(
     false
 }
 
-/// Pure part of the speech gate, kept separate so the important VAD-versus-
-/// RMS precedence is testable without constructing a Tauri app handle.
 pub(super) fn speech_gate_accepts(
     vad_result: Option<&crate::media::vad::SpeechDetectionResult>,
     gate_rms: f32,
@@ -286,11 +276,6 @@ pub(super) async fn transcribe_any(
     result
 }
 
-/// Active connectivity disambiguation: returns true when the user's own
-/// connection is down (not just one provider). Reads the Verenu service-check
-/// preference so the probe honors "don't contact Verenu" — falling back to
-/// google.com when Verenu checks are disabled, or when Verenu itself is the
-/// thing that's unreachable.
 pub(super) async fn confirm_offline(app: &AppHandle) -> bool {
     let checks_enabled = store::settings_snapshot(app)
         .map(|s| {

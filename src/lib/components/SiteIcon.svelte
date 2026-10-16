@@ -2,20 +2,8 @@
   import { invoke } from '../tauri';
   import { createIconCache } from '../iconCache';
 
-  /**
-   * Favicons are resolved by the backend (`get_site_icon`) rather than loaded
-   * straight from a remote `<img src>`: the app's CSP only permits `self`,
-   * `asset:`, `blob:` and `data:` image sources, so the old direct-to-Google
-   * URL was silently blocked and every site fell back to the globe glyph.
-   *
-   * The backend returns a data URI and disk-caches the result (including
-   * "there is no icon") per hostname. This module-level map adds in-process
-   * dedup on top, so a sidebar full of rows referencing the same site issues
-   * one call, and remounting a row costs nothing.
-   */
   const siteIconCache = createIconCache();
 
-  /** Mirrors `normalize_favicon_host` in src-tauri/src/system/icons.rs. */
   function normalizeHost(input: string): string {
     const trimmed = input.trim().toLowerCase();
     if (!trimmed) return '';

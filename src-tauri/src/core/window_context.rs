@@ -82,16 +82,11 @@ pub fn get_foreground_hwnd() -> usize {
     0
 }
 
-/// Whether `process_name` (as returned by `get_process_name_for_hwnd`) is a
-/// known browser — used to gate the address-bar domain probe so it's never
-/// attempted against a non-browser foreground window.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn is_browser_exe(process_name: &str) -> bool {
     BROWSER_EXES.iter().any(|(exe, _)| exe.eq_ignore_ascii_case(process_name))
 }
 
-/// A Wayland app ID may differ from its executable. Check both exact
-/// identities; never classify arbitrary Electron apps as browsers.
 pub fn is_browser_target(process_name: &str, target_id: usize) -> bool {
     if is_browser_exe(process_name) {
         return true;
@@ -200,8 +195,6 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Title of the captured target window (HWND on Windows, PID on macOS/Linux).
-/// Used for sub-app matching and the cleanup prompt; never logged.
 pub fn get_window_title(target_id: usize) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -213,7 +206,7 @@ pub fn get_window_title(target_id: usize) -> Option<String> {
         }
         let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
         let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, len) };
-        return Some(String::from_utf8_lossy(bytes).into_owned()).filter(|t| !t.is_empty());
+        Some(String::from_utf8_lossy(bytes).into_owned()).filter(|t| !t.is_empty())
     }
     #[cfg(not(target_os = "macos"))]
     get_window_title_platform(target_id)

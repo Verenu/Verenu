@@ -40,8 +40,6 @@ pub struct LinuxWindowTarget {
 }
 
 impl WindowTarget {
-    /// Context lookup must use the same window snapshot as insertion. A PID
-    /// alone cannot distinguish two browser windows in the same process.
     pub fn process_name(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
         if let Some(window) = &self.linux {
@@ -109,8 +107,6 @@ impl WindowTarget {
         }
     }
 
-    /// Re-read geometry for retries in case the target window moved. Retain the
-    /// original point if the native window is no longer queryable.
     pub fn refreshed(self) -> Self {
         #[cfg(target_os = "linux")]
         if let Some(linux) = &self.linux {
@@ -128,8 +124,6 @@ impl WindowTarget {
     }
 }
 
-/// Returns the center of a Tauri webview window in the platform coordinate
-/// space used by `WindowTarget::display_point`.
 pub fn capture_webview_center<R: Runtime>(window: &WebviewWindow<R>) -> Option<DesktopPoint> {
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;

@@ -2,9 +2,6 @@ use std::sync::OnceLock;
 
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Returns the process-wide shared reqwest client.
-/// Reusing one client enables TCP connection pooling and TLS session reuse,
-/// saving ~200-400ms per request compared to Client::new() each time.
 pub fn get() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -17,9 +14,6 @@ pub fn get() -> &'static reqwest::Client {
 
 static HARDENED: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Client for user-supplied endpoints. It never follows redirects, so a custom
-/// provider can't bounce the request (and the key in its auth header) to a
-/// different host than the one the user approved.
 pub fn hardened() -> &'static reqwest::Client {
     HARDENED.get_or_init(|| {
         reqwest::Client::builder()
@@ -33,8 +27,6 @@ pub fn hardened() -> &'static reqwest::Client {
 
 static DOWNLOAD: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Long-running model downloads do not use the API request timeout. Speech
-/// and cleanup model transfers share this pool because they use the same hosts.
 pub fn download() -> &'static reqwest::Client {
     DOWNLOAD.get_or_init(|| {
         reqwest::Client::builder()

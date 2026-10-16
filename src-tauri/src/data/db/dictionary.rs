@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -9,10 +8,6 @@ use super::*;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DictionaryCorrection {
-    /// Persistent identity of the correction mapping. This is deliberately
-    /// separate from `DictionaryEntry::id`: the latter identifies the shared
-    /// canonical term and must never be used as a context-scoped rejection
-    /// target.
     pub id: i64,
     pub dictionary_id: i64,
     pub context_id: i64,
@@ -34,11 +29,6 @@ pub struct DictionaryEntry {
     pub confidence_tier: String,
     pub last_seen_at: Option<String>,
     pub created_at: String,
-    /// Context-effective correction mappings. The legacy Dictionary view
-    /// leaves this empty and uses `mistake`; context materialization fills it
-    /// with the child mappings effective in that one context. Keeping both
-    /// fields lets old IPC consumers continue to render a flattened row while
-    /// the pipeline/rejection path uses typed mapping identities.
     #[serde(default)]
     pub corrections: Vec<DictionaryCorrection>,
 }
@@ -273,15 +263,6 @@ fn confidence_tier_rank(tier: &str) -> u8 {
     }
 }
 
-/// Move correction mappings along with their canonical dictionary assignment
-/// when a Context is deleted.
-///
-/// Context deletion has always moved vocabulary assignments to Everywhere.
-/// The child mapping must follow that move, but a direct `UPDATE` can collide
-/// with an existing Everywhere mapping. An exact same-term/same-variant row is
-/// merged (manual metadata wins); a different canonical term already using the
-/// same variant wins deterministically and the deleted-Context row is dropped
-/// rather than creating an ambiguous substitution.
 pub fn move_dictionary_corrections_conn(
     conn: &rusqlite::Connection,
     from_context_id: i64,
@@ -410,12 +391,6 @@ pub fn move_dictionary_corrections_conn(
     Ok(changed)
 }
 
-/// Remove all correction mappings for one canonical item from one Context.
-///
-/// This is the connection-level operation used by the Context assignment
-/// "remove" path. Removing only `dictionary_contexts` would leave an orphaned
-/// child mapping that could reappear if the canonical item is assigned again,
-/// and would leave stale evidence eligible for promotion.
 pub fn remove_dictionary_corrections_for_context_conn(
     conn: &rusqlite::Connection,
     context_id: i64,
@@ -509,9 +484,6 @@ fn purge_auto_learn_evidence_for_mistake_list_conn(
     Ok(())
 }
 
-/// Returns the comma-separated mistranscription variants in a dictionary
-/// field. Variants are compared after trimming and case-folding, but their
-/// stored spelling is preserved for display and prompt evidence.
 pub fn dictionary_mistake_variants(mistake: &str) -> impl Iterator<Item = &str> {
     mistake
         .split(',')
@@ -527,10 +499,6 @@ fn normalized_mistake_variants(mistake: Option<&str>) -> HashSet<String> {
         .collect()
 }
 
-/// Rejects a dictionary entry when one of its mistranscription variants is
-/// already mapped to a different term in the same context group. This is
-/// intentionally checked at the database boundary because entries can enter a
-/// context through create, edit, or assignment paths.
 pub fn check_dictionary_mistake_conflicts(
     conn: &rusqlite::Connection,
     context_id: i64,
@@ -631,17 +599,6 @@ pub fn insert_dictionary_entry(db: &Db, term: &str, mistake: Option<&str>) -> Re
     Ok(())
 }
 
-/// Creates a dictionary entry, or — when `context_id` names a specific
-/// (non-Everywhere) context and the term already exists elsewhere — links the
-/// existing entry into that context instead of failing on the term's UNIQUE
-/// constraint. Only errors on a duplicate when the entry is already assigned
-/// to that same context; a term already scoped to a *different* context is
-/// fair game to also assign here, since a term can belong to more than one
-/// context at once (see `dictionary_contexts`).
-///
-/// `context_id: None` (used by the legacy standalone Dictionary page and bulk
-/// import) keeps the original strict behavior: duplicate terms always fail,
-/// and new entries land in Everywhere.
 pub fn insert_dictionary_entry_returning(
     db: &Db,
     term: &str,
@@ -776,9 +733,6 @@ pub fn insert_dictionary_entry_returning(
     Ok(CreatedRecordMeta { id, created_at })
 }
 
-/// Removes a dictionary entry from Everywhere and assigns the existing row
-/// to a specific context. The correction and all learning metadata stay
-/// attached to the same global row.
 pub fn move_dictionary_entry_by_term_to_context(
     db: &Db,
     term: &str,
@@ -816,41 +770,6 @@ pub fn move_dictionary_entry_by_term_to_context(
     )?)
 }
 
-/// Ensures the dictionary's "Verenu" entry (if any) lists every known
-/// mistranscription observed in practice from local speech-to-text models —
-/// small local STT models get their own product name wrong almost every
-/// time, unlike cloud Whisper models, which get a spelling hint baked into
-/// their transcription prompt (see `TRANSCRIPTION_GLOSSARY`) that local
-/// engines have no equivalent for (`transcribe-rs`'s `TranscribeOptions` has
-/// no prompt/vocabulary field at all). `mistake` is comma-separated (see
-/// `parse_dictionary_mistakes` in `data::dictionary`), same as a snippet's
-/// multi-trigger field.
-///
-/// Two cases, handled differently:
-/// - **An entry for "Verenu" already exists** (a prior run of this
-///   function, or — the real bug this fixes — the user's own manual entry
-///   predating this feature entirely, e.g. a hand-added `Verenu -> Vernu`).
-///   Any of the known variants missing from its `mistake` list are merged
-///   in; anything already there (including variants this function doesn't
-///   know about) is left untouched. This branch is safe and idempotent to
-///   run on every launch, unconditionally — it only ever adds, so it also
-///   self-heals a database like this one where `INSERT OR IGNORE` had
-///   silently lost every known variant to a `UNIQUE` conflict against a
-///   pre-existing row, without clobbering what the user already had.
-/// - **No entry exists.** Create one with the full known list — but only
-///   the first time ever, gated on the `seeded_defaults` marker table, so a
-///   user who deletes the entry entirely doesn't see it recreated on the
-///   next launch. (Not `PRAGMA user_version`: that's schema.rs's own
-///   migration counter, and claiming a version number here for a one-off
-///   data seed would collide with any future structural migration needing
-///   the same number.)
-///
-/// Deliberately NOT part of the generic migration chain in `schema::open` —
-/// that function is called directly by `open(":memory:")` all over the test
-/// suite (fixtures, unit tests), and seeding real product data into every
-/// ephemeral test database would silently change dictionary counts/contents
-/// those tests don't expect. This is called once per launch, explicitly,
-/// only where the real user database opens (`main.rs`).
 pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
     const MARKER: &str = "verenu_dictionary_v1";
     const KNOWN_VARIANTS: [&str; 16] = [
@@ -971,9 +890,6 @@ pub fn seed_default_dictionary_entries(db: &Db) -> Result<()> {
     Ok(())
 }
 
-/// Inserts a dictionary entry restored from a backup file. Takes an
-/// already-locked connection so a caller doing many inserts (bulk import)
-/// can wrap them all in one transaction instead of locking per row.
 pub fn insert_dictionary_entry_from_backup_conn(
     conn: &rusqlite::Connection,
     term: &str,
@@ -1144,9 +1060,6 @@ pub fn insert_dictionary_entry_auto_learned_for_context(
     Ok(changed)
 }
 
-/// Context-aware event writer. The legacy wrapper above remains for old
-/// telemetry callers; new monitor paths should always provide the immutable
-/// originating Context id.
 pub fn log_auto_learn_event_for_context(
     db: &Db,
     context_id: i64,
@@ -1178,10 +1091,6 @@ fn log_auto_learn_event_with_context(
     Ok(())
 }
 
-/// Records a confidence observation for a (wrong, correct) pair and returns
-/// the running average confidence across all observations of that pair in one
-/// Context. Context is part of the natural key; observations from another
-/// Context cannot contribute to this average.
 pub fn upsert_auto_learn_candidate_for_context(
     db: &Db,
     context_id: i64,
@@ -1214,7 +1123,6 @@ pub fn upsert_auto_learn_candidate_for_context(
     .map_err(Into::into)
 }
 
-/// Outcome of an [`auto_learn_promote_for_context`] attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoLearnPromoteResult {
     Promoted,
@@ -1223,20 +1131,6 @@ pub enum AutoLearnPromoteResult {
     AlreadyPromoted,
 }
 
-/// Atomically records a pending correction, checks the promotion threshold,
-/// claims the candidate's `promoted_at` gate, and promotes the pair into the
-/// dictionary — all in one transaction under the single DB lock.
-///
-/// Auto-learn monitors are intentionally concurrent (one per dictation), and
-/// two monitors can observe the same `(wrong, correct)` pair within the same
-/// 2-day window. Previously the pending-count read and the dictionary upsert
-/// were separate lock acquisitions, so two monitors could BOTH pass the
-/// threshold and BOTH "promote" the same pair — double `promoted` events and
-/// an inflated `correction_count`. A rejection monitor could also delete the
-/// entry/candidate in the gap, and the in-flight promotion would re-create the
-/// rejected entry. `promoted_at` is the single promotion gate: it is claimed
-/// here (atomically, `IS NULL` guard) and only cleared by the rejection /
-/// manual-delete paths, which purge the candidate row entirely.
 pub fn auto_learn_promote_for_context(
     db: &Db,
     context_id: i64,
@@ -1440,9 +1334,6 @@ pub fn insert_pending_correction(db: &Db, wrong: &str, correct: &str) -> Result<
     insert_pending_correction_for_context(db, EVERYWHERE_CONTEXT_ID, wrong, correct)
 }
 
-/// Test helper for inserting evidence into an explicit Context. Production
-/// promotion records pending evidence inside its own transaction; keeping the
-/// scoped helper test-only avoids exposing a write API for transient state.
 #[cfg(test)]
 pub fn insert_pending_correction_for_context(
     db: &Db,
@@ -1512,13 +1403,6 @@ pub fn prune_pending_corrections(db: &Db, max_age_days: i64) -> Result<usize> {
     Ok(changed)
 }
 
-/// Bounded retention for the auto-learn bookkeeping tables, so they cannot
-/// grow without limit on long-lived installs: monitor/promotion audit events
-/// are pruned after 30 days, and candidate rows that have not been seen in 90
-/// days (promoted or not) are dropped — a candidate that is still alive after
-/// 90 days of inactivity has outlived its learning window. Rejection and
-/// manual-delete already purge their own rows; this catches everything else.
-/// Called at startup alongside the cleanup-cache prune.
 pub fn prune_auto_learn_retention(db: &Db) -> Result<usize> {
     let conn = lock_conn(db)?;
     let events = conn.execute(
@@ -1631,9 +1515,6 @@ fn update_dictionary_entry_for_context_conn(
     Ok(())
 }
 
-/// Legacy Dictionary-page edits have no Context argument. Refuse to apply one
-/// edit across divergent Context mappings rather than silently overwriting
-/// them; the Contexts surface should call `update_dictionary_entry_for_context`.
 pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&str>) -> Result<()> {
     let conn = lock_conn(db)?;
     let context_ids: Vec<i64> = conn
@@ -1671,12 +1552,6 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
     update_dictionary_entry_for_context(db, context_id, id, term, mistake)
 }
 
-/// Remove a canonical dictionary assignment from one Context without deleting
-/// the shared canonical row or any of its mappings in other Contexts.
-///
-/// This is the Contexts-surface counterpart to the legacy global delete. An
-/// automatically-created canonical row is removed only when this was its last
-/// assignment and no correction mapping remains anywhere.
 pub fn remove_dictionary_entry_from_context(
     db: &Db,
     context_id: i64,
@@ -1705,10 +1580,6 @@ pub fn remove_dictionary_entry_from_context(
     Ok(())
 }
 
-/// Move one canonical assignment from one Context to another. Unlike adding a
-/// shared item, moving is an explicit transfer: its Context-owned correction
-/// mappings follow the assignment, while any unpromoted evidence in the source
-/// Context is discarded because it has no safe destination.
 pub fn move_dictionary_entry_to_context(
     db: &Db,
     dictionary_id: i64,
@@ -1930,16 +1801,6 @@ pub(crate) fn cleanup_orphaned_auto_dictionary_conn(
     Ok(())
 }
 
-/// Delete only automatic correction mappings identified by their persistent
-/// child-row IDs in one Context.
-///
-/// A rejection monitor receives `dictionary_corrections.id`, never the shared
-/// `dictionary.id`. The transaction verifies both the Context and the
-/// `auto_learned` flag before deleting, then purges the matching pending and
-/// candidate rows in that same Context so a rejected mapping cannot
-/// immediately re-promote. Manual mappings, other Contexts, and the shared
-/// canonical term remain untouched unless the canonical row is an auto-learned
-/// orphan with no remaining Context assignment.
 pub fn delete_auto_learned_corrections_by_ids(
     db: &Db,
     context_id: i64,
@@ -1991,11 +1852,6 @@ pub fn delete_auto_learned_corrections_by_ids(
     Ok(deleted)
 }
 
-/// Test-only compatibility wrapper for the legacy rejection caller, whose IDs are
-/// canonical dictionary ids and whose historical behavior only ever learned
-/// into Everywhere. New callers must use
-/// `delete_auto_learned_corrections_by_ids` with child mapping ids and an
-/// originating Context.
 #[cfg(test)]
 pub fn delete_auto_learned_entries_by_ids(db: &Db, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
