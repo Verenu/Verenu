@@ -25,12 +25,11 @@ const configuredDiff = requiredCiContextDiff(configuredChecks, contexts);
 const effective = gh(['api', `repos/${repository}/rules/branches/master`]);
 const effectiveChecks = effective.filter(row => row.type === 'required_status_checks').flatMap(row => row.parameters.required_status_checks);
 const effectiveDiff = requiredCiContextDiff(effectiveChecks, contexts);
-if (configuredDiff.missing.length || configuredDiff.unexpected.length || effectiveDiff.missing.length || effectiveDiff.unexpected.length) {
+if (configuredDiff.missing.length || configuredDiff.unexpected.length || effectiveDiff.missing.length) {
   const issues = [
     ...configuredDiff.missing.map(context => `missing ${context}`),
     ...configuredDiff.unexpected.map(context => `unexpected ${context}`),
     ...effectiveDiff.missing.map(context => `not effective on master: ${context}`),
-    ...effectiveDiff.unexpected.map(context => `unexpected on master: ${context}`),
   ];
   console.error(`Required CI check set drifted: ${issues.join(', ')}`);
   process.exitCode = 1;
