@@ -856,9 +856,6 @@
     z-index: 61;
   }
 
-  /* Android: the status bar can't be drawn under, so the rail reads as a
-     rounded panel sitting below it instead of a slab that is cut off, and it
-     clears the gesture bar at the bottom. */
   :global(.app[data-android='true']) .sidebar {
     margin-top: 6px;
     margin-left: 6px;

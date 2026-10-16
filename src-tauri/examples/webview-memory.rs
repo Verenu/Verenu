@@ -133,8 +133,6 @@ mod probe {
                     if let Some(related) = related { builder = builder.with_related_view(related); }
                     let pill = builder.build()?;
                     policy::configure_window(&pill);
-                    // Wry must supply a distinct content manager even for related
-                    // views, so IPC handlers and scripts remain window-specific.
                     pill.with_webview(move |pill_platform| {
                         assert_ne!(main_manager, Some(pill_platform.inner().user_content_manager().unwrap().as_ptr() as usize));
                     })?;

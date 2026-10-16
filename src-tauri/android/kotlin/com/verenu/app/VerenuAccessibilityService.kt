@@ -24,33 +24,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 
-/**
- * Verenu's Android integration point. Replaces the desktop hotkey + clipboard
- * paste + pill window with OS-native equivalents:
- *
- * - Detects IME visibility with an editable-focus plus default-IME window
- *   event heuristic (Android exposes no show/hide callback to an
- *   AccessibilityService) and shows [VerenuOverlayView] as a
- *   `TYPE_ACCESSIBILITY_OVERLAY` window. The overlay appears ONLY while a
- *   keyboard is open over an editable field and disappears when it closes —
- *   there is never a permanent bubble, it never takes focus
- *   (`FLAG_NOT_FOCUSABLE`), and it never replaces the user's keyboard.
- * - Top-anchored below the status bar by design: keyboard height is not
- *   queryable from a service on all supported APIs, so anchoring above the
- *   IME would occlude either the field or the keyboard on some devices. The
- *   pill stays clear of both everywhere from API 26 to 34.
- * - Forwards the foreground package to Rust for Android Context labels
- *   (package name only — never field contents, URLs, or notifications).
- * - Performs insertion: direct `ACTION_SET_TEXT` with cursor restoration
- *   where the app allows it, clipboard fallback (plus optional `ACTION_PASTE`)
- *   where blocked, then acks Rust over the loopback bridge.
- * - Pushes Keystore-unlocked credentials into Rust at connect and drains
- *   staged rotations from the bridge poll loop.
- *
- * Only Android SDK APIs are used — no Tauri imports — so this compiles in
- * the generated `gen/android` project untouched by CLI upgrades. First-SDK-
- * build verification checklist lives in `src-tauri/android/README.md`.
- */
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
@@ -497,13 +470,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * Rust (and therefore the loopback bridge) lives in the Tauri activity's
-     * process. When Android restarts this process just to bind the service
-     * (boot, update, crash), nothing has loaded Rust yet, so start the
-     * activity in background mode and optionally wait for the bridge. Runs on
-     * the requester thread.
-     */
     private fun ensureBackendRunning(waitMs: Long): Boolean {
         if (bridge.getState() != null) return true
         val now = System.currentTimeMillis()
@@ -922,12 +888,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * The keyboard window's bounds, as they will be once it has finished sliding
-     * in. While it slides its window is reported hanging off the bottom of the
-     * screen at full height; shifting it up by the overhang gives the final
-     * position straight away, so the pill does not have to wait out the animation.
-     */
     private fun imeBoundsPx(): android.graphics.Rect? = try {
         val rect = android.graphics.Rect()
         windows

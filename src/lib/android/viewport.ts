@@ -26,11 +26,6 @@ function readOrientation(width: number, height: number): ViewportSnapshot['orien
 	return height >= width ? 'portrait' : 'landscape';
 }
 
-/**
- * Pure: build a snapshot from raw dimensions. `foldPosture` is best-effort —
- * callers pass `'half-opened'` when the Jetpack WindowManager posture API
- * (bridged via `android_get_window_metrics`) reports it, else `'unknown'`.
- */
 export function snapshotForSize(
 	widthDp: number,
 	heightDp: number,

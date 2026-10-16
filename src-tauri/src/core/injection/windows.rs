@@ -311,15 +311,6 @@ pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     anyhow::bail!("copy_to_clipboard: clipboard held after 3 attempts")
 }
 
-// Post-paste verification loop timing (the matching logic itself lives in
-// `super::paste_tail_matches` / `super::full_text_confirms_paste`). Heavier
-// editors (ProseMirror-style rich text, React-rendered chat inputs) commit a
-// paste to their own state before the accessibility tree catches up — a UIA
-// read taken immediately after PASTE_SETTLE_MS can still see the pre-paste
-// text and read as a false mismatch. Chromium's a11y lag is variable and can
-// exceed a second while the editor is still settling, so retry with growing
-// gaps, then cross-check the control's full text, before ever reporting
-// failure (see the verify loop below).
 const PASTE_VERIFY_ATTEMPTS: u32 = 6;
 const PASTE_VERIFY_RETRY_MS: u64 = 100;
 const PASTE_VERIFY_RETRY_GROWTH_MS: u64 = 40;
@@ -589,9 +580,6 @@ pub(super) async fn inject_text(
             }
         }
 
-        // Cross-check the full field text before concluding anything — the
-        // caret-range read can stay stale/anchored even after the document
-        // text reflects the paste (Chromium re-anchors lazily).
         if !verified {
             for _ in 0..PASTE_VERIFY_FULLTEXT_ATTEMPTS {
                 if let Some(full_text) = crate::api::auto_learn::read_focused_text() {

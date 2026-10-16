@@ -1246,9 +1246,6 @@ mod linux {
             });
         let _ = reader;
 
-        // Digital-silence fallback for hardware buttons that zero PCM without
-        // flipping the PipeWire mute flag. Always on while idle (the flag
-        // alone misses exactly the buttons this feature is for).
         let mut last_pcm_start_at: Option<Instant> = None;
         const PCM_RETRY: Duration = Duration::from_secs(5);
         let mut level_debouncer = MuteDebouncer::new(DEBOUNCE);

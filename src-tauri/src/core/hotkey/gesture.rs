@@ -62,10 +62,6 @@ enum TapState {
     },
 }
 
-/// Chord/handsfree gesture tracking. Owned exclusively by the hook thread
-/// (accessed only via the `CHORD_MACHINE` thread-local below) so it never
-/// needs locking inside `hook_proc`, which must return quickly or Windows
-/// silently unhooks it.
 pub(super) struct ChordStateMachine {
     pub(super) keys: Vec<KeyState>,
     passthrough_if_incomplete: Vec<bool>,

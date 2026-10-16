@@ -94,7 +94,8 @@ pub fn start_recording_session_ex_with_context(
         }
 
         match crate::system::mac_app::microphone_permission_status() {
-            "denied" | "restricted" => {
+            crate::system::mac_app::MicrophonePermission::Denied
+            | crate::system::mac_app::MicrophonePermission::Restricted => {
                 release_starting_reservation(state);
                 return Err(
                     "Microphone access is blocked on macOS. Open System Settings > Privacy & Security > Microphone and enable Verenu."

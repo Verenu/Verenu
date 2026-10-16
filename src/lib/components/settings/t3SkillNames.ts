@@ -1,4 +1,3 @@
-/** The exact mention T3 Code receives for a shared skill. */
 export function skillToken(name: string): string {
   return `$${name}`;
 }

@@ -17,19 +17,6 @@ import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/**
- * Foreground-service holder for dictation sessions.
- *
- * Actual microphone capture stays in Rust (`cpal`, same pipeline as
- * desktop). This service exists because Android attributes microphone use
- * and process priority to a foreground service: while it runs (type
- * `microphone`), the system will not kill Verenu mid-sentence, OEM battery
- * managers back off, and the user gets a persistent Stop affordance in the
- * notification shade.
- *
- * Started/stopped by [VerenuAccessibilityService] around each dictation.
- * Holds no audio resources itself, so it can never leak the microphone.
- */
 class VerenuDictationService : Service() {
 
     private val commandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -69,10 +56,6 @@ class VerenuDictationService : Service() {
             }
             else -> {
                 startAsMicrophoneService(startId)
-                // If Android kills the process, Rust's recording session is
-                // gone too. Restarting this holder with a null intent would
-                // otherwise create a misleading foreground notification with
-                // no live microphone session behind it.
                 return START_NOT_STICKY
             }
         }
@@ -179,11 +162,6 @@ class VerenuDictationService : Service() {
         }
     }
 
-    /**
-     * The Rust session is started immediately before this service. If Android
-     * refuses to promote us to a microphone foreground service, cancel Rust's
-     * session asynchronously before stopping this holder.
-     */
     private fun abortBackendRecording(startId: Int) {
         try {
             commandExecutor.execute {

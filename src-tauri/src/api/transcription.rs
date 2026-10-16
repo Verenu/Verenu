@@ -398,12 +398,6 @@ fn build_assemblyai_submit_request(
     }
 }
 
-/// AssemblyAI's pre-recorded API has no synchronous endpoint: unlike the
-/// whisper-compatible and Gemini paths (single request in, text out), this
-/// requires uploading the audio, submitting a transcription job, then
-/// polling until the job finishes. This adds real latency (upload + submit +
-/// several poll round trips) that the other providers don't have — inherent
-/// to the API, not a bug.
 async fn transcribe_assemblyai(
     wav: Bytes,
     api_key: &str,

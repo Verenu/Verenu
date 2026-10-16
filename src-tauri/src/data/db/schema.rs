@@ -1020,10 +1020,6 @@ pub fn sqlite_disk_maintenance(db: &Db) -> Result<()> {
     let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
     let freelist_count: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
     let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
-    // Reclaim in small chunks only when the free list is both material and a
-    // meaningful fraction of the file. A full VACUUM needs an explicit,
-    // user-idle maintenance flow: holding this shared connection while SQLite
-    // rewrites the database would pause recording, history, and sync work.
     if freelist_count < 256 || freelist_count.saturating_mul(4) < page_count || page_size <= 0 {
         return Ok(());
     }

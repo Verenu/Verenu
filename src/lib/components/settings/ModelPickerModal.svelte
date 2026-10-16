@@ -226,15 +226,6 @@
     onAddFallback(row.key);
   }
 
-  /**
-   * Which provider a hand-typed id belongs to.
-   *
-   * Never parsed out of the id itself: plenty of ids contain a slash that is
-   * part of the name, not a provider — `qwen/qwen3.6-27b` is a *Groq* model.
-   * Splitting on `/` would file
-   * them under OpenAI. The rail's current filter is an explicit answer, and
-   * the active model's provider is the sensible default.
-   */
   const customProvider = $derived<ProviderId>(
     providerFilter !== 'all'
       ? providerFilter

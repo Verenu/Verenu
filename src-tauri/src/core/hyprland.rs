@@ -44,9 +44,6 @@ pub(crate) struct ActiveWindow {
 pub(crate) struct Workspace {
     #[serde(default)]
     pub id: i32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub name: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -333,7 +330,6 @@ const WINDOW_RULE_MARKERS: (&str, &str) = (
     "-- <<< End Verenu window rules >>>",
 );
 
-/// Installed before either window is mapped, including on a fresh profile.
 /// Use Hyprland's own API rather than a version-specific Omarchy helper.
 /// Tauri's GTK app ID comes from the bundle identifier, never the filename.
 #[cfg(target_os = "linux")]
@@ -494,8 +490,6 @@ fn sub_app_capture_binding_block(chord: &str, capture_command: &str) -> String {
     )
 }
 
-/// xkb keycodes that do not turn a held chord into a different shortcut:
-/// Escape, Space, Caps Lock, modifiers, and hardware media controls. Linux
 /// evdev media codes are translated to XKB codes by adding 8, just like the
 /// compositor's modifier keycodes. These controls remain usable during a hold.
 #[cfg(target_os = "linux")]

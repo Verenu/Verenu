@@ -89,8 +89,6 @@ pub fn build() {
         concurrency.is_file(),
         "Xcode Swift concurrency back-deployment runtime is missing"
     );
-    // Tauri's macOS frameworks list copies this dylib into Contents/Frameworks
-    // and signs nested code before the app, for every bundling entry point.
     let stage = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join("native/macos/swift-runtime");
     println!("cargo:rerun-if-changed={}", concurrency.display());

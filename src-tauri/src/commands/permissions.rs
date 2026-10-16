@@ -130,13 +130,13 @@ fn permission_diagnostics() -> MacPermissionDiagnostics {
         snapshot_generation: PERMISSION_QUERY_GENERATION.load(Ordering::Relaxed),
         accessibility_trusted: check_accessibility_permission(false),
         microphone_av_audio_status: crate::system::mac_app::av_audio_microphone_permission_status()
-            .map(str::to_string),
+            .map(|status| status.as_str().to_string()),
         microphone_av_audio_raw: crate::system::mac_app::av_audio_microphone_permission_raw()
             .map(|v| v as i64),
         microphone_av_audio_fourcc: crate::system::mac_app::av_audio_microphone_permission_raw()
             .map(fourcc),
         microphone_av_capture_status:
-            crate::system::mac_app::av_capture_microphone_permission_status().to_string(),
+            crate::system::mac_app::av_capture_microphone_permission_status().as_str().to_string(),
         microphone_av_capture_raw: crate::system::mac_app::av_capture_microphone_permission_raw()
             as i64,
     }
@@ -208,8 +208,8 @@ fn microphone_permission_status_string() -> String {
     let capture = crate::system::mac_app::av_capture_microphone_permission_status();
     let capture_raw = crate::system::mac_app::av_capture_microphone_permission_raw();
     let final_state = crate::system::mac_app::microphone_permission_status();
-    log::info!("[permissions][mic] query pid={} bundle={:?} AVAudioApplication raw={:?} fourcc={:?} state={:?} AVCaptureDevice raw={} state={} final={}", std::process::id(), crate::system::mac_app::bundle_identifier(), modern_raw, modern_raw.map(fourcc), modern, capture_raw, capture, final_state);
-    final_state.to_string()
+    log::info!("[permissions][mic] query pid={} bundle={:?} AVAudioApplication raw={:?} fourcc={:?} state={:?} AVCaptureDevice raw={} state={} final={}", std::process::id(), crate::system::mac_app::bundle_identifier(), modern_raw, modern_raw.map(fourcc), modern.map(crate::system::mac_app::MicrophonePermission::as_str), capture_raw, capture.as_str(), final_state.as_str());
+    final_state.as_str().to_string()
 }
 
 fn fourcc(raw: isize) -> String {
@@ -506,21 +506,21 @@ pub async fn request_microphone_permission(app: tauri::AppHandle) -> Result<Stri
     #[cfg(target_os = "macos")]
     {
         let before = crate::system::mac_app::microphone_permission_status();
-        if before == "not_determined" {
+        if before == crate::system::mac_app::MicrophonePermission::NotDetermined {
             crate::system::mac_app::request_microphone_on_main_thread(&app).await?;
         }
-        let status = crate::system::mac_app::microphone_permission_status().to_string();
+        let status = crate::system::mac_app::microphone_permission_status();
         if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
             analytics.permission_event(
                 "microphone",
-                if status == "authorized" {
+                if status == crate::system::mac_app::MicrophonePermission::Authorized {
                     "granted"
                 } else {
                     "denied"
                 },
             );
         }
-        Ok(status)
+        Ok(status.as_str().to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -541,9 +541,9 @@ pub async fn request_microphone_permission_snapshot(
     #[cfg(target_os = "macos")]
     {
         let before = crate::system::mac_app::microphone_permission_status();
-        log::info!("[permissions][mic][request] before={}", before);
+        log::info!("[permissions][mic][request] before={}", before.as_str());
         write_microphone_request_trace("started", before, None, None);
-        if before == "not_determined" {
+        if before == crate::system::mac_app::MicrophonePermission::NotDetermined {
             let request =
                 if crate::system::mac_app::av_audio_microphone_permission_status().is_some() {
                     crate::system::mac_app::request_audio_application_on_main_thread(&app).await
@@ -558,7 +558,7 @@ pub async fn request_microphone_permission_snapshot(
                 }
             };
             let mut after = crate::system::mac_app::microphone_permission_status();
-            if !callback && after == "not_determined" {
+            if !callback && after == crate::system::mac_app::MicrophonePermission::NotDetermined {
                 callback =
                     crate::system::mac_app::request_microphone_via_device_input(&app).await?;
                 after = crate::system::mac_app::microphone_permission_status();
@@ -566,7 +566,7 @@ pub async fn request_microphone_permission_snapshot(
             log::info!(
                 "[permissions][mic][request] callback={} after={}",
                 callback,
-                after
+                after.as_str()
             );
             write_microphone_request_trace("completed", after, Some(callback), None);
         } else {
@@ -579,7 +579,7 @@ pub async fn request_microphone_permission_snapshot(
 #[cfg(all(target_os = "macos", debug_assertions))]
 fn write_microphone_request_trace(
     stage: &str,
-    state: &str,
+    state: crate::system::mac_app::MicrophonePermission,
     callback: Option<bool>,
     error: Option<&str>,
 ) {
@@ -588,11 +588,11 @@ fn write_microphone_request_trace(
         "pid": std::process::id(),
         "bundleIdentifier": crate::system::mac_app::bundle_identifier(),
         "stage": stage,
-        "state": state,
+        "state": state.as_str(),
         "callback": callback,
         "error": error,
         "captureRaw": crate::system::mac_app::av_capture_microphone_permission_raw(),
-        "captureState": crate::system::mac_app::av_capture_microphone_permission_status(),
+        "captureState": crate::system::mac_app::av_capture_microphone_permission_status().as_str(),
     });
     let _ = std::fs::write("/tmp/verenu-microphone-request.json", payload.to_string());
 }
@@ -600,7 +600,7 @@ fn write_microphone_request_trace(
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn write_microphone_request_trace(
     _stage: &str,
-    _state: &str,
+    _state: crate::system::mac_app::MicrophonePermission,
     _callback: Option<bool>,
     _error: Option<&str>,
 ) {
@@ -649,9 +649,6 @@ pub fn open_notifications_settings() -> Result<(), String> {
     ])
 }
 
-/// Relaunches the app. macOS can cache a TCC decision for the life of the
-/// process, so synthesised Cmd+V injection may only start working after a
-/// restart once Accessibility has just been granted.
 #[tauri::command]
 pub fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]

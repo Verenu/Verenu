@@ -71,10 +71,6 @@ mod win {
         }
     }
 
-    /// Reads a browser window's address bar text via UI Automation. Chromium's
-    /// exact `addressEditBox` is preferred even when it appears after a page
-    /// input in the tree; the generic Edit fallback is only used when no exact
-    /// address bar was found (for Firefox and other engines).
     pub fn read_address_bar_text(window_id: usize) -> Option<String> {
         let _com = ComGuard::init();
         let automation: IUIAutomation =

@@ -255,9 +255,6 @@ pub fn caps_lock_is_on() -> bool {
     CAPS_LOCK_ON.load(Ordering::SeqCst)
 }
 
-/// Live OS-level check (not our own bookkeeping) — true if Windows currently
-/// thinks either Win key is held. Reuses the same `GetAsyncKeyState` primitive
-/// `modifier_held` already uses for Win (VK 91/92, no generic VK_WIN).
 pub fn is_win_key_down() -> bool {
     unsafe { modifier_held(91) }
 }
@@ -685,9 +682,6 @@ where
             }
         };
 
-        // Seed the cached state immediately: SetWindowsHookExW just gave this
-        // thread a message queue, so GetKeyState's toggle bit already reflects
-        // the real current state here, before the first key event arrives.
         CAPS_LOCK_ON.store((GetKeyState(0x14) & 0x0001) != 0, Ordering::SeqCst);
 
         let mut msg = MSG::default();

@@ -432,11 +432,6 @@ pub async fn download_model(
         overall_started_at.elapsed().as_millis()
     );
 
-    // Checksum hashing (hundreds of MB) and archive extraction are heavy
-    // synchronous CPU/disk work; running them on the Tokio worker thread
-    // (this fn is invoked via `tauri::async_runtime::spawn`) would block
-    // other async IPC/tasks for as long as they take. spawn_blocking hands
-    // them a dedicated thread-pool thread instead.
     {
         let app = app.clone();
         let manifest = manifest.clone();

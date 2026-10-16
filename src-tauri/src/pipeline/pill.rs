@@ -708,8 +708,6 @@ pub(crate) fn hide_pill(app: &AppHandle) {
         // Do not call pill.hide() on Windows - hiding the window suspends the
         // WebView2 renderer. The next show_pill("recording") emit would then
         // be lost before WebView2 wakes up.
-        // Hit-testing + harden only — never set_decorations(false) here (see
-        // apply_pill_hit_testing / reveal_pill).
         #[cfg(not(target_os = "linux"))]
         apply_pill_hit_testing(&pill, false);
     }

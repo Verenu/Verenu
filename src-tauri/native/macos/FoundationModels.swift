@@ -44,8 +44,8 @@ public func start(_ instructions: UnsafePointer<CChar>, _ input: UnsafePointer<C
         }
         do {
             try Task.checkCancellation()
-            // macOS 26.4 exposes the real tokenizer. Reserve space for output
-            // and framing; never truncate a request to fit the model window.
+
+
             #if compiler(>=6.3)
             if #available(macOS 26.4, *) {
                 let model = SystemLanguageModel.default

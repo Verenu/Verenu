@@ -236,8 +236,6 @@ pub(crate) fn cleanup_update_helper_if_requested() {
         return;
     };
 
-    // The helper has just spawned this process and is exiting. Retry briefly so
-    // Windows has released the helper image before removing its temp copy.
     for _ in 0..20 {
         match std::fs::remove_file(&helper) {
             Ok(()) => return,

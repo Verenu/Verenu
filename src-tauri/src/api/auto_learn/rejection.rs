@@ -122,8 +122,6 @@ fn run_rejection_monitor(
     }
 
     let guard = MonitorKeyGuard::new(key);
-    // Keep native accessibility identities on one OS thread. In particular,
-    // UIA elements belong to the COM apartment that read the baseline.
     let spawned = std::thread::Builder::new()
         .name("auto_learn_rejection".into())
         .spawn(move || {

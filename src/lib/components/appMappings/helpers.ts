@@ -5,10 +5,6 @@ export function customExeFromSearch(search: string): string {
   return normalizeExe(search).replace(/\.exe$/, '') + '.exe';
 }
 
-/**
- * Whether an app matches a search. Android packages all start "com." and share
- * segments like "google.android", so only the visible name is searched there.
- */
 export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = isAndroid) {
   const query = search.trim().toLowerCase();
   return matchesSearch(app, query, query.replace(/[^a-z0-9]/g, ''), nameOnly);

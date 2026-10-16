@@ -24,7 +24,7 @@ impl DeviceIdentity {
         &self.cert_der
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn cert_fingerprint(&self) -> String {
         fingerprint_of(self.cert_der.as_ref())
     }

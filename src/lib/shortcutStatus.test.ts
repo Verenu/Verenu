@@ -3,7 +3,7 @@ import { invoke, listen } from './tauri';
 
 const harness = vi.hoisted(() => ({ handlers: new Map<string, unknown>() }));
 
-vi.mock('./platform', () => ({ isLinux: true, isAndroid: false }));
+vi.mock('./platform', () => ({ isLinuxDesktop: true }));
 vi.mock('./tauri', () => ({
   invoke: vi.fn(async () => null),
   listen: vi.fn(async (event: string, handler: unknown) => {
