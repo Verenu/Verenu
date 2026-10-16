@@ -1,32 +1,15 @@
-//! Ordering guarantee for "Mute PC Audio": the system output is muted, and the
-//! mute confirmed, *before* the microphone opens, so playing audio cannot leak
-//! into the start of a dictation.
-//!
-//! The wait is bounded. A slow or wedged audio server must never hang
-//! dictation, so after `MUTE_CONFIRM_TIMEOUT` recording starts anyway and the
-//! mute, which keeps running on its own thread, lands late.
-
 use crate::system::volume::MuteOutcome;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Longest recording start waits for the mute to be confirmed. A confirmed
-/// mute takes roughly 15-30 ms on PipeWire, so this only matters when the audio
-/// server is unhealthy.
 pub const MUTE_CONFIRM_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// How the pre-recording mute step ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuteGate {
-    /// "Mute PC Audio" is off, so there was nothing to wait for.
     Skipped,
-    /// The output is silent: Verenu muted it, or it already was.
     Confirmed(MuteOutcome),
-    /// The mute request was delivered but the platform cannot confirm it.
     Unconfirmed,
-    /// The mute was attempted but could not be applied.
     Failed,
-    /// The mute was not confirmed in time; recording started without it.
     TimedOut,
 }
 
@@ -36,17 +19,12 @@ impl MuteGate {
     }
 }
 
-/// What the gate measured, for the mute-to-record log line.
 #[derive(Clone, Copy, Debug)]
 pub struct MuteReport {
     pub gate: MuteGate,
-    /// Time spent waiting for the mute.
     pub waited: Duration,
 }
 
-/// Runs `mute` on its own thread and waits up to `timeout` for its outcome.
-/// The thread is detached, so a mute that outlives the timeout still finishes
-/// (and is undone by the normal unmute path if recording ended meanwhile).
 pub fn wait_for_mute<F>(timeout: Duration, mute: F) -> MuteReport
 where
     F: FnOnce() -> MuteOutcome + Send + 'static,
@@ -68,7 +46,6 @@ where
             Ok(MuteOutcome::Requested) => MuteGate::Unconfirmed,
             Ok(outcome) => MuteGate::Confirmed(outcome),
             Err(mpsc::RecvTimeoutError::Timeout) => MuteGate::TimedOut,
-            // The mute thread died without reporting back.
             Err(mpsc::RecvTimeoutError::Disconnected) => MuteGate::Failed,
         },
     };
@@ -78,10 +55,6 @@ where
     }
 }
 
-/// Runs `mute` (when there is one) to completion or timeout, then `start`. Never
-/// runs `start` first and never skips it: the caller always gets its result.
-/// Logs the mute confirmation time and the time the recording took to open
-/// once the mute was settled.
 pub fn start_after_mute<T, M, S>(mute: Option<M>, timeout: Duration, start: S) -> (T, MuteReport)
 where
     M: FnOnce() -> MuteOutcome + Send + 'static,
@@ -104,7 +77,6 @@ where
     let mute_to_record = mute_settled.elapsed();
     let level = match report.gate {
         MuteGate::Failed | MuteGate::TimedOut => {
-            // Recording went ahead unmuted; make that visible in the log.
             log::Level::Warn
         }
         _ => log::Level::Info,
@@ -140,7 +112,6 @@ mod tests {
         let (mute_log, start_log) = (log.clone(), log.clone());
         let (_, report) = start_after_mute(
             Some(move || {
-                // Slow enough that a start that did not wait would run first.
                 std::thread::sleep(Duration::from_millis(60));
                 push(&mute_log, "mute-confirmed");
                 MuteOutcome::Muted
@@ -185,7 +156,6 @@ mod tests {
             elapsed >= Duration::from_millis(80) && elapsed < Duration::from_secs(2),
             "wait must be bounded by the timeout, took {elapsed:?}"
         );
-        // The detached mute is not abandoned: it still finishes afterwards.
         release.send(()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && log.lock().unwrap().len() < 2 {

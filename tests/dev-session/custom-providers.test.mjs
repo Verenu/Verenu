@@ -56,7 +56,6 @@ test('custom provider editor persists, offers task models, renames, and removes 
     assert.equal('api_key' in p, false);
     await page.setViewportSize({ width: 1320, height: 860 });
     await page.getByRole('button', { name: 'Models', exact: true }).click();
-    // The advanced panel owns the model picker.
     await invoke('save_setting', { key: 'advanced_model_ui', value: true });
     await page.reload();
     await page.getByRole('button', { name: 'Settings', exact: true }).click();

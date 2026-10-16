@@ -1,28 +1,3 @@
-//! Bounded, metadata-first diagnostics state for the native application.
-//!
-//! This module is intentionally independent of Tauri, the logger, and the
-//! pipeline. Callers can feed it safe fields from those systems without
-//! making diagnostics a second logging framework. The normal integration
-//! points are:
-//!
-//! * call [`init`] during native startup;
-//! * call [`record_log`] beside ordinary log calls when a structured record is
-//!   useful;
-//! * wrap a dictation with [`start_trace`], [`start_span`], and
-//!   [`finish_span`];
-//! * wrap `commands::run_blocking` with [`start_operation`] and
-//!   [`finish_operation`];
-//! * call [`set_profiler_enabled`] when the Diagnostics view becomes visible
-//!   or an explicit recording starts, then feed sampled resources through
-//!   [`record_resource_sample`];
-//! * expose [`snapshot`] to the frontend or an export command.
-//!
-//! All text fields are labels or short, redacted summaries. This module does
-//! not define fields for transcripts, prompts, clipboard contents, payloads,
-//! API keys, or active-field text. Callers should still pass metadata-first
-//! messages. The small redaction pass below is a second line of defence for
-//! accidental sensitive markers.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -51,10 +26,6 @@ const ROLLING_CALL_WINDOW_MS: u64 = 60_000;
 static STORE: OnceLock<Mutex<DiagnosticsStore>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Retention limits for all in-memory diagnostics histories.
-///
-/// Values are clamped to at least one entry. A small configuration is useful
-/// in deterministic tests and in constrained diagnostic builds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticsConfig {
     pub max_logs: usize,
@@ -106,8 +77,6 @@ impl DiagnosticsConfig {
     }
 }
 
-/// Log severity. This is separate from `log::Level` so the diagnostics model
-/// stays easy to serialize and test without installing a global logger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
@@ -118,7 +87,6 @@ pub enum LogLevel {
     Error,
 }
 
-/// The terminal state of a span, trace, or operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OperationOutcome {
@@ -131,7 +99,6 @@ pub enum OperationOutcome {
     Unknown,
 }
 
-/// Cache state that is safe to show in diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheStatus {
@@ -141,11 +108,6 @@ pub enum CacheStatus {
     Unknown,
 }
 
-/// Optional structured fields shared by logs, failures, and spans.
-///
-/// Numeric measurements and boolean flags are copied with bounded key counts.
-/// Arbitrary JSON is deliberately not accepted here, which prevents a
-/// diagnostics call from retaining a provider response or user payload.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StructuredFields {
     pub operation: Option<String>,
@@ -165,8 +127,6 @@ pub struct StructuredFields {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// A structured, human-readable log record. The message is short and
-/// redacted; it is never intended to carry dictated text or a request body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StructuredLogEntry {
     pub timestamp_ms: u64,
@@ -188,7 +148,6 @@ pub struct StructuredLogEntry {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// Input accepted by [`record_failure`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FailureEventInput {
     pub subsystem: String,
@@ -207,8 +166,6 @@ pub struct FailureEventInput {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// One retained failure occurrence. Repeated occurrences also update a
-/// [`FailureGroup`], but each retained event keeps its own trace and timing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FailureEvent {
     pub id: String,
@@ -230,9 +187,6 @@ pub struct FailureEvent {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// A normalized failure family. Volatile IDs, timestamps, offsets, and paths
-/// do not make a new group, while subsystem, operation, stage, and category
-/// remain part of the identity so unrelated failures stay separate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FailureGroup {
     pub fingerprint: String,
@@ -249,8 +203,6 @@ pub struct FailureGroup {
     pub model: Option<String>,
 }
 
-/// A bounded pipeline timeline. Active spans have no `ended_at_ms` and use
-/// `running` as their outcome.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineTrace {
     pub trace_id: String,
@@ -263,8 +215,6 @@ pub struct PipelineTrace {
     pub spans: Vec<Span>,
 }
 
-/// One pipeline stage. `parent_span_id` and `parallel_group` preserve the
-/// shape of concurrent work such as dual transcription.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub span_id: String,
@@ -288,7 +238,6 @@ pub struct Span {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// Optional fields applied when a span finishes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpanFinish {
     pub outcome: OperationOutcome,
@@ -304,9 +253,6 @@ pub struct SpanFinish {
     pub flags: BTreeMap<String, bool>,
 }
 
-/// Backend command or other operation aggregate. Duration samples are kept
-/// in a bounded reservoir and are used for an exact p95 over that bounded
-/// recent sample set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationMetric {
     pub operation: String,
@@ -325,8 +271,6 @@ pub struct OperationMetric {
     pub last_called_at_ms: Option<u64>,
 }
 
-/// One point in the optional resource timeline. Unknown or unsupported
-/// platform values stay `None` and serialize as `null`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSnapshot {
     pub observed_at_ms: u64,
@@ -350,7 +294,6 @@ pub struct ResourceSnapshot {
     pub collector_duration_us: Option<u64>,
 }
 
-/// Bounded child-process detail for a resource sample.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChildProcessSnapshot {
     pub label: String,
@@ -363,7 +306,6 @@ pub struct ChildProcessSnapshot {
     pub thread_count: Option<u32>,
 }
 
-/// A timestamped resource point retained by the profiler.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSample {
     pub sequence: u64,
@@ -371,7 +313,6 @@ pub struct ResourceSample {
     pub snapshot: ResourceSnapshot,
 }
 
-/// Cheap health counters for the diagnostics system itself.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticsHealth {
     pub initialized: bool,
@@ -401,7 +342,6 @@ pub struct DiagnosticsHealth {
     pub last_event_at_ms: Option<u64>,
 }
 
-/// Serializable view of all bounded diagnostics state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticsSnapshot {
     pub generated_at_ms: u64,
@@ -415,8 +355,6 @@ pub struct DiagnosticsSnapshot {
     pub recent_pipelines: Vec<PipelineTrace>,
     pub logs: Vec<StructuredLogEntry>,
     pub operations: Vec<OperationMetric>,
-    /// Optional runtime-manager state supplied by the command layer. Kept
-    /// outside the diagnostics store so this module remains Tauri-independent.
     pub runtime: DiagnosticsRuntime,
     pub health: DiagnosticsHealth,
 }
@@ -428,29 +366,22 @@ pub struct DiagnosticsRuntime {
     pub sync: Option<serde_json::Value>,
     pub auto_learn: Option<serde_json::Value>,
     pub cleanup_cache: Option<serde_json::Value>,
-    /// Snapshot of the active recording session's atomic audio/VAD state.
-    /// This deliberately contains levels and state flags only, never PCM.
     pub audio: Option<serde_json::Value>,
-    /// Linux titlebar / window-chrome capability probe for diagnostics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_chrome: Option<serde_json::Value>,
 }
 
-/// Opaque handle returned by [`start_trace`]. The value contains no user
-/// content and can safely be passed between pipeline tasks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceHandle {
     pub trace_id: String,
 }
 
-/// Opaque handle returned by [`start_span`] or [`start_parallel_span`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpanHandle {
     pub trace_id: String,
     pub span_id: String,
 }
 
-/// Opaque handle for a timed operation.
 #[derive(Debug)]
 pub struct OperationHandle {
     operation: String,
@@ -560,21 +491,15 @@ fn with_store<T>(f: impl FnOnce(&mut DiagnosticsStore) -> T) -> T {
     f(&mut guard)
 }
 
-/// Initializes the global store with default bounds. Repeated calls are safe.
 pub fn init() {
     let _ = store();
 }
 
-/// Initializes the store with explicit bounds. Only the first initialization
-/// chooses the configuration. Later calls are harmless no-ops.
 #[allow(dead_code)]
 pub fn init_with_config(config: DiagnosticsConfig) {
     let _ = STORE.get_or_init(|| Mutex::new(DiagnosticsStore::new(config)));
 }
 
-/// Enables or disables the expensive sampling window. Enabling starts a new
-/// resource window and clears its previous samples. Disabling stops future
-/// samples but keeps the completed window in the snapshot for inspection.
 pub fn set_profiler_enabled(enabled: bool) {
     with_store(|state| {
         if state.profiler_enabled == enabled {
@@ -593,21 +518,16 @@ pub fn set_profiler_enabled(enabled: bool) {
     });
 }
 
-/// Alias suited to UI lifecycle call sites.
 #[allow(dead_code)]
 pub fn enable_profiler(enabled: bool) {
     set_profiler_enabled(enabled);
 }
 
-/// Returns whether the optional resource profiler is currently enabled.
 #[allow(dead_code)]
 pub fn profiler_enabled() -> bool {
     with_store(|state| state.profiler_enabled)
 }
 
-/// Explicit recording keeps the sampler alive even after the Diagnostics view
-/// unmounts. This is intentionally separate from view visibility so ordinary
-/// navigation cannot leave a process-tree sampler running forever.
 pub fn set_profiling_recording(enabled: bool) {
     with_store(|state| {
         state.profiling_recording = enabled;
@@ -629,8 +549,6 @@ pub fn should_sample_resources() -> bool {
     with_store(|state| state.profiler_enabled || state.profiling_recording)
 }
 
-/// Records a metadata-first structured log entry and returns the retained
-/// sanitized value. The returned value is useful for event emission.
 pub fn record_log(level: &str, subsystem: &str, message: &str) -> Option<StructuredLogEntry> {
     Some(record_log_with_fields(
         parse_log_level(level),
@@ -640,7 +558,6 @@ pub fn record_log(level: &str, subsystem: &str, message: &str) -> Option<Structu
     ))
 }
 
-/// Records a metadata-first structured log entry with optional fields.
 pub fn record_log_with_fields(
     level: LogLevel,
     subsystem: &str,
@@ -679,8 +596,6 @@ fn parse_log_level(level: &str) -> LogLevel {
     }
 }
 
-/// Stores an already constructed entry after applying the same bounds and
-/// redaction used by [`record_log`]. A zero timestamp is replaced with now.
 pub fn record_log_entry(mut entry: StructuredLogEntry) -> StructuredLogEntry {
     entry.timestamp_ms = if entry.timestamp_ms == 0 {
         now_ms()
@@ -713,8 +628,6 @@ pub fn record_log_entry(mut entry: StructuredLogEntry) -> StructuredLogEntry {
     entry
 }
 
-/// Records a failure, updates its normalized group, and returns the retained
-/// sanitized event. This channel is independent of `verenu:error`.
 pub fn record_failure(input: FailureEventInput) -> FailureEvent {
     let timestamp_ms = now_ms();
     let subsystem = safe_label(&input.subsystem);
@@ -804,19 +717,13 @@ pub fn record_failure(input: FailureEventInput) -> FailureEvent {
     })
 }
 
-/// Short alias retained for command helpers that use `FailureInput`.
 pub type FailureInput = FailureEventInput;
 
-/// Normalizes a failure message for display in tests or a diagnostics UI.
-/// The result contains no volatile IDs, timestamps, paths, or offset values.
 pub fn normalize_failure_cause(cause: &str) -> String {
     let redacted = redact_and_limit(cause, MAX_FINGERPRINT_INPUT_CHARS);
     normalize_failure_text(&redacted)
 }
 
-/// Returns the stable fingerprint used by [`record_failure`]. Context fields
-/// are included so identical provider messages in different subsystems do not
-/// collapse into one misleading group.
 pub fn failure_fingerprint(
     subsystem: &str,
     operation: Option<&str>,
@@ -835,7 +742,6 @@ pub fn failure_fingerprint(
     format!("f-{hash:016x}", hash = fnv1a64(identity.as_bytes()))
 }
 
-/// Starts a bounded dictation trace.
 pub fn start_trace(root_operation: &str, session_id: Option<&str>) -> TraceHandle {
     let trace_id = next_id("trace");
     let started = Instant::now();
@@ -862,7 +768,6 @@ pub fn start_trace(root_operation: &str, session_id: Option<&str>) -> TraceHandl
     TraceHandle { trace_id }
 }
 
-/// Starts a normal child span under a trace.
 pub fn start_span(
     trace_id: &str,
     operation: &str,
@@ -872,8 +777,6 @@ pub fn start_span(
     start_span_inner(trace_id, operation, stage, parent_span_id, None)
 }
 
-/// Starts a span and labels it as part of a parallel lane. The lane name is a
-/// safe label such as `dual-transcription`, not a task payload or request ID.
 pub fn start_parallel_span(
     trace_id: &str,
     operation: &str,
@@ -936,7 +839,6 @@ fn start_span_inner(
     })
 }
 
-/// Finishes a span using its measured monotonic duration.
 pub fn finish_span(handle: &SpanHandle, outcome: OperationOutcome) -> bool {
     finish_span_with(
         handle,
@@ -947,8 +849,6 @@ pub fn finish_span(handle: &SpanHandle, outcome: OperationOutcome) -> bool {
     )
 }
 
-/// Finishes a span and applies safe stage metadata. `duration_ms` can be used
-/// when the caller already has a more accurate external measurement.
 pub fn finish_span_with(handle: &SpanHandle, finish: SpanFinish) -> bool {
     let ended_at_ms = now_ms();
     with_store(|state| {
@@ -984,8 +884,6 @@ pub fn finish_span_with(handle: &SpanHandle, finish: SpanFinish) -> bool {
     .unwrap_or(false)
 }
 
-/// Finishes a trace. Any still-running spans are marked cancelled so a trace
-/// cannot retain live spans forever after a pipeline cancellation.
 pub fn finish_trace(trace_id: &str, outcome: OperationOutcome) -> bool {
     let ended_at_ms = now_ms();
     with_store(|state| {
@@ -1013,8 +911,6 @@ pub fn finish_trace(trace_id: &str, outcome: OperationOutcome) -> bool {
     .unwrap_or(false)
 }
 
-/// Starts timing an operation. The operation is counted immediately, while
-/// duration and outcome counters update when [`finish_operation`] runs.
 pub fn start_operation(operation: &str) -> OperationHandle {
     let operation = safe_label(operation);
     let started = Instant::now();
@@ -1044,7 +940,6 @@ pub fn start_operation(operation: &str) -> OperationHandle {
     }
 }
 
-/// Finishes an operation using its monotonic duration.
 pub fn finish_operation(handle: OperationHandle, outcome: OperationOutcome) -> bool {
     if !handle.tracked {
         return false;
@@ -1057,13 +952,11 @@ pub fn finish_operation(handle: OperationHandle, outcome: OperationOutcome) -> b
     )
 }
 
-/// Compatibility helper for central wrappers such as `commands::run_blocking`.
 pub fn operation_started(operation: &'static str) -> OperationHandle {
     start_operation(operation)
 }
 
 impl OperationHandle {
-    /// Completes this operation from a boolean success result.
     pub fn finish(self, success: bool) {
         let _ = finish_operation(
             self,
@@ -1076,8 +969,6 @@ impl OperationHandle {
     }
 }
 
-/// Records an already measured operation. This is convenient for command
-/// wrappers that already own an `Instant` or a native duration.
 #[allow(dead_code)]
 pub fn record_operation(operation: &str, duration_ms: u64, outcome: OperationOutcome) -> bool {
     let operation = safe_label(operation);
@@ -1122,8 +1013,6 @@ fn record_operation_duration(
     })
 }
 
-/// Records one resource point if profiling is enabled. The native collector
-/// should populate unavailable values as `None`, never as a fake zero.
 pub fn record_resource_sample(mut resource: ResourceSnapshot) -> bool {
     with_store(|state| {
         if !(state.profiler_enabled || state.profiling_recording) {
@@ -1201,14 +1090,10 @@ fn start_resource_window(state: &mut DiagnosticsStore) {
     state.next_resource_sequence = 0;
 }
 
-/// Returns a cheap, serializable copy of all current bounded state.
 pub fn snapshot() -> DiagnosticsSnapshot {
     with_store(|state| snapshot_locked(state, now_ms()))
 }
 
-/// Frontend-facing snapshot with a smaller transfer budget than the retained
-/// export ring. The backend keeps the larger bounded history for export and
-/// postmortem work, while ordinary polling never serializes thousands of rows.
 pub fn snapshot_for_ui() -> DiagnosticsSnapshot {
     let mut snapshot = snapshot();
     snapshot.logs = snapshot.logs.into_iter().rev().take(800).collect();
@@ -1237,9 +1122,6 @@ pub fn snapshot_for_ui() -> DiagnosticsSnapshot {
     snapshot
 }
 
-/// Clears all retained state while preserving the current bounds. This is
-/// public for deterministic integration tests and explicit "clear diagnostics"
-/// tooling. It does not change profiler enablement.
 #[allow(dead_code)]
 pub fn reset_for_tests() {
     with_store(|state| {
@@ -1256,9 +1138,6 @@ pub fn reset_for_tests() {
     });
 }
 
-/// Clears retained diagnostics while preserving configured bounds and the
-/// current profiler enablement. This is the production-facing counterpart to
-/// [`reset_for_tests`] for a user-requested new recording window.
 #[allow(dead_code)]
 pub fn reset() {
     reset_for_tests();
@@ -1440,8 +1319,6 @@ fn update_operation_metric(
 
 fn public_operation_metric(state: &OperationMetricState, now: u64) -> OperationMetric {
     let mut metric = state.metric.clone();
-    // The queue is already capped on every write. Count live entries without
-    // cloning it; p95 is likewise maintained when a duration is recorded.
     metric.calls_per_minute = state
         .call_times
         .iter()

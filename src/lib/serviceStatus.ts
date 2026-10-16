@@ -54,8 +54,6 @@ export function setServiceChecksEnabled(enabled: boolean): void {
     return;
   }
 
-  // An explicit opt-in should take effect immediately rather than waiting
-  // for the next scheduled interval.
   void checkStatus();
 }
 
@@ -67,7 +65,6 @@ export async function checkStatus(): Promise<void> {
     invoke<GlobalMessage | null>('check_global_message'),
   ]);
 
-  // The setting may have been changed while the requests were in flight.
   if (!serviceChecksEnabled) return;
 
   if (alertsResult.status === 'fulfilled') {
@@ -158,9 +155,6 @@ export function startProviderStatusChecks(): () => void {
   void checkStatus();
   const timer = window.setInterval(() => void checkStatus(), PROVIDER_STATUS_INTERVAL_MS);
 
-  // The backend fires this after a pipeline call fails in a way that looks
-  // provider-side (quota or a retryable timeout/429/5xx), so a real outage
-  // shows up immediately instead of waiting up to 5 minutes.
   let disposed = false;
   let unlistenRecheck: (() => void) | undefined;
   listen('verenu:recheck-provider-status', () => void checkStatus())

@@ -53,7 +53,6 @@ describe('layout decisions', () => {
 	it('uses multi-pane only on flat expanded windows', () => {
 		expect(shouldUseMultiPane(snapshotForSize(1200, 800))).toBe(true);
 		expect(shouldUseMultiPane(snapshotForSize(700, 500))).toBe(false);
-		// Half-opened foldable: hinge area makes spanning panes unreadable.
 		expect(shouldUseMultiPane(snapshotForSize(1200, 800, 'half-opened'))).toBe(false);
 	});
 });

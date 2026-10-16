@@ -1,17 +1,3 @@
-// Installs Verenu's Android native sources into the Tauri-generated project.
-//
-// Usage: node scripts/android-sync.mjs [--init-only]
-//
-// 1. Runs `tauri android init` when src-tauri/gen/android is missing.
-// 2. Copies src-tauri/android/kotlin/* into the app module package dir.
-// 3. Copies res/xml + res/values resources.
-// 4. Merges AndroidManifest.snippet.xml blocks (idempotent, marker-wrapped).
-// 5. Pins minSdk 26 plus required Android dependencies in app/build.gradle.kts.
-//
-// Idempotent: safe to re-run after `tauri android init` or CLI upgrades.
-// Fails loudly (non-zero exit + anchor dump) when generated content it must
-// patch is missing, instead of writing a half-merged project.
-
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -64,8 +50,6 @@ function readJson(path) {
 }
 
 function javaSourceDir() {
-  // The source tree already contains its package path (`kotlin/com/verenu/app`)
-  // so copy it below `java`, not below `java/<identifier>` a second time.
   return join(genAndroid, 'app', 'src', 'main', 'java');
 }
 
@@ -94,9 +78,6 @@ function syncWebAssets() {
     fail('dist/ is missing or stale. Run `npm run build` before `npm run android:sync`.');
   }
 
-  // Tauri's generated Android project packages these files directly into the
-  // WebView. Remove old hashed bundles first so index.html can never point at
-  // a file from a previous frontend build.
   rmSync(join(generatedAssets, 'assets'), { recursive: true, force: true });
   mkdirSync(generatedAssets, { recursive: true });
   copyFileSync(join(dist, 'index.html'), join(generatedAssets, 'index.html'));
@@ -136,9 +117,6 @@ function mergeManifest() {
     let baseManifest = manifest;
     if (existingStart !== -1) {
       if (existingEnd < existingStart) fail(`generated manifest has unbalanced verenu markers near: ${start}`);
-      // Exclude our previous merged block while comparing against permissions
-      // supplied by the generated Tauri template. This keeps repeated syncs
-      // idempotent without duplicating a permission such as INTERNET.
       baseManifest = manifest.slice(0, existingStart) + manifest.slice(existingEnd + end.length);
     }
     if (start.includes('permissions')) {
@@ -152,7 +130,6 @@ function mergeManifest() {
       );
     }
     if (existingStart !== -1) {
-      // Replace the previously merged block in place (idempotent).
       manifest = manifest.slice(0, existingStart) + block + manifest.slice(existingEnd + end.length);
       continue;
     }
@@ -170,13 +147,6 @@ function mergeManifest() {
       manifest = manifest.slice(0, lineEnd + 1) + '\n' + block + manifest.slice(lineEnd + 1);
     }
   }
-  // MainActivity's own tag is Tauri's template output, not ours, so it isn't
-  // marker-wrapped like the blocks above — patch its attribute in place
-  // instead. Edge-to-edge (MainActivity.kt's enableEdgeToEdge()) only lets
-  // content draw behind the status/nav bars; without this attribute the
-  // system still reserves the display cutout (camera hole-punch) as
-  // off-limits, so content laid out for the full edge-to-edge height gets
-  // clipped under the cutout instead of avoiding or padding around it.
   const cutoutAttr = 'android:windowLayoutInDisplayCutoutMode="shortEdges"';
   if (!manifest.includes('windowLayoutInDisplayCutoutMode')) {
     const activityAnchor = 'android:name=".MainActivity"';
@@ -185,16 +155,10 @@ function mergeManifest() {
     manifest = manifest.slice(0, at) + cutoutAttr + '\n            ' + manifest.slice(at);
   }
 
-  // Release builds keep cleartext disabled globally. The native accessibility
-  // service still needs the Rust bridge's authenticated loopback HTTP socket,
-  // so install a resource-level exception scoped to localhost/127.0.0.1 and
-  // disable Android backups for dictation history and transient bridge data.
   const appAnchor = '<application';
   const appAt = manifest.indexOf(appAnchor);
   if (appAt === -1) fail('application anchor not found; check the Tauri CLI template.');
   const appAttrs = [];
-  // llama-server is APK-owned executable code, installed by Android rather
-  // than downloaded into writable app storage.
   if (/android:extractNativeLibs="[^"]*"/.test(manifest)) {
     manifest = manifest.replace(/android:extractNativeLibs="[^"]*"/, 'android:extractNativeLibs="true"');
   } else {
@@ -233,8 +197,6 @@ function patchGradle() {
       '\n    // Verenu APK-owned inference executables.\n    packaging { jniLibs.useLegacyPackaging = true }\n' +
       gradle.slice(at + anchor.length);
   }
-  // Keep the runtime capability report and the packaged APK metadata aligned
-  // even when `tauri android init` was produced by a different CLI template.
   gradle = gradle.replace(/targetSdk\s*=\s*\d+/, 'targetSdk = 36');
   if (!gradle.includes('POSTHOG_PROJECT_TOKEN')) {
     const anchor = 'defaultConfig {';
@@ -269,8 +231,6 @@ function patchGradle() {
     },
     {
       marker: 'com.posthog:posthog-android',
-      // Pin this dependency so a future SDK default cannot silently broaden
-      // the analytics data-collection contract.
       declaration: 'implementation("com.posthog:posthog-android:3.64.0")',
       comment: 'PostHog Android SDK.',
     },
@@ -296,8 +256,6 @@ function patchRootGradle() {
   const gradlePath = join(genAndroid, 'build.gradle.kts');
   if (!existsSync(gradlePath)) fail(`root build script missing: ${gradlePath}`);
   let gradle = readFileSync(gradlePath, 'utf8');
-  // PostHog 3.64.0 is published with Kotlin 2.1 metadata. Keep the
-  // generated Tauri project compatible with its transitive dependencies.
   gradle = gradle.replace(
     /kotlin-gradle-plugin:\d+\.\d+\.\d+/,
     'kotlin-gradle-plugin:2.1.21',
@@ -317,8 +275,6 @@ copyTree(join(androidSrc, 'instrumentation'), join(genAndroid, 'app', 'src', 'an
 copyTree(join(androidSrc, 'res'), join(genAndroid, 'app', 'src', 'main', 'res'));
 copyFileSync(join(androidSrc, 'proguard-rules.pro'), join(genAndroid, 'app', 'proguard-rules.pro'));
 console.log('android-sync: kotlin + res installed');
-// Kotlin compilation and JVM tests do not link the packaged inference runtimes.
-// APK builds must use the ordinary sync path, which prepares both real runtimes.
 if (!process.argv.includes('--sources-only')) await syncAndroidLocalRuntimes(root);
 removeBundledCppRuntime();
 mergeManifest();

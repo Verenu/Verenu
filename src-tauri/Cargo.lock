@@ -4590,7 +4590,8 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "quick-xml"
 version = "0.41.0"
-source = "git+https://github.com/tafia/quick-xml?rev=4deda08abeffdc188c269360229cf47e12a77a9f#4deda08abeffdc188c269360229cf47e12a77a9f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
 ]

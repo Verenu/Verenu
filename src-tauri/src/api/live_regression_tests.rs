@@ -39,8 +39,6 @@ struct LiveCase {
 }
 
 fn settings_path() -> Option<PathBuf> {
-    // Prefer the shared Verenu data dir, then fall back to legacy
-    // identifier-scoped AppData copies from older builds.
     #[cfg(windows)]
     {
         let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
@@ -226,9 +224,6 @@ fn contains_eval_term(text: &str, term: &str) -> bool {
     if term.is_empty() {
         return false;
     }
-    // The live score is semantic rather than a verbatim diff. These are
-    // intentionally narrow software-dictation equivalences; technical terms
-    // such as Kubernetes, Claude, paths, and identifiers remain exact.
     let semantic_aliases: &[&str] = match term.as_str() {
         "release" => &["release", "ship"],
         "send" => &["send", "deliver"],

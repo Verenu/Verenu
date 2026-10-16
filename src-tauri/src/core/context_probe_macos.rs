@@ -1,36 +1,5 @@
 #![cfg(target_os = "macos")]
 
-//! macOS caret-local context probe (the real `CaretLocal` source).
-//!
-//! This is the macOS half of the layered `InjectionContextProbe`. It calls into
-//! the Objective-C shim (`system/macos_ax_text_marker.m`) which uses the
-//! Accessibility (AX) API to read the focused element's selected text range and
-//! the characters on both sides of it. When AX permits, this returns a genuine
-//! `ContextProbeSource::CaretLocal` result with independent confidence for each
-//! edge, exactly like the Windows UI Automation path.
-//!
-//! ## Known OS limitations (why this can fall back)
-//!
-//! The AX API does not expose caret context for every control. The shim reports
-//! these cases so the caller can preserve the payload instead of guessing:
-//!
-//! - **Accessibility permission not granted** → `SOURCE_PERMISSION_MISSING`. The
-//!   app must be trusted under System Settings → Privacy & Security →
-//!   Accessibility; without it AX returns nothing.
-//! - **Controls that don't implement the text AX attributes** →
-//!   `SOURCE_UNSUPPORTED_CONTROL`. Common offenders: Chromium/Electron web views
-//!   and many browser text inputs, custom-drawn/canvas editors, terminal
-//!   emulators, and some cross-process or sandboxed apps that expose only a
-//!   coarse `AXTextArea` without `AXSelectedTextRange`/`AXTextMarker` support.
-//! - **Secure text fields** (password inputs) deliberately withhold contents →
-//!   typically reported as unsupported/ambiguous.
-//! - **Non-collapsed selection with unreadable endpoints** →
-//!   `SOURCE_AMBIGUOUS_SELECTION`. Readable selections use the text before the
-//!   selection start and after the selection end.
-//!
-//! The read is synchronous on the calling thread (the AX round-trip is fast for
-//! supported controls); the caller runs it off the hotkey path.
-
 use std::ffi::c_char;
 
 use crate::core::context_probe::{
@@ -76,8 +45,6 @@ unsafe extern "C" {
 }
 
 fn c_buf_to_string(buf: &[c_char], preserve_whitespace: bool) -> String {
-    // Find the null terminator within the buffer bounds to avoid a buffer
-    // overread if the Objective-C shim fails to write a trailing null byte.
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     let u8_bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, len) };
     let value = String::from_utf8_lossy(u8_bytes).to_string();
@@ -125,7 +92,6 @@ pub fn read_injection_context_probe_sync() -> InjectionContextProbe {
         head: [0; 512],
     };
 
-    // SAFETY: The shim fills the provided POD struct and does not retain Rust memory.
     let ok = unsafe { verenu_macos_read_context_probe(LOOKBEHIND_CHARS, &mut raw) };
     if ok == 0 {
         return InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "ffi_failed");
@@ -137,11 +103,6 @@ pub fn read_injection_context_probe_sync() -> InjectionContextProbe {
         return InjectionContextProbe::unavailable(source, "invalid_pid");
     }
 
-    // A response other than "permission missing" / "unavailable" means the AX API
-    // returned real data for another app's focused element — authoritative proof
-    // Accessibility is granted, even if `AXIsProcessTrusted()` is reporting a stale
-    // `false` after an ad-hoc rebuild. Latch it so the permissions snapshot can
-    // self-heal the same way the microphone and Input Monitoring signals do.
     if !matches!(
         source,
         ContextProbeSource::PermissionMissing | ContextProbeSource::Unavailable

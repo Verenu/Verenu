@@ -6,8 +6,6 @@ const failure = {
 };
 const working = { ...failure, active: 'Ctrl + Super', codes: ['ControlLeft', 'MetaLeft'], note: null };
 
-// Browser sessions disable OS shortcuts. Deliver the real event contract
-// through the Rust bridge; the native probe covers actual portal registration.
 async function publish(page, status) {
   await page.evaluate(async (item) => {
     const { emit } = await import('/src/lib/tauri.ts');
@@ -21,7 +19,6 @@ test('shortcut failure remains visible and ready recovery restores dictation gui
   await expect(page.getByRole('heading', { name: 'Dictation shortcut unavailable' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'An app id is required' })).toBeVisible();
   await expect(page.getByText('Hold Unavailable', { exact: false })).toHaveCount(0);
-  // A saved-hotkey notification must not advertise an unregistered shortcut.
   await page.evaluate(async () => {
     const { emit } = await import('/src/lib/tauri.ts');
     await emit('verenu:hotkey-changed', ['ControlLeft', 'MetaLeft']);

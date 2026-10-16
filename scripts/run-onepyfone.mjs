@@ -59,7 +59,6 @@ function findPython() {
         return candidate;
       }
     } catch {
-      // Try the next interpreter candidate.
     }
   }
 

@@ -22,7 +22,6 @@ pub struct Connection {
     pub expires_at: u64,
     pub fetched_at: u64,
     pub attempted_at: u64,
-    /// Legacy setting retained for existing connections; shared skills ignore it.
     pub selected_catalog: Option<String>,
     pub catalogs: Vec<Catalog>,
     pub error: Option<String>,
@@ -69,8 +68,6 @@ fn status(settings: &store::SettingsSnapshot) -> Status {
 
 pub fn captured_catalog(settings: &store::SettingsSnapshot) -> Option<std::sync::Arc<Catalog>> {
     let connection = connection(settings)?;
-    // Credential expiry controls network access, not use of metadata already
-    // imported. Keep the last-good catalog until replaced or disconnected.
     merged_catalog(&connection.environment_id, &connection.catalogs).map(std::sync::Arc::new)
 }
 
@@ -90,7 +87,6 @@ pub fn catalog_for_destination(
         return None;
     }
     let catalog = captured_catalog(settings);
-    // Useful with default logging; no app identities or skill names are logged.
     log::info!(
         "t3 skills: capture enabled=true catalog={}",
         catalog.is_some()
@@ -244,8 +240,6 @@ fn apply_refresh_result(
             current.error = None;
         }
         Err(error) => {
-            // A failed pull never replaces data from the previously paired
-            // environment. Reconnect to refresh, or disconnect to remove it.
             current.error = Some(error);
         }
     }
@@ -411,7 +405,6 @@ mod tests {
             assert_eq!(value.selected_catalog.as_deref(), Some("catalog"));
             assert_eq!(value.fetched_at, fetched_at);
             assert_eq!(value.error.as_deref(), Some(error));
-            // Settings reload retains the cache even when its credential expired.
             assert_eq!(
                 captured_catalog(&snapshot(&value)).unwrap().skills[0].name,
                 "babysit-pr"

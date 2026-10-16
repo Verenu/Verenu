@@ -1,14 +1,5 @@
 import type { InsightsProviderUsage } from './types';
 
-/*
- * Bundled fallback rates for audio models and providers that OpenRouter does
- * not publish. Token-priced cleanup models use the cached OpenRouter snapshot.
- * The refresh is performed by the desktop backend and persisted locally.
- *
- * Everything here is an ESTIMATE and must be labelled as such in the UI.
- * Verenu never bills anyone; users pay their provider directly.
- */
-
 type Rate =
   | { kind: 'audio'; usd_per_hour: number }
   | { kind: 'token'; usd_per_m_in: number; usd_per_m_out: number };
@@ -25,7 +16,6 @@ export interface PricingSnapshot {
 }
 
 export const PRICING: Record<string, Rate> = {
-  // Transcription — billed on audio duration
   'whisper-large-v3-turbo': { kind: 'audio', usd_per_hour: 0.04 },
   'whisper-large-v3': { kind: 'audio', usd_per_hour: 0.111 },
   'distil-whisper-large-v3-en': { kind: 'audio', usd_per_hour: 0.02 },
@@ -33,7 +23,6 @@ export const PRICING: Record<string, Rate> = {
   'gpt-4o-transcribe': { kind: 'audio', usd_per_hour: 0.36 },
   'gpt-4o-mini-transcribe': { kind: 'audio', usd_per_hour: 0.18 },
 
-  // Cleanup — billed on tokens
   'llama-3.3-70b-versatile': { kind: 'token', usd_per_m_in: 0.59, usd_per_m_out: 0.79 },
   'qwen3.6-27b': { kind: 'token', usd_per_m_in: 0.60, usd_per_m_out: 3.00 },
   'qwen3.8-27b': { kind: 'token', usd_per_m_in: 0.80, usd_per_m_out: 4.00 },
@@ -44,20 +33,12 @@ export const PRICING: Record<string, Rate> = {
   'gemini-2.5-flash-lite': { kind: 'token', usd_per_m_in: 0.10, usd_per_m_out: 0.40 },
 };
 
-/*
- * Gemini's transcription path sends audio inline rather than as text tokens,
- * so the token-priced `gemini-3.5-flash` entry above doesn't apply there —
- * this task-scoped override kicks in instead. Keyed as "model#task".
- */
 const TASK_OVERRIDES: Record<string, Rate> = {
   'gemini-3.5-transcribe#transcription': { kind: 'audio', usd_per_hour: 0.306 },
 };
 
-/** Rough tokenizer stand-in. Good to ~±15% for English prose, which is all an estimate needs. */
 const CHARS_PER_TOKEN = 4;
 
-/** Backend model ids may carry a provider prefix ("groq/whisper-large-v3-turbo",
- * "models/gemini-3.5-flash") or inconsistent casing — normalize before lookup. */
 function normalizeModelId(model: string | null | undefined): string {
   return String(model ?? '').trim().toLowerCase();
 }
@@ -85,8 +66,6 @@ function lookupOpenRouterRate(usage: InsightsProviderUsage, index: RateIndex): R
   const model = normalizeModelId(usage.model);
   const short = shortModelId(model);
   const provider = String(usage.provider ?? '').trim().toLowerCase();
-  // Either qualified ID can match. Preserve the catalog's first match even
-  // when both IDs are present, and only then fall back to the short name.
   const first = Math.min(
     index.exact.get(model) ?? Infinity,
     (provider ? index.exact.get(`${provider}/${short}`) : undefined) ?? Infinity,
@@ -104,16 +83,11 @@ function lookupRate(usage: InsightsProviderUsage, index: RateIndex): Rate | null
   const key = shortModelId(normalizeModelId(usage.model));
   const openRouterRate = lookupOpenRouterRate(usage, index);
   if (openRouterRate) return openRouterRate;
-  // The backend writes tasks in lowercase, but normalize defensively so a
-  // mixed-case or whitespace-padded value still matches the override keys.
   const task = String(usage.task ?? '').trim().toLowerCase();
   return TASK_OVERRIDES[`${key}#${task}`] ?? PRICING[key] ?? null;
 }
 
-/** Cost in USD for one model's usage, or null when the model has no known rate. */
 function modelCost(usage: InsightsProviderUsage, index: RateIndex): number | null {
-  // Apple's system cleanup runs on-device and has no provider charge. Keep
-  // this scoped to its exact provenance so cloud recovery stays priced.
   if (usage.provider === 'apple-intelligence' && usage.task === 'cleanup'
     && normalizeModelId(usage.model) === 'system') return 0;
   const rate = lookupRate(usage, index);
@@ -128,14 +102,12 @@ function modelCost(usage: InsightsProviderUsage, index: RateIndex): number | nul
 
 export interface CostRow extends InsightsProviderUsage {
   cost: number | null;
-  /** Fraction of the priced total, 0–1. Zero for unpriced models. */
   share: number;
 }
 
 export interface CostSummary {
   rows: CostRow[];
   total: number;
-  /** True when at least one model had no rate, so `total` understates reality. */
   hasUnpriced: boolean;
 }
 

@@ -1,13 +1,5 @@
 import { test, expect } from './fixtures.mjs';
 
-// Regression: progress dots stay clickable while a step slides, and a click in
-// that window used to be dropped. It must land on the requested step once the
-// slide ends, in both motion modes, by pointer and by keyboard (Enter and Space).
-// A keyboard user's focus first
-// moves into the incoming step (Setup's landing focus: its heading, else its first
-// control, in a new .step-wrap), so the keyboard cases focus the dot only after
-// that, still mid-slide, and record the real key's origin. Focus left on the
-// outgoing step does not count: the landing move would take it off the dot.
 for (const reducedMotion of ['no-preference', 'reduce']) {
   for (const mode of ['pointer', 'keyboard Enter', 'keyboard Space']) {
     test(`Setup honors an early progress step click (${mode}, ${reducedMotion})`, async ({ page, session }) => {
@@ -26,17 +18,10 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
 
         const keyboard = mode !== 'pointer';
         const outgoing = await page.locator('.step-wrap:not([inert])').elementHandle();
-        // Keep the transition open across automation round trips. Wall-clock
-        // scheduling on a busy runner must not decide whether input was early.
-        // Install before the pause target: a timestamp captured as "now" can
-        // already be in the browser clock's past when the RPC reaches it.
-        // This initialization jump occurs before Next starts the transition.
         await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
         await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
         await page.getByRole('button', { name: 'Next', exact: true }).evaluate(button => button.click());
         await page.clock.runFor(50);
-        // Landing focus has settled, but the paused clock keeps the transition
-        // running while pointer or trusted keyboard input reaches the dot.
         const early = await page.evaluate(({ keyboard, outgoing }) => {
           const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Next');
           const dot = document.querySelector('button[aria-label="Step 5"]');
@@ -67,9 +52,6 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
           const key = mode === 'keyboard Space' ? 'Space' : 'Enter';
           await page.keyboard.press(key);
           const input = await page.evaluate(() => window.__progressDotInput);
-          // Real browser key events (trusted), delivered to the dot while Next was
-          // still disabled. A native button turns Enter (keydown) or Space (keyup)
-          // into a keyboard click, which has detail 0 and is likewise trusted.
           const clicks = input.filter(entry => entry.type === 'click');
           expect(input.filter(entry => entry.type === 'keydown').map(entry => [entry.key, entry.trusted, entry.nextDisabled, entry.onDot]))
             .toEqual([[key === 'Space' ? ' ' : 'Enter', true, true, true]]);
@@ -81,7 +63,6 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         await page.clock.resume();
         await expect(label(5)).toBeVisible();
         await expect(page.getByRole('button', { name: 'Step 5', exact: true })).toHaveAttribute('aria-current', 'step');
-        // The queued request ends the transition cleanly: navigation works again.
         await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
         await page.getByRole('button', { name: 'Next', exact: true }).click();
         await expect(label(6)).toBeVisible();

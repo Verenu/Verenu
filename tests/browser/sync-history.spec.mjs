@@ -72,8 +72,6 @@ test('Home refreshes imported history and totals when sync completes', async ({ 
     row = db.prepare('INSERT INTO transcriptions(raw_text,clean_text,words,spoken_words,duration_ms,api_used,app_name) VALUES(?,?,3,3,1200,?,?) RETURNING id').get(text, text, 'fixture-model', 'Synthetic sync app');
     db.prepare('INSERT INTO lifetime_stats(id,total_words) VALUES(1,3) ON CONFLICT(id) DO UPDATE SET total_words=total_words+3').run();
     db.exec('COMMIT;');
-    // SQLite fixtures represent committed remote imports. No provider calls
-    // or IPC responses are mocked; the page queries its real Rust backend.
     await page.evaluate(async () => {
       const { emit } = await import('/src/lib/tauri.ts');
       await emit('verenu:sync-status', { state: 'syncing' });

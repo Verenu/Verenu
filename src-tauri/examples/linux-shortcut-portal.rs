@@ -1,6 +1,3 @@
-//! Disposable native portal check. Run outside an editor's inherited app scope.
-//! Registers no permanent shortcut and never records audio or reads the clipboard.
-
 #[cfg(target_os = "linux")]
 #[path = "../src/core/hotkey/linux_portal.rs"]
 mod portal;

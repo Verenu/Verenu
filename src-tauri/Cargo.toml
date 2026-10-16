@@ -39,15 +39,9 @@ serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 scraper     = "0.24"
 tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util", "fs"] }
-# OpenSSL cannot be cross-compiled from the NDK as part of a normal Tauri
-# build. Keep the desktop native-tls path, but use rustls on Android.
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "charset"] }
-# T3 pairing uses the same WebSocket client on desktop and Android targets.
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
-# LAN device sync: mDNS discovery (pure Rust, no system daemon) + a TLS
-# transport with self-signed per-device certificates. rustls uses the ring
-# provider so Windows builds don't need aws-lc-rs's NASM/CMake toolchain.
 mdns-sd          = "0.21"
 if-addrs         = "0.15"
 rustls           = { version = "0.23", default-features = false, features = ["ring", "logging", "std"] }
@@ -74,16 +68,9 @@ flate2      = "1"
 sha2        = "0.10"
 tar         = "0.4"
 zip         = { version = "2", default-features = false, features = ["deflate"] }
-# "vad-silero" pulls in transcribe-rs's own bundled Silero VAD wrapper
-# (transcribe_rs::vad::SileroVad) on top of the ort/onnxruntime dependency
-# "onnx" already requires — no separate ort dependency or hand-rolled ONNX
-# plumbing needed for local speech detection.
-#
-# Android uses the official ONNX Runtime library packaged by android:sync;
-# the same transcribe-rs engines run against its C API.
 transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
 image       = { version = "0.25", default-features = false, features = ["png"] }
-libc        = "0.2"     # POSIX host/system calls
+libc        = "0.2"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 transcribe-rs = { version = "0.3.11", features = ["whisper-cpp"] }
@@ -97,8 +84,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # ndk-context. Tauri/tao owns the same activity context, so initialize this
 # small bridge during Android setup before any audio worker can start.
 ndk-context = "0.1"
-# Pinned to the version tao/tauri already resolve; used to take a process-lifetime
-# reference to the Application context for ndk-context.
 jni = "0.21"
 
 [target.'cfg(windows)'.dependencies]
@@ -136,36 +121,28 @@ windows = { version = "0.61", features = [
 windows-core = "0.61"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-global-hotkey      = "0.8"    # Carbon RegisterEventHotKey global hotkey (no Input Monitoring / Accessibility needed)
-core-graphics      = "0.24"   # CGEvent post (Cmd+V), Caps-Lock state
-core-foundation    = "0.10"   # CFRunLoop, CFString, CFRunLoopSource
-objc2              = "0.5"     # msg_send! for AppKit (NSWorkspace, NSPasteboard)
-objc2-foundation   = { version = "0.2", features = ["NSData", "NSString"] }  # NSData/NSString conversions
-block2             = "0.5"     # ObjC completion blocks (AVCaptureDevice mic request)
-accessibility-sys  = "0.1"     # AXUIElement (auto-learn focused text + AX prompt)
-libproc            = "0.14"    # process RSS for memory monitor
-security-framework = "2"       # macOS Keychain generic-password storage
-coreaudio          = { package = "coreaudio-rs", version = "0.11" }  # CoreAudio native mute control
+global-hotkey      = "0.8"
+core-graphics      = "0.24"
+core-foundation    = "0.10"
+objc2              = "0.5"
+objc2-foundation   = { version = "0.2", features = ["NSData", "NSString"] }
+block2             = "0.5"
+accessibility-sys  = "0.1"
+libproc            = "0.14"
+security-framework = "2"
+coreaudio          = { package = "coreaudio-rs", version = "0.11" }
 
-# Wayland is deliberately implemented through the desktop portal and Hyprland's
-# authenticated IPC socket.  No keyboard snooping, uinput daemon, or root
-# helper is involved. `arboard` uses the compositor data-control protocol on
-# Hyprland (and falls back to XWayland where available); `keyring` uses the
-# Freedesktop Secret Service implementation supplied by GNOME Keyring/KWallet.
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4.18.0"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
 wl-clipboard-rs = "0.9"
-# AT-SPI focused-text reads for smart formatting and AutoLearn (already in
-# the tree through ashpd; the blocking API keeps probes off the async runtime).
 zbus = "5.19"
 # Matches the version tao/wry already resolve (see Cargo.lock) so the
 # gtk::ApplicationWindow returned by WebviewWindow::gtk_window() and the
 # gtk::Settings used to theme it are the same type, not a version mismatch.
 gtk = "0.18"
-# Use the same WebKitGTK types as Tauri/wry for per-window cache policy.
 webkit2gtk = "2.0.2"
 
 [profile.release]
@@ -185,13 +162,3 @@ codegen-units = 1
 tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
 tauri-runtime-wry = { path = "vendor/tauri-runtime-wry-2.11.4" }
 tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "5a882eccfda53a189ec076c79c4ad186f50db5ff" }
-
-# tauri-winrt-notification 0.7.2 pins quick-xml = "^0.37" (0.37.5 in our
-# lockfile), which carries two high-severity DoS advisories with no fix in
-# the 0.37 line (RUSTSEC-2026-0194, RUSTSEC-2026-0195; fixed upstream in
-# 0.41.0). No notify-rust/tauri-winrt-notification release accepts a newer
-# quick-xml yet, so pin the patched release directly via git instead of
-# waiting. Pinned to the v0.41.0 tag's commit, not the tag name — a tag ref
-# is a mutable pointer git will happily follow if it's ever force-moved,
-# defeating the point of pinning a security fix.
-quick-xml = { git = "https://github.com/tafia/quick-xml", rev = "4deda08abeffdc188c269360229cf47e12a77a9f" }

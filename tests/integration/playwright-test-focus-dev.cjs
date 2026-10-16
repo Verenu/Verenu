@@ -55,9 +55,6 @@ const expected = 'The model picker opens from the keyboard, retains focus, and c
       regressionArea: 'settings keyboard interaction and focus management',
       measurements: { tabCycles, closedWithEscape, focusRestored: restored },
       failureKind: failures.length ? 'product' : null,
-      // The harness cannot determine whether a UI failure predates the
-      // current change; leave classification unknown rather than asserting
-      // that every failure is pre-existing.
       regressionStatus: 'unknown',
     });
   } catch (error) {

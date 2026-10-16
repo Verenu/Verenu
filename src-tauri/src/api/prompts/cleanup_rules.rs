@@ -1,8 +1,6 @@
 use super::count_words;
 use crate::api::cleanup::escape_transcript_xml as escape_markup;
 
-/// Layout permission varies by level; spoken commands and literal tokens are
-/// governed once by the shared contract before any changing request data.
 pub(super) fn formatting_rules(intensity: &str) -> &'static str {
     match intensity {
         "medium" => "Use paragraphs or lists when the dictated structure clearly calls for them; never invent headings.",
@@ -99,9 +97,6 @@ pub(super) fn render_cleanup_template(
     snippet_overrides: &str,
     evidence: &str,
 ) -> String {
-    // Resolve placeholders in one pass. A data value such as a window title
-    // or transcript evidence may itself contain `{{ ... }}` and must never be
-    // interpreted as another template token.
     let placeholders = [
         ("{{ cleanup_preset }}", cleanup_preset),
         (
@@ -114,7 +109,6 @@ pub(super) fn render_cleanup_template(
         ),
         (
             "{{ cleanup_tone }}",
-            // Priority is injected independently when composing edited presets.
             cleanup_preset
                 .split_once('\n')
                 .map(|(_, tone)| tone.split("\nPriority:").next().unwrap_or(tone))

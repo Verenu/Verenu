@@ -1,4 +1,3 @@
-//! Verified APK staging and Android's user-approved installer handoff.
 use sha2::{Digest, Sha256};
 use tauri::{plugin::PluginHandle, AppHandle, Emitter, Manager, Runtime};
 use tokio::io::AsyncWriteExt;
@@ -37,8 +36,6 @@ pub async fn install(
     channel: crate::api::updater::UpdateChannel,
 ) -> Result<crate::commands::InstallOutcome, String> {
     let plugin = app.state::<AndroidUpdater<tauri::Wry>>();
-    // Ask for source permission before downloading. The user returns to the
-    // update button after allowing Verenu; no pending intent survives restart.
     let prepared: Prepared = plugin
         .0
         .run_mobile_plugin_async("prepare", serde_json::json!({}))
@@ -62,7 +59,6 @@ pub async fn install(
         let _ = tokio::fs::remove_file(&path).await;
         return Err(error.to_string());
     }
-    // The system installer is still awaiting approval. Never claim success.
     Ok(crate::commands::InstallOutcome::InstallerOpened)
 }
 

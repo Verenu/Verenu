@@ -19,7 +19,6 @@ test('Context hints locate the independent voice commands control in Settings Ge
 
 test('Basic selection and independently opt-in commands persist without a prompt editor', async ({ page, session }, testInfo) => {
   const previous = await session.invoke('get_all_settings');
-  // get_all_settings omits cleanup_intensity, so read it canonically.
   const previousIntensity = await session.invoke('get_setting', { key: 'cleanup_intensity' });
   try {
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
@@ -99,7 +98,6 @@ test('Context cleanup hint follows the effective cleanup when Use default is sel
     await expect(dialog).toBeHidden();
     created = (await session.invoke('get_contexts')).find((row) => row.name === name);
     expect(created).toBeTruthy();
-    // Inheriting stays inheriting: the saved override is null, not 'rules'.
     expect(created.cleanup_intensity ?? null).toBeNull();
 
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
@@ -129,8 +127,6 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
       await expect(more).toHaveAttribute('aria-expanded', 'false');
       await expect(more).not.toHaveAttribute('aria-controls', /.+/);
       await expect(details).toHaveCount(0);
-      // Svelte transitions run through Element.animate; record durations so
-      // the check cannot race the animation finishing.
       await page.evaluate(() => {
         window.__voiceAnimations = [];
         const animate = Element.prototype.animate;
@@ -143,9 +139,6 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
       await more.click();
       await expect(more).toHaveAttribute('aria-expanded', 'true');
       await expect(more).toHaveAttribute('aria-controls', 'voice-commands-details');
-      // Svelte first creates a zero-duration delay animation, then starts the
-      // slide in its finish callback. Wait for the real slide without relaxing
-      // the duration contract.
       await expect.poll(durations).toContain(reducedMotion === 'reduce' ? 132 : 220);
       await expect(details).toBeVisible();
       await expect(details).toContainText('scratch that');

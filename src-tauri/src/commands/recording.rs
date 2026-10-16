@@ -1,5 +1,3 @@
-//! Microphone and recording session control commands.
-
 use super::*;
 use crate::core::window_geometry::{capture_webview_center, WindowTarget};
 
@@ -20,7 +18,6 @@ fn capture_in_app_target(app: &AppHandle) -> WindowTarget {
     }
     target
 }
-// ---------- microphone ----------
 
 #[tauri::command]
 pub async fn get_microphones() -> Vec<String> {
@@ -32,8 +29,6 @@ pub async fn get_microphones() -> Vec<String> {
         }
     }
 }
-
-// ---------- recording control ----------
 
 #[tauri::command]
 pub async fn start_input_recording(
@@ -84,11 +79,6 @@ pub async fn start_input_recording(
     match start_result {
         Ok(()) => Ok(()),
         Err(e) => {
-            // The returned error is the only surface the caller shows (inline
-            // mic-button message / setup TryIt step). Emitting verenu:error
-            // here too would show the same failure twice — a toast on top of
-            // the inline message. The hotkey path that has no caller-facing
-            // surface emits its own event in pipeline::session instead.
             let msg = format!(
                 "Failed to start recording: {}",
                 crate::api::user_facing_message(&e)
@@ -152,8 +142,6 @@ pub async fn start_setup_try_recording(
     match start_result {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Single-surface rule: the caller (setup TryIt step) shows the
-            // returned error inline; no duplicate verenu:error toast here.
             let msg = format!(
                 "Failed to start recording: {}",
                 crate::api::user_facing_message(&e)
@@ -188,9 +176,6 @@ pub async fn stop_and_transcribe_input(
 ) -> Result<String, String> {
     pipeline::transcribe_input_only(app, state.inner().clone())
         .await
-        // Sanitize before crossing IPC: the raw error can embed provider
-        // response bodies or the AUTH_401 wire format, which must not reach
-        // the inline mic-button message.
         .map_err(|e| crate::api::user_facing_error(&e))
 }
 
@@ -218,9 +203,6 @@ pub async fn stop_recording(
             )
             .await;
         });
-        // The join handle is deliberately not awaited inline (stop_recording
-        // returns immediately), but a panicked/aborted task would otherwise
-        // be swallowed silently — log it so a broken cancel path is visible.
         tauri::async_runtime::spawn(async move {
             if handle.await.is_err() {
                 log::error!("cancel_recording_with_resume task panicked or was aborted");
@@ -246,48 +228,22 @@ pub async fn stop_handless_mode(
     } else {
         pipeline::cancel_starting_reservation(state.inner());
         crate::system::media_control::end_dictation_media_pause();
-        // This command only fires from the pill's own hands-free confirm
-        // button. No live session means the pill is showing a hands-free
-        // state for a session that no longer exists — leaving it up strands
-        // the user with confirm/cancel buttons that can never do anything.
-        // (stop_recording's own empty-take path already hides unconditionally.)
         pipeline::hide_pill(&app);
     }
     Ok(())
 }
 
-/// Resumes a cancelled recording's audio: starts a fresh hands-free
-/// recording that will be prepended with the previously-captured audio when
-/// it stops, so the finished dictation reads as one continuous take. Errs if
-/// the capture already expired or was already resumed/dismissed.
 #[tauri::command]
 pub async fn resume_cancelled_capture(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    // Reserve first so a busy state fails before anything is consumed. The
-    // stashed capture is only cleared once the new session is actually
-    // underway — a mid-start failure (mic permissions, poisoned lock) must
-    // leave it resumable rather than destroying the audio.
     pipeline::reserve_starting(state.inner())?;
     let Some(capture) = pipeline::peek_cancelled_capture_if_fresh(state.inner()) else {
         pipeline::cancel_starting_reservation(state.inner());
         return Err("Nothing to resume".to_string());
     };
     pipeline::set_starting_prepend_audio(state.inner(), capture.audio.clone());
-    // Reuse the target captured when the original recording started, not the
-    // foreground window right now — by the time Undo is clicked, the
-    // foreground window is Verenu's own pill (it just took a real click),
-    // and injecting into that tripped finalize.rs's self-inject guard on
-    // every resume, silently downgrading to a clipboard-only "Ctrl+V to
-    // paste" pill no matter what app the user was actually dictating into.
-    // `.refreshed()` mirrors retry_transcription_impl's handling of a stale
-    // target — the window may have moved (or since closed) in the meantime.
-    //
-    // A zero `id` means this capture was recovered from disk after a crash/
-    // restart (see failover::loaded_to_capture), so there is no original
-    // target to restore — fall back to the current foreground window, same
-    // as before this fix, since that's the best guess available.
     let target = if capture.target.id == 0 {
         WindowTarget::capture_foreground()
     } else {
@@ -365,12 +321,6 @@ pub fn get_cancelled_capture(
     )
 }
 
-/// Discards a cancelled recording's stashed audio without resuming it —
-/// called when the user explicitly dismisses the offer, either the pill's
-/// own dismiss (X) button or Home's dismiss button. The pill toast's plain
-/// 10s auto-hide does *not* call this: the capture stays resumable from Home
-/// for the full `CANCEL_RESUME_WINDOW` regardless of whether the toast is
-/// still on screen.
 #[tauri::command]
 pub async fn dismiss_cancelled_capture(
     app: AppHandle,
@@ -383,17 +333,10 @@ pub async fn dismiss_cancelled_capture(
     Ok(())
 }
 
-/// Puts a failed dictation's text back on the clipboard so the user can
-/// paste it manually — called from the pill's "Paste failed" Copy button.
-/// The text itself never crosses to the frontend; only this command's
-/// success/failure result does.
 #[tauri::command]
 pub async fn copy_paste_failure_to_clipboard(
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    // Peek rather than take: if the clipboard write fails (transient system
-    // clipboard lock/error), the text stays available so the user can retry.
-    // The slot is only cleared once the copy actually succeeds.
     let Some(text) = pipeline::peek_paste_failure_if_fresh(state.inner()) else {
         return Err("Nothing to copy".to_string());
     };
@@ -404,11 +347,6 @@ pub async fn copy_paste_failure_to_clipboard(
     Ok(())
 }
 
-/// Flip the floating pill between click-through and interactive without
-/// touching window decorations. Used when delayed controls mount (handsfree /
-/// paste-failed buttons). Backend reveal/hide own the same path; the pill
-/// window's ACL does not grant `setIgnoreCursorEvents` / `setDecorations`,
-/// and decorations must stay backend-hardened to avoid the pale caption flash.
 #[tauri::command]
 pub fn set_pill_interactive(
     app: AppHandle,
@@ -435,24 +373,12 @@ pub fn native_test_pill(
     )
 }
 
-/// Frontend auto-dismiss (error / cancelled / copied toasts) owns the hide
-/// timer so a newer recording cannot be stolen by a stale timeout. On Linux
-/// the native window must actually unmap; Windows leave it shown and idle.
 #[tauri::command]
 pub fn hide_dictation_pill(app: AppHandle) -> Result<(), String> {
     crate::pipeline::hide_pill(&app);
     Ok(())
 }
 
-/// Resizes the pill window to fit its visible content. The frontend measures
-/// the actual rendered content (pill capsule + profile label above it + error
-/// text) and reports the size in CSS px (== logical points on the pill's
-/// monitor), so the transparent click-capture zone around the pill stays
-/// exactly as wide as the pill itself instead of a fixed 380px band that
-/// swallows or forwards stray clicks — the floating pill grows for wide
-/// content (long error messages, handsfree buttons) and shrinks back when
-/// it's just the bare recording capsule. Height changes grow the window
-/// upward so the pill itself stays visually pinned in place.
 #[tauri::command]
 pub fn set_pill_size(
     app: AppHandle,
@@ -465,8 +391,6 @@ pub fn set_pill_size(
             return Ok(());
         };
 
-        // Upper bounds are backstops against a bad frontend measurement, not the
-        // expected size. They leave room for transient status and error messages.
         let width_points = if width.is_finite() {
             width.clamp(60.0, 440.0).round()
         } else {
@@ -478,18 +402,6 @@ pub fn set_pill_size(
             44.0
         };
 
-        // Recompute the ideal centered placement from the monitor directly
-        // rather than offsetting from the window's current position — content-fit
-        // resizing fires many times per second during a width transition, and
-        // deriving each new position from the previous one let small rounding/race
-        // errors compound into a visible rightward drift. This recomputation is
-        // idempotent: every call lands on the same correct center.
-        //
-        // If no monitor resolves at all, still apply the *size* (anchored on the
-        // window's current center) rather than bailing. The frontend has already
-        // recorded this size as sent and won't re-send it, so dropping the resize
-        // here would strand the window too small for its content and clip the pill
-        // until something else happened to change its size.
         let placement =
             crate::pipeline::placement_for_current_monitor(&pill, width_points, height_points)
                 .unwrap_or_else(|| {
@@ -518,10 +430,6 @@ pub fn set_pill_size(
     }
 }
 
-/// Reports the pill's visible content rectangle (CSS px, viewport-relative) so
-/// the Linux window can accept clicks only over the capsule instead of its
-/// transparent margin. A no-op elsewhere, where the native
-/// window itself is content-sized.
 #[tauri::command]
 pub fn set_pill_hit_rect(
     app: AppHandle,

@@ -1,5 +1,5 @@
 import { invoke, listen } from './tauri';
-import { isAndroid, isLinux } from './platform';
+import { isLinuxDesktop } from './platform';
 
 export type ShortcutStatus = {
   id: 'dictation' | 'copy' | 'capture' | 'cancel' | 'handsfree';
@@ -19,7 +19,7 @@ export function desktopShortcut(id: ShortcutStatus['id']): ShortcutStatus | unde
 }
 
 export async function loadDesktopShortcuts(): Promise<void> {
-  if (!isLinux || isAndroid) return;
+  if (!isLinuxDesktop) return;
   listening ??= listen<ShortcutStatus[]>('verenu:shortcuts-changed', (event) => {
     statusRevision += 1;
     shortcutStatus.items = Array.isArray(event.payload) ? event.payload : [];
@@ -32,6 +32,5 @@ export async function loadDesktopShortcuts(): Promise<void> {
     if (sequence !== loadSequence || revision !== statusRevision) return;
     shortcutStatus.items = Array.isArray(items) ? items : [];
   } catch {
-    // A browser preview has no native desktop bindings.
   }
 }

@@ -1,6 +1,5 @@
 export type SortKey = 'newest' | 'oldest' | 'alpha' | 'most_corrected';
 export type CreatedRecordMeta = {
-  /** Canonical dictionary id; `id` remains the legacy response field. */
   id: number;
   dictionary_id?: number;
   correction_id?: number | null;

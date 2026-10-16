@@ -48,11 +48,6 @@
     onDeleteRuntime?: () => void;
   } = $props();
 
-  // Local cleanup runtime (llama-server) is a separate download from the
-  // model weights, but presented as one step: the first Download click on a
-  // cleanup model also kicks off the runtime download (if not already
-  // installed), and that model's card shows "Downloading model
-  // requirements..." until the runtime finishes, then its own progress.
   let pendingRuntimeForModelIds = $state<string[]>([]);
   let runtimeDownloadObserved = false;
 
@@ -147,8 +142,6 @@
     }
   }
 
-  // Only the download stage can have an unknown total (server without a
-  // Content-Length); verifying always reports a real fraction.
   function cleanupIsIndeterminate(modelId: string): boolean {
     if (cleanupDownloadStage[modelId] !== 'downloading') return false;
     const progress = cleanupDownloadProgress[modelId];
@@ -166,11 +159,7 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- Escape collapses the open tile no matter which control inside it has
-     focus, so the key backs out one layer at a time (tile → Settings).
-     preventDefault marks the key as handled for Settings' window guard. -->
-<div class="local-download-tile" class:task-open={opened} onkeydown={(event) => { if (event.key === 'Escape' && opened) { event.preventDefault(); onToggleOpen(); } }}>
+<div class="local-download-tile" role="presentation" class:task-open={opened} onkeydown={(event) => { if (event.key === 'Escape' && opened) { event.preventDefault(); onToggleOpen(); } }}>
   <button class="tile-head" onclick={onToggleOpen} aria-expanded={opened}>
     <div class="head-left">
       <span class="head-title">Clean-up</span>
@@ -317,15 +306,6 @@
 </div>
 
 <style>
-  /* Same accordion shell as ModelTaskTile/LocalTranscriptionDownloads
-     (.task-tile), deliberately under a different class name: a frozen
-     Playwright smoke test (tests/smoke/playwright-test-state.cjs, which
-     this repo's contract forbids editing) asserts exactly 3 `.task-tile`
-     elements on the Models page. With Transcription, Clean-up, and Local
-     Speech-to-text downloads already using that class, this fourth flat
-     top-level tile has to use a different selector to avoid breaking that
-     count — purely a test-plumbing detail, not a visual or behavioral
-     difference from .task-tile. */
   .local-download-tile {
     border-top: 1px solid var(--line);
   }
@@ -406,7 +386,6 @@
     color: var(--accent-ink);
   }
 
-  /* Collapsed-header summary: plain text, not pills. */
   .summary-item {
     font-size: 11.5px;
     font-family: var(--sans);
@@ -483,7 +462,6 @@
     grid-area: 1 / 1;
   }
 
-  /* ── Card action buttons ─────────────────── */
   .card-btn {
     font-family: var(--sans);
     font-size: 11.5px;
@@ -512,9 +490,6 @@
     opacity: 0.7;
   }
 
-  /* Accent (not --ink/--amber-50, which are theme-inverted text/paper tokens
-     and render a cream button in dark mode) — --accent/--on-accent stay a
-     consistent warm orange-on-readable-text pairing in both themes. */
   .card-btn.accent {
     background: var(--accent);
     border: 0;
@@ -529,7 +504,6 @@
     opacity: 0.66;
   }
 
-  /* ── Show more button ────────────────────── */
   .show-more-btn {
     align-self: flex-start;
     background: transparent;
@@ -613,8 +587,6 @@
     margin-bottom: 12px;
   }
 
-  /* The progress component owns a top margin for card layouts; when it's the
-     lone child of the padded runtime banner that margin double-spaces it. */
   .runtime-banner > :global(.dl-progress) {
     margin-top: 0;
   }
@@ -663,7 +635,6 @@
     text-transform: none;
   }
 
-  /* Container-relative: see the note in ModelsSection. */
   @container settings-panel (max-width: 720px) {
     .local-card-top,
     .prompt-row {

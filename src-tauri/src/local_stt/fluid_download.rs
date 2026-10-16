@@ -1,5 +1,3 @@
-//! Explicit, revision-pinned multi-file CoreML installs. Inference never
-//! invokes this downloader. Every payload is authenticated before promotion.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -149,8 +147,6 @@ pub async fn download(
     Ok(())
 }
 
-// Dropping a pending request/body future aborts its wait when Cancel is clicked.
-// The manager keeps this task active until it returns, including during deletion.
 async fn cancellable_io<T>(
     cancel: &AtomicBool,
     operation: impl std::future::Future<Output = reqwest::Result<T>>,
@@ -203,8 +199,6 @@ async fn prepare_staging(
     Ok(total)
 }
 
-// Keep the old directory until promotion succeeds. A failed replacement
-// restores it; only verified model artifacts replace an existing install.
 fn promote_verified(staging: &Path, destination: &Path) -> anyhow::Result<()> {
     promote_with_cleanup(staging, destination, |backup| {
         std::fs::remove_dir_all(backup)
@@ -241,7 +235,6 @@ mod tests {
     async fn cancellation_interrupts_pending_network_io() {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let pending = async {
-            // Simulate cancellation after the network operation has started.
             cancel.store(true, std::sync::atomic::Ordering::Release);
             std::future::pending::<reqwest::Result<()>>().await
         };

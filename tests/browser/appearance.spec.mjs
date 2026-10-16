@@ -11,7 +11,6 @@ test('theme editor previews, stays open during navigation, cancels and saves', a
     const editor = page.getByRole('group', { name: 'Create theme', exact: true });
     await editor.getByRole('textbox', { name: 'Background hex value' }).fill('182633');
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--paper').trim().toLowerCase())).toBe('#182633');
-    // Drafts must not write the active palette until Save.
     expect(await session.invoke('get_setting', { key: 'custom_theme' })).toEqual(previous.custom_theme);
     await page.locator('[data-debug-id="nav.back"]').click();
     await expect(editor).toBeVisible();
@@ -51,7 +50,6 @@ test('theme editor previews, stays open during navigation, cancels and saves', a
     await page.getByRole('button', { name: 'Tokyo Night', exact: true }).click();
     await expect.poll(() => session.invoke('get_setting', { key: 'appearance_mode' })).toBe('custom');
   } finally {
-    // Restore only settings owned by this test, in the isolated session.
     for (const key of ['custom_themes', 'custom_theme', 'accent_color', 'appearance_mode']) {
       await session.invoke('save_setting', { key, value: previous[key] ?? (key === 'appearance_mode' ? 'system' : null) });
     }

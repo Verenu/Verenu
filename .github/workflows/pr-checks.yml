@@ -54,15 +54,13 @@ jobs:
         run: npm ci
 
       - name: Audit npm dependencies
-        # The checked-in webview bundle ships production dependencies only;
-        # development tooling is not included in release artifacts.
         run: npm audit --omit=dev --audit-level=moderate
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0
         with:
           tool: cargo-audit
           fallback: none
@@ -71,13 +69,6 @@ jobs:
         run: cargo audit --file src-tauri/Cargo.lock
 
       - name: Verify Tauri plugin version alignment
-        # The Tauri CLI aborts the build when the Rust crate and NPM package
-        # of any plugin disagree on major/minor. Cargo resolves semver ranges
-        # to the newest compatible crate while npm follows package-lock.json,
-        # so the two sides can drift apart silently (this broke the
-        # 2026-09-21 nightly: tauri-plugin-notification 2.4.0 vs
-        # @tauri-apps/plugin-notification 2.3.3). Fail fast here instead of
-        # in the middle of a release build.
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -124,11 +115,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is Apple Silicon (arm64). GitHub retired the macos-13
-        # (Intel) runner image — a job pinned to it just queues forever and
-        # gets auto-cancelled after 24h, never running — so there's currently
-        # no GitHub-hosted way to test real Intel Mac silicon; the release
-        # pipeline's "Intel" DMG remains cross-compiled on arm64, untested.
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -139,7 +125,7 @@ jobs:
         run: rustc --version
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
 
@@ -162,10 +148,6 @@ jobs:
           fetch-depth: 0
 
       - name: Fail if any changed file exceeds 10 MB
-        # Guardrail: build trees and other agent-workspace artifacts must never
-        # land in git history again (target-test-codex/ alone added ~1.3 GB).
-        # Installers under /installers are an intentional exception handled by
-        # their own release process, but they stay under this limit per file.
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.sha }}
@@ -190,7 +172,6 @@ jobs:
 
   all-in-one-fast:
     name: All-in-one fast profile
-    # This job uses its own checkout and consumes no output from other checks.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -232,7 +213,6 @@ jobs:
           java-version: 17
       - uses: android-actions/setup-android@v3
         with:
-          # setup-android@v3 defaults to the removed `tools` SDK package.
           packages: platform-tools
       - uses: dtolnay/rust-toolchain@stable
         with:

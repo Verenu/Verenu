@@ -19,7 +19,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONObject;
 
-/** Opt-in emulator fixture. No keys, accessibility grants, or keyboard changes. */
 public final class MuteLifecycleInstrumentation extends Instrumentation {
     private WebView web;
     private AudioManager audio;
@@ -108,8 +107,6 @@ public final class MuteLifecycleInstrumentation extends Instrumentation {
             expectMuteReleased();
             expectVolume(0);
             progress("Observed user override preserved, including a later zero");
-            // Android starts its full pipeline asynchronously on normal stop.
-            // Test restoration before it completes, with no subsequent session.
             volume(6);
             invoke("start_input_recording", "{}");
             expectVolume(0);

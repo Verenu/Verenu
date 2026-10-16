@@ -1,32 +1,15 @@
-//! Animated cross-monitor pill move: a hand-rolled `SetWindowPos` tween so a
-//! cross-DPI monitor switch reads as a deliberate glide instead of an
-//! instant jump. Pure interpolation math (testable without a window) is kept
-//! apart from the Windows-only driver that actually touches the HWND - same
-//! split as `pill_position.rs`'s placement math vs `pill.rs`'s lifecycle.
-
 use crate::pipeline::pill_position::PillPlacement;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
 use tauri::{Runtime, WebviewWindow};
 
-/// Total tween length and per-step cadence. Named so they can be retuned by
-/// ear the same way `MONITOR_MOVE_SETTLE_MS`/the sound-cue delays were tuned
-/// in earlier passes — adjust freely if real-hardware testing shows the
-/// motion feels off.
 #[cfg(target_os = "windows")]
 const TWEEN_DURATION_MS: u64 = 180;
 #[cfg(target_os = "windows")]
 const TWEEN_STEP_MS: u64 = 12;
 
-/// Guards against two tweens (or a tween and an instant same-monitor move)
-/// racing over the same HWND. Mirrors `media::sound::START_CUE_GEN` exactly:
-/// a bare static generation counter, not `SharedState`, since this is purely
-/// an internal sequencing concern of "which thread may currently call
-/// SetWindowPos on the pill," not application state anything else reads.
 static PILL_TWEEN_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// One interpolated frame of the tween: physical-pixel geometry to apply via
-/// `SetWindowPos` at a given point in the animation.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) struct TweenFrame {
@@ -36,13 +19,6 @@ pub(super) struct TweenFrame {
     pub height: i32,
 }
 
-/// Monotonic ease-out curve, no overshoot. The bouncy
-/// `cubic-bezier(0.34, 1.56, 0.64, 1)` used elsewhere in PillApp.svelte's CSS
-/// would overshoot past 1.0 partway through, which is fine for a CSS element
-/// growing past its own final size but wrong for a native window move —
-/// `placement_for_monitor` sits the pill flush against the work-area's
-/// bottom edge, so overshoot here would briefly push it past the edge of the
-/// visible work area.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn ease_out_cubic(t: f64) -> f64 {
     let u = 1.0 - t;
@@ -54,14 +30,6 @@ fn lerp_i32(a: i32, b: i32, t: f64) -> i32 {
     (a as f64 + (b as f64 - a as f64) * t).round() as i32
 }
 
-/// Builds the tween's frame sequence from `from` to `to`. Frame 0 (`from`) is
-/// intentionally not included — the window is already showing that geometry
-/// — and the last frame is guaranteed to equal `to` exactly (since
-/// `ease_out_cubic(1.0) == 1.0`), so the tween always lands precisely on the
-/// already-verified-correct placement math in `pill_position.rs`, with no
-/// separate "snap to final" step needed. All four axes share one eased
-/// progress value per frame so the pill glides rather than wobbling (e.g.
-/// width finishing before position does).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn build_tween_frames(
     from: PillPlacement,
@@ -83,24 +51,10 @@ pub(super) fn build_tween_frames(
         .collect()
 }
 
-/// Bumps the generation counter so any in-flight tween bails out on its next
-/// frame instead of fighting an instant same-monitor move over the window.
-/// Cheap enough to call unconditionally regardless of whether a tween is
-/// actually running — mirrors `media::sound::cancel_pending_start()`.
 pub(super) fn cancel_pending_pill_tween() {
     PILL_TWEEN_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Starts an animated move/resize from `from` to `to` on Tauri's async
-/// runtime and returns immediately. `on_complete` runs once the tween lands
-/// exactly on `to` - never if a newer tween or instant move superseded this
-/// one first. Win32 `SetWindowPos` can be called from any thread (thread
-/// affinity governs who *receives* a window's messages, not who can issue
-/// commands to it), and this codebase already calls it from non-main
-/// threads today (`pill_position::apply_pill_placement`). Uses
-/// `tauri::async_runtime::spawn` + `tokio::time::sleep` rather than a raw OS
-/// thread, matching the same generation-counter-guarded delayed-action shape
-/// already used in `media::sound::play_start_delayed_then`.
 #[cfg(target_os = "windows")]
 pub(super) fn animate_pill_placement<R: Runtime>(
     pill: &WebviewWindow<R>,
@@ -118,32 +72,17 @@ pub(super) fn animate_pill_placement<R: Runtime>(
     let pill = pill.clone();
     let step_count = (TWEEN_DURATION_MS / TWEEN_STEP_MS).max(1) as u32;
     let mut frames = build_tween_frames(from, to, step_count);
-    // Every animated frame except the final one can be posted asynchronously.
-    // The last resize must be confirmed before the WebView is revealed: on a
-    // mixed-DPI move Windows can otherwise still be using the old, shorter
-    // client area, which clips the bottom of the pill on its first frame.
     let final_frame = frames.pop().expect("tween always has at least one frame");
 
     tauri::async_runtime::spawn(async move {
         for frame in frames {
             if PILL_TWEEN_GEN.load(Ordering::SeqCst) != generation {
-                return; // superseded — cede the window to the newer move.
+                return;
             }
-            // Re-checked every frame (not cached) so a window closed/destroyed
-            // mid-tween is caught immediately instead of sleeping through the
-            // remaining frames for nothing.
             let Ok(hwnd) = pill.hwnd() else {
                 return;
             };
             unsafe {
-                // SWP_ASYNCWINDOWPOS: this runs on a tokio worker thread, not
-                // the pill's owning (main/UI) thread. Without this flag,
-                // SetWindowPos posts the request to the owning thread's
-                // message queue and *blocks the caller* until that thread
-                // processes it - tying up the worker for however long the
-                // main thread takes, and making the animation's cadence
-                // depend on how busy the UI thread is. With it, the call
-                // posts and returns immediately.
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -164,8 +103,6 @@ pub(super) fn animate_pill_placement<R: Runtime>(
             return;
         };
         unsafe {
-            // Synchronous last frame: `on_complete` shows the WebView next.
-            // Intermediate frames keep SWP_ASYNCWINDOWPOS.
             let _ = SetWindowPos(
                 hwnd,
                 None,
@@ -178,13 +115,6 @@ pub(super) fn animate_pill_placement<R: Runtime>(
         }
 
         if PILL_TWEEN_GEN.load(Ordering::SeqCst) == generation {
-            // Temporary diagnostic for issue #161: the per-frame SetWindowPos
-            // calls use SWP_ASYNCWINDOWPOS (post-and-return), so the last
-            // frame's move may not have actually been processed by the
-            // window's owning thread yet when we read this back here. If
-            // `actual` doesn't match `to`, that's direct evidence the
-            // tween's final geometry hadn't landed before `on_complete`
-            // (and thus `ShowWindow`) ran.
             if crate::system::logger::is_verbose() {
                 let actual = super::pill_position::current_placement(&pill);
                 log::debug!("pill tween landed: target={to:?} actual_immediately_after={actual:?}");
@@ -259,8 +189,6 @@ mod tests {
 
     #[test]
     fn build_tween_frames_is_monotonic_per_axis_with_no_overshoot() {
-        // Cover both directions: growing+moving right (A -> higher-DPI B) and
-        // shrinking+moving left (B -> A), since a real setup crosses both ways.
         for (from, to) in [
             (placement(0, 1000, 380, 44), placement(1920, 1340, 475, 55)),
             (placement(1920, 1340, 475, 55), placement(0, 1000, 380, 44)),
@@ -279,8 +207,6 @@ mod tests {
 
     #[test]
     fn cancel_pending_pill_tween_bumps_generation() {
-        // Verifies only the atomic mechanics; real thread-cancellation
-        // behavior needs a live window and can't be unit tested here.
         let before = PILL_TWEEN_GEN.load(Ordering::SeqCst);
         cancel_pending_pill_tween();
         cancel_pending_pill_tween();

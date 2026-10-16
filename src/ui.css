@@ -1,11 +1,3 @@
-/*
- * Shared interactive-control primitives.
- *
- * Keep component-specific layout in its owning Svelte file. Visual treatment,
- * state feedback, focus behavior, and motion belong here so one adjustment
- * reaches every use of these primitives. See DESIGN.md for the public API.
- */
-
 :root {
   --ui-duration-fast: 150ms;
   --ui-duration-base: 220ms;
@@ -14,17 +6,12 @@
   --ui-disabled-opacity: 0.45;
 }
 
-/* Shared focus-ring helper for feature-local interactive controls that should
-   not invent their own ring language (rows, chips, dots, icon buttons). */
 .ui-focus-ring:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   box-shadow: var(--ui-focus-ring);
 }
 
-/* Shared keycap primitive. Feature surfaces may recolor the background or
-   scale the type for their own context (e.g. the hero panel), but the shape
-   stays the same everywhere so "key" reads as "key" across the app. */
 :where(kbd) {
   background: var(--paper);
   border: 1px solid var(--line-strong);
@@ -121,8 +108,6 @@
   box-shadow: var(--ui-focus-ring);
 }
 
-/* Composite dropdown anatomy. Behaviour remains local when option content,
-   keyboard navigation, or selection side effects differ by feature. */
 .ui-dropdown {
   position: relative;
   flex-shrink: 0;
@@ -158,13 +143,6 @@
   flex: 0 0 auto;
 }
 
-/*
- * Only the chevron flips. This targets the trailing direct child rather than
- * every descendant svg, so a trigger that also carries a leading icon (the
- * Insights context picker shows the context's own glyph) doesn't turn that
- * icon upside down along with the chevron. Every trigger in the app puts its
- * chevron last, which is what makes :last-child the right anchor.
- */
 .ui-dropdown-trigger > svg:last-child {
   transition: transform var(--ui-duration-fast) var(--ui-ease-out);
 }
@@ -241,8 +219,6 @@
   color: var(--ink);
 }
 
-/* Compact trigger for dense surfaces (settings rows, insights range picker).
-   Local layout may still tune the height via --ui-dropdown-trigger-height. */
 :where(button).ui-dropdown-trigger--compact {
   --ui-dropdown-trigger-bg: transparent;
   border-color: var(--line-strong);
@@ -251,8 +227,6 @@
   min-height: 28px;
 }
 
-/* Shared chevron rotation for disclosure triggers that are not ui-dropdown
-   triggers (feature dropdowns, mapping badges, local-model toggles). */
 .ui-chevron {
   transition: transform var(--ui-duration-fast) var(--ui-ease-out);
 }
@@ -262,9 +236,6 @@
   transform: rotate(180deg);
 }
 
-/* Icon-button primitive: compact square close/cancel affordance (modal close,
-   prompt close). Row-density variants (copy/dismiss/clear in dense lists) keep
-   their own size for hierarchy; the treatment stays the same. */
 :where(button).icon-btn {
   align-items: center;
   background: transparent;
@@ -288,8 +259,6 @@
   color: var(--ink-strong);
 }
 
-/* Text inputs: one base recipe so every field reads the same. Dense modifier
-   for toolbar search fields that live in an elevated strip. */
 :where(input, textarea).ui-input {
   background: var(--paper);
   border: 1px solid var(--line);
@@ -308,10 +277,6 @@
   color: var(--ink-faint);
 }
 
-/* Text inputs intentionally get no glow/ring on focus — a box-shadow here
-   reads as an alert/highlight on every click into a plain search or text
-   field. A quiet border darken is enough of a cue for a field that's
-   already visually a text box. */
 :where(input, textarea).ui-input:focus-visible {
   border-color: var(--line-strong);
   outline: none;
@@ -326,9 +291,6 @@
   padding: 6px 10px;
 }
 
-/* Modal anatomy. Layout per modal stays local (wide editor card vs compact
-   confirm), but backdrop, card, header/body/footer, and the footer action row
-   are shared so five modals do not re-implement the same shell. */
 .ui-modal-backdrop,
 .modal-backdrop {
   background: var(--overlay);
@@ -337,9 +299,6 @@
   z-index: 50;
 }
 
-/* A backdrop fills the viewport, so the browser's default button outline
-   looks like a border around the entire app. Dialog controls own the visible
-   keyboard focus treatment instead. */
 .ui-modal-backdrop:focus,
 .modal-backdrop:focus {
   outline: none;
@@ -398,15 +357,6 @@
   justify-content: flex-end;
 }
 
-/*
- * Compact/Android: every dialog built on the shared modal shell (new context
- * group, add snippet/word, cleanup prompt, sync pairing, ...) becomes a
- * bottom sheet instead of a centered desktop card. A ~460px card floating in
- * the middle of a 400px-wide phone screen leaves dead margins on both sides
- * and, worse, sits above the keyboard rather than anchored to it — the sheet
- * is full-width, docked to the bottom edge, and gets far more vertical room
- * to work with than the desktop card's `calc(100vh - 40px)` allowed for.
- */
 .app[data-compact-nav='true'] .ui-modal-card,
 .app[data-compact-nav='true'] .modal-card,
 :root:has(.app[data-compact-nav='true']) .ui-modal-card--portalled {
@@ -437,11 +387,6 @@
   }
 }
 
-/* Provider marks that ship a light and a dark cut (OpenAI's is monochrome, so
-   one cut alone would vanish against its own background). getProviderLogo
-   emits both; exactly one must ever be visible. This lives here rather than in
-   a component because every logo consumer needs it — scoping it to the model
-   picker left the API Keys page drawing both marks on top of each other. */
 .mark-dark {
   display: none;
 }

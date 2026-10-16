@@ -74,7 +74,6 @@ test('provided audio captures shared T3 skills without workspace selection only 
         await page.goto(session.access.localAccessUrl);
         await page.locator('[data-debug-id="nav.settings"]').click();
         await page.locator('[data-debug-id="settings.integrations"]').click();
-        // Pull on mount must settle before menu actions, which are inert while loading.
         await page.waitForFunction(() => document.querySelector('[aria-label="T3 Code integration"]')?.getAttribute('aria-busy') === 'false');
         const panel = page.getByRole('region', { name: 'T3 Code integration', exact: true });
         const countButton = panel.getByRole('button', { name: '3 skills', exact: true });
@@ -88,13 +87,10 @@ test('provided audio captures shared T3 skills without workspace selection only 
           await page.screenshot({ path: path.join(screenshots, `integrations-${viewport.width}.png`) });
         }
 
-        // The skill count opens a names-only, alphabetical, searchable dialog.
         await countButton.click();
         const dialog = page.getByRole('dialog', { name: 'Shared T3 skills', exact: true });
         await dialog.waitFor();
         await dialog.evaluate(async node => {
-          // Svelte schedules the intro animation on its next frame. Wait for it
-          // to exist before measuring the final sheet geometry.
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           await Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => {})));
         });
@@ -106,7 +102,6 @@ test('provided audio captures shared T3 skills without workspace selection only 
         assert.ok(!dialogText.includes('Create and improve skills.'));
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         if (viewport.width <= 560) {
-          // Narrow screens dock the dialog as a full-width bottom sheet.
           const sheet = await dialog.boundingBox();
           assert.ok(sheet.width >= viewport.width - 1, 'bottom sheet spans the viewport width');
           assert.ok(sheet.y + sheet.height >= viewport.height - 1, 'bottom sheet is docked to the bottom edge');
@@ -124,18 +119,15 @@ test('provided audio captures shared T3 skills without workspace selection only 
         await search.fill('');
         assert.equal((await tokens()).length, 3);
 
-        // Copy writes the exact token and reports the outcome in the dialog.
         await dialog.getByRole('button', { name: 'Copy $skill-designer', exact: true }).click();
         await dialog.getByRole('status').filter({ hasText: 'Copied $skill-designer.' }).waitFor();
         await page.waitForFunction(async () => (await navigator.clipboard.readText()) === '$skill-designer', null, { timeout: 5000 });
 
-        // Escape dismisses the dialog and returns focus to the count that opened it.
         await page.keyboard.press('Escape');
         await dialog.waitFor({ state: 'detached' });
         assert.equal(await countButton.evaluate(node => node === document.activeElement), true);
         assert.ok(await panel.isVisible());
 
-        // The three-dot menu is keyboard-dismissable and does not close Settings.
         await actions.click();
         const menu = page.getByRole('menu', { name: 'T3 Code actions', exact: true });
         await menu.waitFor();
@@ -145,7 +137,6 @@ test('provided audio captures shared T3 skills without workspace selection only 
         assert.equal(await actions.getAttribute('aria-expanded'), 'false');
         assert.ok(await panel.isVisible());
 
-        // Reconnect shows a replacement form, and a failed pairing keeps the current connection.
         await actions.click();
         await menu.getByRole('menuitem', { name: 'Reconnect', exact: true }).click();
         const pairing = panel.locator('#t3-pairing-link');
@@ -165,7 +156,6 @@ test('provided audio captures shared T3 skills without workspace selection only 
         assert.equal(await countButton.isVisible(), true);
         assert.ok(!(await panel.innerText()).includes('Using saved skills'), 'A failed replacement pairing is not a failed skill pull');
 
-        // Disconnect asks first. The dev session cannot disconnect, so this run dismisses the confirmation.
         await actions.click();
         await menu.getByRole('menuitem', { name: 'Disconnect', exact: true }).click();
         const confirm = page.getByRole('dialog', { name: 'Disconnect T3 Code?', exact: true });

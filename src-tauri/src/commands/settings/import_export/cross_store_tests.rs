@@ -58,8 +58,6 @@ impl Fixture {
             &[],
             |_, _| Ok(()),
             |effects| {
-                // The same completion boundary drives runtime updates, pruning,
-                // and the production success event. Never access host credentials.
                 notified.set(true);
                 if let Some(days) = effects.history_prune_days {
                     db::prune_transcriptions_for_retention(&self.db, &self.settings, days).unwrap();
@@ -160,7 +158,6 @@ fn relaxed_retention_before_import_completion_preserves_history() {
         &[],
         |_, _| Ok(()),
         |effects| {
-            // Model a concurrent ordinary setting save after import publishes.
             f.settings
                 .save_value(store::HISTORY_RETENTION, serde_json::json!("Forever"))
                 .unwrap();
@@ -268,8 +265,6 @@ fn valid_import_settings_write_failure_preserves_stores() {
     let f = Fixture::new();
     let disk = std::fs::read(f.dir.join("settings.json")).unwrap();
     let library = f.library();
-    // A directory at the temporary file path gives a deterministic real I/O
-    // error, including when tests run with elevated filesystem privileges.
     std::fs::create_dir(f.dir.join("settings.json.tmp")).unwrap();
     let notified = Cell::new(false);
     assert!(f.run("2", &notified).is_err());
@@ -290,7 +285,6 @@ fn valid_import_settings_write_failure_preserves_stores() {
 #[test]
 fn valid_import_library_commit_failure_preserves_stores() {
     let f = Fixture::new();
-    // Rollback must preserve actual bytes, even noncanonical whitespace.
     std::fs::write(
         f.dir.join("settings.json"),
         b"{\"cleanup_enabled\":true,\"history_retention\":\"forever\"}\n",

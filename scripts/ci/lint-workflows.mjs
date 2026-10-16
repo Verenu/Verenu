@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { root } from '../verification/identity.mjs';
 
-// Pin and verify the official binary, including local runs outside a Go setup.
 const version = '1.7.12';
 const platform = { linux: 'linux', darwin: 'darwin', win32: 'windows' }[process.platform];
 const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
@@ -22,7 +21,6 @@ async function download(name) {
   if (!response.ok) throw new Error(`actionlint download failed: HTTP ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
 }
-// Verify the archive on every invocation so an interrupted download is never used.
 const [data, checksums] = await Promise.all([download(archive), download(`actionlint_${version}_checksums.txt`)]);
 const expected = checksums.toString().split('\n').find(line => line.endsWith(`  ${archive}`))?.split(/\s+/)[0];
 if (!expected || createHash('sha256').update(data).digest('hex') !== expected) throw new Error('actionlint checksum mismatch');

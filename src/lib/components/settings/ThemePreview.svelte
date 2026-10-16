@@ -8,7 +8,6 @@
   }: {
     colors: Colors;
     accent?: string | null;
-    /** Second palette drawn on the right half, for the System card. */
     split?: Colors | null;
   } = $props();
 </script>

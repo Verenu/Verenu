@@ -5,8 +5,6 @@
 
   let { hourly = Array.from({ length: 24 }, () => 0) }: { hourly?: number[] } = $props();
 
-  // Default destructure above normalizes a missing/null prop; guard the
-  // derivations against a non-array payload too.
   const series = $derived(
     Array.isArray(hourly)
       ? [...hourly.slice(0, 24), ...Array.from({ length: Math.max(0, 24 - hourly.length) }, () => 0)]
@@ -87,7 +85,6 @@
 </section>
 
 <style>
-  /* .card / .card-head / .card-h / .card-sub are owned by Insights.svelte. */
 
   .strip {
     position: relative;

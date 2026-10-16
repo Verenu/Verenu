@@ -18,7 +18,6 @@ test('API key actions never expose the inactive label', async ({ page, session, 
     await expect(saved ? clear : save).toHaveAttribute('aria-hidden', 'false');
     await expect(save).toBeDisabled();
 
-    // Public synthetic draft only. Never save it or change native credentials.
     await input.fill('synthetic-draft');
     await expect(save).toBeVisible();
     await expect(save).toBeEnabled();

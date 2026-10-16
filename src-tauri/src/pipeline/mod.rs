@@ -27,8 +27,6 @@ mod pill;
 mod pill {
     use tauri::{AppHandle, Emitter};
 
-    // Android renders the pill in Kotlin. Keep the shared pipeline calls
-    // intact while mirroring the state through the authenticated bridge.
     pub(crate) fn queue_pill_context(_context: &str) {}
 
     pub(crate) fn current_pill_state() -> String {
@@ -127,9 +125,6 @@ use stages_transcription::*;
 pub use state::*;
 use telemetry::PipelineTelemetry;
 
-/// Bounded, process-local sensitivity levels used after a rejected capture.
-/// Each fresh attempt can become more permissive without changing the user's
-/// saved microphone gain or making the relaxed thresholds permanent.
 pub(crate) const MAX_ADAPTIVE_SENSITIVITY: u8 = 4;
 pub(crate) const ADAPTIVE_SENSITIVITY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(3);
@@ -154,8 +149,6 @@ pub struct CapturedAudio {
 
 impl CapturedAudio {
     pub fn from_samples(mut samples: Vec<f32>, sample_rate: u32, duration_ms: u64) -> Self {
-        // Capture grows geometrically. Retries can retain this allocation for
-        // ten minutes, so release unused capacity before sharing the take.
         samples.shrink_to_fit();
         Self {
             wav_cache: Arc::new(Mutex::new(None)),
@@ -201,8 +194,6 @@ pub(crate) struct TranscriptCandidate {
     pub model: String,
 }
 
-// ---------- pipeline ----------
-
 pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow::Result<String> {
     let Some((session, exclusive_mic_session_id)) = state::take_recording_plain(&state) else {
         anyhow::bail!("No active recording");
@@ -214,9 +205,6 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     let settings_store = match store::settings_snapshot(&app) {
         Ok(s) => s,
         Err(e) => {
-            // The session was removed from shared state above. Stop it before
-            // returning, otherwise a settings read failure leaves the audio
-            // thread and exclusive-mic reservation alive with no owner.
             let _ = stop_and_capture_audio(&app, session, exclusive_mic_session_id).await;
             hide_pill(&app);
             return Err(anyhow::anyhow!(e));
@@ -299,12 +287,6 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
                     retryable,
                     trim_err(&e.to_string())
                 );
-                // A failure only tells us this candidate is unusable. It does
-                // not say a configured fallback cannot work: a common setup
-                // is a cloud primary with a downloaded local fallback, while
-                // the cloud key is absent or stale. Match the main pipeline
-                // and keep walking the configured chain regardless of whether
-                // retrying this same provider would make sense.
                 last_err = Some(e);
             }
         }
@@ -346,8 +328,6 @@ struct ProvidedCapture {
     process_name: String,
 }
 
-/// Browser audio enters the production pipeline after microphone capture.
-/// Delivery remains event-only, so tests cannot paste into an unrelated app.
 #[cfg(all(
     debug_assertions,
     any(
@@ -386,36 +366,21 @@ pub(crate) async fn run_provided_audio(
     Ok(())
 }
 
-/// Whether a release that found no live session should hide the pill.
-/// True only when the backend is genuinely Idle (so a stray release during
-/// Stopping/Processing/Finalizing never touches that task's pill) and the
-/// pill is showing a session-bound state (so idle toasts like
-/// error/cancelled are never cut short). A recording/handsfree pill with an
-/// Idle backend is an orphaned session indicator nothing else will clear.
 fn should_hide_orphaned_pill(lifecycle_is_idle: bool, pill_state: &str) -> bool {
     lifecycle_is_idle && matches!(pill_state, "recording" | "handsfree")
 }
 
-/// Waits for a cancellation signal without ever missing one that arrived
-/// before this future started polling — `watch` retains its last value, so
-/// checking `*rx.borrow()` first (not just relying on `changed()`) closes the
-/// lost-wakeup gap a `Notify`-based signal would have had.
 async fn wait_for_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
     loop {
         if *rx.borrow() {
             return;
         }
         if rx.changed().await.is_err() {
-            return; // sender dropped
+            return;
         }
     }
 }
 
-/// Concatenates a previous (interrupted) dictation's audio onto a freshly
-/// captured one — both are already resampled to the fixed 16kHz mono target,
-/// so the sample buffers join directly. RMS is recomputed from the merged
-/// samples rather than reusing either fragment's own value, since the two
-/// aren't otherwise combinable.
 fn merge_prepend_audio(
     prev: CapturedAudio,
     next: CapturedAudio,
@@ -472,14 +437,6 @@ async fn run_pipeline_with_delivery(
     )) = handoff
     else {
         log::debug!("pipeline: no session - recording never started or was already consumed");
-        // A release that finds no live session must not leave a
-        // session-bound pill on screen. The take above already consumed a
-        // raced Starting reservation (the late mic opener aborts on Idle),
-        // so a pill still showing recording/handsfree belongs to a session
-        // that no longer exists and nothing else will hide it. Gate on Idle
-        // so a stray release during Stopping/Processing/Finalizing can never
-        // clobber that task's own pill, and gate on the pill state so idle
-        // toasts (error/cancelled) are never cut short by a stray release.
         if should_hide_orphaned_pill(
             lock_state(&state).is_ok_and(|st| st.lifecycle.is_idle()),
             &current_pill_state(),
@@ -501,16 +458,8 @@ async fn run_pipeline_with_delivery(
     );
     let _media_pause_guard = crate::system::media_control::DictationMediaPauseGuard::new();
 
-    // Read once, synchronously, as close to the hotkey-release moment as
-    // possible — the rest of the pipeline is async and the user may keep
-    // typing (toggling Caps Lock) while it runs.
     let caps_lock_on = crate::core::hotkey::caps_lock_is_on();
 
-    // Resolve app metadata from the target that will actually receive text
-    // into (captured at record-start), not the live foreground at release — the
-    // two can diverge (handsfree, focus shifts) and that divergence let one
-    // app's mapping style leak into another app. Issue #144. Falls back to the
-    // live foreground only when the captured target id is unavailable (null/0).
     let process_name = provided
         .as_ref()
         .map(|input| input.process_name.clone())
@@ -518,32 +467,17 @@ async fn run_pipeline_with_delivery(
         .unwrap_or_else(|| "unknown".into())
         .to_lowercase();
     let db_handle = app.state::<DbHandle>().inner().clone();
-    // Rehydrate only the settings needed by the cleanup/profile stage. A
-    // deleted Context must not cause a second foreground resolution or leak
-    // the dictation into whichever Context now matches the active window.
     let resolved_context = db::query_context(&db_handle, resolved_context_identity.id).ok();
     let context_id = resolved_context_identity.id;
     log::info!("pipeline: start gen={generation} target_id={}", target.id);
 
-    // The lifecycle take already released this recording's mute claim.
-    // Mark capture inactive before waiting on stop().
     if let Some(session) = &session {
         session.active.store(false, Ordering::Relaxed);
     }
     crate::media::sound::cancel_pending_start();
     show_pill(&app, "processing");
-    // Label the pill "Transcribing…" from the moment processing starts, not
-    // once the transcription call actually begins. Audio encoding and the
-    // local Silero VAD gate both run first and both scale with recording
-    // length — the VAD gate alone reprocesses the *entire* buffer frame by
-    // frame, so on a multi-minute hands-free dictation this stretch can run
-    // several seconds. Until this moved, the pill had no stage mounted for
-    // that whole span and simply went blank, then jumped straight to
-    // "Transcribing…" once the real network call started.
     emit_pill_stage(&app, "transcribing");
 
-    // Keep the quiet-audio gate permissive at high gain. Whisper recordings can
-    // still have low post-denoise RMS, even after amplification.
     let audio_cfg = match store::settings_snapshot(&app) {
         Ok(s) => store::load_audio_config(&s),
         Err(e) => {
@@ -565,9 +499,6 @@ async fn run_pipeline_with_delivery(
         Some("capture"),
         None,
     );
-    // Capture first, gate second: a resumed/prepended recording needs to be
-    // merged with the previous session's audio before the quality gate runs,
-    // so a short-but-valid continuation isn't rejected on its own merits.
     let capture = if let Some(input) = provided {
         let rms = audio::rms_f32(&input.audio.samples_16k);
         Some(StoppedCapture {
@@ -584,8 +515,6 @@ async fn run_pipeline_with_delivery(
     };
     let Some(stopped_capture) = capture else {
         telemetry.input_health("capture_stream_failed");
-        // Stop/capture failures retain any durable prefix for crash recovery;
-        // the duration-limit branch handles its deliberate cleanup itself.
         state::leave_stopping_if_owned(&state, generation);
         return;
     };
@@ -620,12 +549,6 @@ async fn run_pipeline_with_delivery(
         raw_rms = merged_raw_rms;
     }
     telemetry.recording_finished(captured_audio.duration_ms);
-    // Only reject here on duration or on RMS so low it's obviously digital
-    // silence/a dead mic — cheap enough to check before paying for an API
-    // call. The real "is there speech" judgment happens in the local VAD gate
-    // below, before any transcription request — this early gate deliberately
-    // stays permissive so quiet/distant speech gets a fair chance at VAD
-    // instead of being rejected on RMS alone.
     let silence_floor = silence_floor_gate_rms_for_sensitivity(active_gain, sensitivity_level);
     if !validate_captured_audio(
         &app,
@@ -696,10 +619,6 @@ async fn run_pipeline_with_delivery(
     }
     if !state::install_processing(&state, generation, active) {
         telemetry.cancelled();
-        // Superseded between Stopping and here (should not happen in
-        // practice — nothing else can transition out of Stopping — but an
-        // interrupt/Escape branch, if it somehow raced this, already owns
-        // whatever cleanup is needed).
         return;
     }
 
@@ -713,15 +632,10 @@ async fn run_pipeline_with_delivery(
     let Some((mut cfg, profile)) =
         open_config_and_context(&app, &process_name, resolved_context.as_ref()).await
     else {
-        // open_config_and_context already shows its own error/pill on
-        // failure — no separate emit_pipeline_failed here (matches its
-        // pre-existing contract).
         state::leave_processing_if_owned(&state, generation);
         return;
     };
     cfg.t3_skill_catalog = resolved_context_identity.t3_skills.clone();
-    // Surface the resolved context so the pill can show where this dictation
-    // is going (same value emitted at record start, now domain-refined).
     emit_pill_context(&app, &resolved_context_identity.label);
     log::debug!(
         "pipeline: config t_provider={} c_provider={} t_model={} c_model={} cleanup_enabled={} intensity={} profile={}",
@@ -762,11 +676,6 @@ async fn run_pipeline_with_delivery(
         });
     }
 
-    // Run local VAD before touching the transcription API. This is deliberate:
-    // a post-transcription gate still pays for the API and gives Whisper a
-    // chance to hallucinate text from noise. A VAD failure (model missing or
-    // inference error) never blocks a dictation; the speech gate falls back to
-    // the RMS threshold only in that case.
     let vad_span = diagnostics::start_span(trace_guard.trace_id(), "vad_gate", Some("vad"), None);
     telemetry.start_stage(Stage::Vad);
     let vad_samples = captured_audio.samples_16k.clone();
@@ -821,8 +730,6 @@ async fn run_pipeline_with_delivery(
     });
     telemetry.complete_stage(None);
 
-    // Stage already emitted right after entering "processing" above (see
-    // comment there) — this Instant is purely for the timing log below.
     let stage_transcribe = std::time::Instant::now();
     telemetry.start_stage(Stage::Transcription);
     let transcription_span =
@@ -849,8 +756,6 @@ async fn run_pipeline_with_delivery(
             None
         }
     };
-    // Cleanup and retry storage only need PCM. A later cloud retry can encode
-    // it again; existing upload owners keep their Bytes handles valid.
     captured_audio.clear_wav_cache();
     let Some(transcribe_outcome) = transcribe_race else {
         telemetry.cancelled();
@@ -917,13 +822,6 @@ async fn run_pipeline_with_delivery(
             },
         );
     }
-    // Diagnostic only, no behavioral effect — counts and a ratio, never the
-    // text. Average conversational speech runs ~2-3 words/sec; a ratio well
-    // under that on a recording long enough to judge reliably (rules out
-    // pauses/silence at the start dominating a short clip) is a signal worth
-    // having on hand if a future report of "words missing" turns out to be
-    // the transcription itself dropping content rather than cleanup, which
-    // today has no equivalent completeness check of its own.
     if captured_audio.duration_ms >= 3000 {
         let words_per_sec = raw_words as f64 / (captured_audio.duration_ms as f64 / 1000.0);
         log::debug!(
@@ -938,10 +836,6 @@ async fn run_pipeline_with_delivery(
         stage_transcribe.elapsed().as_millis()
     );
 
-    // Post-transcription hallucination gate — silently drop prompt-echoes and
-    // known silent-audio artifacts before they reach cleanup or the cache.
-    // (A trailing hallucinated sentence has already been trimmed above; this
-    // catches the case where the whole transcription is still one.)
     if !has_spoken_content(&raw) || is_transcription_hallucination(&raw) {
         telemetry.failed(FailureCategory::EmptyResponse, true);
         log::warn!(
@@ -974,10 +868,6 @@ async fn run_pipeline_with_delivery(
         Some("cleanup"),
         None,
     );
-    // Only advertise the cleaning stage when the cleanup LLM will actually run
-    // (cleanup enabled + intensity + a key in the chain). When cleanup is off
-    // the cleanup call resolves to local snippet/dictionary work that is
-    // effectively instant, so advertising it would just flash the label.
     let cleanup_will_run_llm = should_run_cleanup_llm(
         cfg.cleanup_enabled,
         has_cleanup_key_in_chain(&cfg),
@@ -1041,12 +931,6 @@ async fn run_pipeline_with_delivery(
         stage_cleanup.elapsed().as_millis()
     );
 
-    // Point of no return: once this succeeds, finalize runs unconditionally,
-    // never raced against cancellation — finalize touches the clipboard, and
-    // a preempted clipboard operation is worse than an un-cancellable late
-    // finalize (see core/injection's serialized critical section). Failure
-    // here means an interrupt/Escape branch already took ownership of this
-    // generation; abandon without inserting anything.
     emit_pill_stage(&app, "pasting");
     if !state::enter_finalizing(&state, generation) {
         telemetry.cancelled();
@@ -1112,9 +996,6 @@ async fn run_pipeline_with_delivery(
     trace_guard.success();
 }
 
-/// Finishes a trace on every early-return path. An incomplete stage is marked
-/// cancelled by the diagnostics store, preventing active-trace leaks when a
-/// user cancels during VAD, transcription, or cleanup.
 struct PipelineDiagnosticsGuard {
     trace: TraceHandle,
     outcome: OperationOutcome,
@@ -1218,9 +1099,6 @@ pub async fn retry_transcription_impl(
         hide_pill(app);
         anyhow::bail!("No retry available");
     };
-    // Count only a real Retry action with a still-available capture. The boost
-    // applies to the next fresh take; a missing or expired retry must not
-    // change microphone sensitivity.
     state::note_sensitivity_retry(state);
     let analytics = app
         .try_state::<crate::analytics::Analytics>()

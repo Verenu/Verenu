@@ -19,8 +19,6 @@ describe('chartCurve', () => {
     });
   });
 
-  // The invariant the hover indicator depends on: at a whole index the dot must
-  // sit exactly on that day's point, or it visibly floats off the line.
   it('lands exactly on the data point at every whole index', () => {
     const pts = points([100, 40, 90, 20, 75]);
     const segments = buildSegments(pts, MIN_Y, MAX_Y);

@@ -2,25 +2,11 @@
 	import { appStore } from '../../stores';
 	import { icons } from '../../icons';
 
-	// Compact-width bottom navigation for the Android shell. The desktop rail
-	// (Sidebar.svelte) stays the navigation on medium/expanded windows; this
-	// bar renders only when App.svelte decides the window is compact. Entries
-	// mirror the rail's primary ones so the two never disagree.
-	//
-	// Icon-first: at phone widths a label per tab is more text than a bottom
-	// bar can carry legibly, so the icon leads and the label sits under it at
-	// caption size — the standard Android bottom-bar treatment.
 	const BASE = [
 		{ id: 'home', label: 'Home', icon: 'home' },
 		{ id: 'insights', label: 'Insights', icon: 'chart' },
 	] as const;
 
-	/*
-	 * Contexts (or the legacy Dictionary/Snippets pair it replaced) are reached
-	 * from the sidebar rail on desktop. That rail is hidden here, so without
-	 * these entries the whole surface is unreachable on a phone. Mirrors the
-	 * same legacy switch App.svelte routes on.
-	 */
 	const LIBRARY = [{ id: 'contexts', label: 'Contexts', icon: 'layers' }] as const;
 	const LEGACY_LIBRARY = [
 		{ id: 'dictionary', label: 'Words', icon: 'book' },
@@ -35,7 +21,6 @@
 	]);
 
 	function openSettings() {
-		// A tap on the Settings tab always lands on the section list.
 		appStore.settingsMobileList = true;
 		appStore.settingsOpen = true;
 	}
@@ -76,8 +61,6 @@
 </nav>
 
 <style>
-	/* Material-style bar: a tonal pill behind the active icon, labels always
-	   shown. Height is mirrored by --mobile-nav-h in App.svelte. */
 	.mobile-nav {
 		display: flex;
 		gap: 4px;
@@ -89,9 +72,6 @@
 		border-top: 1px solid var(--line);
 		position: sticky;
 		bottom: 0;
-		/* Above the settings overlay (z-index 60). Settings is a page on mobile,
-		   not a dialog, and the sidebar's "Back to app" button that normally
-		   closes it is hidden here. */
 		z-index: 70;
 	}
 
@@ -124,7 +104,6 @@
 		transition: color 180ms ease;
 	}
 
-	/* The tonal pill grows out of the icon instead of switching on. */
 	.mobile-nav-icon::before {
 		content: '';
 		position: absolute;

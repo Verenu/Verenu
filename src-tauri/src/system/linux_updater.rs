@@ -1,4 +1,3 @@
-//! Linux installation ownership, verified staging, and native update operations.
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -61,7 +60,6 @@ fn detect_installation(
         .filter(|image| image.is_absolute())
         .and_then(|image| image.canonicalize().ok())
     {
-        // Never replace a package-owned AppImage directly, including AUR packages.
         if let Some(package) = owner(&image) {
             return if package == "verenu" {
                 Installation::Arch {
@@ -97,7 +95,6 @@ fn progress(app: &AppHandle, phase: &'static str, downloaded: u64, total: Option
     );
 }
 
-/// Owned temporary files disappear after every error, cancellation, or success.
 struct StagingDirectory(PathBuf);
 impl StagingDirectory {
     fn new(parent: &Path) -> Result<Self, String> {
@@ -198,13 +195,9 @@ pub async fn install(
     let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
         .await
         .map_err(|e| e.to_string())?;
-    // Validate metadata before turning its name into a local path.
     if Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(&name) {
         return Err("Invalid release installer filename.".into());
     }
-    // Pacman's downloader may drop privileges to the alpm user. Release
-    // packages must be reachable outside a private home directory after
-    // verification; no app data or credentials are staged here.
     let cache = if matches!(mode, Installation::Arch { .. }) {
         PathBuf::from("/var/tmp")
     } else {
@@ -220,7 +213,6 @@ pub async fn install(
     let db = app.state::<crate::DbHandle>().inner().clone();
     let app = app.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        // The backup is mandatory. A failed backup never proceeds to install.
         let conn = db
             .lock()
             .map_err(|_| "Could not lock the database for the update backup.".to_owned())?;
@@ -230,7 +222,6 @@ pub async fn install(
         )
         .map_err(|e| format!("Could not back up Verenu data. Installation was stopped: {e}"))?;
         drop(conn);
-        // Re-check ownership after the download, in case an external manager updated it.
         if installation() != mode {
             return Err(
                 "Verenu's installation changed during the download. Check for updates again."
@@ -279,9 +270,6 @@ fn validate_arch_package(path: &Path) -> Result<(), String> {
 }
 
 fn apply_arch_package(path: &Path) -> Result<(), String> {
-    // Absolute program paths and separate arguments avoid shell interpolation.
-    // Do not disable package signatures, dependency checks, or database locks.
-    // -U never refreshes sync databases or performs a partial system upgrade.
     let output = Command::new(PKEXEC)
         .args(pkexec_pacman_args(path))
         .stdin(Stdio::null())
@@ -405,7 +393,6 @@ fn replace_appimage_with_directory_sync(
     backup_name.push(".previous");
     std::fs::rename(&previous, PathBuf::from(backup_name))
         .map_err(|e| format!("Could not retain the previous AppImage: {e}"))?;
-    // Same-filesystem rename is atomic. Every earlier error leaves the old image intact.
     std::fs::rename(&next, image).map_err(|e| format!("Could not replace the AppImage: {e}"))?;
     if let Err(error) = sync_directory(parent) {
         log::warn!("AppImage replacement committed, but its directory sync failed: {error}");

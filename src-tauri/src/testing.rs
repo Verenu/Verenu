@@ -83,8 +83,6 @@ pub fn set_enabled(enabled: bool) {
     lock_harness().enabled = enabled;
 }
 
-/// Capture delivery while leaving provider requests live. This keeps live audio
-/// checks out of the user's focused app without substituting provider fixtures.
 pub fn set_injection_capture_enabled(enabled: bool) {
     lock_harness().capture_injections = enabled;
 }

@@ -2,8 +2,6 @@ import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
 
 async function captureSetupState(page, name) {
-  // Wait for the existing finite wizard transitions rather than capturing
-  // outgoing and incoming steps overlaid. This changes no interaction budget.
   await page.evaluate(async () => {
     await Promise.all(document.getAnimations()
       .filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity)
@@ -12,10 +10,6 @@ async function captureSetupState(page, name) {
   await page.screenshot({ path: path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), name) });
 }
 
-// Records every Apple availability request with the source modules on its call
-// stack, then forwards it untouched through the real fetch/backend path. The
-// request is issued synchronously from the caller, so the stack names the
-// origin. Anything this cannot attribute is reported as unknown and fails.
 async function installAppleAvailabilityProbe(page) {
   await page.addInitScript(() => {
     const realFetch = window.fetch;
@@ -28,7 +22,7 @@ async function installAppleAvailabilityProbe(page) {
         const url = typeof input === 'string' ? input : input?.url ?? '';
         isAvailabilityCheck = url.endsWith('/__verenu_dev/invoke') && typeof init?.body === 'string'
           && JSON.parse(init.body).command === 'get_apple_intelligence_availability';
-      } catch { /* not a JSON invoke body */ }
+      } catch {}
       if (isAvailabilityCheck) {
         const limit = Error.stackTraceLimit;
         Error.stackTraceLimit = 100;
@@ -55,8 +49,6 @@ async function appleAvailabilityOrigins(page) {
   });
 }
 
-// Sparse synthetic stores omit defaults. Restore effective defaults where
-// the setting validator does not permit null, without touching host settings.
 const defaults = {
   setup_complete: true, setup_progress: null, cleanup_intensity: 'medium', default_tone: 'casual',
   cleanup_enabled: true, transcription_provider: 'groq', cleanup_provider: 'groq',
@@ -85,10 +77,6 @@ async function restoreSetup(session, previous) {
   for (const key of SETUP_KEYS) await session.invoke('save_setting', { key, value: previous[key] ?? defaults[key] ?? null });
 }
 
-// Regression: a transcription-only preset chosen in setup must not turn Basic
-// cleanup off. Only the frontend downloaded-model inventory is a fixture;
-// settings writes and the protected-setting boundary use the real backend.
-// This does not verify local model downloads or inference.
 for (const priorAppleChoice of [false, true]) {
 test(`Setup keeps Basic cleanup on after a transcription-only preset${priorAppleChoice ? ' and an unavailable Apple choice' : ''}`, async ({ page, session }, testInfo) => {
   const previous = await snapshotSetup(session);
@@ -107,7 +95,6 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
     });
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeEnabled();
     if (priorAppleChoice) {
-      // Presentation eligibility only: this does not establish Mac support.
       await page.evaluate(async () => {
         const { appleIntelligence, refreshAppleIntelligence } = await import('/src/lib/appleIntelligence.svelte.ts');
         await refreshAppleIntelligence();
@@ -136,8 +123,6 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
     }
 
     if (priorAppleChoice) {
-      // Ready Basic deliberately has no recovery action on Done. Review the
-      // earlier Models step through the wizard's normal progress navigation.
       await page.getByRole('button', { name: 'Step 4', exact: true }).click();
       await page.evaluate(async () => {
         await (await import('/src/lib/appleIntelligence.svelte.ts')).refreshAppleIntelligence();
@@ -149,8 +134,6 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
       await expect(page.getByText('Setup cannot finish', { exact: false })).toHaveCount(0);
       await captureSetupState(page, `basic-apple-models-${testInfo.project.name}.png`);
     }
-    // Basic and voice commands are gated on cleanup_enabled, so the wizard must
-    // summarise Basic rather than reporting cleanup as off.
     for (let i = 0; i < 6 && !(await page.getByText('Finish setup', { exact: true }).isVisible()); i++) {
       await page.getByRole('button', { name: 'Next', exact: true }).click();
     }
@@ -171,10 +154,6 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
     expect(await session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('rules');
     expect(await session.invoke('get_setting', { key: 'setup_complete' })).toBe(false);
     if (priorAppleChoice) {
-      // Basic Finish must not ask Apple Intelligence anything. The Home
-      // readiness panel stays mounted behind Setup and legitimately re-reads
-      // availability after each saved setting; that background call is counted
-      // separately, and any call this cannot attribute fails the test.
       const finishOrigins = (await appleAvailabilityOrigins(page)).slice(originsBeforeFinish);
       expect(finishOrigins.filter(origin => origin === 'setup')).toEqual([]);
       expect(finishOrigins.filter(origin => origin === 'unknown')).toEqual([]);
@@ -188,11 +167,6 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
 });
 }
 
-// Positive control for the origin probe above: AI cleanup with an Apple choice
-// does re-check availability from Setup on Finish, through the real wizard UI.
-// If the probe stopped seeing Setup-origin calls, the Basic test would pass
-// vacuously; this test fails instead. Presentation eligibility is a fixture;
-// the availability request itself reaches the real backend.
 test('Setup Finish re-checks Apple availability for AI cleanup (probe positive control)', async ({ page, session }) => {
   const previous = await snapshotSetup(session);
   try {
@@ -217,7 +191,6 @@ test('Setup Finish re-checks Apple availability for AI cleanup (probe positive c
     await page.getByRole('switch', { name: 'Clean up with Apple Intelligence', exact: true }).click();
     await page.getByRole('button', { name: 'Use local Transcription only' }).click();
     await page.getByRole('button', { name: 'Next', exact: true }).click();
-    // The default cleanup level is an AI level, so the Apple choice stays in force.
     for (let i = 0; i < 6 && !(await page.getByText('Finish setup', { exact: true }).isVisible()); i++) {
       await page.getByRole('button', { name: 'Next', exact: true }).click();
     }

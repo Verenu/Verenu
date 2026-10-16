@@ -1,13 +1,9 @@
-//! Each shortcut session owns its portal identity and D-Bus connection.
-
 use ashpd::desktop::global_shortcuts::GlobalShortcuts;
 use std::future::Future;
 use std::time::Duration;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-// Match installed launchers, including the Arch package and AppImage integration.
-// Never inherit the identity of the terminal or editor that launched Verenu.
 pub(super) fn desktop_id() -> &'static str {
     ["com.verenu.app", "verenu", "Verenu"]
         .into_iter()
@@ -46,8 +42,6 @@ pub(super) async fn connect() -> Result<GlobalShortcuts, Failure> {
         .await?;
         let options = std::collections::HashMap::<&str, zbus::zvariant::Value<'_>>::new();
         let result = request("Registering Verenu's app identity", async {
-            // Registry also accepts legacy desktop basenames such as `verenu`,
-            // which ashpd::AppID deliberately restricts to reverse-DNS names.
             registry
                 .call::<_, _, ()>("Register", &(desktop_id(), options))
                 .await

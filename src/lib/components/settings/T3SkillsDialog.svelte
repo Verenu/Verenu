@@ -31,7 +31,6 @@
       : `${names.length} ${noun}`,
   );
 
-  // Copy feedback stays in one polite live region so both outcomes are announced.
   let copied = $state<{ token: string; ok: boolean } | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   const copyMessage = $derived(
@@ -57,8 +56,6 @@
     copyTimer = setTimeout(() => (copied = null), 2400);
   }
 
-  // Escape clears an active search before it dismisses the sheet, matching
-  // native search fields.
   function onWindowKeydown(event: KeyboardEvent) {
     if (event.key !== 'Escape') return;
     event.preventDefault();
@@ -152,8 +149,6 @@
 </div>
 
 <style>
-  /* The portal moves these to the body, outside Settings' z-index 60 layer, so they
-     sit at the same level as the sync dialogs. The shared shell stays at 50/51. */
   .skill-backdrop { border: 0; cursor: default; padding: 0; z-index: 70; }
   .skill-dialog { display: flex; flex-direction: column; max-height: min(640px, calc(100vh - 40px)); width: min(440px, calc(100vw - 40px)); z-index: 71; }
   .skill-head { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }

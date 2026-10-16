@@ -77,7 +77,6 @@ function safeMenuGeometry(errors = []) {
         viewport: { width: geometry.viewport.width, height: geometry.viewport.height },
       };
     } catch {
-      // Ignore malformed diagnostics. They may contain arbitrary page data.
     }
   }
   return null;
@@ -103,8 +102,6 @@ function browserTestStatus(value) {
     case 'skipped':
       return 'skipped';
     default:
-      // Unexpected, flaky, interrupted, timed out, and unknown outcomes must
-      // remain visible as failures in the strict session gate.
       return 'failed';
   }
 }

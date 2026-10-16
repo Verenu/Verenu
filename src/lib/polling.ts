@@ -1,6 +1,3 @@
-/** Completion-based polling with visibility suspension and one trailing refresh.
- * Events during a request are reconciled once more so changes cannot be lost.
- */
 export function startPolling(
   refresh: () => Promise<unknown>,
   intervalMs: number | (() => number),

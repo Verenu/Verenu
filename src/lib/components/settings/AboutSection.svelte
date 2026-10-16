@@ -99,8 +99,6 @@
         return;
       }
 
-      // A result from the other channel is no longer trustworthy. Re-check now
-      // so switching channels has an immediate, visible effect.
       try { await saveSetting('update_dismissed_version', null); } catch {}
       try { await saveSetting('update_notified_version', null); } catch {}
       appStore.updateInfo = null;
@@ -246,7 +244,6 @@
 </div>
 
 {#if confirmBetaUpdates}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmBetaUpdates = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
     class="modal-card"

@@ -1,6 +1,3 @@
-// Lightweight platform detection for UI labels. Uses the WebView user-agent so
-// no extra Tauri plugin/dependency is required. The backend remains the source
-// of truth for actual platform behavior.
 const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
 const uaDataPlatform =
 	typeof navigator !== 'undefined'
@@ -14,56 +11,31 @@ const isNativeAndroidRuntime =
 	typeof globalThis !== 'undefined' &&
 	(globalThis as typeof globalThis & { __VERENU_ANDROID__?: boolean }).__VERENU_ANDROID__ === true;
 export const isMac = isMacUserAgent;
-// A Tauri WebKitGTK UA often contains Linux without X11. That is a desktop
-// Wayland session, not Android. Android is identified only by its explicit UA,
-// UA-CH, or native bridge marker.
 export const isLinux = /Linux/i.test(ua) || /Linux/i.test(uaDataPlatform);
-// Some Android WebViews used by Tauri report a desktop-style UA. Their
-// platform still identifies the Linux/ARM WebView. Verenu's supported desktop
-// targets are Windows/macOS, so Linux + touch is an Android fallback without
-// depending on a Tauri bootstrap global that may not exist at module load.
-const isAndroidWebViewFallback =
-	/Linux/i.test(ua) &&
-	!/X11/i.test(ua);
-const isTouchOnlyRuntime =
+const isTauriWebView =
+	typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+const isTouchPhone =
 	!isMacUserAgent &&
 	typeof navigator !== 'undefined' &&
-	(navigator.maxTouchPoints > 0 ||
-		(typeof window !== 'undefined' &&
-			typeof window.matchMedia === 'function' &&
-			window.matchMedia('(pointer: coarse)').matches));
-// The desktop shell enforces a 900px minimum width. A phone WebView can
-// therefore be identified safely from its CSS viewport even when its UA and
-// native bridge are unavailable during the first cold render.
-const isPhoneViewport =
 	typeof window !== 'undefined' &&
 	Math.min(window.innerWidth, window.innerHeight) <= 600 &&
-	(isTouchOnlyRuntime ||
-		/Android/i.test(ua) ||
-		/VerenuAndroid/i.test(ua) ||
-		isNativeAndroidRuntime ||
-		isAndroidWebViewFallback);
-const detectedAndroid =
+	(navigator.maxTouchPoints > 0 ||
+		(typeof window.matchMedia === 'function' &&
+			window.matchMedia('(pointer: coarse)').matches));
+const explicitAndroid =
 	/Android/i.test(ua) ||
 	/Android/i.test(uaDataPlatform) ||
 	/VerenuAndroid/i.test(ua) ||
-	isNativeAndroidRuntime ||
-	isAndroidWebViewFallback ||
-	isTouchOnlyRuntime ||
-	isPhoneViewport;
-export const isAndroid = detectedAndroid;
-// A desktop-style Android UA may still match /Windows/; the explicit native
-// marker above must win so all platform labels agree on the real target.
+	isNativeAndroidRuntime;
+export const isAndroid = explicitAndroid || (!isTauriWebView && isTouchPhone);
+export const isLinuxDesktop = isLinux && !isAndroid;
 export const isWindows = isWindowsUserAgent && !isAndroid;
-/** Phone/tablet/foldable shell: touch-first layout, bottom nav, safe-area insets. */
 export const isMobile = isAndroid;
-/** Coarse pointers need larger hit targets regardless of OS. */
 export const isTouchDevice =
 	typeof window !== 'undefined' &&
 	typeof window.matchMedia !== 'undefined' &&
 	window.matchMedia('(pointer: coarse)').matches;
 
-/** Human label for a `KeyboardEvent.code`, OS-aware (⌘/⌃/⌥ + fn on macOS). */
 export function formatKeyLabel(code: string): string {
 	if (isMac) {
 		const mac: Record<string, string> = {
@@ -110,7 +82,6 @@ export const defaultHotkey: string[] = isMac
 	? ['AltLeft', 'Space']
 	: ['ControlLeft', 'MetaLeft'];
 
-/** Platform label for the fixed copy-last-dictation shortcut. */
 export const copyLastHotkey: string[] = isMac
 	? ['AltLeft', 'MetaLeft', 'KeyC']
 	: ['ControlLeft', 'AltLeft', 'KeyC'];

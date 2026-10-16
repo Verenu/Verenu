@@ -5,14 +5,16 @@ test('Context creation, editing and deletion persist through the UI without touc
   const name = `Synthetic flow ${Date.now()}`;
   let created;
   const open = async (id) => {
-    // Desktop Context labels collapse at narrow widths; the ID remains stable.
     await page.locator(`[data-debug-id="context.${id}"]`).click();
   };
   const actions = async (id, label) => {
     if (page.viewportSize().width < 700) {
-      // The compact rail exposes the row's context menu instead of a kebab.
       await page.locator(`[data-debug-id="context.${id}"]`).click({ button: 'right' });
-    } else await page.getByRole('button', { name: `More actions for ${label}`, exact: true }).click();
+    } else {
+      const menuButton = page.getByRole('button', { name: `More actions for ${label}`, exact: true });
+      await expect(menuButton).toHaveCount(1);
+      await menuButton.click();
+    }
   };
   try {
     await page.getByRole('button', { name: 'New context group', exact: true }).click();
@@ -36,8 +38,14 @@ test('Context creation, editing and deletion persist through the UI without touc
     expect((await session.invoke('get_contexts')).find(row => row.id === created.id).name).toBe(renamed);
     await open(created.id);
     await actions(created.id, renamed);
+    await page.getByRole('menuitem', { name: 'Pin', exact: true }).click();
+    await expect.poll(async () => (await session.invoke('get_contexts')).find(row => row.id === created.id).pinned_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    await actions(created.id, renamed);
+    await expect(page.getByRole('menuitem', { name: 'Unpin', exact: true })).toBeVisible();
+    await page.getByRole('menuitem', { name: 'Unpin', exact: true }).click();
+    await expect.poll(async () => (await session.invoke('get_contexts')).find(row => row.id === created.id).pinned_at).toBeNull();
+    await actions(created.id, renamed);
     await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
-    // The first click arms deletion; it must not mutate data yet.
     expect((await session.invoke('get_contexts')).some(row => row.id === created.id)).toBe(true);
     await page.getByRole('menuitem', { name: 'Confirm delete', exact: true }).click();
     await expect.poll(async () => (await session.invoke('get_contexts')).some(row => row.id === created.id)).toBe(false);

@@ -2,8 +2,6 @@ import { test, expect } from './fixtures.mjs';
 
 for (const task of ['transcription', 'cleanup']) {
   test(`${task} picker stays usable with a large catalog and a pending refresh`, async ({ page, session }) => {
-    // Normalize a fresh install before taking the restoration snapshot. Absent
-    // model settings are returned as null and cannot be written back as IDs.
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.locator('[data-debug-id="settings.models"]').click();
     await expect.poll(async () => {
@@ -28,8 +26,6 @@ for (const task of ['transcription', 'cleanup']) {
       metadata: Object.fromEntries(ids.map(id => [id, { label: id, tasks: ['transcription', 'cleanup'] }])), warning: null,
     } };
     const pending = [];
-    // Delay transport, not a fabricated catalog: requests are held before they
-    // reach the Rust bridge, then fail as a real offline browser request would.
     await page.route('**/__verenu_dev/invoke', async route => {
       if (route.request().postDataJSON()?.command !== 'get_provider_model_catalog') return route.continue();
       await new Promise(resolve => pending.push({ route, resolve }));
@@ -58,7 +54,6 @@ for (const task of ['transcription', 'cleanup']) {
       await expect(dialog.locator('.row-main[aria-current="true"]')).toContainText(model);
       await expect(dialog.getByRole('status')).toContainText('Refreshing model lists…');
       expect(pending.length).toBeGreaterThan(0);
-      // Bounds the expensive DOM/transition work regardless of catalog size.
       expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
       await dialog.getByRole('navigation', { name: 'Filter by provider' }).getByRole('button', { name: /OpenRouter/ }).click();
       const rowsBefore = await dialog.locator('.model-row').count();

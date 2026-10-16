@@ -1,7 +1,3 @@
-//! Opt-in Linux display/IPC/PSS comparison for independent and related views.
-//! No app settings, audio, credentials, hotkeys, or provider calls are used.
-//! Run with `-- shared` or `-- separate`; each run exits after its probes.
-
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 #[path = "../src/system/linux_webview.rs"]
@@ -137,8 +133,6 @@ mod probe {
                     if let Some(related) = related { builder = builder.with_related_view(related); }
                     let pill = builder.build()?;
                     policy::configure_window(&pill);
-                    // Wry must supply a distinct content manager even for related
-                    // views, so IPC handlers and scripts remain window-specific.
                     pill.with_webview(move |pill_platform| {
                         assert_ne!(main_manager, Some(pill_platform.inner().user_content_manager().unwrap().as_ptr() as usize));
                     })?;
@@ -176,7 +170,6 @@ mod probe {
                     let mut samples = Vec::new();
                     let mut renderers = 0;
                     for _ in 0..3 {
-                        // Match the production app's idle native allocator trim.
                         #[cfg(target_env = "gnu")]
                         unsafe { libc::malloc_trim(0); }
                         let (pss_kb, count) = pss_tree(std::process::id());

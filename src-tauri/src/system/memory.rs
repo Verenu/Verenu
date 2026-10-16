@@ -9,8 +9,6 @@ pub async fn reclaim_idle_memory(state: &crate::pipeline::SharedState) {
     {
         let idle = state.lock().is_ok_and(|state| state.lifecycle.is_idle());
         if idle {
-            // Trimming can scan allocator arenas. Keep it off the async worker
-            // and recording path; the caller runs at most once every 30 seconds.
             let _ = tauri::async_runtime::spawn_blocking(|| unsafe { libc::malloc_trim(0) }).await;
         }
     }
@@ -18,9 +16,6 @@ pub async fn reclaim_idle_memory(state: &crate::pipeline::SharedState) {
     let _ = state;
 }
 
-/// System-wide RAM availability (not just this process) — used to decide
-/// whether to proactively unload local models under memory pressure rather
-/// than waiting for their configured idle timeout.
 #[derive(Clone, Copy, Debug)]
 pub struct SystemMemoryStatus {
     pub available_mb: u64,
@@ -103,17 +98,6 @@ fn macos_free_memory_bytes() -> Option<u64> {
     parse_vm_stat_free_bytes(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Parses `vm_stat`'s output. Page size varies by architecture (4096 bytes
-/// on Intel, 16384 on Apple Silicon) and is reported in the header line, so
-/// it must be parsed rather than assumed.
-///
-/// Sums "Pages free" with "Pages inactive/purgeable/speculative" (the same
-/// pages Activity Monitor counts toward "Memory Used" being *not* full, i.e.
-/// reclaimable without pressure) rather than "Pages free" alone. Darwin
-/// aggressively fills otherwise-idle RAM with disk cache and keeps "Pages
-/// free" intentionally low — often under 200 MB even with ample headroom —
-/// so free-only would make `detect_resource_pressure()` read "critical" on
-/// a healthy Mac almost permanently.
 #[cfg(target_os = "macos")]
 fn parse_vm_stat_free_bytes(text: &str) -> Option<u64> {
     let page_size: u64 = text
@@ -148,14 +132,6 @@ fn parse_vm_stat_free_bytes(text: &str) -> Option<u64> {
     Some(reclaimable_pages * page_size)
 }
 
-/// NVIDIA-only VRAM check via `nvidia-smi` (same tool used for GPU backend
-/// detection in local_llm::binary). No reliable cross-vendor equivalent
-/// exists without vendor SDKs (AMD/Intel), so this returns an empty `Vec`
-/// on non-NVIDIA systems or detection failure — callers must treat that as
-/// "no signal", not "VRAM is fine". One entry per GPU, in `nvidia-smi`'s
-/// own enumeration order — multi-GPU systems are common enough (and
-/// `CUDA_VISIBLE_DEVICES`/device selection varies enough) that we check
-/// every detected GPU rather than assuming index 0 is the relevant one.
 #[derive(Clone, Copy, Debug)]
 pub struct GpuVramStatus {
     pub index: u32,
@@ -179,10 +155,6 @@ pub fn gpu_vram_statuses() -> Vec<GpuVramStatus> {
     parse_nvidia_smi_memory_csv(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Runs `command`, killing it if it hasn't exited within `timeout`. Diagnostic
-/// CLI tools (nvidia-smi included) are expected to respond in well under a
-/// second; this exists purely so a wedged driver or hung process can never
-/// stall the periodic resource-pressure check indefinitely.
 fn run_with_timeout(
     mut command: std::process::Command,
     timeout: Duration,
@@ -191,8 +163,6 @@ fn run_with_timeout(
     {
         use std::os::windows::process::CommandExt;
 
-        // Hardware probes are background work. CREATE_NO_WINDOW prevents
-        // nvidia-smi from flashing a console over the app on Windows.
         command.creation_flags(0x08000000);
     }
 
@@ -203,12 +173,6 @@ fn run_with_timeout(
         .spawn()
         .ok()?;
 
-    // Drained on a dedicated thread concurrently with the wait loop below —
-    // if the child wrote more than the OS pipe buffer (~64KB) before
-    // exiting and nobody was reading it in the meantime, it would block
-    // inside its own write() call forever, so try_wait() below would never
-    // see it exit and this would stall for the full timeout on every call
-    // instead of returning as soon as the child actually finishes.
     let stdout_handle = child.stdout.take().map(|mut out| {
         std::thread::spawn(move || {
             use std::io::Read;
@@ -269,13 +233,6 @@ const HIGH_RAM_LOAD_PERCENT: u32 = 92;
 const LOW_VRAM_THRESHOLD_MB: u64 = 512;
 const HIGH_VRAM_LOAD_PERCENT: u64 = 92;
 
-/// Returns `Some(reason)` describing why the system looks low on RAM or
-/// (NVIDIA) VRAM right now, for deciding whether to proactively unload
-/// local models rather than waiting out their idle timeout — e.g.
-/// launching a demanding game shouldn't have to wait out a 15-minute idle
-/// timer before Verenu gives back the RAM/VRAM its local models hold. This
-/// does blocking I/O (process spawn with a bounded wait); callers on an
-/// async runtime should run it via `spawn_blocking`.
 pub fn detect_resource_pressure() -> Option<String> {
     if let Some(mem) = system_memory_status() {
         if mem.available_mb < LOW_RAM_THRESHOLD_MB || mem.load_percent >= HIGH_RAM_LOAD_PERCENT {
@@ -285,9 +242,6 @@ pub fn detect_resource_pressure() -> Option<String> {
             ));
         }
     }
-    // Every detected GPU is checked independently (not aggregated) so a
-    // single critically-low GPU is never masked by averaging it against an
-    // idle one elsewhere in the system.
     for vram in gpu_vram_statuses() {
         if vram.total_mb == 0 {
             continue;
@@ -377,10 +331,6 @@ pub fn measure() -> u64 {
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     return 0;
 
-    // macOS: sum resident memory of this process and its WebView child processes
-    // by walking the process tree (children are grandchildren of the main app,
-    // same as WebView2 on Windows). Uses RSS, which includes some shared pages, so
-    // it slightly over-reports versus Windows' private working set — informational.
     #[cfg(target_os = "macos")]
     {
         use libproc::libproc::proc_pid::pidinfo;
@@ -494,9 +444,6 @@ pub fn measure() -> u64 {
         let mut counted_pids = HashSet::new();
         counted_pids.insert(our_pid);
 
-        // Build a full parent→children map in one snapshot pass, then BFS the
-        // entire subtree. WebView2 renderer/GPU processes are grandchildren (children
-        // of the browser process), so a single-level walk misses most of the memory.
         let mut children_map: HashMap<u32, Vec<u32>> = HashMap::new();
         if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
             let mut entry: PROCESSENTRY32W = std::mem::zeroed();

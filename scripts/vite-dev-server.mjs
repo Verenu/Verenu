@@ -20,8 +20,6 @@ if (running?.kind === 'dev') {
 }
 
 if (running?.kind === 'not-dev') {
-  // Bailing out beats letting Vite fail on strictPort with a generic
-  // "port in use", because the cause is specific and the fix is one command.
   console.error(
     `[vite-dev-server] ${running.url} is serving Verenu, but it is not a dev server ` +
       '(no HMR client in the HTML) - most likely `vite preview`, which serves whatever ' +
@@ -57,10 +55,6 @@ child.on('exit', (code, signal) => {
 });
 
 async function findReachableServer() {
-  // Vite can take a moment to answer while dependency optimization is in
-  // progress. A single short probe can miss an already-running server and
-  // then launch a second strictPort instance, which makes beforeDevCommand
-  // fail with "Port 1420 is already in use".
   for (let attempt = 0; attempt < SERVER_PROBE_ATTEMPTS; attempt += 1) {
     for (const url of DEV_URLS) {
       const kind = await classifyServer(url);
@@ -76,7 +70,6 @@ async function findReachableServer() {
   return null;
 }
 
-/** `'dev'`, `'not-dev'`, or null when nothing Verenu-shaped answers. */
 async function classifyServer(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SERVER_PROBE_TIMEOUT_MS);
@@ -89,18 +82,11 @@ async function classifyServer(url) {
       return null;
     }
 
-    // Port 1420 is a convention, not proof that this project's Vite server is
-    // running. Reusing an unrelated local service makes Tauri load the wrong
-    // page and leaves the desktop window looking blank or transparent.
     const html = await response.text();
     if (!html.includes('<title>Verenu</title>')) {
       return null;
     }
 
-    // The title alone is not enough: `vite preview` serves the built dist/ under
-    // the same title, so reusing it pins the desktop window to the last build
-    // and makes every source edit look like it did nothing. Only a dev server
-    // injects the HMR client, so that is what "dev server" has to mean here.
     return html.includes('/@vite/client') ? 'dev' : 'not-dev';
   } catch {
     return null;

@@ -101,15 +101,8 @@
     listen<string>('verenu:transcribed', (ev) => {
       if (destroyed) return;
       errorMessage = '';
-      // start_setup_try_recording runs the pipeline in event-only mode (no real
-      // clipboard/Ctrl+V injection), so this event is the only way text reaches the
-      // textarea. Always take the latest payload so trying multiple dictations in a
-      // row keeps showing the most recent result instead of requiring "Try again".
       if (ev.payload) {
         if (isAndroid) {
-          // On Android the pill inserts into the focused field through the
-          // accessibility service, so assigning here as well would type the
-          // text twice. Only fall back to the event if nothing arrived.
           const payload = ev.payload;
           setTimeout(() => {
             if (!destroyed && sampleText.trim().length === 0) sampleText = payload;
@@ -131,9 +124,6 @@
       else unlistenError = unsub;
     });
 
-    // The OS sends keyup to whatever window has focus, not necessarily ours — if focus
-    // is lost mid-chord (alt-tab, an OS popup, a system dialog), our keyup handler never
-    // fires and the chord/recording would otherwise get stuck active. Blur is the backstop.
     function handleBlur() {
       if (localRecording) void stopLocalRecording();
       pressedHotkeyCodes.clear();
@@ -155,8 +145,6 @@
     };
   });
 
-  // Feedback swaps between hint, error and success. The old panel leaves first
-  // and the new one grows in after it, so the layout eases instead of snapping.
   const feedbackIn = () => ({ duration: motionMs(260), delay: motionMs(140) });
   const feedbackOut = () => ({ duration: motionMs(140) });
 

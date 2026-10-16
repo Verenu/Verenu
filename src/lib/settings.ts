@@ -21,7 +21,6 @@ export type CleanupIntensity = 'none' | 'rules' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 
-/** Pill placements anchored to the screen. Mirrors `ANDROID_PILL_SCREEN_POSITIONS` in Rust. */
 export type AndroidPillScreenPosition =
   | 'screen-top-left'
   | 'screen-top'
@@ -34,7 +33,6 @@ export type AndroidPillScreenPosition =
   | 'screen-bottom-right'
   | 'punch-hole';
 
-/** Where the Android dictation pill sits. Mirrors `ANDROID_PILL_POSITIONS` in Rust. */
 export type AndroidPillPosition =
   | 'keyboard-center'
   | 'keyboard-left'
@@ -62,7 +60,6 @@ export const ANDROID_PILL_POSITION_OPTIONS: { id: AndroidPillPosition; label: st
 ];
 
 export const DEFAULT_ANDROID_PILL_POSITION: AndroidPillPosition = 'keyboard-center';
-/** Where the pill rests when a dictation outlives the keyboard. */
 export const DEFAULT_ANDROID_PILL_DOCK_POSITION: AndroidPillScreenPosition = 'screen-bottom';
 export type LocalModelMemoryPolicy =
   | 'keep_loaded'
@@ -111,16 +108,13 @@ type SettingsValueMap = {
   sound_effects_volume: number;
   mic_gain: number;
   setup_complete: boolean;
-  /** Unfinished wizard position; cleared (null) once setup completes. */
   setup_progress: import('./setup/setupProgress').SetupProgress | null;
   force_setup_on_launch: boolean;
   ruin_accessibility: boolean;
   dev_mode_on_startup: boolean;
   auto_learn_enabled: boolean;
   contextual_formatting_enabled: boolean;
-  /** @deprecated Compatibility mirror for one downgrade cycle. */
   contextual_caps_enabled: boolean;
-  /** @deprecated Compatibility mirror for one downgrade cycle. */
   auto_spacing_enabled: boolean;
   caps_lock_uppercase_enabled: boolean;
   clipboard_phrase_enabled: boolean;
@@ -134,38 +128,29 @@ type SettingsValueMap = {
   beta_updates_enabled: boolean;
   verenu_service_checks_enabled: boolean;
   appearance_mode: AppearanceMode;
-  /** Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S"; unset means the platform default. */
   sub_app_capture_hotkey: string | null;
   linux_cancel_key: string | null;
   linux_handsfree_key: string | null;
   accent_color: string | null;
-  /** Hex palette for the Custom appearance mode. */
   custom_theme: CustomTheme | null;
-  /** Named palettes the user created in the theme editor. */
   custom_themes: SavedTheme[] | null;
   android_pill_position: AndroidPillPosition;
   android_pill_dock_position: AndroidPillScreenPosition;
-  /** Android: sit the pill over the keyboard's own mic button when it can be found. */
   android_pill_cover_keyboard_mic: boolean;
-  /** Android: hide offline if any active selected model needs a network provider. */
   android_pill_hide_offline: boolean;
   advanced_model_ui: boolean;
-  /** One cleanup prompt for every model — see stores.svelte.ts. */
   cleanup_prompt_override: string;
   style_prompt_instructions: Partial<Record<Exclude<CleanupIntensity, 'none'> | ToneId, string>>;
-  /** Derived cache of each provider's live model list. Written only by modelCatalogStore. */
   provider_model_cache: Record<string, unknown>;
   legacy_features_enabled: boolean;
   sync_enabled: boolean;
   sync_muting_enabled: boolean;
-  /** Per-peer Tailscale routes, written only by SyncManager's validated command. */
   sync_peer_addresses: Record<string, string> | null;
 };
 
 type SettingKey = keyof SettingsValueMap;
 type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
 
-/** Nullable persisted values; callers retain their own UI defaults. No cache. */
 export type SettingsSnapshot = {
   [K in Exclude<SettingKey, 'default_tone' | 'cleanup_intensity' | 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
 };

@@ -24,8 +24,6 @@ impl chunks::PasteBackend for ChunkBackend<'_> {
         let posted = tokio::task::spawn_blocking(|| -> Option<()> {
             use core_graphics::{event::{CGEvent, CGEventFlags, CGEventTapLocation}, event_source::{CGEventSource, CGEventSourceStateID}};
             let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
-            // Create every event before posting so allocation failure cannot
-            // leave Command or V held down.
             let down = CGEvent::new_keyboard_event(source.clone(), 55, true).ok()?;
             let v_down = CGEvent::new_keyboard_event(source.clone(), 9, true).ok()?;
             let v_up = CGEvent::new_keyboard_event(source.clone(), 9, false).ok()?;
@@ -51,8 +49,6 @@ pub(super) async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("Could not write pasteboard text"))
 }
 
-/// Restores every pasteboard representation exactly once, provided the user
-/// has not copied something else since Verenu wrote its temporary payload.
 struct ClipboardRestoreGuard {
     saved: Option<crate::system::mac_app::PasteboardSnapshot>,
     expected_change_count: Option<isize>,
@@ -81,7 +77,6 @@ impl Drop for ClipboardRestoreGuard {
     }
 }
 
-// Keep the existing injection arguments explicit across native backends.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn inject_text(
     text: &str,
@@ -98,8 +93,6 @@ pub(super) async fn inject_text(
 
     const VK_ANSI_V: CGKeyCode = 9;
 
-    // Declared before the restore guard so it releases *after* the pasteboard
-    // has been restored (Rust drops in reverse declaration order).
     let _injection_guard = super::injection_lock().lock().await;
 
     if target_hwnd != 0 {

@@ -1,29 +1,3 @@
-//! Global hold/release hotkey.
-//!
-//! Both platforms expose the same public contract consumed by `main.rs` and
-//! `commands`:
-//!   `start(on_press, on_release, on_handless, on_cancel, on_escape, on_copy_last)`,
-//!   `update_keys`, `map_code_to_vk`, `validate_hotkey`, `is_hotkey_available`,
-//!   `reset_chord_state`, `set_handless_active`,
-//!   `begin_synthetic_paste_suppression`, `is_win_key_down`,
-//!   `force_release_win_key`.
-//!
-//! Windows uses a `WH_KEYBOARD_LL` hook; macOS uses Carbon `RegisterEventHotKey`
-//! via the `global-hotkey` crate. The numeric
-//! key ids produced by `map_code_to_vk` are platform-private — only the matching
-//! backend interprets them — so the two implementations never need to agree on a
-//! shared numbering.
-
-/// Whether `code` (a JS `KeyboardEvent.code`) is a key the backend can map to a
-/// real key on either supported platform. Platform-independent: mirrors the
-/// union of codes accepted by the Windows and macOS `map_code_to_vk`
-/// implementations, so a hotkey that validates here will register on at least
-/// one of them.
-///
-/// Used by the generic `save_setting`/`import_data` path, which must not let a
-/// hand-edited or imported settings.json silently disable the dictation hotkey
-/// by storing a code no backend recognizes (e.g. `["Foo", "Bar"]` — the startup
-/// hook would then map both to VK 0 and never fire).
 pub fn is_known_key_code(code: &str) -> bool {
     match code {
         "" => false,
@@ -53,8 +27,6 @@ pub fn is_known_key_code(code: &str) -> bool {
     }
 }
 
-/// Accept old single-key settings with an empty second slot, then remove it.
-/// Modifier sides have always matched either side in the native backends.
 pub fn normalize_codes(codes: &[String]) -> Result<Vec<String>, String> {
     let legacy_single = codes.len() == 2 && codes[1].is_empty();
     let mut result = Vec::new();
@@ -88,7 +60,6 @@ pub fn modifier_name(code: &str) -> Option<&'static str> {
     }
 }
 
-/// Secondary Linux controls are a single key, independent of held modifiers.
 pub fn is_control_key(code: &str) -> bool {
     is_known_key_code(code) && modifier_name(code).is_none() && code != "Fn"
 }
@@ -215,8 +186,6 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
-// Fallback for any other platform (e.g. Linux CI): inert no-op shims so the
-// crate still builds. Mirrors the public contract above.
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod noop {
     pub fn suspend_shortcuts(_active: bool) -> Result<(), String> {

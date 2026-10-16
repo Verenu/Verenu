@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Uses the actual Svelte overlay and production native window commands.
-// OS pointer routing is checked separately against a disposable desktop target.
 export async function verifyNativePill({ browser, invoke, directory, screenshot }) {
   const show = async (state, message, context) => {
     await browser.command('POST', '/window', { handle: 'main' });

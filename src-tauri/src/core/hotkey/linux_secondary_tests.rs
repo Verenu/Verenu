@@ -1,6 +1,3 @@
-//! Opt-in native probe: production key selection, generated Lua and portal events.
-//! Uses unique handles and unused keys; never reloads user config or records audio.
-
 use super::*;
 
 struct Controls(Vec<String>);
@@ -34,7 +31,6 @@ async fn secondary_controls_register_selected_keys_and_receive_native_actions() 
     let mut chosen = Vec::new();
     for index in 0..2 {
         let mut desktop = conflicts::bindings("secondary-probe").unwrap();
-        // The probe must also respect bindings owned by another Verenu process.
         for binding in &mut desktop { binding.description.clear(); }
         let key = ["Quote", "Semicolon", "BracketLeft", "BracketRight", "Backslash", "Minus", "Equal"]
             .iter().filter_map(|code| control_trigger(code).ok())

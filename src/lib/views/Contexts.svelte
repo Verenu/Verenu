@@ -57,8 +57,6 @@
   import { matchesAppSearch, rankAppMatches } from '../components/appMappings/helpers';
   import { isAndroid, isMobile } from '../platform';
 
-  // The page swap leaves a transform on the page, which re-bases `position: fixed`.
-  // On Android the pickers dock to the screen, so they move to <body> like the dialogs.
   const portalOnAndroid = (node: HTMLElement) => (isAndroid ? portal(node) : {});
   import { handleListboxOptionKeydown, focusListboxOption } from '../components/appMappings/listbox';
   import DictionaryModal from './dictionary/DictionaryModal.svelte';
@@ -75,19 +73,6 @@
   const CONTEXT_TAB_ORDER = CONTEXT_TABS.map((t) => t.id);
   type ContextTab = (typeof CONTEXT_TABS)[number]['id'];
 
-  // Curated subset of the shared icon set — enough variety for work modes
-  // without dumping every icon in the app into a picker grid.
-  // Chosen for relevance to the "work mode" contexts people actually create
-  // (coding, browsing, chat/support, writing, dictation, etc.) rather than
-  // reusing whatever settings/nav icons happened to already exist.
-
-  // A small curated swatch, not a full picker — same lightness/chroma family
-  // as the app's own accent (oklch L~0.65-0.72, C~0.09-0.13) so every option
-  // reads as "part of this UI" rather than a clashing sticker color. Orange
-  // reuses the live --accent token so it always matches the theme exactly;
-  // the rest are fixed OKLCH values chosen to sit at roughly the same
-  // lightness/chroma as the accent (same tonal family), spread across hue at
-  // a comfortable amount of separation.
   const CONTEXT_COLOR_CHOICES = [
     { id: 'orange', label: 'Orange', value: 'var(--accent)' },
     { id: 'sage', label: 'Sage', value: 'oklch(0.65 0.09 150)' },
@@ -117,15 +102,10 @@
     { id: 'ink', label: 'Ink', value: '#111827' },
   ] as const;
   const MODAL_APP_MATCH_LIMIT = 40;
-  // Mirrors `MAX_USER_CONTEXTS` in src-tauri/src/data/db/contexts.rs — the
-  // backend is the source of truth and enforces this too; this just avoids a
-  // round-trip error for the common "hit the limit" case.
   const MAX_USER_CONTEXTS = 200;
 
   const [send, receive] = crossfade({ duration: motionMs(MOTION_MS.base), easing: expoOut });
 
-  // The context list, its targets and the current selection are shared with
-  // the sidebar, which is where contexts are now navigated and managed from.
   const contexts = $derived(contextsStore.contexts);
   const targets = $derived(contextsStore.targets);
   const websites = $derived(contextsStore.websites);
@@ -138,9 +118,6 @@
   let tabDir = $state<1 | -1>(1);
   let tablistEl = $state<HTMLDivElement | null>(null);
   let sort = $state<'newest' | 'alpha'>('newest');
-  // "Selected" here means "open in the edit modal", not "shown in an
-  // inspector panel" — Contexts uses a three-dot row menu (Edit/Delete)
-  // instead of a click-to-inspect panel.
   let selectedDictionary = $state<DictionaryEntry | null>(null);
   let selectedSnippet = $state<Snippet | null>(null);
   let openRowMenu = $state<{ kind: 'dictionary' | 'snippet'; id: number } | null>(null);
@@ -148,9 +125,6 @@
   let rowMenuDeleteArmed = $state(false);
   let rowMenuShowMove = $state(false);
   let modal = $state<'context' | 'dictionary' | 'snippet' | null>(null);
-  // Capture the originating Context when a dictionary modal opens.  The
-  // selected Context can change while the modal is open; edits must never
-  // follow that later selection.
   let dictionaryModalContextId = $state<number | null>(null);
   let contextModalMode = $state<'create' | 'edit'>('create');
   let contextName = $state('');
@@ -184,7 +158,6 @@
   let modalColor = $state<string | null>(null);
   let modalTone = $state<string | null>(null);
   let modalCleanupIntensity = $state<string | null>(null);
-  // Global default that "Use default" resolves to; refreshed whenever the modal opens.
   let globalCleanupIntensity = $state<string | null>(null);
   const inheritsBasicCleanup = $derived(modalCleanupIntensity === null && globalCleanupIntensity === 'rules');
   let modalCustomInstructions = $state('');
@@ -194,9 +167,6 @@
   let savingT3 = $state(false);
   let modalAdvancedOpen = $state(false);
   let editingContextId = $state<number | null>(null);
-  // Tone/cleanup dropdown menus render fixed-position at the top level (not
-  // nested in the modal card) because the modal card and body both clip
-  // overflow — an absolutely-positioned menu inside them gets cut off.
   let openFieldMenu = $state<'tone' | 'cleanup' | null>(null);
   let fieldMenuPos = $state<{ top: number; left: number; width: number } | null>(null);
   let toneTrigger = $state<HTMLButtonElement | null>(null);
@@ -215,9 +185,6 @@
   let loading = $state(true);
   let loadToken = 0;
 
-  // Marks a chip (by exe or domain) as "just added by the user" so its
-  // pop-in transition only plays for a genuinely new addition — not for the
-  // whole list re-rendering when switching to a different context group.
   let recentlyAddedChips = $state<Set<string>>(new Set());
   function markRecentlyAdded(key: string) {
     recentlyAddedChips = new Set(recentlyAddedChips).add(key);
@@ -233,7 +200,6 @@
   );
   const selectedTargets = $derived(targets.filter((target) => target.context_id === selectedContextId));
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
-  // Sub-apps capture a desktop window; Android has no such windows.
   const selectedSubApps = $derived(isAndroid ? [] : contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
   const hasT3Target = $derived([...selectedTargets, ...selectedSubApps].some(target => isT3App(target.executable)));
 
@@ -247,8 +213,6 @@
     } catch (error) { contextErrorMessage = classifyIpcError(error).message; }
     finally { savingT3 = false; }
   }
-  // A sub-app belongs to at most one context group, so only unassigned ones
-  // are offered; assigning one removes it from this list everywhere.
   const unassignedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === null));
   const captureKeys = $derived(subAppCaptureKeys(desktopShortcut('capture')?.active ?? appStore.subAppCaptureHotkey));
   const MATCH_MODE_PHRASE = { contains: 'contains', starts_with: 'starts with', equals: 'is' } as const;
@@ -346,9 +310,6 @@
       : sortedSnippets;
   });
 
-  // A compact usage line, not an analytics panel — deeper context analytics
-  // belong in Insights. Counts only dictations recorded since the schema
-  // started attributing them to a context, so it stays empty on fresh installs.
   type ContextStats = { dictations: number; words: number; last_used_at: string | null };
   let contextStats = $state<ContextStats | null>(null);
 
@@ -359,7 +320,6 @@
       if (token !== loadToken) return;
       contextStats = stats ?? null;
     } catch {
-      // Cosmetic — a failed stats read just hides the line.
       if (token === loadToken) contextStats = null;
     }
   }
@@ -392,8 +352,6 @@
     try {
       const [nextApps] = await Promise.all([
         invoke<InstalledApp[]>('get_installed_apps'),
-        // Force a refresh: the sidebar loads this once at startup, but this
-        // page is the surface where targets get added and removed.
         loadSharedContexts(true),
       ]);
       installedApps = (nextApps ?? []).map((app) => ({
@@ -422,10 +380,6 @@
         const contextId = selectedContextId;
         if (shouldRefreshContextDictionary(event.payload, contextId)) void loadContextItems(contextId);
       }),
-      // A promoted mapping can arrive from another device without emitting the
-      // local dictionary event.  Refresh only the selected Context's materialized
-      // view; the fetch token still rejects an older response after a selection
-      // change.
       listen<{ tables?: string[] }>('verenu:sync-data-changed', (event) => {
         if ((event.payload?.tables ?? []).some((table) => table === 'dictionary' || table === 'dictionary_corrections')) {
           void loadContextItems(selectedContextId);
@@ -448,10 +402,6 @@
   $effect(() => {
     const contextId = selectedContextId;
     if (contexts.length > 0) {
-      // Do not leave the previous Context's rows interactive during the fetch
-      // for a newly selected Context.  The request token protects assignment
-      // from stale responses; clearing here also protects edit/delete actions
-      // during the transition from using the old row with the new Context id.
       dictionary = [];
       snippets = [];
       selectedDictionary = null;
@@ -461,8 +411,6 @@
     }
   });
 
-  // The sidebar owns the context list but not the context form, so it asks
-  // this page to open the same create/edit modal it always had.
   $effect(() => {
     const request = contextsStore.modalRequest;
     if (!request) return;
@@ -562,10 +510,6 @@
       if (kind === 'dictionary') {
         const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
         if (!entry) throw new Error('The dictionary entry is no longer in this context.');
-        // Moving transfers the Context-owned mapping.  Sharing remains the
-        // explicit assignment operation used elsewhere (for example when
-        // duplicating a Context), so a private learned correction is not copied
-        // accidentally.
         await moveContextDictionaryEntry(entry, selectedContextId, targetContextId);
         dictionary = dictionary.filter((candidate) => dictionaryEntryId(candidate) !== id);
       } else {
@@ -580,11 +524,6 @@
     }
   }
 
-  // Clicking anywhere on the row opens the same menu the kebab does — the
-  // row used to be inert outside the kebab's small hit area, which read as
-  // "clicking it does nothing". Bail out when the click originated on the
-  // kebab itself so its own handler doesn't get double-fired (open then
-  // immediately close again).
   function handleItemRowClick(kind: 'dictionary' | 'snippet', id: number, event: MouseEvent) {
     if (event.target instanceof Element && event.target.closest('.item-kebab')) return;
     const trigger = (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('.item-kebab');
@@ -593,10 +532,6 @@
 
   $effect(() => {
     if (!openRowMenu) return;
-    // Exclude clicks on the kebab trigger itself — otherwise the outside-click
-    // close fires on pointerdown, then the trigger's own click handler runs
-    // right after and reopens it, which looks like the menu never closed at
-    // all (just replayed its opening animation).
     const handleClose = (event: Event) => {
       if (event.target instanceof Element && event.target.closest('.item-kebab')) return;
       closeRowMenu();
@@ -630,9 +565,6 @@
     if (contextId !== selectedContextId) return;
     dictionary = [entry, ...dictionary.filter((item) => dictionaryEntryId(item) !== dictionaryEntryId(entry))];
     selectedDictionary = entry;
-    // The create/edit response is metadata-only on some backends.  Reload the
-    // scoped row so the mapping id, confidence, and effective mistake shown
-    // by the Contexts UI are authoritative without an app restart.
     void loadContextItems(contextId);
   }
 
@@ -642,9 +574,6 @@
     void finishNewAssignment(snippet.id);
   }
 
-  // Context-scoped dictionary create/edit owns assignment atomically. Shared
-  // canonical rows remain assignable to more than one context, while
-  // their correction mappings stay scoped to the active context.
   async function finishNewAssignment(id: number, contextId = selectedContextId) {
     if (contextId === EVERYWHERE_ID) return;
     try {
@@ -692,14 +621,9 @@
   function openContextModal(mode: 'create' | 'edit' = 'create', targetId?: number) {
     if (mode === 'create' && atContextLimit) return;
     contextModalMode = mode;
-    // Resolve the edit target explicitly from the requested id: going through
-    // the selectedContext derived would silently fall back to contexts[0]
-    // when the id isn't (yet) in the list, prefilled with the wrong context.
     const editing = mode === 'edit'
       ? contexts.find((context) => context.id === (targetId ?? contextsStore.selectedId)) ?? null
       : null;
-    // Save uses this id directly so it can never drift to a different
-    // context if the list or selection changes while the modal is open.
     editingContextId = editing?.id ?? null;
     contextName = editing?.name ?? '';
     modalIcon = editing?.icon ?? null;
@@ -730,7 +654,6 @@
       .catch(() => { globalCleanupIntensity = null; });
   }
 
-  // Two taps, like the desktop row menu: arm, then confirm.
   async function deleteEditingContext() {
     const target = contexts.find((context) => context.id === editingContextId);
     if (!target || target.is_everywhere) return;
@@ -785,15 +708,9 @@
     };
   });
 
-  // The results list renders fixed-position (outside the modal card, see
-  // template) so it overlays the fields below it instead of pushing the
-  // modal taller — the modal card clips/scrolls its own content, so an
-  // absolutely-positioned menu inside it would be cut off (same issue the
-  // Tone/Cleanup dropdowns had).
   function updateModalAppMatchPos() {
     if (!modalAppInputEl) return;
     const rect = modalAppInputEl.getBoundingClientRect();
-    // Open upward when the keyboard or sheet edge leaves too little room below.
     const below = window.innerHeight - rect.bottom - 8;
     modalAppMatchPos = below < 180 && rect.top > below
       ? { top: rect.top - 4, above: true, left: rect.left, width: rect.width }
@@ -823,8 +740,6 @@
     modalAppHighlight = 0;
   }
 
-  // Reset the highlighted row whenever the match list changes shape, so a
-  // stale index from a longer previous list can't point past the new end.
   $effect(() => {
     modalAppMatches;
     modalAppHighlight = 0;
@@ -894,8 +809,6 @@
       ? contexts.find((context) => context.id === editingContextId) ?? null
       : null;
     if (contextModalMode === 'edit' && !editing) {
-      // The context was deleted (or never resolved) while the modal was
-      // open - refuse rather than silently falling through to create.
       contextError = 'This context no longer exists.';
       return;
     }
@@ -947,8 +860,6 @@
             appName: app.name,
             developer: app.developer ?? null,
           });
-          // Read the live store array each iteration: a captured snapshot
-          // would drop targets assigned by earlier iterations of this loop.
           contextsStore.targets = [...contextsStore.targets.filter((item) => normalizeExe(item.executable) !== normalizeExe(app.exe)), target];
         }
         for (const domain of modalWebsites) {
@@ -1122,9 +1033,6 @@
     </div>
   {/if}
 
-  <!-- The sidebar's context list is hidden with the rail on phones and an
-       unfolded foldable, so this strip is how those layouts switch and add
-       context groups. -->
   <div class="ctx-chips" role="tablist" aria-label="Context groups">
     {#each orderedContexts(contextsStore.contexts) as chipContext (chipContext.id)}
       <button
@@ -1148,17 +1056,6 @@
     <main class="context-main">
       {#key selectedContextId}
       {#if selectedContext}
-        <!--
-          Swaps along the sidebar's own axis and in the direction the selection
-          travelled, so the view reads as coming from the row that was clicked.
-          The two panes overlap in one grid cell (see .context-main), so the
-          incoming one never gets pushed below the outgoing one mid-swap.
-
-          |global is required, not decorative: the element sits inside an {#if}
-          whose condition never changes, so a local transition sees its own
-          block as unchanged and skips entirely. It is the {#key} above that
-          swaps, which only a global transition reacts to.
-        -->
         <div
           class="context-content"
           in:pageSwap|global={{ axis: 'y', distance: contextsStore.selectDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.panel) }}
@@ -1168,7 +1065,6 @@
           <div>
             <h2>{selectedContext.name}</h2>
             <p>{selectedContext.is_everywhere ? 'These items are used when no specific app context group is active.' : 'These items are used when this context group is active.'}</p>
-            <!-- The desktop sidebar's row menu is the editor's entry point; there is no sidebar on a phone. -->
             {#if isAndroid}
               <button class="btn-ghost btn-compact context-edit-btn" type="button" onclick={() => openContextModal('edit', selectedContext.id)}>Edit context group</button>
             {/if}
@@ -1405,11 +1301,7 @@
                 {:else}
                   <div class="item-list">
                     {#each filteredDictionary as e (e.id)}
-                      <!-- Mouse convenience only — the kebab button inside is the
-                           keyboard-accessible equivalent for this same action. -->
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div class="item-row" onclick={(event) => handleItemRowClick('dictionary', e.id, event)}>
+                      <div class="item-row" role="presentation" onclick={(event) => handleItemRowClick('dictionary', e.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{e.term}</span>
                           {#if e.auto_learned}
@@ -1458,9 +1350,7 @@
                 {:else}
                   <div class="item-list">
                     {#each filteredSnippets as s (s.id)}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div class="item-row" onclick={(event) => handleItemRowClick('snippet', s.id, event)}>
+                      <div class="item-row" role="presentation" onclick={(event) => handleItemRowClick('snippet', s.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{s.trigger}</span>
                           <span class="item-arrow" aria-hidden="true">→</span>
@@ -1929,16 +1819,9 @@
   .contexts-page:not(.modal-open) ~ :global(.modal-card),
   .contexts-page:not(.modal-open) ~ :global(.ui-modal-backdrop) { pointer-events: none; }
   .contexts-shell { min-width: 0; }
-  /* One cell, so the outgoing and incoming context panes cross-fade in place. */
   .context-main { display: grid; }
   .context-content { grid-area: 1 / 1; min-width: 0; }
 
-  /*
-   * A light cascade behind the pane swap: header, stats, targets, tabs and the
-   * list each settle a beat apart, which is what makes switching context feel
-   * like something happened rather than a straight cross-fade. Keyed remount
-   * replays it on every switch.
-   */
   .context-content > :global(*) {
     animation: context-rise var(--ctx-rise-ms) cubic-bezier(0.33, 1, 0.68, 1) both;
   }

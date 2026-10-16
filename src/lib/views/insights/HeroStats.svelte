@@ -17,26 +17,14 @@
 
   let { data }: { data: InsightsPayload } = $props();
 
-  // Dictionary fixes and auto-learned terms are lifetime counters with no
-  // context dimension in the schema, so they stay global even when the rest of
-  // the page is filtered. Say so rather than letting them read as scoped.
   const scoped = $derived(data.context_id !== null);
 
-  /* The pace meter is a ruler, not a dial: same flat, hairline vocabulary as
-     the bars elsewhere on this page, and it leaves the tile left-aligned on
-     the same baseline grid as its two neighbours.
-
-     Scale runs 0 → a round ceiling that always clears the personal best, so
-     the best marker never pins itself to the last tick and read as "maxed". */
   const TICKS = PACE_TICKS;
   const tickIndices = Array.from({ length: TICKS }, (_, i) => i);
-  // Measured so ticks can be pinned to whole pixels; see paceTickOffset().
   let rulerW = $state(0);
   const scale = $derived(paceScale(data.totals.best_wpm));
   const scaleMax = $derived(scale.max);
 
-  // Tweened so the meter — and everything derived from it — glides to a new
-  // reading instead of snapping when a fresh dictation lands.
   const wpmT = tweened(untrack(() => data.totals.avg_wpm), { duration: motionMs(650), easing: expoOut });
   $effect(() => { wpmT.set(data.totals.avg_wpm); });
 
@@ -44,17 +32,11 @@
   $effect(() => { totalWordsT.set(data.totals.words_in_range); });
 
   const wpm = $derived(Math.round($wpmT));
-  // Lit tick count, so the meter fills in discrete steps as the tween runs.
   const litTicks = $derived(Math.round(Math.min(1, Math.max(0, $wpmT / scaleMax)) * TICKS));
   const bestTick = $derived(scale.bestTick);
 
   const words = $derived(fmtCompact($totalWordsT));
-  // Derived from the tweened count so the book equivalent stays in sync with
-  // the animating word number instead of snapping to the target immediately.
   const books = $derived(bookEquivalent($totalWordsT));
-  // The exact string shown in the note; pluralization keys off its parsed
-  // value (so 80,080 words → "1.0" → singular) rather than a fragile strict
-  // equality against the raw float.
   const booksLabel = $derived(books < 10 ? books.toFixed(1) : String(Math.round(books)));
   const isOneBook = $derived(Number(booksLabel) === 1);
   const delta = $derived(pctDelta(data.totals.words_in_range, data.totals.words_prev_range));
@@ -114,8 +96,6 @@
     <p class="tile-label">total words dictated</p>
     <p class="tile-note">
       {#if books >= 1}
-        <!-- Pluralize off the displayed amount: "1" is singular, but "1.5"
-             isn't. -->
         {#if isOneBook}
           That's 1 full-length book of writing.
         {:else}
@@ -154,9 +134,6 @@
 </div>
 
 <style>
-  /* A summary band on bare paper, not three cards: columns are separated by
-     the same 1px hairline the rest of the app uses between rows, and the band
-     itself is closed off by a rule before the first section below it. */
   .hero {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -186,8 +163,6 @@
   }
 
   .tile-relative .tile-head {
-    /* Reserve room for the absolutely-positioned delta pill so a large
-       "303.0k" reading never slides underneath it on narrow columns. */
     padding-right: 92px;
   }
 
@@ -261,8 +236,6 @@
     margin-left: 5px;
   }
 
-  /* Ruler, not a bar: discrete hairline ticks read as an instrument scale and
-     match the bar language used by the charts below. */
   .meter { margin-top: 14px; }
 
   .ruler {
@@ -270,10 +243,6 @@
     height: 18px;
   }
 
-  /* Fixed hairline width — flex-grown ticks turn into fat blocks and the whole
-     thing reads as a loading bar instead of a scale. Absolutely positioned at
-     whole-pixel offsets rather than spaced by flexbox, so no tick straddles a
-     pixel boundary and renders heavier than the rest. */
   .tick {
     position: absolute;
     bottom: 0;
@@ -285,13 +254,8 @@
       background-color var(--ui-duration-base, 200ms) ease,
       height var(--ui-duration-base, 200ms) ease;
   }
-  /* Quarter marks, so the scale can be read without counting hairlines. The
-     last tick is deliberately not one — the "250" label already ends the
-     scale, and a tall mark there competes with the personal-best marker. */
   .tick.major { height: 14px; }
   .tick.on { background: var(--accent); }
-  /* The best marker outranks the fill — it must stay findable inside the lit
-     run, which is where it usually sits. */
   .tick.best {
     height: 18px;
     background: var(--ink-soft);
@@ -308,8 +272,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Ties the tall tick to the words underneath it without a floating label
-     that would overflow the column. */
   .best-key {
     display: inline-block;
     width: 2px;
@@ -356,13 +318,7 @@
     margin-left: auto;
   }
 
-  /* Container queries against the insights column (owned by Insights.svelte):
-     viewport queries fired too late because the sidebar consumes ~220px.
-     The band stays 3-up as long as possible — stacking early strands one
-     narrow tile in a full-width row with empty space beside it. */
   @container insights (max-width: 680px) {
-    /* Compact 3-up: tighter gutters and smaller numbers so all three tiles
-       still fit side by side instead of stacking. */
     .hero { gap: 14px; }
     .tile + .tile { padding-left: 14px; }
     .tile-relative .tile-head { padding-right: 84px; }
@@ -380,8 +336,6 @@
 
   @container insights (max-width: 500px) {
     .hero { grid-template-columns: 1fr; gap: 0; }
-    /* Stacked, the vertical rules become horizontal ones — same trick
-       StatsCard uses when its row collapses. */
     .tile + .tile {
       border-left: 0;
       padding-left: 0;
@@ -391,8 +345,6 @@
     }
   }
 
-  /* Very narrow: the delta pill joins the flow instead of floating over the
-     hero number it would otherwise collide with. */
   @container insights (max-width: 380px) {
     .tile-relative .tile-head { padding-right: 0; }
     .delta { position: static; align-self: flex-start; margin-bottom: 8px; }

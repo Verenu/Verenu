@@ -1,11 +1,3 @@
-//! Correction-detection algorithm extracted from auto_learn.rs: edit distance,
-//! word tokenization, candidate scoring, anchor location, and span
-//! diff/alignment (plus the thin baseline-capture wrappers around the parent's
-//! focused-text reader). No DB access or COM/hook lifecycle lives here — the
-//! data structs, tuning constants, and StableTextGate stay in the parent so
-//! these functions can borrow them as a child module. Heavily covered by the
-//! auto_learn test module; this was a behavior-preserving move.
-
 use super::{
     AlignOp, CandidateCorrection, CorrectionMetrics, TextAnchor, WordToken,
     MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN, MAX_SPAN_GROWTH_WORDS,
@@ -209,8 +201,6 @@ pub(super) fn is_candidate_correction(
 }
 
 pub(super) fn pair_hash(left: &str, right: &str) -> (String, String) {
-    // FNV-1a 64-bit with a fixed offset/prime gives stable hashes across
-    // app versions and process runs. This is telemetry bucketing, not crypto.
     fn hash_str(value: &str) -> String {
         const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x100000001b3;
@@ -228,10 +218,6 @@ pub(super) fn monitor_key(
     injected_text: &str,
     context: &crate::core::context::ResolvedContextIdentity,
 ) -> String {
-    // The monitor key is process-global, so the immutable resolved Context ID
-    // must be part of it. A process/app label is not sufficient: a website
-    // Context can override the browser's app Context while both share the
-    // same executable and injected phrase.
     let (lhs, rhs) = pair_hash(injected_text, &context.id.to_string());
     format!("{rhs}:{lhs}")
 }
@@ -254,8 +240,6 @@ pub(super) fn candidate_confidence(
         && metrics.b_len >= 4
         && !is_common_word(&corrected.norm)
     {
-        // A manually restored proper noun is useful evidence even without a
-        // digit or internal capital.
         score += 0.20;
     }
     if is_common_word(&original.norm) && is_common_word(&corrected.norm) {
@@ -264,8 +248,6 @@ pub(super) fn candidate_confidence(
     score -= (changed_ops.saturating_sub(1) as f64) * 0.07;
     score -= (replacements_len.saturating_sub(1) as f64) * 0.08;
     if changed_ops == 1 && replacements_len == 1 && has_distinctive_features(&corrected.raw) {
-        // Short technical names can be phonetically close but several edits
-        // apart. Keep them eligible for repeated evidence, never fast learning.
         score = score.max(0.50);
     }
     score.clamp(0.0, 1.0)
@@ -380,9 +362,6 @@ pub(super) fn current_anchored_span<'a>(
     Some(&current[anchor.start..new_end])
 }
 
-/// Bounded UI Automation reads may start at different offsets after an edit.
-/// Anchor the span using text immediately beside the injected range instead of
-/// assuming both windows have a shared document origin.
 fn current_span_from_surrounding_context<'a>(
     baseline: &str,
     current: &'a str,
@@ -450,10 +429,6 @@ pub(super) fn align_word_ops(
     let old_middle = &original[prefix..old_end];
     let new_middle = &current[prefix..new_end];
 
-    // A correction can only survive the caller's changed-operation limit when
-    // the middle is small or mostly identical. Strip equal edges first, then
-    // keep the backtrace in a narrow band. This preserves the old tie-breaking
-    // for useful corrections without ever allocating an m*n matrix.
     const MAX_ALIGNMENT_MIDDLE_WORDS: usize = 4096;
     if old_middle.len().max(new_middle.len()) > MAX_ALIGNMENT_MIDDLE_WORDS
         || old_middle.len().abs_diff(new_middle.len()) > max_changes
@@ -469,14 +444,14 @@ pub(super) fn align_word_ops(
     previous[0] = 0;
     for j in 1..=new_middle.len().min(width) {
         previous[j] = j;
-        decisions[j + width] = 3; // Insert.
+        decisions[j + width] = 3;
     }
 
     for i in 1..=old_middle.len() {
         current_row.fill(usize::MAX);
         if i <= width {
             current_row[0] = i;
-            decisions[i * band_width + width - i] = 2; // Delete.
+            decisions[i * band_width + width - i] = 2;
         }
 
         let start = i.saturating_sub(width).max(1);
@@ -490,7 +465,7 @@ pub(super) fn align_word_ops(
             let diagonal = diagonal.saturating_add(replace_cost);
 
             let (value, decision) = if diagonal <= delete && diagonal <= insert {
-                (diagonal, 1_u8) // Diagonal, matching the old preference.
+                (diagonal, 1_u8)
             } else if delete <= insert {
                 (delete, 2_u8)
             } else {
@@ -573,8 +548,6 @@ pub(super) fn detect_span_corrections(
         return vec![];
     }
 
-    // Group adjacent edits so a speech model's split/merged name is learned
-    // as one mapping instead of unrelated word replacements.
     let mut runs = Vec::new();
     let mut old_indices = Vec::new();
     let mut new_indices = Vec::new();
@@ -657,8 +630,6 @@ pub(super) fn detect_span_corrections(
             if !case_only && !boundary_change {
                 return None;
             }
-            // Internal mixed case makes the desired spelling explicit. All-caps
-            // edits and ordinary title/sentence casing are intentionally ignored.
             Some(CandidateCorrection {
                 mistake,
                 correction,

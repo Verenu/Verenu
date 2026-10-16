@@ -31,8 +31,6 @@ test('AI command recovery uses existing cleanup after deterministic edits with o
       const body = JSON.parse(Buffer.concat(chunks).toString());
       cleanupRequests.push(body);
       const input = body.messages.find(message => message.role === 'user').content;
-      // This endpoint validates real production request wiring, not model
-      // obedience. A separate configured-provider acceptance run tests quality.
       const text = input.match(/<raw_dictation>\n([\s\S]*?)\n<\/raw_dictation>/)?.[1]
         .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
       assert.notEqual(text, undefined, 'normal cleanup receives one labeled primary transcript');

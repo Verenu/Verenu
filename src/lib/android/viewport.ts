@@ -1,20 +1,7 @@
-// Adaptive window-size classes for the Android shell (and any narrow
-// desktop window). Mirrors the Rust `crate::android::width_class_for_dp`
-// breakpoints exactly — both sides use 600/840dp so backend layout hints and
-// the Svelte shell never disagree.
-//
-// Uses live window dimensions, never hard-coded device categories: rotation,
-// folding/unfolding, split-screen, and freeform windows all reclassify
-// without restart. Hinge/fold posture comes from the CSS `screen-fold`
-// feature where the WebView supports it; otherwise the width class alone
-// drives the layout (compact → single column + bottom nav, expanded →
-// list-detail multi-pane).
-
 export type WidthClass = 'compact' | 'medium' | 'expanded';
 
 export const WIDTH_CLASS_BREAKPOINTS = { medium: 600, expanded: 840 } as const;
 
-/** Pure: classify an available width in density-independent pixels. */
 export function widthClassForDp(widthDp: number): WidthClass {
 	if (!Number.isFinite(widthDp) || widthDp < 0) return 'compact';
 	if (widthDp < WIDTH_CLASS_BREAKPOINTS.medium) return 'compact';
@@ -32,7 +19,6 @@ export type ViewportSnapshot = {
 	heightDp: number;
 	widthClass: WidthClass;
 	orientation: 'portrait' | 'landscape';
-	/** True while a foldable is half-opened (tabletop/book) where detectable. */
 	foldPosture: 'flat' | 'half-opened' | 'unknown';
 };
 
@@ -40,11 +26,6 @@ function readOrientation(width: number, height: number): ViewportSnapshot['orien
 	return height >= width ? 'portrait' : 'landscape';
 }
 
-/**
- * Pure: build a snapshot from raw dimensions. `foldPosture` is best-effort —
- * callers pass `'half-opened'` when the Jetpack WindowManager posture API
- * (bridged via `android_get_window_metrics`) reports it, else `'unknown'`.
- */
 export function snapshotForSize(
 	widthDp: number,
 	heightDp: number,
@@ -60,19 +41,11 @@ export function snapshotForSize(
 	};
 }
 
-/** Whether the main shell should use the multi-pane (list-detail) layout. */
 export function shouldUseMultiPane(snapshot: ViewportSnapshot): boolean {
-	// Half-opened foldables keep single-column even when wide: the hinge
-	// area makes a spanning detail pane unreadable.
 	if (snapshot.foldPosture === 'half-opened') return false;
 	return snapshot.widthClass === 'expanded';
 }
 
-/**
- * Whether primary navigation collapses to the bottom bar. Medium windows (an
- * unfolded foldable) use it too: a side rail would take about a third of the
- * width and leave pages cramped into a phone-sized column beside it.
- */
 export function shouldUseBottomNav(snapshot: ViewportSnapshot): boolean {
 	return snapshot.widthClass !== 'expanded';
 }
@@ -103,14 +76,6 @@ function defaultFrameScope(): AnimationFrameScope | null {
 	return null;
 }
 
-/**
- * Live tracker for `App.svelte`. Subscribes to resize + orientation changes
- * and emits a fresh snapshot (debounced to animation frames so rotation and
- * live fold/unfold don't thrash the layout). Returns an unsubscribe fn.
- * Pure enough to unit-test via `snapshotForSize`; this wrapper only owns the
- * DOM subscription. Pass explicit `events`/`frames` doubles in tests — the
- * default is the global window, and a null window (SSR/tests) emits once.
- */
 export function trackViewport(
 	getSize: () => { width: number; height: number },
 	notify: ViewportListener,

@@ -1,20 +1,14 @@
 use super::model::{prompt_family_for_model, LocalLlmModelManifest, LocalLlmPromptFamily};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-
-const RECENT_LOG_CAPACITY: usize = 64;
 
 pub struct ManagedLocalLlmServer {
     child: Child,
     pub endpoint: String,
-    recent_log: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl ManagedLocalLlmServer {
@@ -24,25 +18,10 @@ impl ManagedLocalLlmServer {
         Ok(())
     }
 
-    /// Last few lines the runtime process wrote to stderr, newest last.
-    /// Useful to surface alongside an empty/failed completion, since the
-    /// HTTP response alone often doesn't say why generation produced nothing.
-    pub fn recent_log_tail(&self) -> Vec<String> {
-        self.recent_log
-            .lock()
-            .map(|guard| guard.iter().cloned().collect())
-            .unwrap_or_default()
-    }
 }
 
 impl Drop for ManagedLocalLlmServer {
     fn drop(&mut self) {
-        // std::process::Child does NOT kill its process on drop. Every known
-        // call site already calls .stop() explicitly before replacing or
-        // dropping a server, but this is the backstop for any path that
-        // doesn't (app shutdown, a future call site, a panic mid-unload) —
-        // otherwise llama-server survives as an orphan, still holding the
-        // RAM/VRAM this whole manager exists to reclaim.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -118,7 +97,7 @@ fn start_server_process(
     binary: &Path,
     model_path: &Path,
     port: u16,
-) -> anyhow::Result<(Child, Arc<Mutex<VecDeque<String>>>)> {
+) -> anyhow::Result<Child> {
     let mut command = Command::new(binary);
     #[cfg(target_os = "android")]
     {
@@ -131,7 +110,6 @@ fn start_server_process(
             "2",
             "--threads-batch",
             "2",
-            // Avoid busy waits on thermally constrained mobile CPUs.
             "--poll",
             "0",
             "--poll-batch",
@@ -156,81 +134,31 @@ fn start_server_process(
         .arg(port.to_string())
         .arg("--ctx-size")
         .arg("4096")
-        // Disable thinking at the runtime boundary; the output token budget
-        // below is therefore available for the dictated text.
         .arg("--reasoning")
         .arg("off")
         .arg("--reasoning-budget")
         .arg("0")
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .stdin(Stdio::null());
-    let mut child = command.spawn()?;
-
-    // llama-server's own stderr is the only place that explains *why* a
-    // request produced nothing (missing chat template, sampling/EOS issues,
-    // GPU backend load failures, etc.) — at default verbosity it logs
-    // timing/status, not prompt or completion text, so this is safe to log.
-    let recent_log = Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_LOG_CAPACITY)));
-    if let Some(stderr) = child.stderr.take() {
-        let recent_log_writer = Arc::clone(&recent_log);
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                log::debug!("local-llm: runtime stderr: {line}");
-                if let Ok(mut guard) = recent_log_writer.lock() {
-                    if guard.len() >= RECENT_LOG_CAPACITY {
-                        guard.pop_front();
-                    }
-                    guard.push_back(line);
-                }
-            }
-        });
-    }
-
-    Ok((child, recent_log))
-}
-
-pub(super) fn format_log_tail(lines: &[String]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let tail: Vec<&str> = lines.iter().rev().take(6).map(String::as_str).collect();
-    format!(
-        " — recent runtime log: {}",
-        tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
-    )
+    Ok(command.spawn()?)
 }
 
 async fn wait_until_ready(
     endpoint: &str,
     child: &mut Child,
-    recent_log: &Arc<Mutex<VecDeque<String>>>,
 ) -> anyhow::Result<()> {
     let started_at = Instant::now();
     let url = format!("{endpoint}/v1/models");
     loop {
-        let tail = recent_log
-            .lock()
-            .map(|guard| guard.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
         if started_at.elapsed() > Duration::from_secs(45) {
-            // child.kill() on a `Child` that's still running is the only way
-            // to stop it — dropping the handle on the `?` in start_server()
-            // does NOT kill the process, it just detaches the handle, which
-            // previously left an orphaned llama-server.exe holding the
-            // loaded model's GPU/RAM allocation with no way to clean it up.
             let _ = child.kill();
             let _ = child.wait();
-            anyhow::bail!(
-                "local cleanup runtime timed out while starting{}",
-                format_log_tail(&tail)
-            )
+            anyhow::bail!("local cleanup runtime timed out while starting")
         }
         if let Some(status) = child.try_wait()? {
             anyhow::bail!(
-                "local cleanup runtime exited during startup with status {status}{}",
-                format_log_tail(&tail)
+                "local cleanup runtime exited during startup with status {status}"
             )
         }
 
@@ -255,13 +183,12 @@ pub async fn start_server(
     }
     let port = pick_local_port()?;
     let endpoint = format!("http://127.0.0.1:{port}");
-    let (child, recent_log) = start_server_process(&binary, &model_path, port)?;
+    let child = start_server_process(&binary, &model_path, port)?;
     let mut server = ManagedLocalLlmServer {
         child,
         endpoint,
-        recent_log,
     };
-    wait_until_ready(&server.endpoint, &mut server.child, &server.recent_log).await?;
+    wait_until_ready(&server.endpoint, &mut server.child).await?;
     Ok(server)
 }
 
@@ -272,32 +199,6 @@ struct ChatReq {
     max_tokens: u32,
     cache_prompt: bool,
     temperature: f32,
-    // Greedy decoding (temperature 0) has no randomness to escape a
-    // repetition loop once it enters one — observed in practice on a small
-    // quantized local model: the same word repeated dozens of times in a
-    // row. `repeat_penalty` (a llama-server extension to the OpenAI-compatible
-    // endpoint, not part of the official spec) directly discourages
-    // re-emitting recently used tokens; cloud providers are unaffected since
-    // this struct/endpoint is local-only.
-    //
-    // Deliberately the gentle ~1.1 most llama.cpp guides recommend, not a
-    // stronger value: llama.cpp's repeat penalty applies over the trailing
-    // token window regardless of whether those tokens came from the prompt
-    // or the completion-so-far, and for a "lightly edit this dictation" task
-    // the <raw_dictation> text sits at the very end of the prompt — well
-    // inside that window for any non-trivial penalty strength. A stronger
-    // value (this was 1.3) actively suppresses the logits for the speaker's
-    // own words, which pushes the model toward paraphrasing with different
-    // vocabulary just to avoid the penalty even on a short, simple
-    // dictation — exactly backwards for a cleanup pass that's supposed to
-    // preserve almost everything verbatim, and it shows up downstream as
-    // `looks_like_fabricated_content` rejecting otherwise-fine output
-    // because word overlap with the input collapsed. The original
-    // degenerate-repetition risk this guarded against is now also caught
-    // independently by `looks_like_degenerate_repetition` plus the pipeline's
-    // hardened-retry/raw-text-fallback path, so a milder penalty here doesn't
-    // remove the safety net, just stops it from firing constantly on normal
-    // input.
     repeat_penalty: f32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
@@ -326,11 +227,6 @@ struct MsgResp {
     content: String,
 }
 
-/// Each open-weight chat template ends a turn with a different marker.
-/// Passed as an explicit `stop` string (matched against decoded text, not
-/// raw token ids) so generation still terminates correctly even when a
-/// GGUF's tokenizer metadata is broken and llama.cpp's automatic
-/// end-of-generation detection can't find the model's real stop token.
 fn stop_sequences_for_family(family: LocalLlmPromptFamily) -> Vec<String> {
     match family {
         LocalLlmPromptFamily::Gemma4 => vec!["<end_of_turn>".to_string()],
@@ -364,8 +260,6 @@ async fn send_chat_completion(endpoint: &str, body: &ChatReq) -> anyhow::Result<
         .filter(|s| !s.is_empty());
     let finish_reason = choice.as_ref().and_then(|c| c.finish_reason.clone());
 
-    // Diagnostic only — character counts and the finish_reason enum value,
-    // never the generated text itself (cleaned text must not be logged).
     log::debug!(
         "local-llm: chat completion status={status} finish_reason={finish_reason:?} content_chars={}",
         content.as_ref().map(|s| s.chars().count()).unwrap_or(0),
@@ -377,20 +271,6 @@ async fn send_chat_completion(endpoint: &str, body: &ChatReq) -> anyhow::Result<
     })
 }
 
-/// finish_reason="length" means the server hard-cut generation at the token
-/// budget — never that the model decided to stop on its own, which always
-/// reports finish_reason="stop" instead. So this alone is an unambiguous
-/// truncation signal regardless of how much of the input length the output
-/// reached before being cut off. Previously this also required the content
-/// to be under half the input length, on the theory that a deliberately
-/// brief "high" intensity result hitting its (small, proportional) budget
-/// wasn't really truncated — but that ratio gate had a real blind spot: a
-/// cleanup that got cut off after reaching 50-99% of the input length (a
-/// dropped trailing clause, not a dropped paragraph) reported finish_reason
-/// "length" just the same and went completely undetected. The budget is
-/// already computed proportional to the input for every intensity (see
-/// `cleanup_max_output_tokens`), so hitting it is always premature, never a
-/// sign of "the model deliberately chose to be this short."
 fn looks_truncated(attempt: &ChatAttempt, input_chars: usize) -> bool {
     attempt.finish_reason.as_deref() == Some("length")
         && attempt
@@ -399,9 +279,6 @@ fn looks_truncated(attempt: &ChatAttempt, input_chars: usize) -> bool {
             .is_some_and(|output| input_chars > 20 && !output.is_empty())
 }
 
-/// Combines the truncation, fabrication, and perspective-flip checks into a
-/// single "is this attempt worth retrying" decision, returning a short
-/// reason for logging (never the text itself).
 fn retry_reason(attempt: &ChatAttempt, input_texts: &[&str]) -> Option<&'static str> {
     let primary = input_texts.first().copied().unwrap_or_default();
     if looks_truncated(attempt, primary.chars().count()) {
@@ -463,10 +340,6 @@ pub async fn request_cleanup_with_alternate(
         }],
         max_tokens,
         cache_prompt: true,
-        // Small non-zero temperature: greedy decoding (0.0) has no
-        // randomness to escape a repetition loop once it enters one, which
-        // is exactly the failure mode observed (the same word repeated
-        // dozens of times). Still low enough to stay close to deterministic.
         temperature: 0.15,
         repeat_penalty: 1.1,
         stop,
@@ -506,7 +379,6 @@ mod tests {
 
     #[test]
     fn truncation_detected_when_length_cutoff_and_content_far_shorter_than_input() {
-        // The actual observed bug: a 256-char dictation cleaned down to 57 chars.
         let result = attempt(Some(&"x".repeat(57)), Some("length"));
         assert!(looks_truncated(&result, 256));
     }
@@ -519,19 +391,12 @@ mod tests {
 
     #[test]
     fn flagged_even_when_content_is_comparable_length_to_input() {
-        // The actual gap this closed: a cleanup that got cut off after
-        // reaching 78% of the input length (a dropped trailing clause, not a
-        // dropped paragraph) used to slip through undetected because the old
-        // check required content under half the input length. finish_reason
-        // "length" alone already means the server cut it off mid-generation
-        // — there's no length ratio at which that stops being true.
         let result = attempt(Some(&"x".repeat(200)), Some("length"));
         assert!(looks_truncated(&result, 256));
     }
 
     #[test]
     fn not_flagged_for_tiny_inputs_even_if_short() {
-        // Avoid false positives on trivially short dictations.
         let result = attempt(Some("hi"), Some("length"));
         assert!(!looks_truncated(&result, 10));
     }
@@ -556,8 +421,6 @@ mod tests {
 
     #[test]
     fn gemma_stop_sequence_matches_its_real_turn_marker() {
-        // Gemma's chat template ends a turn with <end_of_turn>, not </s> —
-        // this is the specific marker this fix exists to enforce.
         assert_eq!(
             stop_sequences_for_family(LocalLlmPromptFamily::Gemma4),
             vec!["<end_of_turn>".to_string()]

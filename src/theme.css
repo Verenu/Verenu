@@ -5,12 +5,10 @@
 :root {
   color-scheme: light;
 
-  /* Neutral paper and surfaces */
   --amber-50: #fcfcfa;
   --amber-100: #f5f4f2;
   --amber-200: #e6e4e0;
 
-  /* Neutral default accent scale. A custom color replaces this at runtime. */
   --jap-50: #f8f8f7;
   --jap-100: #ededeb;
   --jap-200: #d9d9d6;
@@ -20,7 +18,6 @@
   --jap-600: #000000;
   --jap-700: #000000;
 
-  /* Neutral text and lines */
   --arm-200: #e3e2e0;
   --arm-300: #d3d2cf;
   --arm-400: #9b9a96;
@@ -47,17 +44,12 @@
   --line-soft: #ededea;
   --line-strong: var(--arm-300);
 
-  /* Light defaults; dark overrides below in :root[data-theme="dark"]. */
   --accent: var(--jap-400);
   --accent-ink: var(--jap-700);
   --accent-soft: var(--jap-100);
   --on-accent: #ffffff;
-  /* Stable default for the Accent picker Default swatch. applyAccentTheme
-     overrides --accent for custom colors, but never this token. */
   --accent-theme-default: #000000;
 
-  /* The Home instruction tile always has a dark surface. Its copy must not
-     inherit the page theme's foreground or a low-contrast custom accent. */
   --hero-accent: #ffffff;
 
   --danger: #dc2626;
@@ -93,9 +85,6 @@
   --pill-context-fg: var(--pill-fg);
   --pill-context-line: var(--pill-line);
 
-  /* Error pill is always dark red-tinted, regardless of theme — matches the
-     dark-theme --danger/--danger-bg/--danger-line so the pill and in-app
-     error toast agree. */
   --pill-error-bg: #351613;
   --pill-error-border: #7a3027;
   --pill-error-fg: #ff8f80;
@@ -113,30 +102,16 @@
   --page-max: 1160px;
   --page-readable: 680px;
 
-  /* App chrome metrics. --app-gutter mirrors .body's padding/gap in App.svelte;
-     the sidebar runs flush to the window's left edge, so there is no left
-     gutter — the full-screen settings shell offsets itself by the sidebar width
-     plus this gutter to sit flush beside it. */
   --sidebar-w: 220px;
   --app-gutter: 14px;
-  /* Measure for the settings content column inside the full-width shell. */
   --settings-measure: 760px;
-  /* Width of the custom scrollbars in app.css. Anything that has to line up
-     with a `scrollbar-gutter: stable` scroller needs to reserve the same. */
   --scrollbar-w: 10px;
 
-  /* Touch + edge-to-edge (Android shell; 0/no-op on desktop).
-     --touch-target-min is the minimum hit area for coarse pointers;
-     --safe-* mirror the OS insets for gesture nav, cutouts, and hinges. */
   --touch-target-min: 48px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
-  /* Space MobileNav reserves at the bottom of the shell. 0 everywhere the bar
-     isn't shown; App.svelte sets the real height for compact/Android. Any
-     full-bleed overlay rooted in .app (Settings, modals, toasts) must clear
-     this or its content renders behind the nav bar. */
   --mobile-nav-h: 0px;
 }
 
