@@ -134,8 +134,11 @@ mod tests {
             ("RECONNECTED_CONTROL", "ESCAPE", Some("new:cancel")),
             ("DISCONNECTED_CONTROL", "", None),
         ] {
-            fixture = fixture.replace(&format!("-- {marker}"), &temporary_binding("escape", key, id, "Verenu cancel dictation"));
+            let token = format!("__VERENU_{marker}__()");
+            assert_eq!(fixture.matches(&token).count(), 1, "hyprland temporary-controls fixture missing sentinel {token}");
+            fixture = fixture.replacen(&token, &temporary_binding("escape", key, id, "Verenu cancel dictation"), 1);
         }
+        assert!(!fixture.contains("__VERENU_"), "hyprland temporary-controls fixture left an unreplaced sentinel");
         let mut child = Command::new("lua").arg("-").stdin(Stdio::piped())
             .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
             .expect("Lua interpreter is required for this fixture");

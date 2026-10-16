@@ -45,7 +45,7 @@ async function list() {
     try {
       const row = JSON.parse(await fs.readFile(path.join(stateRoot, directory, 'session.json'), 'utf8'));
       rows.push({ id: row.id, branch: row.branch, localUrl: row.localUrl, shareUrl: row.shareUrl, status: row.status, startedAt: row.startedAt });
-    } catch {   }
+    } catch {}
   }
   console.log(JSON.stringify(rows, null, 2));
 }
@@ -87,7 +87,7 @@ async function start() {
       for (const child of children) {
         if (child.exitCode === null) {
           if (process.platform === 'win32') child.kill();
-          else { try { process.kill(-child.pid, 'SIGTERM'); } catch {   } }
+          else { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
         }
       }
       if (sharedPort) {

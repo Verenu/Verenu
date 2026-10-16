@@ -139,7 +139,7 @@
     clearCancelledEntry();
     try {
       await invoke('dismiss_cancelled_capture');
-    } catch {   }
+    } catch {}
   }
 
   async function copyText(entry: Entry) {
@@ -217,7 +217,7 @@
     if (!appStore.updateInfo) return;
     try {
       await saveSetting('update_dismissed_version', appStore.updateInfo.version);
-    } catch {   }
+    } catch {}
     appStore.updateInfo = null;
   }
 
@@ -233,7 +233,7 @@
       .then(() => {
         refreshShortcut();
       })
-      .catch(() => {   });
+      .catch(() => {});
     load(true, true);
     invoke<{ created_at: string; kind: string } | null>('get_cancelled_capture')
       .then((pending) => {
