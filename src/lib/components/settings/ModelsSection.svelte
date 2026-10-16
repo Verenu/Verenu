@@ -129,14 +129,8 @@
     } finally { testingLocal = false; }
   }
 
-  // Hardware drives which local presets are offered. Starts as the "assume
-  // capable" default so the picker never flashes a degraded set before the
-  // real read lands (or if it fails outright — see getHardware).
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
 
-  // A preset whose local models are still downloading. Its settings are applied
-  // (activated) only once every required model is on disk, so the active
-  // selection never points at a model that isn't there yet.
   let pendingPreset = $state<Preset | null>(null);
   let pendingPresetDownloads = $state<RequiredLocalModel[]>([]);
   let pendingPresetRequestsSettled = $state(0);
@@ -164,12 +158,6 @@
     customProviders: customProviderStore.providers,
   });
 
-  /**
-   * Local models are downloaded, deleted and prompt-edited from inside the
-   * picker now. The old "Local models" section listed the very same models a
-   * second time under a different UI, which is what made the page feel like
-   * two products stapled together.
-   */
   function localControls(type: TaskType): LocalControls {
     if (type === 'transcription') {
       return {
@@ -200,7 +188,6 @@
     };
   }
 
-  /** Everything the picker needs to classify a model, per task. */
   function pickerContext(type: TaskType): PickerContext {
     return {
       task: type,
@@ -211,7 +198,6 @@
     };
   }
 
-  /** Selections plus the curated catalog — the ids worth counting misses for. */
   function trackedModelIds(): string[] {
     const selected = [
       transcriptionDefaultModel,
@@ -280,13 +266,9 @@
         || (model.task === 'cleanup' && !localLlmStore.runtime.installed),
     );
     if (missing.length > 0) {
-      // Kick off the downloads and defer activation until they land (see the
-      // $effect below). Reuses the same download plumbing as the Advanced panel.
       pendingPreset = preset;
       pendingPresetDownloads = missing;
       pendingPresetRequestsSettled = 0;
-      // Each manager has one download slot. Speech models needed for Quality
-      // must be queued, while speech and cleanup can download concurrently.
       for (const task of ['transcription', 'cleanup'] as const) {
         void (async () => {
           for (const model of missing.filter(model => model.task === task)) {
@@ -350,7 +332,6 @@
     }
   }
 
-  // Once a pending preset's downloads finish, activate it.
   $effect(() => {
     const preset = pendingPreset;
     if (!preset?.target) return;
@@ -364,27 +345,16 @@
       isExpectedModelDownloading,
     );
     if (!isDownloadingExpectedModel && pendingPresetRequestsSettled >= pendingPresetDownloads.length) {
-      // A failure or cancellation can leave the preset incomplete without
-      // passing through the explicit cancel button. Do not keep a stale
-      // pending preset that could activate after an unrelated later download.
       clearPendingPreset();
     }
   });
 
-  // One draft per task now that the custom-id field lives in the picker
-  // rather than once per provider group.
   let customDrafts = $state<Record<TaskType, string>>({ transcription: '', cleanup: '' });
 
   let advancedModelUi = $state(false);
   let localModelMemoryPolicy = $state<LocalModelMemoryPolicy>('unload_after_5m');
   let localModelMemoryDropdownOpen = $state(false);
-  // Most local on-device STT/LLM inference is gated off on Intel Mac builds —
-  // see system::platform::is_macos_intel on the backend for why. Apple Speech
-  // and whisper.cpp transcription stay offered (see localModelOffered).
-  // Defaults to true (never assume unsupported) until the one-time check
-  // resolves, since almost every user is on a supported platform.
   let localModelsSupported = $state(true);
-  // Opening one settings dropdown closes the other.
   $effect(() => { if (transcriptionModeDropdownOpen) localModelMemoryDropdownOpen = false; });
   $effect(() => { if (localModelMemoryDropdownOpen) transcriptionModeDropdownOpen = false; });
   const LOCAL_MEMORY_POLICY_MENU_ID = 'models-local-memory-policy-menu';
@@ -443,11 +413,6 @@
     }
   }
 
-  // A deleted local model drops out of the picker's Ready list entirely (only
-  // downloaded models appear there), so if it was selected there is no row left
-  // to click to deselect it. Reassign to another installed local model for this
-  // task. Keep a missing local selection when no replacement exists so deletion
-  // cannot silently turn an on-device choice into a cloud request.
   function pickLocalReplacementDefault(type: TaskType, excludeLocalId: string): string {
     const localModels = type === 'transcription' ? localSttStore.models : localLlmStore.models;
     const otherLocal = localModels.find((model) => model.is_downloaded && model.id !== excludeLocalId && (type === 'cleanup' || supportsLocalLanguage(model.id, presetOptions)));
@@ -523,12 +488,6 @@
     }
   }
 
-  // Concurrent persistAll() calls (e.g. rapid row clicks) each fire several
-  // parallel save_setting IPC calls. Without serialization, an older call's
-  // writes can land on disk after a newer call's writes, silently reverting
-  // the user's last action. Chaining through persistChain guarantees writes
-  // apply in invocation order, while the values themselves are still read
-  // synchronously at call time so each batch reflects the click that caused it.
   let persistChain: Promise<void> = Promise.resolve();
 
   function persistAll(): Promise<void> {
@@ -693,12 +652,6 @@
       refreshLocalLlmState(),
     ]);
 
-    // Local model existence can only be checked once the stores above have
-    // loaded (ensureDefaultAndFallbacks ran earlier, before that data was
-    // available). Settings saved before a model was deleted — or written by
-    // an older build — can still point at a local model that's no longer on
-    // disk; self-heal that here instead of leaving a dead selection stuck
-    // in the UI forever.
     validateLocalSelectionsAfterLoad();
   }
 
@@ -721,14 +674,11 @@
     }
   }
 
-  /** Makes a model the active one, pushing the previous default aside. */
   function selectModel(type: TaskType, id: string) {
     modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
     if (!parsed) return;
     ensureModelsContainSelection(type, parsed.provider, parsed.model);
-    // Picking a model that was a fallback promotes it rather than leaving it
-    // in the chain twice.
     setTaskFallbacks(type, taskFallbacks(type).filter((entry) => entry !== id));
     setTaskDefault(type, id);
     persistAll().catch((err) => console.error('persist model selection failed', err));
@@ -765,11 +715,9 @@
     customDrafts = { ...customDrafts, [type]: value };
   }
 
-  /** Adds a hand-typed id and makes it active — you typed it to use it. */
   function addCustomModelForTask(type: TaskType, draft: string) {
     const raw = draft.trim();
     if (!raw) return;
-    // A bare id with no provider prefix belongs to whoever is active now.
     const parsed = splitModelId(raw) ?? {
       provider: splitModelId(taskDefault(type))?.provider ?? 'groq',
       model: raw,
@@ -825,19 +773,12 @@
     }
   }
 
-  // Reached from "Manage local models" inside a task tile — revealing the
-  // downloads necessarily closes the tile it was launched from, which is the
-  // point: the user asked to go there.
   onMount(() => {
     refreshLocalModels().catch((err) => console.error('refresh local models failed', err));
     refreshLocalState().catch((err) => console.error('refresh local state failed', err));
     refreshLocalLlmModels().catch((err) => console.error('refresh local cleanup models failed', err));
     refreshLocalLlmState().catch((err) => console.error('refresh local cleanup state failed', err));
     refreshLocalLlmRuntimeInfo().catch((err) => console.error('refresh local cleanup runtime info failed', err));
-    // Only ever act on an explicit `false` — an unrecognized/older backend
-    // command, a transient error, or any other non-boolean response must
-    // never hide the download UI for the overwhelming majority of users on
-    // a supported platform. "Assume supported" is the only safe default.
     invoke<boolean>('local_models_supported_on_this_platform')
       .then((supported) => {
         if (supported === false) localModelsSupported = false;
@@ -851,8 +792,6 @@
       const provider = (event as CustomEvent<{ provider: ProviderId }>).detail?.provider;
       if (!provider) return;
       apiKeyStatus = { ...apiKeyStatus, [provider]: true };
-      // Refresh on save, not on validation: validation checks an unsaved key
-      // held in JS, and list_provider_models only ever reads the stored one.
       await refreshCatalog(provider, trackedModelIds());
     };
     const onKeyDeleted = (event: Event) => {
@@ -867,8 +806,6 @@
     };
   });
 
-  // Settings just opened: top up any provider whose list has gone stale, or
-  // that failed long enough ago to be worth another try.
   $effect(() => {
     refreshStaleCatalogs(apiKeyStatus, trackedModelIds()).catch((err) =>
       console.error('refresh model catalogs failed', err),
@@ -1073,12 +1010,6 @@
 
 <style>
 
-
-
-
-  /* Only a top border — the row below it (the advanced block's first tile when
-     expanded, or the Memory policy row when collapsed) supplies its own top
-     border, so a bottom border here would double up into one thick line. */
   .advanced-toggle-row {
     display: flex;
     align-items: center;
@@ -1144,8 +1075,6 @@
   .models-dropdown-item span { font-weight: 550; }
   .models-dropdown-item.is-active small { color: var(--ink-soft); }
 
-  /* Keyed to the settings content column, not the window — this stacks when the
-     panel itself is narrow, which is what the rule was always standing in for. */
   @container settings-panel (max-width: 700px) {
     .models-dropdown {
       width: 100%;
@@ -1175,7 +1104,6 @@
       white-space: normal;
     }
 
-    /* Thumb-sized rows on phones. */
     .models-dropdown-btn { min-height: 44px; }
     .models-dropdown-item { min-height: 44px; padding-block: 10px; }
   }

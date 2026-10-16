@@ -10,11 +10,6 @@ const persistence: SyncMutingPersistence = {
   save: (enabled) => saveSetting('sync_muting_enabled', enabled),
 };
 
-/**
- * Device-local synchronous muting opt-in. The switch stays disabled until the
- * saved value is known and while a save is in flight, so an optimistic value
- * can never be overwritten by a stale load or rolled back by a later write.
- */
 export class SyncMutingSetting {
   enabled = $state(false);
   loaded = $state(false);

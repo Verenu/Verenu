@@ -17,19 +17,6 @@ import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/**
- * Foreground-service holder for dictation sessions.
- *
- * Actual microphone capture stays in Rust (`cpal`, same pipeline as
- * desktop). This service exists because Android attributes microphone use
- * and process priority to a foreground service: while it runs (type
- * `microphone`), the system will not kill Verenu mid-sentence, OEM battery
- * managers back off, and the user gets a persistent Stop affordance in the
- * notification shade.
- *
- * Started/stopped by [VerenuAccessibilityService] around each dictation.
- * Holds no audio resources itself, so it can never leak the microphone.
- */
 class VerenuDictationService : Service() {
 
     private val commandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -40,9 +27,6 @@ class VerenuDictationService : Service() {
         const val ACTION_ACTIVE = "com.verenu.app.action.DICTATION_ACTIVE"
         const val ACTION_STOP = "com.verenu.app.action.DICTATION_STOP"
         const val ACTION_CANCEL = "com.verenu.app.action.DICTATION_CANCEL"
-        // Android insists on a notification while the microphone service runs. It
-        // lives on a minimum-importance channel: no sound, no status-bar icon,
-        // collapsed in the shade. The old LOW channel is deleted on first run.
         const val CHANNEL_ID = "verenu_dictation_quiet"
         const val LEGACY_CHANNEL_ID = "verenu_dictation"
         const val NOTIFICATION_ID = 4201
@@ -72,10 +56,6 @@ class VerenuDictationService : Service() {
             }
             else -> {
                 startAsMicrophoneService(startId)
-                // If Android kills the process, Rust's recording session is
-                // gone too. Restarting this holder with a null intent would
-                // otherwise create a misleading foreground notification with
-                // no live microphone session behind it.
                 return START_NOT_STICKY
             }
         }
@@ -92,17 +72,12 @@ class VerenuDictationService : Service() {
             if (acknowledged) {
                 mainHandler.post { stopSelfResult(startId) }
             } else {
-                // Keep the foreground holder alive when the backend did not
-                // acknowledge. The user can retry from the notification
-                // instead of leaving Rust recording with no stop affordance.
                 Log.w(TAG, "foreground action was not acknowledged")
             }
         }
     }
 
     override fun onDestroy() {
-        // A failed foreground promotion queues backend cleanup and stops the
-        // service immediately. Let that already-submitted cleanup finish.
         commandExecutor.shutdown()
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -114,7 +89,6 @@ class VerenuDictationService : Service() {
         try {
             manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
         } catch (e: SecurityException) {
-            // A running service may still own the old channel; retry next start.
         }
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         manager.createNotificationChannel(
@@ -183,20 +157,11 @@ class VerenuDictationService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
-            // ForegroundServiceStartNotAllowedException (background start on
-            // API 31+) or missing mic permission: log loudly; the Rust
-            // pipeline surfaces its own error and onboarding recovery
-            // explains the fix.
             Log.e(TAG, "cannot enter foreground", e)
             abortBackendRecording(startId)
         }
     }
 
-    /**
-     * The Rust session is started immediately before this service. If Android
-     * refuses to promote us to a microphone foreground service, cancel Rust's
-     * session asynchronously before stopping this holder.
-     */
     private fun abortBackendRecording(startId: Int) {
         try {
             commandExecutor.execute {

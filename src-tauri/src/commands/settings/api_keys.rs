@@ -49,7 +49,6 @@ pub(super) fn with_custom_endpoint<T>(
         }) {
             return Err("This provider endpoint changed or was removed. Save the key again for the current endpoint.".into());
         }
-        // Keep the settings read guard until the native write/delete finishes.
         action()
     })
 }
@@ -83,15 +82,10 @@ pub async fn get_api_key_status(app: AppHandle) -> Result<serde_json::Value, Str
 #[derive(serde::Serialize)]
 pub struct KeyValidationResult {
     pub ok: bool,
-    /// "valid" | "invalid" | "unknown" lets the frontend tell a definitive
-    /// auth failure (401/403) apart from an inconclusive network/timeout/5xx
-    /// result, which "ok: false" alone can't distinguish.
     pub status: String,
     pub message: String,
 }
 
-/// Pure status+body -> result mapping, kept separate from the network call so it's
-/// unit-testable without mocking HTTP.
 pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationResult {
     if (200..300).contains(&status) {
         return KeyValidationResult {
@@ -128,8 +122,6 @@ pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationRes
     }
 }
 
-/// Live, non-blocking key check: a cheap models-list GET, no audio and no token spend.
-/// Anything short of a clean 2xx/401/403 is treated as inconclusive rather than a hard fail.
 #[tauri::command]
 pub async fn validate_api_key(
     app: AppHandle,
@@ -172,13 +164,9 @@ pub async fn validate_api_key(
     }
     let client = crate::api::client::get();
     let request = match provider.as_str() {
-        // AssemblyAI has no models endpoint, so its key check is the odd one
-        // out and can't share the models-list builder the other three use.
         store::ASSEMBLYAI => client
             .get("https://api.assemblyai.com/v2/transcript?limit=1")
             .header("authorization", trimmed),
-        // OpenRouter's model list is public, so it can't prove a key works.
-        // `/key` answers 401 for a bad key and spends nothing.
         store::OPENROUTER => client
             .get("https://openrouter.ai/api/v1/key")
             .bearer_auth(trimmed),
@@ -211,20 +199,9 @@ pub async fn validate_api_key(
     Ok(classify_validation_response(status, &body))
 }
 
-// ── Live provider model lists ──────────────────────────────────────────────
-//
-// The key check above and the catalog refresh below hit the same three
-// endpoints with the same auth, so they share one builder and can't drift.
-// AssemblyAI is deliberately not in here: it has no models endpoint.
-
-/// AssemblyAI publishes no models endpoint, so its list is static. Kept here
-/// rather than in the frontend catalog so `list_provider_models` answers for
-/// every provider with the same shape.
 const ASSEMBLYAI_MODELS: &[&str] = &["universal-3-5-pro", "universal-2"];
 
-/// Google returns at most `pageSize` models per response; ask for the max.
 const GOOGLE_PAGE_SIZE: usize = 1000;
-/// Runaway guard. Hitting it is treated as a failure, not a short list.
 const GOOGLE_MAX_PAGES: usize = 20;
 
 fn models_list_request(
@@ -241,7 +218,6 @@ fn models_list_request(
             .get("https://api.openai.com/v1/models")
             .bearer_auth(key),
         store::XAI => client.get("https://api.x.ai/v1/models").bearer_auth(key),
-        // Listing is public on OpenRouter; key validation uses `/key` instead.
         store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models").query(&[("output_modalities", "all")]),
         store::GOOGLE => {
             let mut request = client
@@ -273,8 +249,6 @@ pub fn parse_openai_models(body: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// One page of `{"models":[{"name":"models/…","supportedGenerationMethods":[…]}],
-/// "nextPageToken":"…"}`. Returns the page's ids and the token for the next one.
 pub fn parse_google_models_page(body: &str) -> Result<(Vec<String>, Option<String>), String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("Malformed model list: {e}"))?;
@@ -286,8 +260,6 @@ pub fn parse_google_models_page(body: &str) -> Result<(Vec<String>, Option<Strin
     let ids = models
         .iter()
         .filter(|entry| {
-            // No `supportedGenerationMethods` at all means we can't tell, so
-            // keep it — dropping it would read downstream as a deprecation.
             entry
                 .get("supportedGenerationMethods")
                 .and_then(|m| m.as_array())
@@ -324,14 +296,6 @@ fn dedupe(ids: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Every model id the provider currently offers, read with the *saved*
-/// credential — the frontend never holds a key, only a presence boolean.
-///
-/// Failure and emptiness must stay distinguishable: the catalog store treats
-/// `Err` as "no trustworthy list" and leaves its cache alone, while `Ok(vec![])`
-/// is a real (if odd) answer. That is why a partial Google pagination is an
-/// error rather than the pages that did arrive — a truncated list would read
-/// downstream as mass deprecation.
 #[tauri::command]
 pub async fn list_provider_models(
     _app: AppHandle,

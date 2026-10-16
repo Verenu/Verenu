@@ -20,7 +20,6 @@
   let saving = $state(false);
   let error = $state('');
   let showDetails = $state(false);
-  // The account name is captured when the confirmation opens so the title stays stable while it closes.
   let confirmDisconnect = $state<string | null>(null);
   let alive = true;
   const connected = $derived(!!githubState.username);
@@ -46,11 +45,9 @@
     draft = githubState.username;
     editing = true;
     error = '';
-    // The menu releases focus after it closes; move it into the form once the input exists.
     void tick().then(() => document.getElementById('github-username')?.focus());
   }
 
-  // Escape closes the details disclosure. See T3Integration for why this layer owns the key.
   function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && showDetails && confirmDisconnect === null) showDetails = false;
   }

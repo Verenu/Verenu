@@ -49,8 +49,6 @@ export function setupCleanupEnabled(
   target: PresetTarget | null | undefined,
 ): boolean {
   if (intensity === 'none') return false;
-  // Basic is on-device rule cleanup with no cleanup model, so a transcription-only
-  // preset must not switch it off. The pipeline gates Basic and voice commands on cleanup_enabled.
   if (intensity === 'rules') return true;
   return target ? target.cleanupEnabled : true;
 }

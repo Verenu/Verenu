@@ -138,7 +138,6 @@
 
   .how-step { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 12px; align-items: start; }
 
-  /* Bare numeral on the title's baseline — no disc behind it. */
   .how-num {
     width: 14px;
     color: var(--accent);

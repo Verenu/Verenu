@@ -1,13 +1,9 @@
-//! Cleanup-LLM response cache (keyed by prompt/input hash, with TTL).
-
 use anyhow::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::*;
 
-/// Cleanup responses are useful but disposable.  Keep their persistent
-/// footprint bounded even when a user dictates for years without restarting.
 pub const CLEANUP_CACHE_MAX_ROWS: i64 = 2_000;
 pub const CLEANUP_CACHE_MAX_BYTES: i64 = 16 * 1024 * 1024;
 pub const CLEANUP_CACHE_IDLE_DAYS: i64 = 2;
@@ -27,8 +23,6 @@ pub struct CleanupCacheEntry {
 pub fn cleanup_cache_get_active(db: &Db, key: &str) -> Result<Option<CleanupCacheEntry>> {
     use rusqlite::OptionalExtension;
     let conn = lock_conn(db)?;
-    // Enforce expiry during reads as well as maintenance, including databases
-    // whose epoch columns have not been populated.
     conn.query_row(
         "SELECT key, clean_text, hit_count,
                 COALESCE(datetime(created_at_epoch, 'unixepoch'), created_at),
@@ -74,8 +68,6 @@ pub fn cleanup_cache_insert_new(
     cleanup_cache_insert_if(db, key, clean_text, expires_at, is_snippet, || true)
 }
 
-/// Recheck the live preference under the same lock as cache clearing. This
-/// prevents an in-flight provider request from repopulating a disabled cache.
 pub fn cleanup_cache_insert_if(
     db: &Db,
     key: &str,
@@ -99,21 +91,10 @@ pub fn cleanup_cache_insert_if(
                  ?4)",
         params![key, clean_text, expires_at, is_snippet as i64],
     )?;
-    // Insertion is the hot path where a budget violation is created, so do a
-    // cheap opportunistic expiry/budget pass rather than waiting for startup.
     cleanup_cache_enforce_budget_conn(&conn)?;
     Ok(())
 }
 
-/// Applies a cache hit's touch, but only if the row still matches what the
-/// caller read (`expected_created_at` / `expected_hit_count`). The rejection
-/// monitor deletes a cache key when the user deletes that dictation's output;
-/// a hit/touch and a delete run on different threads with no shared
-/// transaction, so a stale touch could otherwise land AFTER a rejection delete
-/// and a cache-miss re-insert of the same key, overwriting the freshly
-/// regenerated row's `hit_count` / `expires_at` with values derived from the
-/// rejected entry. Matching on the row's identity makes a stale touch a no-op
-/// instead of a data-clobbering update.
 pub fn cleanup_cache_touch_hit(
     db: &Db,
     key: &str,
@@ -175,9 +156,6 @@ pub fn cleanup_cache_prune_expired(db: &Db) -> Result<usize> {
     Ok(changed_epoch + changed_fallback + cleanup_cache_enforce_budget_conn(&conn)?)
 }
 
-/// Evict least-recently-used cache responses until both row and byte budgets
-/// are satisfied. Snippet entries have eviction priority but share the same
-/// lifetime limits as other results.
 fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usize> {
     let (count, bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) +
@@ -192,10 +170,6 @@ fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usiz
         return Ok(0);
     }
 
-    // Pick the complete LRU prefix in one statement. The old loop counted the
-    // whole table and deleted one row at a time, which made a large cache
-    // budget correction O(rows^2). The window sum finds the first row that
-    // frees enough bytes, while the row-number floor enforces the row budget.
     let removed = conn.execute(
         "WITH ordered AS (
            SELECT rowid,
@@ -240,7 +214,6 @@ pub fn cleanup_cache_count(db: &Db) -> Result<i64> {
         .map_err(Into::into)
 }
 
-/// Logical text payload, not SQLite file allocation or whole-disk free space.
 pub fn cleanup_cache_payload_bytes(db: &Db) -> Result<i64> {
     let conn = lock_conn(db)?;
     conn.query_row("SELECT COALESCE(SUM(length(CAST(key AS BLOB)) + length(CAST(clean_text AS BLOB))), 0) FROM cleanup_cache",

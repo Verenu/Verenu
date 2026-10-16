@@ -1,10 +1,4 @@
 <script lang="ts">
-  /*
-   * Canvas donut with filleted (rounded-cap) segments, gap-separated sweeps,
-   * a value tween on data change, and a soft hover interaction that widens
-   * the hovered segment and dims the rest — both from the ring and from the
-   * legend. No chart library; the ring is hand-drawn per frame.
-   */
   import { onMount, onDestroy, untrack } from 'svelte';
   import { reducedMotionEnabled } from '../../motion';
 
@@ -27,9 +21,6 @@
     primaryLabel: string;
     secondaryLabel?: string;
     size?: number;
-    /** CostBreakdown's own table repeats every legend row (name + cost) in
-     *  more detail right below the ring on narrow layouts — set false there
-     *  so the same numbers aren't listed twice in a row. */
     showLegend?: boolean;
   } = $props();
 
@@ -49,15 +40,6 @@
   interface Point { x: number; y: number }
   interface Fillet { filletCenter: Point; flatFacePoint: Point; ringPoint: Point; angle: number }
 
-  /**
-   * atan2 always returns a value in (-π, π], but segment boundaries are
-   * cumulative and range well past that (a ring can sweep past 3π/2 before
-   * wrapping back to 12 o'clock). Re-expressing the wrapped result as the
-   * angle nearest `reference` keeps boundaries monotonically increasing
-   * across the whole sweep — without this, any segment whose end crossed
-   * the ±π seam got a start/end pair that looked "backwards" and silently
-   * failed to render.
-   */
   function unwrapNear(angle: number, reference: number): number {
     let a = angle;
     while (a - reference > Math.PI) a -= TAU;
@@ -98,7 +80,6 @@
     return { filletCenter, flatFacePoint, ringPoint, angle: unwrapNear(rawAngle, boundaryAngle) };
   }
 
-  /** Shortest-path arc between two points around a shared small-radius center — the fillet corners. */
   function minorArc(path: Path2D, center: Point, radius: number, from: Point, to: Point) {
     const a0 = Math.atan2(from.y - center.y, from.x - center.x);
     const a1raw = Math.atan2(to.y - center.y, to.x - center.x);
@@ -134,12 +115,6 @@
     return p;
   }
 
-  /**
-   * Keep the rounded treatment on slices that are too narrow for the full
-   * corner radius. The gap and radius are scaled together so a tiny slice
-   * still gets soft corners without the two ends folding back over each
-   * other.
-   */
   function adaptiveDonutSegmentPath(
     cx: number, cy: number, startBoundary: number, endBoundary: number,
     radius: number, width: number, gap: number, corner: number,
@@ -160,7 +135,6 @@
     );
   }
 
-  /** Exact annular sector, no fillet — only a last-resort geometry fallback. */
   function sectorPath(cx: number, cy: number, startBoundary: number, endBoundary: number, radius: number, width: number): Path2D {
     const outerRadius = radius + width / 2;
     const innerRadius = radius - width / 2;
@@ -171,9 +145,6 @@
     return p;
   }
 
-  // One probe element resolves any CSS color (including color-mix()) to a
-  // concrete value canvas can always paint — canvas fillStyle parsing is
-  // less permissive than CSS in some WebView builds.
   let colorProbe: HTMLDivElement | null = null;
   function resolveColor(css: string): string {
     if (typeof document === 'undefined') return css;
@@ -184,9 +155,6 @@
       colorProbe.style.pointerEvents = 'none';
       document.body.appendChild(colorProbe);
     }
-    // Clear any previous inline color first — CSSOM silently ignores an
-    // invalid assignment, so without a reset a failed resolve would leave the
-    // previous call's color behind and report that instead.
     colorProbe.style.color = '';
     colorProbe.style.color = css;
     return getComputedStyle(colorProbe).color || css;
@@ -202,18 +170,12 @@
   let animTo = new Map<string, number>();
   let animStart = 0;
   let resolvedColors = new Map<string, string>();
-  // Resolved once per data change (with the segment colors) rather than on
-  // every paint frame — getComputedStyle() on each rAF tick forces style
-  // recalc/reflow at 60–120fps.
   let trackColor = '';
 
-  let dimming = false; // is *something* currently hovered, for the dim tween
+  let dimming = false;
   let dimStart = 0;
   let dimFromAlpha = 1;
 
-  // Per-segment widen/pop progress (0..1), tracked individually so the
-  // previously-focused segment eases back down instead of snapping when the
-  // hover target changes — only the "grow in" direction had a tween before.
   let widenFrom = new Map<string, number>();
   let widenTarget = new Map<string, number>();
   let widenStart = new Map<string, number>();
@@ -240,11 +202,7 @@
   }
 
   $effect(() => {
-    // Re-run whenever the segment set or its values change.
     segments;
-    // A hovered segment may no longer exist after a data change (e.g. range
-    // filter removed it) — a stale id would dim the whole chart and legend
-    // until the next hover. Drop it and any dim state.
     untrack(() => {
       if (hoveredId !== null && !segments.some((s) => s.id === hoveredId)) {
         hoveredId = null;
@@ -265,9 +223,6 @@
       dimStart = performance.now();
     }
     const now = performance.now();
-    // The old target eases back to 0; the new one eases up to 1 — both
-    // captured from wherever they currently sit, so a fast re-hover doesn't
-    // jump.
     if (hoveredId !== null) {
       widenFrom.set(hoveredId, currentWiden(hoveredId));
       widenTarget.set(hoveredId, 0);
@@ -320,7 +275,6 @@
     const radius = size * RADIUS_FRACTION;
     const stroke = size * STROKE_FRACTION;
 
-    // Track ring underneath — keeps the shape legible with zero/tiny data.
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, TAU);
     ctx.strokeStyle = trackColor || resolveColor('var(--control-hover)');
@@ -328,7 +282,7 @@
     ctx.stroke();
 
     if (total > 0) {
-      let cursor = -Math.PI / 2; // 12 o'clock
+      let cursor = -Math.PI / 2;
       segments.forEach((seg, i) => {
         const fraction = values[i] / total;
         const start = cursor;
@@ -337,20 +291,12 @@
         if (fraction <= 0) return;
 
         const dimmed = hoveredId !== null && hoveredId !== seg.id;
-        // Every segment eases its own widen/pop toward whatever it's
-        // currently targeting (1 while hovered, 0 otherwise) — a pure width
-        // increase (growing equally in/out) reads as barely-there at this
-        // scale, so it pops outward too, and the *previous* hover target
-        // eases back down instead of snapping when you move to a new slice.
         const widenT = reduced ? (widenTarget.get(seg.id) ?? 0) : currentWiden(seg.id);
         const width = stroke + HOVER_WIDEN * widenT;
         const segRadius = radius + HOVER_POP * widenT;
 
         const sweep = end - start;
         const minSweepForFillet = ((GAP + CORNER * 2) / segRadius) * 1.4;
-        // Narrow slices use a proportionally smaller fillet instead of
-        // dropping to square-ended annular sectors. This is especially
-        // important for the small model-cost slices in the Insights ring.
         const filletPath =
           sweep > minSweepForFillet
             ? donutSegmentPath(cx, cy, start, end, segRadius, width, GAP, CORNER)
@@ -414,21 +360,12 @@
     syncCanvasSize();
     ctx = canvasEl.getContext('2d');
     applyDprScale();
-    // Don't call startValueTween() here — the $effect tracking `segments`
-    // already does on mount, and a second call would reset animFrom to the
-    // target values (animTo already set by the first), skipping the initial
-    // 0-to-value entrance. Just ensure a frame paints once the context is up.
     scheduleFrame();
   });
 
-  // The size prop can change at runtime (responsive layout) — re-sync the
-  // canvas backing store, CSS size, and the DPR context scale so paint()
-  // never draws onto a stale/clipped buffer.
   $effect(() => {
     size;
     if (!ctx || !canvasEl) return;
-    // Resizing width/height resets the context state and transform matrix to
-    // identity, so the DPR scale must be re-applied *after* the resize.
     syncCanvasSize();
     applyDprScale();
     scheduleFrame();
@@ -452,8 +389,6 @@
   onDestroy(() => {
     if (rafId) cancelAnimationFrame(rafId);
     colorProbe?.remove();
-    // Null it out too — a destroyed probe is a detached node, and any later
-    // resolveColor() must create a fresh element rather than reuse it.
     colorProbe = null;
   });
 </script>
@@ -503,8 +438,6 @@
     flex-wrap: wrap;
   }
 
-  /* Only the ring remains once the legend is hidden — center it as a group
-     rather than leaving it hugging the left edge of the card. */
   .donut:has(.donut-ring-wrap:only-child) {
     justify-content: center;
   }
@@ -548,8 +481,6 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    /* Keep model prices beside their names instead of distributing them over
-       the full editorial measure on wide windows. */
     flex: 0 1 560px;
     width: min(100%, 560px);
     min-width: 0;

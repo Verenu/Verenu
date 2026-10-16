@@ -2,7 +2,6 @@ import test from 'node:test';
 import { runBasicCases } from './helpers/basic-cleanup.mjs';
 
 test('production rollback preserves only real clause boundaries and protected payloads', { timeout: 180_000 }, async () => {
-  // Independent default-30 worker; existing scenario groups stay unchanged.
   await runBasicCases([
     [true, 'open report.md scratch that', ''],
     [true, 'visit example.com scratch that', ''],

@@ -2,8 +2,6 @@ import { test, expect } from './fixtures.mjs';
 
 for (const [index, task] of ['transcription', 'cleanup'].entries()) {
   test(`${task} picker opens promptly and stays usable during slow and failed refreshes`, async ({ page, session, cachedCatalogs }) => {
-    // Let first-open migration establish defaults before taking the restore
-    // snapshot, so an initially unset legacy setting is never saved as null.
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.locator('[data-debug-id="settings.models"]').click();
     await expect.poll(async () => {
@@ -26,8 +24,6 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
     cache.openrouter.metadata = Object.fromEntries(ids.map(id => [id, { label: id, tasks: ['transcription', 'cleanup'] }]));
     let release;
     let requests = 0;
-    // Hold actual catalog transport pending, then disconnect it. No success
-    // response or provider catalog is fabricated; all other IPC goes to Rust.
     const route = async route => {
       if (route.request().postDataJSON()?.command !== 'get_provider_model_catalog') return route.continue();
       requests++;
@@ -46,8 +42,6 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await trigger.waitFor();
       const dialog = page.getByRole('dialog');
       async function openPromptly() {
-        // Start at the click event, excluding Playwright's selector/actionability
-        // work, and wait for a painted, nearly opaque card rather than DOM alone.
         const opening = await trigger.evaluate(button => new Promise(resolve => {
           const start = performance.now();
           button.click();
@@ -63,8 +57,6 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
           };
           requestAnimationFrame(frame);
         }));
-        // Cached choices must arrive with the dialog rather than each waiting
-        // for its own staggered entrance, including offscreen discoveries.
         expect(opening.hiddenRows).toBe(0);
         test.info().annotations.push({ type: 'click-to-visible-ms', description: String(opening.elapsed) });
         await expect(dialog.getByRole('searchbox', { name: 'Search models' })).toBeEnabled();
@@ -91,8 +83,6 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await expect.poll(async () => (await session.invoke('get_setting', { key: 'provider_model_cache' })).openrouter.lastError).not.toBeNull();
       const failedAttempt = (await session.invoke('get_setting', { key: 'provider_model_cache' })).openrouter.lastAttemptAt;
       expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
-      // The picker renders cached catalogs in batches; keep proving the full
-      // cached list remains searchable after the provider refresh fails.
       await search.fill('synthetic/model-499');
       await expect(dialog.locator('.model-row')).toHaveCount(1);
       await expect(dialog.getByText('synthetic/model-499', { exact: true }).first()).toBeVisible();
@@ -100,7 +90,6 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await rail.getByRole('button', { name: /OpenRouter/ }).click();
       await dialog.getByRole('button', { name: 'Refresh models', exact: true }).click();
       await expect.poll(() => requests).toBe(2);
-      // Choices remain interactive when viewing another provider during a refresh.
       await rail.getByRole('button', { name: /Synthetic picker endpoint/ }).click();
       await expect(dialog.getByRole('status')).not.toContainText('Refreshing');
       await dialog.locator('.row-main').filter({ hasText: 'synthetic-alternative' }).click();

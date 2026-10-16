@@ -1,6 +1,3 @@
-//! Verenu status-API checks: provider outage alerts scoped to the user's
-//! selected models, and a plain health check of `api.verenu.com`.
-
 use super::*;
 use crate::api::service_status::ProviderStatusAlert;
 

@@ -1,8 +1,3 @@
-// Palette-driven appearance: maps a palette (the active Omarchy theme's
-// colors.toml, read by the backend, or the user's Custom hex colors) onto
-// Verenu's surface, ink, line, status, overlay, and pill tokens. Status colors
-// come from the palette's red/green/yellow only when they are vivid enough to
-// read as status; monochrome themes keep Verenu's own so errors stay visible.
 import { normalizeAccentColor, isAdaptiveDefaultAccent, relativeLuminance } from './accentTheme';
 import { customPalette, type CustomTheme } from './customTheme';
 
@@ -12,7 +7,6 @@ export type OmarchyTheme = {
   name: string;
   mode: 'dark' | 'light';
   colors: Record<string, string>;
-  /** The user typed this text color, so it is used as-is. Theme palettes keep text neutral. */
   customText?: boolean;
 };
 
@@ -41,7 +35,6 @@ const STATUS_SOURCES = {
   warning: ['bright_yellow', 'yellow', 'orange'],
 } as const;
 
-/** Palette colors flatter than this (0-255 channel spread) read as gray, not as a status. */
 const MIN_STATUS_CHROMA = 48;
 const MIN_STATUS_CONTRAST = 3.2;
 
@@ -66,7 +59,6 @@ function contrast(a: string, b: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
-/** The most vivid palette color for a status, nudged toward the text color until it reads on the background. */
 function statusColor(colors: Record<string, string>, names: readonly string[]): string | null {
   const candidates = names
     .map((name) => normalizeAccentColor(colors[name])?.toLowerCase())
@@ -95,7 +87,6 @@ export function isOmarchyTheme(value: unknown): value is OmarchyTheme {
   );
 }
 
-/** Applies or clears the palette. Pass `null` to restore theme.css tokens. */
 export function applyOmarchyPalette(root: HTMLElement, theme: OmarchyTheme | null): void {
   if (!isOmarchyTheme(theme)) {
     for (const property of OMARCHY_PROPERTIES) root.style.removeProperty(property);
@@ -105,21 +96,16 @@ export function applyOmarchyPalette(root: HTMLElement, theme: OmarchyTheme | nul
   const bg = normalizeAccentColor(c.background)!.toLowerCase();
   const fg = normalizeAccentColor(c.foreground)!.toLowerCase();
   const edge = theme.mode === 'dark' ? '#ffffff' : '#000000';
-  // Text stays neutral (white on dark, near-black on light) so a green or
-  // brown theme never tints it. Only a color the user typed is used as given.
   const neutralInk = theme.mode === 'dark' ? '#f4f4f4' : '#141414';
   const ink = theme.customText ? fg : neutralInk;
   const mix = (amount: number, base = bg) => `color-mix(in srgb, ${ink} ${amount}%, ${base})`;
   const alpha = (amount: number) => `color-mix(in srgb, ${ink} ${amount}%, transparent)`;
-  // Secondary text steps are gray rather than a blend into the themed background.
   const toneBase = theme.mode === 'dark' ? '#000000' : '#ffffff';
   const tone = (amount: number) =>
     theme.customText ? mix(amount) : `color-mix(in srgb, ${ink} ${amount}%, ${toneBase})`;
   const elevated = c.lighter_background && c.lighter_background !== bg ? c.lighter_background : mix(3);
   const sidebar = c.dark_background && c.dark_background !== bg ? c.dark_background : mix(2);
 
-  // Overlays and shadows darken the page; on a light theme the text color is
-  // the darkest tone the palette offers.
   const shade = theme.mode === 'dark' ? (c.darker_background ?? '#000000') : ink;
 
   const palette: Partial<Record<(typeof OMARCHY_PROPERTIES)[number], string>> = {
@@ -144,8 +130,6 @@ export function applyOmarchyPalette(root: HTMLElement, theme: OmarchyTheme | nul
     '--arm-700': tone(82),
     '--arm-800': ink,
     '--arm-900': ink,
-    // Always-dark surfaces (the Home tile) use this; light themes darken the
-    // foreground so white copy and accent keys keep their contrast.
     '--arm-950': theme.mode === 'dark' ? (c.darker_background ?? sidebar) : `color-mix(in srgb, ${ink} 45%, #000000)`,
     '--line': mix(14),
     '--line-soft': mix(9),
@@ -192,11 +176,6 @@ function statusTokens(colors: Record<string, string>, background: string): Parti
   return tokens;
 }
 
-/**
- * The palette the current appearance mode paints with, or `null` for the stock
- * Light/Dark look. System follows the desktop, so on Omarchy (the only place
- * `omarchy` is ever non-null) it means the active Omarchy theme.
- */
 export function resolvePalette(
   mode: string,
   omarchy: OmarchyTheme | null,
@@ -207,11 +186,6 @@ export function resolvePalette(
   return null;
 }
 
-/**
- * Under a palette the palette's accent (or, for Custom, the typed text color
- * when it has none) is the default. A custom accent the user picked still wins; the black/white
- * "follow theme" swatches do not.
- */
 export function effectiveAccent(accentColor: string | null, palette: OmarchyTheme | null): string | null {
   if (!palette) return accentColor;
   if (accentColor && !isAdaptiveDefaultAccent(accentColor)) return accentColor;

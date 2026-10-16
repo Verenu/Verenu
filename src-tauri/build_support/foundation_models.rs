@@ -89,8 +89,6 @@ pub fn build() {
         concurrency.is_file(),
         "Xcode Swift concurrency back-deployment runtime is missing"
     );
-    // Tauri's macOS frameworks list copies this dylib into Contents/Frameworks
-    // and signs nested code before the app, for every bundling entry point.
     let stage = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join("native/macos/swift-runtime");
     println!("cargo:rerun-if-changed={}", concurrency.display());
@@ -101,8 +99,6 @@ pub fn build() {
     fs::create_dir_all(&stage).expect("create Swift runtime staging directory");
     fs::copy(&concurrency, stage.join("libswift_Concurrency.dylib"))
         .expect("stage Swift concurrency runtime for bundling");
-    // Unbundled cargo/dev executables and test executables also need the
-    // runtime on Big Sur. Keep these copies in this task's Cargo output only.
     let profile = out
         .parent()
         .and_then(|p| p.parent())
@@ -114,7 +110,5 @@ pub fn build() {
         fs::copy(&concurrency, runtime.join("libswift_Concurrency.dylib"))
             .expect("copy dev Swift concurrency runtime");
     }
-    // Mach-O LC_LINKER_OPTION records carry Swift runtime autolinks. Darwin's
-    // linker consumes them directly; swift-autolink-extract is an ELF tool.
     println!("cargo:rustc-link-arg=-Wl,-weak_framework,FoundationModels");
 }

@@ -37,11 +37,6 @@ struct DownloadTaskState {
     completion: Arc<tokio::sync::Notify>,
 }
 
-/// Guarantees `is_loading` is cleared and waiters are woken even if
-/// `load_model_inner` panics mid-load — without this, a panic during load
-/// (unwind, not the release profile's panic=abort) leaves `is_loading` stuck
-/// `true` forever, and every future `ensure_loaded()` call deadlocks
-/// permanently waiting on a notify that will never come.
 struct LoadSlotGuard {
     is_loading: Arc<Mutex<bool>>,
     loading_condvar: Arc<Condvar>,
@@ -84,18 +79,6 @@ impl LocalTranscriptionManager {
         crate::app_data_dir().join("models").join("stt")
     }
 
-    /// Ensures the models directory exists. Deliberately does NOT clean up
-    /// stale `.extracting` artifacts here — this is called from read paths
-    /// like `list_models()`/`state()` refreshes that can run concurrently
-    /// with an active extraction, and deleting that directory out from under
-    /// an in-progress `tar` unpack corrupts it (confirmed via logs: rapid
-    /// Cancel-button clicks during extraction, each triggering a refresh,
-    /// deleted the live `.extracting` dir and crashed the unpack with
-    /// "the system cannot find the file specified"). Stale-leftover cleanup
-    /// from a previous crashed session happens exactly once, inside
-    /// `download::download_model()`, which only runs while this manager's
-    /// `download_task` guard is held — i.e. provably no concurrent extraction
-    /// can be using that directory at that point.
     pub fn prepare_models_dir(&self) -> anyhow::Result<PathBuf> {
         let root = Self::models_root();
         std::fs::create_dir_all(&root)?;
@@ -172,9 +155,6 @@ impl LocalTranscriptionManager {
         }
     }
 
-    /// Local inference runs in a non-cancellable native/ONNX call. Keep one
-    /// call in flight so a timed-out caller cannot stack more blocking jobs
-    /// behind the same engine mutex while the abandoned call unwinds.
     pub fn try_begin_transcription(&self) -> bool {
         self.transcription_active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -198,10 +178,6 @@ impl LocalTranscriptionManager {
         );
         let root = self.prepare_models_dir()?;
 
-        // The model is already fully installed (e.g. the frontend's cached
-        // state went stale after a prior download finished while nobody was
-        // listening). Re-running the full download would silently overwrite
-        // a working installation, so just resync the frontend instead.
         if manifest.is_downloaded(&root) {
             log::info!(
                 "local-stt: download requested for already-installed model id={model_id}, skipping and resyncing state"
@@ -251,13 +227,6 @@ impl LocalTranscriptionManager {
         tauri::async_runtime::spawn(async move {
             let result = download_model(&app_handle, &manifest, &root, Arc::clone(&cancel)).await;
 
-            // Clear the active-download guard BEFORE emitting any terminal event.
-            // The frontend's completion/failure handler immediately refreshes via
-            // list_local_stt_models + get_local_transcription_state, both of which
-            // derive `is_downloading` from this guard. If we emitted the event
-            // first and cleared the guard second, that refresh would race the
-            // clear and read is_downloading=true for an already-finished download,
-            // leaving the UI stuck on "Downloading 0%" until some later refresh.
             if let Ok(mut guard) = manager.download_task.lock() {
                 *guard = None;
             }
@@ -294,11 +263,6 @@ impl LocalTranscriptionManager {
                         started_at.elapsed().as_millis(),
                         was_cancelled
                     );
-                    // An explicit user cancellation should leave nothing behind to
-                    // resume from — the next Download click starts fully fresh.
-                    // An incidental failure (network blip, disk error) keeps the
-                    // partial file so the next attempt can resume instead of
-                    // re-downloading from scratch.
                     let cleanup_manifest = manifest.clone();
                     let cleanup_root = root.clone();
                     let _ = tokio::task::spawn_blocking(move || {
@@ -443,9 +407,6 @@ impl LocalTranscriptionManager {
         let result = engine.transcribe(samples, sample_rate, language, vocabulary, cancellation);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if result.is_err() && matches!(engine, super::engine::LoadedLocalSttEngine::FluidAudio(_)) {
-            // A cancelled or failed helper may have exited. Recreate its
-            // process and model state on the next request, rather than reuse
-            // a stale warm-model marker.
             *guard = None;
             *self
                 .current_model_id
@@ -460,13 +421,6 @@ impl LocalTranscriptionManager {
         if self.recording_active.load(Ordering::Relaxed) {
             return Ok(());
         }
-        // Skip entirely once nothing is loaded — this is polled every 30s for
-        // the app's whole lifetime (see main.rs), so without this check, the
-        // "unloading idle model" log below fired every single tick forever
-        // once idle crossed the threshold, even long after the one real
-        // unload had already happened (observed live: 10+ straight minutes of
-        // identical log lines, `unload()` itself was already a safe no-op via
-        // its own `had_model` check, but this caller had no equivalent guard).
         let is_loaded = self
             .current_model_id
             .lock()
@@ -514,11 +468,6 @@ impl LocalTranscriptionManager {
         }
     }
 
-    /// Unconditional safety unload triggered by system RAM/VRAM pressure —
-    /// unlike `unload_if_idle`, this ignores the configured memory policy
-    /// (including "keep loaded") since freeing memory for whatever else
-    /// needs it takes priority over a passive idle preference. Still skips
-    /// while a recording is actively in progress.
     pub fn unload_for_resource_pressure(&self, app: &AppHandle) {
         if self.recording_active.load(Ordering::Relaxed) {
             return;
@@ -548,12 +497,6 @@ impl LocalTranscriptionManager {
                 .wait(loading)
                 .map_err(|_| anyhow::anyhow!("local loading wait poisoned"))?;
         }
-        // Re-check after the wait loop (not inside it) — if `*loading` was
-        // already false the moment this fn acquired the lock (a concurrent
-        // load finished between the top-of-fn check and here), the loop body
-        // above never runs, so this is the only place that recheck happens.
-        // Without it, that race unconditionally falls through to a redundant
-        // reload of a model another caller just finished loading.
         if self.is_model_loaded(model_id)? {
             return Ok(());
         }
@@ -567,9 +510,6 @@ impl LocalTranscriptionManager {
         self.load_model_inner(app, model_id)
     }
 
-    /// Lock the engine first, matching `unload` and `load_model_inner`.
-    /// This prevents a model load and the periodic idle reaper from waiting
-    /// forever on each other's state lock.
     fn is_model_loaded(&self, model_id: &str) -> anyhow::Result<bool> {
         let engine = self
             .engine
@@ -638,14 +578,6 @@ impl LocalTranscriptionManager {
     }
 }
 
-/// Retries a filesystem removal briefly before giving up. `delete_model`
-/// only signals cancellation to the background download/extraction task via
-/// an atomic flag (no handle to await its actual exit), so a task that's
-/// mid-write when deletion is requested may still hold open file handles for
-/// a moment — on Windows especially, that turns straight into an
-/// access-denied error. A short retry window covers the gap between the
-/// cancel flag being seen and the task actually unwinding and dropping its
-/// handles.
 fn remove_with_retry(mut remove: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
     let mut last_err = None;
     for attempt in 0..10 {

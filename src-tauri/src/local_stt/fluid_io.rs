@@ -1,4 +1,3 @@
-//! Bounded, cancellable exchange with the private CoreML helper.
 use std::{
     io::{Read, Write},
     os::fd::AsRawFd,

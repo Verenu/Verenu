@@ -1,6 +1,3 @@
-// Adapted from FluidAudio VocabularyBoostingSession.swift, Apache-2.0.
-// Changes: explicit private tokenizer directory, no content logging, explicit
-// English gate in the caller, conservative punctuation/alignment fallback.
 import Foundation
 import FluidAudio
 
@@ -33,8 +30,6 @@ struct AcousticVocabulary {
             cbw: thresholds.cbw, marginSeconds: 0.5,
             minSimilarity: max(thresholds.minSimilarity, vocabulary.minSimilarity))
         guard result.wasModified else { return nil }
-        // Apply only acoustically accepted, unique spans to the primary text.
-        // Preserve punctuation verbatim; ambiguous alignment retains primary.
         var output = text
         for replacement in result.replacements where replacement.shouldReplace {
             guard let word = replacement.replacementWord,

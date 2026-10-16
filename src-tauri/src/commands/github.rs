@@ -59,7 +59,6 @@ where
 struct CachedCommitSnapshot {
     #[serde(flatten)]
     snapshot: CommitSnapshot,
-    // Optional for caches written before timezone identity was recorded.
     #[serde(default)]
     timezone_id: Option<String>,
 }
@@ -88,10 +87,6 @@ fn timezone_id_for_sources(
 }
 
 fn current_timezone_id() -> Option<String> {
-    // Chrono honors Unix TZ overrides, while iana-time-zone reports the system
-    // zone. Hash a bounded override value so equal current offsets with different
-    // historical rules cannot share cache identity. Non-Unicode values are
-    // ignored here because Chrono ignores them too.
     #[cfg(unix)]
     let tz_override = std::env::var("TZ").ok();
     #[cfg(not(unix))]
@@ -114,9 +109,6 @@ fn cached_snapshot_for_user(
 }
 
 fn normalize_cached_snapshot(mut cache: CachedCommitSnapshot) -> CachedCommitSnapshot {
-    // Older incomplete public-search caches serialized zero for days without a
-    // returned result. They cannot distinguish a confirmed zero from missing
-    // coverage, so keep positive lower bounds and mark those days unknown.
     if cache.snapshot.source == ActivitySource::PublicCommits && !cache.snapshot.complete {
         for day in &mut cache.snapshot.daily {
             if day.commits == Some(0) {
@@ -276,8 +268,6 @@ pub async fn get_github_username_suggestion() -> Result<Option<GithubUsernameSug
     run_blocking("github_username_suggestion", || {
         #[cfg(not(target_os = "android"))]
         {
-            // Ask the CLI for just the login. Never read or return its token,
-            // name, email, credential-helper output, or browser cookies.
             let args = ["api", "--hostname", "github.com", "user", "--jq", ".login"];
             let username = command_username("gh", &args, 8);
             #[cfg(target_os = "macos")]
@@ -340,7 +330,6 @@ mod suggestion_tests {
         }
     }
 }
-// Serialize attempt bookkeeping, but never hold this lock while GitHub responds.
 static REFRESH_ATTEMPT: tokio::sync::Mutex<Option<RefreshAttempt>> =
     tokio::sync::Mutex::const_new(None);
 
@@ -441,7 +430,6 @@ pub async fn get_github_commits(
     .await;
     match result {
         Ok(snapshot) => {
-            // A disconnect or username change during the request must not restore its cache.
             let timezone_after_fetch = current_timezone_id();
             let timezone_id = timezone_before_fetch
                 .as_deref()
@@ -1012,7 +1000,6 @@ mod cache_tests {
 
     #[test]
     fn same_current_offset_with_different_timezone_rules_forces_refresh_and_warns_on_fallback() {
-        // New York and Lima can both be UTC-5, but New York observes DST.
         let new_york = timezone_id_for_sources(Some(b"America/New_York"), None).unwrap();
         let lima = timezone_id_for_sources(Some(b"America/Lima"), None).unwrap();
         let cached = cache("octocat", -18_000, Some(&new_york));
