@@ -56,7 +56,7 @@ for (const task of ['transcription', 'cleanup']) {
       const dialog = page.getByRole('dialog');
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('.row-main[aria-current="true"]')).toContainText(model);
-      await expect(dialog.getByText('Refreshing model lists…', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('status')).toContainText('Refreshing model lists…');
       expect(pending.length).toBeGreaterThan(0);
       // Bounds the expensive DOM/transition work regardless of catalog size.
       expect(await dialog.locator('.model-row').count()).toBeLessThan(160);
