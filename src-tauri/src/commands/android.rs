@@ -1,31 +1,8 @@
-//! Android bridge commands.
-//!
-//! These are the Rust side of the Android integration. On desktop they return
-//! honest `unsupported` errors (or pure-logic answers) so shared frontend code
-//! can call them unconditionally; on Android the Kotlin layer in
-//! `gen/android` implements the native half and calls back into these same
-//! commands:
-//!
-//! * `android_provide_credential` — Kotlin pushes a Keystore-unlocked API key
-//!   into Rust's in-memory cache at startup/rotation. Rust never persists
-//!   secrets on Android; durable storage is Kotlin `VerenuKeystore`
-//!   (`EncryptedSharedPreferences` + AndroidKeyStore).
-//! * `android_on_keyboard_visibility` / `android_on_focus_changed` — Kotlin
-//!   reports IME + focus state; Rust answers with the overlay decision and
-//!   insertion strategy so both sides agree (logic lives in `crate::android`).
-//! * `android_insert_text_result` — Kotlin reports direct-vs-fallback outcome
-//!   for history/diagnostics.
-//!
-//! The overlay itself, `AudioRecord` capture fallback, permission intents, and
-//! Keystore I/O are Kotlin-owned. See `docs/ANDROID.md`.
-
 use crate::android::{
     self, AndroidPermission, AndroidPermissionSnapshot, InsertionStrategy, OverlayState,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Opt-in debug APK fixture entry point. Uses the real production pipeline,
-/// returns through its normal events/history, and never inserts into another app.
 #[cfg(all(
     debug_assertions,
     feature = "android-local-testing",
@@ -98,9 +75,6 @@ pub async fn android_test_local_audio(app: AppHandle, wav_base64: String) -> Res
     .await
 }
 
-/// Static Android platform facts for the frontend (SDK floor/target, ABI,
-/// local-AI support). Same shape on every OS so Settings/Setup can render
-/// without branching on `isAndroid` first.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidPlatformInfo {
@@ -128,12 +102,6 @@ pub fn android_get_platform_info() -> AndroidPlatformInfo {
     }
 }
 
-/// Overlay visibility decision for a keyboard/focus report from Kotlin.
-///
-/// Returns the overlay state Kotlin should render plus the two booleans that
-/// drive its `WindowManager` handling: `visible` (add/remove the overlay
-/// view — never a permanent bubble) and `dictationActive` (keep rendering
-/// across keyboard churn vs settle back to idle/hidden).
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AndroidOverlayDecision {
@@ -161,9 +129,6 @@ pub fn android_on_keyboard_visibility(
     }
 }
 
-/// Insertion strategy for the currently focused field, from Kotlin's focus
-/// report. Direct accessibility text editing where the app allows it,
-/// clipboard fallback where it doesn't.
 #[tauri::command]
 pub fn android_decide_insertion(
     has_editable_focus: bool,
@@ -189,7 +154,6 @@ pub fn android_provide_credential(provider: String, key: String) -> Result<(), S
     Ok(())
 }
 
-/// Drop all in-memory credentials (lock event, permission revocation).
 #[tauri::command]
 pub fn android_clear_credentials() -> Result<(), String> {
     android::clear_credentials();
@@ -197,13 +161,11 @@ pub fn android_clear_credentials() -> Result<(), String> {
     Ok(())
 }
 
-/// Whether Rust currently holds a key for `provider` in memory.
 #[tauri::command]
 pub fn android_has_credential(provider: String) -> bool {
     android::has_cached_credential(&provider)
 }
 
-/// Permission rationale strings for onboarding, in display order.
 #[tauri::command]
 pub fn android_permission_rationale() -> Vec<serde_json::Value> {
     [
@@ -229,8 +191,6 @@ pub fn android_permission_rationale() -> Vec<serde_json::Value> {
     .collect()
 }
 
-/// Evaluate a permission snapshot from Kotlin. Pure logic — same function the
-/// frontend uses to decide whether onboarding can complete.
 #[tauri::command]
 pub fn android_evaluate_permissions(snapshot: AndroidPermissionSnapshot) -> serde_json::Value {
     serde_json::json!({
@@ -239,16 +199,11 @@ pub fn android_evaluate_permissions(snapshot: AndroidPermissionSnapshot) -> serd
     })
 }
 
-/// Width-class for an available window width in dp. Lets the backend include
-/// layout hints in events; the Svelte shell is the source of truth visually.
 #[tauri::command]
 pub fn android_width_class(width_dp: f32) -> android::WidthClass {
     android::width_class_for_dp(width_dp)
 }
 
-/// Kotlin reports the outcome of a text-insertion attempt so history and
-/// diagnostics record whether direct accessibility editing or the clipboard
-/// fallback delivered the text.
 #[tauri::command]
 pub async fn android_insert_text_result(
     app: AppHandle,
@@ -292,9 +247,6 @@ pub fn android_keystore_save(provider: String, key: String) -> Result<(), String
     Ok(())
 }
 
-/// Ask Kotlin to fire the system prompt for `permission` (runtime dialog,
-/// accessibility settings, battery-optimization settings, notification
-/// settings), then publish the fresh native snapshot to the webview.
 #[tauri::command]
 pub async fn android_request_permission(
     app: AppHandle,
@@ -324,9 +276,6 @@ pub async fn android_request_permission(
     }
 }
 
-/// Read the native Android permission state when the app regains focus. This
-/// catches changes made in Accessibility, battery, notification, and app-info
-/// settings without requiring a restart.
 #[tauri::command]
 pub async fn android_read_permissions(app: AppHandle) -> Result<serde_json::Value, String> {
     #[cfg(target_os = "android")]
@@ -346,10 +295,6 @@ pub async fn android_read_permissions(app: AppHandle) -> Result<serde_json::Valu
     }
 }
 
-/// Placeholder for permission-revocation handling. Kotlin calls this when
-/// Android revokes a grant at runtime (user toggles it off, OEM battery
-/// manager intervenes); Rust drops in-memory secrets and tells the UI to
-/// re-run onboarding recovery.
 #[tauri::command]
 pub async fn android_on_permission_revoked(
     app: AppHandle,

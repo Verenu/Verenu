@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 
 pub const SNIPPET_TRIGGER_CHAR_LIMIT: usize = 300;

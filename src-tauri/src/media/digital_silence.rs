@@ -1,13 +1,6 @@
-//! Digital-silence detector for microphones that zero PCM when hardware-muted.
-//!
-//! Treats a sample as silent when `|s| <= 1/32768` (one LSB at 16-bit). A window
-//! must be almost entirely silent before "muted"; quiet ambient noise must not
-//! trip that threshold.
-
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// One LSB of a full-scale 16-bit sample, expressed as f32 in [-1, 1].
 pub const DIGITAL_SILENCE_EPS: f32 = 1.0 / 32768.0;
 
 const DEFAULT_WINDOW: Duration = Duration::from_millis(250);
@@ -73,8 +66,6 @@ impl DigitalSilenceDetector {
         sample.abs() <= DIGITAL_SILENCE_EPS
     }
 
-    /// Push a block of PCM samples observed at `now`. Returns a debounced
-    /// transition when the mute state has been stable long enough.
     #[cfg(any(test, windows))]
     pub fn push_samples(&mut self, samples: &[f32], now: Instant) -> Option<SilenceTransition> {
         if samples.is_empty() {
@@ -95,8 +86,6 @@ impl DigitalSilenceDetector {
         self.push_chunk_stats(now, silent, samples.len() as u32, abs_max)
     }
 
-    /// Same as [`Self::push_samples`], but callers can compute stats without
-    /// allocating a converted float buffer on the realtime audio thread.
     pub fn push_chunk_stats(
         &mut self,
         now: Instant,
@@ -188,7 +177,6 @@ impl DigitalSilenceDetector {
     }
 }
 
-/// Debounces boolean mute transitions so brief glitches do not fire.
 #[derive(Debug, Clone)]
 pub struct MuteDebouncer {
     debounce: Duration,
@@ -205,7 +193,6 @@ impl MuteDebouncer {
         }
     }
 
-    /// Seeds the current mute state without emitting a transition.
     pub fn seed(&mut self, muted: bool) {
         self.last_stable = Some(muted);
         self.pending = None;

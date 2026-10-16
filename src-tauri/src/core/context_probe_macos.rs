@@ -1,36 +1,5 @@
 #![cfg(target_os = "macos")]
 
-//! macOS caret-local context probe (the real `CaretLocal` source).
-//!
-//! This is the macOS half of the layered `InjectionContextProbe`. It calls into
-//! the Objective-C shim (`system/macos_ax_text_marker.m`) which uses the
-//! Accessibility (AX) API to read the focused element's selected text range and
-//! the characters on both sides of it. When AX permits, this returns a genuine
-//! `ContextProbeSource::CaretLocal` result with independent confidence for each
-//! edge, exactly like the Windows UI Automation path.
-//!
-//! ## Known OS limitations (why this can fall back)
-//!
-//! The AX API does not expose caret context for every control. The shim reports
-//! these cases so the caller can preserve the payload instead of guessing:
-//!
-//! - **Accessibility permission not granted** → `SOURCE_PERMISSION_MISSING`. The
-//!   app must be trusted under System Settings → Privacy & Security →
-//!   Accessibility; without it AX returns nothing.
-//! - **Controls that don't implement the text AX attributes** →
-//!   `SOURCE_UNSUPPORTED_CONTROL`. Common offenders: Chromium/Electron web views
-//!   and many browser text inputs, custom-drawn/canvas editors, terminal
-//!   emulators, and some cross-process or sandboxed apps that expose only a
-//!   coarse `AXTextArea` without `AXSelectedTextRange`/`AXTextMarker` support.
-//! - **Secure text fields** (password inputs) deliberately withhold contents →
-//!   typically reported as unsupported/ambiguous.
-//! - **Non-collapsed selection with unreadable endpoints** →
-//!   `SOURCE_AMBIGUOUS_SELECTION`. Readable selections use the text before the
-//!   selection start and after the selection end.
-//!
-//! The read is synchronous on the calling thread (the AX round-trip is fast for
-//! supported controls); the caller runs it off the hotkey path.
-
 use std::ffi::c_char;
 
 use crate::core::context_probe::{

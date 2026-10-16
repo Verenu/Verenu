@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -45,7 +44,6 @@ fn query_all<T>(
         .map_err(Into::into)
 }
 
-/// Metadata returned after inserting a row: the new id and its `created_at`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreatedRecordMeta {
     pub id: i64,

@@ -82,15 +82,10 @@ pub async fn get_api_key_status(app: AppHandle) -> Result<serde_json::Value, Str
 #[derive(serde::Serialize)]
 pub struct KeyValidationResult {
     pub ok: bool,
-    /// "valid" | "invalid" | "unknown" lets the frontend tell a definitive
-    /// auth failure (401/403) apart from an inconclusive network/timeout/5xx
-    /// result, which "ok: false" alone can't distinguish.
     pub status: String,
     pub message: String,
 }
 
-/// Pure status+body -> result mapping, kept separate from the network call so it's
-/// unit-testable without mocking HTTP.
 pub fn classify_validation_response(status: u16, body: &str) -> KeyValidationResult {
     if (200..300).contains(&status) {
         return KeyValidationResult {
@@ -206,7 +201,6 @@ pub async fn validate_api_key(
     Ok(classify_validation_response(status, &body))
 }
 
-
 const ASSEMBLYAI_MODELS: &[&str] = &["universal-3-5-pro", "universal-2"];
 
 const GOOGLE_PAGE_SIZE: usize = 1000;
@@ -257,8 +251,6 @@ pub fn parse_openai_models(body: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// One page of `{"models":[{"name":"models/…","supportedGenerationMethods":[…]}],
-/// "nextPageToken":"…"}`. Returns the page's ids and the token for the next one.
 pub fn parse_google_models_page(body: &str) -> Result<(Vec<String>, Option<String>), String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("Malformed model list: {e}"))?;

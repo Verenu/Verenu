@@ -1,4 +1,3 @@
-
 use super::SharedState;
 use crate::pipeline::pill_position::PillPlacement;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,20 +45,8 @@ static CURRENT_PILL_SNAPSHOT: Mutex<PillSnapshot> = Mutex::new(PillSnapshot {
 #[cfg(target_os = "windows")]
 static PILL_PLACED_ONCE: AtomicBool = AtomicBool::new(false);
 
-/// Holds a resolved context name until the reveal that should carry it
-/// actually runs. `show_pill`'s cross-monitor move animates the window into
-/// place and only calls `reveal_pill` (which emits `pill-state`) once that
-/// tween lands, deferred well past the moment the caller finishes its own
-/// synchronous call — a name emitted directly at the call site could land
-/// either before or after that deferred `pill-state`, and the frontend
-/// unconditionally clears `contextLabel` on `pill-state: recording`, so a
-/// name that beat it there got silently wiped. Queuing it here and only
-/// emitting it from inside `reveal_pill`, right after `pill-state`, makes the
-/// ordering correct regardless of which path a given reveal takes.
 static PENDING_PILL_CONTEXT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Queues a context name to ride along with whichever reveal happens
-/// next, instead of emitting it immediately (see `PENDING_PILL_CONTEXT`).
 pub(crate) fn queue_pill_context(context: &str) {
     if let Ok(mut slot) = PENDING_PILL_CONTEXT.lock() {
         *slot = Some(context.to_string());
@@ -130,9 +117,6 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
     }
 }
 
-/// Pre-create the Linux pill while the app is starting so its WebView can
-/// finish mounting and install event listeners before the first dictation.
-/// The window remains hidden until a recording state is revealed.
 #[cfg(target_os = "linux")]
 pub(crate) fn initialize_pill(app: &AppHandle) {
     create_pill_if_needed(app);
@@ -252,8 +236,6 @@ fn apply_pill_hit_testing(pill: &WebviewWindow, interactive: bool) {
     }
 }
 
-/// Pushes the stored Linux input policy onto the GTK surface. A surface that
-/// is not realized yet is skipped: every reveal re-applies it after `show()`.
 #[cfg(target_os = "linux")]
 fn apply_linux_pill_input(pill: &WebviewWindow) {
     apply_linux_pill_input_for_window(pill, None);
@@ -308,9 +290,6 @@ fn schedule_linux_pointer_sync(mut address: Option<String>) {
     });
 }
 
-/// Frontend report of the capsule's visible rectangle (CSS px, relative to
-/// the window). Linux excludes the transparent margin; the other
-/// platforms size the native window to the content instead.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_pill_hit_rect(app: &AppHandle, x: f64, y: f64, width: f64, height: f64) {
     if ![x, y, width, height].iter().all(|v| v.is_finite()) {
@@ -342,9 +321,6 @@ pub(crate) fn set_pill_hit_rect(app: &AppHandle, x: f64, y: f64, width: f64, hei
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn set_pill_hit_rect(_app: &AppHandle, _x: f64, _y: f64, _width: f64, _height: f64) {}
 
-/// Frontend entry point for delayed controls (handsfree / paste-failed buttons
-/// that mount a beat after the state lands). Same path as reveal/hide so the
-/// pill never toggles hit-testing without re-hardening.
 pub(crate) fn set_pill_interactive(
     app: &AppHandle,
     interactive: bool,
@@ -389,9 +365,6 @@ pub(crate) fn show_pill(app: &AppHandle, state: &str) {
     show_pill_msg(app, state, None);
 }
 
-/// Updates an already-visible pill without repeating the native reveal and
-/// placement work. Used for in-session state changes such as recording to
-/// hands-free, where re-running `show_pill` can produce a one-frame flicker.
 pub(crate) fn update_pill_state(app: &AppHandle, state: &str) {
     let Some(pill) = app.get_webview_window("pill") else {
         show_pill(app, state);
@@ -410,26 +383,6 @@ pub(crate) fn update_pill_state(app: &AppHandle, state: &str) {
     reveal_pill(app, &pill, state, None);
 }
 
-/// Shows the pill window in the given state, optionally carrying an error
-/// message. The window is sized to whatever the frontend last reported as its
-/// visible content width (see `commands::recording::set_pill_size`), so the
-/// transparent click-capture zone tracks the pill rather than a fixed band —
-/// in a button-bearing state like handsfree, only the capsule itself swallows
-/// clicks, and everything beside it passes through. Moving to a different
-/// monitor, whether or not its scale factor differs, animates the move on
-/// Windows (see `pill_animation.rs`) instead of jumping instantly, since an
-/// instant cross-monitor move on this window either visibly snapped
-/// (same-DPI repositions) or made WebView2 stutter recreating its swap
-/// chain (cross-DPI resizes) - the latter is what showed up as a clipped
-/// pill on the first dictation after a monitor change, since `hide_pill`
-/// resets `PILL_VISUALLY_ACTIVE` between dictations even though the window
-/// keeps its stale geometry the whole time it's idle. Animates whenever the
-/// pill has been placed at least once before (`PILL_PLACED_ONCE`) and the
-/// resolved placement actually differs from where it currently sits - that
-/// covers both a monitor change mid-session and one only discovered on the
-/// next reveal after an idle cycle. Only the very first reveal of the whole
-/// process skips the animation, since nothing has been shown yet for it to
-/// glide from.
 fn show_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
     if crate::is_dev_session() {
         app.emit(
@@ -587,15 +540,6 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     schedule_linux_raise(app);
 }
 
-/// Moves the mapped Linux pill to its bottom-centre placement, then raises
-/// it. The target depends on the monitor and the content size most recently
-/// reported by the frontend. The compositor's mapped size is read
-/// back instead of assumed, because Hyprland can hand a floating client a
-/// different size than it asked for and a position computed for the wrong size
-/// leaves the capsule off-centre. A Wayland toplevel can only be moved after it
-/// is mapped, and mapping is asynchronous, so `wait_for_map` polls briefly for
-/// it (see `pill_window_after_show`). Raising matters as well: pinning keeps the
-/// pill on every workspace but not above existing floating windows.
 #[cfg(target_os = "linux")]
 fn place_linux_pill(app: &AppHandle, wait_for_map: bool) {
     use crate::core::hyprland;
@@ -779,7 +723,6 @@ pub(crate) fn hide_pill(app: &AppHandle) {
     }
 }
 
-/// Drives the production overlay in an isolated native verification worker.
 #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
 pub(crate) fn native_test_pill(
     app: &AppHandle,
@@ -854,10 +797,6 @@ pub(crate) fn native_test_pill(
     Ok(result)
 }
 
-/// Shows the pill's "Cancelled" state — a cancelled recording whose audio was
-/// good enough to stash for the pill's Continue button (see
-/// `pipeline::cancel_recording_with_resume`). Auto-dismiss is handled by the
-/// frontend (`PillApp.svelte`), same as `show_error_pill`.
 pub(super) fn show_cancelled_pill(app: &AppHandle) {
     show_pill_msg(app, "cancelled", None);
 }
@@ -866,11 +805,6 @@ pub(super) fn show_interrupted_pill(app: &AppHandle) {
     show_pill_msg(app, "interrupted", None);
 }
 
-/// Shows the pill's "Paste failed" state — injection didn't land (or
-/// couldn't be verified), but the finished text is safely stashed as
-/// `paste_failure` for the pill's Copy button (see
-/// `commands::recording::copy_paste_failure_to_clipboard`). Auto-dismiss is
-/// handled by the frontend, same as `show_error_pill`.
 pub(super) fn show_paste_failed_pill(app: &AppHandle) {
     if super::start_stop_sounds_enabled(app) {
         crate::media::sound::play(crate::media::sound::SoundCue::Error);
@@ -882,11 +816,6 @@ pub(super) fn show_partial_paste_pill(app: &AppHandle) {
     show_pill_msg(app, "paste_failed", Some("Partly pasted"));
 }
 
-/// Shows the pill's "Copied" confirmation for the global copy-last-dictation
-/// shortcut (Ctrl+Alt+C / ⌥⌘C) — a lightweight, button-less toast so the
-/// user gets clear feedback the shortcut actually did something, even when
-/// nothing is focused to receive it. Auto-dismiss (5s) is handled by the
-/// frontend, same as the other transient pill states.
 pub(crate) fn show_copied_pill(app: &AppHandle, msg: &str) {
     if super::start_stop_sounds_enabled(app) {
         crate::media::sound::play(crate::media::sound::SoundCue::Stop);
@@ -894,11 +823,6 @@ pub(crate) fn show_copied_pill(app: &AppHandle, msg: &str) {
     show_pill_msg(app, "copied", Some(msg));
 }
 
-/// Emits the current processing sub-stage to the pill window. The pill is
-/// already showing `processing`; this only refines what it displays
-/// ("Transcribing…" / "Cleaning…" / "Pasting…"). Payload is a bare stage id
-/// string; the frontend maps it to a label, so adding a stage never requires
-/// an IPC schema change.
 pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
     if crate::is_dev_session() {
         app.emit("verenu:pill-stage", stage).ok();
@@ -909,9 +833,6 @@ pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
     }
 }
 
-/// Emits the resolved context name (e.g. "Slack") to the pill window so it
-/// can show where the current dictation is headed. Emitted from the pipeline
-/// itself — the frontend never re-resolves it.
 pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
     if let Ok(mut snapshot) = CURRENT_PILL_SNAPSHOT.lock() {
         snapshot.context = Some(context.to_string());
@@ -1045,14 +966,10 @@ pub(super) async fn show_error_pill(app: &AppHandle, msg: &str) {
     show_pill_msg(app, "error", Some(msg));
 }
 
-/// A delivered dictation can still have a clipboard-phrase warning. This is
-/// deliberately passive: the text already reached its destination.
 pub(crate) fn show_clipboard_warning_pill(app: &AppHandle, msg: &str) {
     show_pill_msg(app, "clipboard_warning", Some(msg));
 }
 
-/// Shows the pill in error state for a quality-gate rejection without
-/// focusing the main window or blocking the pipeline task.
 pub(super) fn reject_with_pill(app: &AppHandle, msg: &str) {
     app.emit("verenu:error", msg).ok();
     if super::start_stop_sounds_enabled(app) {

@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Result};
 use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceEvent, ServiceInfo};
 use rusqlite::OptionalExtension;
@@ -31,7 +30,6 @@ const SERVICE_TYPE: &str = "_verenu._tcp.local.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 pub(crate) const MAX_INCOMING_CONNECTIONS: usize = 8;
-/// Bound long-lived leases separately so they cannot starve sync or pairing.
 pub(crate) const MAX_ACTIVE_MUTE_LEASES: usize = 64;
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
@@ -100,10 +98,6 @@ pub(crate) fn is_discovery_interface_allowed(name: &str, address: IpAddr, is_p2p
         .any(|marker| normalized_name.contains(marker))
 }
 
-/// Keep a device on the same private TCP port across app restarts. mDNS
-/// caches can retain the previous advertisement for part of its TTL; a random
-/// listener port turns that otherwise harmless stale record into an immediate
-/// connection refusal during pairing.
 pub(crate) fn listener_port_for_uuid(uuid: &str) -> u16 {
     let hash = uuid
         .as_bytes()
@@ -114,9 +108,6 @@ pub(crate) fn listener_port_for_uuid(uuid: &str) -> u16 {
     PRIVATE_PORT_START + (hash % PRIVATE_PORT_COUNT) as u16
 }
 
-/// Pick exactly one automatic initiator for a peer pair. Manual sync remains
-/// available from either device, but discovery/pairing must not start two
-/// competing sessions at once.
 pub(crate) fn should_auto_initiate(local_uuid: &str, peer_uuid: &str) -> bool {
     local_uuid < peer_uuid
 }
@@ -208,8 +199,6 @@ pub(crate) struct Backoff {
     next_attempt: Instant,
 }
 
-/// Read committed change capture and local counters, including counter-only
-/// dictations. sqlite_sequence survives log compaction, avoiding false edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChangeStamp {
     local: (i64, i64, i64),
@@ -249,8 +238,6 @@ pub(crate) fn automatic_session_due(
         && retry.is_none_or(|(failures, next)| now >= next || (changed && failures == 0))
 }
 
-/// Explicit routes are restricted to Tailscale IPv4 addresses. The paired
-/// certificate still authenticates the device, independently of its address.
 pub(crate) fn parse_tailscale_address(value: &str) -> Result<SocketAddr> {
     let address: SocketAddr = value.trim().parse().map_err(|_| {
         anyhow!("Enter a Tailscale IPv4 address and sync port, such as 100.64.0.1:50000")
@@ -290,7 +277,6 @@ fn connection_error(name: &str, address: SocketAddr, detail: &str) -> anyhow::Er
 pub(crate) fn should_try_next_address(error: &anyhow::Error) -> bool {
     error.is::<ConnectionFailure>()
 }
-
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfoDto {
@@ -343,9 +329,6 @@ pub struct SyncStatusSnapshot {
 }
 
 impl SyncManager {
-    /// Initializes the identity and starts all background tasks. Sync stays
-    /// soft-failed if identity/listener setup fails - the rest of the app must
-    /// never refuse to start over LAN sync.
     pub fn start(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
@@ -821,7 +804,6 @@ impl SyncManager {
         }
     }
 
-    /// Initiates pairing with a discovered device. Returns the code to show.
     pub async fn start_pairing(&self, peer_uuid: String) -> Result<String> {
         let target = self
             .inner
@@ -1016,7 +998,6 @@ impl SyncManager {
         self.complete_pairing(outcome, generation).await
     }
 
-    /// Responder side: user approved (or rejected) with the typed code.
     pub async fn respond_to_pairing(&self, code: String, approve: bool) -> Result<()> {
         let pending = {
             let mut guard = self.inner.pending.lock().await;
@@ -1257,7 +1238,6 @@ impl SyncManager {
         }
     }
 
-    /// Removes a paired device locally and best-effort notifies the peer.
     pub async fn remove_device(&self, peer_uuid: String) -> Result<()> {
         let existed = {
             let conn = self.lock_db()?;
@@ -1393,7 +1373,6 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Manual "Sync now". `None` attempts every paired peer and reports errors.
     pub async fn sync_now(&self, peer_uuid: Option<String>) -> Result<()> {
         let targets = match peer_uuid {
             Some(uuid) => vec![uuid],
@@ -1448,7 +1427,6 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Called by the settings layer after a synced setting changes locally.
     pub fn mark_dirty(&self) {
         self.inner.dirty.store(true, Ordering::Relaxed);
     }
@@ -1531,7 +1509,6 @@ impl SyncManager {
         }
     }
 
-    /// Runs one sync session with a paired peer (if discovered and idle).
     pub async fn sync_to_peer(&self, peer_uuid: &str) -> Result<()> {
         if peer_uuid == self.device_uuid() {
             return Err(anyhow!("Cannot sync this device with itself"));
@@ -1723,7 +1700,6 @@ impl SyncManager {
     }
 }
 
-/// RAII guard removing the peer from the active-session set.
 struct SessionGuard(Arc<Inner>, String);
 
 impl Drop for SessionGuard {
@@ -1743,7 +1719,6 @@ impl Drop for PairingInProgressGuard<'_> {
 }
 
 impl Inner {
-    /// Tells the frontend the discovered/paired device lists may have changed.
     pub(crate) fn emit_devices_changed(&self) {
         let _ = self.app.emit("verenu:sync-devices-changed", ());
     }
@@ -1858,7 +1833,6 @@ fn stored_device_name(conn: &rusqlite::Connection) -> Result<Option<String>> {
     Ok(name)
 }
 
-
 fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
     let uuid = info
         .get_property_val_str("uuid")
@@ -1949,7 +1923,6 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
         let _ = SyncManager { inner }.sync_to_peer(&uuid).await;
     });
 }
-
 
 async fn handle_connection(
     inner: Arc<Inner>,
@@ -2202,15 +2175,11 @@ async fn handle_sync_hello(
     }
 }
 
-
 pub(crate) struct ManagerHost {
     db: DbHandle,
     settings: SettingsHandle,
     app: AppHandle,
     uuid: String,
-    /// App enumeration is relatively expensive on both platforms.  Most sync
-    /// sessions contain no context-target changes, so defer it until the
-    /// engine actually needs to resolve a target.
     installed_apps: OnceLock<Vec<crate::system::apps::InstalledApp>>,
 }
 

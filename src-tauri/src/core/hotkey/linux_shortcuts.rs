@@ -1,4 +1,3 @@
-
 use std::{fs, path::PathBuf};
 
 pub(super) const START: &str = "-- >>> Verenu copy last dictation (do not edit) <<<";

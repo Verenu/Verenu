@@ -22,7 +22,6 @@ pub struct Connection {
     pub expires_at: u64,
     pub fetched_at: u64,
     pub attempted_at: u64,
-    /// Legacy setting retained for existing connections; shared skills ignore it.
     pub selected_catalog: Option<String>,
     pub catalogs: Vec<Catalog>,
     pub error: Option<String>,

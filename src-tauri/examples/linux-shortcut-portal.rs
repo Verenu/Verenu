@@ -1,4 +1,3 @@
-
 #[cfg(target_os = "linux")]
 #[path = "../src/core/hotkey/linux_portal.rs"]
 mod portal;

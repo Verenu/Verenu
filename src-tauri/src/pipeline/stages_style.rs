@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::core::window_geometry::WindowTarget;
 pub(super) fn resolve_app_mapping(
@@ -15,12 +14,6 @@ pub(super) fn resolve_app_mapping(
     })
 }
 
-/// Resolves the effective tone profile, in priority order: the active
-/// Context's tone override, then the app-mapping's profile, then the global
-/// `default_tone`. Cleanup intensity follows the same priority and is
-/// applied onto `cfg` in place. The Context override is the most specific
-/// signal (it can be a per-website match), so it wins over the exe-keyed
-/// AppMapping when both are set.
 pub(super) fn apply_app_style_overrides(
     cfg: &mut store::PipelineConfig,
     mapping: Option<&AppMapping>,
@@ -53,9 +46,6 @@ pub(super) fn apply_app_style_overrides(
         .unwrap_or_else(|| cfg.default_tone.clone())
 }
 
-/// Resolves the context that would apply to a foreground window without
-/// running the full pipeline. The identity is retained for the dictation,
-/// including retries and history, even if focus moves after recording starts.
 pub(super) fn resolve_context_for_window(
     app: &AppHandle,
     target: &WindowTarget,
@@ -102,19 +92,6 @@ pub(super) fn emit_context_for_window(
     Some(context)
 }
 
-/// Casual/formal cleanup sometimes omits a closing period on short utterances.
-/// That leaves a bare word before the caret, which the contextual-capitalization
-/// probe then reads as a mid-sentence continuation — so the *next* dictation has
-/// its first letter lowercased. Appending a period when the cleaned text ends on
-/// a plain word makes consecutive dictations read as separate sentences and
-/// capitalize naturally.
-///
-/// Deliberately conservative:
-/// - `very_casual` is skipped (its style is intentionally near-punctuation-free).
-/// - `none`/verbatim intensity is skipped (must echo speech without editorializing).
-/// - Only acts when the last non-space character is alphanumeric. Text already
-///   ending in terminal punctuation, a comma/colon/dash (intentional
-///   continuation), or a closing bracket/quote is left untouched.
 pub(super) fn ensure_terminal_punctuation(
     text: &str,
     profile: &str,

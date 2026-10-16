@@ -1,11 +1,3 @@
-//! Linux AT-SPI access to the focused editable text control.
-//!
-//! Smart capitalization/spacing and AutoLearn read a bounded window of text
-//! around the caret of the focused control, exactly like UI Automation on
-//! Windows. This uses the session accessibility bus only: no keyboard
-//! snooping, `/dev/input`, or compositor privileges. Text read here must never
-//! be logged.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -33,15 +25,10 @@ const ROLE_DOCUMENT_FRAME: u32 = 82;
 const ROLE_DOCUMENT_WEB: u32 = 95;
 
 const METHOD_TIMEOUT: Duration = Duration::from_millis(150);
-/// Upper bound on objects visited by the fallback tree walk.
 const WALK_BUDGET: usize = 600;
-/// Total time allowed for the browser address-bar walk.
 const ADDRESS_BAR_DEADLINE: Duration = Duration::from_millis(250);
-/// Includes connection setup and application/frame discovery. The worker
-/// may finish a timed-out D-Bus call later, but recording must continue.
 const ADDRESS_BAR_TIMEOUT: Duration = Duration::from_millis(350);
 static ADDRESS_BAR_BUSY: AtomicBool = AtomicBool::new(false);
-/// Characters read on each side of the caret.
 pub const LOCAL_TEXT_CHARS: i32 = 2048;
 
 #[derive(Clone, Debug)]
@@ -50,8 +37,6 @@ struct ObjRef {
     path: OwnedObjectPath,
 }
 
-/// A bounded window of the focused control's text around the caret. Offsets
-/// are character (code point) offsets inside `text`.
 #[derive(Clone, Debug)]
 pub struct FocusedText {
     pub text: String,
@@ -416,7 +401,6 @@ fn read_text_at_depth(conn: &Connection, obj: &ObjRef, pid: u32, radius: i32, de
     })
 }
 
-/// Reads the focused text control of the application owning `pid`.
 pub fn read_focused(pid: u32, radius: i32) -> FocusProbe {
     if pid == 0 {
         return FocusProbe::Unavailable;
@@ -588,7 +572,6 @@ fn read_address_bar_inner(pid: u32, title: &str) -> Option<String> {
     })
 }
 
-/// Focused text in the currently active Hyprland window.
 pub fn read_active(radius: i32) -> FocusProbe {
     match crate::core::hyprland::active_window() {
         Some(window) => read_focused(window.pid, radius),

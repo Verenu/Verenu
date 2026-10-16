@@ -16,17 +16,12 @@ pub struct ExportStats {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportDictionaryEntry {
     pub term: String,
-    /// Retained for v1 compatibility. v2 stores correction mappings below the
-    /// Context that owns them and always writes this as `null`.
     #[serde(default)]
     pub mistake: Option<String>,
     pub auto_learned: bool,
     pub confidence_tier: String,
     pub correction_count: i64,
     pub created_at: String,
-    /// Canonical dictionary identity is useful when inspecting a backup, but
-    /// v2 import still uses the unique canonical term as its natural key so a
-    /// backup can be restored into a database with different integer IDs.
     #[serde(default)]
     pub uuid: Option<String>,
 }
@@ -99,9 +94,6 @@ fn default_export_match_mode() -> String {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportContext {
-    /// Used only to recognize a renamed Context during import. New local
-    /// Context rows receive a fresh identity; a JSON backup is not a sync
-    /// transport and must not overwrite local row identities.
     #[serde(default)]
     pub uuid: Option<String>,
     pub name: String,
@@ -133,7 +125,6 @@ pub struct ExportContext {
     pub targets: Vec<ExportContextTarget>,
     #[serde(default)]
     pub website_targets: Vec<ExportContextWebsiteTarget>,
-    /// App + window-title rules. Older backups omit the field.
     #[serde(default)]
     pub sub_apps: Vec<ExportSubApp>,
 }
@@ -150,11 +141,8 @@ pub struct ExportPayload {
     pub dictionary: Vec<ExportDictionaryEntry>,
     #[serde(default)]
     pub snippets: Vec<ExportSnippet>,
-    /// v2's Context graph. Empty for v1 backups.
     #[serde(default)]
     pub contexts: Vec<ExportContext>,
-    /// Sub-apps not assigned to any Context. Assigned ones live under their
-    /// Context in `contexts[].sub_apps`.
     #[serde(default)]
     pub sub_apps: Vec<ExportSubApp>,
 }
@@ -212,14 +200,10 @@ pub struct ImportSummary {
     pub snippets_inserted: usize,
     pub snippets_skipped: usize,
     pub snippets_already_existed: usize,
-    /// App targets restored as-is (native to this platform or installed).
     pub app_targets_kept: usize,
-    /// Targets from another platform/device rebound to the closest local app.
     pub app_targets_matched: usize,
-    /// Targets with no local match; left out so the user can add them later.
     pub app_targets_dropped: usize,
     pub sub_apps_imported: usize,
-    /// Sub-apps whose app is not installed here; left out like app targets.
     pub sub_apps_dropped: usize,
 }
 
@@ -499,7 +483,6 @@ mod import_safety_tests;
 
 #[cfg(test)]
 mod cross_store_tests;
-
 
 fn export_contextual_library(
     db: &db::Db,

@@ -1,4 +1,3 @@
-
 export type AndroidPermissionId =
 	| 'microphone'
 	| 'accessibility_service'

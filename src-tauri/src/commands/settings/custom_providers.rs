@@ -30,8 +30,6 @@ pub(super) fn clear_changed_provider_keys(
     Ok(())
 }
 
-/// Remove the endpoint and its model references together. Credential deletion
-/// happens first so a failed keychain operation leaves a retryable definition.
 #[tauri::command]
 pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<(), String> {
     if !crate::api::custom::is_custom_id(&provider) {

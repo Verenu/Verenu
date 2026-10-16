@@ -1,6 +1,3 @@
-//! Hyprland/Wayland clipboard paste. The compositor authenticates both focus
-//! and shortcut dispatch; no input snooping, X11 hook, uinput, or root daemon.
-
 use super::*;
 use arboard::{ClearExtLinux, Clipboard, GetExtLinux, LinuxClipboardKind, SetExtLinux};
 use std::{io::Read, time::Duration};

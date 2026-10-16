@@ -1,13 +1,5 @@
 #![allow(dead_code)]
 
-//! macOS Accessibility / Microphone / Keychain permission commands.
-//!
-//! The global hotkey uses Carbon `RegisterEventHotKey` (see `core::hotkey::mac`),
-//! which needs no Input Monitoring permission — so the only macOS permissions the
-//! app requests are **Accessibility** (Cmd+V injection + AX reads) and
-//! **Microphone**. Keychain access is surfaced separately when a provider key is
-//! stored.
-
 #[cfg(target_os = "macos")]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +35,6 @@ fn canonical_relaunch_bundle(bundle: String) -> String {
         _ => bundle,
     }
 }
-
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -409,8 +400,6 @@ pub async fn get_macos_permission_snapshot(provider: Option<String>) -> MacPermi
     snapshot
 }
 
-/// Debug-only native probe. It performs the same passive snapshot as the page
-/// inside the current process and never touches Keychain.
 #[tauri::command]
 pub async fn debug_permission_probe() -> MacPermissionSnapshot {
     let snapshot = macos_permission_snapshot(None).await;
@@ -468,8 +457,6 @@ pub fn check_accessibility_permission(_prompt: bool) -> bool {
     true
 }
 
-/// Opens the macOS Accessibility privacy pane so the user can grant permission.
-/// No-op on other platforms.
 #[tauri::command]
 pub fn open_accessibility_settings() -> Result<(), String> {
     open_macos_settings(&[
@@ -518,9 +505,6 @@ pub fn get_microphone_permission_status() -> String {
     microphone_permission_status_string()
 }
 
-/// Triggers the macOS microphone consent prompt when access is undetermined,
-/// then returns the resulting status. Lets the permissions UI request the mic
-/// directly instead of waiting for the first recording. No-op off macOS.
 #[tauri::command]
 pub async fn request_microphone_permission(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
@@ -657,8 +641,6 @@ pub async fn request_notification_permission(
     Ok(snapshot)
 }
 
-/// Opens the macOS Microphone privacy pane so the user can grant permission.
-/// No-op on other platforms.
 #[tauri::command]
 pub fn open_microphone_settings() -> Result<(), String> {
     open_macos_settings(&[
@@ -738,9 +720,6 @@ fn open_macos_settings(_urls: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// Opens the macOS Privacy & Security settings root. Used as a fallback from
-/// menu-bar actions where landing near the right pane matters more than the
-/// specific sub-pane anchor.
 #[tauri::command]
 pub fn open_privacy_security_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -750,9 +729,6 @@ pub fn open_privacy_security_settings() -> Result<(), String> {
     Ok(())
 }
 
-/// Clears the app's stale Accessibility TCC grant so the user can re-add this
-/// build fresh. Rarely needed now that builds are signed with a stable identity,
-/// but kept as a last-resort repair.
 #[tauri::command]
 pub async fn reset_macos_core_permissions() -> TccResetResult {
     #[cfg(target_os = "macos")]

@@ -231,7 +231,6 @@
     }
   }
 
-  /** Opens settings, seeding the pill at the Settings button so it slides up from it. */
   function openSettings(event: MouseEvent) {
     movePillTo(event.currentTarget as HTMLElement, { snap: true });
     settingsQuery = '';
@@ -283,12 +282,10 @@
 
   const STACK_COMPACT = 4;
   const STACK_EXPANDED = 8;
-  /** Per-icon stagger for the hover reveal, in ms. */
   const STACK_REVEAL_STEP = 35;
 
   type StackEntry = { key: string; kind: 'app' | 'site'; value: string };
 
-  /** Apps and sites share one stack — splitting them just adds visual noise. */
   function stackEntries(contextId: number): StackEntry[] {
     return [
       ...contextsStore.targets
@@ -460,20 +457,13 @@
     closeContextMenu();
     try {
       await invoke('set_context_pinned', { contextId: context.id, pinned });
-      // Re-pinning restamps, so the row jumps to the top of the pinned group;
-      // mirror the backend's `datetime('now')` locally rather than refetching.
-      // The stamp must match SQLite's `YYYY-MM-DD HH:MM:SS` UTC format or the
-      // pinned sort (a plain string compare) would interleave the two formats.
-      const pinnedAt = pinned ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null;
-      contextsStore.contexts = contextsStore.contexts.map((c) =>
-        c.id === context.id ? { ...c, pinned_at: pinnedAt } : c
-      );
+      const contexts = await invoke<Context[]>('get_contexts');
+      contextsStore.contexts = contexts ?? [];
     } catch (error) {
       contextError = classifyIpcError(error).message;
     }
   }
 
-  /** Two-click arm/confirm — the same delete affordance the Contexts rows had. */
   async function deleteContext(context: Context) {
     if (context.is_everywhere) return;
     if (!contextDeleteArmed) {
@@ -789,9 +779,6 @@
     </button>
   </div>
 
-  <!-- Shown in both modes: "running locally" is app-level status, not page
-       chrome, and keeping it fixed means the rail's bottom never swaps.
-       Hidden on Android, where the memory readout means nothing to the user. -->
   {#if !isAndroid}
   <div class="local-bar">
     <div class="local-bar-row">
@@ -889,7 +876,6 @@
 
   .sidebar:not(.rail-settings) .nav-section { padding-top: 18px; }
   .rail-settings .nav-section { padding-top: 20px; }
-
 
   .rail-list {
     grid-area: 1 / 1;
@@ -1167,7 +1153,6 @@
     white-space: nowrap;
     border: 0;
   }
-
 
   .nav-item:disabled {
     color: var(--ink-faint);
@@ -1517,7 +1502,6 @@
   .ctx-menu-delete { transition: color .15s ease, background-color .15s ease; }
   .ctx-menu-delete:hover { color: var(--danger); }
   .ctx-menu-delete.is-armed { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
-
 
   .dl-panel {
     margin: 0 8px 6px;

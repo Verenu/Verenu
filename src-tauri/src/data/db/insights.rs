@@ -1,15 +1,3 @@
-//! Insights aggregation for the Insights page.
-//!
-//! Mirrors `src/lib/views/insights/types.ts` field for field — serde field
-//! names are the frontend contract and must not drift. Timestamp filters use
-//! UTC-naive range bounds so `created_at` remains seekable; day/hour bucketing
-//! still goes through `date(created_at, 'localtime')` / `strftime('%H',
-//! created_at, 'localtime')` because the stored value is UTC-naive (see
-//! `query_stats` in transcriptions.rs).
-//!
-//! Privacy: this module only ever emits counts, model ids, and normalized
-//! word stats. It never logs dictated text, clean_text, or top words.
-
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -21,17 +9,12 @@ use super::*;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Insights {
-    /// `None` when the payload covers every context. When set, every
-    /// per-dictation figure is scoped to it; the lifetime counters called out
-    /// on `InsightsCleanup` are not.
     pub context_id: Option<i64>,
     pub range_days: i64,
     pub generated_at: String,
     pub totals: InsightsTotals,
     pub streak: InsightsStreak,
     pub daily: Vec<InsightsDay>,
-    /// One compact rolling year. The frontend shows as many fixed-width weeks
-    /// as fit without scrolling.
     pub streak_daily: Vec<InsightsDay>,
     pub history_started_on: Option<String>,
     pub hourly: Vec<i64>,
@@ -104,9 +87,6 @@ pub struct InsightsWordCount {
     pub count: i64,
 }
 
-/// One provider call recorded at pipeline finalize time, aggregated into
-/// `Insights.providers`. `audio_ms` is set for transcription tasks only;
-/// `input_chars`/`output_chars` for cleanup tasks only.
 #[derive(Debug, Clone)]
 pub struct ApiCall {
     pub transcription_id: i64,
@@ -150,14 +130,6 @@ fn is_stopword(word: &str) -> bool {
     STOPWORDS.binary_search(&word).is_ok()
 }
 
-/// Aggregated insights for `days` (`0` = all time). A brand-new install with
-/// no transcriptions returns a fully-populated zero payload, never an error.
-/// Aggregates for `days` (`0` = all time), optionally narrowed to one context.
-///
-/// Every per-dictation figure honours `context_id`; the lifetime counters on
-/// `InsightsCleanup` (`dictionary_fixes`, `auto_learned_terms`, and therefore
-/// `edits_applied`) have no context dimension in the schema and stay global
-/// either way — the UI labels them as such.
 pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Insights> {
     let (
         totals,
@@ -232,7 +204,6 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
     })
 }
 
-/// Inserts the per-call API usage rows for one transcription.
 pub fn insert_api_calls(db: &Db, calls: &[ApiCall]) -> Result<()> {
     if calls.is_empty() {
         return Ok(());
@@ -262,15 +233,6 @@ pub fn insert_api_calls(db: &Db, calls: &[ApiCall]) -> Result<()> {
     Ok(())
 }
 
-/// Builds `ApiCall` rows for one finalized transcription by parsing the
-/// `api_used` string the pipeline assembled (formats: `provider/model`,
-/// `provider/model/transcription`, `primary=..;secondary=..`, with an
-/// optional `;cleanup=..` suffix). Unparseable strings yield no rows, never
-/// an error — cost accounting is best-effort and must not fail a dictation.
-///
-/// `audio_ms` is attributed to every transcription model (each one processed
-/// the same clip); cleanup rows carry `input_chars`/`output_chars` derived
-/// from the raw and cleaned text.
 pub(crate) fn build_api_calls(
     transcription_id: i64,
     created_at: &str,

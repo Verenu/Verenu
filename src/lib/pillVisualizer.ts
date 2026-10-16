@@ -1,4 +1,3 @@
-
 /** Bar count and height range — mirrors the pill's rendered geometry. */
 export const BARS = 12;
 export const BAR_MIN_H = 3;

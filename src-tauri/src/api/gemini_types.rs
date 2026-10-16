@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-/// Shared Gemini generateContent response types used by both transcription.rs and cleanup.rs.
 #[derive(Deserialize, Debug)]
 pub struct GeminiResp {
     pub candidates: Option<Vec<GeminiCandidate>>,

@@ -1,4 +1,3 @@
-
 use super::{
     AlignOp, CandidateCorrection, CorrectionMetrics, TextAnchor, WordToken,
     MAX_CHANGED_OPS_PER_SPAN, MAX_REPLACEMENTS_PER_SPAN, MAX_SPAN_GROWTH_WORDS,

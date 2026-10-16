@@ -46,17 +46,12 @@ pub struct InjectionContextProbe {
     pub context: SentenceContext,
     pub source: ContextProbeSource,
     pub context_tail: String,
-    /// Text immediately after the caret, or after the end of a selection.
     pub context_head: String,
-    /// Whether an empty or non-empty left edge was confirmed by the platform.
     pub left_reliable: bool,
-    /// Whether an empty or non-empty right edge was confirmed by the platform.
     pub right_reliable: bool,
     pub selection_state: SelectionState,
     pub control_identity_hash: String,
     pub control_type: String,
-    /// Owning process id for validating that the probe still belongs to the
-    /// window captured when dictation started.
     pub target_id: usize,
 }
 
@@ -151,10 +146,8 @@ impl MacosProbeGuard {
 
         let mut active_time = MACOS_PROBE_START_TIME.load(Ordering::SeqCst);
         loop {
-            if active_time != 0 {
-                if now < active_time || now - active_time < 2000 {
-                    return None;
-                }
+            if active_time != 0 && (now < active_time || now - active_time < 2000) {
+                return None;
             }
 
             match MACOS_PROBE_START_TIME.compare_exchange(
@@ -231,7 +224,6 @@ pub async fn read_injection_context_probe() -> InjectionContextProbe {
     }
 }
 
-/// Bounded AT-SPI probe of the focused control in the window owned by `pid`.
 #[cfg(target_os = "linux")]
 pub async fn read_linux_injection_context_probe_async(pid: u32) -> InjectionContextProbe {
     const LINUX_PROBE_TIMEOUT_MS: u64 = 400;

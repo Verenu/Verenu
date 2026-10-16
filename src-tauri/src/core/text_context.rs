@@ -348,9 +348,6 @@ pub struct InsertionDecision {
     pub reason: &'static str,
 }
 
-/// Everything the formatter is allowed to know about the insertion point.
-/// Edge confidence stays separate because casing and leading spacing only
-/// depend on the left edge, while trailing spacing only depends on the right.
 pub struct CaretTextContext<'a> {
     pub left: &'a str,
     pub right: &'a str,
@@ -591,10 +588,6 @@ fn at_sentence_boundary(left: &str) -> bool {
     }
 }
 
-/// Produces capitalization and spacing decisions from one caret snapshot.
-/// Each mutation uses only the edge it depends on, so a failed right-side read
-/// cannot disable safe continuation casing and a failed left-side read cannot
-/// invent a sentence boundary.
 pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionDecision {
     if text.is_empty() {
         return InsertionDecision {

@@ -1,4 +1,3 @@
-
 export type WidthClass = 'compact' | 'medium' | 'expanded';
 
 export const WIDTH_CLASS_BREAKPOINTS = { medium: 600, expanded: 840 } as const;

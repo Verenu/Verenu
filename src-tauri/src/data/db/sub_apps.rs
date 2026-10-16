@@ -1,11 +1,3 @@
-//! Sub-apps: a place inside an app (a Discord server, a VS Code project)
-//! identified by the app plus a window-title rule. They form their own list
-//! and can each be assigned to at most one Context; only assigned sub-apps
-//! take part in resolution, which checks them before websites and apps.
-//!
-//! Only the user-approved title pattern is stored. Captured window titles are
-//! never persisted or logged; they can contain private document names.
-
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -41,7 +33,6 @@ impl TitleMatchMode {
         }
     }
 
-    /// Higher wins when several rules match the same window.
     fn specificity(self) -> u8 {
         match self {
             Self::Equals => 3,
@@ -55,12 +46,10 @@ impl TitleMatchMode {
 pub struct ContextSubApp {
     pub id: i64,
     pub uuid: String,
-    /// `None` while the sub-app sits unassigned in the sub-app list.
     pub context_id: Option<i64>,
     pub executable: String,
     pub app_name: Option<String>,
     pub label: String,
-    /// Icon key from the shared context icon set, or `None` for the app icon.
     pub icon: Option<String>,
     pub title_pattern: String,
     pub match_mode: TitleMatchMode,
@@ -68,7 +57,6 @@ pub struct ContextSubApp {
     pub created_at: String,
 }
 
-/// Case-insensitive, whitespace-collapsed form used for every comparison.
 pub fn normalize_title(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
@@ -90,9 +78,6 @@ fn normalized_title_rule_matches(pattern: &str, mode: TitleMatchMode, title: &st
     }
 }
 
-/// Suggests a stable pattern from a captured title: drops unread counters
-/// ("(3) ", "[12] ", "• "), unsaved markers ("● ", leading/trailing "*"),
-/// and a trailing " - App" / " — App" / " | App" suffix naming the app.
 pub fn propose_title_pattern(title: &str, app_name: Option<&str>) -> String {
     let mut value = title.split_whitespace().collect::<Vec<_>>().join(" ");
     loop {
@@ -169,8 +154,6 @@ fn sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextSubApp> 
 
 const SUB_APP_COLUMNS: &str = "id, uuid, context_id, executable, app_name, label, icon, title_pattern, match_mode, platform, created_at";
 
-/// Every sub-app visible on this device (assigned or not). Same visibility
-/// rule as app targets: untagged or tagged for this platform.
 pub fn query_sub_apps(db: &Db) -> Result<Vec<ContextSubApp>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare_cached(&format!(
@@ -210,7 +193,6 @@ fn normalize_icon(icon: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Adds a sub-app to the list, unassigned.
 pub fn create_sub_app(db: &Db, new: NewSubApp<'_>) -> Result<ContextSubApp> {
     let executable = require_nonempty_trimmed("App", new.executable)?.to_lowercase();
     let label = normalize_label(new.label)?;
@@ -245,8 +227,6 @@ pub fn create_sub_app(db: &Db, new: NewSubApp<'_>) -> Result<ContextSubApp> {
     query_sub_app_conn(&conn, conn.last_insert_rowid())
 }
 
-/// Puts a sub-app in a Context, or back in the list with `None`. A sub-app
-/// belongs to at most one Context, so assigning moves it.
 pub fn assign_sub_app(db: &Db, id: i64, context_id: Option<i64>) -> Result<ContextSubApp> {
     let conn = lock_conn(db)?;
     if let Some(context_id) = context_id {
@@ -268,8 +248,6 @@ pub fn delete_sub_app(db: &Db, id: i64) -> Result<()> {
     require_row_changed(changed, "Sub-app", id)
 }
 
-/// The most specific sub-app rule matching this app and window title:
-/// `equals` over `starts_with` over `contains`, then the longest pattern.
 pub(crate) fn resolve_sub_app_conn(
     conn: &rusqlite::Connection,
     executable: &str,

@@ -209,8 +209,6 @@ where
     scan
 }
 
-/// Transfer an authenticated lease away from the general connection budget.
-/// The lease pool stays bounded while ordinary sync and pairing slots reopen.
 fn handoff_to_mute_lease(
     incoming: tokio::sync::OwnedSemaphorePermit,
     lease_slots: &Arc<Semaphore>,

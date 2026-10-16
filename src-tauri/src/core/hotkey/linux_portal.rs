@@ -1,4 +1,3 @@
-
 use ashpd::desktop::global_shortcuts::GlobalShortcuts;
 use std::future::Future;
 use std::time::Duration;

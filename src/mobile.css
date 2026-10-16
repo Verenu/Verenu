@@ -1,4 +1,3 @@
-
 .app[data-android='true'] {
   --page-pad-x: 20px;
   --page-pad-y: 20px;
@@ -18,7 +17,6 @@
   --page-pad-x: 40px;
   --page-pad-y: 32px;
 }
-
 
 .app[data-android='true'] .page-h {
   font-size: 30px;
@@ -46,7 +44,6 @@
   max-width: 1040px;
   margin-inline: auto;
 }
-
 
 .app[data-android='true'] .btn-primary,
 .app[data-android='true'] .btn-ghost,
@@ -108,7 +105,6 @@
   height: 12px;
 }
 
-
 .app[data-android='true'] .setting-row .label {
   font-size: 15px;
 }
@@ -125,7 +121,6 @@
   text-transform: uppercase;
   color: var(--ink-mute);
 }
-
 
 .app[data-android='true'] .settings-body .setting-row {
   grid-template-columns: minmax(0, 1fr);
@@ -182,7 +177,6 @@
   font-size: 13px;
   line-height: 1.5;
 }
-
 
 :root:has(.app[data-android='true']) :is(.ui-modal-backdrop, .modal-backdrop, .modal-overlay, .context-modal-backdrop) {
   z-index: 84;
@@ -268,7 +262,6 @@
   width: min(560px, 100%);
   translate: -50% 0;
 }
-
 
 .app[data-compact-nav='true'] .settings-page {
   left: 0;
@@ -473,7 +466,6 @@
   flex: 0 1 120px;
 }
 
-
 .app[data-android='true'] .hero-photo {
   border-radius: 20px;
   height: auto;
@@ -491,7 +483,6 @@
 .app[data-android='true'] .hero-photo-sub {
   font-size: 14px;
 }
-
 
 .app[data-android='true'] input[type='range'] {
   height: 32px;
@@ -519,11 +510,9 @@
   box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-
 .app[data-android='true'][data-compact-nav='true'][data-keyboard='open'] {
   --mobile-nav-h: 0px;
 }
-
 
 .m-search {
   display: flex;
@@ -578,7 +567,6 @@
   font-size: 14px;
 }
 
-
 .app[data-android='true'] .content-inner > .head {
   align-items: center;
   gap: 14px 16px;
@@ -607,7 +595,6 @@
   flex: 1 1 0;
   max-width: none;
 }
-
 
 .app[data-android='true'] .context-header {
   display: flex;
@@ -709,7 +696,6 @@
   font-weight: 700;
 }
 
-
 @media (prefers-reduced-motion: no-preference) {
   @keyframes m-in-right {
     from { opacity: 0; transform: translate3d(32px, 0, 0); }
@@ -784,7 +770,6 @@
     transform: scale(0.97);
   }
 }
-
 
 :root:has(.app[data-android='true']) .picker-wrap {
   z-index: 90;
@@ -1019,7 +1004,6 @@
   border-radius: 12px;
 }
 
-
 :root:has(.app[data-android='true']) .prompt-modal-wrap {
   z-index: 86;
 }
@@ -1098,7 +1082,6 @@
   font-size: 13px;
   line-height: 1.55;
 }
-
 
 :root:has(.app[data-android='true'][data-width-class='compact']) .setup-actionbar {
   gap: 12px;

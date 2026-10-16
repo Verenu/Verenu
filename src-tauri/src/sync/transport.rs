@@ -1,14 +1,3 @@
-//! TLS transport for sync connections.
-//!
-//! Each device presents a self-signed certificate (its identity). We do not
-//! use the WebPKI - there is no CA on a LAN - so the rustls verifiers here
-//! accept any certificate at the TLS layer, and authentication happens at the
-//! protocol layer: the `Hello` message names a device uuid, and the manager
-//! checks the connection's certificate fingerprint against the fingerprint
-//! pinned for that uuid when it was paired. An unpaired device can encrypt to
-//! us all it likes; the first protocol message it sends is rejected unless the
-//! fingerprint matches a paired peer (or the user is actively pairing).
-
 use anyhow::{anyhow, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
@@ -171,8 +160,6 @@ pub fn client_config(
     Ok(Arc::new(config))
 }
 
-/// SHA-256 fingerprint of the leaf certificate a peer presented on a live
-/// connection. `conn.peer_certificates()` yields the chain; the leaf is first.
 pub fn peer_fingerprint(certs: &[CertificateDer<'_>]) -> Result<String> {
     let leaf = certs
         .first()
@@ -189,9 +176,6 @@ pub fn tls_connector(config: Arc<ClientConfig>) -> tokio_rustls::TlsConnector {
     config.into()
 }
 
-/// Complete an incoming TLS handshake within a bounded window.  A TCP peer
-/// that connects and then never sends a ClientHello must not consume an
-/// incoming connection slot forever.
 pub async fn accept_with_timeout(
     acceptor: &tokio_rustls::TlsAcceptor,
     tcp: TcpStream,

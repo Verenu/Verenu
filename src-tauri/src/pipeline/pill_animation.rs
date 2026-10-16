@@ -1,4 +1,3 @@
-
 use crate::pipeline::pill_position::PillPlacement;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
@@ -9,15 +8,8 @@ const TWEEN_DURATION_MS: u64 = 180;
 #[cfg(target_os = "windows")]
 const TWEEN_STEP_MS: u64 = 12;
 
-/// Guards against two tweens (or a tween and an instant same-monitor move)
-/// racing over the same HWND. Mirrors `media::sound::START_CUE_GEN` exactly:
-/// a bare static generation counter, not `SharedState`, since this is purely
-/// an internal sequencing concern of "which thread may currently call
-/// SetWindowPos on the pill," not application state anything else reads.
 static PILL_TWEEN_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// One interpolated frame of the tween: physical-pixel geometry to apply via
-/// `SetWindowPos` at a given point in the animation.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) struct TweenFrame {
@@ -38,14 +30,6 @@ fn lerp_i32(a: i32, b: i32, t: f64) -> i32 {
     (a as f64 + (b as f64 - a as f64) * t).round() as i32
 }
 
-/// Builds the tween's frame sequence from `from` to `to`. Frame 0 (`from`) is
-/// intentionally not included — the window is already showing that geometry
-/// — and the last frame is guaranteed to equal `to` exactly (since
-/// `ease_out_cubic(1.0) == 1.0`), so the tween always lands precisely on the
-/// already-verified-correct placement math in `pill_position.rs`, with no
-/// separate "snap to final" step needed. All four axes share one eased
-/// progress value per frame so the pill glides rather than wobbling (e.g.
-/// width finishing before position does).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn build_tween_frames(
     from: PillPlacement,
@@ -67,24 +51,10 @@ pub(super) fn build_tween_frames(
         .collect()
 }
 
-/// Bumps the generation counter so any in-flight tween bails out on its next
-/// frame instead of fighting an instant same-monitor move over the window.
-/// Cheap enough to call unconditionally regardless of whether a tween is
-/// actually running — mirrors `media::sound::cancel_pending_start()`.
 pub(super) fn cancel_pending_pill_tween() {
     PILL_TWEEN_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Starts an animated move/resize from `from` to `to` on Tauri's async
-/// runtime and returns immediately. `on_complete` runs once the tween lands
-/// exactly on `to` - never if a newer tween or instant move superseded this
-/// one first. Win32 `SetWindowPos` can be called from any thread (thread
-/// affinity governs who *receives* a window's messages, not who can issue
-/// commands to it), and this codebase already calls it from non-main
-/// threads today (`pill_position::apply_pill_placement`). Uses
-/// `tauri::async_runtime::spawn` + `tokio::time::sleep` rather than a raw OS
-/// thread, matching the same generation-counter-guarded delayed-action shape
-/// already used in `media::sound::play_start_delayed_then`.
 #[cfg(target_os = "windows")]
 pub(super) fn animate_pill_placement<R: Runtime>(
     pill: &WebviewWindow<R>,

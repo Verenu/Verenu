@@ -504,7 +504,6 @@
     if (rafId !== 0) { cancelAnimationFrame(rafId); rafId = 0; resetVisualizer(); }
   }
 
-
   function goIdle() {
     if (dying) return;
     dying = true;
@@ -1468,8 +1467,6 @@
     text-overflow: clip;
     max-height: 100%;
   }
-  /* Only past ERROR_MAX_LINES does the body actually scroll; below that the
-     card simply grew to fit, and a scrollbar would be dead chrome. */
   /* Standard scrollbar properties only — Chromium ignores ::-webkit-scrollbar
      entirely once scrollbar-width/-color are set, so the two cannot be
      combined. The thumb is tinted from the error foreground rather than the

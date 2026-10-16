@@ -1,4 +1,3 @@
-
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -35,7 +34,6 @@ pub enum ActivitySource {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CommitSnapshot {
-    /// Missing on old caches; those were produced by the public search API.
     #[serde(default)]
     pub source: ActivitySource,
     pub username: String,

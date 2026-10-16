@@ -170,7 +170,6 @@
     el.style.width = `${newW}px`;
   });
 
-  /** Take saved placements as given; an unknown or missing value falls back to the default. */
   function applyPillPlacement(position: AndroidPillPosition | null, dock: AndroidPillScreenPosition | null) {
     pillPosition = ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === position)
       ? (position as AndroidPillPosition)
@@ -180,11 +179,6 @@
       : DEFAULT_ANDROID_PILL_DOCK_POSITION;
   }
 
-  /**
-   * The pill can change its own placement (dragging it snaps and saves), and
-   * this page only read the settings once on mount, so re-read them whenever
-   * the pill reports a move or the app comes back to the foreground.
-   */
   async function refreshPillPlacement() {
     if (!isAndroid) return;
     try {

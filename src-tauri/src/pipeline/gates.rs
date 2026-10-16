@@ -1,8 +1,5 @@
-
 use crate::data::store;
 
-/// Whitespace is normally an empty completion. Locally processed voice
-/// commands may intentionally deliver only line breaks, unlike blank AI output.
 pub(super) fn has_deliverable_cleanup(text: &str, cfg: &store::PipelineConfig, cleanup_api_used: &str) -> bool {
     !text.trim().is_empty()
         || (cfg.cleanup_enabled && cfg.cleanup_intensity != "none"
@@ -15,20 +12,8 @@ pub(super) fn has_deliverable_cleanup(text: &str, cfg: &store::PipelineConfig, c
 /// Whisper hallucinate, so they're rejected outright.
 pub(super) const MIN_RECORDING_MS: u64 = 700;
 
-/// Minimum RMS (at default gain) below which audio is treated as near-silence
-/// and rejected as a likely accidental activation. Lowered from the original
-/// 0.008: local VAD (`media::vad`) is now the primary speech-presence check,
-/// run before transcription — this threshold only backstops it when VAD is
-/// unavailable, so it no longer needs to carry the whole burden of catching
-/// quiet speech on its own and can afford to be less trigger-happy.
 pub(super) const MIN_RECORDING_RMS: f32 = 0.005;
 
-/// A much lower floor than `MIN_RECORDING_RMS`, used only as a cheap
-/// pre-transcription check to skip the transcription API call outright for
-/// audio that's digitally silent or corrupt (e.g. a dead mic). Real
-/// "was there speech" judgment happens after VAD analysis runs alongside
-/// transcription — this just avoids paying for an API call when the answer
-/// is already obvious from the waveform alone.
 pub(super) const SILENCE_FLOOR_RMS: f32 = MIN_RECORDING_RMS * 0.3;
 
 fn gain_scaled_rms(base: f32, active_gain: f32) -> f32 {
@@ -40,15 +25,10 @@ fn gain_scaled_rms(base: f32, active_gain: f32) -> f32 {
     }
 }
 
-/// Scale the near-silence RMS threshold by the active mic gain so the gate
-/// stays consistent whether the user is amplifying a quiet mic or attenuating
-/// a hot one. Used as the fallback gate when local VAD is unavailable.
 pub(super) fn recording_gate_rms(active_gain: f32) -> f32 {
     recording_gate_rms_for_sensitivity(active_gain, 0)
 }
 
-/// Adaptive version of the recording gate. A rejected capture can lower the
-/// threshold for the next attempt without changing the saved mic gain.
 pub(super) fn recording_gate_rms_for_sensitivity(active_gain: f32, sensitivity_level: u8) -> f32 {
     gain_scaled_rms(
         MIN_RECORDING_RMS * crate::pipeline::adaptive_sensitivity_scale(sensitivity_level),
@@ -56,8 +36,6 @@ pub(super) fn recording_gate_rms_for_sensitivity(active_gain: f32, sensitivity_l
     )
 }
 
-/// Exposes the already-computed recording gate to diagnostics without
-/// duplicating the quality gate's gain/sensitivity math in a command module.
 pub(crate) fn diagnostic_recording_gate_rms(active_gain: f32, sensitivity_level: u8) -> f32 {
     recording_gate_rms_for_sensitivity(active_gain, sensitivity_level)
 }
@@ -72,8 +50,6 @@ pub(super) fn silence_floor_gate_rms_for_sensitivity(
     )
 }
 
-/// Use the post-processed RMS for normal validation, but keep a quiet voice
-/// from being rejected when denoising removes energy after gain was applied.
 pub(super) fn effective_recording_rms(processed_rms: f32, raw_rms: f32, active_gain: f32) -> f32 {
     let gain = active_gain.clamp(store::MIN_MIC_GAIN, store::MAX_MIC_GAIN);
     processed_rms.max(raw_rms * gain)
@@ -129,9 +105,6 @@ pub(super) fn is_transcription_hallucination(text: &str) -> bool {
     is_pure_glossary_echo(&t) || is_fuzzy_glossary_echo(&t)
 }
 
-/// Returns false for punctuation-only or whitespace-only transcription output.
-/// A single spoken letter such as "I" remains valid; a lone period must not
-/// reach cleanup or injection.
 pub(super) fn has_spoken_content(text: &str) -> bool {
     text.chars().any(|character| character.is_alphanumeric())
 }
@@ -245,8 +218,6 @@ fn damerau_levenshtein_distance(left: &str, right: &str) -> usize {
 ///      the typical shape of this artifact), or whatever follows looks like
 ///      a glossary echo (an exact vocabulary term, or the same trigger
 ///      phrase repeating) rather than ordinary continued speech.
-// Applied alongside strip_hallucinated_suffix() at each transcription output
-// boundary in pipeline/mod.rs and stages_transcription.rs.
 pub(super) fn strip_trailing_hallucination(text: &str) -> String {
     const TRAILING_PATTERNS: &[&str] = &[
         "return only spoken words",
@@ -310,9 +281,6 @@ pub(super) fn strip_hallucinated_suffix(text: &str) -> String {
     current
 }
 
-/// Removes only standalone provider-style attribution artifacts. A phrase is
-/// left alone when it appears inside a normal sentence, because users can
-/// legitimately dictate provider names or words such as "subscribe".
 pub(super) fn strip_provider_artifacts(text: &str) -> String {
     let mut kept = Vec::new();
     for sentence in text.split_inclusive(['.', '!', '?', '。', '！', '？', '\n']) {
@@ -470,14 +438,6 @@ fn last_sentence(text: &str) -> &str {
     trimmed[start..].trim()
 }
 
-/// Build a single-line, length-capped preview of dictation text for logs.
-///
-/// Privacy: dictation content must not land in default logs (the in-memory ring
-/// buffer, the `verenu:log` event stream, or exported log files). The actual
-/// text is therefore only included when developer verbose logging is enabled;
-/// otherwise a content-free `<N chars redacted>` marker is returned so the log
-/// still records that text existed and roughly how long it was. The companion
-/// `*_full` logs (also verbose-gated) carry the untruncated text.
 pub(super) fn preview_text(s: &str, limit: usize) -> String {
     if !crate::system::logger::is_verbose() {
         return format!("<{} chars redacted>", s.chars().count());
@@ -491,9 +451,6 @@ pub(super) fn preview_text(s: &str, limit: usize) -> String {
     }
 }
 
-/// Collapse spaced-out multiplication artifacts (e.g. "6 x 7" → "6x7") that the
-/// transcription model occasionally inserts, so downstream number handling and
-/// cleanup see a consistent form.
 pub(super) fn normalize_transcription_math_artifacts(raw: &str) -> String {
     let chars: Vec<char> = raw.chars().collect();
     let mut out = String::with_capacity(chars.len());

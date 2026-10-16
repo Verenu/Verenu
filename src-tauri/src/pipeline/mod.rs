@@ -125,9 +125,6 @@ use stages_transcription::*;
 pub use state::*;
 use telemetry::PipelineTelemetry;
 
-/// Bounded, process-local sensitivity levels used after a rejected capture.
-/// Each fresh attempt can become more permissive without changing the user's
-/// saved microphone gain or making the relaxed thresholds permanent.
 pub(crate) const MAX_ADAPTIVE_SENSITIVITY: u8 = 4;
 pub(crate) const ADAPTIVE_SENSITIVITY_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(3);
@@ -196,7 +193,6 @@ pub(crate) struct TranscriptCandidate {
     pub provider: String,
     pub model: String,
 }
-
 
 pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow::Result<String> {
     let Some((session, exclusive_mic_session_id)) = state::take_recording_plain(&state) else {
@@ -332,8 +328,6 @@ struct ProvidedCapture {
     process_name: String,
 }
 
-/// Browser audio enters the production pipeline after microphone capture.
-/// Delivery remains event-only, so tests cannot paste into an unrelated app.
 #[cfg(all(
     debug_assertions,
     any(

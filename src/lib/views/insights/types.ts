@@ -1,4 +1,3 @@
-
 export type InsightsRange = 7 | 30 | 90 | 0;
 
 export interface InsightsTotals {

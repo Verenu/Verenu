@@ -1,6 +1,3 @@
-//! One clipboard transaction owns every chunk. Platform callers restore their
-//! snapshot after this returns, including errors; this future is never aborted.
-
 use std::{fmt, future::Future, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 

@@ -33,12 +33,6 @@ static LOGGER: SessionLogger = SessionLogger;
 static VERBOSE_MODE: AtomicBool = AtomicBool::new(false);
 static LOG_SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
 
-/// Initializes the in-memory log buffer and installs the session logger.
-///
-/// Call this as early as possible in `main()` — before the database opens —
-/// so startup failures (DB open/migrations, settings load) are captured
-/// instead of vanishing into the default no-op logger. The `AppHandle` is
-/// attached later by [`attach_app`], which enables `verenu:log` emission.
 pub fn init_early() {
     crate::system::diagnostics::init();
     #[cfg(not(target_os = "android"))]
@@ -49,8 +43,6 @@ pub fn init_early() {
     }
 }
 
-/// Attaches the app handle so buffered records are forwarded to the frontend
-/// as `verenu:log` events. Safe to call once, after `init_early`.
 pub fn attach_app(app: &AppHandle) {
     #[cfg(target_os = "android")]
     super::log_files::init(crate::app_data_dir().join("logs"));
@@ -101,9 +93,6 @@ pub fn unsubscribe_log_stream() {
     });
 }
 
-/// Header for exported diagnostics. Metadata only — version, platform, and
-/// export time; never settings, keys, paths, or user content. Kept pure so
-/// the export path is testable without touching the filesystem.
 pub fn export_header() -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let verbose = if is_verbose() { "on" } else { "off" };

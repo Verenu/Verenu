@@ -1,4 +1,3 @@
-
 use serde::Serialize;
 use std::sync::Mutex;
 #[cfg(target_os = "linux")]

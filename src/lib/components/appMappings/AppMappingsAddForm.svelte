@@ -533,8 +533,6 @@
     flex-shrink: 0;
   }
 
-  /* Paired queries — see the note in MacPermissions.svelte. This form also
-     renders on the Style page, which has no settings container. */
   @container settings-panel (max-width: 720px) {
     .app-picker-wrap {
       flex-basis: 100%;

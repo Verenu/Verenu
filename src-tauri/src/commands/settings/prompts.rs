@@ -33,8 +33,6 @@ const PROMPT_TEST_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-/// One template for every provider and model — the picker's fallback chain
-/// would otherwise silently drop an edit made on a different model.
 #[tauri::command]
 pub fn get_default_cleanup_prompt(intensity: Option<String>, tone: Option<String>) -> String {
     if let Some(tone) = tone {

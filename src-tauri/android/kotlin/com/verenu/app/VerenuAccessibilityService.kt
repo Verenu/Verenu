@@ -252,7 +252,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         hideOverlay()
     }
 
-
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         val pkg = event.packageName?.toString() ?: ""
@@ -532,7 +531,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return false
     }
 
-    /** All loopback I/O stays off Android's main thread. */
     private fun runOnBridge(block: () -> Unit) {
         val handler = requester
         if (handler == null) {
@@ -547,7 +545,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
         }
     }
-
 
     private fun shouldShowOverlay(): Boolean =
         (keyboardVisible && hasEditableFocus && !suppressedForNow()) ||
@@ -1107,7 +1104,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         setOverlayState(VerenuOverlayView.State.ERROR)
     }
 
-
     override fun onPillTap() {
         when (overlayState) {
             VerenuOverlayView.State.IDLE -> startDictation()
@@ -1129,7 +1125,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     override fun onPillCancel() = requestCancel()
-
 
     override fun onPillDragStart() {
         if (overlayAttached.not()) return
@@ -1495,7 +1490,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return ""
     }
 
-    /** Prefer the active browser root, then find that package's application window. */
     private fun browserApplicationRoot(pkg: String): AccessibilityNodeInfo? {
         val active = rootInActiveWindow
         if (active?.packageName?.toString() == pkg) return active
@@ -1631,7 +1625,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             Log.w(TAG, "cannot stop dictation service", e)
         }
     }
-
 
     private fun focusedEditable(
         budget: VerenuInsertionBudget = VerenuInsertionBudget(SystemClock::elapsedRealtime, 350L),
@@ -1775,7 +1768,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             false
         }
     }
-
 
     private fun schedulePoll(delayMs: Long) {
         poller?.postDelayed({ poll() }, delayMs)

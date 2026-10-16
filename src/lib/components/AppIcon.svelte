@@ -18,11 +18,6 @@
   let dataUri = $state<string | null>(null);
   let needsContrastBackdrop = $state(false);
 
-  /**
-   * Detect the narrow case where a light icon would disappear on paper.
-   * Looking at the pixels keeps colorful and deliberately dark icons alone,
-   * even when they happen to have transparent corners.
-   */
   function assessIconContrast(event: Event) {
     const image = event.currentTarget as HTMLImageElement;
     const canvas = document.createElement('canvas');

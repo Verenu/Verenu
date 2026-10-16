@@ -67,7 +67,6 @@ fn wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-
 #[cfg(windows)]
 pub fn set(provider: &str, key: &str) -> Result<(), String> {
     let key = normalize_key(key);
@@ -179,7 +178,6 @@ pub fn has(provider: &str) -> bool {
     !get(provider).is_empty()
 }
 
-
 #[cfg(target_os = "macos")]
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
@@ -253,9 +251,6 @@ fn keychain_failure(operation: &str, code: i32) -> KeychainDiagnostic {
     }
 }
 
-/// Proves every generic-password account namespace Verenu currently reads,
-/// then proves create/read/delete capability with a private sentinel. Existing
-/// values are never returned, compared, or logged.
 #[cfg(target_os = "macos")]
 pub fn check_access_sentinel() -> KeychainDiagnostic {
     let service = keychain_service();
@@ -608,7 +603,6 @@ pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
 
-
 #[cfg(target_os = "android")]
 pub fn set(provider: &str, key: &str) -> Result<(), String> {
     let (canonical_provider, normalized_key) = crate::android::credential_input(provider, key)?;
@@ -657,7 +651,6 @@ pub fn save(_app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
 pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
-
 
 #[cfg(target_os = "linux")]
 const LINUX_SECRET_SERVICE: &str = "com.verenu.app";
@@ -799,9 +792,6 @@ pub fn has(_provider: &str) -> bool { false }
 #[cfg(not(any(windows, target_os = "macos", target_os = "android", target_os = "linux")))]
 pub fn delete(_provider: &str) -> Result<(), String> { Err("No secure credential backend is available on this platform".into()) }
 
-/// Moves any plaintext API keys from settings.json or legacy macOS
-/// credentials.json files into the OS secret store, then keeps retrying cleanup
-/// until plaintext remnants are gone.
 pub fn migrate_from_store(_app: &AppHandle, settings: &crate::data::store::SettingsHandle) {
     let already_marked = settings
         .get(crate::data::store::CREDENTIALS_MIGRATED)

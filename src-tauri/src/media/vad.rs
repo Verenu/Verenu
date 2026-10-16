@@ -1,10 +1,5 @@
-
 use crate::data::store;
 
-/// Aggregate result of running VAD across an entire recording.
-///
-/// `contains_speech` drives `pipeline::passes_speech_gate` without carrying
-/// any dictated content across the VAD boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct SpeechDetectionResult {
     pub contains_speech: bool,
@@ -121,12 +116,6 @@ fn staged_model_matches(path: &std::path::Path) -> bool {
     bytes.as_slice() == MODEL_BYTES
 }
 
-/// Streaming speech detector for the active recording. It shares the same
-/// Silero model, frame size, and evidence thresholds as the final
-/// recording-wide VAD, but evaluates them incrementally so the pill can
-/// acknowledge speech without waiting for the recording to stop. Requiring
-/// the aggregate gate here is intentional: a monitor bump or a hard breath
-/// can look speech-like for one frame, but should not earn a checkmark.
 pub struct LiveSpeechDetector {
     vad: Option<transcribe_rs::vad::SileroVad>,
     frame: Vec<f32>,
@@ -174,9 +163,6 @@ impl LiveSpeechDetector {
         }
     }
 
-    /// Feeds processed 16 kHz samples and returns true once the same evidence
-    /// gate used after recording has passed. The caller can keep the result
-    /// latched for the rest of the recording.
     pub fn push(&mut self, samples_16k: &[f32]) -> bool {
         self.frame.extend_from_slice(samples_16k);
         let mut consumed = 0;
@@ -244,12 +230,6 @@ fn gain_leniency_scale(active_gain: f32) -> f32 {
     }
 }
 
-/// Runs VAD over an entire recording and judges whether it contains speech.
-///
-/// Blocking (ONNX inference) — call from `spawn_blocking`, ideally started
-/// concurrently with the transcription API call so it adds no wall-clock
-/// latency of its own.
-///
 #[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 pub fn analyze_speech_with_sensitivity(
     samples_16k: &[f32],

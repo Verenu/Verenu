@@ -34,6 +34,13 @@ test('Context creation, editing and deletion persist through the UI without touc
     expect((await session.invoke('get_contexts')).find(row => row.id === created.id).name).toBe(renamed);
     await open(created.id);
     await actions(created.id, renamed);
+    await page.getByRole('menuitem', { name: 'Pin', exact: true }).click();
+    await expect.poll(async () => (await session.invoke('get_contexts')).find(row => row.id === created.id).pinned_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    await actions(created.id, renamed);
+    await expect(page.getByRole('menuitem', { name: 'Unpin', exact: true })).toBeVisible();
+    await page.getByRole('menuitem', { name: 'Unpin', exact: true }).click();
+    await expect.poll(async () => (await session.invoke('get_contexts')).find(row => row.id === created.id).pinned_at).toBeNull();
+    await actions(created.id, renamed);
     await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
     expect((await session.invoke('get_contexts')).some(row => row.id === created.id)).toBe(true);
     await page.getByRole('menuitem', { name: 'Confirm delete', exact: true }).click();

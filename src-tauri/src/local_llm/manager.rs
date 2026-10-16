@@ -523,14 +523,6 @@ impl LocalLlmManager {
         }
     }
 
-    /// Unconditional safety unload triggered by system RAM/VRAM pressure —
-    /// unlike `unload_if_idle`, this ignores the configured memory policy
-    /// (including "keep loaded") since freeing memory for whatever else
-    /// needs it takes priority over a passive idle preference. Skipped
-    /// entirely while a cleanup request is in flight: killing the
-    /// llama-server process mid-generation has no safe cancellation path,
-    /// it just surfaces as a connection error to whoever is waiting on the
-    /// result. The next periodic check (30s later) will retry.
     pub fn unload_for_resource_pressure(&self, app: &AppHandle) {
         let Ok(_request_gate) = self.request_start_gate.lock() else {
             log::warn!("local-llm: request gate poisoned; skipping resource-pressure unload");

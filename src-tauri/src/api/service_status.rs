@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Serialize};
 
 const PROVIDER_STATUS_URL: &str = "https://api.verenu.com/v1/provider-status";
@@ -98,11 +97,6 @@ fn filter_alerts(
         .collect()
 }
 
-/// Fetches provider status and returns only the alerts relevant to
-/// `selected_providers` (the user's configured transcription/cleanup
-/// providers) that the backend has flagged as worth surfacing
-/// (`showToUsers`). Providers the user hasn't selected are dropped
-/// silently, even if they're having issues.
 pub async fn fetch_relevant_alerts(
     selected_providers: &[String],
 ) -> anyhow::Result<Vec<ProviderStatusAlert>> {
@@ -119,10 +113,6 @@ pub async fn fetch_relevant_alerts(
     Ok(filter_alerts(response.providers, selected_providers))
 }
 
-/// Fetches provider status and returns the response body untouched, for the
-/// Developer panel's manual check button — lets us see exactly what the API
-/// returned (including fields our typed model doesn't parse) rather than the
-/// filtered/reshaped alerts the pipeline actually acts on.
 pub async fn fetch_raw() -> anyhow::Result<serde_json::Value> {
     Ok(super::client::get()
         .get(PROVIDER_STATUS_URL)
@@ -135,9 +125,6 @@ pub async fn fetch_raw() -> anyhow::Result<serde_json::Value> {
         .await?)
 }
 
-/// Fetches the global client notice. The API wraps the message in a top-level
-/// `message` object. Expiry is filtered here; the frontend applies the
-/// `showToUsers` visibility gate.
 pub async fn fetch_global_message() -> anyhow::Result<Option<GlobalMessage>> {
     let response: GlobalMessageResponse = super::client::get()
         .get(GLOBAL_MESSAGE_URL)
@@ -155,8 +142,6 @@ pub async fn fetch_global_message() -> anyhow::Result<Option<GlobalMessage>> {
     ))
 }
 
-/// Plain reachability check for `api.verenu.com` — no parsing beyond the
-/// HTTP status, since callers only need up/down.
 pub async fn check_health() -> bool {
     matches!(
         super::client::get()

@@ -1,4 +1,3 @@
-
 #[cfg(target_os = "linux")]
 use serde::de::DeserializeOwned;
 #[cfg(target_os = "linux")]
@@ -116,9 +115,6 @@ fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     serde_json::from_slice(&output.stdout).ok()
 }
 
-/// Use the same command socket and five-second timeout as hyprctl. Only fall
-/// back before sending anything: retrying a dispatch after a read failure can
-/// repeat a visible window operation.
 #[cfg(target_os = "linux")]
 pub(crate) fn socket_request(command: &str) -> Option<std::io::Result<Vec<u8>>> {
     let path = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
@@ -177,8 +173,6 @@ pub(crate) fn window_by_address(address: &str) -> Option<ActiveWindow> {
         .and_then(|window| serde_json::from_value(window).ok())
 }
 
-/// The client owned by `pid`, preferring the most recently focused one. Used
-/// to resolve a captured target's app after focus has moved elsewhere.
 #[cfg(target_os = "linux")]
 pub(crate) fn window_by_pid(pid: u32) -> Option<ActiveWindow> {
     let windows: Vec<serde_json::Value> = hyprctl_json(&["-j", "clients"])?;
@@ -423,8 +417,6 @@ pub(crate) fn pill_window_after_show() -> Option<ActiveWindow> {
     None
 }
 
-/// Install the portal actions in the user's Lua bindings. Omarchy loads this
-/// file after its defaults, so the marked block is the only text Verenu owns.
 #[cfg(target_os = "linux")]
 pub(crate) fn ensure_global_shortcut_binding(
     bindings: &[String],
@@ -483,9 +475,6 @@ fn replace_managed_block(current: &str, start: &str, end: &str, block: &str) -> 
     }
 }
 
-/// Installs the fixed sub-app capture chord in its own managed block. The
-/// bind runs a single-instance handoff (`--verenu-capture-sub-app`); exec
-/// does not move focus, so the running app captures the user's window.
 #[cfg(target_os = "linux")]
 pub(crate) fn ensure_sub_app_capture_binding(chord: &str, capture_command: &str) -> Result<(), String> {
     let config = std::env::var_os("XDG_CONFIG_HOME")

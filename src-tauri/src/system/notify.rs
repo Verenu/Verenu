@@ -1,4 +1,3 @@
-
 use tauri::AppHandle;
 #[cfg(windows)]
 use tauri::Emitter;
@@ -6,14 +5,7 @@ use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(windows)]
 const WINDOWS_TOAST_APP_ID: &str = "com.verenu.app";
-
-#[cfg(windows)]
-#[allow(dead_code)]
-static WINDOWS_TOAST_IDENTITY_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(windows, debug_assertions))]
 static WINDOWS_TOAST_SHORTCUT_ICON: std::sync::Mutex<Option<std::path::PathBuf>> =
@@ -205,8 +197,6 @@ mod linux_tests {
     }
 }
 
-/// Raises a download-complete system notification from the backend so it can
-/// arrive while the main window is hidden.
 pub fn notify_model_download_complete(app: &AppHandle, model_name: &str) {
     let _ = show(
         app,
@@ -244,8 +234,6 @@ pub fn notify_provider_and_global_message(
     )
 }
 
-/// Sends a selected notification example through the same native path used by
-/// background notifications.
 pub fn notify_test_notification(app: &AppHandle, notification_type: &str) -> Result<(), String> {
     match notification_type {
         "update" => notify_update_available(app, "0.16.1"),
@@ -297,25 +285,18 @@ fn show_windows(
     Ok(())
 }
 
-/// Prepare Windows toast attribution for unpackaged development builds.
-///
-/// Toasts keep the normal "Verenu" Start Menu identity. Process isolation for
-/// `tauri dev` still uses `com.verenu.app.dev` via `tauri.dev.windows.conf.json`,
-/// so we intentionally do not create a "Verenu Development" shortcut.
 #[cfg(target_os = "windows")]
 pub fn prepare_windows_notification_identity(themed_icon: &std::path::Path) {
     #[cfg(all(windows, debug_assertions))]
     {
         remove_obsolete_windows_dev_branded_shortcut();
-        match sync_windows_toast_shortcut_icon(themed_icon) {
-            Ok(()) => WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release),
-            Err(err) => log::warn!("Could not register the Windows notification identity: {err}"),
+        if let Err(err) = sync_windows_toast_shortcut_icon(themed_icon) {
+            log::warn!("Could not register the Windows notification identity: {err}");
         }
     }
 
     #[cfg(not(all(windows, debug_assertions)))]
     {
-        WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release);
         let _ = themed_icon;
     }
 }
@@ -325,17 +306,13 @@ pub fn refresh_windows_notification_identity(themed_icon: &std::path::Path) {
     #[cfg(debug_assertions)]
     {
         remove_obsolete_windows_dev_branded_shortcut();
-        match sync_windows_toast_shortcut_icon(themed_icon) {
-            Ok(()) => WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release),
-            Err(err) => {
-                log::warn!("Could not refresh the Windows toast shortcut icon: {err}")
-            }
+        if let Err(err) = sync_windows_toast_shortcut_icon(themed_icon) {
+            log::warn!("Could not refresh the Windows toast shortcut icon: {err}");
         }
     }
 
     #[cfg(not(debug_assertions))]
     {
-        WINDOWS_TOAST_IDENTITY_READY.store(true, Ordering::Release);
         let _ = themed_icon;
     }
 }

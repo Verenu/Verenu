@@ -1,4 +1,3 @@
-
 import { invoke, listen } from './tauri';
 import { fetchSnippets, fetchDictionary } from './stores.svelte';
 import { loadContexts } from './contextsStore.svelte';

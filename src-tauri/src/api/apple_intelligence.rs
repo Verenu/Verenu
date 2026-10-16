@@ -1,4 +1,3 @@
-//! On-device FoundationModels cleanup. This module never makes network calls.
 use serde::Serialize;
 
 pub const MODEL: &str = "system";

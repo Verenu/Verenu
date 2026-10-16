@@ -1,4 +1,3 @@
-
 const STIFFNESS = 600;
 const DAMPING = 43;
 const MAX_SPEED = 26;

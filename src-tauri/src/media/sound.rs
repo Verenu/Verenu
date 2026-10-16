@@ -1,4 +1,3 @@
-
 use rodio::buffer::SamplesBuffer;
 use std::f32::consts::{PI, TAU};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -8,13 +7,11 @@ use std::sync::OnceLock;
 
 use crate::system::volume::MuteOutcome;
 
-/// Which dictation transition the cue represents.
 #[derive(Clone, Copy)]
 pub enum SoundCue {
     Start,
     Stop,
     Error,
-    /// Recording cancelled (Escape) — a quiet, soft two-note dismiss.
     Cancel,
 }
 
@@ -23,12 +20,7 @@ const ATTACK_MS: f32 = 6.0;
 const RELEASE_MS: f32 = 60.0;
 const AMPLITUDE: f32 = 0.30;
 
-/// Delay before the start cue for a normal hold-to-talk press. Long enough that
-/// the discarded first tap of a handsfree double-tap (held <200ms, then
-/// cancelled) is suppressed before it sounds, while a genuine hold still chimes.
 pub const START_CUE_NORMAL_DELAY_MS: u64 = 260;
-/// Delay before the start cue when entering handsfree, so it lands after the
-/// pill's entry animation rather than before it looks like it's listening.
 pub const START_CUE_HANDSFREE_DELAY_MS: u64 = 220;
 
 static START_CUE_GEN: AtomicU64 = AtomicU64::new(0);
@@ -232,7 +224,6 @@ mod mute_tests {
     }
 }
 
-/// Connection-scoped remote ownership is independent of local dictation.
 pub fn set_remote_mute(owner: u64, muted: bool) {
     update_mute_owners(|owners| {
         if muted {
@@ -245,7 +236,6 @@ pub fn set_remote_mute(owner: u64, muted: bool) {
     });
 }
 
-/// Restore audio before the runtime exits; late network workers cannot remute.
 pub fn release_all_mutes_on_exit() {
     let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     release_mute_owners_on_exit(&mut owners, crate::system::volume::unmute);
@@ -268,18 +258,12 @@ enum Timbre {
     Buzz,
 }
 
-/// One harmonic of a timbre: frequency `ratio` to the fundamental, relative
-/// `gain`, and `decay_mult` (>1 = decays faster than the body, which gives bells
-/// their bright-onset/mellow-tail shimmer). `decay_mult` is unused for sustained
-/// voices.
 struct Harmonic {
     ratio: f32,
     gain: f32,
     decay_mult: f32,
 }
 
-/// One note in a cue: fundamental `freq`, when it begins, how long it rings, a
-/// relative `gain`, and the `timbre` it is voiced with.
 struct Note {
     freq: f32,
     start_ms: f32,
@@ -288,7 +272,6 @@ struct Note {
     timbre: Timbre,
 }
 
-/// Play the cue on a background thread. Returns immediately.
 pub fn play(cue: SoundCue) {
     if sound_tx()
         .send(SoundCommand::Play {
@@ -302,22 +285,14 @@ pub fn play(cue: SoundCue) {
     }
 }
 
-/// Set the master volume for future sound effects.
 pub fn set_volume(volume: f32) {
     SOUND_EFFECTS_VOLUME.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-/// Schedule the start cue after `delay_ms`. Claims a new generation, so any
-/// previously scheduled start cue is superseded and will not sound. This is how
-/// the discarded first tap of a handsfree double-tap is silenced and how the
-/// handsfree cue is held back until its entry animation has played.
 pub fn play_start_delayed(delay_ms: u64) {
     play_start_delayed_then(delay_ms, || {});
 }
 
-/// Schedule the start cue after `delay_ms`, then run `after` once that same cue
-/// has either finished playing or failed. Superseded or cancelled generations
-/// never invoke the callback.
 pub fn play_start_delayed_then<F>(delay_ms: u64, after: F)
 where
     F: FnOnce() + Send + 'static,
@@ -345,18 +320,10 @@ where
     });
 }
 
-/// Cancel a pending (not-yet-played) start cue — e.g. when a quick tap is
-/// discarded or the recording is escaped before the cue fires.
 pub fn cancel_pending_start() {
     START_CUE_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Claims local mute ownership for a recording that is about to open and
-/// returns the task that applies the mute. Run it through
-/// `mute_gate::start_after_mute` so the microphone only opens once the output
-/// is silent. Claiming immediately, rather than after the start cue, is what
-/// keeps playing audio out of the first recorded samples. A later
-/// `coordinated_unmute` supersedes a mute that is still in flight.
 #[derive(Clone, Copy)]
 pub struct LocalMuteClaim(u64);
 
@@ -379,7 +346,6 @@ impl LocalMuteClaim {
         }
     }
 
-    /// A late opener must not invalidate or release a replacement's claim.
     pub fn release(self) {
         if let Some(generation) = invalidate_local_claim(&LOCAL_MUTE_CLAIM, self.0) {
             queue_local_release(generation);
@@ -417,7 +383,6 @@ fn queue_local_release(generation: u64) {
     });
 }
 
-/// Invalidate any pending coordinated mute before unmuting the system.
 pub fn coordinated_unmute() {
     let generation = LOCAL_MUTE_CLAIM
         .fetch_add(1, Ordering::SeqCst)

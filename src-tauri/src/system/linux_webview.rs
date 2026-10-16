@@ -1,4 +1,3 @@
-
 use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
 
 pub(super) fn configure(webview: &webkit2gtk::WebView) {

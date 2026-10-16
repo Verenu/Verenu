@@ -1,4 +1,3 @@
-
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -101,8 +100,6 @@ pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<S
     result
 }
 
-/// Responder side of pairing: approve (with the code typed by the user) or
-/// reject the pending incoming request.
 #[tauri::command]
 pub async fn sync_respond_to_pairing(
     app: AppHandle,
@@ -172,7 +169,6 @@ pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(),
     result
 }
 
-/// Debug/diagnostics: change-log size and per-peer cursor positions.
 #[tauri::command]
 pub async fn sync_get_diagnostics(app: AppHandle) -> Result<serde_json::Value, String> {
     super::run_db(&app, "sync_get_diagnostics", move |db| {

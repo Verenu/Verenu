@@ -1,11 +1,3 @@
-//! Secure storage for the sync identity private key.
-//!
-//! Mirrors `data/credentials.rs` (Windows Credential Manager via CredWriteW,
-//! macOS Keychain via security-framework) but with its own target names, since
-//! that module is deliberately closed over the four API-provider keys. If the
-//! platform store fails, the key falls back to a 0600 file in the app data
-//! directory with a loud warning - pairing still works, but users should know.
-
 #[cfg(target_os = "windows")]
 const WIN_TARGET: &str = "verenu.sync.identity";
 #[cfg(target_os = "macos")]

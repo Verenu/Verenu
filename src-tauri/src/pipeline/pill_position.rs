@@ -132,19 +132,6 @@ fn placement_for_linux_monitor(
     }
 }
 
-/// Recomputes the pill's ideal centered placement for a given content size,
-/// purely from the monitor it currently sits on — never from the window's
-/// own current position. `set_pill_size` used to derive the new position by
-/// offsetting from the window's current geometry (`cur_pos + (cur_size -
-/// new_size) / 2`), which is only correct if that current geometry was
-/// itself exactly centered; content-fit resizing fires many times per
-/// second during a width transition, and out-of-order/concurrent command
-/// invocations could read back a stale position mid-flight, so small
-/// rounding/race errors compounded into a persistent rightward drift on any
-/// state whose pill width transitions (every state but the bare recording
-/// capsule). Recomputing from the monitor's work area every time is
-/// idempotent — each call lands on the same correct center regardless of
-/// what the window's geometry was a moment ago, so nothing can compound.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn placement_for_current_monitor<R: Runtime>(
     pill: &WebviewWindow<R>,
@@ -176,16 +163,6 @@ pub(crate) fn placement_for_current_monitor<R: Runtime>(
     resolve_pill_placement(pill, point, width_points, height_points)
 }
 
-/// Reads the pill's actual on-screen geometry right now. Used by the
-/// animated cross-monitor path (`pill_animation.rs`) as the tween's starting
-/// point — it needs the literal current placement to interpolate from, not
-/// just a changed/unchanged boolean. Only called from the Windows-only
-/// animated branch in `pill.rs`'s `show_pill_msg`. Returns `None` if the
-/// geometry can't be read or comes back zero-sized (e.g. very early in
-/// window initialization) rather than guessing `(0, 0)` — a tween that
-/// actually started from `(0, 0, 0, 0)` would visibly grow in from the
-/// screen's top-left corner, which is worse than just skipping the
-/// animation for that one call.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn current_placement<R: Runtime>(pill: &WebviewWindow<R>) -> Option<PillPlacement> {
     let size = pill.inner_size().ok()?;
@@ -209,12 +186,6 @@ pub(super) fn position_changed(current: i32, desired: i32) -> bool {
     current.abs_diff(desired) > 1
 }
 
-/// Whether a pill move should glide via `pill_animation.rs` rather than jump.
-///
-/// #197 meant this for mixed-DPI *cross-monitor* hops. Gating on any x/y
-/// delta still tweened same-monitor content-fit resizes, because the pill is
-/// recentered when its width changes (x moves by half the width delta). Treat
-/// a move as a monitor hop only when it is larger than that recenter.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn should_animate_cross_monitor_move(
     already_placed: bool,
@@ -257,13 +228,6 @@ pub(crate) fn snap_linux_placement_to_mapped_size(
     }
 }
 
-/// Moves/resizes the pill to `placement` if it isn't already there. Returns
-/// `true` if a native resize or reposition was actually issued. Used as-is
-/// for the synchronous same-monitor path and by `set_pill_size` for
-/// frontend-reported content-fit resizes; the animated cross-monitor path in
-/// `pill_animation.rs` has its own per-frame `SetWindowPos` calls instead,
-/// since every tween frame must apply unconditionally to progress the
-/// animation rather than skip via this function's no-op check.
 pub(crate) fn apply_pill_placement<R: Runtime>(
     pill: &WebviewWindow<R>,
     placement: PillPlacement,

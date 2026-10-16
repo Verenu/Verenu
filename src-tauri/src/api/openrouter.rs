@@ -1,4 +1,3 @@
-
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
@@ -33,8 +32,6 @@ struct ModelPricingFields {
     completion: String,
 }
 
-/// Fetches the public OpenRouter catalog. The endpoint does not need one of
-/// the user's provider keys, so pricing refreshes never send private data.
 pub async fn fetch_model_pricing() -> Result<Vec<ModelPricing>> {
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(15),

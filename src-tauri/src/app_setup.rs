@@ -1,4 +1,3 @@
-
 use std::sync::{atomic::AtomicBool, Arc};
 use tauri::{AppHandle, Manager};
 
@@ -14,8 +13,6 @@ use std::time::Duration;
 #[derive(Clone, Default)]
 pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
-    /// Diagnostic state only. The pill is created after the main frontend has
-    /// passed the startup gate, so its readiness is not a separate gate.
     pub(crate) pill: Arc<AtomicBool>,
 }
 
@@ -61,15 +58,6 @@ pub(crate) fn hide_main_window(app: &AppHandle) {
     }
 }
 
-/// Canonical per-user data directory for Verenu, following each OS's convention.
-///
-/// This is the single source of truth for where Verenu stores its SQLite
-/// database and `settings.json`. Everything that touches the DB — startup
-/// `open`, the in-app updater's pre-update backup, etc. — MUST derive its path
-/// from here (via [`app_db_path`]). Do NOT use Tauri's
-/// `app.path().app_data_dir()` for the database or settings: that resolves
-/// against the bundle identifier, so Windows `tauri dev` (`com.verenu.app.dev`)
-/// would otherwise fork state away from production.
 fn app_data_dir_override() -> Option<std::path::PathBuf> {
     std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE").map(std::path::PathBuf::from)
 }
@@ -213,7 +201,6 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// Canonical path to the SQLite database file. Use this everywhere.
 pub(crate) fn app_db_path() -> std::path::PathBuf {
     app_data_dir().join("verenu.db")
 }

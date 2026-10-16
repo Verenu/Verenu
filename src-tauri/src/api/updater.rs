@@ -79,7 +79,6 @@ impl UpdateChannel {
     }
 }
 
-/// Repo to check for releases.
 const RELEASE_REPO: &str = "MONKE2525E/Verenu";
 const LEGACY_RELEASE_REPO: &str = "Verenu/Verenu";
 
@@ -176,15 +175,10 @@ pub fn is_authorized_release_asset_url(url: &str) -> bool {
     !is_suspicious(tag) && !is_suspicious(asset)
 }
 
-/// Check the configured repo for a release newer than the current version on
-/// the selected release channel.
 pub async fn check(channel: UpdateChannel) -> anyhow::Result<Option<UpdateInfo>> {
     check_repo(RELEASE_REPO, channel, true).await
 }
 
-/// Resolve the newest installable release for a channel, including the version
-/// already running. This is used only by the developer reinstall control;
-/// normal update checks must continue to require a newer version.
 pub async fn latest_installable(channel: UpdateChannel) -> anyhow::Result<Option<UpdateInfo>> {
     check_repo(RELEASE_REPO, channel, false).await
 }
@@ -298,8 +292,6 @@ fn select_compatible_release(
 #[cfg(target_os = "linux")]
 pub use resolve_verified_download as resolve_linux_download;
 
-/// Resolve metadata again in Rust; never accept a checksum or installer type
-/// supplied by the renderer. Reject stale offers after a channel change.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub async fn resolve_verified_download(
     url: &str,

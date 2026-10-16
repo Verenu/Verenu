@@ -1,4 +1,3 @@
-
 #[derive(Clone, Debug)]
 pub(super) struct ClipboardPhrasePlan {
     pub markers: Vec<String>,

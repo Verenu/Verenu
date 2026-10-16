@@ -78,8 +78,6 @@ pub fn ensure_disk_space(root: &Path, downloaded: u64, total: Option<u64>) -> an
     Ok(())
 }
 
-/// Hashing runs on the caller's blocking worker. Completion is emitted only
-/// after EOF; cancellation and read failures must leave verification unfinished.
 pub fn sha256_with_progress(
     path: &Path,
     cancel: &AtomicBool,

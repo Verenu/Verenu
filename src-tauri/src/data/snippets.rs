@@ -244,11 +244,6 @@ pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]
     count
 }
 
-/// Words dictated, without snippet awareness: whitespace-delimited tokens
-/// containing at least one alphanumeric character. Punctuation-only tokens
-/// (`...`, em dashes, stray periods from the transcription model) are not
-/// words. This is the shared definition behind history totals, lifetime
-/// stats, and Insights aggregates.
 #[cfg(test)]
 pub fn count_alphanumeric_words(text: &str) -> i64 {
     text.split_whitespace()
@@ -256,14 +251,6 @@ pub fn count_alphanumeric_words(text: &str) -> i64 {
         .count() as i64
 }
 
-/// If the entire transcription is just a snippet trigger (ignoring punctuation
-/// added by the transcription model), return the expansion directly.
-///
-/// The transcription model always appends a period — "roblox" becomes "roblox." —
-/// which `expand_snippets` would leave as an orphaned "." after replacing the trigger.
-/// This function strips all punctuation before matching and returns the raw expansion
-/// text, so no period bleeds through. Also increments the snippet's use_count.
-///
 pub fn try_pure_snippet_expand_from(
     text: &str,
     snippets: &[db::Snippet],
@@ -334,8 +321,6 @@ pub fn expand_snippets_from(text: &str, snippets: &mut [db::Snippet], db: &Db) -
     result
 }
 
-/// Resolve triggers against untouched speech, then edit only spoken spans.
-/// Payloads are expansion barriers so a rollback cannot erase saved content.
 pub(crate) fn expand_snippets_with_spoken_transform(
     text: &str,
     snippets: &mut [db::Snippet],
@@ -369,9 +354,6 @@ pub(crate) fn expand_snippets_with_spoken_transform(
     out
 }
 
-/// Alternate candidates may expand only snippets admitted by the primary
-/// transcript, whose instructions are already included in cleanup. Other
-/// triggers stay literal barriers, including triggers named like commands.
 pub(crate) fn transform_alternate_with_primary_snippets(
     primary: &str,
     alternate: &str,
@@ -396,9 +378,6 @@ pub(crate) fn transform_alternate_with_primary_snippets(
     out
 }
 
-/// Apply mechanical final-output constraints from matched snippet instructions.
-/// These are intentionally narrow: they only cover hard formatting rules that
-/// should be guaranteed even if the cleanup model misses the prompt override.
 pub fn apply_cleanup_instruction_overrides(text: &str, instructions: &str) -> String {
     if instructions.trim().is_empty() {
         return text.to_string();

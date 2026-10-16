@@ -1,29 +1,3 @@
-//! The sync engine: turns the local change log into wire ops, applies remote
-//! ops with last-writer-wins semantics, and drives a full sync session over an
-//! established (already-authenticated) framed message stream.
-//!
-//! Conflict model, in one place:
-//! - Every row change carries a stamp (wall-clock ms, origin device uuid,
-//!   origin sequence). Stamps are totally ordered, so every device converges.
-//! - Upsert vs upsert / upsert vs delete: higher stamp wins (LWW per record).
-//! - Natural-key collisions (two devices created "the same" dictionary term,
-//!   snippet trigger, or context name independently): the row with the higher
-//!   stamp survives and the loser is hard-deleted on both sides. When the
-//!   local row wins, an anti-entropy tombstone is logged for the remote uuid
-//!   so the originating device removes its losing row too.
-//! - Contexts sync as aggregates (row + targets + memberships); the whole
-//!   aggregate is LWW, so two devices editing the same context concurrently
-//!   converge on the later edit wholesale.
-//! - Context-owned dictionary corrections sync as independent child rows,
-//!   keyed by their own UUID and carrying Context/canonical UUID references;
-//!   transient AutoLearn candidates and pending evidence remain local-only.
-//! - Natural-key loser tombstones use a reserved sync-log namespace so an
-//!   in-flight child can distinguish canonical replacement from explicit
-//!   deletion without adding another database schema column.
-//! - Settings are LWW per key using `sync_setting_meta` stamps.
-//! - Lifetime counters are summed per device (each dictation is counted by
-//!   exactly the device it happened on), so totals merge without double-count.
-
 use anyhow::{anyhow, Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -40,26 +14,14 @@ use super::protocol::{
 use super::store as sync_store;
 use super::store::{latest_op_stamp as latest_stamp, SyncPeer};
 
-/// Where a snapshot send has gotten to. Held by the sender across batches.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SnapshotProgress {
-    /// 0 = dictionary, 1 = snippets, 2 = contexts, 3 = sub-apps,
-    /// 4 = dictionary corrections, 5 = transcriptions, 6 = api_calls,
-    /// 7 = retained tombstones, 8 = done.
     pub stage: u8,
     pub last_id: i64,
-    /// Sequence namespace for synthesized snapshot stamps. Snapshot rows are
-    /// not written to the local log, so this must survive across batches.
     pub origin_seq: Option<i64>,
-    /// Only acknowledge changes present when enumeration started. Writes to
-    /// an already enumerated table must remain eligible for the next delta.
     pub start_cursor: Option<i64>,
 }
 
-/// Settings keys that sync between paired devices. Everything else in
-/// settings.json is device-local by design - see docs/lan-sync.md for the
-/// full classification. API keys never appear here (they are not even stored
-/// in settings.json; they live in the OS credential store).
 pub const SYNCABLE_SETTINGS: &[&str] = &[
     store::TRANSCRIPTION_LANGUAGE,
     store::CLEANUP_ENABLED,
@@ -80,9 +42,6 @@ type ExistingCorrection = (i64, Option<String>, bool, i64, String, Option<String
 type CorrectionTarget = (i64, Option<String>, i64, bool);
 type CorrectionIdentity = (i64, i64, i64, String, bool);
 
-/// The environment the engine needs beyond the database. The Tauri manager
-/// implements it against the real app; tests use an in-memory stand-in so the
-/// whole session flow is testable without a running app.
 pub trait SyncHost: Send + Sync {
     fn device_uuid(&self) -> String;
     fn device_name(&self) -> String;
@@ -204,7 +163,6 @@ fn resolve_context_targets_in_ops(host: &dyn SyncHost, ops: Vec<SyncOp>) -> Vec<
         .collect()
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DictionaryRow {
     pub term: String,
@@ -236,9 +194,6 @@ pub struct SnippetRow {
     pub created_at: String,
 }
 
-/// A synced exe target, carrying which OS assigned it. `#[serde(untagged)]`
-/// so a peer still running a pre-platform-tagging build (bare string wire
-/// format) deserializes fine, just with `platform: None`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum TargetEntry {
@@ -315,17 +270,12 @@ pub struct ContextAggregate {
     pub websites: Vec<String>,
     #[serde(default)]
     pub dictionary_uuids: Vec<String>,
-    /// Dictionary references retain the natural term alongside the stable
-    /// UUID. This lets a Context membership follow a canonical dictionary
-    /// natural-key conflict after the losing UUID has been reparented.
     #[serde(default)]
     pub dictionary_entries: Vec<DictionaryReference>,
     #[serde(default)]
     pub snippet_uuids: Vec<String>,
 }
 
-/// A sub-app row. Sub-apps sync as their own table because they exist
-/// without a Context; the assignment travels as the owning Context's uuid.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubAppRow {
     pub executable: String,
@@ -390,24 +340,15 @@ pub struct ApiCallRow {
     pub created_at: String,
 }
 
-
-/// What changed when a batch was applied, for frontend refresh events.
 #[derive(Debug, Default, Clone)]
 pub struct ApplySummary {
     pub dictionary: bool,
-    /// Persistent Context-scoped correction mappings are separate sync rows,
-    /// but also set `dictionary` so older consumers refresh their dictionary
-    /// cache. The distinct flag lets Context-aware consumers refresh their
-    /// materialized view without guessing from the canonical table.
     pub dictionary_corrections: bool,
     pub snippets: bool,
     pub contexts: bool,
     pub history: bool,
     pub settings: bool,
     pub stats: bool,
-    /// At least one mapping referenced a parent that was not available in
-    /// this batch. The puller keeps its receive cursor unchanged so the
-    /// operation is retried after a later dependency batch or snapshot.
     pub deferred: bool,
     pub applied: usize,
     pub skipped: usize,
@@ -458,8 +399,6 @@ impl Drop for ApplyingGuard<'_> {
     }
 }
 
-/// Logs an op that originated on THIS device (local mutation follow-ups like
-/// anti-entropy tombstones and context cascades) with a fresh stamp.
 pub fn append_self_log(
     conn: &Connection,
     table_name: &str,
@@ -521,7 +460,6 @@ fn latest_dictionary_stamp(
         (left, right) => left.or(right),
     })
 }
-
 
 macro_rules! row_payloads {
     ($($name:ident, $ty:ident, $message:literal, $sql:literal,
@@ -757,11 +695,6 @@ fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Optio
     }))
 }
 
-/// Collects the next batch of ops to send. `snapshot` sends the full current
-/// state (new pairing or a peer whose cursor fell out of our retained log);
-/// otherwise it sends the collapsed changes after `since_seq`. Returns the ops
-/// plus the cursor to report: 0 while more batches follow, else the final log
-/// position.
 pub fn collect_ops(
     conn: &Connection,
     since_seq: i64,
@@ -932,7 +865,6 @@ pub fn collect_ops(
     Ok((ops, cursor, done))
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Applied {
     Yes,
@@ -959,9 +891,6 @@ fn apply_rank(op: &SyncOp) -> u8 {
     }
 }
 
-/// Applies a batch of remote ops inside one applying-guard window. Idempotent:
-/// re-applying an already-known op is a no-op, so retries and duplicate
-/// deliveries never create duplicate rows.
 pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
     with_sync_savepoint(conn, |conn| apply_ops_inner(conn, ops))
 }
@@ -2516,7 +2445,6 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     }
 }
 
-
 pub fn build_stats_exchange(conn: &Connection, self_uuid: &str) -> Result<StatsExchange> {
     let (total_words, dictionary_fixes) = conn
         .query_row(
@@ -2545,9 +2473,6 @@ pub fn build_stats_exchange(conn: &Connection, self_uuid: &str) -> Result<StatsE
     })
 }
 
-/// Applies the peer's stats exchange: their own counters and everything they
-/// know about third devices. Rows for ourselves are ignored (our own
-/// `lifetime_stats` row is authoritative for this device).
 pub fn apply_stats_exchange(
     conn: &Connection,
     stats: &StatsExchange,
@@ -2574,9 +2499,6 @@ pub fn apply_stats_exchange(
     Ok(())
 }
 
-/// Applies the peer's settings with per-key LWW. An unstamped local key uses
-/// the zero stamp until it is changed or a remote value is accepted, so an
-/// incoming stamped value can win the first exchange.
 pub fn apply_settings_exchange(
     conn: &Connection,
     host: &dyn SyncHost,
@@ -2612,8 +2534,6 @@ pub fn apply_settings_exchange(
     Ok(values.len())
 }
 
-/// Stamps a local settings change so it wins LWW against peers from now on.
-/// Called from the save_setting command path for syncable keys.
 pub fn record_local_setting_change(conn: &Connection, key: &str) -> Result<()> {
     if !SYNCABLE_SETTINGS.contains(&key) {
         return Ok(());
@@ -2626,8 +2546,6 @@ pub fn record_local_setting_change(conn: &Connection, key: &str) -> Result<()> {
     )
 }
 
-
-/// What a completed session did, for status events.
 #[derive(Debug, Default)]
 pub struct SessionSummary {
     pub applied: ApplySummary,
@@ -2643,19 +2561,6 @@ fn hello(uuid: &str, name: &str, app_version: &str) -> Hello {
     }
 }
 
-/// Runs one full sync session over an authenticated stream. Both sides call
-/// this; the phases run in a fixed order (initiator pulls, initiator serves,
-/// then the roles flip), so the sequential message flow cannot deadlock:
-///
-/// 1. Hello exchange (initiator sends first).
-/// 2. Meta exchange - stats + settings, initiator sends first.
-/// 3. Initiator pulls from the responder (request/batches/acks).
-/// 4. Responder pulls from the initiator.
-/// 5. Each side sends SyncDone and drains the peer's.
-///
-/// The caller must already have verified the peer: TLS is up, the `Hello`
-/// uuid maps to a paired peer, and the certificate fingerprint matches the
-/// pin recorded at pairing time.
 pub async fn run_session<S>(
     db: &DbHandle,
     host: &dyn SyncHost,
@@ -2669,8 +2574,6 @@ where
     run_session_after_hello(db, host, stream, initiator, peer, None).await
 }
 
-/// Responder entry point when the connection dispatcher already consumed and
-/// authenticated the initial Hello frame.
 pub async fn run_session_after_hello<S>(
     db: &DbHandle,
     host: &dyn SyncHost,

@@ -46,10 +46,6 @@ impl SettingsSnapshot {
     }
 }
 
-/// Anonymous count of optional features an install actually uses, for the
-/// `settings_snapshot` analytics event. Counts the same boolean feature
-/// flags that event already reports individually, plus one if at least one
-/// user-created context group exists.
 pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_count: i64) -> i64 {
     let flags = [
         CLEANUP_ENABLED,
@@ -104,8 +100,6 @@ impl SettingsHandle {
         Ok(SettingsSnapshot { values })
     }
 
-    /// Keep settings stable throughout an operation that uses their identity
-    /// or policy. Callers needing SQLite must acquire its lock first.
     pub(crate) fn with_snapshot<T>(
         &self,
         read: impl FnOnce(&SettingsSnapshot) -> Result<T, String>,
@@ -168,9 +162,6 @@ impl SettingsHandle {
         self.save_values_if_changed(values).map(|_| ())
     }
 
-    /// Persists a batch only when at least one value differs from the current
-    /// snapshot. The immutable Arc lets readers retain a cheap snapshot while
-    /// the first write after that snapshot performs the necessary map clone.
     pub fn save_values_if_changed<I, K>(&self, values: I) -> Result<bool, String>
     where
         I: IntoIterator<Item = (K, Value)>,
@@ -200,9 +191,6 @@ impl SettingsHandle {
         Ok(true)
     }
 
-    /// Persist before committing another store, then publish to runtime readers.
-    /// A returned commit error restores the previous file without publishing.
-    /// This is error recovery, not crash/power-loss atomicity across stores.
     pub(crate) fn save_values_with_commit<I, K, T>(
         &self,
         values: I,
@@ -259,7 +247,6 @@ impl SettingsHandle {
         Ok((true, result))
     }
 
-    /// Commit an asynchronous refresh only if its owner setting is unchanged.
     #[cfg(test)]
     pub fn save_value_if_owner_matches(
         &self,
@@ -271,8 +258,6 @@ impl SettingsHandle {
         self.save_value_if_owner_matches_when(owner_key, owner, key, value, || true)
     }
 
-    /// Commit an asynchronous refresh only if its owner and request context
-    /// are still current while holding the settings write lock.
     pub fn save_value_if_owner_matches_when<F>(
         &self,
         owner_key: &str,
@@ -458,7 +443,6 @@ pub(crate) fn is_storage_full_error(message: &str) -> bool {
         || lower.contains("error 112")
 }
 
-/// API key names in the store — never expose values to the frontend after write.
 pub const KEY_GROQ: &str = "api_key_groq";
 pub const KEY_OPENAI: &str = "api_key_openai";
 pub const KEY_GOOGLE: &str = "api_key_google";
@@ -467,8 +451,6 @@ pub const KEY_OPENROUTER: &str = "api_key_openrouter";
 pub const KEY_XAI: &str = "api_key_xai";
 pub const CUSTOM_KEY_PREFIX: &str = "api_key_custom_";
 
-/// Non-secret definitions of user-added providers. Their keys live in the
-/// credential store, never here.
 pub const CUSTOM_PROVIDERS: &str = "custom_providers";
 
 pub const TRANSCRIPTION_PROVIDER: &str = "transcription_provider";
@@ -489,7 +471,6 @@ pub const CLEANUP_CACHE_ENABLED: &str = "cleanup_cache_enabled";
 pub const HOTKEY: &str = "hotkey";
 pub const LINUX_CANCEL_KEY: &str = "linux_cancel_key";
 pub const LINUX_HANDSFREE_KEY: &str = "linux_handsfree_key";
-/// Sub-app capture chord, e.g. "Ctrl+Alt+Shift+S" (see core::hotkey::chord).
 pub const SUB_APP_CAPTURE_HOTKEY: &str = "sub_app_capture_hotkey";
 pub const MICROPHONE_DEVICE: &str = "microphone_device";
 pub const DEFAULT_TONE: &str = "default_tone";
@@ -505,55 +486,33 @@ pub const MIC_GAIN: &str = "mic_gain";
 pub const PLAY_START_STOP_SOUNDS: &str = "play_start_stop_sounds";
 pub const SOUND_EFFECTS_VOLUME: &str = "sound_effects_volume";
 pub const SETUP_COMPLETE: &str = "setup_complete";
-/// Where an unfinished setup wizard stands (`{ step, provider }`), so closing
-/// and reopening the app resumes it instead of starting over. Cleared on finish.
 pub const SETUP_PROGRESS: &str = "setup_progress";
 pub const CLIPBOARD_PHRASE: &str = "clipboard_phrase";
 pub const CLIPBOARD_PHRASE_ENABLED: &str = "clipboard_phrase_enabled";
 pub const LEGACY_FEATURES_ENABLED: &str = "legacy_features_enabled";
 pub const SYNC_ENABLED: &str = "sync_enabled";
-/// Device-local consent to send and receive temporary dictation mute requests.
 pub const SYNC_MUTING_ENABLED: &str = "sync_muting_enabled";
-/// Device-local routes for already paired devices. Never transferred to peers.
 pub const SYNC_PEER_ADDRESSES: &str = "sync_peer_addresses";
 pub const AUTO_LEARN_ENABLED: &str = "auto_learn_enabled";
 pub const AUTO_LEARN_EVENT_MODE: &str = "auto_learn_event_mode";
 pub const CONTEXTUAL_FORMATTING: &str = "contextual_formatting_enabled";
-/// Legacy mirror of [`CONTEXTUAL_FORMATTING`], still written on every save so a
-/// downgrade to an older build keeps working.
 pub const CONTEXTUAL_CAPS: &str = "contextual_caps_enabled";
-/// Legacy mirror of [`CONTEXTUAL_FORMATTING`]. See [`CONTEXTUAL_CAPS`].
 pub const AUTO_SPACING: &str = "auto_spacing_enabled";
 pub const APPEARANCE_MODE: &str = "appearance_mode";
 pub const ACCENT_COLOR: &str = "accent_color";
-/// User-entered hex palette for the Custom appearance mode (background, text,
-/// and optional sidebar/surface colors).
 pub const CUSTOM_THEME: &str = "custom_theme";
-/// Named palettes saved on this device, including each palette's accent.
 pub const CUSTOM_THEMES: &str = "custom_themes";
-/// Where the Android dictation pill sits; see `ANDROID_PILL_POSITIONS`.
 pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
-/// Where the Android pill rests with no keyboard to sit on; any of
-/// `ANDROID_PILL_SCREEN_POSITIONS`.
 pub const ANDROID_PILL_DOCK_POSITION: &str = "android_pill_dock_position";
-/// Whether the Android pill covers the keyboard's own mic button when it can find it.
 pub const ANDROID_PILL_COVER_KEYBOARD_MIC: &str = "android_pill_cover_keyboard_mic";
-/// Hide the Android pill offline when selected models need a network provider.
 pub const ANDROID_PILL_HIDE_OFFLINE: &str = "android_pill_hide_offline";
 pub const FORCE_SETUP_ON_LAUNCH: &str = "force_setup_on_launch";
 pub const RUIN_ACCESSIBILITY: &str = "ruin_accessibility";
 pub const DEV_MODE_ON_STARTUP: &str = "dev_mode_on_startup";
 pub const ADVANCED_MODEL_UI: &str = "advanced_model_ui";
-/// One cleanup prompt for every model. Fallback chains made per-model prompts
-/// a trap: edit the prompt on your default, fall back to another model, and the
-/// edit silently vanished. `CLEANUP_PROMPT_OVERRIDES` is the retired per-model
-/// map, still read once so an existing edit survives the change.
 pub const CLEANUP_PROMPT_OVERRIDE: &str = "cleanup_prompt_override";
 pub const STYLE_PROMPT_INSTRUCTIONS: &str = "style_prompt_instructions";
 pub const CLEANUP_PROMPT_OVERRIDES: &str = "cleanup_prompt_overrides";
-/// Per-provider snapshot of the live model lists, written only by the model
-/// catalog store. Derived cache state, so it is readable but never exported —
-/// one machine's stale view of a provider must not travel to another.
 pub const PROVIDER_MODEL_CACHE: &str = "provider_model_cache";
 pub const CREDENTIALS_MIGRATED: &str = "credentials_migrated_v1";
 pub const UPDATE_DISMISSED_VERSION: &str = "update_dismissed_version";
@@ -598,8 +557,6 @@ pub fn is_supported_local_model_memory_policy(value: &str) -> bool {
     LOCAL_MODEL_MEMORY_POLICY_OPTIONS.contains(&value)
 }
 
-/// Maps a `history_retention` setting value to a day count. `None` means
-/// "Forever" (or an unrecognized value) — never prune.
 pub fn history_retention_days(value: &str) -> Option<i64> {
     match value {
         "7 days" => Some(7),
@@ -615,14 +572,6 @@ mod tests;
 
 pub use config::*;
 
-/// Folds the two legacy booleans into the single `contextual_formatting_enabled`
-/// setting they were merged into.
-///
-/// Runs once at launch and is idempotent: if the new key already exists it does
-/// nothing. Old installs get `caps AND spacing` — formatting is only considered
-/// on if the user had both halves on, so nobody who deliberately turned one off
-/// gets it silently switched back on. The legacy keys are left in place as
-/// downgrade mirrors; every later save rewrites all three.
 pub fn migrate_contextual_formatting(settings: &SettingsHandle) -> Result<(), String> {
     if settings.get(CONTEXTUAL_FORMATTING).is_some() {
         return Ok(());

@@ -1,9 +1,3 @@
-//! Privacy-preserving product analytics for the desktop runtime.
-//!
-//! This is the only desktop module allowed to talk to PostHog. Callers pass
-//! semantic, bounded values; they never pass transcript text, exceptions, or
-//! window/application data.
-
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,8 +162,6 @@ pub enum FailureCategory {
     Unknown,
 }
 
-/// Fixed domains keep error tracking useful without ever accepting a free-form
-/// exception message, provider response, file name, endpoint, or user content.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub enum ErrorDomain {
@@ -223,8 +215,6 @@ impl ErrorSeverity {
     }
 }
 
-/// A structured, privacy-safe error report. No `Error`, message, path, URL,
-/// or stack string can enter this type.
 pub struct ErrorReport {
     pub domain: ErrorDomain,
     pub code: &'static str,
@@ -308,10 +298,8 @@ impl Analytics {
         }
     }
 
-    /// Captures a synthetic, content-free `$exception` event that PostHog
-    /// Error Tracking can group. Raw errors are deliberately not accepted.
     pub fn capture_sanitized_exception(&self, report: ErrorReport) {
-        self.capture_exception("$exception", exception_properties(report));
+        self.dispatch_to(DeliveryKind::Exception, "$exception", exception_properties(report));
     }
 
     pub fn capture_frontend_exception(&self, code: &'static str, handled: bool) {
@@ -336,8 +324,6 @@ impl Analytics {
         });
     }
 
-    /// Panic payloads commonly contain arbitrary values, so the hook reports
-    /// a fixed fingerprint and never reads the panic message or location.
     pub fn install_panic_hook(&self) {
         let _ = PANIC_ANALYTICS.set(self.clone());
         if PANIC_HOOK_INSTALLED.set(()).is_err() {
@@ -366,8 +352,6 @@ impl Analytics {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Opt-out is immediate. Deleting the installation identity means a later
-    /// opt-in cannot join activity from before the opt-out.
     pub fn set_enabled(&self, enabled: bool) {
         let already_enabled = self.enabled.load(Ordering::Acquire) == enabled;
         let has_install_id = self
@@ -902,12 +886,6 @@ impl Analytics {
         }
     }
 
-    /// The only trusted `$exception` producer. It is fed solely by
-    /// `capture_sanitized_exception`, which has no raw error/message input.
-    fn capture_exception(&self, event: &'static str, properties: Value) {
-        self.dispatch_exception(event, properties);
-    }
-
     fn capture(&self, event: &'static str, properties: Value) {
         let safe = safe_properties(event, properties);
         #[cfg(test)]
@@ -925,10 +903,6 @@ impl Analytics {
 
     fn dispatch(&self, event: &'static str, properties: Value) {
         self.dispatch_to(DeliveryKind::Event, event, properties);
-    }
-
-    fn dispatch_exception(&self, event: &'static str, properties: Value) {
-        self.dispatch_to(DeliveryKind::Exception, event, properties);
     }
 
     fn dispatch_to(&self, kind: DeliveryKind, event: &'static str, properties: Value) {

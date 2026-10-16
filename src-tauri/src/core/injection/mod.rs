@@ -462,9 +462,6 @@ fn unavailable_injection_probe() -> InjectionContextProbe {
     InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
 }
 
-/// Smart capitalization and spacing for a caret whose surrounding text the
-/// caller already read (Android's accessibility service reports the text on
-/// either side of the caret). Same rules as the desktop probes.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn format_for_caret_text(
@@ -668,9 +665,6 @@ pub fn append_or_reset_injection_history(hwnd: usize, ch: char) {
         }
     }
 }
-/// Write `text` to the OS clipboard without injecting. Used as a fallback
-/// when Verenu itself holds foreground focus and a normal paste would
-/// land in our own WebView.
 pub async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     let _guard = injection_lock().lock().await;
     #[cfg(windows)]
@@ -692,8 +686,6 @@ pub async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     }
 }
 
-/// Snapshot current plain text before the pipeline writes its injection payload.
-/// Clipboard phrase insertion is deliberately Windows-only for now.
 pub async fn read_current_clipboard_text() -> Option<String> {
     #[cfg(windows)]
     {

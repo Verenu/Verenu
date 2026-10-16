@@ -1,14 +1,3 @@
-//! Extended native chrome for the Linux main window.
-//!
-//! Tao creates a `GtkApplicationWindow` whose sole content child is a vertical
-//! `GtkBox`; wry packs the WebKit view into that box. A normal
-//! `GtkWindow::set_titlebar` installs `GtkHeaderBar` outside that content child,
-//! so GTK subtracts the header allocation before sizing the WebView. We instead
-//! make the existing box the main child of a `GtkOverlay` and place a real,
-//! textless `GtkHeaderBar` over its upper-right corner. The WebView therefore
-//! owns the full window allocation while GTK continues to provide whichever
-//! native controls the active compositor can meaningfully support.
-
 use gtk::glib::Cast;
 use gtk::prelude::{
     ContainerExt, CssProviderExt, GtkSettingsExt, GtkWindowExt, HeaderBarExt, ObjectExt,
@@ -238,9 +227,6 @@ pub fn metrics(window: &WebviewWindow) -> Result<TitleBarMetrics, String> {
     Ok(metrics_for(&header))
 }
 
-/// Applies Verenu's resolved foreground and hover colors to the native control
-/// cluster. The header itself stays transparent because the WebView now paints
-/// the sidebar and paper surfaces beneath it.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_theme(
     window: &WebviewWindow,

@@ -35,7 +35,6 @@ fn session_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("VERENU_DEV_SESSION_DIR").expect("session directory"))
 }
 
-/// Snapshot only once. The installed database is always opened read-only.
 pub(crate) fn prepare() -> anyhow::Result<()> {
     if !enabled() {
         return Ok(());

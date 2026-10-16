@@ -368,11 +368,8 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
     if user_version < 2 {
-        // IMPORTANT: each migration uses BEGIN/COMMIT for atomicity, followed by an
-        // explicit ROLLBACK. If the migration fails mid-way, sqlite3_exec aborts but
-        // leaves the BEGIN open. Without the ROLLBACK cleanup, every subsequent INSERT
-        // would execute inside that ghost transaction and be silently discarded on
-        // connection close — causing all user data to vanish on restart.
+        // sqlite3_exec leaves an explicit transaction open when a batch fails.
+        // ROLLBACK restores autocommit before subsequent writes use this connection.
         let _ = conn.execute_batch(
             "ALTER TABLE snippets ADD COLUMN instructions TEXT NOT NULL DEFAULT '';",
         );

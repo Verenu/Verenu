@@ -22,7 +22,6 @@ const ROLE_PREFIXES: &[&str] = &[
     "mic",
 ];
 
-/// Generic labels that would false-match under substring comparison.
 const GENERIC_NORMALIZED: &[&str] = &[
     "usb audio device",
     "usb audio",

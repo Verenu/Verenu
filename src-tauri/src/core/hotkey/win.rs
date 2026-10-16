@@ -181,8 +181,6 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Validate key mapping without probing RegisterHotKey. Dev sessions do not
-/// own host shortcuts, but still reject codes this backend cannot map.
 pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
     let ids = super::mapped_codes(keys)?;
     Ok(keys
@@ -233,8 +231,6 @@ pub fn set_handless_active(v: bool) {
     HANDLESS_ACTIVE.store(v, Ordering::SeqCst);
 }
 
-/// Prevent injected paste keys from matching the configured global hotkey.
-/// Physical user input remains active while the suppression window is open.
 pub fn begin_synthetic_paste_suppression(duration_ms: u64) {
     let until = unsafe { GetTickCount64() }.saturating_add(duration_ms);
     SYNTHETIC_PASTE_SUPPRESSION_UNTIL.fetch_max(until, Ordering::SeqCst);
@@ -255,7 +251,6 @@ pub fn clear_processing_generation(expected_generation: u64) {
     );
 }
 
-/// Current Caps Lock toggle state, tracked from the hook thread.
 pub fn caps_lock_is_on() -> bool {
     CAPS_LOCK_ON.load(Ordering::SeqCst)
 }

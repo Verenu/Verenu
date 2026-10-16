@@ -1,4 +1,3 @@
-
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +84,6 @@ impl Chord {
         }
     }
 
-    /// Windows virtual-key code for the non-modifier key.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn windows_vk(&self) -> u32 {
         match self.key {
@@ -95,7 +93,6 @@ impl Chord {
         }
     }
 
-    /// W3C `KeyboardEvent.code` name, as used by `global_hotkey` on macOS.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn web_code(&self) -> String {
         match self.key {

@@ -377,7 +377,6 @@
     }
   }
 
-  /** Base model lists the wizard seeds, plus whatever the chosen preset points at. */
   function modelsByProvider(...selected: string[]): ProviderModelMap {
     const map: ProviderModelMap = {
       groq: ['whisper-large-v3-turbo', 'whisper-large-v3'],
