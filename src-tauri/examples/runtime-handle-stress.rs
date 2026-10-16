@@ -1,5 +1,3 @@
-//! Exercise native handle ownership without loading Verenu data or providers.
-//! Requires a display; on CI run under xvfb-run. A process abort is a failure.
 fn main() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();

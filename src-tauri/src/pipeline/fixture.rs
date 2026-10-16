@@ -135,11 +135,6 @@ pub async fn run_pipeline_fixture(
             }
             Ok(_) => {}
             Err(e) => {
-                // Mirrors run_transcription in stages.rs: always try the
-                // next candidate regardless of retryable status — a
-                // non-retryable error on this provider (e.g. missing key)
-                // says nothing about whether a different fallback
-                // provider/model would succeed.
                 last_err = Some(e);
             }
         }
@@ -182,21 +177,15 @@ pub async fn run_pipeline_fixture(
         || injected_text.clone(),
         |catalog| catalog.normalize_mentions(&injected_text),
     );
-    // Mirrors finalize.rs: History must save the same text that actually
-    // gets injected (dictionary substitution included), not the
-    // pre-dictionary value.
     let clean_for_insert = injected_text.clone();
     let history_entry = db::insert_transcription_returning(
         &db_handle,
         &raw_text,
         &clean_for_insert,
-        // Canonical count is derived inside from the raw text (see finalize.rs).
         0,
         request.audio.duration_ms as i64,
         &api_used,
         None,
-        // Mirror finalize.rs: dictations are attributed to the resolved
-        // context so fixture results exercise context attribution too.
         Some(context_id),
     )?;
     let injected = injection::inject_text(

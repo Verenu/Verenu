@@ -1,6 +1,3 @@
-//! Optional GitHub activity counts. The public profile calendar is primary;
-//! unauthenticated public commit search is the fallback. No credentials,
-//! commit messages, or repository names are retained or returned to the UI.
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
@@ -95,7 +92,6 @@ fn count_page(
             valid = false;
             continue;
         };
-        // A commit may appear in several public forks. Count its SHA once.
         if seen.insert(item.sha.clone()) {
             if let Some(count) =
                 counts.get_mut(&date.with_timezone(&Local).date_naive().to_string())
@@ -278,9 +274,6 @@ fn parse_count(value: &str) -> Option<u64> {
     Some(count)
 }
 
-/// Reads the exact counts shown by GitHub's public profile contribution
-/// calendar. The calendar can include anonymized private contributions when
-/// its owner enables that profile setting; no GitHub credentials are used.
 fn parse_contribution_calendar(
     html: &str,
     username: &str,
@@ -427,12 +420,10 @@ fn calendar_segments(start: NaiveDate, end: NaiveDate) -> Vec<(NaiveDate, NaiveD
 }
 
 async fn fetch_public_commits(username: &str) -> Result<CommitSnapshot, String> {
-    // Search returns zero results for some nonexistent users, so validate first.
     request(&format!("users/{username}")).await?;
     let now = Local::now();
     let today = now.date_naive();
     let start = today - Duration::days(HISTORY_DAYS - 1);
-    // Date search uses UTC. Pad both ends, then bucket/filter locally like Insights.
     let query = format!(
         "author:{username} author-date:{}..{}",
         start - Duration::days(1),
@@ -487,9 +478,6 @@ async fn fetch_public_commits(username: &str) -> Result<CommitSnapshot, String> 
             .into_iter()
             .map(|(day, commits)| CommitDay {
                 day,
-                // With incomplete search results, a returned commit is a
-                // useful lower bound. A day with no indexed result is unknown,
-                // not a confirmed zero.
                 commits: (complete || commits > 0).then_some(commits),
             })
             .collect(),

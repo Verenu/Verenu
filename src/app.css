@@ -2,7 +2,6 @@ body {
   font-feature-settings: 'ss01', 'cv11';
 }
 
-/* Shared scrollbar utility for overflow containers. */
 .scrollbar-standard,
 .scroll-styled {
   scrollbar-width: thin;
@@ -19,7 +18,6 @@ body {
   background: transparent;
 }
 
-/* Pill-within-track: shared border gutter and clip for both thumb classes. */
 .scrollbar-standard::-webkit-scrollbar-thumb,
 .scroll-styled::-webkit-scrollbar-thumb {
   border-radius: 999px;
@@ -45,8 +43,6 @@ body {
   background: color-mix(in srgb, var(--ink-faint) 62%, transparent);
 }
 
-/* Hover-reveal floating-pill scrollbar; add this class to any overflow container.
-   Override the thumb border-color locally to match the element's own background. */
 .scroll-styled {
   scrollbar-color: transparent transparent;
   --scroll-thumb-border: transparent;

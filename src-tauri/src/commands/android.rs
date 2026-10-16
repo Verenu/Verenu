@@ -356,8 +356,6 @@ pub async fn android_on_permission_revoked(
     permission: AndroidPermission,
 ) -> Result<(), String> {
     let cancellation = if matches!(permission, AndroidPermission::Microphone) {
-        // Cancel through the shared lifecycle so the local audio owner is
-        // released before reporting permission recovery to the frontend.
         crate::commands::stop_recording(app.clone(), app.state::<crate::pipeline::SharedState>())
             .await
     } else {
@@ -394,7 +392,6 @@ mod tests {
         let no_focus = android_on_keyboard_visibility(true, false, None);
         assert_eq!(no_focus.state, OverlayState::Hidden);
 
-        // In-flight dictation survives keyboard churn.
         let flight = android_on_keyboard_visibility(false, false, Some(OverlayState::Recording));
         assert_eq!(flight.state, OverlayState::Recording);
         assert!(flight.dictation_active);
@@ -432,7 +429,6 @@ mod tests {
         android_keystore_save("google".to_string(), "AIza-test".to_string()).unwrap();
         assert!(android_has_credential("google".to_string()));
         assert!(crate::android::bridge::has_keystore_rotation());
-        // Delete rotates an empty key through the same single-delivery path.
         android_keystore_save("google".to_string(), "".to_string()).unwrap();
         assert!(!android_has_credential("google".to_string()));
         assert!(crate::android::bridge::has_keystore_rotation());

@@ -11,8 +11,6 @@
   let listEl = $state<HTMLDivElement | null>(null);
   let searchInput = $state<HTMLInputElement | null>(null);
 
-  // English is the default, so it leads; the other common dictation languages
-  // follow, then the rest A–Z. Nothing is hidden, only reordered.
   const commonOrder: TranscriptionLanguageCode[] = ['en', 'es', 'fr', 'de', 'pt', 'zh'];
   const ordered = [
     ...commonOrder.flatMap((code) => transcriptionLanguages.filter((l) => l.code === code)),
@@ -33,8 +31,6 @@
     language = code;
   }
 
-  // Land keyboard focus on the selected (or first) option whenever the list
-  // (re)appears, and send Escape/arrow keys back to the search box.
   onMount(() => {
     void focusListboxOption(LANG_MENU_ID);
   });
@@ -48,8 +44,6 @@
     void focusListboxOption(LANG_MENU_ID);
   }
 
-  // Enter on the search box takes the only remaining match — faster than
-  // reaching for the mouse once you have typed enough to narrow it down.
   function onSearchKey(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.isComposing && filtered.length === 1) {
       event.preventDefault();
@@ -81,8 +75,6 @@
       {/if}
     </div>
 
-    <!-- data-scroll-region: scrolling is this control's design, not a layout
-         overflow — see tests/manual/setup-layout-bounds.js -->
     <div
       id={LANG_MENU_ID}
       class="lang-list scroll-styled"

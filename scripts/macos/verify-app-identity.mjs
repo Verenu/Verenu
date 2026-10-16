@@ -36,7 +36,6 @@ const run = (command, args, allowFailure = false) => {
 const plistValue = (key) => {
   const value = run('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', plist], true);
   if (value.status === 0) return value.output;
-  // CFBundleDisplayName is optional; macOS falls back to CFBundleName.
   if (key === 'CFBundleDisplayName') {
     const fallback = run('/usr/bin/plutil', ['-extract', 'CFBundleName', 'raw', '-o', '-', plist], true);
     if (fallback.status === 0) return fallback.output;

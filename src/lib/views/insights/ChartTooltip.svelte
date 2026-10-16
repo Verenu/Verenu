@@ -1,9 +1,4 @@
 <script lang="ts">
-  /*
-   * Lightweight floating tooltip shared by the hour strip and streak heatmap.
-   * Replaces native `title` attributes, which have an OS hover delay and can't
-   * be themed — this appears immediately and matches the app's popover style.
-   */
   let {
     x,
     y,

@@ -49,14 +49,11 @@
   }
 
   async function dismiss(): Promise<void> {
-    // Closing the prompt without deciding declines quietly - pairing must be
-    // explicit on both devices.
     if (busy) return;
     busy = true;
     try {
       await invoke('sync_respond_to_pairing', { code: '', approve: false });
     } catch {
-      // Dismissal is best-effort; the status refresh below is authoritative.
     } finally {
       await refreshSyncStatus();
       busy = false;
@@ -73,7 +70,6 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if incoming}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button
     class="modal-backdrop pair-backdrop"
     aria-label="Dismiss pairing request"
@@ -165,8 +161,6 @@
 {/if}
 
 <style>
-  /* Settings owns a z-index 60 stacking context. Incoming pairing can arrive
-     while that page is open, so this global prompt must sit above it. */
   .pair-backdrop {
     z-index: 70;
   }

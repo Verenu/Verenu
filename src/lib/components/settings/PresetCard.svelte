@@ -62,9 +62,6 @@
     downloading ? 'Cancel download' : needsDownload ? `Download ${formatSize(downloadMb)}` : '',
   );
 
-  // Deleting downloaded models is destructive and irreversible, so it gets the
-  // same in-app confirm dialog as the other destructive settings actions
-  // instead of a blocking native browser confirm.
   let confirmDelete = $state(false);
   const showDetails = $derived(detailsOpen);
   const detailsId = `preset-details-${Math.random().toString(36).slice(2, 9)}`;
@@ -81,9 +78,6 @@
     onDeleteModels?.();
   }
 
-  // Same Escape contract as the other settings confirm dialogs: dismiss the
-  // dialog, never the page beneath it (Settings' own Escape guard yields
-  // while [role="dialog"] is present).
   function handleDeleteModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmDelete) confirmDelete = false;
   }
@@ -162,8 +156,6 @@
 {/if}
 
 {#if confirmDelete}
-  <!-- Renders above every surface it can open from: settings (z-60), the
-       cleanup-prompt modal (z-70), and the setup wizard overlay (z-100). -->
   <div class="preset-confirm-wrap">
     <button type="button" class="ui-modal-backdrop" aria-label="Close dialog" onclick={() => (confirmDelete = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
     <div
@@ -309,7 +301,6 @@
     .preset-radio { transition: none; transform: none; }
   }
 
-  /* Narrow settings column: tagline drops under the name. */
   @container settings-panel (max-width: 560px) {
     .preset-main { flex-direction: column; align-items: flex-start; gap: 2px; }
     .preset-line, .preset-info { padding: 12px; }

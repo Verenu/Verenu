@@ -32,6 +32,5 @@ export async function loadDesktopShortcuts(): Promise<void> {
     if (sequence !== loadSequence || revision !== statusRevision) return;
     shortcutStatus.items = Array.isArray(items) ? items : [];
   } catch {
-    // A browser preview has no native desktop bindings.
   }
 }

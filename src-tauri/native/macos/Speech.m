@@ -28,8 +28,6 @@ static NSLocale *verenu_speech_locale(NSString *requested, NSLocale *current, NS
     return preferred ?: fallback;
 }
 
-// Owned by one Rust blocking worker. Callbacks only update request-local state.
-// Neither the transcript nor vocabulary is written to native diagnostics.
 char *verenu_speech_transcribe(const float *samples, size_t count,
                              const char *language, const char *vocabularyJSON,
                              bool (*cancelled)(const void *), const void *cancelState,

@@ -1,10 +1,3 @@
-# Regenerates every packaged Verenu icon from the canonical five-bar SVG.
-#
-#   powershell -ExecutionPolicy Bypass -File scripts/generate-icons.ps1
-#
-# The canonical mark is deliberately a bare 254x208 SVG. Each output applies
-# only a presentation transform (tile padding and uniform scale); no output
-# owns a second set of bar coordinates.
 
 Add-Type -AssemblyName System.Drawing
 
@@ -56,8 +49,6 @@ function Convert-HexColor($hex) {
   )
 }
 
-# Platform presentation changes only tile padding and uniform scale. The bar
-# geometry itself always comes from the canonical source.
 function New-IconBitmap($size, $rects, $presentation) {
   $ss = [math]::Max($size * 8, 512)
   $big = New-Object System.Drawing.Bitmap($ss, $ss, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -166,7 +157,6 @@ function New-IcnsFile($icnsPath, $rects) {
   $chunks = @()
   foreach ($entry in $entries) {
     $png = Get-PngBytes (New-IconBitmap $entry.size $rects 'macos')
-    # Chunk integers are big-endian; reverse the little-endian bytes explicitly.
     $length = [BitConverter]::GetBytes([uint32](8 + $png.Length)); [array]::Reverse($length)
     $chunk = New-Object System.Collections.Generic.List[byte]
     $chunk.AddRange([Text.Encoding]::ASCII.GetBytes($entry.tag))

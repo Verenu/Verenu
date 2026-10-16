@@ -12,6 +12,6 @@
 # practical risk is low. Revisit and remove these once `cargo update` can
 # pull in quick-xml >=0.41 on its own.
 ignore = [
-    "RUSTSEC-2026-0194", # quick-xml: quadratic run time on duplicate attribute check
-    "RUSTSEC-2026-0195", # quick-xml: unbounded namespace-declaration allocation (DoS)
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

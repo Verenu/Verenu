@@ -7,7 +7,6 @@ export type CustomContextIcon = {
   foreground: string;
 };
 
-// Keep custom artwork in the existing icon field so backups and sync retain it.
 const PREFIX = 'custom-icon:';
 export const isHexColor = (value: string): boolean => /^#[0-9a-f]{6}$/i.test(value);
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -15,14 +14,10 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const EMOJI_GRAPHEME = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|\u20E3|^\p{Regional_Indicator}{2}$/u;
 const graphemes = (value: string): string[] => Array.from(segmenter.segment(value), (part) => part.segment);
 
-// One or two visible characters, whatever they are. Grapheme segmentation keeps
-// ZWJ emoji, flags, keycaps and letters with combining marks in one piece.
 export function iconText(value: string): string {
   return graphemes(value.replace(/\s+/g, '')).slice(0, 2).join('');
 }
 
-// Presentation follows the content: emoji-only artwork has no badge, anything
-// else (letters, or letters mixed with emoji) gets the colored badge.
 export function iconKindFor(text: string): CustomContextIcon['kind'] {
   const parts = graphemes(text);
   return parts.length > 0 && parts.every((part) => EMOJI_GRAPHEME.test(part)) ? 'emoji' : 'letters';

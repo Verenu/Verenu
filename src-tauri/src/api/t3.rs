@@ -1,4 +1,3 @@
-//! Existing T3 OAuth pairing and Effect JSON WebSocket RPC, bounded and redacted.
 use crate::system::t3_skills::{self, Catalog, Skill};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Url};
@@ -282,7 +281,6 @@ pub fn parse_catalogs(config: &Value, environment_id: &str) -> Result<Vec<Catalo
             }));
         }
         let mut seen_scopes = HashSet::new();
-        // Workspace-specific catalogs take precedence over the provider default.
         for (cwd, skills) in scopes.into_iter().rev() {
             let Some(skills) = skills.and_then(Value::as_array) else {
                 continue;

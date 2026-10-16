@@ -1,8 +1,6 @@
 import Foundation
 import FoundationModels
 
-// C ABI owns only request IDs and copied UTF-8 strings. No Swift object or
-// borrowed Rust buffer survives a call. A dropped Rust future cancels its task.
 private final class Requests: @unchecked Sendable {
     static let shared = Requests()
     let lock = NSLock()
@@ -27,8 +25,6 @@ private func complete(_ id: UInt64, _ value: String) {
     let requests = Requests.shared
     requests.lock.lock()
     defer { requests.lock.unlock() }
-    // Cancellation removes the ID before cancelling the task. A late result
-    // must never recreate it or retain dictated text indefinitely.
     if requests.tasks[id] != nil { requests.results[id] = value }
 }
 
@@ -79,8 +75,6 @@ public func start(_ instructions: UnsafePointer<CChar>, _ input: UnsafePointer<C
         } catch LanguageModelSession.GenerationError.assetsUnavailable {
             complete(id, "E:model-not-ready")
         } catch {
-            // Framework diagnostics may contain private input. Return a fixed
-            // error code rather than an error description across IPC/logs.
             complete(id, "E:generation-failed")
         }
     }

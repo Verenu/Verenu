@@ -27,8 +27,6 @@ pub fn extract_domain(raw: &str) -> Option<String> {
         return None;
     }
     url.host_str()?;
-    // Keep the same host spelling as saved Context targets. URL parsing is
-    // validation here; IDNA conversion would break existing Unicode targets.
     let authority = (if has_scheme {
         trimmed
             .split_once("://")
@@ -134,9 +132,6 @@ mod win {
         let control_type = unsafe { element.CurrentControlType() }.ok();
         let is_edit = control_type.map(|v| v.0) == Some(UIA_EditControlTypeId.0);
 
-        // Do not require the control type here. The automation id is the
-        // browser-owned identifier and remains the strongest signal if the
-        // browser changes how it exposes the value pattern.
         if automation_id.eq_ignore_ascii_case("addressEditBox") {
             if let Some(text) = read_value(element) {
                 result.exact = Some(text);
@@ -188,8 +183,6 @@ mod mac {
 use mac::read_address_bar_text as platform_read_address_bar_text;
 #[cfg(windows)]
 use win::read_address_bar_text as platform_read_address_bar_text;
-/// On Android Kotlin reads the address bar when the recording starts and sends
-/// the host along, so there is nothing to probe here.
 #[cfg(target_os = "android")]
 fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     crate::android::bridge::dictation_domain()
@@ -218,8 +211,6 @@ pub fn read_browser_domain_for_target(target: &crate::core::window_geometry::Win
     #[cfg(target_os = "linux")]
     {
         let window = target.linux.as_ref()?;
-        // A focus change during the read makes the result uncertain. Never
-        // apply a different window's website Context to the captured target.
         let still_focused = || crate::core::hyprland::active_window()
             .is_some_and(|active| active.address == window.address && active.pid == window.pid);
         if !still_focused() { return None; }

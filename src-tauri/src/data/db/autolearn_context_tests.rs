@@ -37,9 +37,6 @@ fn v25_reopen_runs_schema_before_scoped_autolearn_migration() {
             .id;
         set_dictionary_context_assignment(&db, development.id, shared_id, true)
             .expect("share manual term");
-        // Keep a malformed legacy collision in the fixture as well: the
-        // manual mapping must win over an old automatic row when v26 creates
-        // the new Context/variant uniqueness constraint.
         {
             let conn = lock_conn(&db).expect("collision fixture lock");
             conn.execute(
@@ -64,15 +61,10 @@ fn v25_reopen_runs_schema_before_scoped_autolearn_migration() {
             .find(|entry| entry.term == "LegacyLearned")
             .expect("legacy canonical row")
             .id;
-        // A targeted assignment without reliable origin evidence must not
-        // cause the old automatic mapping to be copied into that Context.
         set_dictionary_context_assignment(&db, development.id, legacy_id, true)
             .expect("share legacy canonical term");
 
         let conn = lock_conn(&db).expect("fixture lock");
-        // Make the current database look like a real v25 install: the old
-        // global projection is populated, the child table did not exist, and
-        // transient evidence has no originating Context column.
         conn.execute("DELETE FROM dictionary_corrections", [])
             .expect("clear v26 child rows");
         conn.execute(
@@ -247,8 +239,6 @@ fn v25_reopen_runs_schema_before_scoped_autolearn_migration() {
     drop(conn);
     drop(db);
 
-    // Reopening an already-v26 database is idempotent and preserves the
-    // mapping identities and count.
     let db = open(&path).expect("reopen migrated database");
     let conn = lock_conn(&db).expect("second repaired lock");
     let second_uuids: Vec<String> = conn
@@ -572,9 +562,6 @@ fn context_edit_replaces_only_its_mapping_and_ignores_stale_global_projection() 
     update_dictionary_entry_for_context(&db, development.id, entry.id, "Groq", Some("grok"))
         .expect("edit development mapping");
 
-    // Simulate a stale write from a pre-v26/remote legacy consumer. Context
-    // materialization must remain child-table-only even if the compatibility
-    // column is unexpectedly populated after migration.
     {
         let conn = lock_conn(&db).expect("stale projection lock");
         conn.execute(

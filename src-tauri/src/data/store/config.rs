@@ -1,8 +1,5 @@
-//! Pipeline and audio configuration types, provider/model constants, and
-//! the single-place settings loaders used by the pipeline.
 
 use super::*;
-// ---------- pipeline config ----------
 
 /// All settings values needed by run_pipeline, loaded in one place.
 #[derive(Clone, Debug, Default)]

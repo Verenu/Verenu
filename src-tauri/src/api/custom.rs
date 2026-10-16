@@ -34,8 +34,6 @@ const MAX_MODEL_CHARS: usize = 200;
 const MAX_HEADERS: usize = 16;
 const MAX_HEADER_VALUE_CHARS: usize = 512;
 const MAX_OVERRIDES_BYTES: usize = 4096;
-/// Chat-completion fields Verenu computes itself. An override can add
-/// `temperature` or a vendor flag, but never change what is being asked.
 const PROTECTED_BODY_KEYS: &[&str] = &[
     "model",
     "messages",

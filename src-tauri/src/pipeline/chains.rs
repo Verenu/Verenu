@@ -131,8 +131,6 @@ fn prioritize_model_chain(
     if mode == "manual" {
         return chain;
     }
-    // Choosing on-device cleanup must not send text to a cloud recovery model
-    // merely because automatic ranking is enabled. Rank its fallbacks only.
     let selected_apple = if task == "cleanup"
         && chain
             .first()
@@ -145,7 +143,6 @@ fn prioritize_model_chain(
     let (mut cloud, mut local): (Vec<_>, Vec<_>) = chain.into_iter().partition(|(provider, _)| {
         provider != store::LOCAL && provider != store::APPLE_INTELLIGENCE
     });
-    // The Quality pair stays intact. Only recovery candidates are reordered.
     let fixed = if mode == "quality" && task == "transcription" {
         cloud.len().min(2)
     } else {

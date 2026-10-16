@@ -1,6 +1,3 @@
-//! Two virtual devices on one host, using real TCP, TLS, pairing, and SQLite.
-//! All identities and content are disposable fixtures. No credential store,
-//! discovery broadcast, app database, microphone, or provider is touched.
 use super::super::{engine, identity, pairing, protocol, store, transport};
 use super::{count, TestHost};
 use crate::{data::db, DbHandle};
@@ -224,8 +221,6 @@ async fn session(a: &Device, b: &Device) -> Result<()> {
     Ok(())
 }
 
-/// Compare stored content and relationships, excluding device-local SQLite
-/// ids. This catches missing assignments even when row counts happen to match.
 fn logical_state(device: &Device) -> Vec<Vec<Vec<serde_json::Value>>> {
     let conn = device.db.lock().unwrap();
     [
@@ -296,7 +291,6 @@ async fn two_devices_pair_sync_multiple_batches_restart_and_converge() {
          VALUES (?1, 'fixture-model', 'fixture-provider', 'cleanup', 1200, 25, 25, datetime('now'))",
         [history.id],
     ).unwrap();
-    // More rows than a protocol batch exercises pagination and acknowledgements.
     for index in 0..(protocol::OPS_PER_BATCH + 9) {
         db::insert_dictionary_entry_returning(&a.db, &format!("FixtureTerm{index}"), None, None)
             .unwrap();
@@ -459,7 +453,6 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                     protocol::read_message(&mut server).await.unwrap(),
                     protocol::Message::Ack { .. }
                 ));
-                // Drop a real encrypted connection after one committed batch.
                 drop(server);
             },
         )
@@ -545,8 +538,6 @@ async fn three_devices_relay_data_without_regressing_lifetime_counters() {
     )
     .unwrap();
     session(&a, &b).await.unwrap();
-    // C still has A's old counters. Its gossip must not overwrite B's newer
-    // knowledge when B and C exchange metadata in both directions.
     session(&b, &c).await.unwrap();
     for device in [&a, &b, &c] {
         assert_eq!(
@@ -622,8 +613,6 @@ async fn four_device_mesh_converges_after_concurrent_edits_offline_restart_and_s
     session(&a, &d).await.unwrap();
     session(&b, &d).await.unwrap();
     for device in [&b, &c, &d] { assert_eq!(logical_state(&a), logical_state(device)); }
-    // D goes offline with a complete but now stale snapshot. The other three
-    // receive a deletion while D makes a new independent edit and reopens DB.
     tokio::time::sleep(Duration::from_millis(10)).await;
     db::delete_context(&a.db, context).unwrap();
     session(&a, &b).await.unwrap();

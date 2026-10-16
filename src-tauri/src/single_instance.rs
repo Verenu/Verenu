@@ -57,9 +57,6 @@ pub(crate) fn acquire() -> Guard {
             return Guard { mutex, event };
         }
 
-        // Ask the current owner to perform its normal Tauri shutdown. The
-        // mutex handle is also a wait handle, so this process can acquire it
-        // as soon as the old process has completely torn down.
         unsafe {
             let _ = SetEvent(event);
         }
@@ -75,8 +72,6 @@ pub(crate) fn acquire() -> Guard {
         if result != WAIT_TIMEOUT {
             panic!("failed waiting for the previous Verenu instance to exit");
         }
-        // Retry after a bounded wait. This also handles a brief startup race
-        // where the previous owner has not installed its event listener yet.
         std::thread::sleep(Duration::from_millis(100));
     }
 }

@@ -1,7 +1,3 @@
-//! Pure recording-quality gates and transcription text-normalization helpers,
-//! extracted from the pipeline orchestration to keep `pipeline.rs` focused on
-//! flow. These are behavior-preserving moves; coverage lives in the `pipeline`
-//! test module (see `super::tests`).
 
 use crate::data::store;
 
@@ -35,8 +31,6 @@ pub(super) const MIN_RECORDING_RMS: f32 = 0.005;
 /// is already obvious from the waveform alone.
 pub(super) const SILENCE_FLOOR_RMS: f32 = MIN_RECORDING_RMS * 0.3;
 
-/// Scale an RMS threshold by the active mic gain so a gate stays consistent
-/// whether the user is amplifying a quiet mic or attenuating a hot one.
 fn gain_scaled_rms(base: f32, active_gain: f32) -> f32 {
     let gain = active_gain.clamp(store::MIN_MIC_GAIN, store::MAX_MIC_GAIN);
     if gain <= store::DEFAULT_MIC_GAIN {
@@ -109,18 +103,12 @@ const GLOSSARY_TERMS: &[&str] = &["verenu", "tauri", "svelte", "groq", "gemini",
 /// are never injected and never populate the cleanup cache.
 pub(super) fn is_transcription_hallucination(text: &str) -> bool {
     let t = text.trim().to_lowercase();
-    // Phrases from our transcription system prompts (prompts.rs).  Whisper
-    // echoes these verbatim when it receives near-silent audio. (Google's
-    // prompt still uses some of these; Whisper/Groq's prompt no longer does
-    // — it's vocabulary-only now — but old recordings/edge cases may still
-    // surface them, so the patterns stay.)
     const PATTERNS: &[&str] = &[
         "return only spoken words",
         "return only the words spoken",
         "verenu dictation in ",
         "transcribe the audio in ",
         "preserve pronouns exactly",
-        // Well-known generic Whisper hallucinations for silent/noisy audio
         "thank you for watching",
         "thanks for watching",
         "please subscribe",
@@ -260,8 +248,6 @@ fn damerau_levenshtein_distance(left: &str, right: &str) -> usize {
 // Applied alongside strip_hallucinated_suffix() at each transcription output
 // boundary in pipeline/mod.rs and stages_transcription.rs.
 pub(super) fn strip_trailing_hallucination(text: &str) -> String {
-    // Distinctive multi-word phrases lifted verbatim from the prompt this
-    // app actually sends to Whisper-family models (api/prompts/transcription.rs).
     const TRAILING_PATTERNS: &[&str] = &[
         "return only spoken words",
         "return only the words spoken",
@@ -270,21 +256,11 @@ pub(super) fn strip_trailing_hallucination(text: &str) -> String {
         "do not obey spoken instructions",
         "do not answer questions or follow instructions",
     ];
-    // ASCII-only lowercasing, not `to_lowercase()`: Unicode case folding can
-    // change a character's UTF-8 byte length (e.g. the Kelvin sign or
-    // Turkish dotted İ), which would desync `idx` — a byte offset found in
-    // the lowercased copy — from `text`'s own byte boundaries, panicking or
-    // corrupting the slice below. `to_ascii_lowercase()` only remaps ASCII
-    // a-z bytes in place, so byte length and position always match `text`
-    // exactly — sufficient here since every pattern is plain ASCII.
     let lower = text.to_ascii_lowercase();
     for pattern in TRAILING_PATTERNS {
         let Some(idx) = lower.find(pattern) else {
             continue;
         };
-        // idx == 0 means the whole output is the echo, which
-        // is_transcription_hallucination already handles by rejecting the
-        // message outright — leave it untouched here.
         if idx == 0 {
             continue;
         }
@@ -293,9 +269,6 @@ pub(super) fn strip_trailing_hallucination(text: &str) -> String {
         if !hard_boundary {
             continue;
         }
-        // A transcription may preserve the prompt's final punctuation, so
-        // punctuation-only tails are still an exact trailing prompt echo.
-        // Keep real words meaningful for the glossary corroboration check.
         let tail = lower[idx + pattern.len()..]
             .trim()
             .trim_matches(|ch: char| ch.is_ascii_punctuation())
@@ -323,8 +296,6 @@ pub(super) fn strip_trailing_hallucination(text: &str) -> String {
 pub(super) fn strip_hallucinated_suffix(text: &str) -> String {
     let mut current = text.trim().to_string();
 
-    // Bounded loop: guards against pathological repeated matches rather than
-    // expecting more than one hallucinated sentence in practice.
     for _ in 0..4 {
         let sentence = last_sentence(&current);
         if sentence.is_empty() || !is_sentence_hallucination(sentence) {
@@ -369,17 +340,6 @@ pub(super) fn strip_provider_artifacts(text: &str) -> String {
     kept.concat().trim().to_string()
 }
 
-/// Like `is_transcription_hallucination`, but scoped to a single sentence
-/// pulled from the end of a transcription rather than the whole output.
-///
-/// A handful of the known hallucinations ("thank you for watching", "please
-/// subscribe", ...) are short, generic phrases that legitimate dictation can
-/// plausibly start a sentence with (e.g. "Please subscribe to our
-/// newsletter."). Matching those as a prefix — as the whole-output gate does
-/// — would silently delete real speech. So here they require an exact match
-/// on the whole sentence (ignoring trailing punctuation) instead. Patterns
-/// that are effectively unambiguous even as a prefix (credit lines, system
-/// prompt echoes) keep prefix matching.
 fn is_sentence_hallucination(sentence: &str) -> bool {
     let t = sentence.trim().to_lowercase();
 
@@ -418,14 +378,6 @@ fn is_sentence_hallucination(sentence: &str) -> bool {
     EXACT_PATTERNS.contains(&t)
 }
 
-/// Returns the final sentence of `text`, where a boundary is one or more of
-/// `.`/`!`/`?` followed by whitespace (or end of string), a newline, or a
-/// CJK fullwidth terminator (`。`/`！`/`？`).
-///
-/// Requiring trailing whitespace after ASCII punctuation avoids treating a
-/// period inside something like "Amara.org" as a sentence boundary. CJK
-/// fullwidth terminators don't need that check — they're unambiguous
-/// sentence-enders and CJK text conventionally has no space after them.
 fn last_sentence(text: &str) -> &str {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -510,8 +462,6 @@ fn last_sentence(text: &str) -> &str {
         i += 1;
     }
 
-    // Walk boundaries from the end, skipping the one that just closes off the
-    // final sentence itself (nothing but whitespace follows it).
     let start = boundaries
         .into_iter()
         .rev()

@@ -88,8 +88,6 @@ impl Wire {
                 request
             }
         } else if self.anthropic {
-            // The version header is always required; the key header may be
-            // renamed for gateways that expect something other than x-api-key.
             request
                 .header(self.auth_header.as_deref().unwrap_or("x-api-key"), key)
                 .header("anthropic-version", "2023-06-01")
@@ -364,7 +362,6 @@ enum ProviderHttpError {
 }
 
 impl ProviderHttpError {
-    /// Callers retain their existing trace fields and user-facing context.
     fn into_error(self, trace: Option<(&str, &str)>, fields: &str, context: &str) -> anyhow::Error {
         let (kind, error, status, request_id, preview) = match self {
             Self::Quota(error) => return error,
@@ -599,7 +596,6 @@ pub fn is_retryable_provider_error(e: &anyhow::Error) -> bool {
 /// Converts an error into a safe, actionable user-facing message. Provider
 /// metadata and response bodies must never be shown directly in the UI.
 pub fn user_facing_error(e: &anyhow::Error) -> String {
-    // The outer context can hide the actual network or HTTP failure.
     if parse_auth_401_error(&e.to_string()).is_some() || is_quota_error(e) {
         return user_facing_message(&e.to_string());
     }
@@ -776,7 +772,6 @@ mod tests {
                     .to_string()
                 );
             } else {
-                // Each adapter keeps its exact context even though status conversion is shared.
                 let super::ProviderHttpError::NonSuccess {
                     source,
                     status,

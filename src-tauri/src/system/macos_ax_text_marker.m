@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Forward declarations for private/semi-private AXTextMarker APIs to prevent pointer truncation or compile warnings on 64-bit systems.
 extern CFTypeID AXTextMarkerGetTypeID(void);
 extern CFTypeID AXTextMarkerRangeGetTypeID(void);
 extern CFIndex AXTextMarkerGetLength(AXTextMarkerRef marker);
@@ -503,8 +502,6 @@ static bool of_try_text_marker_range(
     }
     out_result->left_reliable = tail_ok ? 1 : 0;
 
-    // One character is enough on the right: spacing depends on the immediate
-    // insertion edge, including whether it is whitespace or closing punctuation.
     AXTextMarkerRef lookahead_marker = of_copy_marker_for_index(element, end_index + 1);
     bool head_ok = true;
     if (lookahead_marker != NULL) {
@@ -522,10 +519,6 @@ static bool of_try_text_marker_range(
         out_result->right_reliable = 0;
     }
 
-    // Index zero proves there is nothing before the caret only when the probe
-    // also proves the document continues on the right. With no AXValue and no
-    // readable lookahead, index zero may be a provider fallback rather than an
-    // empty field, so preserving the payload is safer than capitalizing it.
     if (start_index == 0 && end_index == 0 && !out_result->right_reliable) {
         out_result->left_reliable = 0;
     }
@@ -655,9 +648,6 @@ int verenu_macos_read_context_probe(
     return 1;
 }
 
-// AutoLearn needs the selection INCLUDED, and substantially more text than
-// the 64-character insertion-edge probe. Never concatenate the edge strings:
-// that would omit selected text and manufacture a correction.
 int verenu_macos_read_focused_text(
     int radius, char *out, size_t capacity, int32_t *pid_out, AXUIElementRef *identity_out
 ) {
@@ -780,9 +770,6 @@ done:
     return ok;
 }
 
-// Title of the focused window of the app with `pid`, for sub-app matching.
-// Returns 1 and writes UTF-8 into `out` on success. Requires Accessibility
-// permission; without it the attribute read fails and 0 is returned.
 int verenu_macos_focused_window_title(int32_t pid, char *out, size_t capacity) {
     if (out == NULL || capacity == 0) {
         return 0;

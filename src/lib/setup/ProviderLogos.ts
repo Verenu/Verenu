@@ -1,5 +1,4 @@
 import type { ProviderId } from '../settings';
-// Moonshine ships no vector mark anywhere — see the note above MODEL_MARKS.
 import moonshineLogo from '../../assets/providers/moonshine.png?url';
 /*
  * Apple Intelligence icon, byte-for-byte the official asset Apple publishes at
@@ -11,26 +10,11 @@ import moonshineLogo from '../../assets/providers/moonshine.png?url';
  */
 import appleIntelligenceLogo from '../../assets/providers/apple-intelligence.png?url';
 
-/*
- * Provider marks, exactly as each brand publishes them.
- *
- * Sourced from SVGL (svgl.app), unmodified — an earlier pass stripped Groq's
- * orange plate and recoloured its white glyph, which turned a solid logo into
- * something that read as an outline. OpenRouter and xAI come from SVGL redrawn in `currentColor`, like AssemblyAI. Two marks are not from SVGL: AssemblyAI,
- * which SVGL has no entry for, and `local`, which is not a vendor at all.
- *
- * `plate` says how a mark wants to be framed:
- *   - 'bleed'  the logo already includes its own background (Groq's orange
- *              square), so it fills the tile edge to edge
- *   - 'none'   a bare mark, drawn at true colour straight onto the row
- */
 
 type Mark = {
   viewBox: string;
   body: string;
-  /** For marks drawn in `currentColor`, the brand colour to paint them. */
   fill?: string;
-  /** Used when the brand's mark is monochrome and would vanish on dark. */
   bodyDark?: string;
   plate: 'bleed' | 'none';
 };
@@ -81,7 +65,6 @@ const MARKS: Partial<Record<ProviderId, Mark>> = {
   },
 };
 
-/** Cohere ships as a local model, so it carries its own mark rather than the chip. */
 const COHERE: Mark = {
   viewBox: '0 0 75 75',
   plate: 'none',
@@ -89,28 +72,6 @@ const COHERE: Mark = {
 };
 
 
-/*
- * Local models come from real labs, so they carry that lab's mark instead of a
- * generic chip. Hugging Face (SmolLM2) and Alibaba Cloud (SenseVoice) come from
- * simple-icons, which SVGL has no entry for; both are single-path and already
- * monochrome, so they inherit the tile's colour like AssemblyAI does.
- *
- * Still on the generic chip, deliberately. Each was tried and rejected:
- *   - Granite (IBM)      IBM's only mark is the 8-bar wordmark. Rendered at an
- *                        18px row logo its ink is 18x7.5, so the bars fall
- *                        below a pixel each and alias into a grey smudge that
- *                        reads as a broken image. The square "Granite cubes"
- *                        logo on Wikimedia is community fan art in non-IBM
- *                        colours, built from 8 gradient rects with ids that
- *                        collide when two Granite rows render at once.
- *   - GigaAM             The only Sber mark on Commons is a 302x50 wordmark
- *                        whose symbol is 8 paths across 6 gradients with ids
- *                        that collide if it renders twice — and it is the
- *                        bank's mark, not SaluteDevices'. sber.ru and
- *                        salute.sber.ru both time out from here.
- * Drawing these by hand is how Groq's plate got mangled last time — a generic
- * chip is a better answer than an invented logo.
- */
 const QWEN: Mark = {
   viewBox: '0 0 24 24',
   plate: 'none',
@@ -119,12 +80,6 @@ const QWEN: Mark = {
 };
 
 const NVIDIA: Mark = {
-  /*
-   * Cropped to the eye. The full mark bundles the "NVIDIA" wordmark beneath it
-   * (it occupies the lower 65 of 259 viewBox units), which at an 18px row logo
-   * renders as an unreadable grey smudge under a tiny eye. The eye alone is
-   * legible at that size, and being one colour it needs no dark-theme cut.
-   */
   viewBox: '56.8 31.5 248.9 164.7',
   plate: 'none',
   body: `<title>NVIDIA</title><path fill="#77B900" d="M82.211 102.414s22.504-33.203 67.437-36.638V53.73c-49.769 3.997-92.867 46.149-92.867 46.149s24.41 70.565 92.867 77.026v-12.804c-50.237-6.32-67.437-61.687-67.437-61.687zm67.437 36.223v11.726c-37.968-6.769-48.507-46.237-48.507-46.237s18.23-20.195 48.507-23.47v12.867c-.023 0-.039-.007-.058-.007-15.891-1.907-28.305 12.938-28.305 12.938s6.958 24.991 28.363 32.183m0-107.125V53.73c1.461-.112 2.922-.207 4.391-.257 56.582-1.907 93.449 46.406 93.449 46.406s-42.343 51.488-86.457 51.488c-4.043 0-7.828-.375-11.383-1.005v13.739c3.04.386 6.192.613 9.481.613 41.051 0 70.738-20.965 99.484-45.778 4.766 3.817 24.278 13.103 28.289 17.168-27.332 22.883-91.031 41.329-127.144 41.329-3.481 0-6.824-.211-10.11-.528v19.306H305.68V31.512H149.648zm0 49.144V65.777c1.446-.101 2.903-.179 4.391-.226 40.688-1.278 67.382 34.965 67.382 34.965s-28.832 40.043-59.746 40.043c-4.449 0-8.438-.715-12.028-1.922V93.523c15.84 1.914 19.028 8.911 28.551 24.786l21.18-17.859s-15.461-20.277-41.524-20.277c-2.833-.001-5.544.198-8.206.483"/>`,
@@ -136,22 +91,12 @@ const HUGGINGFACE: Mark = {
   body: `<title>Hugging Face</title><path fill="currentColor" d="M12.025 1.13c-5.77 0-10.449 4.647-10.449 10.378 0 1.112.178 2.181.503 3.185.064-.222.203-.444.416-.577a.96.96 0 0 1 .524-.15c.293 0 .584.124.84.284.278.173.48.408.71.694.226.282.458.611.684.951v-.014c.017-.324.106-.622.264-.874s.403-.487.762-.543c.3-.047.596.06.787.203s.31.313.4.467c.15.257.212.468.233.542.01.026.653 1.552 1.657 2.54.616.605 1.01 1.223 1.082 1.912.055.537-.096 1.059-.38 1.572.637.121 1.294.187 1.967.187.657 0 1.298-.063 1.921-.178-.287-.517-.44-1.041-.384-1.581.07-.69.465-1.307 1.081-1.913 1.004-.987 1.647-2.513 1.657-2.539.021-.074.083-.285.233-.542.09-.154.208-.323.4-.467a1.08 1.08 0 0 1 .787-.203c.359.056.604.29.762.543s.247.55.265.874v.015c.225-.34.457-.67.683-.952.23-.286.432-.52.71-.694.257-.16.547-.284.84-.285a.97.97 0 0 1 .524.151c.228.143.373.388.43.625l.006.04a10.3 10.3 0 0 0 .534-3.273c0-5.731-4.678-10.378-10.449-10.378M8.327 6.583a1.5 1.5 0 0 1 .713.174 1.487 1.487 0 0 1 .617 2.013c-.183.343-.762-.214-1.102-.094-.38.134-.532.914-.917.71a1.487 1.487 0 0 1 .69-2.803m7.486 0a1.487 1.487 0 0 1 .689 2.803c-.385.204-.536-.576-.916-.71-.34-.12-.92.437-1.103.094a1.487 1.487 0 0 1 .617-2.013 1.5 1.5 0 0 1 .713-.174m-10.68 1.55a.96.96 0 1 1 0 1.921.96.96 0 0 1 0-1.92m13.838 0a.96.96 0 1 1 0 1.92.96.96 0 0 1 0-1.92M8.489 11.458c.588.01 1.965 1.157 3.572 1.164 1.607-.007 2.984-1.155 3.572-1.164.196-.003.305.12.305.454 0 .886-.424 2.328-1.563 3.202-.22-.756-1.396-1.366-1.63-1.32q-.011.001-.02.006l-.044.026-.01.008-.03.024q-.018.017-.035.036l-.032.04a1 1 0 0 0-.058.09l-.014.025q-.049.088-.11.19a1 1 0 0 1-.083.116 1.2 1.2 0 0 1-.173.18q-.035.029-.075.058a1.3 1.3 0 0 1-.251-.243 1 1 0 0 1-.076-.107c-.124-.193-.177-.363-.337-.444-.034-.016-.104-.008-.2.022q-.094.03-.216.087-.06.028-.125.063l-.13.074q-.067.04-.136.086a3 3 0 0 0-.135.096 3 3 0 0 0-.26.219 2 2 0 0 0-.12.121 2 2 0 0 0-.106.128l-.002.002a2 2 0 0 0-.09.132l-.001.001a1.2 1.2 0 0 0-.105.212q-.013.036-.024.073c-1.139-.875-1.563-2.317-1.563-3.203 0-.334.109-.457.305-.454m.836 10.354c.824-1.19.766-2.082-.365-3.194-1.13-1.112-1.789-2.738-1.789-2.738s-.246-.945-.806-.858-.97 1.499.202 2.362c1.173.864-.233 1.45-.685.64-.45-.812-1.683-2.896-2.322-3.295s-1.089-.175-.938.647 2.822 2.813 2.562 3.244-1.176-.506-1.176-.506-2.866-2.567-3.49-1.898.473 1.23 2.037 2.16c1.564.932 1.686 1.178 1.464 1.53s-3.675-2.511-4-1.297c-.323 1.214 3.524 1.567 3.287 2.405-.238.839-2.71-1.587-3.216-.642-.506.946 3.49 2.056 3.522 2.064 1.29.33 4.568 1.028 5.713-.624m5.349 0c-.824-1.19-.766-2.082.365-3.194 1.13-1.112 1.789-2.738 1.789-2.738s.246-.945.806-.858.97 1.499-.202 2.362c-1.173.864.233 1.45.685.64.451-.812 1.683-2.896 2.322-3.295s1.089-.175.938.647-2.822 2.813-2.562 3.244 1.176-.506 1.176-.506 2.866-2.567 3.49-1.898-.473 1.23-2.037 2.16c-1.564.932-1.686 1.178-1.464 1.53s3.675-2.511 4-1.297c.323 1.214-3.524 1.567-3.287 2.405.238.839 2.71-1.587 3.216-.642.506.946-3.49 2.056-3.522 2.064-1.29.33-4.568 1.028-5.713-.624"/>`,
 };
 
-/*
- * SenseVoice ships from Alibaba's FunAudioLLM team and has no mark of its own,
- * so it carries the parent's — closer to the truth than the generic chip.
- */
 const ALIBABA: Mark = {
   viewBox: '0 0 24 24',
   plate: 'none',
   body: `<title>Alibaba Cloud</title><path fill="currentColor" d="M3.996 4.517h5.291L8.01 6.324 4.153 7.506a1.668 1.668 0 0 0-1.165 1.601v5.786a1.668 1.668 0 0 0 1.165 1.6l3.857 1.183 1.277 1.807H3.996A3.996 3.996 0 0 1 0 15.487V8.513a3.996 3.996 0 0 1 3.996-3.996m16.008 0h-5.291l1.277 1.807 3.857 1.182c.715.227 1.17.889 1.165 1.601v5.786a1.668 1.668 0 0 1-1.165 1.6l-3.857 1.183-1.277 1.807h5.291A3.996 3.996 0 0 0 24 15.487V8.513a3.996 3.996 0 0 0-3.996-3.996m-4.007 8.345H8.002v-1.804h7.995Z"/>`,
 };
 
-/*
- * The only Moonshine mark that exists is raster (moonshine.ai ships a 128px
- * PNG; there is no .svg on the site, in the repo, or in any icon set). Wrapping
- * it in an <svg><image> rather than returning an <img> keeps every call site's
- * `:global(svg)` sizing rule working untouched.
- */
 const MOONSHINE: Mark = {
   viewBox: '0 0 128 128',
   plate: 'none',
@@ -170,7 +115,6 @@ const GEMMA: Mark = {
   body: `<path fill="#3186FF" d="M141.201 4.886c2.282-6.17 11.042-6.071 13.184.148l5.985 17.37a184.004 184.004 0 0 0 111.257 113.049l19.304 6.997c6.143 2.227 6.156 10.91.02 13.155l-19.35 7.082a184.001 184.001 0 0 0-109.495 109.385l-7.573 20.629c-2.241 6.105-10.869 6.121-13.133.025l-7.908-21.296a184 184 0 0 0-109.02-108.658l-19.698-7.239c-6.102-2.243-6.118-10.867-.025-13.132l20.083-7.467A183.998 183.998 0 0 0 133.291 26.28l7.91-21.394Z"/>`,
 };
 
-/** Marks for models whose vendor differs from the provider hosting them. */
 const MODEL_MARKS: Record<string, Mark> = {
   'local/cohere': COHERE,
   'local/gemma-4-e2b': GEMMA,

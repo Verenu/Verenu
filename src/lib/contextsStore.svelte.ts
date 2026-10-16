@@ -17,15 +17,8 @@ export const contextsStore = $state({
   targets: [] as ContextTarget[],
   websites: [] as ContextWebsiteTarget[],
   subApps: [] as ContextSubApp[],
-  /** A fresh capture awaiting review. Mounted globally so the capture hotkey opens it from any page. */
   subAppSheet: null as null | { mode: 'capture'; capture: SubAppCapture },
   selectedId: EVERYWHERE_ID,
-  /**
-   * +1 when the newly selected context sits below the previous one in the
-   * rail, -1 when above. The management view swaps along the same axis the
-   * sidebar list runs on, so the content appears to come from the row you
-   * clicked rather than from nowhere.
-   */
   selectDir: 1 as 1 | -1,
   loaded: false,
   error: '',
@@ -117,8 +110,6 @@ export function loadContexts(force = false): Promise<void> {
  * marker, so normalize before parsing.
  */
 export function compactAge(iso: string): string {
-  // Only the time portion can carry a zone marker (`Z`, `+hh:mm`, `-hh:mm`);
-  // testing the whole string would misread the `-` in the date part.
   const parsed = Date.parse(/(?:[Z+]|-\d{2}:?\d{2})$/.test(iso.slice(10)) ? iso : `${iso.replace(' ', 'T')}Z`);
   if (Number.isNaN(parsed)) return '';
   const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
@@ -133,6 +124,5 @@ export function compactAge(iso: string): string {
   if (days < 30) return `${weeks}w`;
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo`;
-  // Days 360-364 give floor(days / 365) === 0; never show "0y".
   return `${Math.max(1, Math.floor(days / 365))}y`;
 }

@@ -75,9 +75,6 @@ pub enum UpdateChannel {
 
 impl UpdateChannel {
     fn target_branch(self) -> &'static str {
-        // Stable releases and nightly/beta prereleases are both published
-        // from the single master integration branch. GitHub may report the
-        // release-only commit SHA instead, which is accepted below.
         "master"
     }
 }
@@ -148,12 +145,10 @@ pub fn is_authorized_release_asset_url(url: &str) -> bool {
         return false;
     };
     let segments: Vec<&str> = segments.collect();
-    // `/<owner>/<repo>/releases/download/<tag>/<asset>` — no more, no fewer.
     let [owner, repo, releases, download, tag, asset] = segments.as_slice() else {
         return false;
     };
 
-    // GitHub owner/repo names are case-insensitive, so match them that way.
     let is_expected_repo = |expected_repo_path: &str| {
         let mut expected = expected_repo_path.split('/');
         let expected_owner = expected.next().unwrap_or_default();
@@ -167,12 +162,6 @@ pub fn is_authorized_release_asset_url(url: &str) -> bool {
         return false;
     }
 
-    // The tag and asset are attacker-influenced only insofar as a crafted URL
-    // could put traversal markers here. `path_segments()` returns segments
-    // still percent-encoded (verified: `..%2f..` stays `..%2f..`, it is not
-    // decoded to `../..`), so we must catch the *encoded* forms. We also reject
-    // the *literal* separators/dot segments as belt-and-suspenders, so the
-    // check stays correct even if a future url-crate version were to decode.
     let is_suspicious = |s: &str| {
         let lower = s.to_ascii_lowercase();
         s.is_empty()
@@ -210,7 +199,6 @@ async fn check_repo(
     let Some((_, asset, install_mode)) = select_compatible_release(&releases, channel, target)
     else {
         if matches!(target, UpdateTarget::AndroidArm64 | UpdateTarget::AndroidX86_64) {
-            // Desktop-only releases are normal until Android publishing starts.
             return Ok(None);
         }
         return Err(anyhow::anyhow!("No compatible Verenu installer is published for this device on the selected update channel. Try again later or check the release page."));
@@ -255,9 +243,6 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
     }
     let resp = resp.error_for_status().map_err(request_error)?;
     let mut releases: Vec<GhRelease> = resp.json().await.map_err(request_error)?;
-    // Nightly releases can push the latest stable release beyond the first 100.
-    // If the newest page entry is a prerelease, an older stable entry elsewhere
-    // in the page does not prove that the latest stable release is present.
     if channel == UpdateChannel::Stable && needs_latest_stable_fallback(&releases) {
         let latest = super::client::get()
             .get(format!(
@@ -268,8 +253,6 @@ async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Ve
             .await
             .map_err(request_error)?;
         if latest.status() != reqwest::StatusCode::NOT_FOUND {
-            // Equal installer versions prefer the earlier list entry, so keep
-            // this authoritative fallback ahead of older paginated entries.
             releases.insert(
                 0,
                 latest
@@ -409,8 +392,6 @@ fn select_release(releases: &[GhRelease], channel: UpdateChannel) -> Option<&GhR
         .filter_map(|(index, release)| {
             release_installer_version(release).map(|version| (index, release, version))
         })
-        // Keep the first release when normalized versions tie. GitHub returns
-        // releases newest-first, so this preserves the newest prerelease build.
         .max_by(
             |(left_index, _, left_version), (right_index, _, right_version)| {
                 compare_versions(left_version, right_version)
@@ -420,9 +401,6 @@ fn select_release(releases: &[GhRelease], channel: UpdateChannel) -> Option<&GhR
         .map(|(_, release, _)| release)
 }
 
-/// Installer filenames are the version source of truth. Release tags have
-/// historically included stale beta/nightly suffixes, while the filenames
-/// are also the names the user actually installs.
 #[cfg(test)]
 fn release_installer_version(release: &GhRelease) -> Option<String> {
     release
@@ -467,20 +445,11 @@ fn release_matches_channel(release: &GhRelease, channel: UpdateChannel) -> bool 
     let legacy_beta_branch = release.target_commitish.eq_ignore_ascii_case("dev");
 
     match channel {
-        // Older beta releases were published with GitHub's prerelease flag
-        // off, used the retired dev branch, or used a `-beta` tag. Accept
-        // those historical publication styles so the beta toggle does not
-        // silently miss them.
         UpdateChannel::Beta => {
             (release.prerelease || beta_tag || beta_name)
                 && (target_is_branch || target_is_sha || legacy_beta_branch)
         }
         UpdateChannel::Stable => {
-            // GitHub's prerelease flag is authoritative for current releases.
-            // A historical Verenu release was accidentally tagged `-beta` but
-            // published as a normal release; accept that shape when its name
-            // does not identify it as beta, while continuing to exclude the
-            // older releases explicitly named beta or published from `dev`.
             !release.prerelease
                 && !beta_name
                 && !legacy_beta_branch
@@ -516,9 +485,6 @@ fn is_commit_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Release tags must contain exactly three numeric components in the main
-/// version core. Prerelease and build suffixes may contain numbers, but they
-/// must not fill in a missing patch component.
 fn release_version(tag: &str) -> Option<String> {
     let start = tag.find(|c: char| c.is_ascii_digit())?;
     let version_and_suffix = &tag[start..];
@@ -647,8 +613,6 @@ fn compare_prerelease_parts(left: &[VersionPart], right: &[VersionPart]) -> std:
     left.len().cmp(&right.len())
 }
 
-/// Extract the first three numeric groups from any version string, return as "major.minor.patch".
-/// Handles tags like "vVerenu-0.5.0-beta", "v1.2.3", "0.5.0", etc.
 fn normalize_version(tag: &str) -> String {
     let parts: Vec<u32> = tag
         .split(|c: char| !c.is_ascii_digit())
@@ -675,11 +639,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => match (&latest.prerelease, &current.prerelease) {
-            // A same-core beta is a valid update when beta updates are
-            // enabled. The channel filter prevents this rule from affecting
-            // stable-only checks.
             (Some(_), None) => true,
-            // A stable release supersedes a pre-release of the same version.
             (None, Some(_)) => true,
             (Some(latest), Some(current)) => {
                 compare_prerelease_parts(latest, current) == std::cmp::Ordering::Greater
@@ -768,13 +728,9 @@ fn select_release_asset_for_target(
                 )
             }),
         UpdateTarget::Windows => select_windows_asset(assets),
-        // Apple Silicon can run Intel builds via Rosetta 2, so it may fall back
-        // to a generic/Intel DMG.
         UpdateTarget::MacOsAppleSilicon => {
             select_macos_asset(assets, &["apple_silicon", "aarch64", "arm64"], &[])
         }
-        // Intel Macs cannot run arm64 binaries, so exclude Apple Silicon DMGs
-        // from the generic fallback rather than installing an unusable build.
         UpdateTarget::MacOsIntel => select_macos_asset(
             assets,
             &["intel", "x64", "x86_64"],
@@ -785,10 +741,6 @@ fn select_release_asset_for_target(
 }
 
 fn select_windows_asset(assets: &[GhAsset]) -> Option<(&GhAsset, InstallMode)> {
-    // Only the NSIS setup executable supports Verenu's unattended install
-    // handoff. A random `.exe` release asset is not necessarily an installer,
-    // and MSI packages need a different silent-install contract, so those are
-    // download-only instead of being passed the NSIS `/S` argument.
     find_asset_with_suffix(assets, "-setup.exe")
         .or_else(|| find_asset_with_suffix(assets, ".msi"))
         .map(|asset| {
@@ -1394,8 +1346,6 @@ mod tests {
     #[test]
     fn stable_release_supersedes_same_core_prerelease() {
         assert!(is_newer("0.16.2", "0.16.2-beta.1"));
-        // Beta-channel selection can intentionally move a stable install to a
-        // same-core beta; release_matches_channel applies that channel gate.
         assert!(is_newer("0.16.2-beta.1", "0.16.2"));
     }
 
@@ -1495,7 +1445,6 @@ mod tests {
 
     #[test]
     fn macos_apple_silicon_falls_back_to_intel_dmg() {
-        // Apple Silicon can run Intel builds via Rosetta 2.
         let assets = [asset("Verenu_0.15.0_Intel.dmg")];
         let selected = select_release_asset_for_target(&assets, UpdateTarget::MacOsAppleSilicon)
             .expect("rosetta fallback");
@@ -1510,7 +1459,6 @@ mod tests {
         assert!(is_authorized_release_asset_url(
             "https://github.com/Verenu/Verenu/releases/download/v0.15.0/Verenu_0.15.0_x64-setup.exe"
         ));
-        // Owner/repo casing is insignificant on GitHub.
         assert!(is_authorized_release_asset_url(
             "https://github.com/verenu/verenu/releases/download/v0.15.0/Verenu_0.15.0_Apple_Silicon.dmg"
         ));
@@ -1519,19 +1467,14 @@ mod tests {
     #[test]
     fn authorized_url_rejects_bypasses_and_foreign_hosts() {
         let bad = [
-            // Wrong host / scheme.
             "http://github.com/Verenu/Verenu/releases/download/v1/a.exe",
             "https://evil.com/Verenu/Verenu/releases/download/v1/a.exe",
-            // Different repo.
             "https://github.com/attacker/repo/releases/download/v1/a.exe",
-            // Literal dot-segment traversal.
             "https://github.com/Verenu/Verenu/releases/download/../../attacker/repo/releases/download/v1/a.exe",
-            // Percent-encoded dot / slash / backslash traversal.
             "https://github.com/Verenu/Verenu/releases/download/%2e%2e/a.exe",
             "https://github.com/Verenu/Verenu/releases/download/v1/%2fa.exe",
             "https://github.com/Verenu/Verenu/releases/download/..%2f..%2fattacker/a.exe",
             "https://github.com/Verenu/Verenu/releases/download/..%5c..%5cattacker%5crepo/a.exe",
-            // Wrong structure (too few / too many segments).
             "https://github.com/Verenu/Verenu/releases/download/v1",
             "https://github.com/Verenu/Verenu/blob/main/releases/download/v1/a.exe",
         ];
@@ -1543,12 +1486,6 @@ mod tests {
         }
     }
 
-    // Regression guard for the security check in `is_authorized_release_asset_url`.
-    // The `url` crate does NOT percent-decode path segments, so the encoded-form
-    // traversal checks (`%2e`/`%2f`/`%5c`) are load-bearing, not redundant: the
-    // literal `'/'`/`'\\'`/`.`/`..` checks never see a `%2f` because it stays
-    // encoded. If a future url-crate version started decoding segments this test
-    // fails loudly, flagging that the encoded checks can be revisited.
     #[test]
     fn path_segments_preserve_percent_encoding() {
         let parsed =

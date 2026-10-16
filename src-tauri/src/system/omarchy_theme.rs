@@ -71,8 +71,6 @@ pub(crate) fn parse_colors(contents: &str, name: &str, light_marker: bool) -> Op
         if key.starts_with('#') || key.starts_with('[') {
             continue;
         }
-        // `#` both starts comments and hex colors, so read a quoted value up
-        // to its closing quote and a bare value up to whitespace.
         let value = value.trim();
         let value = match value.strip_prefix('"') {
             Some(rest) => rest.split('"').next().unwrap_or(""),
@@ -133,8 +131,6 @@ pub fn current() -> Option<OmarchyTheme> {
     None
 }
 
-/// Polls the theme files (cheap metadata reads) so `omarchy theme set`
-/// updates every Verenu window without a restart.
 #[cfg(target_os = "linux")]
 fn start_watcher(app: &tauri::AppHandle) {
     use std::sync::atomic::{AtomicBool, Ordering};

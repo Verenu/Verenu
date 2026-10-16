@@ -33,9 +33,6 @@ fn log_context_event(
     correction_hash: &str,
     confidence: f64,
 ) {
-    // Keep the stable numeric identity in persistence while retaining the
-    // existing display label for local diagnostics. The label is never used
-    // for scope decisions and no raw text is passed to the event logger.
     let _ = db::log_auto_learn_event_for_context(
         db,
         context.id,
@@ -172,13 +169,6 @@ pub(super) fn record_candidate(
         PROMOTION_THRESHOLD_DEFAULT
     };
 
-    // The pending insert, threshold count, `promoted_at`, and dictionary upsert
-    // happen in ONE transaction inside the DB layer. Concurrent monitors
-    // observing the same pair in this Context can no longer both pass the
-    // threshold and both "promote" it (double events / inflated
-    // correction_count), and a rejection that purges the Context-scoped
-    // candidate mid-flight can no longer be undone by an in-flight promotion
-    // recreating the rejected row.
     match db::auto_learn_promote_for_context(
         db,
         context.id,
@@ -270,9 +260,6 @@ struct MonitorTask {
     next_action: std::time::Instant,
     deadline: std::time::Instant,
     stable_text_gate: StableTextGate,
-    // Keep the Context in the key even though one task currently belongs to
-    // one Context. This prevents a future task/session reuse from silently
-    // turning a pair-only deduplication set back into a global key.
     recorded_this_session: HashSet<CandidateSessionKey>,
     #[cfg(windows)]
     _event_mode_hook_guard: Option<EventModeHookGuard>,
@@ -404,9 +391,6 @@ impl MonitorTask {
                         return false;
                     }
                 } else {
-                    // A hook is an optimization, not a requirement. Keep the
-                    // monitor alive and use the regular polling path if UIA
-                    // could not install it.
                     self.event_mode = false;
                     log_context_event(
                         &self.db,
@@ -421,8 +405,6 @@ impl MonitorTask {
             }
             #[cfg(not(windows))]
             {
-                // There is no native value-change hook on this platform, so
-                // event mode transparently falls back to polling.
                 self.event_mode = false;
             }
             if self.event_mode && !should_read {
@@ -477,9 +459,6 @@ impl MonitorTask {
                 candidate.confidence,
             ) {
                 log::info!("auto-learn: promoted candidate pair");
-                // Keep the originating Context on the event so the canonical
-                // Contexts view can refresh precisely without treating a
-                // targeted learning event as a global dictionary mutation.
                 self.app
                     .emit(
                         "verenu:dictionary-updated",
@@ -534,10 +513,6 @@ fn run_coordinator(receiver: std::sync::mpsc::Receiver<MonitorRequest>) {
                 }
                 Ok(false) => index += 1,
                 Err(_) => {
-                    // A malformed accessibility response or native API
-                    // failure must retire only this session. Do not let an
-                    // unwind permanently disconnect the coordinator and
-                    // disable AutoLearn for every later dictation.
                     log::error!("auto-learn monitor task panicked; retiring task");
                     tasks.swap_remove(index);
                 }

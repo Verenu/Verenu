@@ -14,18 +14,10 @@
 
   const max = $derived(Math.max(...words.top.map((w) => w.count), 0));
 
-  /* Negative means cleanup trimmed the dictation; positive means it grew. */
   const trimPct = $derived(
     cleanup.raw_words > 0 ? ((cleanup.clean_words - cleanup.raw_words) / cleanup.raw_words) * 100 : null
   );
 
-  /*
-   * The card truncates the longest word with CSS ellipsis by default — that
-   * alone handles normal-length words. The click-to-expand is the safety net
-   * for a malformed dictation (e.g. a run of CJK text with no spaces, which
-   * counts as one "word"): a hard char cap keeps even that case from ever
-   * rendering thousands of characters into the DOM.
-   */
   const HARD_CHAR_CAP = 300;
   let wordExpanded = $state(false);
   const rawWord = $derived.by(() => {
@@ -134,7 +126,6 @@
 </section>
 
 <style>
-  /* .card / .card-head / .card-h / .card-sub are owned by Insights.svelte. */
 
   .split {
     display: grid;

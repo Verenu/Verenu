@@ -126,8 +126,6 @@ impl PipelineTelemetry {
 
 impl Drop for PipelineTelemetry {
     fn drop(&mut self) {
-        // Early returns and unwinding must not leave an accepted run without
-        // a terminal outcome. Specific paths finish with a bounded category.
         self.failed(FailureCategory::Internal, false);
     }
 }

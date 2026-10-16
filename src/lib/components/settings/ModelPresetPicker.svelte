@@ -51,7 +51,6 @@
   const originals = $derived(buildPresets(apiKeyStatus, hardware, localSupported, options));
   const presets = $derived(transformPreset ? originals.map(transformPreset) : originals);
   const activeId = $derived(matchActivePreset(presets, activeConfig));
-  // Callbacks take the untransformed preset so the chosen state never stores a display-only override.
   function original(preset: Preset): Preset {
     return originals.find(candidate => candidate.id === preset.id) ?? preset;
   }
@@ -60,10 +59,7 @@
   const cloudActive = $derived(!activeConfig.transcriptionDefaultModel.startsWith('local/'));
   const offlineSpeech = $derived(activeConfig.transcriptionFallbacks.filter(id => id.startsWith('local/') && installedLocal.transcription.includes(id.slice('local/'.length))));
   const offlineCleanup = $derived(activeConfig.cleanupFallbacks.filter(id => id.startsWith('local/') && installedLocal.cleanup.includes(id.slice('local/'.length)) && options.localCleanupReady !== false));
-  // Only surface "Custom" when there's a real, actionable preset list that the
-  // current selection simply doesn't match (not the add-key placeholder state).
 
-  // Accordion: one Details panel at a time; any click elsewhere or Escape closes it.
   let openDetailsId = $state<string | null>(null);
 
   function handleWindowClick(event: MouseEvent) {
@@ -88,9 +84,6 @@
     return total;
   }
 
-  // Presets share models (Fastest and Balanced both use Parakeet), so a model
-  // download says nothing about which preset asked for it. Only the preset the
-  // user clicked shows as downloading.
   function isDownloading(preset: Preset): boolean {
     return pendingPresetId !== null && (pendingPresetId === preset.id || pendingPresetId === `fallback-${preset.id}`);
   }

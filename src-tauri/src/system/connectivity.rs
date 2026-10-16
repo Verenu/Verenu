@@ -99,9 +99,6 @@ pub fn check_native() -> Option<bool> {
     }
 
     unsafe {
-        // The zero address (0.0.0.0) is Apple's documented pattern for a
-        // generic "is there any network route at all" check — it deliberately
-        // avoids resolving a hostname, which would mean a DNS lookup.
         let mut addr: libc::sockaddr_in = std::mem::zeroed();
         addr.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
         addr.sin_family = libc::AF_INET as u8;

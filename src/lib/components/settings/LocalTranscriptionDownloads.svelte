@@ -89,9 +89,6 @@
     }
   }
 
-  // The download stage is the only one whose total can be unknown (a server
-  // that omits Content-Length); verifying and extracting always report a real
-  // fraction, so they never fall back to the indeterminate animation.
   function transcriptionIsIndeterminate(modelId: string): boolean {
     if ((transcriptionDownloadStage[modelId] ?? 'downloading') !== 'downloading') return false;
     const progress = transcriptionDownloadProgress[modelId];
@@ -119,13 +116,7 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- Escape collapses the open tile no matter which control inside it has
-     focus, so the key backs out one layer at a time (tile → Settings). The
-     per-model language disclosure handles Escape first (see .local-meta-toggle)
-     so the innermost layer always closes before the tile. preventDefault
-     marks the key as handled for Settings' window guard. -->
-<div class="task-tile" class:task-open={opened} onkeydown={(event) => { if (event.key === 'Escape' && opened) { event.preventDefault(); onToggleOpen(); } }}>
+<div class="task-tile" role="presentation" class:task-open={opened} onkeydown={(event) => { if (event.key === 'Escape' && opened) { event.preventDefault(); onToggleOpen(); } }}>
   <button class="tile-head" onclick={onToggleOpen} aria-expanded={opened}>
     <div class="head-left">
       <span class="head-title">Speech-to-text</span>
@@ -345,7 +336,6 @@
     color: var(--accent-ink);
   }
 
-  /* Collapsed-header summary: plain text, not pills. */
   .summary-item {
     font-size: 11.5px;
     font-family: var(--sans);
@@ -423,7 +413,6 @@
     grid-area: 1 / 1;
   }
 
-  /* ── Card action buttons ─────────────────── */
   .card-btn {
     font-family: var(--sans);
     font-size: 11.5px;
@@ -452,9 +441,6 @@
     opacity: 0.7;
   }
 
-  /* Accent (not --ink/--amber-50, which are theme-inverted text/paper tokens
-     and render a cream button in dark mode) — --accent/--on-accent stay a
-     consistent warm orange-on-readable-text pairing in both themes. */
   .card-btn.accent {
     background: var(--accent);
     border: 0;
@@ -469,7 +455,6 @@
     opacity: 0.66;
   }
 
-  /* ── Show more button ────────────────────── */
   .show-more-btn {
     align-self: flex-start;
     background: transparent;
@@ -579,7 +564,6 @@
     font-weight: 500;
   }
 
-  /* Container-relative: see the note in ModelsSection. */
   @container settings-panel (max-width: 720px) {
     .local-card-top {
       flex-direction: column;

@@ -42,8 +42,6 @@ pub(super) fn cleanup_cache_plan_for_context(
     let allow_cache = should_use_cleanup_cache_tokens(&cache_tokens)
         && (expanded.chars().count() <= 200 || has_snippets);
     let key = if allow_cache {
-        // Structured encoding preserves word boundaries, case, punctuation,
-        // and field boundaries. Only the digest is persisted in SQLite.
         format!(
             "cleanup-v2:{}",
             cache_digest(&serde_json::json!([
@@ -72,8 +70,6 @@ pub(super) fn cleanup_context_fingerprint(
     extra_rules: &str,
     app_context: Option<&str>,
 ) -> String {
-    // Tone may come from a Context rather than the global default. Include
-    // every preset edit so cached cleanup never survives an instruction edit.
     let edits: std::collections::BTreeMap<_, _> = cfg.style_prompt_instructions.iter().collect();
     cache_digest(&serde_json::json!([
         CLEANUP_PROMPT_VERSION,
@@ -128,7 +124,6 @@ pub(super) fn cleanup_cache_hit_text(
     let entry = db::cleanup_cache_get_active(db_handle, cache_key)
         .ok()
         .flatten()?;
-    // Validate against current candidates without persisting raw transcripts.
     if cleanup_output_is_unusable_against_candidates(
         intensity,
         expanded,
@@ -262,7 +257,6 @@ pub(super) fn should_run_cleanup_llm(
 }
 
 pub(super) fn snippet_instructions_fingerprint(instructions: &str) -> u64 {
-    // djb2 hash — deterministic across runs, no external dep
     let mut h: u64 = 5381;
     for b in instructions.bytes() {
         h = h.wrapping_shl(5).wrapping_add(h).wrapping_add(b as u64);

@@ -1,5 +1,3 @@
-// Adapt frozen smoke URLs and screenshots only inside this runner's child.
-// Assertions and application responses are never changed.
 const { chromium } = require('playwright');
 const path = require('node:path');
 const fs = require('node:fs');

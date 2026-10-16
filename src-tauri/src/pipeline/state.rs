@@ -19,7 +19,6 @@ fn paste_failure_is_fresh(captured_at: std::time::Instant, now: std::time::Insta
     now.checked_duration_since(captured_at)
         .is_some_and(|age| age < PASTE_FAILURE_WINDOW)
 }
-// ---------- shared state ----------
 
 /// Default pill window width (logical points) before the frontend reports the
 /// real content width. Deliberately the *smallest* content width (the bare
@@ -84,32 +83,19 @@ pub struct AppState {
 /// recording start concurrently with an in-flight one).
 pub enum DictationLifecycle {
     Idle,
-    /// Reserved the instant a recording is decided on, before the mic/session
-    /// actually exists — closes the "looks idle but isn't" installation gap
-    /// for both a normal fresh press and an interrupt's replacement
-    /// recording.
     Starting {
         prepend_audio: Option<CapturedAudio>,
     },
     Recording {
         session: audio::RecordingSession,
-        /// Released while taking the session, before a replacement can start.
         mute_claim: Option<crate::media::sound::LocalMuteClaim>,
         exclusive_mic_session_id: Option<u64>,
         handless: bool,
         handless_from_hold: bool,
         prepend_audio: Option<CapturedAudio>,
     },
-    /// Session handed off for `session.stop()` (blocking: denoise flush,
-    /// resample, encode) — audio isn't available yet. Exists so `lifecycle`
-    /// never reads as `Idle` between "recording stopped" and "processing
-    /// reserved."
     Stopping {
         generation: u64,
-        // Not read back out of this variant — the caller of
-        // `take_recording_for_stopping` already has its own copy for the
-        // actual merge. Kept here so the state itself stays self-descriptive
-        // (a resumed dictation is visible mid-stopping, not just mid-merge).
         #[allow(dead_code)]
         prepend_audio: Option<CapturedAudio>,
     },
@@ -153,9 +139,6 @@ pub struct ActivePipeline {
     /// processing. Escape cancellation must retain it if the audio is put
     /// back into the resumable cancelled-capture slot.
     pub context: ResolvedContextIdentity,
-    // Not currently read back out — the pipeline task that owns this
-    // generation already has its own copy of `target`. Kept for state
-    // completeness/observability.
     #[allow(dead_code)]
     pub target: WindowTarget,
 }
@@ -205,14 +188,6 @@ pub struct CancelledCapture {
     pub origin: CaptureOrigin,
     pub created_at_rfc3339: String,
     pub started_at_unix: i64,
-    // The dictation's original focus target, captured when that recording
-    // started. Resuming must reuse this rather than re-capturing the
-    // foreground window: by the time the user clicks Undo, the foreground
-    // window is Verenu's own pill (it just received a real click), not the
-    // app the user was dictating into — see resume_cancelled_capture, which
-    // used to call WindowTarget::capture_foreground() itself and always hit
-    // that self-target, tripping finalize.rs's self-inject guard and
-    // clipboard-only fallback on every resume.
     pub target: WindowTarget,
     /// The exact Context selected for the original capture. Undo/resume must
     /// reuse this identity instead of resolving whichever window is focused
@@ -320,7 +295,6 @@ pub fn note_sensitivity_success(state: &SharedState) {
 static PIPELINE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn next_pipeline_generation() -> u64 {
-    // Starts from 1 so 0 can stay the hook's "not processing" sentinel.
     PIPELINE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
 }
 
@@ -560,9 +534,6 @@ pub fn take_recording_plain_with_prepend(
             Some((session, exclusive_mic_session_id, prepend_audio, context))
         }
         DictationLifecycle::Starting { .. } => {
-            // Cancelling a start must consume the reservation atomically. If
-            // the microphone task has not installed Recording yet, it will
-            // observe Idle and stop the session instead of resurrecting it.
             crate::media::sound::coordinated_unmute();
             st.recording_context = None;
             None
@@ -587,8 +558,6 @@ fn cancel_starting_reservation_with(state: &SharedState, release_mute: impl FnOn
     };
     if matches!(st.lifecycle, DictationLifecycle::Starting { .. }) {
         log::info!("lifecycle: starting -> idle (start reservation cancelled)");
-        // Invalidate before exposing Idle to a new start. Restoration runs
-        // independently of a microphone open that may still be blocked.
         release_mute();
         st.lifecycle = DictationLifecycle::Idle;
         st.recording_context = None;
@@ -713,9 +682,6 @@ pub(super) fn take_recording_for_stopping(state: &SharedState) -> Option<Stoppin
             ))
         }
         DictationLifecycle::Starting { .. } => {
-            // A release can race the microphone opening. Consume the start
-            // reservation so the late opener cannot install a recording after
-            // the user has already released the hotkey.
             crate::media::sound::coordinated_unmute();
             st.recording_context = None;
             None
@@ -939,7 +905,6 @@ mod tests {
 
     #[test]
     fn main_window_dictation_uses_normal_injection() {
-        // A processing pill can gain focus without changing the captured target.
         for foreground_owned in [false, true] {
             assert!(!should_copy_self_target(
                 42,
@@ -1006,7 +971,6 @@ mod tests {
     fn reserve_starting_fails_unless_idle() {
         let state = fresh_state();
         assert!(reserve_starting(&state).is_ok());
-        // Already Starting now — a second reservation must fail.
         assert!(reserve_starting(&state).is_err());
     }
 
@@ -1090,7 +1054,6 @@ mod tests {
                 context: context.clone(),
             });
         }
-        // Peeking clones — the slot must survive for the later clear.
         let peeked = peek_cancelled_capture_if_fresh(&state).unwrap();
         assert_eq!(peeked.audio.duration_ms, 500);
         assert_eq!(peeked.context, context);
@@ -1200,7 +1163,6 @@ mod tests {
             take_paste_failure_if_fresh(&state),
             Some("hello world".to_string())
         );
-        // Already taken — a second call must return None.
         assert_eq!(take_paste_failure_if_fresh(&state), None);
     }
 
@@ -1253,8 +1215,6 @@ mod tests {
         let state = fresh_state();
         reserve_starting(&state).unwrap();
         let released = std::cell::Cell::new(false);
-        // The microphone opener has not completed. Cancellation must release
-        // its mute now, while new starts are still excluded by the state lock.
         assert!(cancel_starting_reservation_with(&state, || {
             assert!(state.try_lock().is_err());
             released.set(true);
@@ -1379,8 +1339,6 @@ mod tests {
                 prepend_audio: None,
             };
         }
-        // A stale task for generation 4 must not be able to install itself
-        // over the current (5) reservation.
         assert!(!install_processing(&state, 4, fake_active(4)));
         let st = lock_state(&state).unwrap();
         assert!(matches!(
@@ -1411,7 +1369,6 @@ mod tests {
             let mut st = lock_state(&state).unwrap();
             st.lifecycle = DictationLifecycle::Processing(fake_active(9));
         }
-        // A superseded task's cleanup for the wrong generation must be a no-op.
         assert!(!leave_processing_if_owned(&state, 8));
         assert!(!enter_finalizing(&state, 8));
         {
@@ -1420,7 +1377,6 @@ mod tests {
                 matches!(&st.lifecycle, DictationLifecycle::Processing(a) if a.generation == 9)
             );
         }
-        // The owning generation succeeds and transitions to Finalizing.
         assert!(enter_finalizing(&state, 9));
         let st = lock_state(&state).unwrap();
         assert!(matches!(

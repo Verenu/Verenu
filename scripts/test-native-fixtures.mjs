@@ -32,7 +32,6 @@ try {
     });
     fixture.stdout.resume();
     fixture.stderr.resume();
-    // Rust discovers the expected PID, window and focused entry before editing.
     const checked = await run('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'atspi_live_formats_disposable_entry', '--lib', '--', '--ignored', '--nocapture'], { directory, name: 'focused-text', env: { ...env, VERENU_FORMAT_FIXTURE_PID: String(fixture.pid) }, timeout: 30_000 });
     const result = formattingResult(checked, await fs.readFile(checked.log, 'utf8'));
     report.checks.push({ name: 'AT-SPI cursor formatting in owned GTK entry', status: result.status === 'verified' ? 'passed' : result.status, cases: result.cases });

@@ -1,5 +1,3 @@
-//! Development-only browser transport. All app commands use Tauri's existing
-//! dispatcher; the transport never implements a parallel settings/database API.
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path as RoutePath, Query, Request, State},
@@ -102,7 +100,6 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
     ] {
         settings.remove(key);
     }
-    // A cloned session never advertises the installed sync identity or phones home.
     settings.insert(store::SYNC_ENABLED.into(), json!(false));
     settings.insert(store::ANALYTICS_ENABLED.into(), json!(false));
     settings.insert(store::AUTO_LEARN_ENABLED.into(), json!(false));
@@ -116,8 +113,6 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
 }
 
 fn scrub_history(path: &Path) -> anyhow::Result<()> {
-    // Migrate the copy before scrubbing, never the source. Preserve customization
-    // tables explicitly; all transcript-derived state and sync identity is removed.
     let db = crate::data::db::open(path)?;
     let mut conn = db
         .lock()
@@ -381,8 +376,6 @@ struct Command {
 }
 
 fn allowed(command: &str) -> bool {
-    // An explicit allowlist keeps new native or secret-bearing commands from
-    // becoming remotely callable when someone adds them to generate_handler!.
     matches!(
         command,
         "frontend_ready"
@@ -510,9 +503,6 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             ),
         ));
     }
-    // Browser audio sessions must not probe host devices unless host access was
-    // explicitly enabled. Settings mounts can otherwise enumerate ALSA devices
-    // concurrently even though recording from those devices is forbidden.
     if command.command == "get_microphones" && !bridge.host_mic {
         return Ok(Json(json!([])));
     }
@@ -632,7 +622,6 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
             }
         });
     } else if stops_mic && result.is_err() {
-        // Keep the cross-process lease while capture may still be active.
         let idle = bridge
             .app
             .state::<crate::pipeline::SharedState>()
@@ -670,8 +659,6 @@ async fn dispatch(app: &Arc<AppHandle>, command: Command) -> Result<Value, Strin
             let window = owner
                 .get_webview_window("main")
                 .ok_or("Native command window unavailable")?;
-            // Tauri's unstable custom invoke API is isolated here and exercised by the
-            // bridge regression. The invoke key never crosses the browser transport.
             let request = tauri::webview::InvokeRequest {
                 cmd: command.command,
                 callback: CallbackFn(0),

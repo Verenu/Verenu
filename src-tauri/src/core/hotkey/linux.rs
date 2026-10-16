@@ -85,16 +85,10 @@ fn requested_control_keys() -> [String; 2] {
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
 static HANDLESS: AtomicBool = AtomicBool::new(false);
 static PROCESSING: AtomicU64 = AtomicU64::new(0);
-/// Mirrors `PortalGesture::chord_active` across threads so Escape arming can
-/// see a held chord. Updated by the portal thread on every edge; read by
-/// `refresh_escape_listening` from any thread.
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Whether the dynamic bare-Escape Hyprland bind is currently installed.
 /// The Lua handle disables only Verenu's binding, preserving user bindings.
 static ESCAPE_ARMED: AtomicBool = AtomicBool::new(false);
-/// App-scoped portal id of the trigger-less "cancel" shortcut (see
-/// `PORTAL_CANCEL_ID`), resolved at startup. Needed to build the dynamic
-/// Escape bind's `hl.dsp.global(...)` action.
 static CANCEL_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static HANDSFREE_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static SPACE_ARMED: AtomicBool = AtomicBool::new(false);
@@ -110,8 +104,6 @@ static COPY: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static SUB_APP: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
 const HANDSFREE_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(350);
-// A first tap must never reach the recording quality gate while a second
-// tap can still promote its open capture. Match the compositor's tap limit.
 const TAP_MAX_HOLD: Duration = Duration::from_millis(700);
 const STALE_CHORD_TIMEOUT: Duration = Duration::from_secs(2);
 const PORTAL_SHORTCUT_ID: &str = "dictate";
@@ -131,9 +123,6 @@ const PORTAL_COPY_ID: &str = "copy-last";
 const PORTAL_COPY_DESCRIPTION: &str = "Verenu copy last dictation";
 const PORTAL_HANDSFREE_ID: &str = "handsfree";
 const PORTAL_HANDSFREE_DESCRIPTION: &str = "Verenu hands-free";
-/// Backoff between portal reconnect attempts. A dead portal stream used to
-/// kill the hotkey thread silently (`else => break`), stranding any active
-/// recording with no way to stop it short of killing the app.
 const PORTAL_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,9 +179,6 @@ impl PortalGesture {
         let is_double_tap = self.pending_tap_at.take().is_some_and(|released_at| {
             now.duration_since(released_at) <= HANDSFREE_DOUBLE_TAP_WINDOW
         });
-        // This activation either consumes the pending tap as hands-free or
-        // begins a new gesture. Never let its delayed cleanup affect that
-        // new recording.
         self.pending_release = None;
         if is_double_tap {
             self.consume_deactivation = true;
@@ -219,9 +205,6 @@ impl PortalGesture {
             .take()
             .map(|pressed_at| now.duration_since(pressed_at))
             .unwrap_or_default();
-        // Info-level by design: the held duration is the primary signal for
-        // diagnosing stuck holds (a release measured from a stale repeat
-        // edge classifies as a tap and cancels instead of transcribing).
         log::info!(
             "linux hotkey: chord deactivated after {}ms",
             held.as_millis()
@@ -250,7 +233,6 @@ impl PortalGesture {
     }
 }
 
-// W3C code, XKB keysym and keycode. Function/Space ids remain compatible.
 const REGULAR_KEYS: &[(&str, &str, u32)] = &[
     ("KeyA", "A", 38),
     ("KeyB", "B", 56),
@@ -393,9 +375,9 @@ fn hyprland_modifier_name(modifier: u32) -> Option<&'static str> {
 
 fn hyprland_keycode(key: u32) -> Option<u32> {
     match key {
-        101..=110 => Some(key - 34), // F1–F10: XKB 67–76
-        111..=112 => Some(key - 16), // F11–F12: XKB 95–96
-        200 => Some(65),             // Space
+        101..=110 => Some(key - 34),
+        111..=112 => Some(key - 16),
+        200 => Some(65),
         _ => REGULAR_KEYS
             .iter()
             .find(|(_, _, code)| 1000 + code == key)
@@ -677,7 +659,6 @@ pub fn notify_handless() {
         cb();
     }
 }
-// Compatibility entry points used by the other desktop implementations.
 #[allow(dead_code)]
 pub fn update_capture_keys(_k1: u32, _k2: u32) {}
 pub fn reset_chord_state() {
@@ -708,8 +689,6 @@ pub fn caps_lock_is_on() -> bool {
     false
 }
 
-/// Lua snippet installing the bare-Escape bind that dispatches the portal
-/// cancel action. Pure so the trigger text is unit-testable.
 fn escape_bind_snippet(cancel_portal_id: &str) -> String {
     let key = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
     shortcuts::temporary_binding(
@@ -721,8 +700,6 @@ fn escape_bind_snippet(cancel_portal_id: &str) -> String {
 }
 
 fn escape_unbind_snippet() -> String {
-    // Disabling uses the stored handle only; temporary_binding ignores the key
-    // when no portal ID is supplied, including when cancellation uses F8–F12.
     shortcuts::temporary_binding("escape", "ESCAPE", None, "")
 }
 
@@ -781,8 +758,6 @@ fn refresh_escape_listening() {
         ESCAPE_ARMED.store(false, Ordering::SeqCst);
         log::info!("linux hotkey: Escape-to-cancel disarmed");
     } else {
-        // Stay armed so the next refresh retries the unbind instead of
-        // leaking a live bare-Escape bind that swallows Escape everywhere.
         log::warn!("linux hotkey: could not disarm Escape-to-cancel, will retry");
     }
 }
@@ -817,8 +792,6 @@ fn refresh_space_listening() {
 }
 
 fn register_temporary_controls() {
-    // Hyprland lists disabled controls too, so Super+K explains the gestures
-    // while idle without consuming those keys in other applications.
     let cancel_key = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
     let handsfree_key = HANDSFREE_KEY
         .lock()
@@ -912,10 +885,6 @@ where
             }
         };
         runtime.block_on(async move {
-            // A dropped portal stream must never kill dictation input
-            // silently: an earlier version `break`ed out of the select loop,
-            // ending the thread with no error surface, which stranded any
-            // active recording (release could never arrive) until restart.
             loop {
                 let requested = configured_keys(&KEYS);
                 let desktop_bindings = match conflicts::bindings("dictation") {
@@ -976,9 +945,6 @@ where
     }))
 }
 
-/// One portal session: bind, resolve compositor actions, and dispatch edges
-/// until a stream ends or the saved shortcut changes. The return value tells
-/// the caller whether to use the normal failure backoff or a fast rebind.
 async fn run_portal_session(
     preferred_trigger: Option<&str>,
     bindings: &[String],
@@ -1022,11 +988,6 @@ async fn run_portal_session(
     }
     let shortcuts = [
         dictate_shortcut,
-        // No preferred trigger: this action exists only so the dynamic
-        // bare-Escape bind has something to dispatch (see
-        // `refresh_escape_listening`). Requesting no trigger means nothing
-        // to collide with and no consent prompt for a key the user never
-        // presses directly.
         NewShortcut::new(PORTAL_CANCEL_ID, PORTAL_CANCEL_DESCRIPTION),
         NewShortcut::new(PORTAL_CHORD_CANCEL_ID, PORTAL_CHORD_CANCEL_DESCRIPTION),
         NewShortcut::new(PORTAL_COPY_ID, PORTAL_COPY_DESCRIPTION),
@@ -1060,11 +1021,6 @@ async fn run_portal_session(
         }
     };
     log::info!("linux hotkey: discovered portal ID");
-    // The managed Lua block references both dictation edge actions; the
-    // cancel action is dispatched through runtime-evaluated binds that resolve
-    // its id below on every arm. A reconnected session therefore needs the
-    // managed block re-ensured so both dictation handles resolve to the live
-    // portal session.
     let release_command = match std::env::current_exe() {
         Ok(exe) => format!(
             "{} --verenu-hotkey-release",
@@ -1101,7 +1057,6 @@ async fn run_portal_session(
         registration_failure(portal::Failure::new("Installing desktop bindings", error));
         return true;
     }
-    // Do not advertise a working chord until the activation listener exists.
     let mut activated =
         match portal::request("Listening for shortcuts", portal.receive_activated()).await {
             Ok(stream) => stream,
@@ -1179,8 +1134,6 @@ async fn run_portal_session(
             ),
         ),
     }
-    // These controls ignore held modifiers, so reserve the key across every
-    // modifier mask and submap before enabling it during dictation.
     let [cancel, handsfree] = requested_control_keys();
     for (id, requested, key_slot) in [
         (
@@ -1202,15 +1155,8 @@ async fn run_portal_session(
         }
         conflicts::status(id, requested.into(), active, vec![]);
     }
-    // Config reloads remove runtime handles. Re-arm against this session.
     register_temporary_controls();
     refresh_escape_listening();
-    // Keep the portal edge classifier as a fallback for normal chord events.
-    // The Hyprland raw-key block recognizes the second quick tap before this
-    // portal stream can be delayed by the single-instance handoff, then calls
-    // `notify_handless` directly. This classifier still filters repeated
-    // portal activations and consumes a portal-delivered second release when
-    // a compositor sends the events in the slower order.
     let gesture = GESTURE.get_or_init(|| Mutex::new(PortalGesture::default()));
     if let Ok(mut state) = gesture.lock() {
         *state = PortalGesture::default();
@@ -1235,8 +1181,6 @@ async fn run_portal_session(
                     desktop_check = Instant::now();
                     desktop_changed = shortcuts_need_rebind();
                     if !desktop_changed {
-                        // A user config reload clears runtime Lua handles.
-                        // Restore the idle controls and their menu entries.
                         register_temporary_controls();
                     }
                 }
@@ -1273,8 +1217,6 @@ async fn run_portal_session(
                     drop(gesture);
                     match action {
                         Some(PortalGestureAction::Press) => {
-                            // Info-level: one line per dictation start is the
-                            // cheapest reliable trace for stuck-hold reports.
                             log::info!("linux hotkey: portal press");
                             CHORD_ACTIVE.store(true, Ordering::SeqCst);
                             refresh_escape_listening();
@@ -1282,9 +1224,6 @@ async fn run_portal_session(
                         }
                         Some(PortalGestureAction::Handsfree) => {
                             log::info!("linux hotkey: portal double-tap, toggling handsfree");
-                            // The second tap's release is consumed by the
-                            // gesture tracker; it must not leave a held chord
-                            // behind after hands-free stops.
                             CHORD_ACTIVE.store(false, Ordering::SeqCst);
                             refresh_escape_listening();
                             if let Some(cb) = HANDLESS_CB.get() { cb(); }
@@ -1296,8 +1235,6 @@ async fn run_portal_session(
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
                 } else if id == PORTAL_CHORD_CANCEL_ID {
-                    // The compositor rejects modifier prefixes of other
-                    // shortcuts. It must never cancel hands-free or processing.
                     if should_cancel_hold(CHORD_ACTIVE.load(Ordering::SeqCst), HANDLESS.load(Ordering::SeqCst)) {
                         log::info!("linux hotkey: discarding hold used by another shortcut");
                         if let Some(cb) = CHORD_CANCEL.get() { cb(); }
@@ -1677,7 +1614,6 @@ mod tests {
 
     #[test]
     fn logged_double_tap_timings_keep_one_capture_without_release_or_cancel() {
-        // First hold and gap from the reported failures, plus slower taps.
         for (held, gap) in [(312, 163), (311, 337), (448, 200), (699, 349)] {
             let start = Instant::now();
             let mut gesture = PortalGesture::default();
@@ -1729,7 +1665,6 @@ mod tests {
         let mut gesture = PortalGesture::default();
         gesture.activated(start);
         gesture.deactivated(start + Duration::from_millis(312));
-        // notify_handless resets the tracker before promoting the capture.
         gesture = PortalGesture::default();
         assert_eq!(
             gesture.deactivated(start + Duration::from_millis(600)),
@@ -1833,7 +1768,6 @@ mod tests {
             pick_portal_id(&before, &after, PORTAL_CANCEL_DESCRIPTION, "com.t3tools.T3Code").as_deref(),
             Some("com.t3tools.T3Code:cancel")
         );
-        // The dictate lookup must not grab the cancel action and vice versa.
         assert_eq!(
             pick_portal_id(&before, &after, PORTAL_SHORTCUT_DESCRIPTION, "com.t3tools.T3Code").as_deref(),
             Some("com.t3tools.T3Code:dictate")

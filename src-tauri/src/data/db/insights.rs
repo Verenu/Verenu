@@ -135,8 +135,6 @@ struct CleanupLifetime {
     auto_learned_terms: i64,
 }
 
-// Filler/function words users don't need to see in their distinctive
-// vocabulary. Lowercase; `top`/`unique_words`/`avg_word_length` filter on it.
 const STOPWORDS: &[&str] = &[
     "a", "about", "after", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
     "because", "been", "before", "being", "but", "by", "could", "did", "do", "does", "for", "from",
@@ -181,17 +179,11 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         let previous = previous_range(days);
         let totals = query_totals(&conn, &range, previous.as_ref(), context_id)?;
         let lifetime_range = range_bounds(0, history_started_on.as_deref())?;
-        // The selected window is always a suffix of the lifetime window. One
-        // grouped query therefore supplies both series, including the idle
-        // prefix needed when a new install has less than `days` of history.
         let aggregate_start = range.start_day.min(lifetime_range.start_day);
         let aggregate_range = make_date_range(aggregate_start, range.end_day);
         let aggregate_daily = query_daily(&conn, &aggregate_range, context_id)?;
         let daily = slice_daily(&aggregate_daily, aggregate_start, &range);
         let lifetime_streak_daily = slice_daily(&aggregate_daily, aggregate_start, &lifetime_range);
-        // The lifetime daily series already contains every bucket needed for
-        // the streak calculation. Derive the compact heatmap from it instead
-        // of issuing a second overlapping 365-day aggregation query.
         let streak_daily = compact_streak_daily(&lifetime_streak_daily);
         let hourly = query_hourly(&conn, &range, context_id)?;
         let providers = query_providers(&conn, &range, context_id)?;
@@ -321,14 +313,11 @@ pub(crate) fn build_api_calls(
     calls
 }
 
-/// Models parsed out of an `api_used` string, split by task. Each entry is
-/// `(provider, model)`.
 struct ApiUsageParts {
     transcription_models: Vec<(String, String)>,
     cleanup_models: Vec<(String, String)>,
 }
 
-/// Splits an `api_used` string into transcription and cleanup model pairs.
 fn parse_api_usage(api_used: &str) -> ApiUsageParts {
     let (transcription_part, cleanup_part) = match api_used.split_once(";cleanup=") {
         Some((before, after)) => (before, Some(after)),
@@ -340,9 +329,6 @@ fn parse_api_usage(api_used: &str) -> ApiUsageParts {
         for segment in primary.split(';') {
             let segment = segment.strip_prefix("secondary=").unwrap_or(segment);
             if let Some((provider, model)) = segment.split_once('/') {
-                // Uniform with the single-provider fallback below: drop a
-                // trailing /transcription so the model key is identical
-                // regardless of which format produced the row.
                 let model = model.strip_suffix("/transcription").unwrap_or(model);
                 if !provider.is_empty() && !model.is_empty() {
                     transcription.push((provider.to_string(), model.to_string()));
@@ -383,9 +369,6 @@ fn history_started_on_conn(conn: &Connection, context_id: Option<i64>) -> Result
         .map_err(Into::into)
 }
 
-/// Local calendar-day bounds plus UTC-naive timestamp bounds. `created_at` is
-/// stored as a UTC-naive value, so the timestamp predicates below can seek on
-/// the ordinary `created_at` index without applying a function to the column.
 fn range_bounds(days: i64, history_started_on: Option<&str>) -> Result<DateRange> {
     let today = Local::now().date_naive();
     let start_day = if days > 0 {
@@ -399,8 +382,6 @@ fn range_bounds(days: i64, history_started_on: Option<&str>) -> Result<DateRange
     Ok(make_date_range(start_day, today))
 }
 
-/// One compact rolling year ending today. The frontend clips this to however
-/// many fixed-width weeks fit in the current window.
 fn rolling_year_bounds() -> DateRange {
     let end_day = Local::now().date_naive();
     make_date_range(end_day - Duration::days(364), end_day)
@@ -428,8 +409,6 @@ fn make_date_range(start_day: NaiveDate, end_day: NaiveDate) -> DateRange {
 
 fn local_midnight_utc_naive(day: NaiveDate) -> NaiveDateTime {
     let midnight = day.and_hms_opt(0, 0, 0).expect("valid local midnight");
-    // Midnight transitions are unusual but legal. For a nonexistent local
-    // midnight, use the first representable wall-clock hour on that date.
     (0..6)
         .find_map(|hour| {
             let wall = day.and_hms_opt(hour, 0, 0)?;
@@ -476,7 +455,6 @@ fn query_totals(
         });
     }
 
-    // Durable daily summaries preserve totals after raw history retention.
     let source = if context_id.is_none() {
         "transcription_daily_stats WHERE ?5 IS NULL"
     } else {
@@ -555,7 +533,6 @@ fn query_totals(
     })
 }
 
-/// One row per calendar day in the range, ascending, zero-filled for idle days.
 fn query_daily(
     conn: &Connection,
     range: &DateRange,
@@ -563,8 +540,6 @@ fn query_daily(
 ) -> Result<Vec<InsightsDay>> {
     let mut per_day: HashMap<String, (i64, i64, i64)> = HashMap::new();
     {
-        // Retention may remove every raw row for an old day. The unscoped
-        // Insights view must read the durable daily summary in that case.
         let sql = if context_id.is_none() {
             "SELECT day, total_words, total_transcriptions, speaking_ms
                FROM transcription_daily_stats
@@ -597,8 +572,6 @@ fn query_daily(
     let start = range.start_day;
     let end = range.end_day;
     if start > end {
-        // A future-dated transcription (clock drift) can make the range
-        // bounds inverted; never spin the zero-fill loop to NaiveDate::MAX.
         return Ok(Vec::new());
     }
     let span_days = (end - start).num_days();
@@ -663,7 +636,6 @@ fn compact_streak_daily(lifetime_daily: &[InsightsDay]) -> Vec<InsightsDay> {
     daily
 }
 
-/// Words per hour-of-day, local time; exactly 24 entries, zeros included.
 fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<Vec<i64>> {
     let mut hourly = vec![0i64; 24];
     let mut stmt = conn.prepare(
@@ -706,16 +678,11 @@ fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -
     Ok(hourly)
 }
 
-/// Per-model/per-task usage from the `api_calls` table, in range. Rows
-/// predating the table simply contribute nothing.
 fn query_providers(
     conn: &Connection,
     range: &DateRange,
     context_id: Option<i64>,
 ) -> Result<Vec<InsightsProviderUsage>> {
-    // api_calls has no context of its own; it inherits the one recorded on the
-    // dictation that produced the call. LEFT JOIN so an unscoped run still
-    // counts calls whose transcription has since been pruned.
     let mut stmt = conn.prepare(
         "SELECT a.model, a.provider, a.task, COUNT(*),
                 COALESCE(SUM(a.audio_ms), 0),
@@ -817,16 +784,11 @@ fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<
     })
 }
 
-/// Count words and vocabulary in one cursor pass. Retain distinct-word counts,
-/// not all transcript text; preserve the product's punctuation and accent rules.
 fn query_text_metrics(
     conn: &Connection,
     range: &DateRange,
     context_id: Option<i64>,
 ) -> Result<(InsightsWords, i64, i64, i64)> {
-    // This intentionally uses the same normalization as existing Insights
-    // results. SQLite's unicode tokenizer splits `re-enter` and folds `café`,
-    // so an FTS vocabulary index would make statistics depend on availability.
     let mut stmt = conn.prepare(
         "SELECT raw_text, clean_text FROM transcriptions
          WHERE created_at >= ?1 AND created_at < ?2
@@ -848,8 +810,6 @@ fn query_text_metrics(
         raw_words += raw_text.split_whitespace().count() as i64;
         changed_words += count_changed_words(&raw_text, &clean_text);
         for token in clean_text.split_whitespace() {
-            // Same word definition as history totals: punctuation-only tokens
-            // are not words.
             if !token.chars().any(char::is_alphanumeric) {
                 continue;
             }
@@ -902,10 +862,6 @@ fn query_text_metrics(
     ))
 }
 
-/// Returns the number of word insertions, deletions, and substitutions needed
-/// to turn the best raw transcript into the final injected text. Comparison is
-/// case- and punctuation-insensitive because this metric is about changed
-/// words, not formatting changes.
 fn count_changed_words(raw: &str, clean: &str) -> i64 {
     let raw_words: Vec<String> = raw
         .split_whitespace()
@@ -918,8 +874,6 @@ fn count_changed_words(raw: &str, clean: &str) -> i64 {
         .filter(|word| !word.is_empty())
         .collect();
 
-    // Equal prefixes and suffixes do not affect Levenshtein distance. Most
-    // cleanup edits change only a small part of the transcript.
     let prefix = raw_words.iter().zip(&clean_words)
         .take_while(|(a, b)| a == b).count();
     let raw_words = &raw_words[prefix..];
@@ -952,7 +906,6 @@ fn count_changed_words(raw: &str, clean: &str) -> i64 {
     distances[shorter.len()] as i64
 }
 
-/// Lowercases and strips punctuation, keeping only alphanumeric characters.
 fn normalize_word(word: &str) -> String {
     word.chars()
         .filter(|c| c.is_alphanumeric())
@@ -960,17 +913,10 @@ fn normalize_word(word: &str) -> String {
         .collect()
 }
 
-/// Computes current/longest streak over the (already zero-filled, ascending)
-/// daily series. A day with `words > 0` counts as active.
 fn compute_streak(daily: &[InsightsDay]) -> InsightsStreak {
     let active_days = daily.iter().filter(|d| d.words > 0).count() as i64;
 
     let mut current_days = 0i64;
-    // The series is zero-filled and ends on today. A quiet today (the day
-    // isn't over yet) must not zero a streak that's still alive through
-    // yesterday — GitHub-style, the streak holds until the day ends. The
-    // grace applies only to the trailing day (today) itself: if today is
-    // empty it's skipped, and counting continues strictly from yesterday.
     let mut iter = daily.iter().rev();
     if let Some(today) = iter.next() {
         if today.words > 0 {
@@ -1031,8 +977,6 @@ mod tests {
         open(":memory:").expect("test db")
     }
 
-    /// UTC-naive timestamp whose local representation lands on `days_ago`
-    /// local calendar days at the given local wall-clock time.
     fn utc_for_local_day(days_ago: i64, hour: u32, minute: u32) -> String {
         let local_date = Local::now().date_naive() - Duration::days(days_ago);
         let wall = local_date
@@ -1118,13 +1062,10 @@ mod tests {
             .expect("context")
             .id;
 
-        // 120 wpm, attributed to Work.
         let a = insert_on_day(&db, 1, "alpha bravo charlie delta", 4, 2_000);
         set_context(&db, a, work);
-        // 60 wpm, attributed to Work.
         let b = insert_on_day(&db, 2, "echo foxtrot", 2, 2_000);
         set_context(&db, b, work);
-        // Another context entirely, plus one pre-v18 row with no context at all.
         let other = insert_on_day(&db, 1, "golf hotel india juliet kilo", 5, 1_000);
         set_context(&db, other, 999);
         insert_on_day(&db, 1, "unattributed words here", 3, 1_000);
@@ -1138,21 +1079,17 @@ mod tests {
         assert_eq!(scoped.context_id, Some(work));
         assert_eq!(scoped.totals.total_transcriptions, 2);
         assert_eq!(scoped.totals.words_in_range, 6);
-        // Average of each clip's own wpm: (120 + 60) / 2.
         assert!(
             (scoped.totals.avg_wpm - 90.0).abs() < 0.001,
             "{}",
             scoped.totals.avg_wpm
         );
         assert_eq!(scoped.totals.best_wpm, 120);
-        // Daily buckets only carry this context's days.
         let scoped_words: i64 = scoped.daily.iter().map(|d| d.words).sum();
         assert_eq!(scoped_words, 6);
-        // Vocabulary is scoped too — the other context's words must not leak in.
         assert!(scoped.words.top.iter().all(|w| w.word != "golf"));
         assert!(all.words.top.iter().any(|w| w.word == "golf"));
 
-        // Lifetime counters have no context dimension and stay global.
         assert_eq!(
             scoped.cleanup.dictionary_fixes,
             all.cleanup.dictionary_fixes
@@ -1161,8 +1098,6 @@ mod tests {
             scoped.cleanup.auto_learned_terms,
             all.cleanup.auto_learned_terms
         );
-        // total_words falls back to the context's own history rather than the
-        // global lifetime figure.
         assert_eq!(scoped.totals.total_words, 6);
     }
 
@@ -1296,8 +1231,6 @@ mod tests {
     #[test]
     fn streak_survives_a_quiet_today() {
         let db = test_db();
-        // Yesterday and the day before were active; today is silent (the day
-        // isn't over yet) — the streak must still read as alive.
         insert_on_day(&db, 1, "yesterday", 2, 1000);
         insert_on_day(&db, 2, "two days ago", 2, 1000);
 
@@ -1308,7 +1241,6 @@ mod tests {
     #[test]
     fn streak_breaks_after_two_quiet_days() {
         let db = test_db();
-        // Today and yesterday silent; the last activity is two days back.
         insert_on_day(&db, 2, "two days ago", 2, 1000);
 
         let insights = query_insights(&db, 7, None).expect("insights");
@@ -1318,8 +1250,6 @@ mod tests {
     #[test]
     fn streak_stops_at_a_real_gap_even_when_today_is_active() {
         let db = test_db();
-        // Today is active, but yesterday was a gap — the grace for a quiet
-        // today must not swallow real historical gaps. Streak is just today.
         insert_on_day(&db, 0, "today", 2, 1000);
         insert_on_day(&db, 2, "two days ago", 2, 1000);
 
@@ -1330,7 +1260,6 @@ mod tests {
     #[test]
     fn transcription_just_before_local_midnight_buckets_to_the_local_day() {
         let db = test_db();
-        // 23:50 local two days ago — within an hour of the local-day boundary.
         let entry = insert_transcription_returning(
             &db,
             "late night words",
@@ -1362,9 +1291,6 @@ mod tests {
             .expect("transcription bucketed somewhere");
         assert_eq!(bucket.day, expected_local_day);
 
-        // When the machine's local offset is non-zero, the UTC calendar day
-        // of the stored timestamp must NOT be the bucket (proving the
-        // 'localtime' conversion happened).
         let utc_day = created_at[..10].to_string();
         if utc_day != expected_local_day {
             assert!(
@@ -1708,8 +1634,6 @@ mod tests {
 
     #[test]
     fn changed_word_count_matches_full_matrix_for_repeated_words() {
-        // Exhaustive short sequences catch prefix/suffix overlap and edits
-        // where matching repeated words gives several possible alignments.
         let mut sequences = vec![Vec::<&str>::new()];
         for length in 1..=4 {
             for bits in 0..(1 << length) {
@@ -1740,10 +1664,7 @@ mod tests {
 
     #[test]
     fn stopwords_stay_sorted_for_binary_search() {
-        // `is_stopword` relies on binary_search over a sorted slice — a
-        // mis-sorted STOPWORDS would silently fail lookups.
         assert!(STOPWORDS.windows(2).all(|w| w[0] < w[1]));
-        // Spot-check membership works for both ends and a middle entry.
         assert!(is_stopword("a"));
         assert!(is_stopword("because"));
         assert!(is_stopword("yours"));
@@ -1783,9 +1704,6 @@ mod tests {
 
     #[test]
     fn parse_api_usage_strips_transcription_suffix_in_primary_branch() {
-        // The primary= branch must normalize model names exactly like the
-        // single-provider fallback — a trailing /transcription must not leak
-        // into the stored model key.
         let parts = parse_api_usage("primary=groq/whisper-large-v3-turbo/transcription");
         assert_eq!(
             parts.transcription_models,

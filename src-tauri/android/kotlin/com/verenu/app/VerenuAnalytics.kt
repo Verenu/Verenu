@@ -8,7 +8,6 @@ import com.posthog.android.PostHogAndroidConfig
 import org.json.JSONObject
 import java.util.UUID
 
-/** The only boundary through which Verenu product telemetry may be emitted. */
 object VerenuAnalytics {
   private const val SCHEMA_VERSION = 4
   private const val IDENTITY_SCHEMA_VERSION = 2
@@ -16,7 +15,6 @@ object VerenuAnalytics {
   private const val INSTALL_ID_KEY = "analytics_install_id"
   private const val FIRST_SEEN_VERSION_KEY = "first_seen_version"
   private var initialized = false
-  // Fail closed until the Rust bridge confirms the persisted user choice.
   private var enabled = false
   private var appContext: Context? = null
   private var analyticsInstallId: String? = null
@@ -44,15 +42,10 @@ object VerenuAnalytics {
         personProfiles = PersonProfiles.NEVER
         optOut = true
         errorTrackingConfig.autoCapture = false
-        // Once enabled, identify() replaces the SDK's anonymous seed with
-        // Verenu's durable analytics-only installation ID. This prevents a
-        // second SDK-owned alias from splitting one installation's events.
         reuseAnonymousId = true
         getAnonymousId = { UUID.randomUUID() }
       },
     )
-    // The SDK starts opted out. The Rust bridge calls setEnabled after it has
-    // read the persisted product setting; no identity is created before then.
     PostHog.reset()
     initialized = true
   }
@@ -70,7 +63,6 @@ object VerenuAnalytics {
     settingsSnapshotSent = false
   }
 
-  /** Loads or creates the analytics-only identity in app-private durable storage. */
   @Synchronized
   private fun activateIdentity() {
     val context = appContext ?: return
@@ -88,8 +80,6 @@ object VerenuAnalytics {
     analyticsSessionId = UUID.randomUUID().toString()
     PostHog.optIn()
     PostHog.reset()
-    // identify() sets the event distinct ID without adding person properties;
-    // PersonProfiles.NEVER remains enabled in the SDK configuration.
     PostHog.identify(installId, emptyMap(), emptyMap())
   }
 
@@ -144,19 +134,13 @@ object VerenuAnalytics {
   fun pipelineFailed(runId: String, message: String, stage: String) {
     val category = failureCategory(message)
     val safeStage = safeStage(stage)
-    // Suppress duplicate bridge observations for this attempt, while allowing
-    // the same failure in a later attempt to remain analytically visible.
     val fingerprint = "$runId:$category:$safeStage"
     if (!reportedFailures.add(fingerprint)) return
     capture("pipeline_failed", mapOf(
       "run_id" to runId,
-      // Keep Android aligned with the desktop contract. The event name is
-      // shared; only the value mapping is platform-specific.
       "category" to category,
       "stage" to safeStage,
     ))
-    // The raw bridge message can contain provider text, endpoint details, or
-    // user-controlled data. Map it locally and send only a fixed error family.
     if (category !in setOf("vad_rejected", "permission_missing")) {
       captureSanitizedException(
         code = when (safeStage) {
@@ -198,10 +182,6 @@ object VerenuAnalytics {
     },
   ))
 
-  /**
-   * Manual Error Tracking contract. It accepts no Throwable, message, stack,
-   * endpoint, file, device, or Android context value.
-   */
   fun captureSanitizedException(code: String, stage: String, runId: String? = null) {
     if (!initialized || !enabled) return
     val safeCode = when (code) {
@@ -242,9 +222,6 @@ object VerenuAnalytics {
     )
     properties.putAll(commonProperties())
     if (runId != null) properties["run_id"] = runId
-    // PostHog's supported manual API recognizes this as an Error Tracking
-    // exception. The Exception contains only the fixed safe code; no raw
-    // Throwable, bridge error, provider response, or user content is passed.
     PostHog.captureException(Exception(safeCode), properties)
   }
 
@@ -267,8 +244,6 @@ object VerenuAnalytics {
       "analytics_schema_version" to SCHEMA_VERSION,
       "identity_schema_version" to IDENTITY_SCHEMA_VERSION,
       "analytics_session_id" to analyticsSessionId,
-      // Processing controls: never retain the connection address, derive
-      // GeoIP fields, or materialize a person profile for this identifier.
       "\$ip" to "0.0.0.0",
       "\$geoip_disable" to true,
       "\$process_person_profile" to false,

@@ -88,8 +88,6 @@ pub async fn transcribe(
     }
 }
 
-/// A user-defined endpoint. The shapes match the built-in adapters; only the
-/// URL, auth, and extra headers differ.
 async fn transcribe_custom(
     wav: Bytes,
     custom: &super::custom::CustomProvider,
@@ -307,8 +305,6 @@ async fn transcribe_gemini_with_prompt(
     let body = build_gemini_transcription_request(wav, prompt, model);
 
     super::validate_model_for_url(model)?;
-    // Key goes in the `x-goog-api-key` header, never the URL query string — see the
-    // matching note in api/cleanup.rs. A leaked URL must not carry the secret.
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
@@ -565,7 +561,6 @@ async fn transcribe_assemblyai(
     }
 }
 
-/// Shared status handling for the JSON and xAI transcription adapters.
 async fn checked_transcription_response(
     resp: reqwest::Response,
     provider_label: &str,
@@ -663,7 +658,6 @@ async fn transcribe_openrouter(
     Ok(body.text.trim().to_owned())
 }
 
-/// xAI requires `file` to be the last multipart field.
 fn build_xai_form(wav: Bytes, model: &str, language: &str) -> Result<multipart::Form> {
     let wav_len = wav.len() as u64;
     let part = multipart::Part::stream_with_length(reqwest::Body::from(wav), wav_len)

@@ -1,12 +1,5 @@
-/*
- * Browser-dev stand-in for `get_insights`. Deterministic (seeded off the day
- * index, no Math.random) so the page doesn't flicker between renders and the
- * smoke tests see stable numbers.
- */
 export function devInsights(days: number, contextId: number | null): unknown {
   const span = days > 0 ? days : 120;
-  // Deterministic per-context scaling: enough for the filter to visibly change
-  // the page in browser dev mode without inventing a second fake dataset.
   const scale = contextId === null ? 1 : 1 / (1 + (contextId % 5));
   const noise = (n: number) =>
     ((Math.sin((n + (contextId ?? 0) * 7) * 12.9898) * 43758.5453) % 1 + 1) % 1;

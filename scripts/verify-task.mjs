@@ -56,8 +56,6 @@ const commands = {
   android: [[npm, ['run', 'test:android']]],
 };
 if (!args.includes('--inspect-only')) {
-  // Run fresh evidence for any automated category. Preserve supplied records
-  // only for manual categories and task acceptance outcomes.
   for (let index = records.length - 1; index >= 0; index--) {
     if (records[index].category !== 'native-integration' && commands[records[index].category]?.length) records.splice(index, 1);
   }

@@ -1,4 +1,3 @@
-//! Persistent cache for OpenRouter model rates.
 
 use anyhow::Result;
 use chrono::Utc;

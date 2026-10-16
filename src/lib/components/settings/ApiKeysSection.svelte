@@ -58,7 +58,6 @@
     }
   }
 
-  // Save now tests first: a definitively-rejected key (401/403) is never persisted.
   async function saveKey(provider: ProviderId) {
     const key = draftKeys[provider].trim();
     if (!key) return;
@@ -74,7 +73,6 @@
         validation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
       }
 
-      // Definitive rejection — don't store it, surface the failure in red.
       if (validation.status === 'invalid') {
         keyValidation[provider] = validation;
         return;
@@ -100,13 +98,8 @@
       }
 
       draftKeys[provider] = '';
-      // The model picker lives in a sibling section and can only list a
-      // provider's models once the key is actually saved, so tell it now
-      // rather than making the user reopen Settings.
       window.dispatchEvent(new CustomEvent('verenu:api-key-saved', { detail: { provider } }));
       void refreshCatalog(provider, []);
-      // 'unknown' = couldn't reach the provider; we saved it anyway (might be fine)
-      // but say so plainly instead of claiming it's verified.
       keyValidation[provider] =
         validation.status === 'valid'
           ? { status: 'valid', message: 'Key verified.' }
@@ -136,7 +129,6 @@
       }
       await invoke('delete_api_key', { provider });
       if (isAndroid) {
-        // Rotate the deletion through Rust's memory cache too.
         await invoke('android_keystore_save', { provider, key: '' });
       }
       await loadKeyStatus();
@@ -249,8 +241,6 @@
     margin: 14px 0 0;
   }
 
-  /* Centered rather than top-aligned: the row no longer wraps at the widths the
-     settings column actually reaches, so flex-start just read as top-heavy. */
   .key-row { align-items: center; gap: 12px; flex-wrap: wrap; }
   .key-left { flex: 1; min-width: 0; }
   .key-logo {
@@ -263,8 +253,6 @@
   }
   .key-logo :global(svg) { width: 100%; height: 100%; }
   .key-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-  /* Inline status chip next to the provider name — saved (green) / failed (red).
-     Slides + pops in; the failed dot pulses a ring twice to draw the eye. */
   .key-status {
     display: inline-flex;
     align-items: center;
@@ -345,8 +333,6 @@
     border-color: var(--danger-line);
   }
 
-  /* Both actions share one grid cell to keep the button width stable.
-     Visibility prevents disabled-button opacity rules revealing the inactive face. */
   .flip-btn {
     display: inline-grid;
     min-width: 72px;
@@ -361,15 +347,11 @@
     transition: opacity 160ms var(--ui-ease-out);
   }
   .flip-face.front { visibility: visible; pointer-events: auto; }
-  /* `:disabled` is listed too: `.settings-body .btn-ghost:disabled` sets its
-     own opacity and would otherwise leave both labels visible on top of each
-     other. */
   .flip-btn .flip-face.back,
   .flip-btn .flip-face.back:disabled { visibility: hidden; opacity: 0; pointer-events: none; }
   .flip-btn.flipped .flip-face.front { visibility: hidden; opacity: 0; pointer-events: none; }
   .flip-btn.flipped .flip-face.back { visibility: visible; opacity: 1; pointer-events: auto; }
 
-  /* Failure feedback: red border + one-shot shake when a key is rejected. */
   .key-input[aria-invalid='true'] { border-color: var(--danger); }
   .key-input.failed {
     border-color: var(--danger);

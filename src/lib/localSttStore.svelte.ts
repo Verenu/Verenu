@@ -43,8 +43,6 @@ export async function refreshLocalState() {
 
 export async function downloadLocalModel(modelIdValue: string): Promise<boolean> {
   try {
-    // Ask for notification permission now (contextual) so the backend can raise
-    // a "model ready" notification when this finishes, even if the window is hidden.
     ensureNotificationPermission().catch(() => {});
     await invoke('download_local_stt_model', { modelId: modelIdValue });
     await refreshLocalModels();
@@ -97,12 +95,6 @@ export async function openLocalModelsFolder() {
 }
 
 let listenersStarted = false;
-// Bumped on every `startLocalSttListeners` call. Captured per-invocation
-// below so `registerUnlisten` can tell whether it belongs to the *current*
-// session — if `startLocalSttListeners` is torn down and restarted while a
-// previous invocation's `listen()` promises are still in-flight, those
-// stale promises must unlisten immediately instead of registering into the
-// new session's `unlisteners` array (or leaking forever).
 let currentSession = 0;
 
 /**
@@ -165,8 +157,6 @@ export function startLocalSttListeners(): () => void {
           [event.payload.model_id]: {
             model_id: event.payload.model_id,
             downloaded_bytes: 0,
-            // total_bytes stays non-null so the verifying bar renders as a
-            // real determinate fraction, never the indeterminate animation.
             total_bytes: 1,
             progress: event.payload.progress,
           },
@@ -202,11 +192,6 @@ export function startLocalSttListeners(): () => void {
     ]) {
       registerUnlisten(
         await listen<LocalSttModelEventPayload>(eventName, async (event) => {
-          // Refresh first so `models`/`state` already reflect the final
-          // is_downloading/is_downloaded truth by the time we clear the
-          // progress/stage display — otherwise there's a render frame where
-          // stage is cleared but is_downloading is still stale-true, which
-          // falls back to a misleading "Downloading 0%" flash.
           await Promise.all([refreshLocalModels(), refreshLocalState()]);
           if (event.payload?.model_id) {
             delete localSttStore.downloadProgress[event.payload.model_id];
@@ -224,9 +209,6 @@ export function startLocalSttListeners(): () => void {
     );
   })().catch((err) => {
     console.error('local STT listeners failed', err);
-    // Registration didn't fully succeed — tear down whatever did register
-    // and reset so a future call can retry instead of permanently returning
-    // a no-op cleanup function forever.
     if (session === currentSession) {
       listenersStarted = false;
     }

@@ -5,10 +5,6 @@ use super::gemini_types::{GeminiGenerateReq, GeminiReqContent, GeminiReqPart};
 use super::prompts::{cleanup_max_output_tokens, gemini_generation_config};
 use super::{CleanupAdapter, ProviderId, Target, Wire};
 
-// Cleanup should be fast enough to run inline with dictation delivery. Keep
-// this shorter than the shared client timeout so a stalled provider can fall
-// through to the configured cleanup fallback instead of leaving the pill in
-// processing for two minutes.
 const CLEANUP_REQUEST_TIMEOUT_SECS: u64 = 45;
 
 #[allow(clippy::too_many_arguments)]
@@ -96,14 +92,8 @@ pub async fn cleanup_with_alternate_and_evidence(
         }
     }
     if intensity == "none" && alternate_transcript.is_none() {
-        // The pipeline normally bypasses this function for Off. Keep the API
-        // boundary safe too: only dual-transcript reconciliation is a valid
-        // model operation at this intensity.
         return Ok(text.to_owned());
     }
-    // Prompt selection and the reasoning policy key off the provider family.
-    // A custom endpoint never borrows a built-in's behavior by sharing its
-    // display name, so it is always "custom" here.
     let provider_id = match &target {
         Target::Builtin(provider) => provider.as_str(),
         Target::Custom(_) => "custom",
@@ -294,7 +284,6 @@ struct CompletionDetails {
 
 fn parse_chat_cleanup(data: ChatResp) -> Result<String> {
     let choice = data.choices.first().ok_or_else(|| anyhow::anyhow!("No choices in cleanup response"))?;
-    // Provider-controlled strings and response bodies must never enter logs.
     let finish = match choice.finish_reason.as_deref() {
         Some("length") => "length",
         Some("stop") => "stop",
@@ -390,8 +379,6 @@ async fn openai_compat(
     Ok(output)
 }
 
-/// Adds user-supplied body fields. Protected keys were rejected when the
-/// provider was saved; `safe_overrides` strips them again before this runs.
 fn merge_overrides(
     body: &mut serde_json::Value,
     overrides: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -466,14 +453,8 @@ fn build_anthropic_request(
     max_tokens: u32,
     alternate_transcript: Option<&str>,
 ) -> serde_json::Value {
-    // Mark standing instructions, never the changing vocabulary tail or
-    // transcript. Providers silently skip prefixes below a model's minimum
-    // cache size; keep prompts compact instead of padding solely for caching.
     let (standing, evidence, cacheable) = split_cached_evidence(prompt);
     if !cacheable {
-        // If a custom prompt contains a malformed evidence boundary, fail
-        // closed: keep the request intact but do not cache possibly dynamic
-        // content as standing instructions.
         let mut body = serde_json::json!({
             "model": model,
             "max_tokens": max_tokens,
@@ -487,14 +468,9 @@ fn build_anthropic_request(
         }
         return body;
     }
-    // Two boundaries preserve the shared contract across preset changes,
-    // then reuse the complete configured prefix on repeated dictations.
     let mut system = Vec::new();
     match standing.find("<cleanup_settings>") {
         Some(settings_start) => {
-            // Split on the structural tag instead of the exact newline
-            // spelling so templates saved with CRLF retain the shared cache
-            // boundary across cleanup preset changes.
             let shared = standing[..settings_start].trim_end();
             if !shared.trim().is_empty() {
                 system.push(serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}));
@@ -548,7 +524,6 @@ fn split_cached_evidence(prompt: &str) -> (&str, Option<String>, bool) {
     (standing, Some(evidence), true)
 }
 
-/// Joins the text blocks of an Anthropic messages response.
 fn parse_anthropic_text(body: &serde_json::Value) -> Option<String> {
     let text: String = body
         .get("content")?
@@ -576,8 +551,6 @@ async fn anthropic_cleanup(
     gen: u64,
 ) -> Result<String> {
     let mut body = build_anthropic_request(text, model, prompt, max_tokens, alternate_transcript);
-    // Other vendors can expose the messages protocol without implementing
-    // Anthropic's cache extensions. Preserve their plain system-string shape.
     if !reqwest::Url::parse(url)
         .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
     {
@@ -609,7 +582,6 @@ async fn anthropic_cleanup(
         .ok_or_else(|| anyhow::anyhow!("No text content in {provider_label} response"))
 }
 
-/// Shared status handling for chat-style cleanup responses.
 async fn checked_cleanup_response(
     resp: reqwest::Response,
     provider_label: &str,
@@ -658,15 +630,9 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
         return false;
     }
     if provider == "groq" {
-        // GPT-OSS and other Qwen 3 variants expose reasoning but not the
-        // no-thinking mode used here. Known ordinary Groq models need no
-        // reasoning field at all.
         return !model.starts_with("qwen/qwen3") || is_groq_qwen_no_reasoning_model(&model);
     }
     if provider == "openrouter" {
-        // Model ids are `vendor/model`. Judge the model by its own name and
-        // refuse families that always reason, since OpenRouter has no uniform
-        // switch that turns reasoning off.
         let bare = model.rsplit('/').next().unwrap_or(&model);
         return !(model.ends_with(":thinking")
             || bare.contains("-thinking")
@@ -676,8 +642,6 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
             || (bare.starts_with("gpt-5") && !is_openai_gpt_51_no_reasoning_model(bare)));
     }
     if provider == "xai" {
-        // Grok 4 and the *-reasoning / mini lines always think; only the
-        // explicit non-reasoning variants and older Grok 2/3 chat models fit.
         if model.contains("non-reasoning") {
             return true;
         }
@@ -726,7 +690,6 @@ pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str
         ProviderId::Xai => openai_compat_model_supports_no_reasoning("xAI", model),
         ProviderId::Local => true,
         ProviderId::AppleIntelligence => model == super::apple_intelligence::MODEL,
-        // AssemblyAI is transcription-only and has no cleanup endpoint.
         ProviderId::AssemblyAi => false,
     }
 }
@@ -760,9 +723,6 @@ async fn google_cleanup(
     );
 
     super::validate_model_for_url(model)?;
-    // Pass the key in the `x-goog-api-key` header, never in the URL query string:
-    // URLs leak into error messages, proxies, and logs, and the bare `?key=` form
-    // would expose the secret (Verenu's top rule is "API keys never hit logs").
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
@@ -1336,8 +1296,6 @@ mod tests {
         assert_eq!(body["top_p"], 0.9);
         assert_eq!(body["model"], "m");
 
-        // A provider the user names "Groq" must not trigger Groq's
-        // reasoning_effort rewrite: custom requests use the policy key "custom".
         let req = super::build_openai_compat_request_with_alternate(
             "t",
             "qwen/qwen3.8-27b",

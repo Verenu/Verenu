@@ -67,7 +67,6 @@ fn wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-// ============================ Windows: Credential Manager ============================
 
 #[cfg(windows)]
 pub fn set(provider: &str, key: &str) -> Result<(), String> {
@@ -88,7 +87,6 @@ pub fn set(provider: &str, key: &str) -> Result<(), String> {
         }
     } else {
         let mut user_wide = wide_null(&user);
-        // Encode as UTF-16-LE — Windows-native format for credential blobs
         let utf16: Vec<u16> = key.encode_utf16().collect();
         let mut blob: Vec<u8> = utf16.iter().flat_map(|c| c.to_le_bytes()).collect();
 
@@ -150,7 +148,6 @@ pub fn get(provider: &str) -> String {
                     String::new()
                 } else {
                     let blob = std::slice::from_raw_parts(blob_ptr, blob_size);
-                    // Decode UTF-16-LE back to a Rust String
                     let utf16: Vec<u16> = blob
                         .chunks_exact(2)
                         .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -182,7 +179,6 @@ pub fn has(provider: &str) -> bool {
     !get(provider).is_empty()
 }
 
-// ================================ macOS: Keychain ================================
 
 #[cfg(target_os = "macos")]
 use security_framework::passwords::{
@@ -199,10 +195,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const PRODUCTION_KEYCHAIN_SERVICE: &str = "com.verenu.app";
 #[cfg(target_os = "macos")]
 fn keychain_service() -> &'static str {
-    // TCC stays isolated by bundle/signing identity, but production and the
-    // canonically signed development app intentionally share Verenu's own
-    // credential namespace. Changing the service name makes existing keys
-    // disappear and leaves development with no configured backend.
     PRODUCTION_KEYCHAIN_SERVICE
 }
 #[cfg(target_os = "macos")]
@@ -616,16 +608,6 @@ pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
 
-// ============================== Android: Keystore bridge ==============================
-//
-// Durable storage on Android is the Kotlin `VerenuKeystore`
-// (`EncryptedSharedPreferences` backed by AndroidKeyStore — see
-// `src-tauri/android/` and `docs/ANDROID.md`). Rust holds keys only in the
-// in-memory `crate::android` cache: populated at startup by Kotlin via
-// `android_provide_credential` / `POST /v1/credential`, updated by saves,
-// and cleared on revocation/lock. Rotations reach Kotlin through the
-// `android_keystore_save` command's single-delivery staging
-// (`crate::android::bridge`). Rust itself writes no secret to disk.
 
 #[cfg(target_os = "android")]
 pub fn set(provider: &str, key: &str) -> Result<(), String> {
@@ -662,13 +644,6 @@ pub fn delete(provider: &str) -> Result<(), String> {
 
 #[cfg(target_os = "android")]
 pub fn save(_app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
-    // Memory-only by design. Durable persistence on Android goes through the
-    // `android_keystore_save` command (staged rotation → Kotlin
-    // EncryptedSharedPreferences), which the frontend calls instead of this
-    // on Android — see crate::android::bridge. Keeping this a plain memory
-    // write (rather than emitting a persist event nobody can hear without a
-    // live WebView) preserves the `save_api_key` contract for any other
-    // caller, e.g. settings migration.
     set(provider, normalize_key(key))?;
     log::info!(
         "credentials(android): cached provider={} key_len={} (durable save via android_keystore_save)",
@@ -683,7 +658,6 @@ pub fn delete_saved(_app: &AppHandle, provider: &str) -> Result<(), String> {
     delete(provider)
 }
 
-// ========================= Linux: Freedesktop Secret Service =========================
 
 #[cfg(target_os = "linux")]
 const LINUX_SECRET_SERVICE: &str = "com.verenu.app";
@@ -720,8 +694,6 @@ where
 
 #[cfg(target_os = "linux")]
 fn linux_attributes(account: &str) -> std::collections::HashMap<&str, &str> {
-    // Keep keyring-compatible attribute names so entries written during an
-    // interrupted older build remain discoverable without copying secrets.
     std::collections::HashMap::from([("service", LINUX_SECRET_SERVICE), ("username", account)])
 }
 
@@ -912,9 +884,6 @@ pub fn migrate_from_store(_app: &AppHandle, settings: &crate::data::store::Setti
                 any_failed = true;
                 continue;
             }
-            // On Android `set` is memory-only; stage the rotation so Kotlin
-            // persists it to the Keystore — otherwise the migrated key would
-            // vanish on the next reboot while the plaintext is already gone.
             #[cfg(target_os = "android")]
             crate::android::bridge::stage_keystore_rotation(provider, &plaintext);
             log::info!("Migration: moved {provider} API key to OS secret store");

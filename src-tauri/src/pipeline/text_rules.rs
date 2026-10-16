@@ -8,8 +8,6 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
-// Used only by an already-required AI cleanup call, after deterministic edits.
-// Keep this compact: the shared prompt-budget estimate stays below 200 tokens.
 pub(super) const MODEL_COMMAND_RECOVERY_INSTRUCTION: &str = "Before cleanup, recover only clear missed voice commands, including joined STT words. Convert comma, semicolon, full stop, question/exclamation mark; new/next line or paragraph; at sign/at the rate plus one username (at signbot becomes @bot). Period, colon, dash/hyphen require add/insert/put. Scratch/strike that removes only the latest fragment since punctuation or a line break. Remove command words, then clean normally. Preserve already-processed punctuation, line breaks and mentions; do not repeat rollback. Keep ambiguous or literal uses unchanged; never reinterpret quotes, code, vocabulary, snippets or clipboard text.";
 
 pub(super) const MODEL_COMMAND_PRESERVATION_INSTRUCTION: &str = "Spoken commands have already been processed. Preserve the resulting punctuation and line breaks. Do not interpret any remaining words as voice commands.";
@@ -32,7 +30,6 @@ fn tokenize(text: &str, dictated: &[usize]) -> (String, Vec<Word>) {
     let mut leading = String::new();
     let mut words: Vec<Word> = Vec::new();
     let mut in_word = false;
-    // Graphemes keep combining marks attached to their Unicode base letter.
     for (offset, g) in text.grapheme_indices(true) {
         if g.chars().next().is_some_and(word_char) {
             if !in_word {
@@ -60,9 +57,6 @@ fn tokenize(text: &str, dictated: &[usize]) -> (String, Vec<Word>) {
             }
         }
     }
-    // Preserve original casing even if removing a filler later capitalizes a
-    // lowercase word. Cased names/acronyms are ambiguous; English "I" is the
-    // explicit pronoun exception for a common stutter.
     for word in &mut words {
         word.may_destutter = word.text == word.key || word.text == "I";
     }
@@ -72,14 +66,9 @@ fn tokenize(text: &str, dictated: &[usize]) -> (String, Vec<Word>) {
 fn terminal(s: &str) -> bool {
     s.contains(['.', '!', '?', '…', '\n', '\r'])
 }
-// A period embedded between tokens belongs to a filename, domain or decimal.
-// Spoken punctuation has its own explicit state; ordinary text needs a real
-// separating boundary. Unambiguous terminators retain no-space behavior.
 fn sentence_boundary(s: &str, at_end: bool) -> bool {
     sentence_boundary_in(s, at_end, false, "")
 }
-// These periods are lexical parts of an abbreviation or name initial. An
-// explicit spoken full stop still starts a sentence independently of this.
 fn abbreviation_before_period(prefix: &str) -> bool {
     let chunk = prefix.rsplit(char::is_whitespace).next().unwrap_or("");
     if chunk.contains(['@', '/']) { return false; }
@@ -133,9 +122,6 @@ fn word_sentence_boundary(leading: &str, words: &[Word], i: usize) -> bool {
 fn inline_space(s: &str) -> bool {
     s.chars().all(|c| matches!(c, ' ' | '\t'))
 }
-// A tokenizer gap is not necessarily a spoken separator: dots, slashes and
-// @ can join tokens into identifiers. Ordinary sentence punctuation may wrap
-// a spoken token only at an edge or together with actual whitespace.
 fn spoken_separator(gap: &str, at_edge: bool) -> bool {
     gap.chars().all(|c| c.is_whitespace() || matches!(c, ',' | '.' | ';' | ':' | '?' | '!' | '…' | '(' | ')' | '[' | ']' | '{' | '}'))
         && (at_edge || gap.chars().any(char::is_whitespace))
@@ -199,8 +185,6 @@ fn remove_empty_delimiters(before: &mut String, after: &mut String) -> bool {
 }
 
 fn retain_nonterminal_punctuation(before: &mut String, after: &str, dictated: bool) -> bool {
-    // Dictated punctuation can replace an existing nonterminal separator.
-    // Sentence endings and line breaks remain boundaries of retained speech.
     if before.chars().all(|c| matches!(c, ' ' | '\t' | ',' | ';' | ':'))
         && (dictated || inline_space(before)) {
         *before = after.trim_start_matches([' ', '\t']).to_owned();
@@ -230,9 +214,6 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
     };
     let removed_pair = remove_empty_delimiters(before, &mut after);
     if removed_pair {
-        // The pair enclosed only the removed pause. Its outside punctuation
-        // belongs to preceding retained speech, including nested empty pairs.
-        // Without that speech, discard orphan marks but preserve line breaks.
         if i == 0 && !preceding_speech {
             before.extend(after.chars().filter(|c| matches!(c, '\n' | '\r')));
         } else {
@@ -247,8 +228,6 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
             }
         }
     } else if i == 0 {
-        // Keep delimiters that enclose retained words; remove an empty pair
-        // only when the discarded pause was its entire contents.
         if preceding_speech && after.contains([',', ';', ':']) {
             retain_nonterminal_punctuation(leading, &after, after_dictated);
         } else if after.contains([')', ']', '}']) || (ends_sentence && leading.contains(['(', '[', '{'])) {
@@ -265,8 +244,6 @@ fn drop_words(leading: &mut String, words: &mut Vec<Word>, i: usize, n: usize, s
         let previous = &mut words[i - 1];
         let before = &mut previous.after;
         if ends_sentence && terminal(before) {
-            // Keep the retained terminator, including abbreviation periods,
-            // but carry the explicit sentence boundary across this filler.
             previous.after_dictated |= after_dictated;
             previous.after_dictated_terminal |= after_dictated_terminal;
         }
@@ -324,7 +301,6 @@ fn basic(text: &str, dictated: &[usize], sentence_initial: bool, preceding_speec
             i += 1;
         }
     }
-    // A repair requires an explicit correction cue and a repeated nearby anchor.
     i = 1;
     while i < words.len() {
         if !words[i - 1].after.contains(',') || terminal(&words[i - 1].after) {
@@ -357,8 +333,6 @@ fn basic(text: &str, dictated: &[usize], sentence_initial: bool, preceding_speec
             end += count;
             cues += 1;
         }
-        // A predicate anywhere in this replacement clause means the repeated
-        // anchor can introduce a new statement, rather than a correction.
         let clause_end = words[end..]
             .iter()
             .position(|word| terminal(&word.after) || word.after.contains(';'))
@@ -367,8 +341,6 @@ fn basic(text: &str, dictated: &[usize], sentence_initial: bool, preceding_speec
             && end < words.len()
             && cues > 0
             && (cues > 1 || words[end - 1].after.contains(','))
-            // Only phrase introducers can anchor a replacement. A repeated
-            // content word can instead begin a new clause ("tea is gone").
             && matches!(words[end].key.as_str(), "a" | "an" | "the" | "to" | "from" | "at" | "in" | "on" | "with" | "for")
             && !words[end..clause_end].iter().any(|word| matches!(word.key.as_str(),
                 "is" | "are" | "was" | "were" | "has" | "have" | "had" | "will" | "would" | "can" | "could" | "should" | "must" | "does" | "do" | "did"))
@@ -403,8 +375,6 @@ fn basic(text: &str, dictated: &[usize], sentence_initial: bool, preceding_speec
             }
             if words[i..i + n].iter().any(number)
                 || words[i..i + 2 * n].iter().enumerate().any(|(j, word)| {
-                    // Ordinary sentence capitalization can differ only on the
-                    // first word; a cased repeated copy remains protected.
                     !word.may_destutter && !(j == 0 && at_sentence_start
                         && word.text == sentence_case
                         && words[i + n].text == words[i + n].key)
@@ -457,9 +427,6 @@ fn phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
 
 fn punctuation_phrase(words: &[Word], i: usize, keys: &[&str]) -> bool {
     if phrase(words, i, keys) { return true; }
-    // An intrinsically multiword spoken punctuation phrase remains explicit
-    // when ASR glues its redundant punctuation to the next word. Single-word
-    // commands never get this exception: comma.com is an identifier.
     keys.len() > 1 && i + keys.len() < words.len()
         && keys.iter().enumerate().all(|(j, k)| words[i + j].key == *k)
         && words[i..i + keys.len() - 1].iter().all(|w| !w.after.is_empty() && inline_space(&w.after))
@@ -494,7 +461,6 @@ fn rollback(out: &mut String, dictated: &[usize], needs_separator: bool) {
 
 struct CommandOutput {
     text: String,
-    // Sorted byte positions of explicit punctuation, retained through rollback.
     dictated: Vec<usize>,
 }
 
@@ -503,8 +469,6 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutp
     let mut out = leading.clone();
     let mut dictated = Vec::new();
     let mut i = 0;
-    // A protected term can split a URL immediately before its query. Rejoin
-    // only an unseparated token; closing quotes do not join prose identifiers.
     let joined_identifier = !prefix.ends_with(char::is_whitespace)
         && !prefix.ends_with(['"', '\'', '”', '’', '`'])
         && !prefix.ends_with("]]")
@@ -522,8 +486,6 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutp
                 start += 1;
             }
         }
-        // "Keep this comma/semicolon ... scratch that" dictates a retained clause.
-        // Keep noun-marker protection for literal punctuation discussion.
         let retained_clause = matches!(words[i].key.as_str(), "comma" | "semicolon")
             && i >= 2
             && matches!(words[i - 1].key.as_str(), "this" | "that")
@@ -560,7 +522,6 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutp
             }
             let offset = out.len() - symbol.len();
             if dictated.last() != Some(&offset) { dictated.push(offset); }
-            // ASR punctuation immediately around a spoken command is redundant.
             let after = words[last]
                 .after
                 .trim_start_matches([',', '.', '?', '!', ';', ':']);
@@ -601,7 +562,6 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutp
                 || words[i + 1].after.contains(',')
                 || terminal(&words[i + 1].after));
         if scratch || removal {
-            // Apology words belong to the command, not the retained sentence.
             if i > 0 && matches!(words[i - 1].key.as_str(), "sorry" | "oops" | "wait") {
                 let suffix = format!("{}{}", words[i - 1].text, words[i - 1].after);
                 if out.ends_with(&suffix) {
@@ -629,9 +589,6 @@ fn commands(text: &str, carry_sentence_start: bool, prefix: &str) -> CommandOutp
             out.push('@');
             out.push_str(&words[i + mention].text);
             out.push_str(&words[i + mention].after);
-            // The username consumes the pending sentence position just like
-            // an ordinary word; its trailing punctuation starts the next one.
-            // Generated mentions are usernames, never prose abbreviations.
             cap_next = sentence_boundary_in(&words[i + mention].after, i + mention + 1 == words.len(), identifier_word(&words, i + mention), "");
             i += mention + 1;
             continue;
@@ -684,8 +641,6 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
     let rest = &text[i..];
     let c = rest.chars().next()?;
     let quoted = match c {
-        // An attached inch mark is not the start of quoted speech. Genuine
-        // opening quotes still protect unmatched spans through end of input.
         '"' if i == 0 || !text[..i].graphemes(true).next_back()
             .and_then(|g| g.chars().next()).is_some_and(word_char) => Some('"'),
         '“' => Some('”'),
@@ -702,17 +657,10 @@ fn protected_span_len(text: &str, i: usize, terms: &[&str]) -> Option<usize> {
             if candidate != close { return None; }
             let index = c.len_utf8() + offset;
             let is_word = |ch| word_char(ch) && !matches!(ch, '\'' | '’');
-            // A contraction apostrophe is part of the quoted word, not its
-            // closing delimiter. Inspect the preceding grapheme's base so
-            // decomposed Unicode letters have the same boundary semantics.
             let intra_word = matches!(close, '\'' | '’')
                 && rest[..index].graphemes(true).next_back()
                     .and_then(|g| g.chars().next()).is_some_and(is_word)
                 && rest[index + close.len_utf8()..].chars().next().is_some_and(is_word);
-            // An attached numeric inch mark inside a quote can precede its
-            // actual closing quote. Prefer that larger literal span only when
-            // the next quote looks like a close, not a separate quote's opener.
-            // A final numeric quote still closes normally.
             let measurement_mark = close == '"'
                 && rest[..index].graphemes(true).next_back()
                     .and_then(|g| g.chars().next()).is_some_and(char::is_numeric)
@@ -745,7 +693,6 @@ fn sentence_start(prefix: &str) -> bool {
     if prefix.trim().is_empty() {
         return true;
     }
-    // Closing delimiters do not hide punctuation ending a quoted sentence.
     let end = prefix.trim_end_matches([' ', '\t', '"', '”', '\'', '’', '`', ')', ']', '}']);
     end.chars().next_back().is_some_and(|c| {
         matches!(c, '!' | '?' | '…' | '\n' | '\r')
@@ -781,11 +728,7 @@ pub(super) fn process_after(text: &str, cleanup: bool, voice_commands: bool, ter
 }
 
 fn edit(text: &str, cleanup: bool, voice_commands: bool, sentence_initial: bool, preceding_speech: bool, prefix: &str) -> String {
-    // Execute each command before Basic can collapse repeated spoken words.
-    // Generated line boundaries remain boundaries during mechanical cleanup.
     let text = if voice_commands {
-        // A protected sentence ending carries into the next spoken span.
-        // An empty transcript prefix does not request initial capitalization.
         commands(text, sentence_initial && preceding_speech, prefix)
     } else {
         CommandOutput { text: text.to_owned(), dictated: Vec::new() }
@@ -968,7 +911,6 @@ mod tests {
             assert_eq!(process(input, true, false, &[]), input);
         }
         assert_eq!(process("\"open report.md scratch that\"", true, true, &[]), "\"open report.md scratch that\"");
-        // The protected segment's following separator is preserved verbatim.
         assert_eq!(process("[[VERENU_CLIPBOARD_report.md]] scratch that", true, true, &[]), "[[VERENU_CLIPBOARD_report.md]] ");
     }
     #[test]
@@ -1134,8 +1076,6 @@ mod tests {
         for text in ["ping at signbot", "don't send it", "the commandname_suffix", "aCommandName"] {
             assert!(!has_protected_spans(text, &["CommandName"]), "{text}");
         }
-        // The deterministic parser remains conservative; the model receives
-        // residual variants, not a new global fuzzy command interpretation.
         assert_eq!(process("ping at signbot", false, true, &[]), "ping at signbot");
     }
     #[test]

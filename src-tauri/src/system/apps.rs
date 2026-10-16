@@ -35,10 +35,6 @@ pub fn list_installed_apps() -> Vec<InstalledApp> {
     #[cfg(target_os = "linux")]
     return list_linux_desktop_apps();
 
-    // macOS: enumerate `.app` bundles in the standard Applications folders. The
-    // `exe` key is "<bundle name>.app" lowercased, matching the foreground app
-    // name produced by `window_context::get_active_process_name` so AppMappings
-    // resolve correctly.
     #[cfg(target_os = "macos")]
     {
         use std::collections::HashSet;
@@ -124,9 +120,6 @@ fn list_linux_desktop_apps() -> Vec<InstalledApp> {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    // Search user entries first. A desktop entry's filename is the stable
-    // application id used by most Wayland clients, while StartupWMClass (when
-    // present) preserves the class used by XWayland applications.
     let mut directories = Vec::new();
     if let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -346,8 +339,6 @@ fn is_user_facing_app(app: &InstalledApp) -> bool {
         "start menu experience host",
         "windows input experience",
         "windows security notification",
-        // Redistributables, runtimes, SDKs, drivers, updaters — installed
-        // dependencies, not apps a user would ever pick for a Context.
         "redistributable",
         "runtime library",
         ".net runtime",
@@ -553,9 +544,6 @@ fn nonempty_metadata(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-/// Returns a stable bundle identity where macOS exposes one. Bundle identifiers
-/// are available without spawning a process and normally remain stable across
-/// bundle/version changes, making them a useful developer signal here.
 #[cfg(target_os = "macos")]
 fn mac_app_developer(path: &std::path::Path) -> Option<String> {
     use core_foundation::bundle::CFBundle;
@@ -768,10 +756,6 @@ pub fn closest_installed_app<'a>(
             let same_developer =
                 source_developer.is_some() && source_developer == candidate_developer;
             let threshold = if same_developer { 0.72 } else { 0.78 };
-            // Legacy targets do not have metadata yet. A lower threshold is
-            // still safe when the candidate preserves a meaningful prefix;
-            // without either developer agreement or that prefix, a similar
-            // score is not enough to auto-rebind a user assignment.
             let strong_prefix = source_keys.iter().any(|source| {
                 candidate_keys
                     .iter()
@@ -787,8 +771,6 @@ pub fn closest_installed_app<'a>(
         })
         .max_by(
             |(_, left_score, left_same, left_rank), (_, right_score, right_same, right_rank)| {
-                // A fixed developer bonus prefers same-developer matches within
-                // the intended margin while keeping the ordering transitive.
                 left_rank
                     .total_cmp(right_rank)
                     .then_with(|| left_score.total_cmp(right_score))
@@ -812,9 +794,6 @@ fn developer_metadata_is_comparable(left: &Option<String>, right: &Option<String
     ) {
         (Some(left_kind), Some(right_kind)) => left_kind == right_kind,
         (None, None) => true,
-        // A bundle identifier and a registry publisher are platform-specific
-        // identities. Do not treat their differing formats as proof of a
-        // developer mismatch when resolving a cross-platform synced target.
         _ => false,
     }
 }

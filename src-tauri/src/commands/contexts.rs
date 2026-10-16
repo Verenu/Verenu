@@ -1,4 +1,3 @@
-//! Context and context-scoped library commands.
 
 use super::*;
 

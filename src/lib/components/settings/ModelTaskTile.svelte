@@ -237,8 +237,6 @@
 {/if}
 
 <style>
-  /* Card, so the advanced area reads as part of the same system as the preset
-     cards above it rather than loose text on the page background. */
   .task-tile {
     border: 1px solid var(--line);
     border-radius: var(--r-lg, 12px);
@@ -299,7 +297,6 @@
     color: var(--accent-ink);
   }
 
-  /* ── Active model ───────────────────────── */
   .active-row {
     display: flex;
     align-items: center;
@@ -310,8 +307,6 @@
     background: var(--paper);
   }
 
-  /* Marks are shown as each brand draws them — a logo carrying its own
-     background fills the tile, the rest sit bare at true colour. */
   .active-logo,
   .chip-logo {
     flex-shrink: 0;
@@ -370,9 +365,6 @@
     color: var(--ink-mute);
   }
 
-  /* Plain inline text, not pills — the selection reads as a quiet
-     "Provider · model · N fallbacks" line. A frozen smoke test reads the
-     fallback count off .summary-item, so the order stays fixed. */
   .summary-row {
     display: flex;
     align-items: baseline;
@@ -402,7 +394,6 @@
     font-size: 10.5px;
   }
 
-  /* ── Warnings ───────────────────────────── */
   .warn-banner {
     margin: 10px 0 0;
     font-size: 12px;
@@ -414,7 +405,6 @@
     padding: 8px 10px;
   }
 
-  /* ── Fallback chain ─────────────────────── */
   .fallback-block {
     margin-top: 12px;
   }
@@ -495,7 +485,6 @@
     transition: opacity 0.14s, color 0.14s;
   }
 
-  /* Keyboard users never hover, so focus has to reveal them too. */
   .fallback-chip-item:hover .chip-btn,
   .chip-btn:focus-visible {
     opacity: 1;

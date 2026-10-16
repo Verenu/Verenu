@@ -55,10 +55,7 @@
 </div>
 
 <style>
-  /* ── Overlay / shell ───────────────────────────────────────────────── */
   .setup-overlay {
-    /* One column width for header, body and action bar so nothing steps out
-       of line. Individual steps widen it locally when they genuinely need to. */
     --setup-col: 640px;
     --setup-pad-x: 28px;
     --setup-page-gap: 22px;
@@ -74,18 +71,10 @@
     flex-direction: column;
     align-items: center;
     overflow: hidden;
-    /*
-     * A fixed, inset:0 overlay anchors straight to the physical viewport
-     * edges — it isn't a descendant of .app's padding box the way the rest
-     * of the app is, so .app's own safe-area padding never reaches it. That
-     * left the step dots and header rendering under the status bar and
-     * camera cutout during onboarding. 0 on desktop/no-cutout devices.
-     */
     padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
       env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
 
-  /* ── Header: stepper + title, fixed spot — never moves between steps ── */
   .setup-header {
     width: 100%;
     max-width: var(--setup-col);
@@ -147,7 +136,6 @@
     line-height: 1.5;
   }
 
-  /* ── Scrollable content ───────────────────────────────────────────── */
   .setup-content {
     flex: 1;
     width: 100%;
@@ -160,12 +148,6 @@
     padding: 30px 0 22px;
   }
 
-  /* ── Step body — fills the space below the fixed header ─────────────
-     Content sits directly under the header; the action bar stays pinned to
-     the bottom. A grid (rather than flex) so the outgoing and incoming steps
-     can occupy the same cell during a transition instead of briefly stacking
-     and shoving the layout down. Header-less steps (Intro, Done) get
-     margin:auto on .step to read as a centered hero — see .no-header below. */
   .setup-body {
     flex: 1;
     min-height: 0;
@@ -184,7 +166,6 @@
     margin: auto 0;
   }
 
-  /* ── Pinned action bar ────────────────────────────────────────────── */
   .setup-actionbar {
     width: 100%;
     max-width: var(--setup-col);
@@ -199,9 +180,6 @@
 
   .actionbar-left, .actionbar-right { display: flex; align-items: center; gap: 12px; }
 
-  /* ── Shared design primitives, used by step components too ──────────
-     Scoped by .setup-overlay ancestry rather than Svelte's per-file hash,
-     since step components render these classes in their own templates. */
   :global(.setup-overlay .step) {
     width: 100%;
     max-width: var(--setup-col);
@@ -211,11 +189,6 @@
     gap: 24px;
   }
 
-  /* ── Shared selection card ──────────────────────────────────────────
-     One affordance for every choice in the wizard: providers, cleanup
-     intensity, tone, language, headphones. Previously each step invented
-     its own (outlined radio here, solid accent disc with a white tick
-     there), which is what made the tick read as out-of-theme. */
   :global(.setup-overlay .pick-card) {
     background: var(--bg-elev);
     border: 1.5px solid var(--line);
@@ -273,7 +246,6 @@
     to   { transform: scale(1);   opacity: 1; }
   }
 
-  /* Uppercase group label above a set of pick-cards. */
   :global(.setup-overlay .group-label) {
     font-size: 11px;
     font-weight: 500;
@@ -301,8 +273,6 @@
     transition: opacity 0.15s, transform 0.1s;
   }
 
-  /* Match the global control selector's specificity so its dark hover cannot
-     win while the pointer stays over the pinned button during a step change. */
   :global(.setup-overlay button.btn-primary:not(:disabled):hover) {
     background: color-mix(in srgb, var(--accent) 88%, var(--ink));
     border-color: color-mix(in srgb, var(--accent) 88%, var(--ink));

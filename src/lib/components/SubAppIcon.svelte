@@ -1,5 +1,4 @@
 <script lang="ts">
-  // A sub-app's chosen icon, or its app's icon when none was picked.
   import AppIcon from './AppIcon.svelte';
   import { icons } from '../icons';
   import type { ContextSubApp } from '../stores';

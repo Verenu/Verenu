@@ -1,6 +1,3 @@
-//! The sub-app capture shortcut: one or more modifiers plus a letter, digit,
-//! or function key, stored as a canonical string such as `Ctrl+Alt+Shift+S`.
-//! `Super` is the Windows/Command key.
 
 use std::fmt;
 
@@ -57,7 +54,6 @@ impl Chord {
             }
         }
         chord.key = key?;
-        // A bare key or Shift+key would hijack ordinary typing.
         (chord.ctrl || chord.alt || chord.super_key).then_some(chord)
     }
 

@@ -14,7 +14,6 @@ test('secondary shortcut controls edit unavailable keys and persist through relo
   const previous = await session.invoke('get_all_settings');
   try {
     await openGeneral(page);
-    // Exercise the native status event contract. This does not claim OS registration.
     await page.evaluate(async () => {
       const { emit } = await import('/src/lib/tauri.ts');
       await emit('verenu:shortcuts-changed', [
@@ -45,7 +44,6 @@ test('secondary shortcut controls edit unavailable keys and persist through relo
     await page.keyboard.press('Control+F10');
     await expect(page.getByRole('alert').filter({ hasText: 'Choose a single key without modifiers' })).toBeVisible();
     expect((await session.invoke('get_all_settings')).linux_cancel_key).toBe('F8');
-    // Escape is assignable; cancelling capture uses the explicit outside click.
     await cancel.click();
     await waitForCaptureReady(cancel);
     await page.keyboard.press('Escape');

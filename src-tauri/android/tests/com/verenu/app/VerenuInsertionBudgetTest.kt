@@ -20,7 +20,7 @@ class VerenuInsertionBudgetTest {
     @Test fun timedOutActionDoesNotStartAnyReadback() {
         var time = 0L
         val budget = VerenuInsertionBudget({ time })
-        time += 5_000L // Android's action IPC timeout.
+        time += 5_000L
         assertEquals(VerenuInsertionBudget.Confirmation.UNAVAILABLE,
             budget.confirm("", "Hello", { error("readback after timeout") }, { error("retry after timeout") }))
     }

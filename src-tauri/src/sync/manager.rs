@@ -1,13 +1,3 @@
-//! The sync manager: owns the device identity, advertises and discovers peers
-//! over mDNS, listens for incoming connections, runs pairing flows, schedules
-//! sync sessions, and reports status to the frontend.
-//!
-//! Networking model (deliberately low-churn):
-//! - One TCP listener on a stable per-device port, advertised via mDNS/Bonjour.
-//! - A continuous mDNS browse (event-driven; no polling of peers).
-//! - A sync session starts when a paired peer is discovered, when the user
-//!   clicks "Sync now", or shortly after local data changes (debounced).
-//! - Failed attempts back off exponentially up to 10 minutes.
 
 use anyhow::{anyhow, Result};
 use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -236,9 +226,6 @@ impl ChangeStamp {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        // Imported settings and counter-only gossip do not create sync_log
-        // rows. Observe their committed metadata too, so a hub promptly relays
-        // them to its other peers rather than waiting for the idle interval.
         let mut settings = sync_store::list_setting_stamps(conn)?.into_iter()
             .map(|(key, stamp)| (key, stamp.ts_ms, stamp.origin)).collect::<Vec<_>>();
         let mut remote_counters = sync_store::list_remote_stats(conn)?.into_iter()
@@ -304,7 +291,6 @@ pub(crate) fn should_try_next_address(error: &anyhow::Error) -> bool {
     error.is::<ConnectionFailure>()
 }
 
-// ---- DTOs surfaced to the frontend ----
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfoDto {
@@ -408,7 +394,6 @@ impl SyncManager {
             .map_err(|e| anyhow!("identity setup failed ({e}); check the OS credential store"))?;
         let identity = Arc::new(identity);
 
-        // Prefer a user-set name persisted in the DB over the hostname default.
         let name = {
             let conn = self.lock_db()?;
             let stored = stored_device_name(&conn)?;
@@ -426,8 +411,6 @@ impl SyncManager {
             *guard = Some(Arc::new(identity));
         }
 
-        // TLS configs (client configs are built per connection; the identity
-        // can be rotated by re-initialization).
         let (uuid, cert, key) = {
             let guard = self.inner.identity.read().expect("identity lock");
             let identity = guard.as_ref().ok_or_else(|| anyhow!("identity missing"))?;
@@ -439,9 +422,6 @@ impl SyncManager {
         };
         let server_cfg = transport::server_config(cert, key)?;
 
-        // Reuse a deterministic port so an mDNS record cached across an app
-        // restart still points at the live listener. Fall back only for a real
-        // local collision, such as two Verenu identities running together.
         let preferred_port = listener_port_for_uuid(&uuid);
         let listener = match TcpListener::bind(("0.0.0.0", preferred_port)).await {
             Ok(listener) => listener,
@@ -503,16 +483,10 @@ impl SyncManager {
             }
         });
 
-        // One-time repair for exe targets written before cross-platform
-        // resolution existed (or before it was applied to that row): a target
-        // that doesn't look like this platform's own naming convention and
-        // was never tagged gets a chance to resolve against apps installed
-        // right now. Best-effort — sync must start regardless.
         if let Err(err) = self.reconcile_stale_context_targets() {
             log::warn!("sync: stale context target reconciliation failed: {err:#}");
         }
 
-        // Discovery.
         let initial_change = {
             let conn = self.lock_db()?;
             ChangeStamp::read(&conn)?
@@ -520,7 +494,6 @@ impl SyncManager {
         *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
         self.start_discovery().await?;
 
-        // Change-driven + fallback sync scheduling.
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -554,9 +527,6 @@ impl SyncManager {
             )
         };
         let instance = format!("verenu-{uuid}");
-        // Namespace the DNS host separately from the service instance. Older
-        // builds published the UUID host as 127.0.0.1 on macOS; using a fresh,
-        // app-specific host prevents that stale A record from hiding the LAN IP.
         let host = format!("verenu-{uuid}.local.");
         let props: HashMap<String, String> = [
             ("uuid", uuid.clone()),
@@ -656,16 +626,6 @@ impl SyncManager {
             .map_err(|_| anyhow!("database lock was poisoned"))
     }
 
-    /// Repairs `context_targets` rows that predate cross-platform resolution
-    /// (or were synced in before this device ever ran it): an untagged row
-    /// whose executable doesn't look like this platform's own naming
-    /// convention gets resolved against apps installed right now, mirroring
-    /// what `resolve_context_targets_in_ops` already does for every live
-    /// incoming sync op. A match is tagged with this platform so it now
-    /// displays only here; no match gets the same "?::" unresolved marker the
-    /// live path uses, so the UI shows a clear "(not found)" chip instead of
-    /// a bare foreign string a user can't act on. Best-effort: errors are
-    /// logged by the caller, never fatal to sync startup.
     fn reconcile_stale_context_targets(&self) -> Result<()> {
         let conn = self.lock_db()?;
         let rows: Vec<(i64, String)> = {
@@ -680,8 +640,6 @@ impl SyncManager {
             return Ok(());
         }
 
-        // Linux desktop ids and window classes carry no suffix, so every
-        // untagged row there goes through matching below.
         let native_suffix = if cfg!(target_os = "macos") {
             Some(".app")
         } else if cfg!(target_os = "linux") {
@@ -722,10 +680,6 @@ impl SyncManager {
             );
             match updated {
                 Ok(_) => {}
-                // The resolved executable already belongs to another row for
-                // this context (both devices' targets turned out to be the
-                // same app) — drop the now-redundant stale row instead of
-                // erroring the whole pass.
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
@@ -1035,8 +989,6 @@ impl SyncManager {
         self.inner
             .update_pairing_phase(generation, "waiting_for_code");
 
-        // The responder replies only after its user approves, so the whole
-        // exchange runs under the generous pairing timeout.
         let exchange = async {
             let responder_msg = match super::protocol::read_message_with_timeout(
                 &mut tls,
@@ -1132,8 +1084,6 @@ impl SyncManager {
         let (responder_msg, cipher) = match pairing::responder_start(&code, &spake_msg) {
             Ok(result) => result,
             Err(err) => {
-                // A mistyped code is retryable; the SPAKE exchange has not
-                // touched the stream yet, so keep the incoming request alive.
                 self.restore_incoming_pairing(PendingPairing::Incoming {
                     peer_uuid,
                     peer_name,
@@ -1235,8 +1185,6 @@ impl SyncManager {
         if outcome.device_uuid.is_empty() || outcome.cert_der.is_empty() {
             return Err(anyhow!("peer sent an incomplete identity"));
         }
-        // Serialize the generation check with cancellation/new pairing so a
-        // cancelled exchange cannot persist a peer after the user moved on.
         let _pairing_generation_guard = self.inner.pending.lock().await;
         if self.inner.pairing_generation.load(Ordering::Relaxed) != generation {
             return Err(anyhow!("pairing was cancelled"));
@@ -1246,8 +1194,6 @@ impl SyncManager {
             let conn = self.lock_db()?;
             let tx = conn.unchecked_transaction()?;
             sync_store::upsert_peer(&tx, &outcome.device_uuid, &outcome.device_name, &fp)?;
-            // Seed setting stamps at pairing time so the first session compares
-            // real timestamps instead of treating existing values as ancient.
             let keys: Vec<String> = engine::SYNCABLE_SETTINGS
                 .iter()
                 .map(|s| s.to_string())
@@ -1270,8 +1216,6 @@ impl SyncManager {
             )
             .ok();
         self.inner.emit_devices_changed();
-        // Pull right away, from one deterministic side only. Both peers finish
-        // pairing at nearly the same time and used to open competing sessions.
         let uuid = outcome.device_uuid.clone();
         if should_auto_initiate(&self.device_uuid(), &uuid) {
             let manager = self.clone();
@@ -1318,7 +1262,6 @@ impl SyncManager {
         let existed = {
             let conn = self.lock_db()?;
             let existed = sync_store::remove_peer(&conn, &peer_uuid)?;
-            // Their contribution to merged lifetime counters goes too.
             let _ = sync_store::remove_remote_stats(&conn, &peer_uuid);
             existed
         };
@@ -1333,7 +1276,6 @@ impl SyncManager {
                 .map_err(|_| anyhow!("status lock poisoned"))?;
             status.remove(&peer_uuid);
         }
-        // Best-effort unpair notification so the peer forgets us too.
         let manager = self.clone();
         let uuid = peer_uuid.clone();
         tauri::async_runtime::spawn(async move {
@@ -1390,7 +1332,6 @@ impl SyncManager {
             .map(|d| connection_candidates(&d.addresses, d.port, peer_uuid))
             .unwrap_or_default();
         if let Some(address) = self.saved_peer_address(peer_uuid) {
-            // Prefer the persistent route; mDNS is unavailable across networks.
             addresses.insert(0, address);
             addresses.dedup();
         }
@@ -1497,7 +1438,6 @@ impl SyncManager {
             let conn = self.lock_db()?;
             sync_store::ensure_self_identity(&conn, &self.device_uuid(), &name)?;
         }
-        // Re-advertise with the new name (best-effort; the next restart also fixes it).
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(err) = manager.start_discovery().await {
@@ -1628,10 +1568,6 @@ impl SyncManager {
                     break;
                 }
                 Err(err) => {
-                    // A busy/authenticated peer or failed transfer is the same
-                    // peer on every address. Release this slot for its retry;
-                    // probing unreachable LAN addresses can otherwise livelock
-                    // simultaneous edits on a working Tailscale connection.
                     let try_next = should_try_next_address(&err);
                     result = Err(err);
                     if !try_next { break; }
@@ -1706,8 +1642,6 @@ impl SyncManager {
         .map_err(|_| anyhow!("TLS handshake with {} timed out", peer.name))?
         .map_err(|e| anyhow!("TLS handshake with {} failed: {e}", peer.name))?;
 
-        // Authenticate: the peer's certificate fingerprint must match the pin
-        // from pairing time.
         let presented = transport::peer_fingerprint(
             tls.get_ref()
                 .1
@@ -1723,7 +1657,6 @@ impl SyncManager {
 
         let host = ManagerHost::new(&self.inner);
         self.set_status(&peer.device_uuid, PeerState::Syncing, None);
-        // A stalled peer must not hold the session slot forever.
         let summary = tokio::time::timeout(
             Duration::from_secs(600),
             engine::run_session(&self.inner.db, &host, &mut tls, true, peer),
@@ -1778,8 +1711,6 @@ impl SyncManager {
             next_attempt: Instant::now(),
         });
         entry.failures = entry.failures.saturating_add(1);
-        // Different retry delays resolve simultaneous edits without repeatedly
-        // starting competing sessions on both devices.
         let base = if should_auto_initiate(&self.device_uuid(), peer_uuid) {
             2u64
         } else {
@@ -1927,11 +1858,7 @@ fn stored_device_name(conn: &rusqlite::Connection) -> Result<Option<String>> {
     Ok(name)
 }
 
-// ---- discovery ----
 
-/// A peer advertised itself on the LAN. Update the discovered cache, tell the
-/// UI, and - if it's a paired device we're not already syncing with and its
-/// backoff has elapsed - start a sync session right away.
 fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
     let uuid = info
         .get_property_val_str("uuid")
@@ -2001,7 +1928,6 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
         inner.emit_devices_changed();
     }
 
-    // Auto-sync on appearance, respecting backoff and one-session-per-peer.
     let paired = paired_set(conn_peers(&inner.db));
     if !paired.contains(&uuid) || !should_auto_initiate(&self_uuid, &uuid) {
         return;
@@ -2024,7 +1950,6 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
     });
 }
 
-// ---- incoming connection handling ----
 
 async fn handle_connection(
     inner: Arc<Inner>,
@@ -2073,8 +1998,6 @@ async fn handle_connection(
             handle_sync_hello(inner, tls, hello, peer_fp).await;
         }
         Message::Unpair { device_uuid } => {
-            // Only honor unpair requests from the pinned certificate of the
-            // device being removed - anything else is an impostor.
             let matches = (|| {
                 let conn = inner.db.lock().ok()?;
                 sync_store::get_peer(&conn, &device_uuid)
@@ -2156,8 +2079,6 @@ async fn handle_incoming_pairing(
     );
     inner.emit_devices_changed();
 
-    // Prompt watchdog: if nobody responds before the lifetime, drop the
-    // request (closing the held stream) so the next pairing isn't blocked.
     let watch_inner = inner.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(PAIRING_PROMPT_LIFETIME).await;
@@ -2180,8 +2101,6 @@ async fn handle_sync_hello(
     hello: Hello,
     peer_fp: String,
 ) {
-    // Authenticate before anything else: the Hello's uuid must map to a paired
-    // device whose pinned fingerprint matches the presented certificate.
     let peer = (|| {
         let conn = inner.db.lock().ok()?;
         sync_store::get_peer(&conn, &hello.device_uuid)
@@ -2225,8 +2144,6 @@ async fn handle_sync_hello(
         .await;
         return;
     }
-    // Reserve the session before acknowledging it. Otherwise a duplicate
-    // connection can receive HelloAck and then fail at the first session read.
     let session_available = {
         let mut sessions = inner.sessions.lock().expect("sessions lock");
         sessions.insert(hello.device_uuid.clone())
@@ -2247,7 +2164,6 @@ async fn handle_sync_hello(
     };
     manager.set_status(&peer.device_uuid, PeerState::Syncing, None);
     let host = ManagerHost::new(&inner);
-    // A stalled peer must not hold the session slot forever.
     let result = match tokio::time::timeout(
         Duration::from_secs(600),
         engine::run_session_after_hello(&inner.db, &host, &mut tls, false, &peer, Some(hello)),
@@ -2286,7 +2202,6 @@ async fn handle_sync_hello(
     }
 }
 
-// ---- SyncHost implementation over the real app ----
 
 pub(crate) struct ManagerHost {
     db: DbHandle,
@@ -2310,9 +2225,6 @@ impl ManagerHost {
         Self {
             db: inner.db.clone(),
             settings: store::settings_handle(&inner.app).unwrap_or_else(|_| {
-                // SettingsHandle::open failing here is practically impossible
-                // (the same file opened fine at startup); fall back to a fresh
-                // handle so sync continues with in-memory settings.
                 store::SettingsHandle::open(&inner.app).expect("settings handle")
             }),
             app: inner.app.clone(),
@@ -2328,8 +2240,6 @@ impl SyncHost for ManagerHost {
     }
 
     fn device_name(&self) -> String {
-        // Read through the manager's identity when reachable; fall back to the
-        // DB row (kept in sync by set_device_name).
         self.app
             .try_state::<SyncManager>()
             .map(|manager| manager.device_info().name)
@@ -2376,8 +2286,6 @@ impl SyncHost for ManagerHost {
         &self,
         settings: &[(String, serde_json::Value)],
     ) -> Result<(), String> {
-        // Values come from a trusted peer, but they still go through the same
-        // validation the local save path uses.
         for (key, value) in settings {
             validate_setting(key, value)?;
         }
@@ -2392,12 +2300,8 @@ impl SyncHost for ManagerHost {
                 values.push((key.as_str(), value.clone()));
             }
         }
-        // Persist first. SettingsHandle only publishes the new in-memory map
-        // after the atomic document write succeeds, so a failed save cannot
-        // leave a value visible without its sync stamp.
         self.settings.save_values_if_changed(values)?;
 
-        // Side effects that keep the running app consistent with the new values.
         for (key, value) in settings {
             if crate::app_tray::setting_updates_runtime_icons(key) {
                 crate::app_tray::apply_runtime_icons(&self.app, None);

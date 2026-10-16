@@ -16,8 +16,6 @@
   import { guardThemeEditor, openThemeEditor, themeEditor } from '../../themeEditor.svelte';
   import ThemePreview from './ThemePreview.svelte';
 
-  // On Omarchy, System already follows the active Omarchy theme. The separate
-  // Omarchy choice is kept only for installs that saved it earlier.
   const modes: { id: AppearanceMode; label: string }[] = $derived([
     { id: 'system', label: 'System' },
     { id: 'light', label: 'Light' },
@@ -119,7 +117,6 @@
     void chooseMode(modes[next].id);
   }
 
-  // Roving tabindex: the checked radio, or the first one while a custom theme is active.
   const tabbableMode = $derived(modes.some((m) => m.id === appStore.appearanceMode) ? appStore.appearanceMode : modes[0].id);
 </script>
 
@@ -209,9 +206,7 @@
     gap: 12px;
     padding: 2px 0 18px;
   }
-  /* Schemes always span the full width in equal columns. */
   .mode-cards { grid-template-columns: repeat(var(--mode-count, 3), minmax(0, 1fr)); }
-  /* About 3 themes wide on desktop, 2 on medium, 1 on narrow windows. */
   .gallery { grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); }
   .card {
     background: var(--paper);
@@ -269,7 +264,6 @@
   .theme-card:hover .theme-edit,
   .theme-edit:focus-visible { opacity: 1; }
   .theme-edit:hover { color: var(--ink); }
-  /* Touch screens have no hover, so keep the edit control visible there. */
   @media (hover: none) { .theme-edit { opacity: 1; } }
   .theme-edit svg,
   .create-card svg { fill: none; height: 12px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; width: 12px; }

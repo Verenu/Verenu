@@ -10,13 +10,10 @@ import {
   toDb,
 } from './pillVisualizer';
 
-// The pill paints at display refresh; the backend ships envelope batches at
-// ~20Hz, each holding several 10ms peaks. The harness drives those two rates
-// separately, because decoupling them is the whole point of the design.
 const FRAME_MS = 1000 / 60;
 const BATCH_MS = 50;
 
-const CENTER = 5; // bars 5 and 6 straddle the centre
+const CENTER = 5;
 
 interface Frame {
   t: number;
@@ -52,16 +49,6 @@ function lcg(seed: number) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 }
 
-/**
- * Steady broadband room noise — a fan, HVAC, a computer.
- *
- * Modelled as the 10ms PEAK of noise, which is the max of several hundred
- * samples and therefore concentrates tightly (Gumbel, ~1.3dB sd) rather than
- * swinging wildly. An earlier version of this generator drew a single Rayleigh
- * sample per window, producing near-zero nulls and ±10dB swings; tuning the
- * filtering against that fictitious signal produced badly wrong constants.
- * Slow mechanical drift is included because real fans have it.
- */
 function fan(amp: number, seed: number): (t: number) => number {
   const rand = lcg(seed);
   let n = 0;
@@ -74,7 +61,6 @@ function fan(amp: number, seed: number): (t: number) => number {
   };
 }
 
-/** Syllabic speech at ~4.5Hz with a pause — the thing that must dominate. */
 function speech(t: number): number {
   if (t > 1800 && t < 2300) return 0;
   const syl = Math.pow(Math.abs(Math.sin((t / 1000) * Math.PI * 4.5)), 1.6);
@@ -96,8 +82,6 @@ function centreStats(frames: Frame[]) {
   const sd = Math.sqrt(c.reduce((a, b) => a + (b - mean) ** 2, 0) / c.length);
   const deltas: number[] = [];
   for (let i = 1; i < c.length; i++) deltas.push(c[i] - c[i - 1]);
-  // Direction changes big enough to actually see. This is the churn metric: a
-  // loud fan alone used to produce ~13 of these a second.
   let reversals = 0;
   let prev = 0;
   for (const d of deltas) {
@@ -155,8 +139,6 @@ describe('pill visualizer — mapping', () => {
 });
 
 describe('pill visualizer — background noise', () => {
-  // Before the adaptive noise floor, a loud fan ALONE sat at a mean of 9.5px in
-  // a 3..16px row and churned at 13 direction reversals a second.
   it.each([
     ['a quiet room', 0.004],
     ['a moderate fan', 0.03],
@@ -169,13 +151,11 @@ describe('pill visualizer — background noise', () => {
   });
 
   it('does not render background as a dead flat line', () => {
-    // Calm, but alive: a perfectly static row reads as the visualizer being off.
     const s = centreStats(between(simulate(fan(0.03, 8), 6000), 2500));
     expect(s.range).toBeGreaterThan(0.05);
   });
 
   it('rests at the same height whatever the background level is', () => {
-    // The floor is adaptive, so a loud fan must not sit higher than a quiet one.
     const quiet = centreStats(between(simulate(fan(0.01, 3), 6000), 2500));
     const loud = centreStats(between(simulate(fan(0.12, 3), 6000), 2500));
     expect(Math.abs(loud.mean - quiet.mean)).toBeLessThan(1);
@@ -190,25 +170,17 @@ describe('pill visualizer — speech over noise', () => {
   });
 
   it('still shows speech over a loud fan', () => {
-    // Regression: the noise floor fed back on itself here. Speech inflated the
-    // measured spread, which raised the window bottom, which drove the level to
-    // zero, which closed the gate, which is what permitted the floor to climb
-    // further. The row died completely.
     const s = centreStats(between(simulate(over(fan(0.08, 7), speech), 5000), 2000));
     expect(s.range).toBeGreaterThan(4);
     expect(s.mean).toBeGreaterThan(4.5);
   });
 
   it('does not flatten speech that starts the recording', () => {
-    // Regression: seeding the noise floor from the first sample declared an
-    // opening word to be the background.
     const s = centreStats(between(simulate(speech, 5000), 400));
     expect(s.range).toBeGreaterThan(8);
   });
 
   it('does not flatten a low-gain microphone', () => {
-    // Regression: reference acquisition used an absolute -35dBFS threshold.
-    // A healthy but quiet input below it never initialized the display window.
     const gain = 0.01;
     const s = centreStats(
       between(
@@ -221,8 +193,6 @@ describe('pill visualizer — speech over noise', () => {
   });
 
   it('does not let continuous speech walk the noise floor upward', () => {
-    // The floor must not creep up under sustained talking and shrink the
-    // waveform mid-sentence.
     const frames = simulate(over(fan(0.03, 12), speech), 8000);
     const early = centreStats(between(frames, 1000, 3000));
     const late = centreStats(between(frames, 6000, 8000));
@@ -239,8 +209,6 @@ describe('pill visualizer — speech over noise', () => {
       (f) => f.h[CENTER] >= base + (peak - base) * 0.1
     );
     expect(firstVisible).toBeDefined();
-    // ~90ms of any figure here is the playhead buffer plus the centre bar's own
-    // age, which are structural rather than filtering.
     expect((firstVisible as Frame).t - 2500).toBeLessThan(160);
   });
 
@@ -263,8 +231,6 @@ describe('pill visualizer — flow', () => {
     const outer = at(CENTER - 1);
     const aligned = correlate(inner.slice(0, inner.length - step), outer.slice(step));
     expect(aligned).toBeGreaterThan(0.9);
-    // Delayed must beat undelayed, or the bars are merely moving together —
-    // which is the level-meter look this design exists to avoid.
     expect(aligned).toBeGreaterThan(correlate(inner, outer));
   });
 
@@ -307,11 +273,7 @@ describe('pill visualizer — loudness and motion quality', () => {
     for (let i = 1; i < frames.length; i++) {
       deltas.push(Math.abs(frames[i].h[CENTER] - frames[i - 1].h[CENTER]));
     }
-    // Generous enough to allow the attack when speech resumes after the pause,
-    // which is legitimately the fastest motion in the run; a snap would be a
-    // large fraction of the 13px range in a single frame.
     expect(Math.max(...deltas)).toBeLessThan(3.2);
-    // Sub-pixel heights: device-pixel snapping quantized this range to ~13 steps.
     const distinct = new Set(frames.map((f) => f.h[CENTER].toFixed(3)));
     expect(distinct.size / frames.length).toBeGreaterThan(0.75);
   });

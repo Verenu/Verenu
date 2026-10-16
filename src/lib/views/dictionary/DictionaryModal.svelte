@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
@@ -25,12 +26,8 @@
     onGoToSnippets: () => void;
   } = $props();
 
-  // The modal mounts fresh each time it opens, so capturing the initial entry
-  // values once here is exactly the desired behavior.
-  // svelte-ignore state_referenced_locally
-  let draftTerm = $state(entry?.term ?? '');
-  // svelte-ignore state_referenced_locally
-  let draftMistake = $state(entry?.mistake ?? '');
+  let draftTerm = $state(untrack(() => entry?.term ?? ''));
+  let draftMistake = $state(untrack(() => entry?.mistake ?? ''));
   let saving = $state(false);
   let saveError = $state('');
   let conflictContexts = $state<ContextAssignment[]>([]);
@@ -63,8 +60,6 @@
   }
 
   async function saveModal() {
-    // Read directly from DOM elements at click time to bypass WKWebView
-    // bind:value paste-sync lag, matching the pattern in Snippets.svelte.
     if (termInput) draftTerm = termInput.value;
     if (mistakeInput) draftMistake = mistakeInput.value;
 
@@ -165,7 +160,6 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <button class="modal-backdrop" aria-label="Close dialog" onclick={onClose} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
 <div
   class="modal-card"

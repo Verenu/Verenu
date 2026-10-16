@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { invoke } from '../../tauri';
   import { formatIpcError, type Context, type Snippet } from '../../stores';
   import { modalFocusTrap } from '../../modalFocus';
@@ -20,14 +21,9 @@
     onSaved: (snippet: Snippet) => void;
   } = $props();
 
-  // The modal mounts fresh each time it opens, so capturing the initial snippet
-  // values once here is exactly the desired behavior.
-  // svelte-ignore state_referenced_locally
-  let draftTrigger = $state(snippet?.trigger ?? '');
-  // svelte-ignore state_referenced_locally
-  let draftExpansion = $state(snippet?.expansion ?? '');
-  // svelte-ignore state_referenced_locally
-  let draftInstructions = $state(snippet?.instructions ?? '');
+  let draftTrigger = $state(untrack(() => snippet?.trigger ?? ''));
+  let draftExpansion = $state(untrack(() => snippet?.expansion ?? ''));
+  let draftInstructions = $state(untrack(() => snippet?.instructions ?? ''));
   let saving = $state(false);
   let saveError = $state('');
   let conflictContexts = $state<ContextAssignment[]>([]);
@@ -61,9 +57,6 @@
   }
 
   async function saveModal() {
-    // Read straight from the DOM elements. On WKWebView, `bind:value` can fail
-    // to propagate a pasted value into reactive state before the click fires.
-    // The element's live `.value` is always correct at click time.
     if (triggerInput) draftTrigger = triggerInput.value;
     if (expansionEl) draftExpansion = expansionEl.value;
     if (instructionsEl) draftInstructions = instructionsEl.value;
@@ -181,7 +174,6 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="modal-overlay">
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <button class="modal-backdrop" aria-label="Close dialog" onclick={onClose} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
 <div
   class="snippet-modal-card"

@@ -74,7 +74,7 @@ for (const task of selected) {
     const agent = await execute(command.map((part) => replacePromptArgument(part, prompt)), sandbox, path.join(directory, `${task.id}-${trial}-agent.log`));
     const outcome = await execute([python, '-B', oracle, sandbox], root, path.join(directory, `${task.id}-${trial}-after.log`));
     let claim = {};
-    try { claim = JSON.parse(await fs.readFile(path.join(sandbox, 'agent-result.json'), 'utf8')); } catch { /* Missing claims remain explicit. */ }
+    try { claim = JSON.parse(await fs.readFile(path.join(sandbox, 'agent-result.json'), 'utf8')); } catch {   }
     results.push({ task: task.id, trial, correct: outcome.code === 0, agentExitCode: agent.code, falseDone: claim.claimedComplete === true && outcome.code !== 0, missingReport: typeof claim.claimedComplete !== 'boolean', durationMs: agent.durationMs, reportedChecks: claim.checks || [], reportedSkips: claim.skippedChecks || [], reportedProviderCostUsd: claim.providerCostUsd ?? null });
     console.log(`${task.id} trial ${trial}: ${outcome.code === 0 ? 'passed' : 'failed'}`);
   }

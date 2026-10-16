@@ -1,4 +1,3 @@
-//! Settings, API keys, prompt configuration, and data import/export.
 
 use super::*;
 
@@ -50,16 +49,12 @@ fn save_github_username(
     let changed =
         github_identity_changed(current.as_deref(), value.as_str().unwrap_or_default());
     if changed {
-        // Invalidate in-flight responses and the prior account's cooldown
-        // before publishing the new owner in settings.
         crate::commands::github::invalidate_github_refresh_owner();
         settings.save_values([
             (store::GITHUB_USERNAME, value),
             (store::GITHUB_COMMIT_CACHE, serde_json::Value::Null),
         ])
     } else {
-        // GitHub logins are case-insensitive. Keep the stored spelling stable
-        // so an in-flight response still matches its exact settings owner.
         Ok(())
     }
 }
@@ -106,7 +101,6 @@ pub struct SettingSpec {
     exportable: bool,
 }
 
-// The table is the allowlist; every listed key is readable.
 macro_rules! setting_specs {
     ($($key:ident: $kind:ident = $exportable:literal),* $(,)?) => {
         const SETTING_SPECS: &[SettingSpec] = &[$(
@@ -207,7 +201,6 @@ fn exportable_setting_keys() -> impl Iterator<Item = &'static str> {
         .map(|spec| spec.key)
 }
 
-/// Bounded device-local theme library, using the active palette's validation.
 fn is_saved_themes(value: &serde_json::Value) -> bool {
     use crate::system::omarchy_theme::{is_custom_theme, is_hex_color};
     let Some(themes) = value.as_array().filter(|themes| themes.len() <= 24) else {
@@ -275,10 +268,6 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
                     })
         })
     };
-    // Strict reject, not normalize: this function only answers yes/no and never
-    // mutates the value before it is saved. The catalog store is the sole
-    // writer and normalizes on its side; anything malformed reaching here is a
-    // hand-edited settings file, which should bounce rather than be guessed at.
     let is_provider_model_cache = |v: &serde_json::Value| {
         let Some(obj) = v.as_object() else {
             return false;
@@ -421,11 +410,8 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
     }
 }
 
-/// Highest wizard step number any platform uses (the Done screen).
 const SETUP_PROGRESS_MAX_STEP: u64 = 12;
 
-/// `null` clears the saved progress; otherwise a bounded step and, optionally,
-/// the provider the wizard was configuring.
 fn is_setup_progress(value: &serde_json::Value) -> bool {
     if value.is_null() {
         return true;
@@ -647,7 +633,6 @@ mod setting_key_tests {
         assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::CUSTOM_THEMES));
     }
 }
-// ---------- generic settings ----------
 
 /// Enables a process-local failure mode for exercising full-disk error UI.
 /// The flag intentionally never touches settings.json, so it can be disabled
@@ -734,9 +719,6 @@ pub async fn save_setting(
         .await?;
     }
 
-    // LAN sync: stamp the change so peers LWW-compare it, and nudge the sync
-    // manager to schedule a session. Both are best-effort — a sync failure
-    // never blocks saving a setting.
     if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
         let db = app.state::<DbHandle>().inner().clone();
         let key_for_stamp = key.clone();
@@ -886,8 +868,6 @@ pub struct AllSettings {
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
 }
 
-// The struct above is the IPC contract (tests/OnePyFone.py parses it); this
-// table keeps each field's store key and reader together.
 macro_rules! all_settings {
     ($($field:ident = $reader:ident($key:path)),* $(,)?) => {
         fn read_all_settings(s: &store::SettingsSnapshot) -> AllSettings {
