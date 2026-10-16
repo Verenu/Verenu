@@ -693,8 +693,6 @@
             oncontextmenu={(event) => handleContextRowContextMenu(context.id, event)}
             role="presentation"
             animate:flip={{ duration: motionMs(300), easing: cubicOut }}
-            in:slide={{ duration: motionMs(200), easing: cubicOut }}
-            out:slide={{ duration: motionMs(160), easing: cubicOut }}
           >
             {@render contextRow(context)}
           </div>
@@ -713,8 +711,6 @@
             oncontextmenu={(event) => handleContextRowContextMenu(context.id, event)}
             role="presentation"
             animate:flip={{ duration: motionMs(300), easing: cubicOut }}
-            in:slide={{ duration: motionMs(200), easing: cubicOut }}
-            out:slide={{ duration: motionMs(160), easing: cubicOut }}
           >
             {@render contextRow(context)}
           </div>
