@@ -1,0 +1,12 @@
+[
+  { "name": "device_match", "path": "media/device_match.rs", "test": true },
+  { "name": "digital_silence", "path": "media/digital_silence.rs", "test": true },
+  { "name": "gesture", "path": "core/hotkey/gesture.rs", "test": true },
+  { "name": "clipboard_phrase", "path": "pipeline/clipboard_phrase.rs", "test": false,
+    "blockedTest": "Lust 0.2.0 rejects a long assert! condition without a message (L0809); production code is checked." },
+  { "name": "chord", "path": "core/hotkey/chord.rs", "test": true },
+  { "name": "text_context", "path": "core/text_context.rs", "test": false,
+    "blockedTest": "Tests reference system::t3_skills (serde and sha2); production code is checked and benchmarked." },
+  { "name": "text", "path": "system/text.rs", "test": true },
+  { "name": "text_rules", "path": "pipeline/text_rules.rs", "blockedCheck": "Requires unicode-segmentation and application prompt dependencies in tests." }
+]
