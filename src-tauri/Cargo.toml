@@ -23,6 +23,7 @@ android-local-testing = []
 [build-dependencies]
 cc = "1"
 tauri-build = { version = "2", features = [] }
+url = "2"
 
 [dependencies]
 axum = { version = "0.8", optional = true }
@@ -67,7 +68,7 @@ crossbeam-queue = "0.3"
 flate2      = "1"
 sha2        = "0.10"
 tar         = "0.4"
-zip         = { version = "2", default-features = false, features = ["deflate"] }
+zip         = { version = "9", default-features = false, features = ["deflate"] }
 transcribe-rs = { version = "0.3.11", features = ["onnx", "vad-silero"] }
 image       = { version = "0.25", default-features = false, features = ["png"] }
 libc        = "0.2"
@@ -144,6 +145,9 @@ zbus = "5.19"
 # gtk::Settings used to theme it are the same type, not a version mismatch.
 gtk = "0.18"
 webkit2gtk = "2.0.2"
+
+[dev-dependencies]
+url = "2"
 
 [profile.release]
 opt-level  = "s"
