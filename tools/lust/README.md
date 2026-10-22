@@ -29,11 +29,17 @@ node --test tools/lust/*.test.mjs
 ```
 
 `toolchain.json` pins [MONKE2525E/Lustful](https://github.com/MONKE2525E/Lustful/tree/verenu-native-pointers)
-at commit `bfd38464ab46391723de7165da5bf5c689616e5d`, based on upstream
+at commit `b31dc6a7ea5d301b88dc8afefd6563c317b1bd4c`, based on upstream
 `91dce84cf1568fb39954b2717a7a3dddedce82d4`. The fork adds `Chars::as_str`
 with the original string's lifetime and differential runtime and borrow tests.
 It also adds a tested `log` 0.4.34 source adapter and correct Cargo target names
 in `module_path!()` metadata.
+The pinned revision adds dependency alias and import convergence fixes, plus
+a closed `serde_json` 1.0.151 adapter for integer `Value` construction and compact
+output. Parsing, floating-point JSON, and general Serde remain unsupported.
+The adapter's guarded registry builds reject unsupported features and retained
+host work; its source corpus compares output with upstream and runs generated
+C under ASan and UBSan. These compiler tests do not establish desktop support.
 The fork supports checked primitive C imports on x86_64 Linux and forbids implicit
 rustc host preparation by default. Standalone files, dependency-free packages,
 closed local workspaces, and restricted normal dependency graphs can use this
