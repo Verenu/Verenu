@@ -7,8 +7,29 @@ permissions:
   contents: read
 
 jobs:
+  validate-release-analytics:
+    name: Validate release analytics configuration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+      POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Validate PostHog ingestion configuration
+        run: node scripts/check-release-analytics.mjs
+
   build:
     name: Build ${{ matrix.platform }} Installers
+    needs: validate-release-analytics
     strategy:
       fail-fast: false
       matrix:
@@ -183,6 +204,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ matrix.os-name == 'macos' && secrets.MACOS_SIGNING_IDENTITY || '' }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          VERENU_REQUIRE_POSTHOG: '1'
         run: |
           set -euo pipefail
 
