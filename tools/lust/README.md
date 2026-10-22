@@ -24,7 +24,8 @@ node tools/lust/run.mjs check
 node tools/lust/run.mjs test
 node tools/lust/run.mjs bench
 node tools/lust/run.mjs full-check
-node --test tools/lust/run.test.mjs
+node tools/lust/run.mjs build-no-rustc
+node --test tools/lust/*.test.mjs
 ```
 
 `toolchain.json` pins [MONKE2525E/lust-lang](https://github.com/MONKE2525E/lust-lang/tree/verenu-support)
@@ -38,6 +39,33 @@ To use an existing installation instead, set `LUST_BIN` to its
 `bin/lust` or `target/release/lust` executable. The matching `lust-core` and
 runtime files must remain alongside it in the upstream layout. Missing or
 incompatible compilers fail; the workflow never substitutes rustc for Lust.
+
+## Audited desktop build
+
+`build-no-rustc` attempts a desktop executable from an unchanged backend
+snapshot and a fresh frontend build. It uses a separate Cargo target directory,
+disables Lust's daemon, and replaces `RUSTC` and the compiler names on `PATH`
+with scripts that refuse execution. It does not run a rustc version check,
+an oracle, or Lust's Cargo release fallback.
+
+This command also requires Linux `strace` with `--kill-on-exit` support. The
+trace follows both builds and their child processes. A rustc request, a failed
+build, an unreadable trace, or a missing executable ELF artifact fails the run.
+Reports distinguish build success from native runtime verification. Producing
+a binary does not establish working dictation, shortcuts, or text injection.
+
+The current desktop attempt fails during `cargo metadata`: Cargo requests
+`rustc -vV`, and the refusing script exits with status 97. No desktop executable
+is produced. Lust must replace this preparation path as well as implement the
+missing language and dependency support before the application can pass.
+
+The scripts block the normal Cargo and PATH compiler entry points. The trace
+also detects compiler paths that bypass those scripts. This audit trusts the
+selected toolchain and is not a security sandbox for renamed compilers or
+untrusted build scripts. It also does not certify the provenance of external
+libraries: a clean execution trace cannot prove that no previously compiled
+Rust was linked. Reports leave artifact provenance unverified. Setup still
+bootstraps Lust with rustc separately.
 
 Generated sources, toolchain builds, isolated compiler caches, binaries, and
 JSON reports live under ignored `test-results/lust/`. Each invocation prints its

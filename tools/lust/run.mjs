@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { auditBuild } from './audit.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../..');
@@ -87,12 +88,15 @@ function setup() {
 
 function run() {
   if (mode === 'setup') return setup();
-  if (!['check', 'test', 'bench', 'full-check'].includes(mode)) throw new Error('Usage: node tools/lust/run.mjs setup|check|test|bench|full-check');
+  if (!['check', 'test', 'bench', 'full-check', 'build-no-rustc'].includes(mode)) throw new Error('Usage: node tools/lust/run.mjs setup|check|test|bench|full-check|build-no-rustc');
   const local = path.join(checkout, 'target/release/lust');
   const lust = process.env.LUST_BIN || local;
   if (!process.env.LUST_BIN && !fs.existsSync(local)) {
     throw new Error('Pinned Lust is not built. Run node tools/lust/run.mjs setup or set LUST_BIN.');
   }
+  // This branch must precede the rustc version/oracle calls below. Even the
+  // frontend build and dependency discovery belong inside its process audit.
+  if (mode === 'build-no-rustc') return buildWithoutRustc(path.resolve(lust));
   const version = execute(lust, ['--version']).stdout.trim();
   if (version.split(/\s+/).slice(0, 2).join(' ') !== `lust ${toolchain.version}`) {
     throw new Error(`Expected Lust ${toolchain.version}, got ${version}`);
@@ -134,6 +138,38 @@ function run() {
   }
   if (mode === 'bench') benchmark(lust, checkRoot);
   for (const blocked of report.blocked) console.log(`BLOCKED ${blocked.module} ${blocked.capability}: ${blocked.reason}`);
+}
+
+function buildWithoutRustc(lust) {
+  if (os.platform() !== 'linux' || os.arch() !== 'x64') throw new Error('The audited Lust desktop build requires Linux x86_64 and strace.');
+  const snapshot = path.join(directory, 'src-tauri');
+  fs.mkdirSync(snapshot);
+  for (const entry of fs.readdirSync(path.join(root, 'src-tauri'))) {
+    if (['target', '.lust-cache'].includes(entry)) continue;
+    fs.cpSync(path.join(root, 'src-tauri', entry), path.join(snapshot, entry), { recursive: true });
+  }
+  env.CARGO_TARGET_DIR = path.join(directory, 'cargo-target');
+  env.CARGO_BUILD_JOBS = '4';
+  // Avoid inherited wrappers, remote caches, and prebuilt host units. This
+  // audit observes executions; it is not a sandbox against a malicious tool.
+  delete env.RUSTC_WRAPPER;
+  delete env.RUSTC_WORKSPACE_WRAPPER;
+  const denyBin = path.join(directory, 'deny-bin');
+  fs.mkdirSync(denyBin);
+  for (const name of ['rustc', 'rustc-real']) {
+    fs.writeFileSync(path.join(denyBin, name), '#!/bin/sh\necho "error: rustc is disabled for this build" >&2\nexit 97\n', { mode: 0o755 });
+  }
+  env.RUSTC = path.join(denyBin, 'rustc');
+  env.PATH = `${denyBin}${path.delimiter}${env.PATH || ''}`;
+  const artifact = path.join(directory, 'verenu');
+  report.desktopBuild = auditBuild({ command: process.execPath,
+    args: [path.join(here, 'compile-desktop.mjs'), lust, snapshot, artifact], directory, artifact, env });
+  report.desktopBuild.runtimeVerified = false;
+  report.desktopBuild.artifactProvenanceVerified = false;
+  console.log(report.desktopBuild.stdout);
+  console.error(report.desktopBuild.stderr);
+  if (!report.desktopBuild.passed) throw new Error(`Desktop build failed: ${report.desktopBuild.failures.join('; ')}. No rustc-free desktop is available.`);
+  console.log(`Built ${artifact} without observed rustc execution. Native dictation and desktop integration still require verification.`);
 }
 
 function fullCheck(lust) {
