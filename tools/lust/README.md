@@ -23,17 +23,22 @@ node tools/lust/run.mjs setup
 node tools/lust/run.mjs check
 node tools/lust/run.mjs test
 node tools/lust/run.mjs bench
-node tools/lust/run.mjs full-check
+LUST_HOST_TOOLS=1 node tools/lust/run.mjs full-check
 node tools/lust/run.mjs build-no-rustc
 node --test tools/lust/*.test.mjs
 ```
 
 `toolchain.json` pins [MONKE2525E/lust-lang](https://github.com/MONKE2525E/lust-lang/tree/verenu-support)
-at commit `256c964fd72ea3e2c99798fbaef34d6bfa813fc1`, based on upstream
+at commit `cb17fe300d9023c3a2c1108f75d87cc5780deaa3`, based on upstream
 `91dce84cf1568fb39954b2717a7a3dddedce82d4`. The fork adds `Chars::as_str`
 with the original string's lifetime and differential runtime and borrow tests.
 It also adds a tested `log` 0.4.34 source adapter and correct Cargo target names
 in `module_path!()` metadata.
+The fork supports checked scalar C imports on x86_64 Linux and forbids implicit
+rustc host preparation by default. Standalone files and dependency-free packages
+can use this strict path. Other Cargo graphs fail with L0532 before host
+preparation or cached host outputs are used. `--host-tools` or
+`LUST_HOST_TOOLS=1` explicitly permits those routes; such a run is not rustc-free.
 The full desktop backend still requires substantial compiler development.
 To use an existing installation instead, set `LUST_BIN` to its
 `bin/lust` or `target/release/lust` executable. The matching `lust-core` and
@@ -54,10 +59,10 @@ build, an unreadable trace, or a missing executable ELF artifact fails the run.
 Reports distinguish build success from native runtime verification. Producing
 a binary does not establish working dictation, shortcuts, or text injection.
 
-The current desktop attempt fails during `cargo metadata`: Cargo requests
-`rustc -vV`, and the refusing script exits with status 97. No desktop executable
-is produced. Lust must replace this preparation path as well as implement the
-missing language and dependency support before the application can pass.
+The current desktop attempt fails with L0532 after `cargo metadata --no-deps`,
+with zero attempted rustc executions. No desktop executable is produced.
+Lust must implement rustc-free preparation for the full dependency graph as well
+as the missing language and dependency support before the application can pass.
 
 The scripts block the normal Cargo and PATH compiler entry points. The trace
 also detects compiler paths that bypass those scripts. This audit trusts the
@@ -79,7 +84,7 @@ it does not select an arbitrary compiler from `PATH`.
 
 ## Full backend compatibility probe
 
-`full-check` attempts the actual library with its complete dependency graph,
+With `LUST_HOST_TOOLS=1`, `full-check` attempts the actual library with its complete dependency graph,
 then the library and desktop binary with an isolated edition-2024 manifest.
 The source and native dependencies stay intact. It also checks small async and
 native-FFI programs with rustc and Lust to distinguish language gaps from
@@ -89,11 +94,12 @@ It does not switch the application's compiler or invoke Lust's Cargo release
 fallback. Cargo may prepare build scripts and procedural macros during Lust's
 dependency discovery; that preparation is not successful Lust compilation.
 
-The tested fork rejects the real edition-2021 manifest with L0530. With only
+The earlier host-enabled probe rejects the real edition-2021 manifest with L0530. With only
 the copied edition changed, both targets pass the previous `log::warn!` expansion
 blocker and reject `serde_json::json!` with L0802. The
-standalone probes are valid Rust; Lust rejects async with L0405 and native FFI
-with L0810. Logging support therefore does not compile the desktop. Verenu's
+standalone async probe is valid Rust and Lust rejects it with L0405. Scalar C
+imports now work on x86_64 Linux; pointers and callbacks still fail with L0810.
+These additions do not compile the desktop. Verenu's
 provider requests, portal hotkeys, Tauri command macros, SQLite, audio, and
 native integrations require broader compiler and dependency support.
 
@@ -162,7 +168,8 @@ to the invocation.
 
 These are core development measurements, not desktop startup or dictation
 latency. A complete-app speedup cannot be inferred from them. Lust's
-`--release` forwards to Cargo or rustc, so this driver deliberately avoids that
-flag. Use Cargo for optimized production builds. Profile separately before
+`--release` without an explicit target forwards to Cargo or rustc and now
+requires `--host-tools`, so this driver avoids that route. Use Cargo for
+optimized production builds. Profile separately before
 attributing a timing difference to a particular function or adopting a compiler
 for runtime performance.
