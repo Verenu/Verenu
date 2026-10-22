@@ -1,5 +1,3 @@
-//! Tauri commands for LAN device sync - the Settings - Sync surface.
-
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -25,7 +23,6 @@ pub struct SyncStatusDto {
 pub async fn sync_get_status(app: AppHandle) -> Result<SyncStatusDto, String> {
     let manager = manager(&app)?;
     let snapshot = manager.snapshot();
-    // A listener startup failure does not establish that a firewall blocked it.
     let last_error_hint = if snapshot.listener_failed {
         Some(
             "Verenu couldn't start sync. Restart Verenu and check that your system keyring is unlocked. If it persists, check Verenu's diagnostics for a listener or discovery startup error."
@@ -51,8 +48,6 @@ pub async fn sync_set_device_name(app: AppHandle, name: String) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
-/// A persistent, device-local Tailscale route for an already trusted peer.
-/// An empty address restores LAN discovery. Pairing authentication is unchanged.
 #[tauri::command]
 pub async fn sync_set_peer_address(
     app: AppHandle,
@@ -69,8 +64,6 @@ pub async fn sync_pair_connection(app: AppHandle, details: String) -> Result<Str
     manager(&app)?.pair_connection(&details).await.map_err(|e| e.to_string())
 }
 
-/// Starts pairing with a discovered device. Returns the 6-digit code to show
-/// on this screen; the other device's user types it.
 #[tauri::command]
 pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<String, String> {
     let result = manager(&app)?
@@ -103,8 +96,6 @@ pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<S
     result
 }
 
-/// Responder side of pairing: approve (with the code typed by the user) or
-/// reject the pending incoming request.
 #[tauri::command]
 pub async fn sync_respond_to_pairing(
     app: AppHandle,
@@ -133,7 +124,6 @@ pub async fn sync_remove_device(app: AppHandle, device_uuid: String) -> Result<(
         .map_err(|e| e.to_string())
 }
 
-/// Manual sync. `deviceUuid = null` syncs every visible paired device.
 #[tauri::command]
 pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(), String> {
     let sync_manager = manager(&app)?;
@@ -174,7 +164,6 @@ pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(),
     result
 }
 
-/// Debug/diagnostics: change-log size and per-peer cursor positions.
 #[tauri::command]
 pub async fn sync_get_diagnostics(app: AppHandle) -> Result<serde_json::Value, String> {
     super::run_db(&app, "sync_get_diagnostics", move |db| {

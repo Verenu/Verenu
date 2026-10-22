@@ -1,8 +1,3 @@
-//! Match a stored microphone name to WASAPI/CPAL device names.
-//!
-//! The same hardware often appears as `Microphone (Yeti Nano)`, `Yeti Nano`,
-//! or `Microphone (Yeti Nano) (2)` after a replug. Exact string equality
-//! misses those, so mute watching would bind the default input instead.
 
 pub const SCORE_NONE: u8 = 0;
 pub const SCORE_CONTAINS: u8 = 1;
@@ -10,7 +5,6 @@ pub const SCORE_NORMALIZED: u8 = 2;
 pub const SCORE_CASEFOLD: u8 = 3;
 pub const SCORE_EXACT: u8 = 4;
 
-/// Longer prefixes first so "headset microphone" wins over "headset".
 const ROLE_PREFIXES: &[&str] = &[
     "headset microphone",
     "headset mic",
@@ -23,7 +17,6 @@ const ROLE_PREFIXES: &[&str] = &[
     "mic",
 ];
 
-/// Generic labels that would false-match under substring comparison.
 const GENERIC_NORMALIZED: &[&str] = &[
     "usb audio device",
     "usb audio",

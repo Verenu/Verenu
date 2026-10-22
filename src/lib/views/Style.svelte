@@ -68,7 +68,6 @@
       if (savedTone) tone = savedTone as string;
       if (savedIntensity) intensity = savedIntensity as string;
     } catch {
-      // Dev mode without Tauri.
     }
   });
 
@@ -88,9 +87,6 @@
     tab = id;
   }
 
-  // The tabs declare role="tab", so they get the full APG pattern: only the
-  // selected tab is in the tab order, and Left/Right/Home/End move and select
-  // with automatic activation (the panels are lightweight).
   let tablistEl = $state<HTMLDivElement | null>(null);
 
   function handleTablistKeydown(event: KeyboardEvent) {

@@ -1,15 +1,6 @@
-/*
- * Contract for the `get_insights` command. The backend owns every number here;
- * the Insights page does no aggregation of its own beyond formatting.
- *
- * Day bucketing is the backend's job and must use date(created_at, 'localtime')
- * — created_at is stored UTC-naive (see query_stats in data/db/transcriptions.rs).
- */
-
-export type InsightsRange = 7 | 30 | 90 | 0; // 0 = all time
+export type InsightsRange = 7 | 30 | 90 | 0;
 
 export interface InsightsTotals {
-  /** Lifetime, from the lifetime_stats table — never shrinks with retention pruning. */
   total_words: number;
   total_transcriptions: number;
   total_speaking_ms: number;
@@ -17,21 +8,20 @@ export interface InsightsTotals {
   avg_wpm: number;
   best_wpm: number;
   words_in_range: number;
-  /** Same-length window immediately before the range, for the delta pill. */
   words_prev_range: number;
 }
 
 export interface InsightsStreak {
   current_days: number;
   longest_days: number;
-  longest_started_on: string | null; // "YYYY-MM-DD"
+  longest_started_on: string | null;
   longest_ended_on: string | null;
   longest_words: number;
   active_days: number;
 }
 
 export interface InsightsDay {
-  day: string; // "YYYY-MM-DD", local
+  day: string;
   words: number;
   transcriptions: number;
   speaking_ms: number;
@@ -63,24 +53,14 @@ export interface InsightsWords {
 }
 
 export interface InsightsPayload {
-  /**
-   * Which context group the payload is scoped to, or null for all of them.
-   * Every per-dictation figure honours it. Dictionary and auto-learn counters
-   * have no context dimension and stay global; `edits_applied` is the word
-   * diff between raw and final text in the selected range.
-   */
   context_id: number | null;
   range_days: number;
-  generated_at: string; // "YYYY-MM-DD HH:MM:SS", UTC-naive like created_at
+  generated_at: string;
   totals: InsightsTotals;
   streak: InsightsStreak;
-  /** One row per calendar day in range, zero days included, ascending. */
   daily: InsightsDay[];
-  /** Compact rolling year; the heatmap displays only the weeks that fit. */
   streak_daily: InsightsDay[];
-  /** First locally recorded transcription date, used to distinguish pre-history from quiet days. */
   history_started_on: string | null;
-  /** Length 24 — words per hour-of-day, local time. */
   hourly: number[];
   providers: InsightsProviderUsage[];
   cleanup: InsightsCleanup;

@@ -22,10 +22,6 @@
   import { EMPTY_INSIGHTS, RANGE_OPTIONS, type InsightsPayload, type InsightsRange } from './insights/types';
 
   let range = $state<InsightsRange>(30);
-  // null = every context. Kept local to the page rather than sharing the
-  // sidebar's selection: filtering a chart is not the same act as opening a
-  // context to edit it, and tying them together would make each surprise the
-  // other.
   let contextId = $state<number | null>(null);
   let contextOpen = $state(false);
   let data = $state<InsightsPayload | null>(null);
@@ -45,9 +41,6 @@
   const contextLabel = $derived(activeContext?.name ?? 'All contexts');
   const isEmpty = $derived(!data || data.totals.total_transcriptions === 0);
 
-  // A context deleted elsewhere (sidebar, contexts page) must not keep
-  // filtering the page behind an "All contexts" label: drop the stale
-  // selection and reload so the numbers match what the filter shows.
   $effect(() => {
     if (contextId === null || contextOptions.length === 0) return;
     if (contextOptions.some((c) => c.id === contextId)) return;
@@ -67,9 +60,6 @@
       data = payload ?? EMPTY_INSIGHTS;
       status = 'loaded';
       error = '';
-      // Keep the previous range visible while its replacement loads, then
-      // give explicit range/manual refreshes one deliberate entry. Silent
-      // polling must update values in place so chart hover/focus state survives.
       if (!opts?.silent) displayVersion += 1;
     } catch (err) {
       if (!mounted || token !== fetchToken) return;
@@ -78,15 +68,9 @@
         error = formatIpcError(err, 'Could not load your insights');
         status = 'error';
       } else if (!data) {
-        // No data to fall back on — surface the error so the skeleton can't
-        // spin forever (e.g. initial load failed, or a silent refresh landed
-        // while the first load was still in flight).
         error = formatIpcError(err, 'Could not load your insights');
         status = 'error';
       } else {
-        // Silent refresh failed but we have good data: keep it up. Also clear
-        // any 'loading' a superseded non-silent load may have left behind, or
-        // the skeleton would stick even though data is present.
         status = 'loaded';
       }
     }
@@ -116,12 +100,8 @@
         if (mounted) pricing = snapshot;
       })
       .catch((err) => {
-        // The cost card still has its bundled fallbacks when the catalog is
-        // unavailable, so a pricing refresh must not make Insights fail.
         console.warn('OpenRouter pricing refresh failed:', err);
       });
-    // Events keep dictations current; reconcile missed events and date rollover
-    // once a minute while visible, and immediately when the window returns.
     const poll = startPolling(() => load({ silent: true }), 60_000, { immediate: false });
     let unlisten: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
@@ -131,14 +111,8 @@
         else unlistenSync = cleanup;
       })
       .catch(() => {});
-    // Refresh live as new dictations land, so the page never shows stale
-    // numbers while it's open. Silent so a background refresh never flashes
-    // the loading state.
     listen('verenu:transcribed', () => { if (!document.hidden) poll.request(); })
       .then((cleanup) => {
-        // If the component already unmounted while `listen` was still
-        // resolving, tear the listener down immediately rather than leaking
-        // it onto a dead component.
         if (!mounted) {
           cleanup();
         } else {
@@ -157,13 +131,6 @@
 
 <div class="content-inner">
   <div class="head">
-    <!--
-      Android drops the explainer paragraph — it's the same "here's what this
-      page does" filler as the equivalent copy on Style/Snippets, and on a
-      phone header it's the difference between the filters being visible
-      without scrolling or not. Desktop keeps it; the wider header has room
-      and first-time users benefit from it there.
-    -->
     <div>
       <h1 class="page-h">Insights</h1>
       {#if !isAndroid}
@@ -172,8 +139,6 @@
     </div>
 
     <div class="head-filters">
-    <!-- The shared Dropdown owns Escape, outside-click, and arrow navigation
-         for each menu once it is open. -->
     <Dropdown bind:open={contextOpen} closeSelector=".context-picker">
       <div class="ui-dropdown range-picker context-picker">
         <button
@@ -312,9 +277,6 @@
     margin-inline: auto;
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     min-width: 0;
-    /* The sidebar eats ~220px of viewport width, so viewport media queries
-       fire far too late for this column. Query the column itself instead —
-       same pattern as the settings-panel container in Settings.svelte. */
     container-type: inline-size;
     container-name: insights;
   }
@@ -328,9 +290,6 @@
     min-width: 0;
   }
 
-  /* The Linux close control overlays the upper-right of this row. Drop the
-     whole header below it so the filters can sit on the page's right edge
-     instead of leaving a caption-sized hole beside the charts. */
   :global(.app.app-linux) .head {
     margin-top: var(--native-chrome-below-clearance);
   }
@@ -367,7 +326,6 @@
     max-width: 100%;
   }
 
-  /* Match the app-mappings / tone dropdowns rather than the default pill radius. */
   .range-picker {
     margin-top: 2px;
     --ui-dropdown-trigger-height: 28px;
@@ -376,7 +334,6 @@
   .context-picker { max-width: 200px; }
   .context-picker .ui-dropdown-trigger { gap: 6px; }
 
-  /* A long context list scrolls inside the menu instead of running off-screen. */
   .ctx-menu-scroll { max-height: 280px; overflow-y: auto; }
 
   .ctx-swatch {
@@ -389,11 +346,6 @@
   .fetch-status { margin: 0 0 10px; font-size: 12px; color: var(--ink-mute); }
   .fetch-status-error { color: var(--danger); }
 
-  /* Section shell for every child component. Owned here rather than repeated
-     in each of them, so the page's visual weight has a single lever. These are
-     sections in an editorial page — a serif sub-heading over a hairline rule,
-     sitting on bare paper — not cards. Elevation stays reserved for modals and
-     popovers, per DESIGN.md. */
   .content-inner :global(.card) {
     display: flex;
     flex-direction: column;
@@ -416,7 +368,6 @@
     border-bottom: 1px solid var(--line);
   }
 
-  /* Matches .settings-subhead — 17px was a card title, this is a section head. */
   .content-inner :global(.card-h) {
     font-family: var(--sans);
     font-size: 13px;
@@ -485,18 +436,8 @@
     max-width: 380px;
   }
 
-  /* Container query, not viewport: the rail + sidebar decide how wide this
-     column actually is. Below ~560px the title and both dropdowns stack and
-     left-align instead of squeezing into one row. */
   @container insights (max-width: 420px) {
-    /* Title first, then the scope filters beneath it. */
     .head { flex-direction: column; align-items: stretch; margin-bottom: 18px; }
-    /*
-     * flex-basis follows the main axis, so the 240px basis that reserves a
-     * sensible title column in row layout becomes a 240px minimum *height*
-     * once this stacks — which left a screen-eating blank band between the
-     * subtitle and the filters on phones. Reset it for the column case.
-     */
     .head > div:first-child { flex: 0 0 auto; }
     .head-filters { justify-content: flex-start; }
     .page-sub { max-width: none; }

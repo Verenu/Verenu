@@ -1,5 +1,3 @@
-//! Context and context-scoped library commands.
-
 use super::*;
 
 #[tauri::command]
@@ -38,6 +36,18 @@ pub async fn create_context(
 pub async fn duplicate_context(app: AppHandle, context_id: i64) -> Result<db::Context, String> {
     run_db(&app, "duplicate_context", move |db| db::duplicate_context(db, context_id))
         .await
+}
+
+#[tauri::command]
+pub async fn set_context_t3_skill_mentions(
+    app: AppHandle,
+    context_id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    run_db(&app, "set_context_t3_skill_mentions", move |db| {
+        db::update_context_t3_skill_mentions(db, context_id, enabled)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -163,10 +173,6 @@ pub async fn get_context_websites(
         .await
 }
 
-/// DNS-only existence check — resolving the hostname is enough to confirm the
-/// domain is real without the cost/fragility of an actual HTTP request (which
-/// can fail for reasons unrelated to the domain existing, like no HTTPS
-/// server or a firewall). Never errors: a lookup failure just means "no".
 #[tauri::command]
 pub async fn check_domain_exists(domain: String) -> Result<bool, String> {
     let host = domain.trim().to_string();

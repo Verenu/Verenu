@@ -1,4 +1,3 @@
-// Shared reports contain classifications, never excerpts of browser errors.
 const matchers = new Set([
   'toBe', 'toEqual', 'toStrictEqual', 'toBeTruthy', 'toBeFalsy', 'toContain',
   'toBeGreaterThan', 'toBeGreaterThanOrEqual', 'toBeLessThan', 'toBeLessThanOrEqual',
@@ -9,8 +8,6 @@ const matchers = new Set([
 ]);
 const failedStates = new Set(['failed', 'timedOut', 'interrupted']);
 
-// Accept only canonical browser-spec metadata. Reject rather than rewrite paths:
-// redacting a path could make a diagnostic appear to name a different source.
 export function safeBrowserSourceFile(file) {
   return typeof file === 'string'
     && /^tests\/browser\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.spec\.mjs$/.test(file)
@@ -43,8 +40,6 @@ export function safeFailureAttempts(test, file, testPointer) {
         && (normalized === file || normalized.endsWith(`/${file}`))
         && Number.isSafeInteger(error.location.line) && error.location.line > 0;
     })?.location;
-    // Pointers identify attachments in the private JSON report without copying
-    // their names, paths, bodies, URLs, or any trace contents into CI artifacts.
     const artifacts = Array.isArray(result.attachments) ? result.attachments.flatMap((attachment, index) =>
       attachment?.name === 'trace' && attachment.contentType === 'application/zip'
         ? [{ kind: 'trace', report: 'playwright.json', pointer: `${testPointer}/results/${resultIndex}/attachments/${index}`, visibility: 'private' }]

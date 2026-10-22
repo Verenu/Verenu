@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createNativeSession } from '../../scripts/verification/native-session.mjs';
 import { replacePromptArgument } from '../../scripts/verification/prompt.mjs';
-import { ownedSessionStartupState, startOwnedSession } from '../../scripts/verification/session.mjs';
+import { root } from '../../scripts/verification/identity.mjs';
+import { cargoTargetDirectory, ownedSessionStartupState, startOwnedSession } from '../../scripts/verification/session.mjs';
 
 test('native WebDriver session creation retries transient HTTP errors', async () => {
   let attempts = 0;
@@ -48,6 +49,12 @@ test('owned session startup fails fast for a stopped manifest owned by its launc
   assert.equal(ownedSessionStartupState({ launcherPid: 42, status: 'ready' }, 42), 'ready');
   assert.equal(ownedSessionStartupState({ launcherPid: 42, status: 'stopped' }, 42), 'stopped');
   assert.equal(ownedSessionStartupState({ launcherPid: 24, status: 'stopped' }, 42), null);
+});
+
+test('dev-session honors an isolated Cargo target directory and keeps the project default', () => {
+  const isolatedTarget = path.join(os.tmpdir(), 'verenu-owned-target');
+  assert.equal(cargoTargetDirectory({ CARGO_TARGET_DIR: isolatedTarget }), isolatedTarget);
+  assert.equal(cargoTargetDirectory({}), path.join(root, 'src-tauri', 'target'));
 });
 
 test('dev-session rejects invalid synthetic seed arguments before creating a session', async () => {

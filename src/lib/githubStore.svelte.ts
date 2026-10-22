@@ -47,8 +47,6 @@ export async function setGithubUsername(username: string): Promise<void> {
     return;
   }
 
-  // Detach previous-account requests immediately. A slow native fetch must not
-  // hold up disconnect or a new account's first refresh.
   const saveGeneration = ++generation;
   pendingSaveGeneration = saveGeneration;
   githubState.loading = false;
@@ -65,8 +63,6 @@ export async function setGithubUsername(username: string): Promise<void> {
   }
   if (generation !== saveGeneration) return;
 
-  // Polling is held during persistence so it cannot consume the new account's
-  // first native refresh attempt.
   pendingSaveGeneration = null;
   generation++;
   githubState.username = username;
@@ -77,8 +73,6 @@ export async function setGithubUsername(username: string): Promise<void> {
 }
 
 export function startGithubRefresh(): () => void {
-  // The native cache limits network refreshes to every 15 minutes. Reconcile
-  // settings and date rollover while visible, and refresh when the app returns.
   const poll = startPolling(() => refreshGithub(), 60_000, { hiddenIntervalMs: 15 * 60_000 });
   return poll.stop;
 }

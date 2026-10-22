@@ -1,6 +1,3 @@
-// Persisted appearance changes shared by the settings page and the theme
-// editor. Each one updates the live store first, saves, and rolls back (store,
-// broadcast, and any accent reset already written) if the save fails.
 import { tick } from 'svelte';
 import { emit } from './tauri';
 import { appStore } from './stores';
@@ -22,7 +19,6 @@ function broadcastCustomTheme(theme: CustomTheme | null) {
   });
 }
 
-/** Keeps the separate dictation-pill window in sync with an unsaved preview or rollback. */
 export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | null, accent: string | null) {
   broadcastCustomTheme(theme);
   void emit(ACCENT_CHANGE_EVENT, accent).catch((err) => {
@@ -33,7 +29,6 @@ export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | n
   });
 }
 
-/** Saves the active custom palette. Throws (after restoring `previous`) on failure. */
 export async function persistCustomTheme(next: CustomTheme | null, previous: CustomTheme | null = appStore.customTheme) {
   const colors = next ? themeColors(next) : null;
   appStore.customTheme = colors;
@@ -48,7 +43,6 @@ export async function persistCustomTheme(next: CustomTheme | null, previous: Cus
   }
 }
 
-/** Saves the named theme list. Leaves the store untouched on failure. */
 export async function persistSavedThemes(next: SavedTheme[]) {
   try {
     await saveSetting('custom_themes', next);
@@ -59,10 +53,6 @@ export async function persistSavedThemes(next: SavedTheme[]) {
   appStore.savedThemes = next;
 }
 
-/**
- * Switches appearance mode. `from` is the last persisted mode when a live
- * preview has already moved the store, so a failure restores the real one.
- */
 export async function setAppearanceMode(
   mode: AppearanceMode,
   from: { mode: AppearanceMode; customTheme: CustomTheme | null; accent: string | null } = {
@@ -71,19 +61,14 @@ export async function setAppearanceMode(
     accent: appStore.accentColor,
   },
 ) {
-  // The last persisted accent, which a live preview may have moved in the store.
   const previousAccent = from.accent;
   const resetAccentToThemeDefault = isAdaptiveDefaultAccent(previousAccent);
   let accentResetSaved = false;
 
   try {
-    // First visit to Custom starts from the light or dark preset that
-    // matches the current look instead of an empty palette.
     if (mode === 'custom' && !appStore.customTheme) {
       await persistCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'), null);
     }
-    // Exact black and white represent the default accent in their respective
-    // themes. Save null so the CSS default adapts when Appearance changes.
     if (resetAccentToThemeDefault) {
       await saveSetting('accent_color', null);
       accentResetSaved = true;
@@ -115,12 +100,10 @@ export async function setAppearanceMode(
   }
 }
 
-/** Saves the accent with animation; restores the previous accent and returns false on failure. */
 export async function persistAccentColor(
   color: string | null,
   previous: string | null = appStore.accentColor,
 ): Promise<boolean> {
-  // Exact black/white are the theme defaults, not fixed custom accents.
   const next = isAdaptiveDefaultAccent(color) ? null : color;
   await animateAccentChange(async () => {
     appStore.accentColor = next;
@@ -161,15 +144,10 @@ export function snapshotAppearance(): AppearanceSnapshot {
   };
 }
 
-/**
- * Makes a palette (and optionally its accent) the active look. Everything
- * rolls back together if any save fails; returns whether it all stuck.
- */
 export async function applyPalette(
   palette: CustomTheme,
   options: { accent?: string | null; themeId?: string | null; from?: AppearanceSnapshot } = {},
 ): Promise<boolean> {
-  // `from` is the persisted look; the live store may hold an editor preview.
   const before = options.from ?? snapshotAppearance();
   let wroteTheme = false;
   let wroteMode = false;
@@ -180,7 +158,6 @@ export async function applyPalette(
     if (before.mode !== 'custom') {
       await setAppearanceMode('custom', before);
       wroteMode = true;
-      // Switching mode may have reset an adaptive accent on disk.
       wroteAccent = true;
     }
     if ('accent' in options) {
@@ -195,7 +172,6 @@ export async function applyPalette(
   }
 }
 
-/** Puts the store and every setting that was already written back to `before`. */
 async function restoreAppearance(
   before: AppearanceSnapshot,
   wrote: { theme: boolean; mode: boolean; accent: boolean },
@@ -217,10 +193,6 @@ async function restoreAppearance(
   broadcastAppearance(before.mode, before.customTheme, before.accent);
 }
 
-/**
- * Runs one appearance save at a time. A second request made while one is in
- * flight is ignored (resolves `undefined`) so saves never race each other.
- */
 export async function withAppearanceLock<T>(task: () => Promise<T>): Promise<T | undefined> {
   if (appStore.appearanceSaving) return undefined;
   appStore.appearanceSaving = true;

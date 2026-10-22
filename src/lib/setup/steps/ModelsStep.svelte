@@ -39,29 +39,19 @@
     onOpenApiKeys,
     onChooseCloudProvider,
   }: {
-    /** The provider chosen earlier. Local presets only appear when it is 'local'. */
     provider: ProviderId;
     apiKeyStatus: Record<ProviderId, boolean>;
-    /** The chosen preset. Written to settings by Setup's finish(), not here. */
     preset: Preset | null;
-    /** Explicit opt-in to cleanup on Apple Intelligence. Cleanup only; speech is unchanged. */
     appleCleanup?: boolean;
-    /** False when no AI cleanup runs (Off or Basic). The Apple choice is kept but not applied, required, or downloaded. */
     cleanupRequested?: boolean;
-    /** True when the inactive cleanup is Basic on-device cleanup rather than Off. Copy only. */
     basicCleanup?: boolean;
     onOpenApiKeys: () => void;
     onChooseCloudProvider: (localSupport: 'unsupported' | 'unknown') => void;
   } = $props();
 
-  // Keep local choices hidden until the platform probe confirms support.
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
   let platformLocalSupport = $state<'checking' | 'supported' | 'unsupported' | 'unknown'>('checking');
-  // Whether the first speech-model listing finished (even if it failed), so a
-  // gated platform doesn't flash the unavailable notice before Apple Speech is known.
   let speechListSettled = $state(false);
-  // Someone who picked a cloud provider didn't ask for a multi-gigabyte local
-  // model; Settings → Models still offers one. Local stays for the local path.
   const localSupported = $derived(platformLocalSupport === 'supported' && provider === 'local');
 
   const presetOptions = $derived({
@@ -69,8 +59,6 @@
     localOnly: provider === 'local',
     localModels: provider === 'local' ? localSttStore.models : undefined,
   });
-  // The blanket gate (Intel Macs) stays closed for every downloaded engine, but
-  // Apple Speech ships with macOS and is offered on its own once listed.
   const systemSpeechOnly = $derived(
     provider === 'local' && platformLocalSupport === 'unsupported' && eligibleSystemSpeechId(presetOptions) !== null,
   );
@@ -86,11 +74,6 @@
     cleanup: localLlmStore.state.downloading_model_id ?? null,
   });
 
-  // The picker highlights whichever card matches this config, so reflecting the
-  // selection back through it is what makes the card read as "Selected".
-  // Card display and active matching read the Apple target while the opt-in is on.
-  // The stored `preset` stays the original, so toggling off restores its cleanup.
-  // Apple applies only while cleanup runs; with intensity Off the choice is kept but inert.
   const appleActive = $derived(appleCleanup && cleanupRequested);
   const effectiveTarget = $derived(applyAppleCleanup(preset?.target, appleActive));
   const activeConfig = $derived<ActiveConfig>({
@@ -105,16 +88,10 @@
     return appleActive ? { ...candidate, target: applyAppleCleanup(candidate.target, true) } : candidate;
   }
 
-  // Every download decision reads the Apple override, so an opt-in before choosing
-  // never waits on or starts a cleanup model/engine that Apple replaces.
   function needsDownload(candidate: Preset): boolean {
     return missingLocalModels(candidate.target, installedLocal, appleActive).length > 0;
   }
 
-  // Pre-select a sensible middle option so the step has a working answer even if
-  // the user just hits Next — but never one that would commit them to a
-  // multi-gigabyte download they didn't ask for. If everything needs a download,
-  // nothing is pre-selected and the provider defaults stand.
   let userPicked = $state(false);
   $effect(() => {
     if (provider === 'local' && platformLocalSupport === 'checking') return;
@@ -134,8 +111,6 @@
     preset = list.find((p) => p.id.endsWith('-balanced')) ?? list[0];
   });
 
-  // Hidden unless a supported Mac reports in. An opt-in is never dropped silently:
-  // if the Mac stops being ready the choice stays, flagged, until turned off here.
   const appleOffer = $derived(appleCleanupOffer(appleIntelligence.status));
   const applePanel = $derived(appleCleanupPanel(appleIntelligence.status, appleCleanup));
   let appleRefreshing = $state(false);
@@ -152,16 +127,11 @@
     if (!next.target) return;
     userPicked = true;
     preset = next;
-    // Start any missing downloads now so they run while the user finishes the
-    // wizard. Unlike the Models tab we don't defer activation — finish() writes
-    // the settings minutes later, and the card shows download progress meanwhile.
     for (const model of missingLocalModels(next.target, installedLocal, appleActive)) {
       localModelDownloads[model.task].download(model.id).catch((err) => console.error('setup preset download failed', err));
     }
   }
 
-  // The models the card shows, so explicit cancel/delete never touch a model the
-  // card no longer lists (e.g. the cleanup model replaced by Apple Intelligence).
   function cardModels(candidate: Preset) {
     return applyAppleCleanup(candidate.target, appleActive)?.requiredLocalModels ?? [];
   }
@@ -310,17 +280,11 @@
   .local-support-recovery p { margin: 0; font-size: 13px; color: var(--ink-mute); line-height: 1.5; }
   .local-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
-  /* PresetCard's narrow layout is keyed to the settings panel container, which
-     doesn't exist here — name the container so the cards still fold on small
-     windows instead of overflowing the wizard column. */
   .models-picker {
     container-type: inline-size;
     container-name: settings-panel;
   }
 
-  /* The Settings cards are sized for a scrolling panel. The wizard has a fixed
-     height budget and up to four cards, so tighten the vertical rhythm here
-     rather than letting the step overflow the action bar. */
   .models-picker :global(.preset-grid) { gap: 7px; margin-bottom: 0; }
   .models-picker :global(.preset-content) { padding: 9px 14px; gap: 14px; }
   .models-picker :global(.preset-info) { padding: 9px 14px; gap: 14px; }
@@ -330,8 +294,6 @@
   .models-picker :global(.preset-action-btn) { min-height: 26px; padding: 4px 10px; }
   .models-picker :global(.preset-card) { min-height: 72px; border-radius: var(--setup-card-radius); }
 
-  /* Short windows: four cards plus a footnote don't fit. The footnote is the
-     least load-bearing thing on the step, so it goes first. */
   @media (max-height: 660px) {
     .models-note { display: none; }
     .models-picker :global(.preset-grid) { gap: 6px; }

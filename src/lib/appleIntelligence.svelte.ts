@@ -10,10 +10,6 @@ export const appleIntelligence = $state<{ status: AppleIntelligenceAvailability 
   status: { state: 'checking', available: false, message: 'Checking Apple Intelligence availability...' },
 });
 
-/**
- * States only a supported Mac reports. Unsupported platforms, OS versions and
- * devices, plus checking, unknown and failed checks, hide the option entirely.
- */
 const SUPPORTED_MAC_STATES = new Set(['available', 'intelligence-disabled', 'model-not-ready']);
 export function appleIntelligenceSupported(status: AppleIntelligenceAvailability): boolean {
   return SUPPORTED_MAC_STATES.has(status.state);

@@ -6,8 +6,6 @@ const root = resolve(import.meta.dirname, '..');
 const kotlinRoot = resolve(root, 'src-tauri/android/kotlin');
 const boundary = readFileSync(resolve(kotlinRoot, 'com/verenu/app/VerenuAnalytics.kt'), 'utf8');
 const desktopBoundary = readFileSync(resolve(root, 'src-tauri/src/analytics.rs'), 'utf8');
-// Test-only fields can appear inside the production boundary. Exclude only
-// the fixture module so those fields cannot truncate the privacy checks.
 const desktopProduction = desktopBoundary.split('#[cfg(test)]\nmod tests')[0];
 
 const files = [];
@@ -19,8 +17,6 @@ const walk = (dir) => {
   }
 };
 
-// Keep this check intentionally simple and reviewable: application Kotlin may
-// use VerenuAnalytics, but only the boundary may reference the SDK symbol.
 walk(kotlinRoot);
 for (const file of files) {
   const source = readFileSync(file, 'utf8');

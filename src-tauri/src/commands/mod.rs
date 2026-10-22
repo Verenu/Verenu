@@ -1,8 +1,3 @@
-//! Tauri command handlers, split by domain into submodules. Everything is
-//! re-exported here so the `commands::*` paths used by `generate_handler!` in
-//! `main.rs` stay stable. Shared imports are re-exported as `pub(crate) use` so
-//! each submodule picks them up via `use super::*`.
-
 pub(crate) use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) use crate::data::{db, store};
@@ -11,19 +6,14 @@ pub(crate) use crate::pipeline::{self, SharedState};
 pub(crate) use crate::system::apps::{AppMapping, InstalledApp};
 pub(crate) use crate::DbHandle;
 
-/// Shown to the user (as a command error / toast) whenever they try to
-/// download a local STT/LLM model or runtime on an Intel Mac build. See
-/// `system::platform::is_macos_intel` for why this is gated off entirely
-/// rather than just discouraged.
 pub(crate) const LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL: &str =
     "Local on-device models aren't available on Intel Macs yet — this hasn't been tested on Intel hardware. Use a cloud provider (Groq, OpenAI, or Google) for now.";
 
 mod analytics;
 mod android;
 mod contexts;
-mod sub_apps;
-mod history;
 mod github;
+mod history;
 mod library;
 mod local_llm;
 mod local_stt;
@@ -32,8 +22,10 @@ mod permissions;
 mod recording;
 mod service_status;
 mod settings;
+mod sub_apps;
 mod sync;
 mod system;
+mod t3_skills;
 mod updater;
 
 pub(crate) async fn run_blocking<T, F>(label: &'static str, f: F) -> Result<T, String>
@@ -88,9 +80,8 @@ where
 pub use analytics::*;
 pub use android::*;
 pub use contexts::*;
-pub use sub_apps::*;
-pub use history::*;
 pub use github::*;
+pub use history::*;
 pub use library::*;
 pub use local_llm::*;
 pub use local_stt::*;
@@ -99,8 +90,10 @@ pub use permissions::*;
 pub use recording::*;
 pub use service_status::*;
 pub use settings::*;
+pub use sub_apps::*;
 pub use sync::*;
 pub use system::*;
+pub use t3_skills::*;
 pub use updater::*;
 
 #[cfg(test)]
@@ -203,9 +196,6 @@ mod tests {
 
     #[test]
     fn validate_setting_hotkey_rejects_unknown_key_codes() {
-        // An imported/edited settings.json must not be able to store a hotkey
-        // no backend can register — that would silently disable dictation at
-        // startup (both codes map to VK 0).
         let err = validate_setting(crate::data::store::HOTKEY, &json!(["Foo", "Bar"]))
             .expect_err("unknown hotkey codes should fail");
         assert!(err.contains("Invalid or unsupported setting"));
@@ -218,7 +208,6 @@ mod tests {
             &json!(["ControlLeft", "MetaLeft"])
         )
         .is_ok());
-        // macOS single-key hotkeys store an empty second slot.
         assert!(validate_setting(crate::data::store::HOTKEY, &json!(["F5", ""])).is_ok());
         assert!(validate_setting(crate::data::store::HOTKEY, &json!(["AltLeft", "Space"])).is_ok());
     }

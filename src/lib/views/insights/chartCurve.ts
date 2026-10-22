@@ -1,12 +1,3 @@
-/*
- * Catmull-Rom → cubic bezier for the daily chart's curve.
- *
- * The drawn line and the hover indicator have to agree exactly: the indicator
- * rides the curve rather than cutting between data points, so if it derived its
- * own control points any difference would float the dot off the line. Both read
- * the segments built here.
- */
-
 export interface Point {
   x: number;
   y: number;
@@ -30,9 +21,6 @@ export function buildSegments(points: Point[], minY: number, maxY: number): Segm
     segments.push({
       p1,
       p2,
-      // Catmull-Rom handles gentle curves well, but its control points can
-      // overshoot between a large spike and a zero-value day. Keeping them in
-      // the plot bounds preserves the curve without inventing negative data.
       c1: { x: p1.x + (p2.x - p0.x) / 6, y: clampY(p1.y + (p2.y - p0.y) / 6) },
       c2: { x: p2.x - (p3.x - p1.x) / 6, y: clampY(p2.y - (p3.y - p1.y) / 6) },
     });
@@ -49,11 +37,6 @@ export function segmentsToPath(segments: Segment[]): string {
   return path;
 }
 
-/**
- * The point on the curve at a fractional data index, clamped to the ends so an
- * overshooting spring parks the indicator on the last day rather than off the
- * side of the plot.
- */
 export function pointOnSegments(segments: Segment[], at: number): Point {
   if (segments.length === 0) return { x: 0, y: 0 };
   const last = segments.length - 1;

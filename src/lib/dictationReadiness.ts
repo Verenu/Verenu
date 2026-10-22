@@ -31,7 +31,6 @@ export type ReadinessInput = {
   cleanupEnabled: boolean;
   cleanupIntensity?: string | null;
   cleanupIntensityOverrideMayBeUsed?: boolean;
-  // A reachable Context or app mapping set to Off still reconciles dual speech results through cleanup under global Basic.
   cleanupOffContextMayBeUsed?: boolean;
   dualTranscriptionEnabled?: boolean;
   isOnline?: boolean;
@@ -46,7 +45,6 @@ export type ReadinessInput = {
 const CLOUD_PROVIDERS = new Set(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai']);
 
 const DEFAULT_MODELS: Record<string, Partial<Record<ReadinessIssue['task'], string>>> = {
-  // Keep these aligned with default_*_model_for in src-tauri/src/data/store/config.rs.
   local: { transcription: 'local/parakeet-v3', cleanup: 'local/gemma-4-e2b' },
   'apple-intelligence': { cleanup: 'apple-intelligence/system' },
   groq: { transcription: 'groq/whisper-large-v3-turbo', cleanup: 'groq/qwen/qwen3.8-27b' },
@@ -67,9 +65,6 @@ function parseConfiguredModel(value: string | null | undefined): string | null {
   return parsed ? modelId(parsed.provider, parsed.model) : null;
 }
 
-// Mirror load_pipeline_config: parse the new setting, then the legacy setting,
-// then use the selected provider's default. The backend supplies a Groq legacy
-// default when the legacy key is absent, before it reaches the provider default.
 export function readinessModel(
   task: ReadinessIssue['task'],
   selected: string | null,
@@ -87,8 +82,6 @@ export function readinessModel(
   const providerDefault = DEFAULT_MODELS[source]?.[task];
   if (providerDefault) return providerDefault;
 
-  // Rust's default_*_model_for uses the Groq model name for unknown providers,
-  // while keeping the selected provider as the outer namespace.
   const groqDefault = splitModelId(DEFAULT_MODELS.groq[task]!)!;
   return modelId(source as typeof groqDefault.provider, groqDefault.model);
 }
@@ -139,7 +132,6 @@ function normalizedTranscriptionModelChain(input: DualTranscriptionInput): strin
 function dualTranscriptionMayNeedCleanup(input: DualTranscriptionInput): boolean {
   if (input.dualTranscriptionEnabled !== true) return false;
   return normalizedTranscriptionModelChain(input)
-    // Match candidate_available_offline: local and custom endpoints remain eligible.
     .filter(model => input.isOnline !== false || model.startsWith('local/') || isCustomProviderId(model.slice(0, model.indexOf('/'))))
     .filter(model => evaluateModel('transcription', model, input).ready)
     .length > 1;
@@ -252,11 +244,6 @@ function candidatesFor(task: ReadinessIssue['task'], input: ReadinessInput): str
   return [...new Set([primary, ...(fallbacks ?? [])].map(migrateCandidate).filter(Boolean))];
 }
 
-// Settings and the Rust pipeline both migrate these deprecated ids while
-// loading configuration. Readiness reads persisted values directly, so it
-// applies the same shared model migrations before deciding whether a chain is
-// usable. Unqualified or otherwise invalid IDs stay unchanged, matching the
-// backend parser's behavior.
 function migrateCandidate(value: string): string {
   const normalized = value.trim();
   const slash = normalized.indexOf('/');
@@ -285,7 +272,6 @@ export function dictationReadiness(input: ReadinessInput): ReadinessIssue[] {
       input.cleanupIntensity === 'none' && dualTranscriptionMayNeedCleanup(input);
     const overrideMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
       input.cleanupIntensity === 'none' && input.cleanupIntensityOverrideMayBeUsed === true;
-    // Global Basic is the only other state where a reachable Off Context adds dual-speech cleanup.
     const offContextFusionMayNeedCleanup = task === 'cleanup' && input.cleanupEnabled &&
       input.cleanupIntensity === 'rules' && input.cleanupOffContextMayBeUsed === true && dualTranscriptionMayNeedCleanup(input);
     const detail = problems.length === 1 ? problems[0] : label + ' has no ready configured model. ' + problems.join(' ');

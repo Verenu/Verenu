@@ -1,6 +1,4 @@
 <script lang="ts">
-  // Settings → Sub-apps: the full sub-app list (remove only) and the capture
-  // shortcut. Sub-apps are assigned from each context group's page.
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { invoke } from '../../tauri';
@@ -62,7 +60,7 @@
       return;
     }
     const next = chordFromKeyboardEvent(event);
-    if (!next) return; // still holding modifiers, or a chord that would steal typing
+    if (!next) return;
     recording = false;
     void saveChord(next);
   }

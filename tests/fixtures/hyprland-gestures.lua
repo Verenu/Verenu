@@ -1,4 +1,3 @@
--- Execute the generated production bindings without changing the desktop.
 local time, timers, bindings, actions = 0, {}, {}, {}
 local keyboard
 local window_rules = {}
@@ -37,16 +36,15 @@ local function count(action)
   return total
 end
 
--- GENERATED_BINDINGS
+__VERENU_GENERATED_BINDINGS__()
 
--- GENERATED_WINDOW_RULES
+__VERENU_GENERATED_WINDOW_RULES__()
 assert(#window_rules == 2, "fresh setup did not install both window policies")
 assert(window_rules[1].match.class == "^(com\\.verenu\\.app|[Vv]erenu)$", "window policy depends on executable filename")
 assert(window_rules[1].float and window_rules[1].center and window_rules[1].min_size[1] == 1100 and window_rules[1].min_size[2] == 700, "main window size policy missing")
 assert(window_rules[2].float and window_rules[2].pin and window_rules[2].no_initial_focus, "pill can tile or steal initial focus")
 assert(not window_rules[2].no_focus, "pill buttons cannot receive clicks")
 
--- Replay the reported 312 ms first tap and 163 ms gap while Ctrl stays down.
 bindings["CTRL + Super_L"]()
 advance(312)
 keyboard(133, nil, 0)
@@ -60,7 +58,6 @@ assert(count("handsfree") == 1, "double-tap failed to enter hands-free")
 assert(count("app:cancel") == 0, "double-tap dispatched Escape cancellation")
 assert(count("app:cancel-chord") == 0, "double-tap rejected its own chord")
 
--- A mouse macro releases both modifiers in the same input frame.
 bindings["SUPER + Control_L"]()
 advance(1550)
 keyboard(37, nil, 0)
@@ -69,8 +66,6 @@ advance(1600)
 assert(count("release") == 3, "simultaneous modifier release dispatched twice")
 assert(count("app:cancel") == 0, "mouse chord cancelled hands-free")
 
--- Other keys while the chord is held may discard the hold prefix, but must
--- use the separate action that the backend ignores during hands-free.
 advance(2500)
 bindings["CTRL + Super_L"]()
 keyboard(38, nil, 1)
@@ -84,7 +79,6 @@ assert(count("app:dictate") == 3, "combo follow-up started another dictation")
 assert(count("handsfree") == 1, "combo follow-up entered hands-free")
 advance(4000)
 
--- Keyboard volume/media/brightness controls must not discard a held capture.
 bindings["CTRL + Super_L"]()
 local cancelled_before = count("app:cancel-chord")
 local released_before = count("release")
@@ -98,7 +92,6 @@ keyboard(133, nil, 0)
 advance(5000)
 assert(count("release") == released_before + 1, "modifier release no longer finishes dictation")
 
--- The mouse's modifier shortcut includes a simultaneous F13 companion.
 bindings["CTRL + Super_L"]()
 cancelled_before = count("app:cancel-chord")
 released_before = count("release")
@@ -113,8 +106,6 @@ keyboard(133, nil, 0)
 advance(6600)
 assert(count("release") == released_before + 1, "mouse release must finish exactly once")
 
--- The companion exception must not accept ordinary shortcut keys on press,
--- or an F13 pressed later during an established hold.
 bindings["CTRL + Super_L"]()
 keyboard(38, nil, 1)
 assert(count("app:cancel-chord") == cancelled_before + 1, "initial letter shortcut was not rejected")

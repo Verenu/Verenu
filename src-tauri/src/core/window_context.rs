@@ -22,7 +22,6 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("librewolf.exe", "LibreWolf"),
 ];
 
-// Process name convention on macOS: "<localized name>.app" lowercased.
 #[cfg(target_os = "macos")]
 const BROWSER_EXES: &[(&str, &str)] = &[
     ("google chrome.app", "Google Chrome"),
@@ -53,8 +52,6 @@ const BROWSER_EXES: &[(&str, &str)] = &[
     ("app.zen_browser.zen", "Zen Browser"),
 ];
 
-/// The focus target to refocus before paste. On Windows this is the foreground
-/// `HWND`; on macOS it is the frontmost application's PID (both fit in a `usize`).
 pub fn get_foreground_hwnd() -> usize {
     #[cfg(windows)]
     unsafe {
@@ -63,12 +60,6 @@ pub fn get_foreground_hwnd() -> usize {
     }
     #[cfg(target_os = "macos")]
     {
-        // Avoid CGWindowListCopyWindowInfo on the hotkey/keypress path — it
-        // communicates synchronously with WindowServer for all on-screen windows
-        // and introduces several ms of typing latency, which can trigger the
-        // macOS event tap watchdog timeout. frontmost_pid() is a single fast
-        // NSWorkspace call and sufficient for both focus-target tracking and the
-        // "same window?" comparisons in injection.rs (pid & 0xFFFFFFFF).
         crate::system::mac_app::frontmost_pid()
             .map(|p| p as usize)
             .unwrap_or(0)
@@ -83,16 +74,11 @@ pub fn get_foreground_hwnd() -> usize {
     0
 }
 
-/// Whether `process_name` (as returned by `get_process_name_for_hwnd`) is a
-/// known browser — used to gate the address-bar domain probe so it's never
-/// attempted against a non-browser foreground window.
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub fn is_browser_exe(process_name: &str) -> bool {
     BROWSER_EXES.iter().any(|(exe, _)| exe.eq_ignore_ascii_case(process_name))
 }
 
-/// A Wayland app ID may differ from its executable. Check both exact
-/// identities; never classify arbitrary Electron apps as browsers.
 pub fn is_browser_target(process_name: &str, target_id: usize) -> bool {
     if is_browser_exe(process_name) {
         return true;
@@ -110,7 +96,6 @@ pub fn is_browser_target(process_name: &str, target_id: usize) -> bool {
 pub(crate) fn linux_executable_for_pid(target_id: usize) -> Option<String> {
     let pid = u32::try_from(target_id).ok().filter(|pid| *pid != 0)?;
     let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    // Running AppImages/package upgrades can unlink the old executable.
     Some(path.file_name()?.to_str()?.trim_end_matches(" (deleted)").to_ascii_lowercase())
 }
 #[cfg(target_os = "android")]
@@ -167,16 +152,11 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        // On macOS WindowTarget stores a PID. Resolve that PID directly so a
-        // later pipeline stage cannot accidentally inspect the current
-        // frontmost app after focus has moved.
         crate::system::mac_app::app_name_for_pid(hwnd as i32)
             .map(|n| format!("{}.app", n.to_lowercase()))
     }
     #[cfg(target_os = "linux")]
     {
-        // Resolve the captured client even if focus has since moved; the live
-        // foreground may be a different app by the time processing runs.
         let pid = u32::try_from(hwnd).ok().filter(|pid| *pid != 0)?;
         crate::core::hyprland::active_window()
             .filter(|window| window.pid == pid)
@@ -184,8 +164,6 @@ pub fn get_process_name_for_hwnd(hwnd: usize) -> Option<String> {
             .map(|window| window.class_name.to_ascii_lowercase())
             .filter(|class| !class.is_empty())
     }
-    // Android has no window handles; Kotlin reports the foreground package
-    // when a recording starts and that is the "executable" Contexts match on.
     #[cfg(target_os = "android")]
     {
         let _ = hwnd;
@@ -209,8 +187,6 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-/// Title of the captured target window (HWND on Windows, PID on macOS/Linux).
-/// Used for sub-app matching and the cleanup prompt; never logged.
 pub fn get_window_title(target_id: usize) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -222,12 +198,13 @@ pub fn get_window_title(target_id: usize) -> Option<String> {
         }
         let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
         let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, len) };
-        return Some(String::from_utf8_lossy(bytes).into_owned()).filter(|t| !t.is_empty());
+        Some(String::from_utf8_lossy(bytes).into_owned()).filter(|t| !t.is_empty())
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(target_os = "macos"))]
     get_window_title_platform(target_id)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn get_window_title_platform(target_id: usize) -> Option<String> {
     #[cfg(windows)]
     unsafe {

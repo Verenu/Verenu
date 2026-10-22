@@ -1,5 +1,3 @@
-//! Conservative conflict checks against compositor bindings, never app text.
-
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -177,7 +175,6 @@ pub(super) fn choose(
 }
 
 pub(super) fn control_key(bindings: &[Binding], requested: &str) -> Option<String> {
-    // Unavailable controls must not migrate to an unrequested function key.
     choose(bindings, requested, &[], true)
 }
 
@@ -222,6 +219,16 @@ mod tests {
         assert_eq!(control_key(&bindings, "Space"), None);
         assert_eq!(control_key(&[], "Escape"), Some("Escape".into()));
         assert_eq!(control_key(&[], "Space"), Some("Space".into()));
+    }
+
+    #[test]
+    fn secondary_controls_can_choose_another_key_and_recover_the_requested_key() {
+        let bindings = [Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
+        assert_eq!(control_key(&bindings, "Space"), None);
+        assert_eq!(control_key(&bindings, "F8"), Some("F8".into()));
+        assert_eq!(control_key(&[], "Space"), Some("Space".into()));
+        let another_control = [Binding { key: "F8".into(), ignore_mods: true, ..Binding::default() }];
+        assert_eq!(control_key(&another_control, "F8"), None);
     }
 
     #[test]

@@ -1,7 +1,3 @@
-//! Application startup glue: readiness handshake, watchdog, data-directory
-//! resolution, and relaunch/update-helper handling. Split out of main.rs so
-//! main.rs stays focused on module wiring and the Tauri builder.
-
 use std::sync::{atomic::AtomicBool, Arc};
 use tauri::{AppHandle, Manager};
 
@@ -10,15 +6,9 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 
-/// Startup readiness reported by each Tauri WebView after its frontend has
-/// mounted successfully. A backend can be fully alive while WebView2 is
-/// showing a stale connection-refused page, so backend liveness alone is not
-/// enough to declare startup successful.
 #[derive(Clone, Default)]
 pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
-    /// Diagnostic state only. The pill is created after the main frontend has
-    /// passed the startup gate, so its readiness is not a separate gate.
     pub(crate) pill: Arc<AtomicBool>,
 }
 
@@ -64,15 +54,6 @@ pub(crate) fn hide_main_window(app: &AppHandle) {
     }
 }
 
-/// Canonical per-user data directory for Verenu, following each OS's convention.
-///
-/// This is the single source of truth for where Verenu stores its SQLite
-/// database and `settings.json`. Everything that touches the DB — startup
-/// `open`, the in-app updater's pre-update backup, etc. — MUST derive its path
-/// from here (via [`app_db_path`]). Do NOT use Tauri's
-/// `app.path().app_data_dir()` for the database or settings: that resolves
-/// against the bundle identifier, so Windows `tauri dev` (`com.verenu.app.dev`)
-/// would otherwise fork state away from production.
 fn app_data_dir_override() -> Option<std::path::PathBuf> {
     std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE").map(std::path::PathBuf::from)
 }
@@ -109,18 +90,12 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let reveal_windows = || {
-            // The main window is the startup gate. Create the pill only after
-            // the main UI is healthy because a hidden WebView2 renderer can
-            // suspend before it reports its own readiness.
             show_main_window(&app);
             if !crate::pipeline::failover::offer_restored_capture_pill(&app) {
                 crate::pipeline::show_pill(&app, "idle");
             }
         };
 
-        // WebView2 normally mounts in well under a second. This grace period
-        // leaves room for a cold Vite/WebView2 start without delaying normal
-        // startup or flashing a recovery window.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
         while tokio::time::Instant::now() < deadline {
             if readiness.main_ready() {
@@ -136,11 +111,6 @@ pub(crate) fn start_frontend_watchdog(app: &AppHandle, readiness: FrontendReadin
             return;
         }
 
-        // In development, the WebView can fail its first navigation while
-        // Vite is restarting or optimizing dependencies. Reload the existing
-        // windows once the server is reachable before restarting the entire
-        // process. This also avoids creating an orphaned app if the parent
-        // `tauri dev` session has already stopped its Vite child.
         #[cfg(debug_assertions)]
         if wait_for_dev_frontend().await {
             readiness.reset();
@@ -227,17 +197,10 @@ pub(crate) fn app_data_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// Canonical path to the SQLite database file. Use this everywhere.
 pub(crate) fn app_db_path() -> std::path::PathBuf {
     app_data_dir().join("verenu.db")
 }
 
-/// Reports a fatal startup error where a packaged user can see it before
-/// aborting. Debug builds reach stderr via the panic; Windows release builds
-/// have no console (`windows_subsystem = "windows"`), so the error also goes
-/// to a message box — otherwise an unwritable data directory or a
-/// non-quarantinable database fails the app with no visible reason. Only the
-/// message is shown, never full user-local paths.
 pub(crate) fn fatal_startup_error(message: &str) -> ! {
     log::error!("{message}");
     #[cfg(target_os = "windows")]
@@ -273,8 +236,6 @@ pub(crate) fn cleanup_update_helper_if_requested() {
         return;
     };
 
-    // The helper has just spawned this process and is exiting. Retry briefly so
-    // Windows has released the helper image before removing its temp copy.
     for _ in 0..20 {
         match std::fs::remove_file(&helper) {
             Ok(()) => return,
@@ -310,18 +271,9 @@ pub(crate) fn wait_for_relaunch_parent_exit() {
             }
         };
 
-        // The old instance may take longer than 5 s to exit (slow model
-        // unload during RunEvent::Exit). Waiting on the same handle in slices
-        // up to a 15 s total budget keeps this bounded while still refusing to
-        // open the database while the parent holds it: two live connections to
-        // the same SQLite file would let the single-instance plugin hand off
-        // to the dying parent and leave the user with no running app.
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let wait_result = loop {
             let result = WaitForSingleObject(handle, 5_000);
-            // WAIT_TIMEOUT means the parent is still alive: keep waiting up to
-            // the deadline. Any other result is terminal (signaled, or a
-            // WAIT_FAILED that would otherwise busy-spin), so leave the loop.
             if result != WAIT_TIMEOUT || std::time::Instant::now() >= deadline {
                 break result;
             }

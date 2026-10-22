@@ -23,9 +23,6 @@ mod focused_text;
 mod monitor;
 mod rejection;
 use correction::*;
-// Glob feeds the `pub(super)` helpers (e.g. classify_caret_char,
-// resolve_injection_context) to the test module via `use super::*`; on macOS
-// the lib build uses none of them directly, so silence the unused-import lint.
 #[allow(unused_imports)]
 use focused_text::*;
 #[allow(unused_imports)]
@@ -47,8 +44,6 @@ const CACHE_REJECTION_WINDOW_SECS: u64 = 10;
 pub(crate) const PENDING_RETENTION_DAYS: i64 = 30;
 const PROMOTION_THRESHOLD_DEFAULT: i64 = 2;
 const PROMOTION_THRESHOLD_FAST: i64 = 1;
-// candidate_confidence() tops out around 0.80; this is reachable only by
-// distinctive corrections (brand/technical terms) with a small edit distance.
 const FAST_PROMOTION_CONFIDENCE: f64 = 0.70;
 const HIGH_CONFIDENCE_TIER: f64 = 0.70;
 const MEDIUM_CONFIDENCE_TIER: f64 = 0.55;
@@ -145,6 +140,7 @@ mod tests {
 
     fn test_context(id: i64) -> ResolvedContextIdentity {
         ResolvedContextIdentity {
+            t3_skills: None,
             id,
             label: format!("Context {id}"),
         }
@@ -156,10 +152,6 @@ mod tests {
         original: String,
         corrected: String,
         expect: Vec<[String; 2]>,
-        /// Number of sessions needed to promote this pair, or `null` if the
-        /// case isn't expected to promote at all. 1 exercises the
-        /// fast-promotion path (confidence >= FAST_PROMOTION_CONFIDENCE);
-        /// 2 exercises the default path.
         #[serde(default)]
         promotion_sessions: Option<u8>,
     }

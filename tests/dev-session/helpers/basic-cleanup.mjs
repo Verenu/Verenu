@@ -60,8 +60,6 @@ export async function runBasicCases(cases, protectedTerms = []) {
       const cursor = (await (await request('/events?after=0')).json()).cursor;
       const response = await request(`/audio?context=${context.id}&process=synthetic-basic`, { method: 'POST', body: audio });
       if (expected === '') {
-        // An entirely rolled-back dictation follows the existing empty-output
-        // policy: no text is delivered and no history/completion is saved.
         assert.equal(response.status, 422);
         assert.equal((await response.json()).error, 'Dictation failed or audio was rejected. Inspect session events and redacted logs.');
         assert.equal((await invoke('get_recent')).filter(row => !before.has(row.id)).length, 0);

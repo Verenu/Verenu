@@ -1,3 +1,10 @@
+export function requiredCiContextDiff(actual, contexts) {
+  return {
+    missing: contexts.filter(context => !actual.some(row => row.context === context && row.integration_id === 15368)),
+    unexpected: actual.filter(row => row.integration_id !== 15368 || !contexts.includes(row.context)).map(row => row.context),
+  };
+}
+
 export function requiredCiRulesetPayload(current, contexts) {
   const rules = (current?.rules || []).filter(rule => rule.type !== 'required_status_checks');
   rules.push({
@@ -12,7 +19,6 @@ export function requiredCiRulesetPayload(current, contexts) {
     target: 'branch',
     enforcement: 'active',
     conditions: { ref_name: { include: ['refs/heads/master'], exclude: [] } },
-    // Required CI applies to every actor; never add a bypass exemption.
     bypass_actors: [],
     rules,
   };

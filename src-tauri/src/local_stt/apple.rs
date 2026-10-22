@@ -14,7 +14,6 @@ extern "C" {
 }
 
 extern "C" fn cancelled(state: *const libc::c_void) -> bool {
-    // The worker retains the Arc for the entire native operation.
     unsafe { (&*state.cast::<AtomicBool>()).load(Ordering::Acquire) }
 }
 

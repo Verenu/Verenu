@@ -131,7 +131,6 @@ describe('theme editor', () => {
     expect(appStore.savedThemes).toEqual([]);
     expect(themeEditor.error).toMatch(/nothing changed/i);
     expect(appStore.customTheme?.background).toBe('#FCFCFA'.toUpperCase());
-    // The saved custom_theme and library were put back.
     const last = (key: string) => { const m = saves().filter(([k]) => k === key); return m[m.length - 1]?.[1]; };
     expect(last('custom_themes')).toEqual([]);
     expect(last('custom_theme')).toBeNull();
@@ -182,7 +181,6 @@ describe('applyPalette rollback', () => {
 
   async function failAt(key: string) {
     const from = persistedLook();
-    // The store holds an editor preview that differs from what is persisted.
     appStore.appearanceMode = 'custom';
     appStore.customTheme = seed;
     appStore.accentColor = '#4F7FD8';

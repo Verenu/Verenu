@@ -211,10 +211,6 @@
 
 <style>
 
-  /* .setting-row (shared, Settings.svelte) is a 2-column grid; without an
-     explicit display override here, `flex-direction: column` below was a
-     no-op, so the slider kept landing in the same narrow auto-sized column
-     as the label instead of stacking full-width beneath it. */
   .gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
   .gain-value {

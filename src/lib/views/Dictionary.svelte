@@ -120,8 +120,6 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && !modal) {
       selected = null;
-      // Escape is the "back out" key: disarm a pending destructive delete too,
-      // so re-selecting the same row doesn't resurrect the Confirm state.
       deleteTarget = null;
     }
   }

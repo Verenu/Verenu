@@ -174,7 +174,6 @@
       await refreshCleanupCache();
       cleanupCacheMessage = value ? 'Caching enabled.' : 'Caching disabled and stored results cleared.';
     } catch (err) {
-      // Saving may have succeeded even if clearing or refreshing failed.
       cleanupCacheEnabled = await invoke<boolean | null>('get_setting', { key: 'cleanup_cache_enabled' })
         .then((enabled) => enabled ?? true).catch(() => cleanupCacheEnabled);
       cleanupCacheError = `Could not update the cache. ${formatIpcError(err)}`;
@@ -193,8 +192,6 @@
   refreshCleanupCache().catch((err) => {
     cleanupCacheError = `Cache status unavailable. ${formatIpcError(err)}`;
   });
-
-  // ---------- import / export ----------
 
   type ImportSummary = {
     settings_applied: number;
@@ -399,7 +396,6 @@
         </svg>
       </button>
       {#if historyDropdownOpen}
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div
           bind:this={historyRetentionMenu}
           id={HISTORY_MENU_ID}
@@ -408,7 +404,6 @@
           role="listbox"
           tabindex="-1"
           aria-label="History retention options"
-          onclick={(e) => e.stopPropagation()}
           in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
           out:fade={{ duration: motionMs(MOTION_MS.fast) }}
         >
@@ -503,7 +498,6 @@
 />
 
 {#if confirmRetention}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmRetention = null)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
     class="modal-card"
@@ -579,7 +573,6 @@
   }
   .privacy-eye-wrap:hover .privacy-tooltip { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  /* ── retention confirm modal ── */
   .modal-backdrop {
     position: fixed;
     inset: 0;

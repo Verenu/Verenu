@@ -1,7 +1,3 @@
-//! The sub-app capture shortcut: one or more modifiers plus a letter, digit,
-//! or function key, stored as a canonical string such as `Ctrl+Alt+Shift+S`.
-//! `Super` is the Windows/Command key.
-
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,8 +17,6 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// Ctrl+Alt+Shift+S (Cmd+Option+Shift+S on macOS). Plain Ctrl+Alt+S is
-    /// JetBrains' Settings shortcut, which a global hook would steal.
     pub fn default_for_platform() -> Self {
         Self {
             ctrl: !cfg!(target_os = "macos"),
@@ -57,7 +51,6 @@ impl Chord {
             }
         }
         chord.key = key?;
-        // A bare key or Shift+key would hijack ordinary typing.
         (chord.ctrl || chord.alt || chord.super_key).then_some(chord)
     }
 
@@ -89,7 +82,6 @@ impl Chord {
         }
     }
 
-    /// Windows virtual-key code for the non-modifier key.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn windows_vk(&self) -> u32 {
         match self.key {
@@ -99,7 +91,6 @@ impl Chord {
         }
     }
 
-    /// W3C `KeyboardEvent.code` name, as used by `global_hotkey` on macOS.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn web_code(&self) -> String {
         match self.key {

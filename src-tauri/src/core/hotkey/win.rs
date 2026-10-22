@@ -1,24 +1,20 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-const VK_BACK: u32 = 0x08; // Backspace
-const VK_ESCAPE: u32 = 0x1B; // Escape
-const VK_SPACE: u32 = 0x20; // Spacebar
-const VK_SHIFT: u32 = 0x10; // VK_SHIFT
-const VK_CTRL: u32 = 0x11; // VK_CONTROL (generic, used with modifier_held)
-const VK_ALT: u32 = 0x12; // VK_MENU (generic, used with modifier_held)
-const VK_RETURN: u32 = 0x0D; // Enter
-const VK_C: u32 = 0x43; // 'C' — used by the Ctrl+Alt+C copy-last-dictation shortcut
+const VK_BACK: u32 = 0x08;
+const VK_ESCAPE: u32 = 0x1B;
+const VK_SPACE: u32 = 0x20;
+const VK_SHIFT: u32 = 0x10;
+const VK_CTRL: u32 = 0x11;
+const VK_ALT: u32 = 0x12;
+const VK_RETURN: u32 = 0x0D;
+const VK_C: u32 = 0x43;
 
-// Side-specific modifier VK codes that should never trigger a history update.
-// Generic codes (0x10/0x11/0x12) are omitted: the !is_injected guard already
-// filters all synthetic input where those codes appear, so only side-specific
-// codes reach this path from real physical key presses.
 static MODIFIER_VKS: &[u32] = &[
-    0xA0, 0xA1, // VK_LSHIFT, VK_RSHIFT
-    0xA2, 0xA3, // VK_LCONTROL, VK_RCONTROL
-    0xA4, 0xA5, // VK_LMENU, VK_RMENU
-    0x5B, 0x5C, // VK_LWIN, VK_RWIN
-    0x14, 0x90, 0x91, // VK_CAPITAL, VK_NUMLOCK, VK_SCROLL
+    0xA0, 0xA1,
+    0xA2, 0xA3,
+    0xA4, 0xA5,
+    0x5B, 0x5C,
+    0x14, 0x90, 0x91,
 ];
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::SystemInformation::GetTickCount64;
@@ -33,22 +29,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-// Returns true if the given specific-side VK (or its mirror) is currently held.
-// Uses generic VKs for Shift/Ctrl/Alt so either side satisfies the check.
-// Win key has no generic VK, so both sides are checked explicitly.
 unsafe fn modifier_held(vk: u32) -> bool {
     let held = |v: u32| -> bool { (GetAsyncKeyState(v as i32) & 0x8000u16 as i16) != 0 };
     match vk {
-        160 | 161 => held(16),           // L/RShift -> VK_SHIFT
-        162 | 163 => held(17),           // L/RControl -> VK_CONTROL
-        164 | 165 => held(18),           // L/RMenu -> VK_MENU
-        91 | 92 => held(91) || held(92), // LWin / RWin (no generic VK_WIN)
+        160 | 161 => held(16),
+        162 | 163 => held(17),
+        164 | 165 => held(18),
+        91 | 92 => held(91) || held(92),
         _ => held(vk),
     }
 }
 
-// Returns true if the hook vkCode matches the configured key, including the
-// mirror side for modifiers (so LCtrl binding also matches RCtrl events).
 fn vk_matches(vk: u32, key: u32) -> bool {
     match key {
         160 | 161 => vk == 160 || vk == 161,
@@ -66,15 +57,14 @@ fn is_hotkey_modifier_vk(vk: u32) -> bool {
 fn is_cursor_movement_key(vk: u32) -> bool {
     matches!(
         vk,
-        0x21..=0x28 | // PgUp, PgDn, End, Home, Left, Up, Right, Down
-        0x2D |        // Insert
-        0x2E // Delete (forward)
+        0x21..=0x28 |
+        0x2D |
+        0x2E
     )
 }
 
 #[inline]
 fn map_vk_to_scan_code(vk: u32, layout: windows::Win32::UI::Input::KeyboardAndMouse::HKL) -> u32 {
-    // windows crate (0.61.x) wraps MapVirtualKeyExW with Option<HKL>.
     unsafe { MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, Some(layout)) }
 }
 
@@ -86,14 +76,9 @@ fn to_unicode_layout(
     buff: &mut [u16],
     layout: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
 ) -> i32 {
-    // windows crate (0.61.x) wrapper derives cchBuff from buff.len().
     unsafe { ToUnicodeEx(vk, scan, state, buff, 0, Some(layout)) }
 }
 
-/// Maps a VK code to the character it produces (US QWERTY layout).
-/// Letters are always returned lowercase - case doesn't affect sentence-ender
-/// or whitespace checks downstream. Returns None for keys with no stable
-/// printable character (numpad, function keys, etc.); those reset history.
 fn vk_to_char(vk: u32) -> Option<char> {
     if vk == VK_RETURN {
         return Some('\n');
@@ -105,30 +90,29 @@ fn vk_to_char(vk: u32) -> Option<char> {
     unsafe {
         let mut state = [0u8; 256];
         if GetAsyncKeyState(0xA0) < 0 {
-            state[0xA0] |= 0x80; // VK_LSHIFT
-            state[0x10] |= 0x80; // VK_SHIFT
+            state[0xA0] |= 0x80;
+            state[0x10] |= 0x80;
         }
         if GetAsyncKeyState(0xA1) < 0 {
-            state[0xA1] |= 0x80; // VK_RSHIFT
+            state[0xA1] |= 0x80;
             state[0x10] |= 0x80;
         }
         if GetAsyncKeyState(0xA2) < 0 {
-            state[0xA2] |= 0x80; // VK_LCONTROL
-            state[0x11] |= 0x80; // VK_CONTROL
+            state[0xA2] |= 0x80;
+            state[0x11] |= 0x80;
         }
         if GetAsyncKeyState(0xA3) < 0 {
-            state[0xA3] |= 0x80; // VK_RCONTROL
+            state[0xA3] |= 0x80;
             state[0x11] |= 0x80;
         }
         if GetAsyncKeyState(0xA4) < 0 {
-            state[0xA4] |= 0x80; // VK_LMENU
-            state[0x12] |= 0x80; // VK_MENU
-        }
-        if GetAsyncKeyState(0xA5) < 0 {
-            state[0xA5] |= 0x80; // VK_RMENU (AltGr)
+            state[0xA4] |= 0x80;
             state[0x12] |= 0x80;
         }
-        // Caps Lock is a toggle key; low-order bit indicates toggle state.
+        if GetAsyncKeyState(0xA5) < 0 {
+            state[0xA5] |= 0x80;
+            state[0x12] |= 0x80;
+        }
         if (GetKeyState(0x14) & 0x0001) != 0 {
             state[0x14] |= 0x01;
         }
@@ -144,9 +128,7 @@ fn vk_to_char(vk: u32) -> Option<char> {
         let mut buff = [0u16; 8];
         let rc = to_unicode_layout(vk, scan, &state, &mut buff, layout);
         if rc < 0 {
-            // Flush dead-key compose state with a neutral key so subsequent
-            // translations are not polluted by stale composition state.
-            let neutral_vk = 0x20u32; // VK_SPACE
+            let neutral_vk = 0x20u32;
             let neutral_scan = map_vk_to_scan_code(neutral_vk, layout);
             for _ in 0..4 {
                 if to_unicode_layout(neutral_vk, neutral_scan, &state, &mut buff, layout) >= 0 {
@@ -183,8 +165,6 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
         };
     }
     if regular.is_empty() {
-        // A lone modifier would fire on every ordinary Ctrl/Shift/Alt/Win
-        // press and suppress that key, so it cannot be a usable binding.
         return Ok(false);
     }
     // Windows exposes reservations only for modifiers plus one trigger key.
@@ -201,8 +181,6 @@ pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Validate key mapping without probing RegisterHotKey. Dev sessions do not
-/// own host shortcuts, but still reject codes this backend cannot map.
 pub fn validate_hotkey(keys: &[String]) -> Result<bool, String> {
     let ids = super::mapped_codes(keys)?;
     Ok(keys
@@ -227,17 +205,8 @@ thread_local! {
     static LOCAL_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-// Cross-thread reset request: `reset_chord_state()` is called from the async
-// pipeline task, which cannot reach the hook thread's thread-local directly.
 static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-// Cross-thread request to force both chord keys' down/ownership bookkeeping
-// to false, regardless of gesture state. Unlike RESET_REQUESTED (gesture
-// state only — see reset_gesture_state's own doc comment on why it never
-// touches physical-key state), this is a deliberately blunter reset: it's
-// only ever set by force_release_win_key(), after GetAsyncKeyState has
-// already confirmed the Win key reads stuck down at the OS level, so there's
-// no risk of prematurely forgetting a legitimately-still-suppressed key.
 static FORCE_KEY_RELEASE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn update_keys(keys: &[u32]) -> Result<(), String> {
@@ -254,11 +223,6 @@ pub fn suspend_shortcuts(_active: bool) -> Result<(), String> {
     Ok(())
 }
 
-// Requests that mid-chord gesture/timing state be cleared. Called from the
-// Tokio handler after a handsfree stop-via-cancel so the still-open
-// double-tap window can't accidentally start a fresh handsfree session on a
-// stray second key press. Applied by the hook thread at the top of its next
-// invocation (only gesture/timing state — see `reset_gesture_state`).
 pub fn reset_chord_state() {
     RESET_REQUESTED.store(true, Ordering::SeqCst);
 }
@@ -267,16 +231,11 @@ pub fn set_handless_active(v: bool) {
     HANDLESS_ACTIVE.store(v, Ordering::SeqCst);
 }
 
-/// Prevent injected paste keys from matching the configured global hotkey.
-/// Physical user input remains active while the suppression window is open.
 pub fn begin_synthetic_paste_suppression(duration_ms: u64) {
     let until = unsafe { GetTickCount64() }.saturating_add(duration_ms);
     SYNTHETIC_PASTE_SUPPRESSION_UNTIL.fetch_max(until, Ordering::SeqCst);
 }
 
-// 0 = not processing. Set once, at Stopping -> Processing; cleared via
-// compare-exchange (a no-op if the generation doesn't match, so a stale,
-// superseded task's cleanup can never clobber a newer generation's flag).
 static PROCESSING_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn set_processing_generation(generation: u64) {
@@ -292,34 +251,20 @@ pub fn clear_processing_generation(expected_generation: u64) {
     );
 }
 
-/// Current Caps Lock toggle state, tracked from the hook thread.
 pub fn caps_lock_is_on() -> bool {
     CAPS_LOCK_ON.load(Ordering::SeqCst)
 }
 
-/// Live OS-level check (not our own bookkeeping) — true if Windows currently
-/// thinks either Win key is held. Reuses the same `GetAsyncKeyState` primitive
-/// `modifier_held` already uses for Win (VK 91/92, no generic VK_WIN).
 pub fn is_win_key_down() -> bool {
     unsafe { modifier_held(91) }
 }
 
-/// Recovery action for a stuck Win key (confirmed via `is_win_key_down()`
-/// first) — called right before a paste so a leftover "Win held" OS state
-/// can't turn the paste's Ctrl+V into a Win-shortcut. Synthesizes a real
-/// keyup for both Win keys (Windows should honor this as authoritative
-/// regardless of why its internal state was wrong) and asks the hook thread
-/// to forget its own chord-key ownership bookkeeping too, in case the hook
-/// itself still thinks it's holding/suppressing the key.
 pub fn force_release_win_key() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
         KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_LWIN, VK_RWIN,
     };
 
-    // Win is an "extended key" per SendInput's own contract — omitting
-    // KEYEVENTF_EXTENDEDKEY can leave the OS's shell-hotkey state machine
-    // out of sync even when GetAsyncKeyState reports the key up.
     let ki = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -410,13 +355,6 @@ static RELEASE_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync:
 static HANDLESS_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 static CANCEL_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
-// Seeded once at hook-thread startup and updated on every hook callback (see
-// `start` and `hook_proc`) - both writes happen on the hook's dedicated
-// message-pumping thread, where `GetKeyState`'s toggle bit is reliably in
-// sync. Querying `GetKeyState` directly from elsewhere (e.g. the Tokio
-// pipeline thread, which has no message queue of its own) would not reflect
-// real toggle state. Backs `caps_lock_is_on()` for the optional caps-lock
-// output-uppercasing setting.
 static CAPS_LOCK_ON: AtomicBool = AtomicBool::new(false);
 
 static HANDLESS_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -424,17 +362,11 @@ static ESCAPE_CANCELLED: AtomicBool = AtomicBool::new(false);
 static ESCAPE_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static ESCAPE_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
-// Ctrl+Alt+C: always-available fallback to re-copy the last dictation to the
-// clipboard, in case paste failed in a way the pipeline's own detection
-// missed. Not chord-based (no hold/release) — a plain keydown fires it,
-// mirroring how Escape is handled below.
 static COPY_LAST_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static COPY_LAST_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
-// Invoked by the configured sub-app capture chord in the keyboard hook.
 static SUB_APP_CB: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 static SUB_APP_KEY_DOWN: AtomicBool = AtomicBool::new(false);
-// Sub-app capture chord: key VK plus modifier bits (1 Ctrl, 2 Alt, 4 Shift, 8 Win).
 static SUB_APP_VK: AtomicU32 = AtomicU32::new(0x53);
 static SUB_APP_MODS: AtomicU32 = AtomicU32::new(1 | 2 | 4);
 
@@ -464,13 +396,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        // This thread pumps messages (see `start`'s GetMessageW loop), so
-        // GetKeyState's toggle bit is reliably in sync here.
         CAPS_LOCK_ON.store((GetKeyState(0x14) & 0x0001) != 0, Ordering::SeqCst);
 
         let generation = CONFIG_GENERATION.load(Ordering::Acquire);
         if LOCAL_GENERATION.with(|local| local.get() != generation) {
-            // Never wait for another thread inside WH_KEYBOARD_LL.
             if let Ok(keys) = KEYS.try_lock() {
                 let keys = if keys.is_empty() {
                     vec![162, 91]
@@ -539,8 +468,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 Some(ChordAction::FireRelease) | Some(ChordAction::FireCancel)
             ) && ESCAPE_CANCELLED.swap(false, Ordering::SeqCst)
             {
-                // Escape already handled cancellation while the chord was
-                // held - don't also fire release/cancel now that it's up.
                 action = None;
             }
 
@@ -549,7 +476,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 && menu_key_passed_through
                 && LOCAL_KEYS.with(|keys| keys.borrow().iter().all(|id| MODIFIER_VKS.contains(id)))
             {
-                // Keep the modifier-only Win/Alt chord's OS edges balanced.
                 disposition = KeyDisposition::Passthrough;
                 CHORD_MACHINE.with(|m| m.borrow_mut().mark_key_passed_through(key));
             }
@@ -581,12 +507,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if disposition == KeyDisposition::Suppress {
                 return LRESULT(1);
             }
-            // Passthrough falls through to the rest of hook_proc below.
         }
 
-        // While the hold-to-talk chord is active, Space converts it into the
-        // existing hands-free mode. Consume both Space edges so the trigger
-        // does not leak into the focused application.
         if vk == VK_SPACE && chord_key.is_none() && (is_down || is_up) {
             let edge = if is_down { KeyEdge::Down } else { KeyEdge::Up };
             let outcome = CHORD_MACHINE.with(|m| m.borrow_mut().on_space_event(edge));
@@ -638,11 +560,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     return LRESULT(1);
                 }
             }
-            // Swallow the C keyup only while the chord modifiers are still
-            // held (the normal release order: C first, then Ctrl/Alt). If the
-            // user released Ctrl/Alt first, letting the C keyup pass keeps
-            // the target app's modifier/keyup bookkeeping consistent — the
-            // down was already suppressed, so it's just an orphaned keyup.
             if is_up
                 && COPY_LAST_KEY_DOWN.swap(false, Ordering::SeqCst)
                 && unsafe { modifier_held(VK_CTRL) && modifier_held(VK_ALT) }
@@ -652,11 +569,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
 
         if vk == SUB_APP_VK.load(Ordering::Relaxed) {
-            // The sub-app capture chord (default Ctrl+Alt+Shift+S). Modifiers
-            // must match exactly so Ctrl+Alt+S never fires Ctrl+Alt+Shift+S.
-            // Same handling as copy-last: fire once per physical press, and
-            // swallow the chord only because a callback consumes it. The
-            // capture itself runs on the async hotkey loop, not in the hook.
             let mods = SUB_APP_MODS.load(Ordering::Relaxed);
             let chord = unsafe {
                 modifier_held(VK_CTRL) == (mods & 1 != 0)
@@ -677,15 +589,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             }
         }
 
-        // Update injection history for real user keystrokes only.
-        // Synthetic events (LLKHF_INJECTED) are skipped - this prevents our own
-        // Ctrl+V paste and any app-generated keyboard events from corrupting the
-        // history that backs backspace recovery.
         if !is_injected && is_down && !MODIFIER_VKS.contains(&vk) {
             if vk == VK_BACK {
-                // Ctrl+Backspace and Alt+Backspace both delete a whole word -
-                // unknown char count, so reset entirely. Plain Backspace pops
-                // just the last character to keep context accurate.
                 if unsafe { modifier_held(VK_CTRL) || modifier_held(VK_ALT) } {
                     crate::core::injection::reset_injection_history();
                 } else {
@@ -699,7 +604,6 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 || is_cursor_movement_key(vk)
                 || unsafe { modifier_held(VK_CTRL) || modifier_held(VK_ALT) }
             {
-                // Keyboard shortcut (Ctrl+Z, Ctrl+A, etc.) - context unknown.
                 crate::core::injection::reset_injection_history();
             } else if let Some(ch) = vk_to_char(vk) {
                 let hwnd = unsafe { GetForegroundWindow().0 as usize };
@@ -763,8 +667,6 @@ where
     let _ = COPY_LAST_CB.set(Box::new(on_copy_last));
     let _ = SUB_APP_CB.set(Box::new(on_capture_sub_app));
 
-    // Verify the hook can be installed before spawning the thread so the caller
-    // gets a synchronous error instead of a silent panic on a background thread.
     unsafe {
         let probe = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0)
             .map_err(|e| format!("Failed to install keyboard hook: {e}"))?;
@@ -780,9 +682,6 @@ where
             }
         };
 
-        // Seed the cached state immediately: SetWindowsHookExW just gave this
-        // thread a message queue, so GetKeyState's toggle bit already reflects
-        // the real current state here, before the first key event arrives.
         CAPS_LOCK_ON.store((GetKeyState(0x14) & 0x0001) != 0, Ordering::SeqCst);
 
         let mut msg = MSG::default();

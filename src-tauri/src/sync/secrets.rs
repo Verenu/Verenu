@@ -1,11 +1,3 @@
-//! Secure storage for the sync identity private key.
-//!
-//! Mirrors `data/credentials.rs` (Windows Credential Manager via CredWriteW,
-//! macOS Keychain via security-framework) but with its own target names, since
-//! that module is deliberately closed over the four API-provider keys. If the
-//! platform store fails, the key falls back to a 0600 file in the app data
-//! directory with a loud warning - pairing still works, but users should know.
-
 #[cfg(target_os = "windows")]
 const WIN_TARGET: &str = "verenu.sync.identity";
 #[cfg(target_os = "macos")]
@@ -44,21 +36,11 @@ pub fn load_identity_key(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
     }
 }
 
-#[allow(dead_code)] // used by future "forget this device" flows
+#[cfg(test)]
 pub fn delete_identity_key(app_data_dir: &std::path::Path) {
-    #[cfg(all(target_os = "windows", not(test)))]
-    {
-        let _ = win_store::delete(WIN_TARGET);
-    }
-    #[cfg(all(target_os = "macos", not(test)))]
-    {
-        let _ = mac_store::delete(MAC_SERVICE, MAC_ACCOUNT);
-    }
     let _ = std::fs::remove_file(fallback_path(app_data_dir));
 }
 
-/// Last-resort storage when the OS credential store is unavailable. The key
-/// file is only readable by the current user where the OS enforces modes.
 fn fallback_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
     app_data_dir.join(FALLBACK_FILE)
 }
@@ -73,8 +55,6 @@ fn store_fallback(app_data_dir: &std::path::Path, key_der: &[u8]) -> Result<(), 
         use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
 
-        // Set the mode at creation time as well as after opening an existing
-        // file, so a newly generated identity is never briefly world-readable.
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true).mode(0o600);
         let mut file = options
@@ -97,18 +77,14 @@ fn load_fallback(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
 #[cfg(target_os = "windows")]
 mod win_store {
     #![allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
-    //! Windows Credential Manager storage, same mechanism as
-    //! `data::credentials` but for the sync identity key.
 
     use super::{load_fallback, store_fallback};
     use std::path::Path;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Security::Credentials::{
-        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
-        CRED_TYPE_GENERIC,
+        CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
-    // Windows stores the blob as UTF-16; encode hex so any byte value survives.
     fn encode(bytes: &[u8]) -> Vec<u16> {
         let mut out = Vec::with_capacity(bytes.len() * 2);
         for b in bytes {
@@ -145,11 +121,8 @@ mod win_store {
         cred.CredentialBlobSize = (blob.len() * 2) as u32;
         cred.CredentialBlob = blob.as_mut_ptr().cast();
         cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-        // SAFETY: cred's buffers live for the duration of the call; the API
-        // copies the credential and does not retain the pointers.
         let result = unsafe { CredWriteW(&cred, 0) };
         if result.is_err() {
-            // Fall back to a protected file rather than losing the identity.
             log::warn!("sync: CredWriteW failed; storing identity key in app data fallback");
             return store_fallback(app_data_dir, key_der);
         }
@@ -159,8 +132,6 @@ mod win_store {
     pub fn load(target: &str, app_data_dir: &Path) -> Option<Vec<u8>> {
         let target_wide = wide(target);
         let mut p_cred: *mut CREDENTIALW = std::ptr::null_mut();
-        // SAFETY: target_wide outlives the call; p_cred receives an allocation
-        // we own until CredFree.
         let result = unsafe {
             CredReadW(
                 PCWSTR(target_wide.as_ptr()),
@@ -187,14 +158,6 @@ mod win_store {
             decode(&blob)
         }
     }
-
-    #[allow(dead_code)]
-    pub fn delete(target: &str) -> Result<(), String> {
-        let target_wide = wide(target);
-        // SAFETY: target_wide outlives the call.
-        unsafe { CredDeleteW(PCWSTR(target_wide.as_ptr()), CRED_TYPE_GENERIC, Some(0)) }
-            .map_err(|e| format!("CredDeleteW failed: {e}"))
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -203,8 +166,6 @@ mod mac_store {
         delete_generic_password, get_generic_password, set_generic_password,
     };
     use std::path::Path;
-
-    const NOT_FOUND: i32 = -25300;
 
     pub fn store(
         service: &str,
@@ -215,7 +176,6 @@ mod mac_store {
         match set_generic_password(service, account, key_der) {
             Ok(()) => Ok(()),
             Err(_) => {
-                // Duplicate item: rewrite in place.
                 let _ = delete_generic_password(service, account);
                 match set_generic_password(service, account, key_der) {
                     Ok(()) => Ok(()),
@@ -233,15 +193,5 @@ mod mac_store {
             Ok(bytes) => Some(bytes),
             Err(_) => super::load_fallback(app_data_dir),
         }
-    }
-
-    pub fn delete(service: &str, account: &str) -> Result<(), String> {
-        delete_generic_password(service, account).map_err(|e| {
-            if e.code() == NOT_FOUND {
-                String::new()
-            } else {
-                e.to_string()
-            }
-        })
     }
 }

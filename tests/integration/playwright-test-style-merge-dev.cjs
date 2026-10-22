@@ -1,9 +1,5 @@
 'use strict';
 
-// Style page: default view merges Cleanup and Personal Tone onto one screen
-// (no tabs). With Legacy features on, it reverts to the old tabbed layout —
-// Legacy mode also brings back App Mappings, which used to live as a third
-// Style tab, so the tabbed layout is what that mode's users still expect.
 const { chromium } = require('playwright');
 const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
 
@@ -26,7 +22,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
   }
 
   try {
-    // ── Default (non-legacy): Cleanup and Personal Tone merged, no tabs ──
     {
       const page = await newPage({
         setup_complete: true,
@@ -42,7 +37,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       await page.locator('h2.style-section-h:has-text("Cleanup")').waitFor({ state: 'visible', timeout: TIMEOUT });
       await page.locator('h2.style-section-h:has-text("Personal Tone")').waitFor({ state: 'visible', timeout: TIMEOUT });
 
-      // Both sections visible at once — no tab switch needed to reach either.
       await page.locator('.style-card:has-text("Strong")').click();
       await page.locator('.style-card:has-text("Formal")').click();
 
@@ -53,7 +47,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       await page.close();
     }
 
-    // ── Legacy features on: reverts to the old tabbed Style page ──
     {
       const page = await newPage({
         setup_complete: true,
@@ -80,7 +73,6 @@ const { TARGET_URL, TIMEOUT, seedDevState } = require('./_dev-helpers.cjs');
       await page.close();
     }
 
-    // ── Sidebar Style icon uses the pencil glyph, not the old text glyph ──
     {
       const page = await newPage({ setup_complete: true, cleanup_enabled: true });
       const navSvgPaths = await page.locator('.nav-item:has-text("Style") svg path').evaluateAll((els) => els.map((el) => el.getAttribute('d')));

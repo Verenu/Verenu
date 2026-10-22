@@ -15,10 +15,6 @@ pub fn build_relevant_dictionary_prompt_from(
     build_relevant_dictionary_prompt_from_sources(entries, raw_text, None)
 }
 
-/// Build vocabulary evidence from the candidate transcripts instead of
-/// dumping the whole Context dictionary into every request. The primary
-/// candidate has the highest weight; an alternate hit can surface a useful
-/// term but never becomes a replacement rule.
 pub fn build_relevant_dictionary_prompt_from_sources(
     entries: &[db::DictionaryEntry],
     primary_text: &str,
@@ -83,10 +79,6 @@ pub fn build_relevant_dictionary_prompt_from_sources(
         .map(|(_, _, entry)| *entry)
         .collect();
 
-    // A one- or two-word dictation often contains exactly the term the STT
-    // missed, so having a tiny set of high-signal candidates is safer than
-    // returning no vocabulary at all. Only distinctive/proper/technical
-    // entries qualify; ordinary words are never sprayed into a short prompt.
     if selected.is_empty() && short_or_ambiguous {
         selected = entries
             .iter()
@@ -98,24 +90,10 @@ pub fn build_relevant_dictionary_prompt_from_sources(
     build_dictionary_prompt_limited(selected.into_iter())
 }
 
-/// Split a `mistake` field into individual mistranscription variants. A
-/// dictionary entry may list several alternate mishearings of the same term
-/// separated by commas (e.g. "Varinu, Verena, Virinu"), mirroring how
-/// `snippets::parse_triggers` lets one snippet respond to several phrases —
-/// same reasoning applies here: one real term can get mangled by a
-/// transcription model in more than one way, and users need to be able to
-/// list all of them against a single correct spelling.
 fn parse_dictionary_mistakes(mistake: &str) -> impl Iterator<Item = &str> {
     db::dictionary_mistake_variants(mistake)
 }
 
-/// One context-effective mistranscription variant.
-///
-/// `DictionaryEntry::id` identifies the shared canonical term. A correction
-/// mapping has its own ID, because the same canonical term can be used by
-/// several Contexts with different mistranscriptions. The context query is
-/// responsible for populating `DictionaryEntry::corrections`; the fallback
-/// below keeps old/legacy dictionary rows readable while that API is migrated.
 #[derive(Clone, Copy)]
 struct EffectiveCorrection<'a> {
     id: i64,
@@ -138,11 +116,6 @@ fn effective_correction_variants<'a>(
             .collect();
     }
 
-    // Manual mappings win over an automatic mapping for the same variant in
-    // this Context. Normally the DB uniqueness rule prevents two effective
-    // mappings from competing, but doing the precedence check here keeps
-    // prompt evidence and deterministic substitutions safe while older rows
-    // are being migrated or when a shared canonical row has mixed metadata.
     let manual_variants: HashSet<String> = entry
         .corrections
         .iter()
@@ -169,7 +142,6 @@ fn effective_correction_variants<'a>(
         .collect()
 }
 
-/// Protect the same context-effective spellings that substitutions consume.
 pub(crate) fn protected_spellings(entries: &[db::DictionaryEntry]) -> Vec<&str> {
     entries
         .iter()
@@ -351,14 +323,6 @@ fn format_dictionary_entry(
 }
 
 pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>) {
-    // Auto-learned mistakes that look like plain common words (no distinctive
-    // features) are left to the cleanup LLM's contextual judgment instead of
-    // a blunt mechanical replace, so a mis-learned pair like "rock" -> "Groq"
-    // can't clobber every legitimate use of "rock". A `mistake` field may
-    // list several comma-separated variants of the same real term (see
-    // `parse_dictionary_mistakes`) — each variant is checked against this
-    // gate and replaced independently, so one entry can carry any number of
-    // known mistranscriptions for a single correct spelling.
     let mut replaceable: Vec<(i64, &str, &str)> = entries
         .iter()
         .flat_map(|entry| {
@@ -433,8 +397,6 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
             continue;
         }
         if !applied_ids.contains(id) {
-            // The same mapping may contain several comma-separated variants;
-            // rejection must target the mapping once, not once per variant.
             applied_ids.push(*id);
         }
         for pos in positions.into_iter().rev() {
@@ -589,8 +551,6 @@ mod tests {
 
     #[test]
     fn comma_separated_mistake_variants_all_substitute_to_the_same_term() {
-        // Mirrors snippets' comma-separated trigger list: one entry can carry
-        // several known mistranscriptions of the same real term.
         let entries = vec![entry(
             1,
             "Verenu",

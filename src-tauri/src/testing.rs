@@ -27,6 +27,7 @@ pub struct InjectionRecord {
 #[derive(Default)]
 struct HarnessState {
     enabled: bool,
+    capture_injections: bool,
     fixtures: HashMap<String, FixtureSpec>,
     hits: HashMap<String, usize>,
     injections: Vec<InjectionRecord>,
@@ -80,6 +81,14 @@ pub fn is_enabled() -> bool {
 
 pub fn set_enabled(enabled: bool) {
     lock_harness().enabled = enabled;
+}
+
+pub fn set_injection_capture_enabled(enabled: bool) {
+    lock_harness().capture_injections = enabled;
+}
+
+pub fn injection_capture_enabled() -> bool {
+    is_enabled() || lock_harness().capture_injections
 }
 
 pub fn reset() {
@@ -160,7 +169,7 @@ pub fn resolve_provider_fixture(
 }
 
 pub fn record_injection(record: InjectionRecord) {
-    if !is_enabled() {
+    if !injection_capture_enabled() {
         return;
     }
     lock_harness().injections.push(record);

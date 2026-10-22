@@ -1,6 +1,3 @@
-//! One clipboard transaction owns every chunk. Platform callers restore their
-//! snapshot after this returns, including errors; this future is never aborted.
-
 use std::{fmt, future::Future, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -29,8 +26,6 @@ pub(super) fn split(text: &str) -> Vec<&str> {
                 word_end = end;
             }
         }
-        // A single unusually large grapheme stays intact. Never drop or add
-        // whitespace, including CRLF, when preferring a word boundary.
         if end < remaining.len() && word_end > 0 {
             end = word_end;
         }
@@ -74,7 +69,6 @@ pub(super) async fn paste(backend: &mut impl PasteBackend, text: &str) -> anyhow
             backend.write(chunk).await?;
             tokio::time::sleep(WRITE_SETTLE).await;
             backend.check().await?;
-            // Input dispatch may partly succeed before reporting failure.
             attempted_chunks += 1;
             let pasted = backend.paste().await;
             tokio::time::sleep(PASTE_SETTLE).await;

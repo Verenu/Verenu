@@ -10,21 +10,15 @@
 
   let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
 
-  // Unique per instance so multiple charts on the page never share a <mask> id.
   const gradientId = `daily-edge-fade-${Math.random().toString(36).slice(2)}`;
 
-  /* Fixed viewBox + preserveAspectRatio="none" makes the chart fully fluid with
-     no resize observer; vector-effect keeps strokes an even width regardless. */
   const W = 600;
   const H = 170;
   const PAD_TOP = 12;
   const PAD_BOTTOM = 22;
 
-  /* Below this many points a line reads as noise — discrete bars are clearer. */
   const BAR_THRESHOLD = 14;
 
-  // Reduce rather than Math.max(...spread) — an all-time range can exceed the
-  // call-stack limit for spread arguments on a very long daily series.
   const max = $derived(niceCeiling(daily.reduce((m, d) => Math.max(m, d.words), 0)));
   const asBars = $derived(daily.length <= BAR_THRESHOLD);
   const plotH = H - PAD_TOP - PAD_BOTTOM;
@@ -43,18 +37,19 @@
   }
 
   function onKey(event: KeyboardEvent) {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !daily.length) return;
+    const step = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1
+      : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1
+      : 0;
+    if ((step === 0 && event.key !== 'Home' && event.key !== 'End') || !daily.length) return;
     event.preventDefault();
     hover = event.key === 'Home' ? 0 : event.key === 'End' ? daily.length - 1
-      : Math.max(0, Math.min(daily.length - 1, (hover ?? 0) + (event.key === 'ArrowRight' ? 1 : -1)));
+      : Math.max(0, Math.min(daily.length - 1, (hover ?? 0) + step));
     plotWidth = (event.currentTarget as HTMLElement).clientWidth;
     cursor.set(hover, { instant: true });
   }
 
   function x(i: number): number {
     if (daily.length <= 1) return W / 2;
-    // Bars sit in the middle of their slot so the first and last aren't clipped
-    // by the viewBox edge; the line spans edge to edge.
     if (asBars) return (i + 0.5) * (W / daily.length);
     return (i / (daily.length - 1)) * W;
   }
@@ -63,9 +58,6 @@
     return PAD_TOP + plotH * (1 - words / max);
   }
 
-  /* Catmull-Rom control points → cubic bezier, so the area reads as a curve
-     without pulling above the data the way a naive spline does. The hover
-     indicator reads these same segments, which is what keeps it on the line. */
   const segments = $derived(
     buildSegments(
       daily.map((d, i) => ({ x: x(i), y: y(d.words) })),
@@ -88,24 +80,20 @@
 
   let hover = $state<number | null>(null);
   let plotWidth = $state(0);
+  const selectedIndex = $derived(Math.min(hover ?? 0, Math.max(0, daily.length - 1)));
+  const selectedDay = $derived(daily[selectedIndex]);
   const active = $derived(hover !== null ? daily[hover] : null);
-  /* Held through the fade-out so the tooltip keeps its text on the way out
-     instead of blanking the instant the pointer leaves. */
   let lastActive = $state<InsightsDay | null>(null);
   const activeActivity = $derived(lastActive ? activity[daily.findIndex(d => d.day === lastActive?.day)] : null);
   $effect(() => {
     if (active) lastActive = active;
   });
 
-  /* The pointer snaps to whole days, so without this the indicator teleports
-     between them. Springing a fractional index — rather than the co-ordinates —
-     is what lets the dot ride the curve instead of cutting across it. */
   const cursor = new Spring(0, { stiffness: 0.19, damping: 0.82 });
 
   const cursorPoint = $derived.by(() => {
     if (daily.length === 0) return { x: 0, y: H - PAD_BOTTOM };
     const at = Math.max(0, Math.min(daily.length - 1, cursor.current));
-    // Bars have no curve to ride, so the indicator slides straight across.
     if (asBars || segments.length === 0) {
       const i = Math.floor(at);
       const next = daily[Math.min(daily.length - 1, i + 1)];
@@ -115,12 +103,8 @@
     return pointOnSegments(segments, at);
   });
 
-  // The svg's CSS height matches the viewBox height 1:1 and only its width is
-  // fluid, so x scales by the rendered width and y needs no conversion.
   const cursorLeft = $derived((cursorPoint.x / W) * plotWidth);
 
-  // Measured on entry, not every move: the readout digits change on each
-  // step, so reading layout per pointermove forced a synchronous reflow.
   let plotRect: DOMRect | null = null;
 
   function onMove(event: PointerEvent) {
@@ -131,15 +115,9 @@
     if (rect.width === 0 || daily.length === 0) return;
     plotWidth = rect.width;
     const ratio = (event.clientX - rect.left) / rect.width;
-    // Bars fill equal-width slots spanning [i/n, (i+1)/n), so floor maps the
-    // pointer into its slot; line charts align points at i/(n-1), so round
-    // to the nearest point.
     const idx = asBars
       ? Math.min(daily.length - 1, Math.max(0, Math.floor(ratio * daily.length)))
       : Math.min(daily.length - 1, Math.max(0, Math.round(ratio * (daily.length - 1))));
-    // Arriving from outside, place the indicator under the pointer rather than
-    // sliding it in from wherever it was last left — otherwise entering the
-    // card drags a line across the whole chart to meet you.
     const entering = hover === null;
     hover = idx;
     cursor.set(idx, { instant: entering || reducedMotionEnabled() });
@@ -177,12 +155,15 @@
     </div>
   {/if}
 
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
   <div
     class="plot"
-    role="img"
-    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. Lines use independent scales to compare trends. Use arrow keys to explore each day.` : '')}
-    tabindex={github ? 0 : undefined}
+    role="slider"
+    aria-valuemin={0}
+    aria-valuemax={Math.max(0, daily.length - 1)}
+    aria-valuenow={selectedIndex}
+    aria-valuetext={selectedDay ? `${fmtDayLong(selectedDay.day)}: ${fmtNumber(selectedDay.words)} words${github ? `, ${describeActivity(activity[selectedIndex])}` : ''}` : undefined}
+    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. Lines use independent scales to compare trends.` : '') + ' Use arrow keys to explore each day.'}
+    tabindex={daily.length ? 0 : undefined}
     onkeydown={onKey}
     onblur={() => { hover = null; }}
     onpointermove={onMove}
@@ -190,7 +171,6 @@
   >
     <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
       <defs>
-        <!-- Fades the area fill's hard vertical edges instead of cutting it off flush. -->
         <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
           <stop offset="0%" stop-color="white" stop-opacity="0" />
           <stop offset="4%" stop-color="white" stop-opacity="1" />
@@ -242,8 +222,6 @@
       {/if}
     </svg>
     {#if !asBars && daily.length > 0}
-      <!-- Positioned as a percentage so it tracks a resize without remeasuring;
-           only the tooltip needs the plot's pixel width. -->
       <span
         class="hover-dot"
         class:on={hover !== null}
@@ -270,7 +248,6 @@
 </section>
 
 <style>
-  /* .card / .card-head / .card-h / .card-sub are owned by Insights.svelte. */
 
   .readout {
     text-align: right;
@@ -334,8 +311,6 @@
 
   rect { transition: fill var(--ui-duration-fast) var(--ui-ease-out), y var(--ui-duration-base) var(--ui-ease-out), height var(--ui-duration-base) var(--ui-ease-out); }
 
-  /* Progressive enhancement: browsers that support animating `d` glide to a
-     new shape when the range or a fresh dictation changes the data. */
   .area-path,
   .line-path {
     transition: d var(--ui-duration-base) var(--ui-ease-out);
@@ -354,8 +329,6 @@
     .line-path { animation: none; }
   }
 
-  /* Only opacity and scale are transitioned. Position is driven by the spring
-     every frame, so a transition on left/top would fight it and lag behind. */
   .cursor-line {
     opacity: 0;
     transition: opacity var(--ui-duration-fast) var(--ui-ease-out);

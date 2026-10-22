@@ -23,8 +23,6 @@ export function formatAppLabel(value: string, installedApps: InstalledApp[] = []
   const installed = installedApps.find((app) => normalizeExe(app.exe) === identity);
   if (installed?.name.trim()) return installed.name.trim();
 
-  // Wayland app IDs may be namespaced while an XWayland desktop registration
-  // uses a short StartupWMClass. Only accept an unambiguous installed match.
   if (/^[a-z0-9_-]+(?:\.[a-z0-9_-]+){2,}$/i.test(identity)) {
     const shortIdentity = identity.slice(identity.lastIndexOf('.') + 1);
     const matches = installedApps.filter((app) => normalizeExe(app.exe) === shortIdentity);
@@ -40,7 +38,6 @@ export function formatAppLabel(value: string, installedApps: InstalledApp[] = []
 export function getGreeting(): string {
   const now = new Date();
   const h = now.getHours();
-  // Days since epoch — avoids the obvious 7-day weekday cycle
   const seed = Math.floor(now.getTime() / 86_400_000);
 
   const pick = (msgs: string[]) => msgs[seed % msgs.length];

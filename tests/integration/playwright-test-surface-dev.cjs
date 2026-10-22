@@ -79,8 +79,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     const dictionaryRow = page.locator('.dict-row:has-text("Verenu")');
     await dictionaryRow.waitFor({ state: 'visible', timeout: TIMEOUT });
     await dictionaryModal.waitFor({ state: 'hidden', timeout: TIMEOUT });
-    // The asynchronous save selects the new row; reset after that update so
-    // this test exercises a deterministic row-selection transition.
     await page.keyboard.press('Escape');
     const dictionaryRowHandle = await dictionaryRow.elementHandle();
     if (!dictionaryRowHandle) throw new Error('New dictionary row disappeared before selection');

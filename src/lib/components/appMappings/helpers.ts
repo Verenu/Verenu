@@ -5,10 +5,6 @@ export function customExeFromSearch(search: string): string {
   return normalizeExe(search).replace(/\.exe$/, '') + '.exe';
 }
 
-/**
- * Whether an app matches a search. Android packages all start "com." and share
- * segments like "google.android", so only the visible name is searched there.
- */
 export function matchesAppSearch(app: InstalledApp, search: string, nameOnly = isAndroid) {
   const query = search.trim().toLowerCase();
   return matchesSearch(app, query, query.replace(/[^a-z0-9]/g, ''), nameOnly);
@@ -30,17 +26,10 @@ function matchesSearch(app: InstalledApp, query: string, compactQuery: string, n
     || (compactQuery.length > 0 && appExe.replace(/[^a-z0-9]/g, '').includes(compactQuery));
 }
 
-/**
- * Apps matching `search`. Android only: best first — names that start with the query, then
- * names with a word that starts with it, then any other match. Ties keep the
- * input order (the platform lists apps alphabetically). An empty query keeps
- * the list as is.
- */
 export function rankAppMatches(apps: InstalledApp[], search: string, android = isAndroid): InstalledApp[] {
   const query = search.trim().toLowerCase();
   if (!query) return apps;
   const compactQuery = query.replace(/[^a-z0-9]/g, '');
-  // Desktop keeps its established behaviour: filter only, in the platform's order.
   if (!android) return apps.filter((app) => matchesSearch(app, query, compactQuery, false));
   const score = (name: string) => {
     if (name.startsWith(query)) return 0;

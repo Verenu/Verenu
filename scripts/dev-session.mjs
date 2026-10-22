@@ -8,6 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { sourceIdentity } from './verification/identity.mjs';
 import { syncBuildIdentityFile } from './verification/build-identity.mjs';
+import { cargoTargetDirectory } from './verification/session.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -44,7 +45,7 @@ async function list() {
     try {
       const row = JSON.parse(await fs.readFile(path.join(stateRoot, directory, 'session.json'), 'utf8'));
       rows.push({ id: row.id, branch: row.branch, localUrl: row.localUrl, shareUrl: row.shareUrl, status: row.status, startedAt: row.startedAt });
-    } catch { /* Ignore directories without a manifest. */ }
+    } catch {}
   }
   console.log(JSON.stringify(rows, null, 2));
 }
@@ -86,7 +87,7 @@ async function start() {
       for (const child of children) {
         if (child.exitCode === null) {
           if (process.platform === 'win32') child.kill();
-          else { try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ } }
+          else { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
         }
       }
       if (sharedPort) {
@@ -130,7 +131,6 @@ async function start() {
     const localUrl = `http://127.0.0.1:${webPort}`;
     let shareUrl = null;
     if (args.includes('--share')) {
-      // Use a separate HTTPS listener per session; never reset existing Serve routes.
       const status = JSON.parse(execFileSync('tailscale', ['status', '--json', '--peers=false'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }));
       if (status.BackendState !== 'Running') throw new Error('Tailscale must be running before --share can be used');
       const dnsName = status.Self?.DNSName?.replace(/\.$/, '');
@@ -149,7 +149,6 @@ async function start() {
       shareUrl = `https://${dnsName}:${port}`;
     }
     const token = randomBytes(32).toString('hex');
-    // Capability links belong in a private file, never terminal logs or reports.
     await fs.writeFile(path.join(directory, 'access.json'), JSON.stringify({ token, localAccessUrl: `${localUrl}/#session-token=${token}`, shareAccessUrl: shareUrl ? `${shareUrl}/#session-token=${token}` : null }), { mode: 0o600 });
     const identity = sourceIdentity();
     const buildIdentityFile = path.join(root, 'src-tauri', '.verenu-build-identity');
@@ -166,7 +165,7 @@ async function start() {
     }
     const maxRuns = Number(option('--max-runs', '30'));
     if (!Number.isSafeInteger(maxRuns) || maxRuns < 0 || maxRuns > 10000) throw new Error('--max-runs must be an integer from 0 to 10000');
-    const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target') };
+    const env = { ...process.env, VITE_VERENU_SESSION: '1', VERENU_DEV_SESSION_ID: id, VERENU_DEV_SESSION_DIR: directory, VERENU_DEV_BRANCH: manifest.branch, VERENU_DEV_COMMIT: manifest.commit, VERENU_DEV_WEB_PORT: String(webPort), VERENU_DEV_BRIDGE_PORT: String(bridgePort), VERENU_DEV_ORIGINS: [localUrl, shareUrl].filter(Boolean).join(','), VERENU_DEV_PRIVATE_HISTORY: args.includes('--private-history') ? '1' : '0', VERENU_DEV_HOST_MIC: args.includes('--host-mic') ? '1' : '0', VERENU_DEV_MAX_RUNS: String(maxRuns), CARGO_TARGET_DIR: cargoTargetDirectory(process.env) };
     env.VERENU_BUILD_FINGERPRINT = identity.fingerprint;
     env.VERENU_BUILD_FINGERPRINT_FILE = buildIdentityFile;
     env.VERENU_DEV_WORKTREE = identity.worktree;
@@ -178,7 +177,6 @@ async function start() {
     }
     if (args.includes('--native-test')) { delete env.VITE_VERENU_SESSION; env.VITE_VERENU_NATIVE_TEST = '1'; }
     if (seedDirectory) env.VERENU_DEV_SEED_DIR = path.resolve(seedDirectory);
-    // No inherited environment credential fallback in local dev sessions.
     env.VITE_VERENU_SESSION_ID = id;
     env.VERENU_DEV_SHARE_URL = shareUrl || '';
     delete env.VERENU_ALLOW_ENV_CREDENTIALS;

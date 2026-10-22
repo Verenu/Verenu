@@ -1,15 +1,3 @@
-//! Best-effort browser address-bar domain read, used to pick a Context by
-//! website when dictating into a browser tab. Only ever called when the
-//! captured process is a known browser (`window_context::is_browser_exe`).
-//! Any failure, timeout, or missing permission returns `None` and the caller
-//! falls back to exe-only context resolution — this must never block or
-//! error the dictation pipeline.
-
-/// Strips scheme/path/query/fragment/port/userinfo from a URL or address-bar
-/// string down to a bare lowercase domain, e.g.
-/// "https://user@mail.google.com:443/mail/u/0?tab=rm" -> "mail.google.com".
-/// Returns `None` for input that doesn't look like a URL/domain at all (pure
-/// search-bar text with spaces).
 pub fn extract_domain(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -27,8 +15,6 @@ pub fn extract_domain(raw: &str) -> Option<String> {
         return None;
     }
     url.host_str()?;
-    // Keep the same host spelling as saved Context targets. URL parsing is
-    // validation here; IDNA conversion would break existing Unicode targets.
     let authority = (if has_scheme {
         trimmed
             .split_once("://")
@@ -85,10 +71,6 @@ mod win {
         }
     }
 
-    /// Reads a browser window's address bar text via UI Automation. Chromium's
-    /// exact `addressEditBox` is preferred even when it appears after a page
-    /// input in the tree; the generic Edit fallback is only used when no exact
-    /// address bar was found (for Firefox and other engines).
     pub fn read_address_bar_text(window_id: usize) -> Option<String> {
         let _com = ComGuard::init();
         let automation: IUIAutomation =
@@ -134,9 +116,6 @@ mod win {
         let control_type = unsafe { element.CurrentControlType() }.ok();
         let is_edit = control_type.map(|v| v.0) == Some(UIA_EditControlTypeId.0);
 
-        // Do not require the control type here. The automation id is the
-        // browser-owned identifier and remains the strongest signal if the
-        // browser changes how it exposes the value pattern.
         if automation_id.eq_ignore_ascii_case("addressEditBox") {
             if let Some(text) = read_value(element) {
                 result.exact = Some(text);
@@ -175,10 +154,6 @@ mod win {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    /// macOS address-bar read is not yet implemented (would extend the
-    /// existing AX shim in `system/macos_ax_text_marker.m` to read the known
-    /// per-browser address-bar identifiers). Returns `None` so website
-    /// matching silently falls back to exe-only resolution on macOS for now.
     pub fn read_address_bar_text(_window_id: usize) -> Option<String> {
         None
     }
@@ -188,8 +163,6 @@ mod mac {
 use mac::read_address_bar_text as platform_read_address_bar_text;
 #[cfg(windows)]
 use win::read_address_bar_text as platform_read_address_bar_text;
-/// On Android Kotlin reads the address bar when the recording starts and sends
-/// the host along, so there is nothing to probe here.
 #[cfg(target_os = "android")]
 fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     crate::android::bridge::dictation_domain()
@@ -204,10 +177,6 @@ fn platform_read_address_bar_text(_window_id: usize) -> Option<String> {
     None
 }
 
-/// Reads a browser window's address bar and returns just the domain, e.g.
-/// "mail.google.com". Caller must confirm the captured process is a
-/// browser (`window_context::is_browser_exe`) before calling this — it does
-/// not check that itself, since the OS-level read is comparatively costly.
 #[cfg(not(target_os = "linux"))]
 fn read_browser_domain_for_window(window_id: usize) -> Option<String> {
     let raw = platform_read_address_bar_text(window_id)?;
@@ -218,8 +187,6 @@ pub fn read_browser_domain_for_target(target: &crate::core::window_geometry::Win
     #[cfg(target_os = "linux")]
     {
         let window = target.linux.as_ref()?;
-        // A focus change during the read makes the result uncertain. Never
-        // apply a different window's website Context to the captured target.
         let still_focused = || crate::core::hyprland::active_window()
             .is_some_and(|active| active.address == window.address && active.pid == window.pid);
         if !still_focused() { return None; }

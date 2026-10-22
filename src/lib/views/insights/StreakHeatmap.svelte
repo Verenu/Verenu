@@ -19,11 +19,6 @@
   const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-  /* Minimum grid width, in weeks — short ranges (a 7-day view is only one
-     column) would otherwise leave the card looking mostly empty. */
-
-  // Reduce rather than Math.max(...spread) — an all-time range can exceed the
-  // call-stack limit for spread arguments on a very long daily series.
   interface GridCell { day: string; words: number; noData: boolean; streakDays: number }
 
   function streakColor(days: number, longest: number): string {
@@ -32,14 +27,6 @@
     return `color-mix(in srgb, var(--accent) ${pct.toFixed(2)}%, var(--paper-2))`;
   }
 
-  /*
-   * Every cell is a real calendar date, generated as one unbroken sequence —
-   * no separate "alignment padding" vs "filler" concept. The grid always
-   * ends on the Saturday containing the last real day (or today, if there's
-   * no data at all) and always starts on a Sunday, so weekday rows are
-   * correct by construction and there's nothing to hover that isn't an
-   * actual date.
-   */
   const allCells = $derived.by((): GridCell[] => {
     const pad = (n: number) => String(n).padStart(2, '0');
     const toKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -50,7 +37,7 @@
 
     const endDate = new Date(lastDate);
     endDate.setHours(12, 0, 0, 0);
-    endDate.setDate(endDate.getDate() + (6 - endDate.getDay())); // extend to that week's Saturday
+    endDate.setDate(endDate.getDate() + (6 - endDate.getDay()));
 
     const firstRealDate = daily.length > 0 ? parseLocalDay(daily[0].day) : lastDate;
     const daysSpanningReal = Math.round((endDate.getTime() - firstRealDate.getTime()) / 86_400_000) + 1;
@@ -98,10 +85,6 @@
 
   onMount(() => {
     if (!gridHost) return;
-    // A window drag can deliver several ResizeObserver notifications before
-    // the next frame; writing Svelte state in each one would run the whole
-    // reactive pass (and any DOM patch) multiple times per frame. Coalesce
-    // into a single update per animation frame instead.
     let raf = 0;
     const update = () => {
       raf = 0;
@@ -120,13 +103,6 @@
     };
   });
 
-  /* One label per month the grid spans, positioned above that month's first
-     column. A month change landing mid-week would otherwise put two labels on
-     the same column (or in immediately adjacent 14px columns, whose text
-     overlaps), so a label is only placed when its column is clear of the
-     previous one. lastMonth advances on every boundary so each month is
-     considered exactly once — a skipped label is omitted, never misplaced
-     above a mid-month column. */
   const monthLabels = $derived.by(() => {
     const labels: Array<{ col: number; label: string }> = [];
     let lastMonth = '';
@@ -145,15 +121,10 @@
     return labels;
   });
 
-  /* Which day of the week tends to be busiest — a second read on the same
-     data the grid already has, so the card earns its space beyond the grid. */
   const bestWeekday = $derived.by(() => {
     const sums = new Array(7).fill(0);
     const counts = new Array(7).fill(0);
     for (const d of daily) {
-      // Only days with actual dictation count toward the average and the
-      // minimum-activity gate — zero-word days (no-data padding or quiet
-      // days) would otherwise inflate the weekday coverage.
       if (d.words <= 0) continue;
       const dow = parseLocalDay(d.day).getDay();
       sums[dow] += d.words;
@@ -188,9 +159,6 @@
 
   function onEnter(cell: GridCell, event: PointerEvent) {
     hover = cell;
-    // Positioned relative to the card, not the scrollable grid — the grid's
-    // horizontal auto-scroll also clips vertical overflow per the CSS spec,
-    // which would cut the tooltip off above short streaks.
     const card = (event.currentTarget as HTMLElement).closest('.card');
     const cardRect = card?.getBoundingClientRect();
     const cellRect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -338,9 +306,6 @@
 </section>
 
 <style>
-  /* .card / .card-head / .card-h / .card-sub are owned by Insights.svelte —
-     except position, which the hover tooltip anchors against via
-     closest('.card'). */
   .card { position: relative; }
 
   .best { text-align: right; }
@@ -360,10 +325,6 @@
     color: var(--ink-mute);
   }
 
-  /* Calendar left, streak figures in a ruled right rail. The calendar has an
-     intrinsic width (fixed 12px cells), so left-aligning it and giving the
-     leftover width to the rail keeps the row filled instead of stranding a
-     small grid in the middle of the page. */
   .heat-layout {
     display: flex;
     gap: clamp(18px, 3vw, 32px);
@@ -388,7 +349,7 @@
     grid-template-rows: repeat(7, 12px);
     gap: 4px;
     flex: 0 0 25px;
-    padding-top: 16px; /* clears the month-row above the grid */
+    padding-top: 16px;
   }
   .weekday-col span {
     font-size: 9px;
@@ -420,8 +381,6 @@
     color: var(--ink-mute);
     white-space: nowrap;
   }
-  /* A month can begin in the final visible week. Keep that final label inside
-     the clipped chart instead of letting its text run past the stats rail. */
   .month-row span.edge {
     left: auto !important;
     right: 0;
@@ -440,14 +399,9 @@
     height: 12px;
     border-radius: 3px;
     display: block;
-    /* A flat fill at 0-intensity nearly disappears against the card
-       background — an outline keeps every day visible in the grid. */
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent);
     transition: background-color var(--ui-duration-base) var(--ui-ease-out);
   }
-  /* A true neutral grey (mixed from --ink, not the warm accent ramp) so it
-     reads as "no data" at a glance instead of blending in as a low-activity
-     day — --paper-2 was too close to the accent-tinted cells' own dark end. */
   .cell-nodata {
     background: color-mix(in srgb, var(--ink) 11%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
@@ -467,26 +421,8 @@
   .legend-label-more { margin-left: 3px; }
   .legend-gap { width: 10px; }
 
-  /* Stacked, the rail's vertical rule becomes a horizontal one.
-     Container query against the insights column (owned by Insights.svelte):
-     viewport queries fired too late because the sidebar consumes ~220px.
-     Kept at 540px so calendar + rail stay side by side through the same
-     widths where the hero band stays 3-up. */
   @container insights (max-width: 540px) {
     .heat-layout { flex-direction: column; }
-    /*
-     * .heat-layout's base align-items: flex-start only stretches children on
-     * the row's cross axis (vertical) in desktop's row layout. Stacked to a
-     * column, "cross axis" becomes horizontal — without an explicit stretch,
-     * .heat-main shrink-wraps to its content's natural width instead of the
-     * card's actual width. And that content width is exactly the bug: the
-     * calendar sizes itself from gridHost.clientWidth, which was free to grow
-     * to fit an unclamped grid — a feedback loop that settled on "however
-     * wide the full calendar wants to be" instead of the card's real width,
-     * rendering it at desktop scale (and clipped) on a phone regardless of
-     * viewport. .heat-side already stretched explicitly; .heat-main needs the
-     * same so the resize observer measures the real, narrow container.
-     */
     .heat-main { align-self: stretch; width: 100%; }
     .heat-side {
       flex: 1 1 auto;
@@ -505,8 +441,6 @@
     line-height: 1.45;
   }
 
-  /* Two labelled stat blocks instead of a run-on sentence — each fact gets
-     its own value and sub-line so it can be read at a glance. */
   .streak-stats {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -537,9 +471,6 @@
     line-height: 1.35;
   }
 
-  /* Must wrap the table rather than be the table: width/height:1px are only a
-     *minimum* on a table box, so an .sr-only <table> keeps its full content
-     height (thousands of px here) and inflates the page's scroll height. */
   .sr-only {
     position: absolute;
     width: 1px;

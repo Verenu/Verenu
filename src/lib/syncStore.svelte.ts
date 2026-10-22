@@ -1,6 +1,3 @@
-// Global state for LAN device sync: status snapshots, live peer states, and
-// the incoming-pairing prompt. Listeners are started once from App.svelte.
-
 import { invoke, listen } from './tauri';
 import { fetchSnippets, fetchDictionary } from './stores.svelte';
 import { loadContexts } from './contextsStore.svelte';
@@ -71,18 +68,13 @@ export function thisDeviceName(): string {
   return syncStore.status?.this_device.name ?? '';
 }
 
-/** Refresh history consumers after both content and lifetime counters commit. */
 export function listenForSyncCompletion(refresh: () => void): Promise<() => void> {
   return listen<{ state: string }>('verenu:sync-status', (event) => {
     if (event.payload.state === 'synced') refresh();
   });
 }
 
-/** Starts the backend event listeners. Returns a cleanup function. */
 export function startSyncListeners(): () => void {
-  // Events reduce latency, but correctness does not depend on catching one.
-  // Poll backend-owned state so a reload or suspended WebView can always
-  // reconstruct an active incoming or outgoing pairing session.
   const poll = startPolling(refreshSyncStatus,
     () => syncStore.status?.pairing ? 1000 : 30_000,
     { hiddenIntervalMs: 30_000, immediate: false });
@@ -102,17 +94,12 @@ export function startSyncListeners(): () => void {
     }),
     listen<{ tables: string[] }>('verenu:sync-data-changed', (event) => {
       const tables = event.payload.tables ?? [];
-      // A promoted/context-specific correction is persisted in its own table
-      // on newer backends, while the legacy dictionary view still materializes
-      // that state through get_dictionary.
       if (tables.includes('dictionary') || tables.includes('dictionary_corrections')) void fetchDictionary();
       if (tables.includes('snippets')) void fetchSnippets();
       if (tables.includes('contexts')) void loadContexts(true);
       poll.request();
     }),
   ];
-  // Reconstruct after registration, closing the startup event gap. This also
-  // runs when started in the tray, where incoming pairing must stay available.
   void Promise.allSettled(unlisteners).then(() => poll.request());
 
   return () => {

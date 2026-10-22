@@ -3,7 +3,7 @@ import { invoke, listen } from './tauri';
 
 const harness = vi.hoisted(() => ({ handlers: new Map<string, unknown>() }));
 
-vi.mock('./platform', () => ({ isLinux: true, isAndroid: false }));
+vi.mock('./platform', () => ({ isLinuxDesktop: true }));
 vi.mock('./tauri', () => ({
   invoke: vi.fn(async () => null),
   listen: vi.fn(async (event: string, handler: unknown) => {
@@ -27,7 +27,6 @@ it('loads persistent shortcut failures and clears them after native recovery', a
   vi.mocked(invoke).mockResolvedValueOnce([failure]);
   await loadDesktopShortcuts();
   expect(desktopShortcut('dictation')).toEqual(failure);
-  // Opening Settings or reloading must retain the backend's failure reason.
   vi.mocked(invoke).mockResolvedValueOnce([failure]);
   await loadDesktopShortcuts();
   expect(desktopShortcut('dictation')?.note).toContain('An app id is required');

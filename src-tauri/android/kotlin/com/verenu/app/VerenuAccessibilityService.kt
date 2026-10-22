@@ -24,33 +24,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 
-/**
- * Verenu's Android integration point. Replaces the desktop hotkey + clipboard
- * paste + pill window with OS-native equivalents:
- *
- * - Detects IME visibility with an editable-focus plus default-IME window
- *   event heuristic (Android exposes no show/hide callback to an
- *   AccessibilityService) and shows [VerenuOverlayView] as a
- *   `TYPE_ACCESSIBILITY_OVERLAY` window. The overlay appears ONLY while a
- *   keyboard is open over an editable field and disappears when it closes —
- *   there is never a permanent bubble, it never takes focus
- *   (`FLAG_NOT_FOCUSABLE`), and it never replaces the user's keyboard.
- * - Top-anchored below the status bar by design: keyboard height is not
- *   queryable from a service on all supported APIs, so anchoring above the
- *   IME would occlude either the field or the keyboard on some devices. The
- *   pill stays clear of both everywhere from API 26 to 34.
- * - Forwards the foreground package to Rust for Android Context labels
- *   (package name only — never field contents, URLs, or notifications).
- * - Performs insertion: direct `ACTION_SET_TEXT` with cursor restoration
- *   where the app allows it, clipboard fallback (plus optional `ACTION_PASTE`)
- *   where blocked, then acks Rust over the loopback bridge.
- * - Pushes Keystore-unlocked credentials into Rust at connect and drains
- *   staged rotations from the bridge poll loop.
- *
- * Only Android SDK APIs are used — no Tauri imports — so this compiles in
- * the generated `gen/android` project untouched by CLI upgrades. First-SDK-
- * build verification checklist lives in `src-tauri/android/README.md`.
- */
 class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Listener {
 
     companion object {
@@ -62,7 +35,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         private const val PREF_POSITION = "position"
         private const val PREF_DOCK_POSITION = "dock_position"
         private const val PREF_COVER_MIC = "cover_keyboard_mic"
-        /** Address-bar view ids per browser package (resource names, no package prefix). */
         private val BROWSER_URL_BAR_IDS = mapOf(
             "com.android.chrome" to listOf("url_bar"),
             "com.chrome.beta" to listOf("url_bar"),
@@ -80,7 +52,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             "com.duckduckgo.mobile.android" to listOf("omnibarTextInput"),
         )
 
-        /** "https://www.example.com/a?b" or "example.com" → "example.com"; "" if not a host. */
         internal fun hostFromAddressText(raw: String): String {
             val text = raw.trim().lowercase()
             if (text.isEmpty() || text.any { it.isWhitespace() }) return ""
@@ -122,7 +93,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             else -> POLL_IDLE_MS
         }
 
-        /** Used by future Settings UI to deep-link recovery correctly. */
         fun isServiceEnabled(context: Context): Boolean {
             val expected = "${context.packageName}/${VerenuAccessibilityService::class.java.name}"
             val enabled = Settings.Secure.getString(
@@ -168,10 +138,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     @Volatile private var cancelRequestInFlight = false
     @Volatile private var lastSeenPendingSeq = -1L
     @Volatile private var lastInsertAttemptMs = 0L
-    // ACTION_SET_TEXT is not idempotent: if the insertion succeeds but the
-    // follow-up ack packet is lost, repeating it would duplicate the dictated
-    // text. Remember the successful handoff and retry only the ack until Rust
-    // clears the outbox.
     @Volatile private var lastInsertedSeq = -1L
     @Volatile private var lastInsertedStrategy = "direct_accessibility"
     @Volatile private var lastInsertedPackage = ""
@@ -184,22 +150,16 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayMoveAnimator: ValueAnimator? = null
     private var gliding = false
-    // Placement settings. Seeded from the last values the backend reported (see
-    // loadPlacementPrefs) so a restart, or a backend that is not up yet, never
-    // shows the pill somewhere the user did not choose.
     @Volatile private var pillPosition = VerenuPillPlacement.DEFAULT_POSITION
     @Volatile private var pillDockPosition = VerenuPillPlacement.DEFAULT_DOCK_POSITION
     @Volatile private var coverKeyboardMic = true
     @Volatile private var hidePillOffline = true
-    // A drag saves its snap to the backend; until that lands, a poll would
-    // report the old value and bounce the pill back.
     private val pendingPlacementSaves = java.util.concurrent.atomic.AtomicInteger(0)
     @Volatile private var lastPlacementSyncMs = 0L
     private var coverBounds: android.graphics.Rect? = null
     private var lastCoverState = ""
     private var coverSizePx = 0
 
-    // Temporary dismissal (long-press and drag to the target) and offline state.
     private var snoozedUntilMs = 0L
     private var dragging = false
     private var snoozeTarget: View? = null
@@ -211,7 +171,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var micCacheAtMs = 0L
     @Volatile private var appearanceMode = "system"
     @Volatile private var backendWasUp = false
-    // ------------------------------------------------------------------ setup
 
     override fun onServiceConnected() {
         bridge = VerenuBridge(this)
@@ -246,10 +205,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         mainHandler.removeCallbacks(imeVisibilityCheck)
         poller?.removeCallbacksAndMessages(null)
         requester?.removeCallbacksAndMessages(null)
-        // Process this after removing queued requests, but before the worker
-        // is asked to quit. This is best-effort because Android may tear down
-        // a disabled service immediately; lock transitions are also covered
-        // by syncDeviceLockState() below.
         requester?.post {
             if (::bridge.isInitialized) {
                 bridge.clearCredentials()
@@ -270,8 +225,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         hideOverlay()
     }
 
-    // --------------------------------------------------------------- events
-
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         val pkg = event.packageName?.toString() ?: ""
@@ -279,10 +232,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (Log.isLoggable(TAG, Log.DEBUG)) {
             Log.d(TAG, "event type=${AccessibilityEvent.eventTypeToString(event.eventType)} pkg=$pkg ime=$imePackage")
         }
-        // IME events describe the keyboard, not the app being edited. Never
-        // let Gboard/Samsung Keyboard become the Context or insertion target.
-        // Content changes also arrive from unfocused split-screen apps. Only
-        // focus events and the focused application window can change targets.
         foregroundPackage = VerenuFocusPackages.eventTarget(
             foregroundPackage, pkg, event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED,
             packageName, imePackage,
@@ -312,9 +261,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     }
                     supportsSetText = editable &&
                         node?.actionList?.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT } == true
-                    // Android exposes no reliable keyboard show/hide callback
-                    // to AccessibilityService. Editable focus starts the
-                    // heuristic; IME window events below keep it current.
                     if (editable) onKeyboardChanged(true)
                     refreshOverlayVisibility()
                 } finally {
@@ -324,23 +270,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             -> {
-                // Selection/caret moved — no visibility change, but a pending
-                // insertion may now have a valid target.
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                // IME packages emit window-state changes when their surface
-                // opens/closes. Restrict this to the configured default IME;
-                // other app windows must never make the overlay permanent.
                 if (pkg.isNotEmpty() && pkg == imePackage) {
                     onKeyboardChanged(true)
                 } else if (pkg != packageName) {
-                    // Our own overlay window also produces window-state
-                    // events and must not clear real focus. For any other app
-                    // window only refresh the editable-focus flag: whether the
-                    // keyboard is actually up is decided from the live window
-                    // list in the check below. Flipping it here made the pill
-                    // blink whenever a system window (one-hand mode, the edge
-                    // panel, a toast) came and went.
                     val node = findInputFocus()
                     val editable = node?.isEditable == true && node.isPassword.not()
                     node?.recycle()
@@ -348,17 +282,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 }
             }
         }
-        // Focus and IME window events are delivered independently. Re-check
-        // the actual interactive window list after the event settles so a
-        // keyboard close cannot leave a stale error/idle pill behind.
         scheduleKeyboardVisibilityCheck()
     }
 
     private fun scheduleKeyboardVisibilityCheck() {
         mainHandler.removeCallbacks(imeVisibilityCheck)
-        // While the pill is waiting for the keyboard to appear, look again at
-        // once rather than a tenth of a second later (every event re-arms this,
-        // so the longer delay always landed 100 ms after the keyboard's own event).
         mainHandler.postDelayed(imeVisibilityCheck, if (keyboardVisible && !overlayAttached) 16L else 100L)
     }
 
@@ -405,9 +333,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (locked == deviceLocked) return
         deviceLocked = locked
         if (locked) {
-            // Stop capture first, then clear every transient secret held by
-            // Rust. The service's durable Keystore copy remains protected by
-            // Android's encrypted storage and is rehydrated after unlock.
             runOnBridge {
                 bridge.cancelRecording()
                 bridge.clearCredentials()
@@ -423,12 +348,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * The input-focused node of the active window. WebViews (Chrome, in-app
-     * browsers, Verenu's own UI) often don't report input focus through
-     * [AccessibilityNodeInfo.findFocus], so fall back to a bounded walk for a
-     * focused editable node. Callers own (and recycle) the result.
-     */
     private fun findInputFocus(
         budget: VerenuInsertionBudget = VerenuInsertionBudget(SystemClock::elapsedRealtime, 350L),
     ): AccessibilityNodeInfo? {
@@ -454,10 +373,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun refreshKeyboardVisibilityFromWindows() {
         val imeVisible = try {
-            // AccessibilityWindowInfo.isActive is false for Samsung's IME
-            // even while it is on-screen. Presence of the IME window is the
-            // useful signal here; the service polls briefly through the close
-            // animation because Samsung may omit the final event entirely.
             windows.any {
                 it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
             }
@@ -466,9 +381,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             return
         }
         if (imeVisible && (!keyboardVisible || !hasEditableFocus)) {
-            // The IME can open (or reopen on an already-focused field) without
-            // a fresh view-focus event, so also re-probe when the keyboard is
-            // known to be up but no editable focus is.
             val node = findInputFocus()
             val editable = node?.isEditable == true && node.isPassword.not()
             supportsSetText = editable &&
@@ -484,8 +396,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 }
             }
         } else if (!imeVisible && !isDictationActive()) {
-            // Keep the visibility invariant true even if an OEM omits the
-            // final IME event during a close animation.
             if (keyboardVisible) onKeyboardChanged(false) else refreshOverlayVisibility()
         }
         if (keyboardVisible) {
@@ -501,16 +411,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (!visible) hasEditableFocus = false
         runOnBridge { bridge.postFocus(visible, hasEditableFocus) }
         refreshOverlayVisibility()
-        // The pill is about to be placed from the settings as last polled, and an
-        // idle poll can be seconds old: pick up a change made in Verenu meanwhile.
         if (visible) refreshPlacementSettings()
     }
 
-    /**
-     * Take the placement and look settings from the backend's state. Skipped
-     * for the placement while a dragged snap is still being saved, because the
-     * backend would still report the position the pill was just moved from.
-     */
     private fun applyPlacementSettings(snapshot: BridgeStateSnapshot) {
         lastPlacementSyncMs = SystemClock.elapsedRealtime()
         val placementChanged = pendingPlacementSaves.get() == 0 &&
@@ -544,7 +447,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun placementPrefs() = getSharedPreferences(PLACEMENT_PREFS, Context.MODE_PRIVATE)
 
-    /** Start from the placement the backend last reported, not from hardcoded defaults. */
     private fun loadPlacementPrefs() {
         try {
             val prefs = placementPrefs()
@@ -552,7 +454,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             pillDockPosition = VerenuPillPlacement.sanitizeDockPosition(prefs.getString(PREF_DOCK_POSITION, null))
             coverKeyboardMic = prefs.getBoolean(PREF_COVER_MIC, true)
         } catch (e: Exception) {
-            // Credential-protected storage can be unavailable before first unlock.
             Log.w(TAG, "placement prefs unavailable", e)
         }
     }
@@ -569,13 +470,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * Rust (and therefore the loopback bridge) lives in the Tauri activity's
-     * process. When Android restarts this process just to bind the service
-     * (boot, update, crash), nothing has loaded Rust yet, so start the
-     * activity in background mode and optionally wait for the bridge. Runs on
-     * the requester thread.
-     */
     private fun ensureBackendRunning(waitMs: Long): Boolean {
         if (bridge.getState() != null) return true
         val now = System.currentTimeMillis()
@@ -603,7 +497,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return false
     }
 
-    /** All loopback I/O stays off Android's main thread. */
     private fun runOnBridge(block: () -> Unit) {
         val handler = requester
         if (handler == null) {
@@ -619,22 +512,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    // ---------------------------------------------------------------- overlay
-
-    /**
-     * The pill shows while a keyboard is up over an editable field, and also
-     * for as long as a dictation is in flight (even with the keyboard closed,
-     * docked) or an error/cancel notice is still fresh.
-     */
     private fun shouldShowOverlay(): Boolean =
         (keyboardVisible && hasEditableFocus && !suppressedForNow()) ||
             isDictationActive() ||
             transientNoticeVisible()
 
-    /**
-     * Hidden on purpose: snoozed by the user, or offline with a selected
-     * network model and automatic offline hiding enabled.
-     */
     private fun suppressedForNow(): Boolean =
         SystemClock.elapsedRealtime() < snoozedUntilMs || (hidePillOffline && !online)
 
@@ -681,8 +563,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
     }
 
-    // A cancelled notice only belongs to the keyboard it was shown over; it
-    // never keeps the pill alive on its own (errors do, so they are not missed).
     private fun transientNoticeVisible(): Boolean =
         overlayState == VerenuOverlayView.State.ERROR &&
             System.currentTimeMillis() - transientShownAtMs < TRANSIENT_AUTO_HIDE_MS
@@ -698,11 +578,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             showOverlay()
             applyOverlayPresentation()
         } else if (overlayAttached) {
-            // Debounce: IME and focus events routinely bounce for a moment
-            // (focus moves between fields, Samsung emits transient window
-            // changes). Hiding instantly made the pill blink off and back on.
-            // Arm the timer once. This runs on every keyboard poll (~60 ms), so
-            // re-arming it each time pushed the hide back forever.
             if (!hideScheduled) {
                 hideScheduled = true
                 mainHandler.postDelayed(hideOverlayRunnable, HIDE_DEBOUNCE_MS)
@@ -726,16 +601,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         else -> false
     }
 
-    /**
-     * The front camera's hole-punch bounds in absolute screen pixels, when the
-     * device reports one (centered on cover screens, in a corner on others).
-     */
     private fun cutoutRect(): android.graphics.Rect? {
         if (Build.VERSION.SDK_INT < 28) return null
         val cutout = try {
             if (Build.VERSION.SDK_INT >= 30) {
-                // Window metrics follow the active display, so the outer and
-                // inner screens of a foldable each report their own camera.
                 windowManager.currentWindowMetrics.windowInsets.displayCutout
             } else {
                 @Suppress("DEPRECATION")
@@ -752,17 +621,11 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return if (resourceId != 0) resources.getDimensionPixelSize(resourceId) else 0
     }
 
-    /** Whether the placement follows the keyboard (as opposed to the screen). */
     private fun followsKeyboard() = pillPosition.startsWith("keyboard-")
 
-    /** Docked: a dictation continues but there is no keyboard to sit on. */
     private fun isDocked(): Boolean =
         isDictationActive() && !(keyboardVisible && hasEditableFocus && imeTopPx() != null)
 
-    /**
-     * Fill in gravity/offsets for the chosen placement. `x` is an offset from
-     * the gravity's anchor (the window center for CENTER_HORIZONTAL).
-     */
     private fun placeOverlay(params: WindowManager.LayoutParams) {
         val density = resources.displayMetrics.density
         val margin = (12 * density).toInt()
@@ -773,32 +636,22 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
         val cover = coverBounds
         when {
-            // Covering the keyboard's own mic button: anchor the pill's right
-            // edge to the button so state changes grow it leftward.
             cover != null && !docked && imeTop != null -> {
                 val pad = (4 * density).toInt()
                 val size = coverSizePx
-                // Stay inside the keyboard: clamp the disc to its bounds.
                 val imeRight = (imeBounds?.right ?: screenWidth).coerceAtMost(screenWidth)
                 val imeTopEdge = imeBounds?.top ?: 0
                 val right = minOf(cover.centerX() + size / 2, imeRight - (2 * density).toInt())
-                // Centre whatever state is showing on the key's row: the idle disc
-                // is the key's size, the other states are shorter or taller.
                 val viewHeight = overlay?.height?.takeIf { it > 0 } ?: (size + 2 * pad)
                 params.gravity = Gravity.TOP or Gravity.RIGHT
                 params.x = (screenWidth - right - pad).coerceAtLeast(0)
                 params.y = (cover.centerY() - viewHeight / 2).coerceAtLeast(imeTopEdge - pad).coerceAtLeast(0)
             }
-            // Docked while the keyboard is away: its own resting place.
             docked && followsKeyboard() -> placeOnScreen(params, pillDockPosition)
-            // A screen placement ignores the keyboard altogether.
             !followsKeyboard() -> placeOnScreen(params, pillPosition)
             imeTop != null -> {
                 val above = (realScreenHeightPx() - imeTop + (8 * density).toInt()).coerceAtLeast(0)
                 params.y = above
-                // Anchor to the keyboard's own bounds, not the screen's: on an
-                // unfolded foldable the keyboard is often split, floating or
-                // one-handed, so the screen edge is nowhere near it.
                 val left = (imeBounds?.left ?: 0).coerceIn(0, screenWidth)
                 val right = (imeBounds?.right ?: screenWidth).coerceIn(left, screenWidth)
                 when (pillPosition) {
@@ -820,7 +673,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /** Gravity/offsets for a screen-anchored placement (see VerenuPillPlacement). */
     private fun placeOnScreen(params: WindowManager.LayoutParams, position: String) {
         val density = resources.displayMetrics.density
         val margin = (12 * density).toInt()
@@ -831,7 +683,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val cutout = cutoutRect()
                 if (cutout != null) {
                     params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                    // Offset from center so the pill sits under an off-center camera.
                     params.x = cutout.centerX() - realScreenWidthPx() / 2
                     params.y = cutout.bottom + (4 * density).toInt()
                 } else {
@@ -856,7 +707,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         params.y = y
     }
 
-    /** Height of the navigation/gesture bar the pill must stay clear of. */
     private fun navigationBarHeightPx(): Int = try {
         if (Build.VERSION.SDK_INT >= 30) {
             windowManager.currentWindowMetrics.windowInsets
@@ -869,7 +719,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         0
     }
 
-    /** Push theme/compact state into the view and glide it to its placement. */
     private fun applyOverlayPresentation() {
         val view = overlay ?: return
         if (keyboardVisible && imeBoundsSettled()) imeBoundsPx()?.let { rememberImeHeight(it) }
@@ -879,7 +728,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         repositionOverlay()
     }
 
-    /** Decide whether, and where, the pill covers the keyboard's mic button. */
     private fun refreshCover(view: VerenuOverlayView, preferPrediction: Boolean = false) {
         val rect = if (coverKeyboardMic && followsKeyboard() && !isDocked() && keyboardVisible) {
             if (preferPrediction) predictedMicBounds() ?: keyboardMicBounds() else keyboardMicBounds()
@@ -894,8 +742,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
         }
         coverBounds = rect
-        // Fit the disc to the button, never bigger than a normal key: an
-        // unfolded keyboard can report a much larger node for the same control.
         val density = resources.displayMetrics.density
         val size = rect?.let {
             minOf(minOf(it.width(), it.height()) + (6 * density).toInt(), (56 * density).toInt())
@@ -904,23 +750,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         view.setCoverSize(size)
     }
 
-    /**
-     * The keyboard's own voice-typing button, found by its accessibility
-     * description in the input-method window. Cached against the keyboard's
-     * bounds because walking another app's node tree is not free and this runs
-     * on every keyboard poll.
-     */
     private fun keyboardMicBounds(): android.graphics.Rect? {
         val ime = imeBoundsPx() ?: return null
-        // Keys report mid-flight positions while the keyboard slides in (and not
-        // in step with its window), so only read them once it has docked. Until
-        // then the remembered position stands in (see predictedMicBounds).
         if (imeIsSliding()) return null
         val now = SystemClock.elapsedRealtime()
-        // Re-check often: the keyboard can swap rows (e.g. to symbols) and move or
-        // drop the mic key without its window bounds changing.
-        // A miss is retried quickly: the key tree is often not populated yet while
-        // the keyboard is still appearing.
         val ttl = if (micCache == null) MIC_MISS_RETRY_MS else 600L
         val fresh = micCacheKey == ime && now - micCacheAtMs < ttl
         if (fresh) return micCache
@@ -955,7 +788,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private fun placementKey(ime: android.graphics.Rect) =
         "mic:${defaultImePackage().orEmpty()}:${ime.width()}"
 
-    /** Remember where this keyboard keeps its mic key, relative to its own bounds. */
     private fun rememberMicPlacement(ime: android.graphics.Rect, mic: android.graphics.Rect) {
         if (!android.graphics.Rect(ime).contains(mic)) return
         val value = "${mic.left - ime.left},${ime.bottom - mic.top},${mic.width()},${mic.height()}"
@@ -969,24 +801,17 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private fun imeHeightKey(ime: android.graphics.Rect) =
         "h:${defaultImePackage().orEmpty()}:${ime.width()}"
 
-    /** Remember the keyboard's settled height so the next opening can skip the settle wait. */
     private fun rememberImeHeight(ime: android.graphics.Rect) {
         if (ime.height() == lastRememberedImeHeight) return
         lastRememberedImeHeight = ime.height()
         placementPrefs.edit().putInt(imeHeightKey(ime), ime.height()).apply()
     }
 
-    /** True when this keyboard has the same height as the last time we placed the pill over it. */
     private fun imeLayoutKnown(): Boolean {
         val ime = imeBoundsPx() ?: return false
         return placementPrefs.getInt(imeHeightKey(ime), -1) == ime.height()
     }
 
-    /**
-     * Where the mic key was the last time this keyboard was seen. Used for the
-     * first frames after the keyboard opens, before its key tree can be read;
-     * the real position replaces it as soon as the lookup succeeds.
-     */
     private fun predictedMicBounds(): android.graphics.Rect? {
         val ime = imeBoundsPx() ?: return null
         val parts = placementPrefs.getString(placementKey(ime), null)?.split(',')?.mapNotNull { it.toIntOrNull() }
@@ -1002,7 +827,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (node.isVisibleToUser && MIC_LABEL.containsMatchIn(label) && !MIC_EXCLUDE.containsMatchIn(label)) {
             val rect = android.graphics.Rect()
             node.getBoundsInScreen(rect)
-            // A single key, not a whole toolbar that merely mentions voice.
             if (rect.width() > 0 && rect.height() > 0 && rect.width() < imeWidth / 3) return rect
         }
         for (i in 0 until node.childCount) {
@@ -1024,9 +848,7 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             android.content.res.Configuration.UI_MODE_NIGHT_YES
     }
 
-    /** Keep the pill glued to its anchor, easing between positions. */
     private fun repositionOverlay() {
-        // A finger or the glide that follows it owns the position meanwhile.
         if (dragging || gliding) return
         val view = overlay ?: return
         val params = overlayParams ?: return
@@ -1037,8 +859,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val toY = params.y
         val toX = params.x
         if (fromGravity != params.gravity) {
-            // Anchor change (e.g. keyboard → docked): jump the anchor, then
-            // let the pill fade in from its new spot rather than slide across.
             applyLayout(view, params)
             return
         }
@@ -1068,12 +888,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * The keyboard window's bounds, as they will be once it has finished sliding
-     * in. While it slides its window is reported hanging off the bottom of the
-     * screen at full height; shifting it up by the overhang gives the final
-     * position straight away, so the pill does not have to wait out the animation.
-     */
     private fun imeBoundsPx(): android.graphics.Rect? = try {
         val rect = android.graphics.Rect()
         windows
@@ -1088,7 +902,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         null
     }
 
-    /** How far below the screen a still-sliding keyboard window currently hangs (0 once docked). */
     private fun slideOverhang(raw: android.graphics.Rect): Int {
         val overhang = raw.bottom - realScreenHeightPx()
         return if (overhang > 2 && overhang < raw.height()) overhang else 0
@@ -1108,15 +921,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var settleBounds: android.graphics.Rect? = null
     private var settleSinceMs = 0L
 
-    /** True once the keyboard's bounds have been unchanged for a short while. */
     private fun imeBoundsSettled(): Boolean {
         val bounds = imeBoundsPx()
         if (bounds == null) {
             settleBounds = null
             return false
         }
-        // While the keyboard slides in, its window is reported hanging off the
-        // bottom of the screen; those bounds are not where it will end up.
         if (bounds.bottom > realScreenHeightPx() + 2) {
             settleBounds = null
             return false
@@ -1140,16 +950,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             metrics.widthPixels
         }
 
-    /**
-     * Fold, unfold, rotation and split-screen change the display under a
-     * running service without any accessibility event. Re-place the pill so it
-     * does not keep the previous screen's coordinates.
-     */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         mainHandler.post {
             if (overlayAttached) applyOverlayPresentation()
-            // The IME resizes a moment after the posture change.
             mainHandler.postDelayed({ if (overlayAttached) applyOverlayPresentation() }, 250)
         }
     }
@@ -1166,10 +970,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     private fun showOverlay() {
         if (overlayAttached) return
-        // A keyboard-relative pill needs the keyboard's final bounds. The IME
-        // window reports bounds while it is still sliding up, so wait until
-        // they stop changing; otherwise the pill spawns mid-keyboard and then
-        // jumps. The 60 ms IME check retries.
         if (followsKeyboard() && !isDictationActive() && !imeLayoutKnown() && !imeBoundsSettled()) {
             if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "overlay waiting for keyboard bounds ime=${imeBoundsPx()}")
             return
@@ -1217,7 +1017,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         overlayMoveAnimator?.cancel()
         dragging = false
         hideSnoozeTarget()
-        // A cancelled notice must not reappear with the next keyboard.
         if (overlayState == VerenuOverlayView.State.CANCELLED) overlayState = VerenuOverlayView.State.IDLE
         val view = overlay ?: return
         overlay = null
@@ -1245,7 +1044,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (next == VerenuOverlayView.State.ERROR || next == VerenuOverlayView.State.CANCELLED) {
             transientShownAtMs = System.currentTimeMillis()
         }
-        // Whether the pill is shown (and docked) depends on this state.
         refreshOverlayVisibility()
         val view = overlay ?: return
         if (next == VerenuOverlayView.State.ERROR && overlayErrorMessage.isNotEmpty()) {
@@ -1255,7 +1053,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /** Retain the short, already-sanitized bridge message across overlay churn. */
     private fun showOverlayError(
         message: String,
         action: ErrorAction = ErrorAction.RETRY_TRANSCRIPTION,
@@ -1266,16 +1063,13 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         setOverlayState(VerenuOverlayView.State.ERROR)
     }
 
-    // ------------------------------------------------------------- pill taps
-
     override fun onPillTap() {
         when (overlayState) {
             VerenuOverlayView.State.IDLE -> startDictation()
-            // The cancelled notice has its own dismiss and restart buttons.
             VerenuOverlayView.State.CANCELLED -> Unit
             VerenuOverlayView.State.RECORDING -> stopDictation()
             VerenuOverlayView.State.ERROR -> retryDictation()
-            else -> Unit // transcribing/cleaning/inserting: taps are no-ops
+            else -> Unit
         }
     }
 
@@ -1291,13 +1085,10 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
 
     override fun onPillCancel() = requestCancel()
 
-    // ---------------------------------------------------- snooze by dragging
-
     override fun onPillDragStart() {
         if (overlayAttached.not()) return
         dragging = true
         overlayMoveAnimator?.cancel()
-        // Hiding the pill makes no sense in the middle of a dictation.
         if (!isDictationActive()) showSnoozeTarget()
     }
 
@@ -1326,8 +1117,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             snoozeFor(SNOOZE_MS)
             return
         }
-        // Not dropped on the hide target: snap to the nearest place the
-        // settings know about and remember it, or glide back if it is fixed.
         val snap = VerenuPillPlacement.snapFor(rawX, rawY, dropContext())
         val unchanged = snap == null || snap.position == placementFor(snap.target)
         if (snap != null && !unchanged) adoptSnap(snap)
@@ -1353,7 +1142,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         )
     }
 
-    /** Make a dropped snap the new placement and save it where Settings reads it. */
     private fun adoptSnap(snap: VerenuPillPlacement.Snap) {
         val previous = placementFor(snap.target)
         setPlacement(snap.target, snap.position)
@@ -1371,7 +1159,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
             if (!saved) {
                 mainHandler.post {
-                    // Put it back unless something newer has already replaced it.
                     if (placementFor(snap.target) == snap.position) setPlacement(snap.target, previous)
                     Toast.makeText(this, "Couldn't save the pill position", Toast.LENGTH_SHORT).show()
                     if (overlayAttached) repositionOverlay()
@@ -1385,11 +1172,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         savePlacementPrefs()
     }
 
-    /**
-     * After a drag, ease from where the finger left the pill to its placement.
-     * The drag positions the window from the top-left corner while placements
-     * use gravity, so both ends are resolved to that corner to animate between.
-     */
     private fun glideFromDrag() {
         val view = overlay ?: return
         val params = overlayParams ?: return
@@ -1397,8 +1179,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val screenHeight = realScreenHeightPx()
         val width = view.width
         val height = view.height
-        // A hold released without moving never went through onPillDragMove, so the
-        // params may still be gravity-relative: resolve where the view really is.
         val fromX = absoluteLeft(params, width, screenWidth)
         val fromY = absoluteTop(params, height, screenHeight)
         val target = WindowManager.LayoutParams()
@@ -1421,7 +1201,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     gliding = false
-                    // Hand back to gravity-based placement (it tracks the keyboard).
                     if (!dragging && overlay === view) {
                         placeOverlay(params)
                         applyLayout(view, params)
@@ -1461,7 +1240,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             y in (snoozeTargetRect.top - slop)..(snoozeTargetRect.bottom + slop)
     }
 
-    /** A capsule at the top of the screen to drop the pill on. */
     private fun showSnoozeTarget() {
         if (snoozeTarget != null) return
         val density = resources.displayMetrics.density
@@ -1537,9 +1315,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     stopDictationService()
                     setOverlayState(VerenuOverlayView.State.CANCELLED)
                 } else {
-                    // Keep the recording state and foreground notification if
-                    // Rust did not acknowledge. A failed cancel must never
-                    // strand an active microphone without its stop affordance.
                     showOverlayError("Couldn't cancel — check connection", ErrorAction.RETRY_CANCEL)
                 }
             }
@@ -1616,9 +1391,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             errorAction != ErrorAction.RETRY_CANCEL
         ) {
             overlayErrorMessage = ""
-            // Back to the idle pill when the keyboard is still up, so a new
-            // dictation can start without reopening it; otherwise get out of
-            // the way immediately.
             setOverlayState(VerenuOverlayView.State.IDLE)
             if (!shouldShowOverlay()) hideOverlay()
         }
@@ -1627,11 +1399,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private var lastBrowserSite: Triple<String, String, Long>? = null
     private var lastBrowserScanMs = 0L
 
-    /**
-     * The host of the page open in a browser (never the full URL), so Contexts
-     * attached to websites can match. Best effort: reads the address bar's text
-     * and returns "" for any app that is not a known browser.
-     */
     private fun readBrowserDomain(pkg: String): String {
         if (!BROWSER_URL_BAR_IDS.containsKey(pkg)) return ""
         val live = scanAddressBar(pkg)
@@ -1639,16 +1406,12 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             lastBrowserSite = Triple(pkg, live, SystemClock.elapsedRealtime())
             return live
         }
-        // The address bar is empty or hidden exactly when someone is typing in
-        // the omnibox or the page has scrolled the toolbar away, so fall back to
-        // the last site seen in this browser a moment ago.
         val seen = lastBrowserSite
         return if (seen != null && seen.first == pkg &&
             SystemClock.elapsedRealtime() - seen.third < BROWSER_SITE_TTL_MS
         ) seen.second else ""
     }
 
-    /** Cheap, throttled refresh while a browser is in front, so the last site is known. */
     private fun rememberBrowserDomain(pkg: String) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastBrowserScanMs < BROWSER_SCAN_INTERVAL_MS) return
@@ -1686,7 +1449,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         return ""
     }
 
-    /** Prefer the active browser root, then find that package's application window. */
     private fun browserApplicationRoot(pkg: String): AccessibilityNodeInfo? {
         val active = rootInActiveWindow
         if (active?.packageName?.toString() == pkg) return active
@@ -1707,7 +1469,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     }
 
     private fun startDictation() {
-        // A start is already pending (e.g. cold backend): its outcome decides.
         if (!holdRelease.beginStart()) return
         val pkg = foregroundPackage
         val editable = hasEditableFocus
@@ -1718,11 +1479,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             showOverlayError("Could not start recording", ErrorAction.RETRY_START)
             return
         }
-        // Read on the calling thread: accessibility node access belongs here.
         val domain = readBrowserDomain(pkg)
         if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, "dictation target browser=${BROWSER_URL_BAR_IDS.containsKey(pkg)} siteFound=${domain.isNotEmpty()}")
         handler.post {
-            // Make sure Rust is up first (cold-started service process).
             val backendUp = ensureBackendRunning(waitMs = BACKEND_START_WAIT_MS)
             if (!backendUp) {
                 mainHandler.post {
@@ -1731,11 +1490,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 }
                 return@post
             }
-            // Promote to a microphone foreground service before opening the
-            // Rust capture stream. Samsung's audio hardening can permanently
-            // mark a background-created VOICE_RECOGNITION session as
-            // silenced, even if foreground promotion happens immediately
-            // afterward.
             if (!startDictationService()) {
                 mainHandler.post {
                     holdRelease.startFinished(recording = false)
@@ -1763,8 +1517,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     if (holdRelease.startFinished(recording = true)) stopDictation()
                 } else {
                     holdRelease.startFinished(recording = false)
-                    // Do not leave a foreground notification behind when the
-                    // backend rejected the recording request.
                     stopDictationService()
                     showOverlayError("Could not start recording", ErrorAction.RETRY_START)
                 }
@@ -1795,15 +1547,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                         System.currentTimeMillis() - recordingStartedAtMs,
                     )
                     VerenuAnalytics.dictationStopped(currentRunId)
-                    // The foreground service is needed only while Rust owns
-                    // the microphone. Transcription and cleanup continue
-                    // through the bridge after this acknowledgement.
                     stopDictationService()
                     setOverlayState(VerenuOverlayView.State.TRANSCRIBING)
                 } else {
-                    // Keep the service and recording alive until Rust accepts
-                    // the stop, so the user still has a working stop/cancel
-                    // path after a transient bridge failure.
                     showOverlayError(
                         "Couldn't stop recording — try again",
                         ErrorAction.RETRY_STOP,
@@ -1839,8 +1585,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    // -------------------------------------------------------------- insertion
-
     private fun focusedEditable(
         budget: VerenuInsertionBudget = VerenuInsertionBudget(SystemClock::elapsedRealtime, 350L),
     ): AccessibilityNodeInfo? {
@@ -1856,14 +1600,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * Insert [text] into the focused field. Direct `ACTION_SET_TEXT` with
-     * cursor restoration where the app allows it; clipboard (+`ACTION_PASTE`
-     * attempt) where blocked. Returns the strategy + success for the ack.
-     * Password fields are a hard stop: dictation never reads, writes, or
-     * copies text for them. This is stricter than merely avoiding a read,
-     * because a clipboard fallback would still expose dictated content.
-     */
     private fun performInsertion(
         node: AccessibilityNodeInfo,
         budget: VerenuInsertionBudget,
@@ -1873,9 +1609,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         if (node.isPassword) return Pair("blocked_password", false)
         if (budget.expired) return Pair("clipboard_fallback", false)
         val actions = node.actionList.map { it.id }
-        // An empty field reports its hint ("Search", "Message") as its
-        // text. Treating that as content typed the hint into the field
-        // in front of the dictation.
         val showingHint = Build.VERSION.SDK_INT >= 26 && node.isShowingHintText
         val readable = node.text != null || showingHint
         val before = if (showingHint) "" else node.text?.toString() ?: ""
@@ -1885,8 +1618,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         val from = minOf(selStart, selEnd).coerceIn(0, before.length)
         val to = maxOf(selStart, selEnd).coerceIn(0, before.length)
 
-        // Smart capitalization and spacing: Rust decides, from the text
-        // either side of the caret. Any failure inserts the dictation as is.
         val reliable = readable && selKnown
         val text = bridge.formatInsertion(
             seq,
@@ -1916,9 +1647,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 )
             },
         )
-        // Some editors report success and then ignore (or revert) the new
-        // text, especially once the field already has content. Believe
-        // the field, not the return value.
         val confirmation = if (set) confirmInsertion(node, budget, before, merged)
             else if (budget.expired) VerenuInsertionBudget.Confirmation.UNAVAILABLE
             else VerenuInsertionBudget.Confirmation.UNCHANGED
@@ -1933,9 +1661,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             )
             return Pair("direct_accessibility", true)
         }
-        // An unresponsive/stale node cannot prove that SET_TEXT failed.
-        // A second mutation here can both wait another five seconds and
-        // duplicate text when the first action eventually completes.
         if (confirmation == VerenuInsertionBudget.Confirmation.UNAVAILABLE) {
             return Pair("clipboard_fallback", false)
         }
@@ -1959,11 +1684,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         pause = { Thread.sleep(50L) },
     )
 
-    /**
-     * Paste through the clipboard at the caret, which edits in place and keeps
-     * the field's own formatting. Verified against the field's text; when the
-     * paste did not take, the text stays on the clipboard for the user.
-     */
     private fun pasteAtCaret(
         node: AccessibilityNodeInfo,
         budget: VerenuInsertionBudget,
@@ -2008,8 +1728,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    // -------------------------------------------------------------- poll loop
-
     private fun schedulePoll(delayMs: Long) {
         poller?.postDelayed({ poll() }, delayMs)
     }
@@ -2023,24 +1741,18 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             audioMuteActive = snapshot?.audioMuteRequested ?: false
             val up = snapshot != null
             if (up && !backendWasUp) {
-                // Rust restarted (or just started): its credential cache is
-                // memory-only, so repopulate it from the Keystore.
                 hydrateCredentials()
             }
             backendWasUp = up
             if (snapshot != null) {
                 onBridgeState(snapshot)
             } else if (!keyboardVisible) {
-                // Backend died or never started; relaunching while a field is
-                // focused would steal focus from the user's app.
                 ensureBackendRunning(waitMs = 0L)
             }
         } catch (e: Exception) {
             audioMuteActive = false
             Log.w(TAG, "bridge poll failed", e)
         }
-        // Transient pills auto-hide like the desktop (10s), and only when
-        // nothing is in flight.
         if ((overlayState == VerenuOverlayView.State.ERROR ||
                 overlayState == VerenuOverlayView.State.CANCELLED) &&
             !isDictationActive() &&
@@ -2063,7 +1775,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
     private fun onBridgeState(snapshot: BridgeStateSnapshot) {
         VerenuAnalytics.setEnabled(snapshot.analyticsEnabled)
         applyPlacementSettings(snapshot)
-        // Staged Keystore rotation → persist, then confirm by re-pushing.
         if (snapshot.keystorePending) {
             try {
                 val pending = bridge.takeKeystorePending()
@@ -2080,9 +1791,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
         }
 
-        // The stop request can outlive the recording UI. Errors are mirrored
-        // separately from lifecycle so a provider/auth/network failure cannot
-        // leave the pill stuck on Transcribing forever.
         val bridgeError = snapshot.lastError
         if (bridgeError != null && isDictationActive() && bridgeError.ageMs < 120_000L) {
             VerenuAnalytics.pipelineFailed(currentRunId, bridgeError.message, snapshot.pillStage)
@@ -2093,7 +1801,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             return
         }
 
-        // Pill stage refinement while a dictation is in flight.
         if (isDictationActive()) {
             if (snapshot.pillStage != lastPipelineStage) {
                 lastPipelineStage = snapshot.pillStage
@@ -2111,15 +1818,9 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 if (envelope.isNotEmpty()) overlay?.setEnvelope(envelope) else overlay?.setAudioLevel(level)
             }
             if (!snapshot.dictationActive && overlayState == VerenuOverlayView.State.RECORDING) {
-                // Backend left recording without our stop (gate rejection,
-                // error): fall back to transcribing/error via lifecycle.
                 setOverlayState(VerenuOverlayView.State.TRANSCRIBING)
             }
 
-            // A successful pipeline with no pending insertion has completed.
-            // Normally the insertion ack handles this; this fallback covers
-            // empty/copy-only completions and keeps the native pill in sync
-            // when the target app disappears during processing.
             if (snapshot.lifecycle == "idle" &&
                 !snapshot.dictationActive &&
                 snapshot.pendingInsertion == null &&
@@ -2131,13 +1832,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
         }
 
-        // Insertion handoff. The target is the field that is focused NOW, not
-        // a package remembered from window events: on Samsung, one-hand mode,
-        // the edge panel and notification shade all emit events from other
-        // packages, which used to leave a finished dictation waiting for a
-        // "foreground" match that never came (the pill sat on "Pasting…" for a
-        // minute). If no field is available the text is copied instead, and the
-        // outbox is always cleared, so there is no endless retry loop.
         val current = snapshot.pendingInsertion
         if (current == null) {
             lastInsertedSeq = -1L
@@ -2149,8 +1843,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             lastInsertAttemptMs = 0L
         }
         if (current.seq == lastInsertedSeq) {
-            // The text is already in the field. Only retry the idempotent ack;
-            // never perform ACTION_SET_TEXT twice for the same sequence.
             val now = System.currentTimeMillis()
             if (now - lastInsertionAckAttemptMs > INSERT_RETRY_MS) {
                 lastInsertionAckAttemptMs = now
@@ -2190,10 +1882,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
             }
             val blockedPassword = strategy == "blocked_password"
             val lengthLimited = strategy == "blocked_length"
-            // A failed ACTION_PASTE still leaves the text in the clipboard;
-            // make the manual-copy result explicit before acknowledging so a
-            // successful copy clears the outbox and is not repeated every
-            // poll. Password fields never enter this path.
             val manualCopy = !ok && !blockedPassword &&
                 copyToClipboard(current.text, tryPaste = false)
             val ack = bridge.ackInsertion(
@@ -2211,9 +1899,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                     current.text.trim().split(Regex("\\s+")).count { it.isNotEmpty() },
                 )
                 if (!ok && manualCopy) VerenuAnalytics.fallbackUsed(currentRunId, "manual_copy")
-                // Consider the local edit successful even if the ack response
-                // is lost. The next poll retries only this ack, avoiding a
-                // second edit while still allowing Rust to clear its outbox.
                 lastInsertedSeq = current.seq
                 lastInsertedStrategy = if (ok) strategy else "clipboard_fallback"
                 lastInsertedPackage = insertedPackage
@@ -2253,9 +1938,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
         node?.recycle()
 
-        // No usable field right now (keyboard closed, focus moved). Give the
-        // user a few seconds to come back to one, then stop waiting. Include
-        // time spent in Android's blocking focus calls, not just snapshot age.
         val waitedMs = current.ageMs + (SystemClock.elapsedRealtime() - lookupStartedAt)
         if (waitedMs >= INSERT_WAIT_FOR_FIELD_MS) {
             lastInsertAttemptMs = now
@@ -2282,12 +1964,6 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
         }
     }
 
-    /**
-     * A focused editable app field may receive the dictation. System UI and
-     * keyboard windows must never become targets. Package hints from window
-     * events cannot veto the actual field: privacy indicators and toasts can
-     * change those hints while the user is still editing the same app.
-     */
     private fun insertionTargetAvailable(node: AccessibilityNodeInfo): Boolean {
         val owner = node.packageName?.toString().orEmpty()
         return VerenuFocusPackages.isInsertionField(owner, defaultImePackage())

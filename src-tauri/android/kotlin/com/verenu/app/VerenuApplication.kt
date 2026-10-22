@@ -6,8 +6,6 @@ import android.util.Log
 class VerenuApplication : Application() {
   private val audioMute by lazy { VerenuAudioMute(this) }
 
-  // Called by Rust's shared mute-owner lifecycle, including in-app dictation.
-  // The Application survives Activity and accessibility-service teardown.
   fun updateMediaMute(muted: Boolean) = audioMute.update(muted)
 
   override fun onCreate() {
@@ -25,8 +23,6 @@ class VerenuApplication : Application() {
 
   private fun configuredValue(value: String?, variableName: String): String? {
     if (!value.isNullOrBlank()) return value
-    // Unconfigured analytics must never stop the app from launching; builds
-    // without an ingestion token (contributors, emulators) simply run without it.
     if (BuildConfig.DEBUG) {
       Log.w("VerenuApplication", "$variableName is not configured; product analytics are disabled")
     }

@@ -1,7 +1,3 @@
-//! Tests for the sync engine: change capture, LWW merging, deletes,
-//! natural-key conflicts, snapshots, counter/settings merge, and a full
-//! protocol session over an in-memory duplex stream.
-
 use anyhow::Result;
 use serde_json::json;
 use std::net::IpAddr;
@@ -18,7 +14,34 @@ mod regression_tests;
 #[path = "device_tests.rs"]
 mod device_tests;
 
-// ---- helpers ----
+#[test]
+fn t3_skill_opt_out_syncs_with_contexts_and_old_payloads_omit_it() {
+    let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    let b = test_db("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let context =
+        db::insert_context_returning(&a, "T3 skills sync", None, None, None, None, false).unwrap();
+    db::update_context_t3_skill_mentions(&a, context.id, false).unwrap();
+    db::update_context_t3_skill_mentions(&a, db::EVERYWHERE_CONTEXT_ID, false).unwrap();
+    exchange(&a, &b);
+    let rows = db::query_contexts(&b).unwrap();
+    assert!(
+        rows.iter()
+            .find(|c| c.name == "T3 skills sync")
+            .unwrap()
+            .t3_skill_mentions_disabled
+    );
+    assert!(
+        rows.iter()
+            .find(|c| c.is_everywhere)
+            .unwrap()
+            .t3_skill_mentions_disabled
+    );
+    let old: engine::ContextAggregate = serde_json::from_value(
+        json!({"name": "Old context", "created_at": "2026-01-01", "updated_at": "2026-01-01"}),
+    )
+    .unwrap();
+    assert_eq!(old.t3_skill_mentions_disabled, None);
+}
 
 #[test]
 fn paste_chunks_context_sync_preserves_desktop_preference() {
@@ -32,7 +55,8 @@ fn paste_chunks_context_sync_preserves_desktop_preference() {
     assert!(rows.iter().find(|c| c.is_everywhere).unwrap().paste_in_chunks);
     let old: engine::ContextAggregate = serde_json::from_value(json!({
         "name": "Old context", "created_at": "2026-01-01", "updated_at": "2026-01-01"
-    })).unwrap();
+    }))
+    .unwrap();
     assert!(!old.paste_in_chunks);
 }
 
@@ -272,8 +296,6 @@ fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect("count")
 }
 
-/// Exchanges the full collapsed change sets between two databases until both
-/// converge (two rounds is always enough for these tests).
 fn exchange(a: &DbHandle, b: &DbHandle) {
     for _ in 0..2 {
         for (from, to) in [(a, b), (b, a)] {
@@ -394,8 +416,6 @@ fn peer_of(device_uuid: &str) -> sync_store::SyncPeer {
     }
 }
 
-// ---- change capture ----
-
 #[test]
 fn triggers_capture_content_changes() {
     let a_uuid = uuid("aaaa");
@@ -442,8 +462,6 @@ fn engine_applied_ops_are_not_recaptured() {
         engine::apply_ops(&conn, std::slice::from_ref(&op)).expect("apply");
     }
     let conn = db.lock().expect("lock");
-    // Exactly one log entry: the manually logged remote op (with its original
-    // stamp), not a re-captured local echo.
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_log"), 1);
     let stamp = sync_store::latest_op_stamp(&conn, "dictionary", &op.row_uuid)
         .expect("stamp")
@@ -567,8 +585,6 @@ fn dictionary_correction_op(
         })),
     }
 }
-
-// ---- bidirectional merge ----
 
 #[test]
 fn context_correction_delta_roundtrip_preserves_scope_and_identity() {
@@ -1252,7 +1268,6 @@ fn content_syncs_both_directions_without_duplicates() {
     let ctx_a =
         db::insert_context_returning(&a, "Work", None, None, None, None, false).expect("ctx");
     db::assign_context_target(&a, ctx_a.id, "code.exe").expect("target");
-    // Scope A's dictionary entry to A's context.
     db::set_dictionary_context_assignment(&a, ctx_a.id, entry_a.id, true).expect("assign");
 
     exchange(&a, &b);
@@ -1275,7 +1290,6 @@ fn content_syncs_both_directions_without_duplicates() {
     );
     drop(conn_b);
 
-    // And back: B's snippet reaches A.
     let conn_a = a.lock().expect("lock");
     assert_eq!(count(&conn_a, "SELECT COUNT(*) FROM snippets"), 1);
     let snippet_on_a: String = conn_a
@@ -1284,7 +1298,6 @@ fn content_syncs_both_directions_without_duplicates() {
     assert_eq!(snippet_on_a, "123 Main St");
     drop(conn_a);
 
-    // Idempotence: exchanging again must not create duplicates.
     exchange(&a, &b);
     let conn_b = b.lock().expect("lock");
     assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM dictionary"), 1);
@@ -1296,7 +1309,6 @@ fn edits_and_deletes_propagate() {
     let a = test_db(&uuid("aaaa"));
     let b = test_db(&uuid("bbbb"));
 
-    // A creates an entry; it reaches B.
     let entry =
         db::insert_dictionary_entry_returning(&a, "Groq", Some("Grock"), None).expect("entry");
     exchange(&a, &b);
@@ -1305,7 +1317,6 @@ fn edits_and_deletes_propagate() {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary"), 1);
     }
 
-    // B edits it offline; the edit reaches A.
     let local_id = {
         let conn = b.lock().expect("lock");
         conn.query_row("SELECT id FROM dictionary", [], |r| r.get(0))
@@ -1328,7 +1339,6 @@ fn edits_and_deletes_propagate() {
         assert_eq!(mistake, "Groqck", "B's edit reached A");
     }
 
-    // B deletes it; the delete reaches A and nothing resurrects.
     db::delete_dictionary_entry(&b, local_id).expect("delete on b");
     exchange(&a, &b);
     let conn_a = a.lock().expect("lock");
@@ -1353,7 +1363,7 @@ fn delete_loses_to_a_newer_edit() {
             table: "dictionary".to_string(),
             row_uuid: upsert.row_uuid.clone(),
             op: "delete".to_string(),
-            ts_ms: 1_000, // older than the upsert
+            ts_ms: 1_000,
             origin: uuid("origin"),
             origin_seq: 1_000,
             payload: None,
@@ -1373,7 +1383,6 @@ fn natural_key_conflict_converges_to_one_row() {
     let a = test_db(&uuid("aaaa"));
     let b = test_db(&uuid("bbbb"));
 
-    // Both devices independently create the same dictionary term.
     db::insert_dictionary_entry_returning(&a, "Verenu", None, None).expect("a row");
     db::insert_dictionary_entry_returning(&b, "Verenu", None, None).expect("b row");
     exchange(&a, &b);
@@ -1392,7 +1401,6 @@ fn natural_key_conflict_converges_to_one_row() {
             rows
         };
         drop(conn);
-        // Same surviving uuid on both devices.
         let other = if name == "a" { &b } else { &a };
         let conn_other = other.lock().expect("lock");
         let other_uuids: Vec<String> = {
@@ -1415,7 +1423,6 @@ fn older_op_never_overwrites_newer() {
     {
         let conn = db.lock().expect("lock");
         engine::apply_ops(&conn, std::slice::from_ref(&newer)).expect("apply newer");
-        // The same row re-delivered with an older stamp must be skipped.
         let mut stale = newer.clone();
         stale.ts_ms = 999;
         stale.origin_seq = 999;
@@ -1429,8 +1436,6 @@ fn older_op_never_overwrites_newer() {
         .expect("term");
     assert_eq!(term, "term-new");
 }
-
-// ---- full session over an in-memory stream ----
 
 #[tokio::test]
 async fn session_snapshot_seeds_a_new_device() {
@@ -1466,7 +1471,6 @@ async fn session_snapshot_seeds_a_new_device() {
         count(&conn_b, "SELECT COUNT(*) FROM context_website_targets"),
         1
     );
-    // B recorded the snapshot position, and A no longer owes B a snapshot.
     let recv_cursor = sync_store::peer_recv_cursor(&conn_b, &host_a.uuid).expect("pos");
     assert!(recv_cursor > 0, "B should have recorded A's log position");
     drop(conn_b);
@@ -1606,8 +1610,6 @@ fn re_pairing_an_old_snapshot_does_not_restore_a_deleted_dictionary_entry() {
     exchange(&source, &stale);
     db::delete_dictionary_entry(&source, entry.id).expect("delete while peer is offline");
 
-    // Advance the log timestamps beyond the previous pruning window while
-    // preserving the original upsert-before-delete ordering on both devices.
     let year = 365 * 24 * 60 * 60 * 1000i64;
     for db in [&source, &stale] {
         db.lock()
@@ -1627,7 +1629,6 @@ fn re_pairing_an_old_snapshot_does_not_restore_a_deleted_dictionary_entry() {
         .expect("re-pair stale device");
     }
 
-    // Exercise the actual snapshot producer and apply path, stale side first.
     for (from, to) in [(&stale, &source), (&source, &stale)] {
         let mut progress = engine::SnapshotProgress::default();
         loop {
@@ -1736,7 +1737,6 @@ async fn session_exchanges_changes_incrementally() {
     let host_a = TestHost::new(&uuid("aaaa"));
     let host_b = TestHost::new(&uuid("bbbb"));
 
-    // First session: seed.
     db::insert_dictionary_entry_returning(&a, "one", None, None).expect("entry");
     run_two_sessions(&a, &b, &host_a, &host_b).await;
     {
@@ -1744,7 +1744,6 @@ async fn session_exchanges_changes_incrementally() {
         assert_eq!(count(&conn_b, "SELECT COUNT(*) FROM dictionary"), 1);
     }
 
-    // Offline edits on both sides, then reconnect: both changes must land.
     db::insert_dictionary_entry_returning(&a, "from-a", None, None).expect("a entry");
     db::insert_snippet_returning(&b, "from-b", "B", "", None).expect("b snippet");
     run_two_sessions(&a, &b, &host_a, &host_b).await;
@@ -1779,8 +1778,6 @@ async fn run_two_sessions(a: &DbHandle, b: &DbHandle, host_a: &TestHost, host_b:
     r2.expect("session b");
 }
 
-// ---- counters + settings ----
-
 #[tokio::test]
 async fn lifetime_counters_merge_without_double_counting() {
     let a = test_db(&uuid("aaaa"));
@@ -1788,8 +1785,6 @@ async fn lifetime_counters_merge_without_double_counting() {
     let host_a = TestHost::new(&uuid("aaaa"));
     let host_b = TestHost::new(&uuid("bbbb"));
 
-    // Each device dictated; stored counts are spoken words ("one two three"
-    // is 3, "hello world" is 2).
     db::insert_transcription_returning(
         &a,
         "one two three",
@@ -1811,7 +1806,6 @@ async fn lifetime_counters_merge_without_double_counting() {
         let (words, _fixes) = sync_store::effective_lifetime_totals(&conn).expect("totals");
         assert_eq!(words, 5, "device {name} merged word count");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM transcriptions"), 2);
-        // History rows arrived with their original timestamps and text.
         let raw: String = conn
             .query_row(
                 "SELECT raw_text FROM transcriptions WHERE words = 3",
@@ -1830,8 +1824,6 @@ async fn settings_lww_applies_newer_remote_value() {
     let host_a = TestHost::new(&uuid("aaaa"));
     let host_b = TestHost::new(&uuid("bbbb"));
 
-    // Realistic wall-clock stamps so the seeding baseline (now_ms) compares
-    // the way production stamps do.
     let base = sync_store::now_ms();
     host_a
         .settings
@@ -1852,7 +1844,6 @@ async fn settings_lww_applies_newer_remote_value() {
         .cloned();
     assert_eq!(applied, Some(json!("formal")), "newer remote setting wins");
 
-    // B's older local change (stamped before A's) must not overwrite it.
     host_b
         .settings
         .lock()
@@ -1862,8 +1853,6 @@ async fn settings_lww_applies_newer_remote_value() {
         "default_tone".to_string(),
         (base + 1_000, host_b.uuid.clone()),
     );
-    // Production stamps the DB when a setting changes locally (save_setting
-    // hook); mirror that here so B's LWW stamp matches its value.
     {
         let conn = b.lock().expect("lock");
         sync_store::set_setting_stamp(&conn, "default_tone", base + 1_000, &host_b.uuid)
@@ -1942,7 +1931,6 @@ fn failed_remote_settings_batch_does_not_record_stamps() {
 
 #[test]
 fn syncable_settings_exclude_device_local_keys() {
-    // Device-specific and secret keys must never appear in the allowlist.
     for key in [
         crate::data::store::KEY_GROQ,
         crate::data::store::KEY_OPENAI,
@@ -2122,11 +2110,6 @@ fn test_context_op(
     }
 }
 
-/// A target this device already resolved for its own platform (whether by a
-/// prior successful auto-match or the user manually picking the app on an
-/// unresolved "?::" chip) must survive a later resync that re-derives a
-/// worse or unresolved match for the same context — see the "sticky" guard
-/// in `reconcile_context_children`.
 #[test]
 fn resolved_context_target_survives_a_later_unresolved_resync() {
     let db = test_db(&uuid("cccc"));
@@ -2150,7 +2133,6 @@ fn resolved_context_target_survives_a_later_unresolved_resync() {
         )
         .expect("context id");
 
-    // The user (or an earlier successful auto-resolve) fixes it locally.
     let my_platform = db::current_platform_tag();
     conn.execute(
         "UPDATE context_targets SET executable = 'antigravity.app', platform = ?1 WHERE context_id = ?2",
@@ -2158,12 +2140,6 @@ fn resolved_context_target_survives_a_later_unresolved_resync() {
     )
     .expect("simulate local fix");
 
-    // A later resync re-derives a bad/unresolved match again for the same
-    // context — e.g. an unrelated edit made on another device (rename, tone
-    // change) after the fix, which still carries that device's now-stale
-    // view of the target list, since a context syncs as one LWW aggregate.
-    // Use a real "now" stamp so this op is unambiguously newer than the
-    // manual-fix trigger's own self-logged stamp above.
     let resync_ts = sync_store::now_ms() + 1;
     let summary = engine::apply_ops(
         &conn,
@@ -2180,14 +2156,6 @@ fn resolved_context_target_survives_a_later_unresolved_resync() {
         "the resync op must actually apply, not be skipped as stale"
     );
 
-    // The sticky row must survive completely unchanged. (A stray unresolved
-    // marker may additionally appear alongside it here, since this test's
-    // synthetic resync payload deliberately carries a different raw source
-    // string than what actually produced "antigravity.app" — in the real
-    // pipeline, `resolve_context_targets_in_ops` re-derives the same source
-    // deterministically and would just re-affirm the sticky row instead. The
-    // one guarantee this test enforces is what the user asked for: the fix
-    // is never silently deleted or overwritten by a later, worse resync.)
     let mut stmt = conn
         .prepare("SELECT executable, platform FROM context_targets WHERE context_id = ?1")
         .expect("prepare");
@@ -2227,8 +2195,6 @@ fn context_app_matching_uses_local_name_and_rejects_weak_matches() {
     assert_eq!(matched.exe, "code.exe");
     assert!(super::manager::closest_installed_app("Completely Different.app", &apps).is_none());
 }
-
-// ---- protocol framing ----
 
 #[tokio::test]
 async fn messages_roundtrip_through_the_framer() {
@@ -2300,8 +2266,6 @@ async fn stalled_tls_handshake_times_out() {
     let _ = client.await;
 }
 
-// ---- pairing handshake ----
-
 #[tokio::test]
 async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
     use super::pairing::{self, IdentityExchange};
@@ -2370,7 +2334,6 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
     assert_eq!(peer_from_a.device_uuid, expected_uuid);
     assert_eq!(peer_from_a.cert_der, vec![4, 5, 6]);
 
-    // Wrong code: both sides must fail with a friendly error, not panic.
     let identity_a2 = IdentityExchange {
         cert_der: vec![7],
         ..identity_a
@@ -2412,7 +2375,6 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
             else {
                 panic!("expected pair request");
             };
-            // Responder uses a DIFFERENT code.
             let (msg_b, cipher) = pairing::responder_start("999999", &spake_msg).expect("start");
             pairing::responder_exchange(&mut b2, &cipher, msg_b, &identity_b2, &device_uuid).await
         },
@@ -2421,9 +2383,6 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
     assert!(responder.is_err(), "responder must fail on code mismatch");
 }
 
-/// Registers the two test databases as paired peers of each other, mirroring
-/// what `complete_pairing` does in production (the session driver reads the
-/// peer row for cursor state, and the manager only dials paired peers).
 fn pair_test_dbs(a: &DbHandle, b: &DbHandle, a_uuid: &str, b_uuid: &str) {
     {
         let conn = a.lock().expect("lock");
@@ -2452,7 +2411,6 @@ fn sub_apps_sync_as_their_own_table_with_assignment_and_deletes() {
     )
     .expect("sub-app");
 
-    // An unassigned sub-app still syncs.
     exchange(&a, &b);
     {
         let conn_b = b.lock().expect("lock");
@@ -2468,7 +2426,6 @@ fn sub_apps_sync_as_their_own_table_with_assignment_and_deletes() {
         assert_eq!(context, None);
     }
 
-    // Assigning on A carries the Context across by uuid.
     let ctx = db::insert_context_returning(&a, "Work", None, None, None, None, false).expect("ctx");
     db::assign_sub_app(&a, sub_app.id, Some(ctx.id)).expect("assign");
     exchange(&a, &b);

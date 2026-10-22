@@ -46,7 +46,6 @@ impl TopologyMuteWatch {
         }
     }
 
-    /// Returns a debounced-ready raw mute bit when any path control changes.
     pub fn poll_edge(&mut self) -> Option<bool> {
         for (i, mute) in self.mutes.iter().enumerate() {
             let Ok(flag) = (unsafe { mute.GetMute() }) else {
@@ -95,8 +94,6 @@ fn collect_capture_path_mutes(device: &IMMDevice) -> Vec<IAudioMute> {
         if let Ok(part) = other.cast::<IPart>() {
             walk_incoming(&part, &mut mutes, &mut visited, 0);
         }
-        // Prefer the mute closest to the capture endpoint. Watching every
-        // subunit and OR-ing them can stick muted on unused mux paths.
         if !mutes.is_empty() {
             mutes.truncate(1);
             break;

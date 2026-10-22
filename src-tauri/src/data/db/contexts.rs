@@ -1,5 +1,3 @@
-//! Contexts, foreground executable targets, and content assignments.
-
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -8,8 +6,6 @@ use super::*;
 
 pub const EVERYWHERE_CONTEXT_ID: i64 = 1;
 
-/// Excludes the built-in Everywhere context — a user can create up to this
-/// many context groups of their own.
 pub const MAX_USER_CONTEXTS: i64 = 200;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -25,19 +21,13 @@ pub struct Context {
     pub contextual_formatting_disabled: bool,
     #[serde(default)]
     pub paste_in_chunks: bool,
-    /// `NULL` when unpinned. Pinned contexts sort newest-pin-first in the
-    /// sidebar; Everywhere is pinned implicitly by the UI and never sets this.
+    #[serde(default)]
+    pub t3_skill_mentions_disabled: bool,
     pub pinned_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// A context that currently contains a dictionary entry or snippet.
-///
-/// The library rows themselves are globally unique, while these assignments
-/// determine which context groups use them. Keeping this small location shape
-/// separate lets the UI explain a duplicate precisely without exposing the
-/// join tables.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContextAssignment {
     pub id: i64,
@@ -50,13 +40,8 @@ pub struct ContextTarget {
     pub id: i64,
     pub context_id: i64,
     pub executable: String,
-    /// The app identity captured when this target was assigned. These fields
-    /// let a target survive versioned/nightly app identifiers changing.
     pub app_name: Option<String>,
     pub developer: Option<String>,
-    /// `"windows"` / `"macos"`, or `None` for rows assigned before this field
-    /// existed (or synced from an unrecognized platform) — those stay visible
-    /// on every device rather than disappearing.
     pub platform: Option<String>,
     pub created_at: String,
 }
@@ -70,20 +55,12 @@ type ContextTargetRow = (
     Option<String>,
 );
 
-/// Tag applied to a target assigned on this device, so a synced-in target
-/// from another OS (e.g. a Windows `.exe` name landing in a Mac's database)
-/// can be hidden from this device's UI without being deleted — going back to
-/// that OS should still see it. Executable naming already differs enough
-/// between platforms (`name.exe` vs `name.app`) that this never affects
-/// foreground-window matching, only which targets a device chooses to show.
 pub fn current_platform_tag() -> Option<&'static str> {
     if cfg!(windows) {
         Some("windows")
     } else if cfg!(target_os = "macos") {
         Some("macos")
     } else if cfg!(target_os = "linux") {
-        // Linux targets are desktop ids/window classes; keep them apart from
-        // synced `.exe` and `.app` targets that can never match here.
         Some("linux")
     } else {
         None
@@ -110,6 +87,7 @@ fn context_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Context> {
         custom_instructions: row.get(7)?,
         contextual_formatting_disabled: row.get::<_, i64>(8)? != 0,
         paste_in_chunks: row.get::<_, i64>(12)? != 0,
+        t3_skill_mentions_disabled: row.get::<_, i64>(13)? != 0,
         pinned_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
@@ -140,9 +118,6 @@ fn normalize_executable(executable: &str) -> Result<String> {
     Ok(normalized)
 }
 
-/// Strips a scheme/path/port from a pasted URL down to a bare domain, so
-/// users can paste `https://mail.google.com/mail/u/0` or type `google.com`
-/// interchangeably.
 fn normalize_domain(domain: &str) -> Result<String> {
     let trimmed = require_nonempty_trimmed("Website", domain)?.to_lowercase();
     let without_scheme = trimmed.split("://").last().unwrap_or(&trimmed);
@@ -150,8 +125,8 @@ fn normalize_domain(domain: &str) -> Result<String> {
         .split(['/', '?', '#'])
         .next()
         .unwrap_or(without_scheme);
-    let host = host.split('@').next_back().unwrap_or(host); // strip user@ prefix
-    let host = host.split(':').next().unwrap_or(host); // strip :port
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
     let normalized = require_nonempty_trimmed("Website", host)?;
     validate_char_limit("Website", &normalized, CONTEXT_DOMAIN_CHAR_LIMIT)?;
     Ok(normalized)
@@ -179,15 +154,13 @@ pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     let conn = lock_conn(db)?;
     query_all(
         &conn,
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
          FROM contexts
          ORDER BY id ASC",
         [], context_from_row,
     )
 }
 
-/// Count of user-created context groups, excluding the built-in "Everywhere"
-/// context. Used for the anonymous `context_group_count` analytics property.
 pub fn count_user_contexts(db: &Db) -> Result<i64> {
     let conn = lock_conn(db)?;
     let count: i64 = conn.query_row(
@@ -249,7 +222,7 @@ pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<Contex
 
 pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
          FROM contexts WHERE id = ?1",
         params![context_id],
         context_from_row,
@@ -331,10 +304,6 @@ fn duplicate_context_name(conn: &Connection, source_name: &str) -> Result<String
     anyhow::bail!("Could not find an available name for the duplicated context")
 }
 
-/// Copies a user context's behavior and assigned library content into a new
-/// unpinned context. App and website targets are deliberately not copied:
-/// each target resolves to one context, so copying one would silently move it
-/// away from the original group.
 pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
@@ -356,8 +325,8 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     tx.execute(
         "INSERT INTO contexts (
            name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled, paste_in_chunks
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+           custom_instructions, contextual_formatting_disabled, paste_in_chunks, t3_skill_mentions_disabled
+         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             name,
             source.icon,
@@ -367,6 +336,7 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
             source.custom_instructions,
             source.contextual_formatting_disabled,
             source.paste_in_chunks,
+            source.t3_skill_mentions_disabled,
         ],
     )?;
     let duplicate_id = tx.last_insert_rowid();
@@ -384,9 +354,6 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     query_context_conn(&conn, duplicate_id)
 }
 
-/// Everywhere is editable like any other context — it is only undeletable.
-/// Renaming it does not change what it does: `is_everywhere` is the flag the
-/// pipeline resolves against, not the name.
 pub fn update_context(db: &Db, context_id: i64, name: &str) -> Result<()> {
     let normalized_name = normalize_context_name(name)?;
     let conn = lock_conn(db)?;
@@ -397,9 +364,6 @@ pub fn update_context(db: &Db, context_id: i64, name: &str) -> Result<()> {
     require_row_changed(changed, "Context", context_id)
 }
 
-/// Sets the context's icon/tone/cleanup override in one shot (always
-/// overwrites all three — `None` clears a field back to "use default").
-/// Kept separate from `update_context` so the plain rename flow is untouched.
 #[cfg(test)]
 pub fn update_context_settings(
     db: &Db,
@@ -435,7 +399,15 @@ pub fn update_context_settings_with_delivery(
     require_row_changed(changed, "Context", context_id)
 }
 
-/// Updates the desktop delivery preference independently of styling.
+pub fn update_context_t3_skill_mentions(db: &Db, context_id: i64, enabled: bool) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let changed = conn.execute(
+        "UPDATE contexts SET t3_skill_mentions_disabled = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![context_id, !enabled],
+    )?;
+    require_row_changed(changed, "Context", context_id)
+}
+
 #[cfg(test)]
 pub fn update_context_paste_in_chunks(db: &Db, context_id: i64, enabled: bool) -> Result<()> {
     let conn = lock_conn(db)?;
@@ -446,10 +418,6 @@ pub fn update_context_paste_in_chunks(db: &Db, context_id: i64, enabled: bool) -
     require_row_changed(changed, "Context", context_id)
 }
 
-/// Sets (or clears, with `None`) the context's accent color independently of
-/// `update_context_settings` — the right-click color picker shouldn't need
-/// to know or resend the context's current icon/tone/cleanup override just
-/// to change this one field.
 pub fn update_context_color(db: &Db, context_id: i64, color: Option<&str>) -> Result<()> {
     let conn = lock_conn(db)?;
     let changed = conn.execute(
@@ -459,10 +427,6 @@ pub fn update_context_color(db: &Db, context_id: i64, color: Option<&str>) -> Re
     require_row_changed(changed, "Context", context_id)
 }
 
-/// Pins or unpins a context. Pinning stamps `pinned_at` with the current time
-/// (re-pinning restamps, so the context becomes the newest pin); unpinning
-/// clears it and the context falls back into the creation-ordered list.
-/// Everywhere included — it is an ordinary row here.
 pub fn set_context_pinned(db: &Db, context_id: i64, pinned: bool) -> Result<()> {
     let conn = lock_conn(db)?;
     let changed = conn.execute(
@@ -481,12 +445,7 @@ pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
     delete_context_conn(&conn, context_id)
 }
 
-/// Connection-level delete used by both the command path and the LAN sync
-/// engine (which applies remote context deletions with identical semantics:
-/// scoped vocabulary moves to Everywhere so nothing is orphaned).
 pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
-    // Remote sync batches already own a transaction. A savepoint makes the
-    // same deletion atomic both inside those batches and for local callers.
     conn.execute_batch("SAVEPOINT delete_context")?;
     let result = delete_context_contents(conn, context_id);
     match result {
@@ -501,13 +460,7 @@ pub fn delete_context_conn(conn: &Connection, context_id: i64) -> Result<()> {
 
 fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
     let everywhere_id = ensure_everywhere_context_conn(tx)?;
-    // Vocabulary assignments move to Everywhere when a Context is deleted;
-    // move the Context-owned correction mappings in the same transaction so
-    // learned substitutions do not disappear or remain orphaned.
     move_dictionary_corrections_conn(tx, context_id, everywhere_id)?;
-    // Evidence is transient and its original Context is being removed. Drop
-    // it rather than allowing a later promotion to invent an Everywhere
-    // origin after the source Context no longer exists.
     tx.execute(
         "DELETE FROM pending_corrections WHERE context_id = ?1",
         params![context_id],
@@ -526,17 +479,10 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
          SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
-    // Historical transcription analytics must follow the same reparenting
-    // semantics as the context's other children. Updating raw rows first lets
-    // the context summary triggers move detailed, unpruned history while the
-    // deleted context UUID is still resolvable.
     tx.execute(
         "UPDATE transcriptions SET context_id = ?1 WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
-    // The raw update above lets the context-daily triggers subtract and add
-    // only the still-detailed rows. Merge the remaining old-UUID buckets now;
-    // those are the already-pruned rows that have no raw trigger to move them.
     let everywhere_uuid: String = tx.query_row(
         "SELECT uuid FROM contexts WHERE id = ?1",
         params![everywhere_id],
@@ -566,8 +512,6 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
         "DELETE FROM transcription_context_daily_stats WHERE context_uuid = ?1",
         params![deleted_uuid],
     )?;
-    // Rollups no longer have a raw transcription to reattribute, so merge
-    // them explicitly into Everywhere before removing the old context.
     tx.execute(
         "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
          SELECT day, hour, ?1, SUM(total_words)
@@ -619,16 +563,6 @@ fn context_target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextT
     })
 }
 
-/// Targets are shown when untagged (pre-v21 or from an unrecognized platform)
-/// or tagged for this device's own platform — see `current_platform_tag`.
-/// Rows still carrying the sync resolver's "?::" unresolved marker (no
-/// locally installed app came close enough to match) are excluded entirely
-/// rather than shown as a broken chip — a target from a context group that
-/// simply doesn't exist on this device should be invisible here, not a
-/// dead "(not found)" entry the user has to notice and clean up. The row
-/// itself stays in the database so a later sync (once a matching app is
-/// installed, or the row resolves on some other device) can still pick it
-/// up — see `sync::manager::reconcile_stale_context_targets`.
 pub fn query_context_targets(db: &Db, context_id: Option<i64>) -> Result<Vec<ContextTarget>> {
     let conn = lock_conn(db)?;
     query_all(
@@ -687,11 +621,6 @@ pub fn assign_context_target_with_metadata(
     Ok(target)
 }
 
-/// Rebinds a target whose old executable disappeared to a strong local app
-/// candidate. Exact executable matches refresh metadata; replacements require
-/// a close name and reject known developer mismatches. The unique executable
-/// constraint is respected: a candidate already owned by another context is
-/// left alone rather than silently stealing that assignment.
 pub fn reconcile_context_targets(
     db: &Db,
     installed_apps: &[crate::system::apps::InstalledApp],
@@ -854,13 +783,6 @@ pub fn remove_context_website(db: &Db, context_id: i64, domain: &str) -> Result<
     require_row_changed(changed, "Context website", context_id)
 }
 
-/// Resolve exactly one context for a foreground executable, optionally
-/// refined by the active browser tab's domain. A target never inherits
-/// multiple contexts; domain match takes priority over the exe match (it's
-/// the more specific signal), and an unmatched/empty executable resolves to
-/// the stable Everywhere context.
-/// Resolution order: sub-app (app + window-title rule), website, app,
-/// Everywhere. Returns the matched sub-app too so the pill can name it.
 #[cfg(any(feature = "dev-session", test))]
 pub fn resolve_context_for_target(
     db: &Db,
@@ -947,9 +869,6 @@ pub fn set_dictionary_context_assignment(
         anyhow::bail!("Dictionary entry {dictionary_id} was not found");
     }
     if assigned {
-        // Sharing a canonical vocabulary item intentionally shares only the
-        // canonical identity. Context-specific correction mappings are not
-        // copied; callers can create an explicit mapping in this Context.
         tx.execute(
             "UPDATE dictionary SET mistake = NULL WHERE id = ?1 AND mistake IS NOT NULL",
             params![dictionary_id],
@@ -1719,13 +1638,6 @@ mod tests {
         assert_eq!(targets[0].context_id, second.id);
     }
 
-    /// A target the sync resolver couldn't match to any app installed on
-    /// this device (stored with the "?::" unresolved marker) must never
-    /// surface as a chip: a context group synced in from another platform
-    /// can legitimately contain apps that plainly don't exist here, and
-    /// showing a dead "(not found)" entry for every one of them is worse
-    /// than just not showing it. The row itself stays in the table so a
-    /// later reconciliation pass can still resolve it once a match exists.
     #[test]
     fn query_context_targets_hides_unresolved_sync_rows() {
         let db = open(":memory:").expect("db");
@@ -2143,9 +2055,6 @@ mod tests {
             insert_dictionary_entry_returning(&db, "Boot", Some("grok bot"), Some(source.id))
                 .expect("source dictionary entry");
 
-        // Assignment is explicit sharing of the canonical term. It must not
-        // copy the source Context's private correction into the target, so a
-        // same spelling in the target can remain owned by its existing term.
         set_dictionary_context_assignment(&db, target.id, second.id, true)
             .expect("canonical assignment should not copy source mapping");
         assert_eq!(
@@ -2166,14 +2075,10 @@ mod tests {
     }
 }
 
-/// Compact per-context totals for the context page's stat strip. Counts only
-/// dictations recorded since schema v18 (when `transcriptions.context_id`
-/// arrived) — older history has no context and is simply not attributed.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ContextStats {
     pub dictations: i64,
     pub words: i64,
-    /// `None` until the context has been used at least once.
     pub last_used_at: Option<String>,
 }
 

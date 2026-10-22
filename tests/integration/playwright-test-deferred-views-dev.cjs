@@ -13,7 +13,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
   page.on('pageerror', (error) => errors.push(error.message));
   await seedDevState(page, { settings: { setup_complete: true, dev_mode_on_startup: true } });
   await page.route('**/AudioSection.svelte', async (route) => {
-    // Exceeds the old search highlight's 40-frame polling window.
     await new Promise((resolve) => setTimeout(resolve, 1100));
     await route.continue();
   });
@@ -40,8 +39,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
 
     await page.locator('.settings-nav-item', { hasText: 'Developer' }).click();
     await page.getByRole('alert').filter({ hasText: "Couldn't load this view." }).waitFor({ state: 'visible', timeout: TIMEOUT });
-    // Browsers can cache a failed module fetch for the life of a document.
-    // Reload clears that failure while saved settings remain in storage.
     await Promise.all([
       page.waitForEvent('load'),
       page.getByRole('button', { name: 'Reload app', exact: true }).click(),

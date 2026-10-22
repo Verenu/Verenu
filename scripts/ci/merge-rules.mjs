@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { requiredCiRulesetPayload } from './ruleset-payload.mjs';
+import { requiredCiContextDiff, requiredCiRulesetPayload } from './ruleset-payload.mjs';
 
-// Run --apply only after the aggregate check is available on master.
-const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'CI required', 'Review dependency changes', 'review'];
+const contexts = ['Frontend checks', 'Dependency audits', 'Rust checks (windows-latest)', 'Rust checks (macos-latest)', 'No large files', 'All-in-one fast profile', 'CI required', 'Review dependency changes'];
 const gh = args => JSON.parse(execFileSync('gh', args, { encoding: 'utf8', timeout: 30_000 }));
 const repository = gh(['repo', 'view', '--json', 'nameWithOwner']).nameWithOwner;
 const endpoint = `repos/${repository}/rulesets`;
@@ -13,15 +12,23 @@ const existing = list.find(row => row.name === name);
 if (process.argv.includes('--apply')) {
   const current = existing ? gh(['api', `${endpoint}/${existing.id}`]) : null;
   const payload = requiredCiRulesetPayload(current, contexts);
-  // Keep a local rollback copy without changing the broader repository rules.
   fs.mkdirSync('test-results', { recursive: true });
   fs.writeFileSync('test-results/merge-rules-before.json', JSON.stringify(current, null, 2), { mode: 0o600 });
   execFileSync('gh', ['api', existing ? `${endpoint}/${existing.id}` : endpoint, '--method', existing ? 'PUT' : 'POST', '--input', '-'], { input: JSON.stringify(payload), stdio: ['pipe', 'ignore', 'inherit'], timeout: 30_000 });
 }
+const configured = gh(['api', endpoint]).find(row => row.name === name);
+const deployed = configured ? gh(['api', `${endpoint}/${configured.id}`]) : null;
+const configuredChecks = (deployed?.rules || []).filter(row => row.type === 'required_status_checks').flatMap(row => row.parameters.required_status_checks);
+const configuredDiff = requiredCiContextDiff(configuredChecks, contexts);
 const effective = gh(['api', `repos/${repository}/rules/branches/master`]);
-const checks = effective.filter(row => row.type === 'required_status_checks').flatMap(row => row.parameters.required_status_checks);
-const missing = contexts.filter(context => !checks.some(row => row.context === context && row.integration_id === 15368));
-if (missing.length) {
-  console.error(`Required CI checks missing: ${missing.join(', ')}`);
+const effectiveChecks = effective.filter(row => row.type === 'required_status_checks').flatMap(row => row.parameters.required_status_checks);
+const effectiveDiff = requiredCiContextDiff(effectiveChecks, contexts);
+if (configuredDiff.missing.length || configuredDiff.unexpected.length || effectiveDiff.missing.length) {
+  const issues = [
+    ...configuredDiff.missing.map(context => `missing ${context}`),
+    ...configuredDiff.unexpected.map(context => `unexpected ${context}`),
+    ...effectiveDiff.missing.map(context => `not effective on master: ${context}`),
+  ];
+  console.error(`Required CI check set drifted: ${issues.join(', ')}`);
   process.exitCode = 1;
-} else console.log('Master requires all existing CI checks and the AI review, bound to GitHub Actions.');
+} else console.log('Master requires the configured CI checks, bound to GitHub Actions.');

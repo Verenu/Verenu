@@ -13,7 +13,6 @@ export function affectsHomeReadiness(tables?: readonly string[]): boolean {
   return tables?.some((table) => READINESS_TABLES.has(table)) ?? false;
 }
 
-/** Subscribe to relevant sync changes and dispose safely if mounting races registration. */
 export function listenForHomeReadinessSyncChanges(
   listen: ReadinessSyncListener,
   refresh: () => void,

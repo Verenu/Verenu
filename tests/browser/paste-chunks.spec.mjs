@@ -16,7 +16,6 @@ test('desktop Context paste preference saves and survives reload and duplication
     expect(context.paste_in_chunks).toBe(true);
     await page.reload();
     const viewport = page.viewportSize();
-    // Desktop sidebar names collapse below the native 900px minimum.
     if (viewport.width < 900) await page.setViewportSize({ width: 1320, height: 860 });
     await page.getByRole('button', { name: 'Synthetic CLI context', exact: true }).click();
     await page.getByRole('button', { name: 'More actions for Synthetic CLI context', exact: true }).click();
@@ -29,7 +28,6 @@ test('desktop Context paste preference saves and survives reload and duplication
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     duplicate = await session.invoke('duplicate_context', { contextId: context.id });
     expect(duplicate.paste_in_chunks).toBe(true);
-    // Mobile and older callers omit this desktop option when editing style.
     await session.invoke('update_context_settings', { contextId: context.id, contextualFormattingDisabled: false });
     context = (await session.invoke('get_contexts')).find(row => row.id === context.id);
     expect(context.paste_in_chunks).toBe(true);

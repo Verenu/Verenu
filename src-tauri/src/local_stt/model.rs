@@ -146,13 +146,6 @@ impl LocalSttModelManifest {
     }
 }
 
-/// Built-in model catalog. URLs, checksums, and sizes are sourced from
-/// Handy (https://github.com/cjpais/Handy) — the upstream project this
-/// local STT feature is based on — and cross-verified against the actual
-/// `blob.handy.computer` archives (HTTP Content-Length and tar listing both
-/// matched Handy's published metadata exactly before these entries were
-/// added). All of these load through the `onnx` Cargo feature already
-/// enabled for Parakeet/Moonshine — no new build dependencies.
 pub fn built_in_model_manifests() -> Vec<LocalSttModelManifest> {
     vec![
         fluid_manifest("fluid-parakeet-ultra", "Parakeet Ultra · CoreML", "Mac Apple Silicon offline multilingual speech. FluidAudio CoreML engine.", 603, &["Multilingual"]),
@@ -456,11 +449,6 @@ fn fluid_manifest(
 mod tests {
     use super::*;
 
-    /// Locks in the exact wire format of `LocalSttEngineType`'s serde
-    /// `snake_case` serialization, since the frontend (`src/lib/tauri.ts`)
-    /// hand-maintains a matching TypeScript union rather than generating it
-    /// — a silent mismatch here would only surface at runtime as an
-    /// unrecognized `engine_type` string in the UI.
     #[test]
     fn engine_type_serializes_to_expected_snake_case() {
         let cases = [

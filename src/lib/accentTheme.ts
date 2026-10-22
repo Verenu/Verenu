@@ -24,7 +24,6 @@ export function normalizeAccentColor(value: unknown): string | null {
   return trimmed.toUpperCase();
 }
 
-/** Exact black and white mean "follow the theme default," not a fixed custom accent. */
 export function isAdaptiveDefaultAccent(value: unknown): boolean {
   const normalized = normalizeAccentColor(value);
   return normalized === '#000000' || normalized === '#FFFFFF';
@@ -48,11 +47,6 @@ export function foregroundForAccent(hex: string): '#17100C' | '#FFFFFF' {
   return darkContrast >= whiteContrast ? '#17100C' : '#FFFFFF';
 }
 
-/**
- * The home-page hotkey tile is always dark. Only neutral black-adjacent
- * accents are replaced with white there. Colored accents stay exact, even if
- * they are dark, so a chosen purple or blue remains consistent across the UI.
- */
 export function foregroundForDarkSurface(hex: string): string {
   const normalized = normalizeAccentColor(hex);
   if (!normalized) return '#FFFFFF';
@@ -76,9 +70,6 @@ export function applyAccentTheme(
     return;
   }
 
-  // The chosen color stays exact at --accent. The rest of the scale mixes
-  // against the current theme tokens, so one custom color remains readable in
-  // both light and dark mode without maintaining two saved palettes.
   const soft = (amount: number) => `color-mix(in srgb, ${accent} ${amount}%, var(--paper))`;
   const ink = (amount: number) => `color-mix(in srgb, ${accent} ${amount}%, var(--ink))`;
   const palette: Record<(typeof ACCENT_PROPERTIES)[number], string> = {

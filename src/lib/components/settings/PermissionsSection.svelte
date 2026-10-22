@@ -5,7 +5,6 @@
   import { isAndroid } from '../../platform';
   import type { ProviderId } from '../../settings';
 
-  // Surface the Keychain row for whichever provider's key is configured.
   let provider = $state<ProviderId | null>(null);
 
   invoke<string | null>('get_setting', { key: 'transcription_provider' })

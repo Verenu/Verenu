@@ -106,10 +106,6 @@
   }
 
   function rebuild() {
-    // Keep the freshly collected inventory local while building the snapshot.
-    // Reading the stateful `inventory` value inside this function and then
-    // assigning it below makes the `$effect` that calls `rebuild()` depend on
-    // a value it also writes, which trips Svelte's effect update-depth guard.
     const nextInventory = collectDomInventory();
     const snapshot = {
       windowKind,
@@ -125,8 +121,6 @@
     inventory = nextInventory;
     dumpTitle = nextTitle;
     dumpText = nextText;
-    // The pill window is content-fit and uses an empty title. Rewriting
-    // document.title here has no SnapShot value and can disturb native sizing.
     if (windowKind === 'main') applyDumpWindowTitle(nextTitle);
     annotateAccessibilityDump();
   }

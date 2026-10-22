@@ -1,5 +1,3 @@
-//! Transcription history queries and lifetime/derived stats.
-
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use rusqlite::params;
@@ -35,16 +33,6 @@ fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntr
     })
 }
 
-// One flat call site in the pipeline; bundling these into a params struct
-// would add a type without removing a caller.
-//
-// `words` is kept in the signature for caller compatibility but is no longer
-// authoritative: the canonical count is the snippet-aware spoken count derived
-// here from `raw`. A bare `split_whitespace` count inflates totals with
-// punctuation-only tokens and snippet triggers (shortcut words that were
-// never spoken), which is what made lifetime totals read higher than what
-// users actually dictated. Storing the spoken count in `words` keeps history,
-// lifetime, and daily rollups on one definition.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_transcription_returning(
     db: &Db,
@@ -56,12 +44,7 @@ pub fn insert_transcription_returning(
     app_name: Option<&str>,
     context_id: Option<i64>,
 ) -> Result<RecentEntry> {
-    // Compute the snippet-aware spoken count before taking the DB mutex. The
-    // snippet trigger snapshot is cached by the schema layer, so this does
-    // not reload complete snippet rows for every transcription.
     let spoken_words = compute_spoken_words(db, raw)?;
-    // Canonical "words dictated": what was actually spoken. The passed-in
-    // `words` (historically a raw whitespace split) is intentionally ignored.
     let _ = words;
     let words = spoken_words;
     let mut conn = lock_conn(db)?;
@@ -73,11 +56,6 @@ pub fn insert_transcription_returning(
         params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id],
         recent_entry_from_row,
     )?;
-    // Lifetime counter is intentionally separate from the transcriptions
-    // table so history retention pruning never shrinks it. Committed in the
-    // same transaction as the insert so a crash between the two can't leave
-    // total_words permanently undercounted. Upsert because a fresh database
-    // (no transcriptions at migration time) may have no id=1 row yet.
     tx.execute(
         "INSERT INTO lifetime_stats (id, total_words) VALUES (1, ?1)
          ON CONFLICT(id) DO UPDATE SET total_words = total_words + ?1",
@@ -87,10 +65,6 @@ pub fn insert_transcription_returning(
     Ok(entry)
 }
 
-/// Lifetime counter for dictionary substitutions actually applied to
-/// dictations. Like `total_words`, it is only ever incremented — never
-/// recomputed from history — so retention pruning can't shrink it. `count`
-/// is the number of dictionary substitution events from one dictation.
 pub fn increment_lifetime_dictionary_fixes(db: &Db, count: i64) -> Result<()> {
     if count <= 0 {
         return Ok(());
@@ -106,10 +80,6 @@ pub fn increment_lifetime_dictionary_fixes(db: &Db, count: i64) -> Result<()> {
 
 pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     let conn = lock_conn(db)?;
-    // We order by id DESC instead of created_at DESC because id is the autoincrementing
-    // primary key. Since IDs are monotonically increasing, this retrieves items in the
-    // same chronological order but leverages the primary key index directly, avoiding
-    // full table scans and manual sorting overhead in SQLite.
     let mut stmt = conn.prepare_cached(
         "SELECT id, clean_text, words, duration_ms, app_name, created_at \
          FROM transcriptions ORDER BY id DESC",
@@ -120,8 +90,6 @@ pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     Ok(rows)
 }
 
-/// Escapes `%`, `_`, and `\` so a user's search text is treated literally inside
-/// a `LIKE ... ESCAPE '\'` pattern instead of acting as wildcards.
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -196,15 +164,6 @@ fn query_recent_page_fts(
     Ok(rows)
 }
 
-/// Recent transcription history, newest-first. `search` (when present) matches
-/// case-insensitively against the cleaned text, the raw transcription, AND the
-/// app name — each whitespace-separated term must match at least one of those
-/// fields (multi-term AND), so typing an app name like "chrome" works straight
-/// in the search box; `app_name` (when present) narrows to a single app.
-/// Search/filtering lives in SQLite so pagination stays intact and the whole
-/// table never reaches the frontend — a `LIKE` scan over short dictation text
-/// is cheap even for large histories, and the `idx_transcriptions_app_name`
-/// index narrows app-filtered queries before the text scan runs.
 pub fn query_recent_page(
     db: &Db,
     limit: usize,
@@ -223,10 +182,6 @@ pub fn query_recent_page(
     )
 }
 
-/// Cursor-based history page. `before_id` is the last row already displayed;
-/// using the AUTOINCREMENT primary key keeps newest-first pagination stable
-/// when rows are inserted while the user is scrolling and avoids SQLite
-/// walking and discarding a deep OFFSET.
 #[allow(dead_code)]
 pub fn query_recent_page_before(
     db: &Db,
@@ -268,8 +223,6 @@ fn query_recent_page_conn(
         }
     }
 
-    // Keep the filtered and unfiltered shapes separate. The former can use
-    // idx_transcriptions_app_name directly; the latter can seek by rowid.
     let mut sql = if app_name.is_some() {
         String::from(
             "SELECT id, clean_text, words, duration_ms, app_name, created_at
@@ -316,9 +269,6 @@ fn query_recent_page_conn(
     Ok(rows)
 }
 
-/// Distinct apps that have dictation history, for the History app filter. Only
-/// non-empty names are returned; pre-v13 rows have no app and simply appear
-/// under the unfiltered view.
 pub fn query_distinct_apps(db: &Db) -> Result<Vec<String>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare(
@@ -334,11 +284,6 @@ pub fn query_distinct_apps(db: &Db) -> Result<Vec<String>> {
 pub fn query_stats(db: &Db) -> Result<Stats> {
     let conn = lock_conn(db)?;
 
-    // Own lifetime counter plus any counters synced from paired devices —
-    // each dictation is counted once, by the device it happened on.
-    // The lifetime counter and WPM aggregate are maintained by the insert and
-    // delete triggers. Home therefore reads two tiny summary rows instead of
-    // rescanning every retained transcription on each refresh.
     let (total_words, avg_wpm): (i64, f64) = conn.query_row(
         "SELECT
            COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
@@ -393,8 +338,6 @@ pub fn prune_transcriptions_older_than(db: &Db, max_age_days: i64) -> Result<usi
     prune_transcriptions_conn(&mut conn, max_age_days)
 }
 
-/// Check retention while holding settings stable through the destructive
-/// transaction. DB precedes settings, matching the backup-import lock order.
 pub fn prune_transcriptions_for_retention(
     db: &Db,
     settings: &crate::data::store::SettingsHandle,
@@ -417,8 +360,6 @@ pub fn prune_transcriptions_for_retention(
 
 fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result<usize> {
     let tx = conn.transaction()?;
-    // Retention removes only transcript text. Summary triggers must stay
-    // quiet so daily activity, streaks, and lifetime WPM remain intact.
     tx.execute(
         "UPDATE stats_maintenance SET retention_prune = 1 WHERE rowid = 1",
         [],
@@ -580,26 +521,21 @@ mod tests {
         )
         .expect("insert raisin");
 
-        // Partial + case-insensitive on clean_text.
         let hits = query_recent_page(&db, 50, 0, Some("apple"), None).expect("search apple");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean Apple Pie");
 
-        // Lowercase query matches uppercase stored text.
         let hits =
             query_recent_page(&db, 50, 0, Some("banana split"), None).expect("search banana");
         assert_eq!(hits.len(), 1);
 
-        // Case-insensitive on raw_text too.
         let hits = query_recent_page(&db, 50, 0, Some("RAW RAISIN"), None).expect("search raw");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean Raisin Bread");
 
-        // No match.
         let hits = query_recent_page(&db, 50, 0, Some("kiwi"), None).expect("search kiwi");
         assert!(hits.is_empty());
 
-        // Missing search returns everything.
         let hits = query_recent_page(&db, 50, 0, None, None).expect("all");
         assert_eq!(hits.len(), 3);
     }
@@ -619,9 +555,6 @@ mod tests {
         )
         .expect("insert quarterly");
 
-        // `arter` is not a token prefix. The trigram FTS index must still
-        // find it, while the LIKE fallback remains available on SQLite builds
-        // without FTS5.
         let hits = query_recent_page(&db, 50, 0, Some("arter"), None).expect("substring search");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Quarterly planning");
@@ -670,7 +603,6 @@ mod tests {
         let first = query_recent_page_before(&db, 2, None, None, None).expect("first page");
         assert_eq!(first.iter().map(|e| e.id).collect::<Vec<_>>(), vec![5, 4]);
 
-        // A new row inserted after page one must not shift page two.
         insert_transcription_returning(&db, "raw new", "clean new", 1, 1000, "t", None, None)
             .expect("insert new");
         let second =
@@ -705,8 +637,6 @@ mod tests {
             .iter()
             .all(|entry| entry.app_name.as_deref() == Some("code.exe")));
 
-        // Both public pagination forms must apply search and app filtering
-        // before selecting a page, including the FTS-capable search path.
         let offset_page = query_recent_page(&db, 1, 1, Some("raw"), Some("code.exe"))
             .expect("offset search page");
         let cursor_page =
@@ -798,17 +728,14 @@ mod tests {
             .iter()
             .all(|e| e.app_name.as_deref() == Some("outlook.exe")));
 
-        // App + search combine: only Outlook rows matching the search text.
         let combined =
             query_recent_page(&db, 50, 0, Some("clean b"), Some("outlook.exe")).expect("combined");
         assert_eq!(combined.len(), 1);
         assert_eq!(combined[0].clean_text, "Clean B");
 
-        // Unknown app matches nothing.
         let none = query_recent_page(&db, 50, 0, None, Some("slack.exe")).expect("slack");
         assert!(none.is_empty());
 
-        // Entries round-trip their app name + duration.
         assert_eq!(outlook[0].duration_ms, 1000);
     }
 
@@ -827,7 +754,6 @@ mod tests {
         )
         .expect("insert percent");
 
-        // A literal "%" must match its own character, not act as a wildcard.
         let hits = query_recent_page(&db, 50, 0, Some("100%"), None).expect("literal percent");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean 100% Sure");
@@ -862,12 +788,10 @@ mod tests {
         )
         .expect("insert outlook");
 
-        // Typing an app name finds that app's dictations without the dropdown.
         let hits = query_recent_page(&db, 50, 0, Some("chrome"), None).expect("search chrome");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean A");
 
-        // Case-insensitive partial matches the .exe too.
         let hits = query_recent_page(&db, 50, 0, Some("LOOK"), None).expect("search look");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean B");
@@ -910,25 +834,20 @@ mod tests {
         )
         .expect("insert report");
 
-        // Both terms must match (AND) across the searched fields.
         let hits = query_recent_page(&db, 50, 0, Some("send report"), None).expect("two terms");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Send the quarterly report");
 
-        // Term order within the query doesn't matter.
         let hits = query_recent_page(&db, 50, 0, Some("REPORT send"), None).expect("reversed");
         assert_eq!(hits.len(), 1);
 
-        // One term in text + one in the app name: both must hold.
         let hits = query_recent_page(&db, 50, 0, Some("report code"), None).expect("text+app");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Refactor the report module");
 
-        // A term matching nothing kills the whole query.
         let hits = query_recent_page(&db, 50, 0, Some("send zzz"), None).expect("no match");
         assert!(hits.is_empty());
 
-        // Extra whitespace is ignored.
         let hits = query_recent_page(&db, 50, 0, Some("  send   report "), None).expect("padded");
         assert_eq!(hits.len(), 1);
     }

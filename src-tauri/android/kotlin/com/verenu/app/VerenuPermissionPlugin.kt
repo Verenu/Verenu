@@ -40,7 +40,6 @@ internal class PermissionRequestArgs {
   lateinit var permission: String
 }
 
-/** Native owner of Android's permission prompts and settings recovery pages. */
 @TauriPlugin(
   permissions = [
     Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone"),
@@ -62,7 +61,6 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
     activity.getSharedPreferences("verenu_permission_requests", Context.MODE_PRIVATE)
   }
 
-  /** An app's launcher icon as a PNG data URI (null when it cannot be read). */
   @Command
   fun appIcon(invoke: Invoke) {
     val args = invoke.parseArgs(AppIconArgs::class.java)
@@ -115,7 +113,6 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
     }
   }
 
-  /** Launcher apps (label + package), for the Contexts app picker. */
   @Command
   fun installedApps(invoke: Invoke) {
     appInfoWorker.submit(
@@ -205,7 +202,6 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
     try {
       startActivityForResult(invoke, intent, "settingsActivityCallback")
     } catch (_: Exception) {
-      // OEMs may not expose the direct battery confirmation activity.
       if (permission == "battery_exemption") {
         try {
           startActivityForResult(
@@ -215,7 +211,6 @@ class VerenuPermissionPlugin(private val activity: Activity) : Plugin(activity) 
           )
           return
         } catch (_: Exception) {
-          // Fall through to the app settings page, which exists on supported Android versions.
         }
       }
       openAppSettings(invoke)

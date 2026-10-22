@@ -12,10 +12,6 @@ use transcribe_rs::onnx::Quantization;
 use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams, WhisperLoadParams};
 use transcribe_rs::{SpeechModel, TranscribeOptions};
 
-/// Number of inference threads for streaming Moonshine models. Matches the
-/// crate's own example default (examples/moonshine_streaming.rs) — there is
-/// no per-platform tuning need here, ONNX Runtime CPU inference scales fine
-/// at this thread count for a model this small.
 const MOONSHINE_STREAMING_THREADS: usize = 4;
 
 pub enum LoadedLocalSttEngine {
@@ -54,8 +50,6 @@ mod tests {
     #[test]
     #[ignore = "requires explicitly downloaded GGML model and public synthetic 16 kHz WAV"]
     fn whisper_native_logs_do_not_expose_public_fixture() {
-        // Run in a separate process to capture native stdout/stderr as well as
-        // Rust test output. The inference test supplies both speech and hints.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -239,8 +233,6 @@ pub fn load_engine(
         LocalSttEngineType::Whisper => {
             #[cfg(not(target_os = "android"))]
             {
-                // Native debug logs can contain prompt and transcript tokens.
-                // With no logging backend enabled, both hooks discard them.
                 whisper_rs::install_logging_hooks();
                 Ok(LoadedLocalSttEngine::Whisper(
                     WhisperEngine::load_with_params(

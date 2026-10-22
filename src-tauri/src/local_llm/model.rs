@@ -97,8 +97,6 @@ impl LocalLlmModelManifest {
             is_downloaded: self.is_downloaded(root),
             is_downloading,
             partial_size: self.partial_size(root),
-            // Phones recommend the smallest model: the 1.5B one made cleanup take far
-            // too long on real devices.
             is_recommended: if cfg!(target_os = "android") {
                 self.id == "qwen2.5-0.5b-instruct"
             } else {
@@ -387,11 +385,6 @@ mod tests {
 
     #[test]
     fn every_local_cleanup_artifact_has_a_well_formed_sha256() {
-        // Downloaded GGUF files are executed by llama-server, so every
-        // artifact must carry a checksum to verify against — and it must
-        // actually look like a SHA256 hex digest, not a placeholder/typo,
-        // since a malformed value would silently never match and brick the
-        // model (every download would fail verification forever).
         for manifest in built_in_model_manifests() {
             for artifact in manifest.artifacts {
                 let hash = artifact.sha256.unwrap_or_else(|| {

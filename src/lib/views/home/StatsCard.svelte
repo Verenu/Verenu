@@ -70,12 +70,6 @@
     }
   }
 
-  /*
-   * Phones keep a fixed 3-up row rather than auto-fit. auto-fit with a 120px
-   * floor reflowed to 2+1 at common phone widths, which read as a broken grid —
-   * one stat orphaned on its own line with its label adrift. Three equal
-   * columns and a baseline-stacked number/label stay legible down to ~320px.
-   */
   @media (max-width: 720px) {
     .stat-card {
       grid-template-columns: repeat(3, minmax(0, 1fr));

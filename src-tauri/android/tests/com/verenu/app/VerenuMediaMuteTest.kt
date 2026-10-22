@@ -172,7 +172,6 @@ class VerenuMediaMuteTest {
             media.control.update(false)
             throw AssertionError("restore should fail")
         } catch (_: IllegalStateException) {
-            // The saved value remains available for the next service poll.
         }
         assertEquals(7, media.store.ownedVolume)
 
@@ -189,7 +188,6 @@ class VerenuMediaMuteTest {
             media.control.update(true)
             throw AssertionError("mute should not proceed without durable restore state")
         } catch (_: IllegalStateException) {
-            // Do not mute if crash recovery state could not be persisted.
         }
         assertEquals(7, media.volume)
         assertTrue(media.writes.isEmpty())
