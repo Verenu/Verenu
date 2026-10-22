@@ -6,6 +6,14 @@ with quotes, brackets, Markdown closers, whitespace and right-hand text, plus
 abbreviations, decimals, URLs, contractions, protected casing and empty input.
 The Rust unit suite also checks idempotence and unreliable-context independence.
 
+At a prose boundary, a dotted `@domain` fragment joins an existing lowercase
+email-like token, and a `#fragment` joins a slash-delimited URL or path prefix.
+Handles such as `@alice` and hashtags in prose still receive a separating
+space. A single-dash fragment such as `well` + `-known` is ambiguous with an
+option such as `-help`; the formatter keeps the prose-boundary space instead
+of guessing from a word list. Use a space or a complete lexical item when the
+intended boundary needs to be unambiguous.
+
 Run the standalone harness against the production formatter without compiling
 the desktop shell:
 
@@ -34,3 +42,19 @@ Do not run concurrent builds during measurements.
 This measures the deterministic insertion formatter only. It does not measure
 speech recognition, model cleanup, accessibility probing or clipboard delivery,
 and does not establish end-to-end dictation speed or platform integration.
+
+## Fragment fix measurement (2026-10-21)
+
+The email/path fragment fix was compared with source at `0136168058a1d96abd560e928feb5661d3cbde78` using the same expanded 5,172-case corpus. The prior source had 16 expected-output mismatches; the fixed source had none. Five optimized processes per side alternated, with five measured rounds per process and the warmup round excluded.
+
+| Source | Median | Range |
+| --- | ---: | ---: |
+| Before | 203.3 ns/insertion | 200.5–220.1 ns/insertion |
+| After | 216.0 ns/insertion | 213.2–225.5 ns/insertion |
+
+The ranges overlap, so this is inconclusive and does not establish a measurable
+latency change. `rustc 1.99.1` compiled both sides with `-O`. The host had a load
+average of 7.16 on 12 cores and another compiler process was active; the two
+sides were interleaved. A full harness run used 6.873 seconds of CPU in 6.900
+seconds elapsed, consistent with a CPU-bound formatter. `perf` was unavailable,
+so no call-level profile or exact instruction-level limiter is claimed.

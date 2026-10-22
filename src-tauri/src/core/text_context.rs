@@ -461,6 +461,62 @@ fn is_token_joiner(ch: char) -> bool {
     matches!(ch, '/' | '\\' | '_' | '@' | '#' | '-')
 }
 
+fn is_email_local_part_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '.' | '_' | '%' | '+' | '-')
+}
+
+fn starts_with_email_domain_fragment(text: &str) -> bool {
+    let Some(candidate) = text.strip_prefix('@') else {
+        return false;
+    };
+    let Some(candidate) = candidate.split_whitespace().next() else {
+        return false;
+    };
+    let domain = candidate.trim_end_matches(|ch: char| {
+        is_closing_delimiter(ch) || is_sentence_terminator(ch) || matches!(ch, ',' | ';' | ':')
+    });
+    let mut labels = domain.split('.');
+    let Some(first) = labels.next() else {
+        return false;
+    };
+    let valid_label = |label: &str| {
+        !label.is_empty()
+            && label.chars().next().is_some_and(char::is_alphanumeric)
+            && label.chars().next_back().is_some_and(char::is_alphanumeric)
+            && label.chars().all(|ch| ch.is_alphanumeric() || ch == '-')
+    };
+    valid_label(first) && labels.next().is_some_and(valid_label) && labels.all(valid_label)
+}
+
+fn is_email_domain_continuation(left: &str, text: &str) -> bool {
+    let Some(local_part) = left.split_whitespace().next_back() else {
+        return false;
+    };
+    !local_part.is_empty()
+        && local_part
+            .chars()
+            .all(|ch| is_email_local_part_char(ch) && !ch.is_uppercase())
+        && starts_with_email_domain_fragment(text)
+}
+
+fn is_url_or_path_prefix(left: &str) -> bool {
+    let Some(token) = left.split_whitespace().next_back() else {
+        return false;
+    };
+    let token = token
+        .trim_start_matches(is_opening_delimiter)
+        .trim_end_matches(is_terminal_wrapper);
+    let has_path_marker = token.starts_with('/') || token.contains('/');
+    has_path_marker
+        && token.chars().all(|ch| {
+            ch.is_alphanumeric()
+                || matches!(
+                    ch,
+                    '/' | '\\' | '.' | '_' | '-' | '+' | '~' | '%' | ':' | '?' | '&' | '=' | '#'
+                )
+        })
+}
+
 fn is_punctuation(ch: char) -> bool {
     is_sentence_terminator(ch)
         || is_opening_delimiter(ch)
@@ -769,7 +825,8 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
         && first.is_some_and(|ch| {
             (!is_closing_delimiter(ch) || is_opening_delimiter(ch))
                 && (!is_token_joiner(ch)
-                    || matches!(ch, '@' | '#')
+                    || (ch == '@' && !is_email_domain_continuation(context.left, text))
+                    || (ch == '#' && !is_url_or_path_prefix(context.left))
                     || (ch == '-' && starts_with_literal_token(text)))
                 && !is_sentence_terminator(ch)
                 && !matches!(ch, ',' | ';' | ':' | '，' | '；' | '：')
