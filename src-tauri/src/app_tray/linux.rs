@@ -1,4 +1,8 @@
 use ksni::{Tray, TrayMethods, menu::StandardItem};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,7 +15,16 @@ enum Action {
 
 struct LinuxTray {
     icon: ksni::Icon,
+    icon_revision: Arc<AtomicU64>,
     dispatch: Box<dyn Fn(Action) + Send + Sync>,
+}
+
+impl LinuxTray {
+    fn apply_icon_update(&mut self, revision: u64, rgba: Vec<u8>, size: u32) {
+        if self.icon_revision.load(Ordering::SeqCst) == revision {
+            self.icon = icon(rgba, size);
+        }
+    }
 }
 
 impl Tray for LinuxTray {
@@ -73,8 +86,11 @@ pub(super) fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     let owner = app.handle().clone();
     let theme = super::resolve_icon_theme(&owner, None);
     let image = super::runtime_tray_icon_image(theme, super::runtime_icon_foreground(theme), 32);
+    let icon_revision = Arc::new(AtomicU64::new(0));
+    app.manage(IconRevision(icon_revision.clone()));
     let tray = LinuxTray {
         icon: icon(image.rgba().to_vec(), 32),
+        icon_revision,
         dispatch: Box::new(move |action| {
             let app = owner.clone();
             if let Err(error) = owner.run_on_main_thread(move || match action {
@@ -91,18 +107,31 @@ pub(super) fn setup(app: &mut tauri::App) -> tauri::Result<()> {
         }),
     };
     // Login startup can precede the shell's watcher; reconnect when it appears.
-    let handle = tauri::async_runtime::block_on(tray.assume_sni_available(true).spawn())
-        .map_err(|error| tauri::Error::Anyhow(anyhow::anyhow!(error)))?;
-    app.manage(handle);
+    let tray_owner = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        match tray.assume_sni_available(true).spawn().await {
+            Ok(handle) => {
+                tray_owner.manage(handle);
+            }
+            Err(error) => log::warn!("Failed to register Linux tray: {error}"),
+        }
+    });
     Ok(())
 }
 
+#[derive(Clone)]
+struct IconRevision(Arc<AtomicU64>);
+
 pub(super) fn update_icon(app: &AppHandle, rgba: Vec<u8>, size: u32) {
-    if let Some(handle) = app.try_state::<ksni::Handle<LinuxTray>>() {
+    if let (Some(handle), Some(revision)) = (
+        app.try_state::<ksni::Handle<LinuxTray>>(),
+        app.try_state::<IconRevision>(),
+    ) {
         let handle = handle.inner().clone();
+        let revision = revision.0.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
         tauri::async_runtime::spawn(async move {
             handle
-                .update(move |tray| tray.icon = icon(rgba, size))
+                .update(move |tray| tray.apply_icon_update(revision, rgba, size))
                 .await;
         });
     }
@@ -119,6 +148,7 @@ mod tests {
         let recorded = actions.clone();
         let mut tray = LinuxTray {
             icon: icon(vec![10, 20, 30, 40], 1),
+            icon_revision: Arc::new(AtomicU64::new(0)),
             dispatch: Box::new(move |action| recorded.lock().unwrap().push(action)),
         };
         assert_eq!(tray.id(), "Verenu");
@@ -168,5 +198,21 @@ mod tests {
             ]
         );
         assert_eq!((image.width, image.height), (2, 2));
+    }
+
+    #[test]
+    fn stale_icon_updates_do_not_replace_the_latest_icon() {
+        let revision = Arc::new(AtomicU64::new(2));
+        let mut tray = LinuxTray {
+            icon: icon(vec![10, 20, 30, 40], 1),
+            icon_revision: revision,
+            dispatch: Box::new(|_| {}),
+        };
+
+        tray.apply_icon_update(1, vec![50, 60, 70, 80], 1);
+        assert_eq!(tray.icon.data, [40, 10, 20, 30]);
+
+        tray.apply_icon_update(2, vec![50, 60, 70, 80], 1);
+        assert_eq!(tray.icon.data, [80, 50, 60, 70]);
     }
 }
