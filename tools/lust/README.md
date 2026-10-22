@@ -28,16 +28,18 @@ node tools/lust/run.mjs build-no-rustc
 node --test tools/lust/*.test.mjs
 ```
 
-`toolchain.json` pins [MONKE2525E/lust-lang](https://github.com/MONKE2525E/lust-lang/tree/verenu-support)
-at commit `cb17fe300d9023c3a2c1108f75d87cc5780deaa3`, based on upstream
+`toolchain.json` pins [MONKE2525E/Lustful](https://github.com/MONKE2525E/Lustful/tree/verenu-native-pointers)
+at commit `bfd38464ab46391723de7165da5bf5c689616e5d`, based on upstream
 `91dce84cf1568fb39954b2717a7a3dddedce82d4`. The fork adds `Chars::as_str`
 with the original string's lifetime and differential runtime and borrow tests.
 It also adds a tested `log` 0.4.34 source adapter and correct Cargo target names
 in `module_path!()` metadata.
-The fork supports checked scalar C imports on x86_64 Linux and forbids implicit
-rustc host preparation by default. Standalone files and dependency-free packages
-can use this strict path. Other Cargo graphs fail with L0532 before host
-preparation or cached host outputs are used. `--host-tools` or
+The fork supports checked primitive C imports on x86_64 Linux and forbids implicit
+rustc host preparation by default. Standalone files, dependency-free packages,
+closed local workspaces, and restricted normal dependency graphs can use this
+strict path. Graphs needing build scripts, procedural macros, or conditional
+dependency preparation fail with L0532 before host preparation or cached host
+outputs are used. `--host-tools` or
 `LUST_HOST_TOOLS=1` explicitly permits those routes; such a run is not rustc-free.
 The full desktop backend still requires substantial compiler development.
 To use an existing installation instead, set `LUST_BIN` to its
@@ -98,7 +100,8 @@ The earlier host-enabled probe rejects the real edition-2021 manifest with L0530
 the copied edition changed, both targets pass the previous `log::warn!` expansion
 blocker and reject `serde_json::json!` with L0802. The
 standalone async probe is valid Rust and Lust rejects it with L0405. Scalar C
-imports now work on x86_64 Linux; pointers and callbacks still fail with L0810.
+imports now work on x86_64 Linux. Thin pointers to the admitted integer types
+also work; nested pointers, callbacks, and broader native APIs remain unsupported.
 These additions do not compile the desktop. Verenu's
 provider requests, portal hotkeys, Tauri command macros, SQLite, audio, and
 native integrations require broader compiler and dependency support.
