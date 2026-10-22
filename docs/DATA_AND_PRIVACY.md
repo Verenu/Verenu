@@ -10,7 +10,6 @@ This document explains what Verenu keeps on device, what it sends off device, an
   token; this is limited to explicit
   aggregate events and is described below.
 - Your dictated audio and text either stay on your machine or go directly to the AI providers you configure — never through a Verenu server.
-- If data leaves your machine, it leaves because a feature needs it: either the AI provider endpoint that feature depends on, or Verenu's own public status/update endpoint.
 - Safety defaults beat convenience. On Windows, updates download or open the published installer instead of auto-executing downloaded bytes.
 
 ## What Stays On Device
@@ -288,15 +287,6 @@ That said, once data is sent to a third-party AI provider, that provider's reten
 | Export data | backup file on local disk | nothing unless you share the file yourself |
 | Logs export | log file on local disk | nothing unless you share the file yourself |
 | Optional desktop/Android product analytics | random installation identity, first-seen version, milestone state, and local queues | approved events with random installation/session/run IDs and sanitized failure reports; see [contract](ANALYTICS.md) |
-
-## macOS And Windows Key Storage
-
-Verenu treats OS credential storage as the source of truth for API keys:
-
-- Windows uses Credential Manager
-- macOS uses Keychain
-
-That is separate from the SQLite app database on purpose. API keys should not be living in the transcription database.
 
 ## If You Change Privacy Behavior
 
