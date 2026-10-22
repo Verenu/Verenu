@@ -606,6 +606,7 @@ fn base_config() -> store::PipelineConfig {
         key_xai: "fixture-xai-key".into(),
         custom_providers: Vec::new(),
         custom_keys: Default::default(),
+        allow_native_credential_lookup: false,
         default_tone: "casual".into(),
         cleanup_intensity: "medium".into(),
         clipboard_phrase_enabled: false,
