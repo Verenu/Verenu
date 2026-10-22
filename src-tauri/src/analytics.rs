@@ -961,7 +961,8 @@ impl Analytics {
                 .post(format!("{host}/{}", kind.endpoint()))
                 .json(&payload)
                 .send()
-                .await;
+                .await
+                .and_then(reqwest::Response::error_for_status);
             if let Err(error) = result {
                 log::debug!(
                     "{} delivery unavailable ({})",

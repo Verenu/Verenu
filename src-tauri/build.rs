@@ -1,5 +1,7 @@
 #[path = "build_support/foundation_models.rs"]
 mod foundation_models;
+#[path = "build_support/posthog.rs"]
+mod posthog;
 #[path = "build_support/speech.rs"]
 mod speech;
 
@@ -21,18 +23,29 @@ fn main() {
     {
         panic!("native testing features are forbidden in release builds");
     }
+    println!("cargo:rerun-if-env-changed=VERENU_REQUIRE_POSTHOG");
     println!("cargo:rerun-if-env-changed=POSTHOG_PROJECT_TOKEN");
     println!("cargo:rerun-if-env-changed=POSTHOG_HOST");
-    if std::env::var("POSTHOG_PROJECT_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
-        println!(
-            "cargo:rustc-env=VERENU_POSTHOG_PROJECT_TOKEN={}",
-            std::env::var("POSTHOG_PROJECT_TOKEN").unwrap()
-        );
+    let require_posthog = match std::env::var("VERENU_REQUIRE_POSTHOG") {
+        Ok(value) if value == "1" => true,
+        Ok(value) if value == "0" => false,
+        Ok(_) => panic!("VERENU_REQUIRE_POSTHOG must be 0 or 1"),
+        Err(_) => false,
+    };
+    let posthog_token = std::env::var("POSTHOG_PROJECT_TOKEN").ok();
+    let posthog_host = std::env::var("POSTHOG_HOST").ok();
+    if let Err(error) = posthog::validate_release_config(
+        require_posthog,
+        posthog_token.as_deref(),
+        posthog_host.as_deref(),
+    ) {
+        panic!("{error}");
     }
-    if let Ok(host) = std::env::var("POSTHOG_HOST") {
-        if !host.trim().is_empty() {
-            println!("cargo:rustc-env=VERENU_POSTHOG_HOST={host}");
-        }
+    if let Some(token) = posthog_token.filter(|value| !value.trim().is_empty()) {
+        println!("cargo:rustc-env=VERENU_POSTHOG_PROJECT_TOKEN={}", token);
+    }
+    if let Some(host) = posthog_host.filter(|value| !value.trim().is_empty()) {
+        println!("cargo:rustc-env=VERENU_POSTHOG_HOST={host}");
     }
     // Build scripts themselves run for the host, so `cfg(target_os =
     // "windows")` describes this machine rather than Cargo's Android target.
