@@ -28,9 +28,11 @@ node --test tools/lust/run.test.mjs
 ```
 
 `toolchain.json` pins [MONKE2525E/lust-lang](https://github.com/MONKE2525E/lust-lang/tree/verenu-support)
-at commit `5a3d5fcff0bb5eebc90202ea8475fd9d5a3bd026`, based on upstream
+at commit `256c964fd72ea3e2c99798fbaef34d6bfa813fc1`, based on upstream
 `91dce84cf1568fb39954b2717a7a3dddedce82d4`. The fork adds `Chars::as_str`
 with the original string's lifetime and differential runtime and borrow tests.
+It also adds a tested `log` 0.4.34 source adapter and correct Cargo target names
+in `module_path!()` metadata.
 The full desktop backend still requires substantial compiler development.
 To use an existing installation instead, set `LUST_BIN` to its
 `bin/lust` or `target/release/lust` executable. The matching `lust-core` and
@@ -60,9 +62,10 @@ fallback. Cargo may prepare build scripts and procedural macros during Lust's
 dependency discovery; that preparation is not successful Lust compilation.
 
 The tested fork rejects the real edition-2021 manifest with L0530. With only
-the copied edition changed, both targets reject `log::warn!` with L0802. The
+the copied edition changed, both targets pass the previous `log::warn!` expansion
+blocker and reject `serde_json::json!` with L0802. The
 standalone probes are valid Rust; Lust rejects async with L0405 and native FFI
-with L0810. Logging is therefore only the first dependency blocker. Verenu's
+with L0810. Logging support therefore does not compile the desktop. Verenu's
 provider requests, portal hotkeys, Tauri command macros, SQLite, audio, and
 native integrations require broader compiler and dependency support.
 
