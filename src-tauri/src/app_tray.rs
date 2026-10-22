@@ -1,11 +1,25 @@
 use std::sync::{Mutex, OnceLock};
+#[cfg(not(target_os = "linux"))]
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, Theme,
 };
+#[cfg(not(target_os = "linux"))]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager, Theme};
 
+#[cfg(not(target_os = "linux"))]
 const TRAY_ID: &str = "verenu-tray";
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    linux::setup(app)?;
+    apply_runtime_icons(app.handle(), None);
+    Ok(())
+}
 
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
     key == crate::data::store::APPEARANCE_MODE || key == crate::data::store::CUSTOM_THEME
@@ -30,6 +44,7 @@ mod canonical_mark {
     include!("generated_icon_geometry.rs");
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open_i = MenuItem::with_id(app, "open", "Open Verenu", true, None::<&str>)?;
     #[cfg(target_os = "macos")]
@@ -248,6 +263,10 @@ fn apply_runtime_icons_on_main_thread(app: &AppHandle, theme_hint: Option<Theme>
         }
     }
 
+    #[cfg(target_os = "linux")]
+    linux::update_icon(app, tray_rgba, tray_size);
+
+    #[cfg(not(target_os = "linux"))]
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let result = tray.set_icon_with_as_template(
             Some(tauri::image::Image::new_owned(
