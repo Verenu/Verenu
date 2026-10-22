@@ -66,6 +66,22 @@ This document is the practical release checklist for Verenu. For release note wo
 4. Run the manual installer workflow from `master` when an on-demand
    production build is needed; it builds the ref selected at dispatch.
 
+## Release Analytics Configuration
+
+Both desktop release workflows validate analytics configuration before
+starting installer builds, and the release build itself fails if analytics
+configuration is missing. Configure the repository Actions secret
+`POSTHOG_PROJECT_TOKEN` with the project's public PostHog ingestion token. Do
+not use a personal or admin API key. The optional Actions variable
+`POSTHOG_HOST` sets the HTTPS ingestion base URL; it defaults to
+`https://us.i.posthog.com`.
+
+Local builds may omit analytics configuration and remain analytics-off at the
+transport layer. The app's analytics opt-out remains available in all builds.
+The automated release workflows currently build Windows, macOS, and Linux.
+There is no Android release build job yet; when one is added, it must use the
+same preflight and required-build setting.
+
 ## Version Bump
 
 Update these three files together:
