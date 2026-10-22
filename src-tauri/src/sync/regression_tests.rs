@@ -1,4 +1,3 @@
-//! Regression cases use synthetic data and isolated device databases.
 use super::*;
 
 #[tokio::test]

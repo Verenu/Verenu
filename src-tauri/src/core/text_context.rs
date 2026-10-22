@@ -182,8 +182,6 @@ pub fn classify_context_tail(text: &str) -> SentenceContext {
         return SentenceContext::NewSentence;
     }
     for (idx, ch) in text.char_indices().rev() {
-        // Check newlines before is_invisible_prefix_char: is_control() includes \n/\r,
-        // so they would be skipped by the continue below and never reach the \n/\r arm.
         if matches!(ch, '\n' | '\r') {
             return SentenceContext::NewSentence;
         }
@@ -350,9 +348,6 @@ pub struct InsertionDecision {
     pub reason: &'static str,
 }
 
-/// Everything the formatter is allowed to know about the insertion point.
-/// Edge confidence stays separate because casing and leading spacing only
-/// depend on the left edge, while trailing spacing only depends on the right.
 pub struct CaretTextContext<'a> {
     pub left: &'a str,
     pub right: &'a str,
@@ -593,10 +588,6 @@ fn at_sentence_boundary(left: &str) -> bool {
     }
 }
 
-/// Produces capitalization and spacing decisions from one caret snapshot.
-/// Each mutation uses only the edge it depends on, so a failed right-side read
-/// cannot disable safe continuation casing and a failed left-side read cannot
-/// invent a sentence boundary.
 pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionDecision {
     if text.is_empty() {
         return InsertionDecision {
@@ -661,10 +652,6 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
             .any(is_cjk);
     let uses_spaces =
         language_uses_interword_spaces(context.language) && !auto_detected_no_space_script;
-    // A joiner touching either caret edge means the insertion is part of a
-    // path, URL, handle, identifier, or compound token. Treat the whole caret
-    // as token-local so we never create a half-broken value such as
-    // `path/value file`.
     let token_local = (context.left_reliable && left_immediate.is_some_and(is_token_joiner))
         || (context.right_reliable && right_immediate.is_some_and(is_token_joiner));
 
@@ -785,6 +772,58 @@ mod tests {
         assert_eq!(smart("n't ready", "is", "").text, "n't ready");
         assert_eq!(smart(", however", "word", "").text, ", however");
         assert_eq!(smart("\"hello\"", "They said", "").text, " \"hello\"");
+    }
+
+    #[test]
+    fn wrapped_terminal_t3_skill_token_keeps_canonical_case_at_sentence_boundary() {
+        let catalog = crate::system::t3_skills::Catalog {
+            environment_id: "synthetic".into(),
+            id: "catalog".into(),
+            label: "Codex".into(),
+            provider_instance_id: "codex".into(),
+            workspace_id: "synthetic".into(),
+            revision: "1".into(),
+            skills: vec![crate::system::t3_skills::Skill {
+                name: "babysit-pr".into(),
+                display_name: None,
+                description: None,
+            }],
+        };
+        let normalized = catalog.normalize_mentions("($BABYSIT-PR)");
+        assert_eq!(normalized, "( $babysit-pr ) ");
+        assert!(catalog.starts_with_skill_mention(&normalized));
+
+        let protected = decide_insertion(
+            &normalized,
+            CaretTextContext {
+                left: "Previous sentence.",
+                right: "",
+                left_reliable: true,
+                right_reliable: true,
+                language: "en",
+                casing_enabled: true,
+                preserve_sentence_case: false,
+                protected_initial_case: catalog.starts_with_skill_mention(&normalized),
+            },
+        );
+        assert_eq!(protected.text, " ( $babysit-pr ) ");
+        assert_eq!(protected.case_action, CaseAction::Preserve);
+
+        let ordinary = decide_insertion(
+            "use a skill",
+            CaretTextContext {
+                left: "Previous sentence.",
+                right: "",
+                left_reliable: true,
+                right_reliable: true,
+                language: "en",
+                casing_enabled: true,
+                preserve_sentence_case: false,
+                protected_initial_case: catalog.starts_with_skill_mention("use a skill"),
+            },
+        );
+        assert_eq!(ordinary.text, " Use a skill");
+        assert_eq!(ordinary.case_action, CaseAction::CapitalizeFirstWord);
     }
 
     #[test]
@@ -1030,8 +1069,6 @@ mod tests {
 
     #[test]
     fn context_tail_newline_is_sentence_boundary() {
-        // Newlines must be checked before is_invisible_prefix_char because
-        // is_control() returns true for \n/\r and would otherwise skip them.
         assert_eq!(
             classify_context_tail("hello\n"),
             SentenceContext::NewSentence

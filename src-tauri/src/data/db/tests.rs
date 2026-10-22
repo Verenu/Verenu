@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
+    let path = temp_db_path("t3_skills_v31");
+    let context_id;
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        context_id = insert_context_returning(&db, "Synthetic T3", None, None, None, None, false)
+            .unwrap()
+            .id;
+        assign_context_target(&db, context_id, "t3code").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE contexts DROP COLUMN t3_skill_mentions_disabled; PRAGMA user_version = 31;").unwrap();
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(
+            !query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+        assert_eq!(
+            query_context_targets(&db, Some(context_id)).unwrap().len(),
+            1
+        );
+        update_context_t3_skill_mentions(&db, context_id, false).unwrap();
+        assert!(
+            duplicate_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+    }
+    {
+        let db = open(path.to_str().unwrap()).unwrap();
+        assert!(
+            query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+        update_context_t3_skill_mentions(&db, context_id, true).unwrap();
+        assert!(
+            !query_context(&db, context_id)
+                .unwrap()
+                .t3_skill_mentions_disabled
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn paste_chunks_migrates_v30_defaults_and_survives_reopen() {
     let path = temp_db_path("paste_chunks_v30");
     {
@@ -127,9 +175,6 @@ fn sqlite_disk_maintenance_reclaims_incremental_free_pages() {
         .query_row("PRAGMA freelist_count", [], |r| r.get(0))
         .expect("freelist");
     assert_eq!(auto_vacuum, 2);
-    // The maintenance threshold intentionally avoids an aggressive rewrite
-    // while the database is live. New databases still use the reclaimable
-    // incremental mode, which is the contract this test protects.
     assert!(freelist >= 0);
     drop(conn);
     drop(db);
@@ -199,7 +244,6 @@ fn fts_repair_rebuilds_updates_made_while_triggers_were_missing() {
             .expect("indexed search without LIKE fallback");
         assert_eq!(matches, expected);
     }
-    // Reopening a healthy index must not duplicate its postings.
     super::schema::ensure_history_fts(&conn);
     conn.execute(
         "INSERT INTO transcriptions_fts(transcriptions_fts, rank) VALUES ('integrity-check', 1)",
@@ -317,11 +361,6 @@ fn open_backfills_legacy_spoken_words_column() {
 
 #[test]
 fn open_repairs_db_stuck_at_v7_without_spoken_words_column() {
-    // Simulates a database left at user_version = 7 by an interrupted
-    // migration (e.g. during the Verenu rename/update) where the
-    // ALTER TABLE for spoken_words never actually landed. The
-    // `if user_version < 7` migration block would never run again for
-    // such a database, so it must be self-healed unconditionally.
     let path = temp_db_path("v7_missing_spoken_words");
     {
         let conn = Connection::open(&path).expect("create stuck db");
@@ -353,7 +392,6 @@ fn open_repairs_db_stuck_at_v7_without_spoken_words_column() {
 
     let db = open(path.to_str().expect("path string")).expect("open repairs stuck db");
 
-    // Inserting a new transcription must succeed now that spoken_words exists.
     insert_transcription_returning(
         &db,
         "second clip",
@@ -384,9 +422,6 @@ fn open_repairs_db_stuck_at_v7_without_spoken_words_column() {
 
 #[test]
 fn open_alone_does_not_seed_the_dictionary() {
-    // seed_default_dictionary_entries is deliberately NOT part of the
-    // generic migration chain (see its doc comment) â€” open() alone must
-    // leave test/fixture databases pristine.
     let db = test_db();
     let entries = query_dictionary(&db).expect("query dictionary");
     assert!(entries.is_empty());
@@ -394,12 +429,6 @@ fn open_alone_does_not_seed_the_dictionary() {
 
 #[test]
 fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
-    // Databases stranded at user_version = 2 by the legacy
-    // non-transactional v2 migration keep the old `wrong`/`correct`
-    // dictionary shape (and may also lack `snippets.instructions` and
-    // `pending_corrections`). Without the self-heal, every dictionary
-    // query fails with `no such column: term` â€” and v7's spoken-words
-    // backfill would fail on the missing `instructions` column.
     let path = temp_db_path("v2_legacy_dictionary");
     {
         let conn = Connection::open(&path).expect("create stuck db");
@@ -440,15 +469,11 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
 
     let db = open(path.to_str().expect("path string")).expect("open self-heals stuck db");
 
-    // The dictionary must be queryable through the modern `term` column,
-    // with the legacy pair migrated into `term`/`mistake`.
     let entries = query_dictionary(&db).expect("query dictionary");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].term, "Verenu");
     assert_eq!(entries[0].mistake.as_deref(), Some("Varinu"));
-    // New entries must insert against the modern UNIQUE(term) constraint.
     insert_dictionary_entry(&db, "Tauri", Some("Tari")).expect("insert modern entry");
-    // The v2 siblings must exist too.
     assert!(
         table_has_column(&lock_conn(&db).expect("lock"), "snippets", "instructions")
             .expect("instructions column"),
@@ -458,7 +483,6 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
         table_exists(&lock_conn(&db).expect("lock"), "pending_corrections").expect("table"),
         "pending_corrections must be self-healed"
     );
-    // Transcriptions with snippet triggers still backfill correctly.
     let conn = lock_conn(&db).expect("lock");
     let spoken_words: i64 = conn
         .query_row(
@@ -468,11 +492,10 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
         )
         .expect("spoken words backfilled");
     assert_eq!(spoken_words, 2);
-    // And the whole chain must have reached the current version.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 31);
+    assert_eq!(version, 32);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -482,10 +505,6 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
 
 #[test]
 fn open_with_recovery_does_not_quarantine_non_corruption_errors() {
-    // A database path that cannot be opened (a directory is not a
-    // database) is NOT corruption: it must surface as an error without
-    // moving anything aside, so a transiently-locked healthy database can
-    // never be silently replaced with an empty fresh one.
     let parent = std::env::temp_dir().join(format!(
         "verenu_noncorrupt_{}_{}",
         std::process::id(),
@@ -524,16 +543,12 @@ fn open_with_recovery_quarantines_a_corrupt_database_and_opens_fresh() {
     let path = temp_db_path("corrupt_db_recovery");
     std::fs::write(&path, b"this is not a sqlite database at all").expect("write garbage");
 
-    // Plain open must fail (the corrupt file is a real error, not something
-    // to silently paper over)â€¦
     assert!(open(&path).is_err());
 
-    // â€¦but the startup path must recover: quarantine + fresh database.
     let db = open_with_recovery(&path).expect("recovery opens a fresh database");
     insert_transcription_returning(&db, "fresh", "fresh", 1, 1000, "test", None, None)
         .expect("fresh db is writable");
 
-    // The corrupt file must be preserved for diagnosis, not deleted.
     let quarantine = std::fs::read_dir(path.parent().expect("parent"))
         .expect("list dir")
         .filter_map(Result::ok)
@@ -579,11 +594,6 @@ fn open_with_recovery_leaves_a_healthy_database_untouched() {
 
 #[test]
 fn open_with_recovery_quarantines_db_and_sidecars_together() {
-    // Real-world corruption is a bad main file while the -wal/-shm
-    // sidecars from a healthy session are still present (torn disk
-    // write, failed update, partial restore). SQLite deletes stale
-    // sidecars itself during a failed open, so the quarantine helper's
-    // "move the whole set" contract is tested directly.
     let path = temp_db_path("sidecar_recovery");
     {
         let db = open(&path).expect("create db");
@@ -697,9 +707,6 @@ fn seed_default_dictionary_entries_does_not_resurrect_a_deleted_entry() {
             .id;
         delete_dictionary_entry(&db, verenu_id).expect("user deletes the default entry");
     }
-    // Reopening and re-seeding must not resurrect it â€” the marker table
-    // makes this a no-op after the first successful seed, regardless of
-    // whether the user has since deleted the row.
     let db = open(path.to_str().expect("path string")).expect("second open");
     seed_default_dictionary_entries(&db).expect("second seed is a no-op");
     let entries = query_dictionary(&db).expect("query dictionary after reopen");
@@ -713,13 +720,6 @@ fn seed_default_dictionary_entries_does_not_resurrect_a_deleted_entry() {
 
 #[test]
 fn seed_default_dictionary_entries_merges_into_a_preexisting_manual_verenu_entry() {
-    // The actual observed bug: a user who'd already hand-added a
-    // "Verenu" -> "Vernu" correction weeks before this feature existed
-    // hit the dictionary's UNIQUE(term) constraint, silently dropping
-    // every known variant from the original INSERT OR IGNORE â€” leaving
-    // only "Vernu", which doesn't match "Varino"/"Varinu" and so never
-    // fired. Merging into the existing row instead must add every known
-    // variant while preserving the user's own "Vernu".
     let db = test_db();
     insert_dictionary_entry(&db, "Verenu", Some("Vernu")).expect("user's own manual entry");
 
@@ -812,7 +812,6 @@ fn auto_learn_updates_and_keeps_context_owned_pairs_independent() {
 fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     let db = test_db();
 
-    // Session 1: pending count reaches 1, below the default threshold of 2.
     upsert_auto_learn_candidate_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -837,7 +836,6 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
     );
     assert!(query_dictionary(&db).expect("dictionary").is_empty());
 
-    // Session 2: pending count reaches 2 â€” the pair promotes.
     let second = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -859,10 +857,6 @@ fn auto_learn_promote_promotes_when_pending_reaches_threshold() {
 
 #[test]
 fn auto_learn_promote_is_atomic_against_double_promotion() {
-    // Two concurrent monitors both observe the pair and both believe the
-    // pending count has crossed the threshold (two prior sessions already
-    // recorded pending rows). Only ONE may actually promote â€” the second
-    // caller's atomic `promoted_at` claim must be refused.
     let db = test_db();
     upsert_auto_learn_candidate_for_context(
         &db,
@@ -913,9 +907,6 @@ fn auto_learn_promote_is_atomic_against_double_promotion() {
 
 #[test]
 fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
-    // A rejection deletes the auto-learned entry AND purges its candidate
-    // rows. An in-flight promotion for that pair must not re-create it: the
-    // `promoted_at` claim no-ops against a purged candidate.
     let db = test_db();
     upsert_auto_learn_candidate_for_context(
         &db,
@@ -946,14 +937,9 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
         .expect("entry")
         .id;
 
-    // Rejection fires: entry + candidate + pending rows purged together.
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
     assert!(query_dictionary(&db).expect("dictionary after").is_empty());
 
-    // A stale monitor that already passed its count read tries to promote.
-    // Its count is re-evaluated inside the SAME transaction as the claim
-    // and dict insert, against post-rejection state: the pending rows are
-    // gone, so it lands BelowThreshold and must NOT re-create the entry.
     let stale = auto_learn_promote_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -979,8 +965,6 @@ fn auto_learn_promote_does_not_resurrect_a_rejected_candidate() {
 
 #[test]
 fn auto_learn_promote_can_relearn_after_rejection() {
-    // After a rejection fully purges the candidate, a genuinely new learning
-    // window (a fresh candidate row with promoted_at IS NULL) can promote.
     let db = test_db();
     upsert_auto_learn_candidate_for_context(
         &db,
@@ -1012,7 +996,6 @@ fn auto_learn_promote_can_relearn_after_rejection() {
         .id;
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
 
-    // New learning episode: fresh candidate (promoted_at NULL), two sessions.
     upsert_auto_learn_candidate_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -1067,8 +1050,6 @@ fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 1");
     insert_pending_correction(&db, "Koobernetes", "Kubernetes").expect("pending 2");
 
-    // Threshold is satisfied, but the manual entry blocks promotion on
-    // every attempt (and records the pending rows for later sessions).
     for _ in 0..2 {
         assert_eq!(
             auto_learn_promote_for_context(
@@ -1090,8 +1071,6 @@ fn auto_learn_promote_manual_entry_blocks_without_claiming() {
     assert_eq!(entries[0].mistake.as_deref(), Some("Koobernetes"));
     assert!(!entries[0].auto_learned);
 
-    // The candidate was NOT claimed, so removing the manual entry later
-    // lets the pair be learned anew.
     let conn = lock_conn(&db).expect("lock");
     let promoted_at: Option<String> = conn
         .query_row(
@@ -1286,15 +1265,12 @@ fn cache_rejection_delete_removes_entry() {
     cleanup_cache_insert_new(&db, "key1", "bad answer", "2999-01-01 00:00:00", false)
         .expect("insert");
 
-    // Verify it's cached.
     assert!(cleanup_cache_get_active(&db, "key1")
         .expect("get")
         .is_some());
 
-    // Simulate rejection monitor firing.
     cleanup_cache_delete_by_key(&db, "key1").expect("delete");
 
-    // Entry must be gone â€” next dictation will hit the LLM.
     assert!(cleanup_cache_get_active(&db, "key1")
         .expect("get after")
         .is_none());
@@ -1326,7 +1302,6 @@ fn cache_rejection_after_hit_removes_entry() {
     let db = test_db();
     cleanup_cache_insert_new(&db, "k", "stale text", "2999-01-01 00:00:00", false).expect("insert");
 
-    // Simulate a cache hit (the phrase was served from cache once).
     let created_at = cleanup_cache_get_active(&db, "k")
         .expect("get")
         .expect("exists")
@@ -1347,7 +1322,6 @@ fn cache_rejection_after_hit_removes_entry() {
         .expect("exists");
     assert_eq!(hit.hit_count, 2);
 
-    // User deletes output â†’ rejection monitor fires.
     cleanup_cache_delete_by_key(&db, "k").expect("delete");
 
     assert!(cleanup_cache_get_active(&db, "k")
@@ -1537,7 +1511,6 @@ fn auto_learn_retention_prunes_only_stale_rows() {
 fn auto_learn_promote_keeps_different_mistakes_independent() {
     let db = test_db();
 
-    // Promote a first pair for the term.
     upsert_auto_learn_candidate_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -1562,9 +1535,6 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
         AutoLearnPromoteResult::Promoted
     );
 
-    // A second pair for the same canonical term is independently represented
-    // by a child mapping in this Context; the old global mistake field could
-    // not express this without overwriting the first pair.
     upsert_auto_learn_candidate_for_context(
         &db,
         EVERYWHERE_CONTEXT_ID,
@@ -1589,7 +1559,6 @@ fn auto_learn_promote_keeps_different_mistakes_independent() {
         AutoLearnPromoteResult::Promoted
     );
 
-    // The second candidate has its own promotion gate.
     let conn = lock_conn(&db).expect("lock");
     let promoted_at: Option<String> = conn
         .query_row(
@@ -1638,7 +1607,6 @@ fn stats_total_words_uses_spoken_count_excluding_snippet_triggers() {
 
     let stats = query_stats(&db).expect("stats");
 
-    // The passed-in 9 is ignored: a pure snippet trigger is zero spoken words.
     assert_eq!(stats.total_words, 0);
     assert_eq!(stats.avg_wpm, 0.0);
 }
@@ -1721,7 +1689,6 @@ fn stats_avg_wpm_streams_large_transcription_sets() {
 
     let stats = query_stats(&db).expect("stats");
 
-    // "hello sig world" counts 2 spoken words: the trigger is never spoken.
     assert_eq!(stats.total_words, 1000);
     assert!(stats.avg_wpm > 0.0);
 }
@@ -1788,7 +1755,6 @@ fn pruning_old_transcriptions_does_not_reduce_lifetime_word_total() {
 #[test]
 fn pruning_old_transcriptions_preserves_daily_insights_and_lifetime_wpm() {
     let db = test_db();
-    // Stored count is spoken words ("old one" is 2).
     insert_transcription_returning(&db, "old one", "old one", 2, 2_000, "test", None, None)
         .expect("old transcription");
     {
@@ -1831,8 +1797,6 @@ fn repair_aligns_legacy_inflated_counts_and_refunds_lifetime() {
     insert_snippet(&db, "sig", "Best regards", "").expect("snippet");
     {
         let conn = lock_conn(&db).expect("lock");
-        // Pre-fix row: raw whitespace-split count stored in `words`, spoken
-        // count never backfilled.
         conn.execute(
             "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used)
              VALUES ('please add sig thanks ...', 'Please add thanks', 5, NULL, 2000, 'test')",
@@ -1845,11 +1809,9 @@ fn repair_aligns_legacy_inflated_counts_and_refunds_lifetime() {
     {
         let mut conn = lock_conn(&db).expect("lock");
         repair_inflated_word_counts(&mut conn).expect("repair");
-        // Second run must be a no-op.
         repair_inflated_word_counts(&mut conn).expect("repair again");
     }
     let conn = lock_conn(&db).expect("lock");
-    // "please add sig thanks ...": trigger + punctuation excluded → 3.
     let words: i64 = conn
         .query_row("SELECT words FROM transcriptions", [], |r| r.get(0))
         .expect("words");
@@ -1862,7 +1824,6 @@ fn repair_aligns_legacy_inflated_counts_and_refunds_lifetime() {
         )
         .expect("lifetime");
     assert_eq!(lifetime, 3);
-    // The daily summary followed through the update trigger.
     let daily: i64 = conn
         .query_row(
             "SELECT total_words FROM transcription_daily_stats",
@@ -1877,7 +1838,6 @@ fn repair_aligns_legacy_inflated_counts_and_refunds_lifetime() {
 fn dict_rejection_only_removes_auto_learned_entries() {
     let db = test_db();
 
-    // Manual entry â€” must survive rejection.
     insert_dictionary_entry(&db, "groq", Some("grog")).expect("manual");
     let manual_id = query_dictionary(&db)
         .expect("query")
@@ -1886,7 +1846,6 @@ fn dict_rejection_only_removes_auto_learned_entries() {
         .expect("find")
         .id;
 
-    // Auto-learned entry â€” must be removed.
     insert_dictionary_entry_auto_learned(&db, "Tauri", Some("Tari"), "high").expect("auto");
     let auto_id = query_dictionary(&db)
         .expect("query")
@@ -1914,7 +1873,6 @@ fn dict_rejection_cleans_up_pending_corrections() {
         .expect("entry")
         .id;
 
-    // Simulate pending correction records that led to the promotion.
     insert_pending_correction(&db, "Tari", "Tauri").expect("pending 1");
     insert_pending_correction(&db, "Tari", "Tauri").expect("pending 2");
     assert_eq!(
@@ -1923,12 +1881,9 @@ fn dict_rejection_cleans_up_pending_corrections() {
         2
     );
 
-    // Rejection monitor fires.
     delete_auto_learned_entries_by_ids(&db, &[id]).expect("reject");
 
-    // Dictionary entry gone.
     assert_eq!(query_dictionary(&db).expect("query after").len(), 0);
-    // Pending corrections also purged â€” prevents immediate re-promotion.
     assert_eq!(
         count_pending_corrections_recent(&db, EVERYWHERE_CONTEXT_ID, "Tari", "Tauri", 7,)
             .expect("count after"),
@@ -1938,16 +1893,13 @@ fn dict_rejection_cleans_up_pending_corrections() {
 
 #[test]
 fn cache_rejection_full_lifecycle() {
-    // End-to-end: insert â†’ hit (cache serves stale) â†’ reject â†’ miss (LLM runs again).
     let db = test_db();
     let key = "chromium-is-a-web-browser-base";
     let bad_answer = "bad cached answer";
 
-    // First dictation: LLM runs, result cached.
     cleanup_cache_insert_new(&db, key, bad_answer, "2999-01-01 00:00:00", false).expect("insert");
     assert_eq!(cleanup_cache_count(&db).expect("count"), 1);
 
-    // Second dictation: cache hit, stale answer served.
     let entry = cleanup_cache_get_active(&db, key)
         .expect("get")
         .expect("hit");
@@ -1963,10 +1915,8 @@ fn cache_rejection_full_lifecycle() {
     )
     .expect("touch");
 
-    // User deletes output within 10s â†’ monitor fires.
     cleanup_cache_delete_by_key(&db, key).expect("delete");
 
-    // Third dictation: cache miss, LLM runs again with fresh context.
     assert!(
         cleanup_cache_get_active(&db, key)
             .expect("get after")
@@ -2072,8 +2022,6 @@ fn snippet_update_normalizes_expansion_whitespace() {
         .into_iter()
         .next()
         .expect("snippet");
-    // Pasted text often arrives with CRLF line endings and trailing whitespace/newlines.
-    // The backend normalizes these so paste behaves like typing.
     update_snippet(&db, snippet.id, "sig", "Line one\r\nLine two  \n", "").expect("update");
     let updated = query_snippets(&db)
         .expect("query after")

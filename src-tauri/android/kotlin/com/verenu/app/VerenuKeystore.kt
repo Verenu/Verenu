@@ -7,33 +7,12 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.util.Locale
 
-/**
- * Durable credential storage: `EncryptedSharedPreferences` backed by the
- * Android Keystore. This is the ONLY place API keys rest on Android — the
- * Rust backend holds them in memory alone (see `src-tauri/src/android/`).
- *
- * Sync protocol with Rust (all over the authed loopback bridge):
- * - Boot/unlock: [pushAll] reads every known provider and POSTs it to
- *   `/v1/credential`, populating Rust's memory cache.
- * - Save/delete from the main app: Rust stages a rotation; the service sees
- *   `keystorePending` in the state poll, fetches it once via
- *   [VerenuBridge.takeKeystorePending], and persists it here.
- * - Revocation: clearing here + [pushAll] with empty values drops Rust's copy.
- *
- * Fail-closed: if the Keystore is unusable (broken TEE on some OEM builds),
- * reads/writes throw and the caller surfaces onboarding recovery instead of
- * silently downgrading to plaintext.
- *
- * Requires `androidx.security:security-crypto` (added to the app module by
- * `scripts/android-sync.mjs`).
- */
 class VerenuKeystore(appContext: Context) {
     companion object {
         const val TAG = "VerenuKeystore"
         const val PREFS_FILE = "verenu_secrets"
         const val MAX_CREDENTIAL_BYTES = 16 * 1024
 
-        /** Provider ids must match `src-tauri/src/data/store` keys. */
         val KNOWN_PROVIDERS = listOf("groq", "openai", "google", "assemblyai")
 
         fun keyFor(provider: String): String =
@@ -73,7 +52,6 @@ class VerenuKeystore(appContext: Context) {
 
     fun read(provider: String): String = prefs.getString(keyFor(provider), "") ?: ""
 
-    /** Status-only lookup for the Settings UI; the secret never crosses IPC. */
     fun has(provider: String): Boolean = read(provider).isNotEmpty()
 
     fun readAll(): Map<String, String> =
@@ -85,17 +63,9 @@ class VerenuKeystore(appContext: Context) {
         }
     }
 
-    /**
-     * Push every stored credential into Rust's memory cache. Called at
-     * service connect (unlock) and after any rotation, so a Rust restart
-     * behind a live service rehydrates without asking the user again.
-     */
     fun pushAll(bridge: VerenuBridge) {
         for (provider in KNOWN_PROVIDERS) {
             val key = read(provider)
-            // Send empty values too. This is the revocation path: without it,
-            // deleting a key from EncryptedSharedPreferences left the old
-            // value alive in Rust's memory cache until the next process boot.
             bridge.pushCredential(provider, key)
         }
     }

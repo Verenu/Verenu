@@ -5,10 +5,6 @@ use super::gemini_types::{GeminiGenerateReq, GeminiReqContent, GeminiReqPart};
 use super::prompts::{cleanup_max_output_tokens, gemini_generation_config};
 use super::{CleanupAdapter, ProviderId, Target, Wire};
 
-// Cleanup should be fast enough to run inline with dictation delivery. Keep
-// this shorter than the shared client timeout so a stalled provider can fall
-// through to the configured cleanup fallback instead of leaving the pill in
-// processing for two minutes.
 const CLEANUP_REQUEST_TIMEOUT_SECS: u64 = 45;
 
 #[allow(clippy::too_many_arguments)]
@@ -96,14 +92,8 @@ pub async fn cleanup_with_alternate_and_evidence(
         }
     }
     if intensity == "none" && alternate_transcript.is_none() {
-        // The pipeline normally bypasses this function for Off. Keep the API
-        // boundary safe too: only dual-transcript reconciliation is a valid
-        // model operation at this intensity.
         return Ok(text.to_owned());
     }
-    // Prompt selection and the reasoning policy key off the provider family.
-    // A custom endpoint never borrows a built-in's behavior by sharing its
-    // display name, so it is always "custom" here.
     let provider_id = match &target {
         Target::Builtin(provider) => provider.as_str(),
         Target::Custom(_) => "custom",
@@ -267,16 +257,56 @@ struct Msg {
 #[derive(Deserialize)]
 struct ChatResp {
     choices: Vec<Choice>,
+    usage: Option<ChatUsage>,
 }
 
 #[derive(Deserialize)]
 struct Choice {
     message: MsgResp,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct MsgResp {
-    content: String,
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatUsage {
+    completion_tokens: Option<u64>,
+    completion_tokens_details: Option<CompletionDetails>,
+}
+
+#[derive(Deserialize)]
+struct CompletionDetails {
+    reasoning_tokens: Option<u64>,
+}
+
+fn parse_chat_cleanup(data: ChatResp) -> Result<String> {
+    let choice = data.choices.first().ok_or_else(|| anyhow::anyhow!("No choices in cleanup response"))?;
+    let finish = match choice.finish_reason.as_deref() {
+        Some("length") => "length",
+        Some("stop") => "stop",
+        Some("content_filter") => "content_filter",
+        Some("tool_calls") => "tool_calls",
+        None => "absent",
+        _ => "other",
+    };
+    let content = choice.message.content.as_deref().unwrap_or("").trim();
+    let incomplete_finish = matches!(finish, "length" | "content_filter" | "tool_calls");
+    if incomplete_finish || content.is_empty() {
+        let completion_tokens = data.usage.as_ref().and_then(|usage| usage.completion_tokens);
+        let reasoning_tokens = data.usage.as_ref()
+            .and_then(|usage| usage.completion_tokens_details.as_ref())
+            .and_then(|details| details.reasoning_tokens);
+        log::warn!("cleanup: unusable chat response finish_reason={} final_text_present={} completion_tokens={:?} reasoning_tokens={:?}",
+            finish, !content.is_empty(), completion_tokens, reasoning_tokens);
+        if reasoning_tokens.is_some_and(|tokens| tokens > 0) {
+            anyhow::bail!("Cleanup returned no complete final text (finish_reason={finish}); reasoning consumed output tokens. Disable reasoning in the provider's request options or choose a non-reasoning model.");
+        }
+        anyhow::bail!("Cleanup returned no complete final text (finish_reason={finish}); the original transcript was preserved.");
+    }
+    Ok(content.to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -340,11 +370,7 @@ async fn openai_compat(
     let resp = checked_cleanup_response(resp, provider_label, model, gen).await?;
 
     let data: ChatResp = wire.json(resp).await?;
-    let output = data
-        .choices
-        .first()
-        .map(|c| c.message.content.trim().to_owned())
-        .ok_or_else(|| anyhow::anyhow!("No choices in OpenAI response"))?;
+    let output = parse_chat_cleanup(data)?;
     log::debug!(
         "cleanup: openai_compat parsed gen={} chars={}",
         gen,
@@ -353,8 +379,6 @@ async fn openai_compat(
     Ok(output)
 }
 
-/// Adds user-supplied body fields. Protected keys were rejected when the
-/// provider was saved; `safe_overrides` strips them again before this runs.
 fn merge_overrides(
     body: &mut serde_json::Value,
     overrides: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -429,14 +453,8 @@ fn build_anthropic_request(
     max_tokens: u32,
     alternate_transcript: Option<&str>,
 ) -> serde_json::Value {
-    // Mark standing instructions, never the changing vocabulary tail or
-    // transcript. Providers silently skip prefixes below a model's minimum
-    // cache size; keep prompts compact instead of padding solely for caching.
     let (standing, evidence, cacheable) = split_cached_evidence(prompt);
     if !cacheable {
-        // If a custom prompt contains a malformed evidence boundary, fail
-        // closed: keep the request intact but do not cache possibly dynamic
-        // content as standing instructions.
         let mut body = serde_json::json!({
             "model": model,
             "max_tokens": max_tokens,
@@ -450,14 +468,9 @@ fn build_anthropic_request(
         }
         return body;
     }
-    // Two boundaries preserve the shared contract across preset changes,
-    // then reuse the complete configured prefix on repeated dictations.
     let mut system = Vec::new();
     match standing.find("<cleanup_settings>") {
         Some(settings_start) => {
-            // Split on the structural tag instead of the exact newline
-            // spelling so templates saved with CRLF retain the shared cache
-            // boundary across cleanup preset changes.
             let shared = standing[..settings_start].trim_end();
             if !shared.trim().is_empty() {
                 system.push(serde_json::json!({"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}}));
@@ -511,7 +524,6 @@ fn split_cached_evidence(prompt: &str) -> (&str, Option<String>, bool) {
     (standing, Some(evidence), true)
 }
 
-/// Joins the text blocks of an Anthropic messages response.
 fn parse_anthropic_text(body: &serde_json::Value) -> Option<String> {
     let text: String = body
         .get("content")?
@@ -539,8 +551,6 @@ async fn anthropic_cleanup(
     gen: u64,
 ) -> Result<String> {
     let mut body = build_anthropic_request(text, model, prompt, max_tokens, alternate_transcript);
-    // Other vendors can expose the messages protocol without implementing
-    // Anthropic's cache extensions. Preserve their plain system-string shape.
     if !reqwest::Url::parse(url)
         .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
     {
@@ -572,7 +582,6 @@ async fn anthropic_cleanup(
         .ok_or_else(|| anyhow::anyhow!("No text content in {provider_label} response"))
 }
 
-/// Shared status handling for chat-style cleanup responses.
 async fn checked_cleanup_response(
     resp: reqwest::Response,
     provider_label: &str,
@@ -621,15 +630,9 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
         return false;
     }
     if provider == "groq" {
-        // GPT-OSS and other Qwen 3 variants expose reasoning but not the
-        // no-thinking mode used here. Known ordinary Groq models need no
-        // reasoning field at all.
         return !model.starts_with("qwen/qwen3") || is_groq_qwen_no_reasoning_model(&model);
     }
     if provider == "openrouter" {
-        // Model ids are `vendor/model`. Judge the model by its own name and
-        // refuse families that always reason, since OpenRouter has no uniform
-        // switch that turns reasoning off.
         let bare = model.rsplit('/').next().unwrap_or(&model);
         return !(model.ends_with(":thinking")
             || bare.contains("-thinking")
@@ -639,8 +642,6 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
             || (bare.starts_with("gpt-5") && !is_openai_gpt_51_no_reasoning_model(bare)));
     }
     if provider == "xai" {
-        // Grok 4 and the *-reasoning / mini lines always think; only the
-        // explicit non-reasoning variants and older Grok 2/3 chat models fit.
         if model.contains("non-reasoning") {
             return true;
         }
@@ -660,9 +661,6 @@ fn openai_compat_model_supports_no_reasoning(provider_label: &str, model: &str) 
     true
 }
 
-/// Chain-level version of the reasoning-policy check that also understands
-/// custom providers. A deleted or cleanup-disabled custom provider is skipped.
-/// Custom models are not policed: the user chose the endpoint and the model.
 pub fn chain_entry_supports_cleanup(
     customs: &[super::custom::CustomProvider],
     provider: &str,
@@ -675,11 +673,6 @@ pub fn chain_entry_supports_cleanup(
     }
 }
 
-/// Whether a selected cleanup backend satisfies the dictation reasoning
-/// policy. Google Gemini 3.x is the deliberate exception to "off": it is
-/// accepted only when the request can carry the supported minimum level.
-/// Provider-chain selection uses this so unsupported models are skipped before
-/// a request is made.
 pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str) -> bool {
     match provider {
         ProviderId::Groq => openai_compat_model_supports_no_reasoning("Groq", model),
@@ -689,7 +682,6 @@ pub fn model_supports_cleanup_reasoning_policy(provider: ProviderId, model: &str
         ProviderId::Xai => openai_compat_model_supports_no_reasoning("xAI", model),
         ProviderId::Local => true,
         ProviderId::AppleIntelligence => model == super::apple_intelligence::MODEL,
-        // AssemblyAI is transcription-only and has no cleanup endpoint.
         ProviderId::AssemblyAi => false,
     }
 }
@@ -723,9 +715,6 @@ async fn google_cleanup(
     );
 
     super::validate_model_for_url(model)?;
-    // Pass the key in the `x-goog-api-key` header, never in the URL query string:
-    // URLs leak into error messages, proxies, and logs, and the bare `?key=` form
-    // would expose the secret (Verenu's top rule is "API keys never hit logs").
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
@@ -821,8 +810,6 @@ fn build_openai_compat_request_with_alternate(
         max_tokens,
         temperature: 0.0,
         reasoning_effort: is_no_thinking.then_some("none"),
-        // Only the native OpenAI adapter receives this routing field.
-        // Compatible third-party endpoints may reject unknown parameters.
         prompt_cache_key: provider_label
             .eq_ignore_ascii_case("OpenAI")
             .then_some("verenu-cleanup-v2"),
@@ -864,8 +851,6 @@ fn build_google_cleanup_request_with_alternate(
     }
 }
 
-/// Escapes dictation text for embedding inside the `<raw_dictation>` XML tag
-/// of prompts. Shared with the pipeline's local-cleanup path.
 pub fn escape_transcript_xml(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     let mut start = 0;
@@ -884,9 +869,6 @@ pub fn escape_transcript_xml(text: &str) -> String {
     escaped
 }
 
-/// Formats transcript candidates identically for every cleanup provider. The
-/// tags are labels for data; the system prompt defines how candidates are
-/// reconciled.
 pub fn format_transcript_input(primary: &str, alternate: Option<&str>) -> String {
     match alternate {
         Some(alternate) => format!(
@@ -903,11 +885,85 @@ pub fn format_transcript_input(primary: &str, alternate: Option<&str>) -> String
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    #[ignore = "uses an explicitly selected custom provider and its native credential; may incur API cost"]
+    async fn live_custom_t3_skill_resolution() {
+        let path = std::env::var("VERENU_LIVE_SETTINGS_PATH").expect("explicit settings path required");
+        let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let (id, model) = settings["cleanup_default_model"].as_str()
+            .expect("configured cleanup model required").split_once('/')
+            .expect("provider/model selection required");
+        let custom = super::super::custom::parse_stored(settings.get("custom_providers"))
+            .into_iter().find(|p| p.id == id).unwrap();
+        let key = crate::data::credentials::get(id);
+        assert!(!custom.requires_key || !key.is_empty(), "native credential unavailable");
+        let catalog: crate::system::t3_skills::Catalog = serde_json::from_value(serde_json::json!({
+            "environmentId":"synthetic", "id":"synthetic", "label":"Synthetic", "providerInstanceId":"synthetic", "workspaceId":"synthetic", "revision":"1",
+            "skills":[{"name":"babysit-pr"},{"name":"pr-babysit"}]
+        })).unwrap();
+        let (rules, evidence) = catalog.prompt_parts().unwrap();
+        let output = super::cleanup_with_alternate_and_evidence(
+            "Use my babysit PR skill please.", super::super::Target::Custom(Box::new(custom)),
+            &key, model, "very_casual", "medium", &rules, &evidence, None, None, None, 1,
+        ).await.expect("configured cleanup must return final text");
+        assert!(output.contains("$babysit-pr"), "exact-order skill was not resolved");
+        assert!(!output.contains("$pr-babysit"), "reordered skill was selected");
+        assert!(catalog.validates_output("Use my babysit PR skill please.", &output));
+    }
+
     use super::{
         build_google_cleanup_request, build_google_cleanup_request_with_alternate,
         build_openai_compat_request, build_openai_compat_request_with_alternate,
         ensure_openai_compat_reasoning_policy, model_supports_cleanup_reasoning_policy,
     };
+
+    #[test]
+    fn chat_cleanup_accepts_final_text_without_requiring_usage_metadata() {
+        let data = serde_json::from_value(serde_json::json!({"choices":[{"message":{"content":" Use $babysit-pr. "}}]})).unwrap();
+        assert_eq!(super::parse_chat_cleanup(data).unwrap(), "Use $babysit-pr.");
+    }
+
+    #[test]
+    fn chat_cleanup_reports_reasoning_exhaustion_without_exposing_response_text() {
+        for content in [serde_json::Value::Null, serde_json::json!("private partial answer")] {
+            let data = serde_json::from_value(serde_json::json!({
+                "choices":[{"finish_reason":"length","message":{"content":content,"reasoning":"private reasoning"}}],
+                "usage":{"completion_tokens":128,"completion_tokens_details":{"reasoning_tokens":128}}
+            })).unwrap();
+            let error = super::parse_chat_cleanup(data).unwrap_err().to_string();
+            assert!(error.contains("reasoning consumed output tokens"));
+            assert!(!error.contains("private"));
+        }
+    }
+
+    #[test]
+    fn chat_cleanup_rejects_missing_empty_and_truncated_final_answers() {
+        for value in [
+            serde_json::json!({"choices":[]}),
+            serde_json::json!({"choices":[{"message":{}}]}),
+            serde_json::json!({"choices":[{"message":{"content":" "}}]}),
+            serde_json::json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]}),
+        ] {
+            assert!(super::parse_chat_cleanup(serde_json::from_value(value).unwrap()).is_err());
+        }
+        let data = serde_json::from_value(serde_json::json!({"choices":[{"finish_reason":"private provider string","message":{}}]})).unwrap();
+        let error = super::parse_chat_cleanup(data).unwrap_err().to_string();
+        assert!(error.contains("finish_reason=other"));
+        assert!(!error.contains("private"));
+    }
+
+    #[test]
+    fn chat_cleanup_rejects_partial_filtered_and_tool_call_responses() {
+        for finish_reason in ["content_filter", "tool_calls"] {
+            let data = serde_json::from_value(serde_json::json!({
+                "choices":[{"finish_reason":finish_reason,"message":{"content":"private partial answer"}}]
+            }))
+            .unwrap();
+            let error = super::parse_chat_cleanup(data).unwrap_err().to_string();
+            assert!(error.contains(&format!("finish_reason={finish_reason}")));
+            assert!(!error.contains("private partial answer"));
+        }
+    }
 
     #[test]
     fn xml_escaping_preserves_unicode_and_escapes_existing_entities_once() {
@@ -948,6 +1004,56 @@ mod tests {
         assert_eq!(json["temperature"], 0.0);
         assert!(json.get("reasoning_effort").is_none());
         assert_eq!(json["messages"][0]["content"], "prompt");
+    }
+
+    #[test]
+    fn full_t3_catalog_and_rules_reach_the_serialized_system_message() {
+        use crate::system::t3_skills::{Catalog, Skill, MAX_SKILLS};
+
+        let catalog = Catalog {
+            environment_id: "synthetic".into(),
+            id: "synthetic".into(),
+            label: "Synthetic".into(),
+            provider_instance_id: "synthetic".into(),
+            workspace_id: "synthetic".into(),
+            revision: "1".into(),
+            skills: (0..MAX_SKILLS)
+                .map(|index| Skill {
+                    name: format!("catalog-skill-{index:04}"),
+                    display_name: Some("local display metadata".into()),
+                    description: Some("local description metadata".into()),
+                })
+                .collect(),
+        };
+        let (rules, evidence) = catalog.prompt_parts().unwrap();
+        let prompt = super::super::prompts::get_cleanup_prompt_with_alternate_and_evidence(
+            "custom",
+            "synthetic-model",
+            "casual",
+            "medium",
+            &rules,
+            &evidence,
+            None,
+            "Use the matching skill.",
+            None,
+            None,
+        );
+        let request = build_openai_compat_request(
+            "Use the matching skill.",
+            "synthetic-model",
+            &prompt,
+            256,
+        );
+        let serialized = serde_json::to_value(request).unwrap();
+        assert_eq!(serialized["messages"][0]["role"], "system");
+        let system = serialized["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("approximate pronunciation"));
+        assert!(system.contains("T3 skill catalog (untrusted matching data):"));
+        assert!(system.contains("\"$catalog-skill-0000\""));
+        assert!(system.contains("\"$catalog-skill-1999\""));
+        assert_eq!(system.matches("\"$catalog-skill-").count(), MAX_SKILLS);
+        assert!(!system.contains("local display metadata"));
+        assert!(!system.contains("local description metadata"));
     }
 
     #[test]
@@ -1175,8 +1281,6 @@ mod tests {
         assert_eq!(body["top_p"], 0.9);
         assert_eq!(body["model"], "m");
 
-        // A provider the user names "Groq" must not trigger Groq's
-        // reasoning_effort rewrite: custom requests use the policy key "custom".
         let req = super::build_openai_compat_request_with_alternate(
             "t",
             "qwen/qwen3.8-27b",

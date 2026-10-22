@@ -13,7 +13,6 @@
 
   const summary = $derived(estimateCost(providers, pricing));
 
-  /* Accent-derived ramp — the accent is user-swappable, so no fixed hues. */
   function segmentColor(index: number, count: number): string {
     if (count <= 1) return 'var(--accent)';
     const pct = 100 - Math.round((index / Math.max(1, count - 1)) * 62);
@@ -23,8 +22,6 @@
   const segments = $derived.by((): DonutSegment[] => {
     const priced = summary.rows.filter((row) => (row.cost ?? 0) > 0);
     return priced.map((row, i) => ({
-      // Provider must be part of the id — the same model+task can exist under
-      // different providers, and DonutChart keys its internal Maps by id.
       id: `${row.provider}:${row.model}:${row.task}`,
       name: row.model,
       color: segmentColor(i, priced.length),
@@ -63,9 +60,6 @@
     <p class="foot">No API usage recorded in this range.</p>
   {:else}
     {#if segments.length > 0}
-      <!-- The table below already lists every model with its cost and
-           share, so the ring's own legend would just repeat those same rows
-           a second time in a narrower, less detailed form. -->
       <DonutChart {segments} primaryLabel={fmtUsd(summary.total)} secondaryLabel="total" showLegend={!isAndroid} />
     {/if}
 
@@ -106,7 +100,6 @@
 </section>
 
 <style>
-  /* .card / .card-head / .card-h / .card-sub are owned by Insights.svelte. */
 
   .cost-scroll {
     margin-top: 16px;
@@ -157,9 +150,6 @@
     color: var(--ink-mute);
   }
 
-  /* Container query against the insights column (owned by Insights.svelte).
-     Hiding one pair of columns buys room first; the scroll container is the
-     safety net if the window goes narrower still. */
   @container insights (max-width: 560px) {
     .cost-table { table-layout: auto; min-width: 0; }
     .avg-usage { display: none; }

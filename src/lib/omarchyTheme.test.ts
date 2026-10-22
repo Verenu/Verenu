@@ -48,7 +48,6 @@ describe('applyOmarchyPalette', () => {
     applyOmarchyPalette(root, solitude);
     expect(values.get('--danger')).toBe('#de6145');
     expect(values.get('--danger-bg')).toContain('#de6145');
-    // Grayscale greens and yellows stay on Verenu's own status colors.
     expect(values.has('--success')).toBe(false);
     expect(values.has('--warning')).toBe(false);
   });

@@ -80,7 +80,6 @@ describe('applySuccess', () => {
     const first = applySuccess(cache(), 'groq', ['whisper-large-v3'], tracked, T0 + 1);
     expect(first.missing['groq/whisper-large-v3-turbo'].count).toBe(1);
 
-    // Settings-open and a key-save seconds apart must not reach the threshold.
     const soon = applySuccess(first, 'groq', ['whisper-large-v3'], tracked, T0 + 2000);
     expect(soon.missing['groq/whisper-large-v3-turbo'].count).toBe(1);
 
@@ -123,8 +122,6 @@ describe('applySuccess', () => {
     const trackedWide = ['groq/a', 'groq/b', 'groq/c', 'groq/d'];
     const after = applySuccess(wide, 'groq', ['a'], trackedWide, T0 + 1);
     expect(after.missing).toEqual({});
-    // Still recorded as a success — the response was a 200, just not trustworthy
-    // enough to prove three models vanished at once.
     expect(after.lastSuccessAt).toBe(T0 + 1);
     expect(after.ids).toEqual(['a', 'b', 'c', 'd']);
     expect(isTrustworthy(after)).toBe(false);

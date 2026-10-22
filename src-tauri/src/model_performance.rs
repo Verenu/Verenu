@@ -1,4 +1,3 @@
-//! Process-local timing metadata. Never retains audio, text, keys, or endpoints.
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 

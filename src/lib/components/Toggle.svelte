@@ -10,7 +10,6 @@
     onchange: (value: boolean) => void;
     label?: string;
     disabled?: boolean;
-    /** Set true to flash the toggle red with an X, e.g. when a save fails. Auto-resets itself. */
     error?: boolean;
   } = $props();
 
@@ -87,8 +86,6 @@
   }
 
   .toggle.error {
-    /* Revert snaps instantly so the shake/X play on an already-settled
-       toggle, instead of racing the position/background transitions. */
     transition: none;
     background: var(--danger);
     animation: toggle-shake 0.4s ease-out;

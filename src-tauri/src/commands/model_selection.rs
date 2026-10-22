@@ -22,7 +22,6 @@ impl Drop for BenchmarkReservation {
     }
 }
 
-/// Uses public bundled speech, never the microphone, history, or a provider API.
 #[tauri::command]
 pub async fn benchmark_local_models(
     app: AppHandle,

@@ -28,9 +28,6 @@ pub struct DictationMediaPauseGuard {
 
 impl DictationMediaPauseGuard {
     pub fn new() -> Self {
-        // Input transcription runs after the recording has already started
-        // the pause. Keep that exact generation so an older async task cannot
-        // end a newer recording's media pause when it eventually completes.
         Self {
             generation: platform::active_generation(),
         }
@@ -245,10 +242,6 @@ mod platform {
                         log::debug!("media pause: paused source_app_id={source_app_id}");
 
                         if restore_immediately {
-                            // The session was just told to pause moments ago; its
-                            // playback status may not have caught up to `Paused`
-                            // yet, so skip the staleness check that gates a normal
-                            // end-of-dictation restore and resume unconditionally.
                             restore_session(
                                 PausedSession {
                                     source_app_id,
@@ -300,11 +293,6 @@ mod platform {
                 poisoned.into_inner()
             }
         };
-        // A late-arriving TryPauseAsync confirmation from an older generation
-        // can resolve after a newer dictation session has already started.
-        // As long as some dictation is still active, hand the session off to
-        // it instead of force-resuming media a still-running session needs
-        // kept paused.
         if state.is_active && state.generation >= generation {
             state.paused_sessions.push(session);
             true
@@ -446,11 +434,6 @@ mod tests {
 
     #[test]
     fn resume_is_skipped_only_for_terminal_sessions() {
-        // Anything short of Stopped/Closed is resumed: state can lag behind
-        // an actual pause (or the session can drift to Playing/Changing by
-        // the time we check), so gating strictly on Paused risked leaving
-        // media paused forever. Resuming an already-playing session is a
-        // harmless no-op, not a fight with a user who resumed it manually.
         assert!(should_resume_after_dictation(MediaPlaybackState::Paused));
         assert!(should_resume_after_dictation(MediaPlaybackState::Playing));
         assert!(should_resume_after_dictation(MediaPlaybackState::Changing));
@@ -475,8 +458,6 @@ mod tests {
             true,
             MediaPlaybackState::Paused
         ));
-        // A session that drifted back to Playing by restore time is still
-        // resumed - TryPlayAsync on an already-playing session is a no-op.
         assert!(would_restore(
             MediaPlaybackState::Playing,
             true,

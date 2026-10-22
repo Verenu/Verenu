@@ -133,12 +133,6 @@ export async function deleteLocalLlmModel(modelIdValue: string) {
 }
 
 let listenersStarted = false;
-// Bumped on every `startLocalLlmListeners` call. Captured per-invocation
-// below so `registerUnlisten` can tell whether it belongs to the *current*
-// session — if `startLocalLlmListeners` is torn down and restarted while a
-// previous invocation's `listen()` promises are still in-flight, those
-// stale promises must unlisten immediately instead of registering into the
-// new session's `unlisteners` array (or leaking forever).
 let currentSession = 0;
 
 export function startLocalLlmListeners(): () => void {
@@ -188,7 +182,6 @@ export function startLocalLlmListeners(): () => void {
           [event.payload.model_id]: {
             model_id: event.payload.model_id,
             downloaded_bytes: 0,
-            // Non-null total keeps the verifying bar determinate.
             total_bytes: 1,
             progress: event.payload.progress,
           },
@@ -240,9 +233,6 @@ export function startLocalLlmListeners(): () => void {
     }
   })().catch((err) => {
     console.error('local cleanup listeners failed', err);
-    // Registration didn't fully succeed — tear down whatever did register
-    // and reset so a future call can retry instead of permanently returning
-    // a no-op cleanup function forever.
     if (session === currentSession) {
       listenersStarted = false;
     }

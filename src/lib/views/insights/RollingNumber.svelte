@@ -10,11 +10,6 @@
 
   const text = $derived(format(value));
 
-  /* Motion cue: a digit stretches along its direction of travel in proportion
-     to the spring's speed. This used to be a per-digit SVG feGaussianBlur, but
-     SVG filters on HTML are rasterized in software every frame (WebKitGTK in
-     particular), which made scrubbing the chart lag and smeared digits into
-     boxes. Transform and opacity stay on the compositor. */
   const STRETCH_PER_SPEED = 0.012;
   const MAX_STRETCH = 0.22;
 
@@ -24,11 +19,7 @@
   let liveEls: (HTMLSpanElement | null)[] = [];
   let ghostEls: (HTMLSpanElement | null)[] = [];
 
-  // Deliberately not $state: these change every frame and drive the DOM
-  // directly, so routing them through reactivity would only add churn.
   let chars: string[] = [];
-  // Seeded from the mount value only; every later value arrives via the
-  // effect below, which is the point — silence the reactivity lint.
   let prevValue = untrack(() => value);
   const springs: RollSpring[] = [];
 
@@ -63,8 +54,6 @@
       ghost.textContent = '';
       ghost.removeAttribute('style');
     }
-    // Only rolling digits get their own layer; settled text keeps normal
-    // subpixel antialiasing.
     if (cell) cell.classList.remove('rolling');
   }
 
@@ -88,8 +77,6 @@
 
   function applyChange(next: string[]) {
     const reduced = reducedMotionEnabled();
-    // Compare by place value, not by string index, so 842 -> 1,749 rolls the
-    // ones digit into the ones digit rather than shifting every column along.
     const shift = next.length - chars.length;
     const rollDir: 1 | -1 = value >= prevValue ? 1 : -1;
     prevValue = value;
@@ -135,9 +122,6 @@
   });
 </script>
 
-<!-- The cells sit on one line with no gaps between them: any whitespace in
-     here becomes a text node, which would make the readout copy and read aloud
-     as "1 , 7 4 9" instead of "1,749". -->
 <span class="rolling-number"
   >{#each view as ch, i (i)}<span class="cell" bind:this={cellEls[i]}><span
       class="live"
@@ -155,10 +139,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Nothing clips and nothing forces a line-height: the settled digit is plain
-     in-flow text, so a digit that just rolled sits on exactly the same baseline
-     as one that never moved. (inline-block + overflow:hidden does not — it
-     aligns by its bottom margin edge, which is what made them settle uneven.) */
   .cell {
     position: relative;
     display: inline-block;
@@ -175,7 +155,6 @@
     pointer-events: none;
   }
 
-  /* `rolling` is toggled from script, so it is global to Svelte's scoping. */
   .cell:global(.rolling) .live,
   .cell:global(.rolling) .ghost {
     will-change: transform, opacity;

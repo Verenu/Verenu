@@ -6,9 +6,6 @@
   export let setupIncomplete = false;
   export let shortcutUnavailable = false;
 
-  // Svelte's legacy prop bridge can briefly supply the default value while
-  // the Android WebView is bootstrapping. Read the platform directly as well
-  // so the primary Android instruction never falls back to desktop copy.
   $: showAndroid = android || isAndroid;
 </script>
 
@@ -54,11 +51,6 @@
     background: var(--arm-950);
   }
 
-  /*
-   * Covers the whole card and positions the gradient's centre, rather than
-   * being a smaller offset box: a box narrower than its own falloff clips the
-   * glow into a hard-edged rectangle down one side.
-   */
   .hero-photo::before {
     content: '';
     position: absolute;

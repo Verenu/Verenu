@@ -1,4 +1,3 @@
-/** Replace named timeouts and release their ownership before callbacks run. */
 export function createTimers<Key extends string>() {
   const pending = new Map<Key, ReturnType<typeof setTimeout>>();
   function clear(...keys: Key[]) {

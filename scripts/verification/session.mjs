@@ -5,6 +5,10 @@ import { spawn } from 'node:child_process';
 import { root, sourceFileChanges, sourceSnapshot } from './identity.mjs';
 import { stopOwned } from './process.mjs';
 
+export function cargoTargetDirectory(environment = process.env) {
+  return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
+}
+
 export function ownedSessionStartupState(manifest, launcherPid) {
   if (!manifest || manifest.launcherPid !== launcherPid) return null;
   if (manifest.status === 'ready') return 'ready';
@@ -68,8 +72,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
     stopOwned(child);
     await Promise.race([exited, new Promise((resolve) => { const timer = setTimeout(resolve, 15_000); timer.unref(); })]);
     if (child.exitCode === null && child.signalCode === null && child.pid) {
-      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Owned child exited. */ } }
-      else { try { child.kill('SIGKILL'); } catch { /* Owned child exited. */ } }
+      if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+      else { try { child.kill('SIGKILL'); } catch {} }
     }
     await log.close();
   })();

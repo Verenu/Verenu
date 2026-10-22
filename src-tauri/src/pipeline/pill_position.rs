@@ -3,8 +3,6 @@ use tauri::{Runtime, WebviewWindow};
 
 const PILL_BOTTOM_GAP_POINTS: f64 = 16.0;
 
-// Linux placement uses Hyprland's logical monitor coordinates. Other
-// platforms use Tauri's physical monitor coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 struct MonitorSnapshot {
@@ -91,9 +89,6 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     let monitor = choose_monitor(target_monitor, primary_monitor)?;
     let placement = placement_for_monitor(monitor, width_points, height_points);
 
-    // Temporary diagnostic for issue #161 (pill clipped on first cross-monitor
-    // reveal) - coordinates/scale factors only, nothing sensitive, so this is
-    // safe at the normal verbose-logging privacy bar.
     if crate::system::logger::is_verbose() {
         log::debug!(
             "pill resolve_pill_placement: target_point={target_point:?} used_target_monitor={} monitor={monitor:?} -> placement={placement:?}",
@@ -111,7 +106,6 @@ pub(super) fn resolve_pill_placement<R: Runtime>(
     width_points: f64,
     height_points: f64,
 ) -> Option<PillPlacement> {
-    // A NaN selects the focused/first fallback in the same monitors snapshot.
     let point = target_point.unwrap_or(DesktopPoint { x: f64::NAN, y: f64::NAN });
     let monitor = crate::core::hyprland::logical_monitor_for_point(point.x, point.y)?;
     Some(placement_for_linux_monitor(
@@ -138,19 +132,6 @@ fn placement_for_linux_monitor(
     }
 }
 
-/// Recomputes the pill's ideal centered placement for a given content size,
-/// purely from the monitor it currently sits on — never from the window's
-/// own current position. `set_pill_size` used to derive the new position by
-/// offsetting from the window's current geometry (`cur_pos + (cur_size -
-/// new_size) / 2`), which is only correct if that current geometry was
-/// itself exactly centered; content-fit resizing fires many times per
-/// second during a width transition, and out-of-order/concurrent command
-/// invocations could read back a stale position mid-flight, so small
-/// rounding/race errors compounded into a persistent rightward drift on any
-/// state whose pill width transitions (every state but the bare recording
-/// capsule). Recomputing from the monitor's work area every time is
-/// idempotent — each call lands on the same correct center regardless of
-/// what the window's geometry was a moment ago, so nothing can compound.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn placement_for_current_monitor<R: Runtime>(
     pill: &WebviewWindow<R>,
@@ -182,16 +163,6 @@ pub(crate) fn placement_for_current_monitor<R: Runtime>(
     resolve_pill_placement(pill, point, width_points, height_points)
 }
 
-/// Reads the pill's actual on-screen geometry right now. Used by the
-/// animated cross-monitor path (`pill_animation.rs`) as the tween's starting
-/// point — it needs the literal current placement to interpolate from, not
-/// just a changed/unchanged boolean. Only called from the Windows-only
-/// animated branch in `pill.rs`'s `show_pill_msg`. Returns `None` if the
-/// geometry can't be read or comes back zero-sized (e.g. very early in
-/// window initialization) rather than guessing `(0, 0)` — a tween that
-/// actually started from `(0, 0, 0, 0)` would visibly grow in from the
-/// screen's top-left corner, which is worse than just skipping the
-/// animation for that one call.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn current_placement<R: Runtime>(pill: &WebviewWindow<R>) -> Option<PillPlacement> {
     let size = pill.inner_size().ok()?;
@@ -215,12 +186,6 @@ pub(super) fn position_changed(current: i32, desired: i32) -> bool {
     current.abs_diff(desired) > 1
 }
 
-/// Whether a pill move should glide via `pill_animation.rs` rather than jump.
-///
-/// #197 meant this for mixed-DPI *cross-monitor* hops. Gating on any x/y
-/// delta still tweened same-monitor content-fit resizes, because the pill is
-/// recentered when its width changes (x moves by half the width delta). Treat
-/// a move as a monitor hop only when it is larger than that recenter.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn should_animate_cross_monitor_move(
     already_placed: bool,
@@ -240,11 +205,6 @@ pub(super) fn should_animate_cross_monitor_move(
     dx > recenter_budget || dy > recenter_budget
 }
 
-/// GTK/WebKit on Hyprland often refuses to shrink the pill below a ~200×200
-/// client. Content-fit placement still uses the measured capsule size, which
-/// parks that larger window so far below the work-area bottom that only the
-/// entrance animation is visible. Keep the requested bottom-center, then lift
-/// and recenter by the extra mapped pixels.
 #[cfg(target_os = "linux")]
 pub(crate) fn snap_linux_placement_to_mapped_size(
     requested: PillPlacement,
@@ -263,13 +223,6 @@ pub(crate) fn snap_linux_placement_to_mapped_size(
     }
 }
 
-/// Moves/resizes the pill to `placement` if it isn't already there. Returns
-/// `true` if a native resize or reposition was actually issued. Used as-is
-/// for the synchronous same-monitor path and by `set_pill_size` for
-/// frontend-reported content-fit resizes; the animated cross-monitor path in
-/// `pill_animation.rs` has its own per-frame `SetWindowPos` calls instead,
-/// since every tween frame must apply unconditionally to progress the
-/// animation rather than skip via this function's no-op check.
 pub(crate) fn apply_pill_placement<R: Runtime>(
     pill: &WebviewWindow<R>,
     placement: PillPlacement,
@@ -335,10 +288,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
                     );
                 }
 
-                // Temporary diagnostic for issue #161: compare the placement
-                // we asked for against what Tauri reads back from the HWND
-                // immediately after SetWindowPos returns, to catch any
-                // post-call DPI-driven override of our explicit size/position.
                 if crate::system::logger::is_verbose() {
                     let actual = current_placement(pill);
                     log::debug!(
@@ -351,9 +300,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 
     #[cfg(target_os = "linux")]
     {
-        // A mapped Wayland client has one geometry owner: the compositor.
-        // Mixing GTK size requests with Hyprland resize dispatches races
-        // configure events and leaves the painted surface at an older size.
         if let Some(window) = crate::core::hyprland::pill_window() {
             if window.size != [placement.width, placement.height] {
                 if let Err(error) = crate::core::hyprland::resize_window(
@@ -388,8 +334,6 @@ pub(crate) fn apply_pill_placement<R: Runtime>(
 
     #[cfg(target_os = "macos")]
     {
-        // The shared Tauri monitor path stores physical pixels; AppKit's Tauri
-        // size API consumes logical points.
         let scale = pill.scale_factor().unwrap_or(1.0).max(0.1);
         if needs_resize {
             pill.set_size(tauri::LogicalSize::new(
@@ -534,8 +478,6 @@ mod tests {
 
     #[test]
     fn content_width_places_narrower_pill_centered() {
-        // A content-sized pill (e.g. 92px for the bare recording capsule)
-        // must still be centered on the work area, not anchored left.
         let placement = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 44.0);
 
         assert_eq!(placement.width, 92);
@@ -553,8 +495,6 @@ mod tests {
 
     #[test]
     fn taller_pill_window_rises_off_the_work_area_bottom() {
-        // A taller window (profile label floating above the capsule) keeps its
-        // bottom pinned to the same work-area gap as the 44px default.
         let tall = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 64.0);
         let normal = placement_for_monitor(monitor(0, 0, 1920, 1040, 1.0), 92.0, 44.0);
 
@@ -606,7 +546,6 @@ mod tests {
 
     #[test]
     fn does_not_animate_same_monitor_recenter_when_width_changes() {
-        // Growing 380→480 recenters x by 50px.
         let current = placement(770, 1000, 380, 44);
         let target = placement(720, 1000, 480, 44);
 

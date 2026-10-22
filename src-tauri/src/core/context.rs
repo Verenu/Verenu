@@ -1,18 +1,12 @@
-//! Foreground executable to content-context resolution.
-
 use anyhow::Result;
 
 use crate::data::db::{self, Context, Db};
 
-/// The portion of a resolved Context that must survive asynchronous pipeline
-/// work.  Keep this separate from the full database row: an AutoLearn
-/// monitor only needs the stable identity and a safe display label for
-/// redacted diagnostics.  In particular, it must never reconstruct a Context
-/// later from the foreground executable or browser process.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResolvedContextIdentity {
     pub id: i64,
     pub label: String,
+    pub t3_skills: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
 }
 
 impl ResolvedContextIdentity {
@@ -20,10 +14,10 @@ impl ResolvedContextIdentity {
         Self {
             id: context.id,
             label: context.name.clone(),
+            t3_skills: None,
         }
     }
 
-    /// Pill/diagnostic label for a sub-app match: "Work · #design".
     pub fn from_context_and_sub_app(context: &Context, sub_app: Option<&db::ContextSubApp>) -> Self {
         let mut identity = Self::from_context(context);
         if let Some(sub_app) = sub_app {
@@ -36,6 +30,7 @@ impl ResolvedContextIdentity {
         Self {
             id: db::EVERYWHERE_CONTEXT_ID,
             label: "Everywhere".to_string(),
+            t3_skills: None,
         }
     }
 }
@@ -45,25 +40,17 @@ fn resolve_context(db: &Db, executable: &str, domain: Option<&str>) -> Result<Co
     resolve_context_with_title(db, executable, domain, None).map(|(context, _)| context)
 }
 
-/// Like [`resolve_context`], but a window title lets a sub-app rule win over
-/// website and app targets.
 pub fn resolve_context_with_title(
     db: &Db,
     executable: &str,
     domain: Option<&str>,
     window_title: Option<&str>,
 ) -> Result<(Context, Option<db::ContextSubApp>)> {
-    // App bundles/installers commonly replace their executable name on every
-    // update. Refresh a target lazily on the dictation path so users do not
-    // need to reopen the Contexts screen after a nightly release changes.
     let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
     db::reconcile_context_targets(db, &installed_apps)?;
     db::resolve_context_with_sub_app(db, executable, domain, window_title)
 }
 
-/// Linux window classes can differ from the executable targets already saved
-/// in Contexts. Prefer the class/domain match, then try the captured process's
-/// executable basename. Never inspect the live foreground for this fallback.
 #[cfg(test)]
 fn resolve_context_for_window(
     db: &Db,
@@ -124,8 +111,6 @@ fn resolve_alias_with_title(
         return Ok(resolved);
     }
     let alias_match = db::resolve_context_with_sub_app(db, alias, domain, title)?;
-    // A sub-app is more specific than a website/app. Otherwise keep
-    // a class or website assignment ahead of an executable alias.
     if alias_match.1.is_some() || resolved.0.is_everywhere {
         Ok(alias_match)
     } else {
@@ -320,7 +305,8 @@ mod tests {
             color: None,
             custom_instructions: None,
             contextual_formatting_disabled: false,
-        paste_in_chunks: false,
+            paste_in_chunks: false,
+            t3_skill_mentions_disabled: false,
             pinned_at: None,
             created_at: String::new(),
             updated_at: String::new(),
@@ -329,6 +315,7 @@ mod tests {
         assert_eq!(
             ResolvedContextIdentity::from_context(&context),
             ResolvedContextIdentity {
+                t3_skills: None,
                 id: 42,
                 label: "Development".to_string(),
             }

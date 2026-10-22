@@ -3,9 +3,6 @@
   import { normalizeExe } from '../appMappings';
   import { createIconCache } from '../iconCache';
 
-  // Module-level so every AppIcon instance across the app shares one fetch
-  // per exe — Contexts' picker/rows and AppMappingsEditor's rows all resolve
-  // the same handful of icons without re-invoking the native extractor.
   const iconCache = createIconCache();
 
   function loadIcon(exe: string): Promise<string | null> {
@@ -21,11 +18,6 @@
   let dataUri = $state<string | null>(null);
   let needsContrastBackdrop = $state(false);
 
-  /**
-   * Detect the narrow case where a light icon would disappear on paper.
-   * Looking at the pixels keeps colorful and deliberately dark icons alone,
-   * even when they happen to have transparent corners.
-   */
   function assessIconContrast(event: Event) {
     const image = event.currentTarget as HTMLImageElement;
     const canvas = document.createElement('canvas');
@@ -74,8 +66,6 @@
         && darkRatio < 0.12
         && colorfulRatio < 0.2;
     } catch {
-      // Icon contrast is cosmetic. Keep the normal icon if the webview cannot
-      // inspect the image (for example, if canvas access is unavailable).
       needsContrastBackdrop = false;
     }
   }

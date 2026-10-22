@@ -52,9 +52,6 @@
   let historyCursor: number | null = null;
   let historyOffset = 0;
 
-  // History filters are session-only. Keep the debounce/load sequence here so
-  // pagination and filter changes cannot overwrite each other with stale
-  // responses.
   let search = '';
   let debouncedSearch = '';
   let appFilter: string | null = null;
@@ -108,11 +105,9 @@
     retrying = true;
     try {
       await invoke('retry_transcription');
-      // success: verenu:transcribed listener clears failedEntry and calls load()
     } catch (err) {
       console.error('Retry failed:', err);
       void emit('verenu:error', formatIpcError(err, 'Could not retry this dictation'));
-      // keep failedEntry so user can try again
     } finally {
       retrying = false;
     }
@@ -131,13 +126,10 @@
     resumingCancelled = true;
     try {
       await invoke('resume_cancelled_capture');
-      // Rust also emits verenu:cancelled-capture-cleared, but clear locally
-      // too so the banner drops immediately rather than waiting on the event.
       clearCancelledEntry();
     } catch (err) {
       console.error('Resume cancelled capture failed:', err);
       void emit('verenu:error', formatIpcError(err, 'Could not resume this recording'));
-      // keep cancelledEntry so the user can try again
     } finally {
       resumingCancelled = false;
     }
@@ -147,7 +139,7 @@
     clearCancelledEntry();
     try {
       await invoke('dismiss_cancelled_capture');
-    } catch { /* dev mode */ }
+    } catch {}
   }
 
   async function copyText(entry: Entry) {
@@ -225,7 +217,7 @@
     if (!appStore.updateInfo) return;
     try {
       await saveSetting('update_dismissed_version', appStore.updateInfo.version);
-    } catch { /* dev mode */ }
+    } catch {}
     appStore.updateInfo = null;
   }
 
@@ -241,7 +233,7 @@
       .then(() => {
         refreshShortcut();
       })
-      .catch(() => { /* use platform default if setting unavailable */ });
+      .catch(() => {});
     load(true, true);
     invoke<{ created_at: string; kind: string } | null>('get_cancelled_capture')
       .then((pending) => {
@@ -323,8 +315,6 @@
       }, 10 * 60 * 1000);
     }));
 
-    // Fired when the capture is resumed or dismissed from elsewhere (the
-    // pill's own buttons) — drop the banner if it's still showing.
     trackListener(listen('verenu:cancelled-capture-cleared', () => {
       clearCancelledEntry();
     }));
@@ -349,7 +339,6 @@
     };
   });
 
-  // Settings is an overlay over Home; do not leave filters active behind it.
   $: if (appStore.settingsOpen) {
     if (resetHistoryFilters()) load(true, false);
   }
@@ -357,7 +346,6 @@
 
 <div class="content-inner" class:desktop-home={!isAndroid}>
   <div class="home-grid">
-    <!-- Left column -->
     <div>
       <h1 class="page-h">Welcome back</h1>
       <p class="page-sub">{greeting}</p>
@@ -418,7 +406,6 @@
       />
     </div>
 
-    <!-- Right column — flat stats (desktop only, see hero note above) -->
     {#if !isAndroid}
       <div class="stat-stack native-chrome-corner--below">
         <StatsCard {stats} />
@@ -459,7 +446,6 @@
 
   .page-sub { color: var(--ink-mute); font-size: 12.5px; margin: 0 0 22px; }
 
-  /* Flat stats */
   .stat-stack {
     display: flex;
     flex-direction: column;
@@ -474,21 +460,11 @@
       min-width: 640px;
     }
 
-    /* Stats are secondary on a narrow desktop window; keeping them in the
-       flow crushes the primary history/recording surface into a column. */
     .desktop-home .stat-stack { display: none; }
   }
 
-  /* Android windows (foldable inner display, tablets, split-screen) are
-     narrower than that desktop floor once the sidebar takes its share. */
   :global(.app[data-android='true']) .home-grid { min-width: 0; }
 
-  /*
-   * Phone composition: hero at the top, the history (or its empty state) taking
-   * the slack in the middle, stats settling at the foot of the screen. Stacked
-   * at their desktop sizes these three sat in the top third with a screen of
-   * dead space under them.
-   */
   @media (max-width: 720px) {
     .content-inner {
       flex: 1;
@@ -499,12 +475,9 @@
 
     .home-grid {
       flex: 1;
-      /* The desktop rule pins items to `start`, which keeps the stacked
-         column at content height and stops it claiming the 1fr row. */
       align-items: stretch;
       grid-template-rows: 1fr auto;
       gap: 16px;
-      /* Undo the narrow-desktop floor above; a phone is narrower than it. */
       min-width: 0;
     }
 
@@ -514,11 +487,6 @@
       min-height: 0;
     }
 
-    /*
-     * HistoryList renders its states as sibling blocks with no single root, so
-     * the empty/loading/error state itself takes the slack. A populated list
-     * has no .empty-state and fills the column on its own.
-     */
     .home-grid :global(.empty-state) {
       flex: 1;
       justify-content: center;

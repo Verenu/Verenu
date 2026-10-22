@@ -39,26 +39,6 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
-/**
- * The Android dictation pill: the touch equivalent of the desktop pill
- * (`src/PillApp.svelte` + `DictationPill.svelte`).
- *
- * - A near-black capsule in both color schemes (a pale pill vanishes against a
- *   light keyboard, and the dark scheme gets a hairline border so it still
- *   reads against a dark one). [setDark] follows Verenu's own appearance
- *   setting rather than only the OS night mode.
- * - Idle → recording → transcribing → cleaning → inserting, plus error (retry)
- *   and cancelled, mirroring `src/lib/android/overlay.ts`. Between states the
- *   capsule morphs its width and cross-fades its content.
- * - The recording row is the desktop's envelope visualizer: 12 mirrored bars
- *   where distance from the middle means AGE, driven by the recorder's 10 ms
- *   peak envelope and redrawn every display frame (see [WaveView]).
- * - [setCompact] is the docked form used while a dictation continues without
- *   the keyboard: smaller, just the wave and stop button.
- *
- * Rendering only — the [Listener] (implemented by
- * [VerenuAccessibilityService]) owns recording, insertion, and bridge calls.
- */
 class VerenuOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -66,17 +46,13 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     interface Listener {
         fun onPillTap()
-        /** The idle pill was held still: start dictating until [onPillHoldEnd]. */
         fun onPillHoldStart() {}
         fun onPillHoldEnd() {}
         fun onPillCancel()
         fun onPillRetry()
-        /** Start a fresh dictation from the cancelled notice. */
         fun onPillRestart()
         fun onPillDismiss()
-        /** The pill's height changed (e.g. a one-line state became a two-line one). */
         fun onPillResized() {}
-        /** Long-press on the idle or recording pill: it can now be dragged (raw screen px). */
         fun onPillDragStart()
         fun onPillDragMove(rawX: Int, rawY: Int)
         fun onPillDragEnd(rawX: Int, rawY: Int)
@@ -99,7 +75,6 @@ class VerenuOverlayView @JvmOverloads constructor(
     var listener: Listener? = null
 
     private companion object {
-        /** Height of every state when it is not covering the keyboard's mic key. */
         const val PILL_HEIGHT_DP = 40f
     }
 
@@ -153,7 +128,6 @@ class VerenuOverlayView @JvmOverloads constructor(
     private var lastBg: Int? = null
 
     init {
-        // Window margin so the capsule's border isn't clipped by the window edge.
         setPadding(dpi(4f), dpi(4f), dpi(4f), dpi(4f))
         clipChildren = false
         clipToPadding = false
@@ -163,7 +137,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         pill.isClickable = true
         pill.isFocusable = false
         pill.setOnClickListener {
-            // A drag ends with the finger lifting over the pill; that is not a tap.
             if (!gesture.consumeClickSuppression()) listener?.onPillTap()
         }
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -185,7 +158,6 @@ class VerenuOverlayView @JvmOverloads constructor(
                         listener?.onPillDragMove(rawX, rawY)
                     } else if (hypot(event.rawX - downRawX, event.rawY - downRawY) > touchSlop) {
                         removeCallbacks(longPress)
-                        // A quick drag from the idle pill moves it (hold = dictate).
                         val started = gesture.movedPastSlop(state == State.IDLE)
                         dispatch(started)
                         if (started != VerenuPillGesture.Event.NONE) listener?.onPillDragMove(rawX, rawY)
@@ -209,8 +181,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = false)
     }
 
-    // ------------------------------------------------------------------ API
-
     fun updateState(next: State) {
         if (state == next) return
         state = next
@@ -218,7 +188,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    /** [retry] shows the retry glyph; false when the only response is to dismiss. */
     fun setError(message: String, retry: Boolean = true) {
         errorMessage = message.ifEmpty { "Something went wrong" }
         errorRetry = retry
@@ -229,7 +198,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-    /** Follow Verenu's appearance setting (the service resolves "system"). */
     fun setDark(value: Boolean) {
         if (dark == value) return
         dark = value
@@ -238,7 +206,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = false)
     }
 
-    /** Docked form: smaller, wave + stop only. */
     fun setCompact(value: Boolean) {
         if (compact == value) return
         compact = value
@@ -246,11 +213,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    /**
-     * Cover mode: the pill sits over the keyboard's own mic button. [sizePx] is
-     * the button's size (0 turns it off). While idle it shrinks to an opaque
-     * disc of that size so the button underneath cannot show through.
-     */
     fun setCoverSize(sizePx: Int) {
         if (coverSize == sizePx) return
         coverSize = sizePx
@@ -259,12 +221,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         render(animated = true)
     }
 
-    /**
-     * A WRAP_CONTENT window is first measured against the system's preferred
-     * dialog width (about 320dp) and an ellipsized or single-line child never
-     * asks for more, so wide content (the error notice) got squeezed to fit.
-     * Measure against the real screen width instead.
-     */
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec)
@@ -279,11 +235,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         super.onMeasure(bounded, heightMeasureSpec)
     }
 
-    /**
-     * Over the keyboard every state is as tall as the mic key it covers, so the
-     * keyboard's own chips and keys behind it stay hidden; the idle one is also
-     * exactly the key's width. Elsewhere it is a 40dp capsule.
-     */
     private fun applyMinimumSize() {
         val disc = coverSize > 0 && state == State.IDLE
         pill.minimumHeight = if (coverSize > 0) coverSize else dpi(PILL_HEIGHT_DP)
@@ -292,21 +243,17 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        // A taller or shorter state must stay centred on the keyboard's mic row.
         if (h != oldh && oldh != 0) listener?.onPillResized()
     }
 
-    /** 10 ms peak-envelope samples (linear 0..1) from the recorder. */
     fun setEnvelope(samples: FloatArray) {
         wave?.pushEnvelope(samples)
     }
 
-    /** Fallback for a backend without the envelope: one RMS level per poll. */
     fun setAudioLevel(level: Float) {
         wave?.pushLevel(level.coerceIn(0f, 1f))
     }
 
-    /** Debug aid: what the pill looks like right now. */
     fun debugDescribe(): String =
         "pill a=${pill.alpha} s=${pill.scaleX} ${pill.width}x${pill.height} vis=${pill.visibility} " +
             "row a=${row.alpha} ${row.width}x${row.height} children=${row.childCount} cover=$coverSize state=$state"
@@ -322,8 +269,6 @@ class VerenuOverlayView @JvmOverloads constructor(
             .setInterpolator(PathInterpolator(0.2f, 0.9f, 0.25f, 1f))
             .withEndAction { entered = true }
             .start()
-        // A window that gets no frames while it is being shown would otherwise
-        // stay stuck at its start values (invisible). Land on the final state.
         postDelayed({
             if (!entered && isAttachedToWindow) {
                 Log.w("VerenuA11y", "pill entrance did not finish; forcing final state")
@@ -359,17 +304,11 @@ class VerenuOverlayView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
-    // ------------------------------------------------------------- rendering
-
-    // Mirrors the desktop pill tokens (--pill-* in theme.css): white with dark
-    // bars in light mode, near-black with white bars in dark mode. The fill is
-    // slightly translucent so the pill can sit right on top of the keyboard.
     private fun paletteFor(dark: Boolean) = Palette(
         bg = if (dark) 0xE00F0E0E.toInt() else 0xE6FFFFFF.toInt(),
         border = if (dark) 0x12FFFFFF else 0x1F111110,
         fg = if (dark) 0xFFFFFFFF.toInt() else 0xFF111110.toInt(),
         muted = if (dark) 0x99FFFFFF.toInt() else 0x99111110.toInt(),
-        // Desktop --pill-error-*: a flat red-tinted capsule with a 1px ring.
         errorBg = 0xFF351613.toInt(),
         errorBorder = 0xFF7A3027.toInt(),
         errorFg = 0xFFFF8F80.toInt(),
@@ -377,7 +316,6 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     private fun applyChrome(animated: Boolean) {
         val base = if (state == State.ERROR) palette.errorBg else palette.bg
-        // Covering the keyboard's own button needs an opaque fill.
         val target = if (coverSize > 0) base or 0xFF000000.toInt() else base
         background.cornerRadius = dp(40f)
         background.setStroke(dpi(1f), if (state == State.ERROR) palette.errorBorder else palette.border)
@@ -403,7 +341,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         row.removeAllViews()
         applyMinimumSize()
         val covering = coverSize > 0 && state == State.IDLE
-        // Rows with a glyph button at either end hug it (desktop uses 5-8px).
         val padH = when {
             covering -> 0
             state == State.RECORDING || state == State.CANCELLED -> dpi(if (compact) 8f else 5f)
@@ -434,8 +371,6 @@ class VerenuOverlayView @JvmOverloads constructor(
             State.CLEANING -> busyRow("Cleaning up…")
             State.INSERTING -> busyRow("Pasting…")
             State.ERROR -> {
-                // Same as desktop: no status icon, the red surface says "error".
-                // Dismiss sits left (quiet), Retry right (the action).
                 row.addView(glyphButton(IconView.Kind.CLOSE, palette.errorFg, "Dismiss", alpha = 0.75f) { listener?.onPillDismiss() }, glyphParams())
                 row.addView(
                     label(errorMessage, palette.errorFg, 12.5f).apply {
@@ -455,8 +390,6 @@ class VerenuOverlayView @JvmOverloads constructor(
                 }
             }
             State.CANCELLED -> {
-                // Desktop layout: muted dismiss, centred label, undo on the right.
-                // The pill body does nothing, so a stray tap never restarts.
                 row.addView(glyphButton(IconView.Kind.CLOSE, palette.muted, "Dismiss") { listener?.onPillDismiss() }, glyphParams())
                 row.addView(
                     label("Cancelled", palette.fg, 12.5f).apply {
@@ -475,7 +408,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         morphWidth(fromWidth, animated)
     }
 
-    /** Animate the capsule from its old width to the new content's width. */
     private fun morphWidth(fromWidth: Int, animated: Boolean) {
         widthAnimator?.cancel()
         val params = pill.layoutParams as LayoutParams
@@ -509,11 +441,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * The desktop's "still working" indicator: the stage name in a dimmed
-     * colour with a narrow bright band sweeping back and forth across it. No
-     * spinner.
-     */
     private fun busyRow(text: String) {
         row.addView(
             ShineTextView(context, text, palette.fg, if (compact) 12f else 13.5f),
@@ -534,7 +461,6 @@ class VerenuOverlayView @JvmOverloads constructor(
     private fun icon(kind: IconView.Kind, @Suppress("UNUSED_PARAMETER") sizeDp: Float, color: Int) =
         IconView(context, kind, color)
 
-    /** Icons have no intrinsic size, so every add must carry explicit params. */
     private fun iconParams(sizeDp: Float, marginStartDp: Float = 0f) =
         LinearLayout.LayoutParams(dpi(sizeDp), dpi(sizeDp)).apply { marginStart = dpi(marginStartDp) }
 
@@ -546,11 +472,6 @@ class VerenuOverlayView @JvmOverloads constructor(
 
     private fun glyphParams() = LinearLayout.LayoutParams(dpi(36f), dpi(36f))
 
-    /**
-     * A borderless glyph, as on the desktop pill: no disc, just the mark, with a
-     * soft circle that appears while it is pressed. 36dp is a fair touch target
-     * inside the capsule.
-     */
     private fun glyphButton(
         kind: IconView.Kind,
         color: Int,
@@ -575,7 +496,6 @@ class VerenuOverlayView @JvmOverloads constructor(
         setOnClickListener { onClick() }
     }
 
-    /** Solid light disc with a dark rounded square: the unmistakable stop. */
     private fun stopButton(): View {
         val size = 26f
         return FrameLayout(context).apply {
@@ -600,8 +520,6 @@ class VerenuOverlayView @JvmOverloads constructor(
             setOnClickListener { listener?.onPillTap() }
         }
     }
-
-    // ------------------------------------------------------------------ icons
 
     private class IconView(context: Context, val kind: Kind, color: Int) : View(context) {
         enum class Kind { MIC, CLOSE, RETRY, UNDO, ALERT }
@@ -633,7 +551,6 @@ class VerenuOverlayView @JvmOverloads constructor(
                     canvas.drawLine(cx, top + s * 0.8f, cx, top + s * 0.94f, paint)
                 }
                 Kind.CLOSE -> {
-                    // Desktop glyph: "M6 6l12 12M6 18 18 6" on a 24 grid.
                     val u = s / 24f
                     paint.strokeWidth = 2.2f * u
                     canvas.drawPath(
@@ -647,7 +564,6 @@ class VerenuOverlayView @JvmOverloads constructor(
                     )
                 }
                 Kind.RETRY -> {
-                    // Desktop glyph: arc "M21 12a9 9 0 1 1-2.64-6.36" and arrow "M21 4v5h-5".
                     val u = s / 24f
                     paint.strokeWidth = 2.2f * u
                     canvas.drawArc(RectF(left + 3f * u, top + 3f * u, left + 21f * u, top + 21f * u), 0f, 315f, false, paint)
@@ -661,7 +577,6 @@ class VerenuOverlayView @JvmOverloads constructor(
                     )
                 }
                 Kind.UNDO -> {
-                    // Desktop glyph: "M9 14 4 9l5-5" and "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11".
                     val u = s / 24f
                     paint.strokeWidth = 2.2f * u
                     canvas.drawPath(
@@ -692,22 +607,9 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
     }
 
-    // ------------------------------------------------------------ shine text
-
-    /**
-     * Port of the desktop `.stage-label` + `.stage-shine` pair: the label dimmed
-     * (70% here, 45% on desktop), with a ~3-character band (clear, half, full, half, clear) that
-     * travels from the first letter to the last and back, ease-in-out, every
-     * 1.05 s. The band stays on the word at both ends, so the text never fades
-     * out between sweeps.
-     */
     private class ShineTextView(context: Context, private val text: String, private val color: Int, sizeSp: Float) : View(context) {
         private val density = context.resources.displayMetrics.density
         private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            // 70%, not the desktop's 45%: on a phone, at arm's length, over a keyboard,
-            // 45% left everything outside the band unreadable.
-            // `this@ShineTextView.color`: inside Paint.apply a bare `color` is the
-            // paint's own (black) colour, which is what this used to draw in.
             this.color = (this@ShineTextView.color and 0x00FFFFFF) or 0xB3000000.toInt()
             textSize = sizeSp * context.resources.displayMetrics.scaledDensity
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
@@ -777,22 +679,10 @@ class VerenuOverlayView @JvmOverloads constructor(
             val left = progress * travel
             gradientMatrix.setTranslate(left, 0f)
             gradient.setLocalMatrix(gradientMatrix)
-            // Clamp keeps the shader transparent beyond the band, so the whole
-            // word is drawn once and only the band shows.
             canvas.drawText(text, 0f, baseline, shine)
         }
     }
 
-    // ------------------------------------------------------------------- wave
-
-    /**
-     * Port of the desktop envelope visualizer (`src/lib/pillVisualizer.ts`),
-     * simplified: 10 ms peak samples → dB → adaptive floor/ceiling → ring
-     * buffer. Each bar reads the ring at its own AGE (distance from the middle
-     * × 45 ms) behind a playhead that advances with real time, then eases
-     * toward that height every display frame — so motion is continuous at the
-     * screen's refresh rate even though samples arrive in small batches.
-     */
     private class WaveView(context: Context, color: Int, private val compact: Boolean) : View(context) {
         private val density = context.resources.displayMetrics.density
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -804,7 +694,7 @@ class VerenuOverlayView @JvmOverloads constructor(
         private val ringValues = FloatArray(RING)
         private val ringTimes = LongArray(RING)
         private var ringCount = 0
-        private var ringHead = 0 // next write index
+        private var ringHead = 0
         private var lastAddedNs = 0L
 
         private var floorDb = -62f
@@ -850,13 +740,11 @@ class VerenuOverlayView @JvmOverloads constructor(
         }
 
         fun pushLevel(level: Float) {
-            // Coarse fallback: one RMS level per poll, treated as a flat run.
             val now = System.nanoTime()
             for (i in 0 until 6) add(level, now - (5 - i) * SAMPLE_NS)
         }
 
         private fun add(value: Float, rawTimeNs: Long) {
-            // Keep timestamps strictly increasing even when batches overlap.
             val timeNs = max(rawTimeNs, lastAddedNs + 1_000_000L)
             lastAddedNs = timeNs
             ringValues[ringHead] = value
@@ -865,13 +753,10 @@ class VerenuOverlayView @JvmOverloads constructor(
             if (ringCount < RING) ringCount++
         }
 
-        /** Linear peak → 0..1 against an adaptive noise floor and ceiling. */
         private fun normalize(peak: Float): Float {
             val db = 20f * log10(max(peak, 1e-5f))
-            // Floor: falls fast, rises slowly, so it settles on the room.
             val floorRate = if (db < floorDb) 0.033f else 0.0013f
             floorDb += (db - floorDb) * floorRate
-            // Ceiling: attacks fast, releases slowly, never closer than 14 dB.
             val ceilRate = if (db > ceilDb) 0.3f else 0.0066f
             ceilDb += (db - ceilDb) * ceilRate
             ceilDb = max(ceilDb, floorDb + 14f)
@@ -880,12 +765,10 @@ class VerenuOverlayView @JvmOverloads constructor(
             return x.pow(0.85f)
         }
 
-        /** Value at [timeNs], interpolated between the surrounding samples. */
         private fun valueAt(timeNs: Long): Float {
             if (ringCount == 0) return 0f
             var newerValue = Float.NaN
             var newerTime = 0L
-            // Walk from newest to oldest.
             for (k in 0 until ringCount) {
                 val idx = (ringHead - 1 - k + RING * 2) % RING
                 val t = ringTimes[idx]

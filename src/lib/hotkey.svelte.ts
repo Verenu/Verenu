@@ -1,34 +1,19 @@
-// Single source of truth for the *user's* dictation hotkey in the UI.
-//
-// Before this module, four places each had their own idea of the chord: two
-// hardcoded `fn + Control` strings (the pre-migration macOS default), and two
-// that read `defaultHotkey` and never looked at the saved setting. Rebinding
-// the hotkey in Settings left the setup wizard advertising keys that do nothing.
-//
-// Codes are `KeyboardEvent.code` values, exactly as `save_hotkey` stores them.
-// Legacy single-key bindings may have an empty second slot.
 import { emit, invoke } from './tauri';
 import { defaultHotkey, formatKeyLabel } from './platform';
 import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
 
 const state = $state<{ codes: string[] }>({ codes: defaultHotkey });
 
-/** The current hotkey codes — reactive; reads `defaultHotkey` until `loadHotkey()` resolves. */
 export function hotkeyCodes(): string[] {
   const desktop = desktopShortcut('dictation');
   return desktop ? desktop.codes : state.codes;
 }
 
-/** Display labels for the chord, empty slots dropped (e.g. `['Ctrl', 'Windows']`). */
 export function hotkeyLabels(): string[] {
   if (desktopShortcut('dictation')?.active === null) return ['Unavailable'];
 	return hotkeyCodes().filter(Boolean).map(formatKeyLabel);
 }
 
-/**
- * Loads the saved hotkey. Safe to call repeatedly — the backend returns null
- * when the user has never set one, in which case the platform default stands.
- */
 export async function loadHotkey(): Promise<void> {
 	await loadDesktopShortcuts();
 	try {
@@ -38,11 +23,9 @@ export async function loadHotkey(): Promise<void> {
 			await emit('verenu:hotkey-changed', state.codes);
 		}
 	} catch {
-		// Keep the platform default; a missing hotkey is not worth surfacing.
 	}
 }
 
-/** Left/Right modifier variants are the same physical intent to a user pressing the chord. */
 function codeVariants(code: string): string[] {
 	const modifier = ['Alt', 'Control', 'Meta', 'Shift'].find(
 		(prefix) => code === prefix || code === `${prefix}Left` || code === `${prefix}Right`,
@@ -54,12 +37,10 @@ function codeVariants(code: string): string[] {
 	return [code];
 }
 
-/** Every `KeyboardEvent.code` that should be tracked to detect the chord. */
 export function hotkeyWatchCodes(): Set<string> {
 	return new Set(hotkeyCodes().filter(Boolean).flatMap(codeVariants));
 }
 
-/** True when `pressed` satisfies every slot of the chord. */
 export function matchesHotkey(pressed: Set<string>): boolean {
 	const slots = hotkeyCodes().filter(Boolean);
 	if (slots.length === 0) return false;

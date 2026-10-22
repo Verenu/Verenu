@@ -34,10 +34,6 @@ struct NativeMetrics {
 }
 
 impl NativeMetrics {
-    /// Fields the frontend actually mirrors (see `applyNativeTitleBarMetrics`
-    /// in App.svelte: height + caption insets + scale). Window/client rects
-    /// and the client origin move on every drag/resize but are unconsumed, so
-    /// they must not by themselves trigger a re-emit.
     fn frontend_relevant_eq(&self, other: &Self) -> bool {
         self.titlebar_height == other.titlebar_height
             && self.left_inset == other.left_inset
@@ -48,10 +44,6 @@ impl NativeMetrics {
     }
 }
 
-/// Last metrics payload forwarded to the frontend. Window events fire
-/// per-frame during a move/resize drag; without this every frame paid for a
-/// WebView2 event plus a full-document style recalc from the CSS-var writes,
-/// even though height/insets/scale are position- and size-independent.
 static LAST_EMITTED: OnceLock<Mutex<Option<NativeMetrics>>> = OnceLock::new();
 
 fn emit_if_changed(window: &WebviewWindow, native: &NativeMetrics) {
@@ -65,8 +57,6 @@ fn emit_if_changed(window: &WebviewWindow, native: &NativeMetrics) {
             }
             changed
         }
-        // A poisoned lock must never swallow a metrics update — emit and let
-        // the next call re-seed the cache.
         Err(_) => true,
     };
     if changed {
@@ -219,11 +209,6 @@ fn refresh_with_dark(window: &WebviewWindow, dark: bool) {
     }
 }
 
-/// Apply the theme the frontend is actually rendering. The native window theme
-/// can follow the OS while Verenu is explicitly set to the opposite appearance.
-/// The surface/text/border/hover/sidebar tokens are Linux-only (see
-/// `linux_titlebar::apply_theme`); Windows themes its caption via DWM, not
-/// CSS, so they're accepted and ignored here to keep one command signature.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn set_native_titlebar_theme(
@@ -330,7 +315,6 @@ mod tests {
         moved.window_top += 200;
         moved.client_screen_x += 300;
         moved.client_screen_y += 200;
-        // A resize also shifts the rect edges without touching the chrome.
         moved.window_right += 150;
         moved.window_bottom += 100;
         assert!(metrics().frontend_relevant_eq(&moved));

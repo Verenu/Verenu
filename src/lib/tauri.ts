@@ -14,7 +14,6 @@ let mockRuntime: MockRuntime | undefined;
 let mockLoading: Promise<MockRuntime> | undefined;
 
 function loadMockRuntime(): Promise<MockRuntime> {
-  // Keep browser fixtures out of packaged WebViews, including lazy chunks.
   if (import.meta.env.PROD) return Promise.reject(new Error('Browser mock is unavailable in production'));
   return mockLoading ??= import('./tauri.dev').then((runtime) => {
     mockRuntime = runtime;
@@ -72,9 +71,5 @@ export function emit<T>(event: string, payload?: T): Promise<void> {
 }
 
 export function getVersion(): Promise<string> {
-  // Vite embeds the package version into the frontend bundle after the
-  // release workflow applies its temporary nightly version bump. Using that
-  // same value here keeps the About screen aligned with the updater and the
-  // packaged application instead of relying on a second runtime metadata path.
   return Promise.resolve(__APP_VERSION__);
 }

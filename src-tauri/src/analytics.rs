@@ -1,9 +1,3 @@
-//! Privacy-preserving product analytics for the desktop runtime.
-//!
-//! This is the only desktop module allowed to talk to PostHog. Callers pass
-//! semantic, bounded values; they never pass transcript text, exceptions, or
-//! window/application data.
-
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,8 +162,6 @@ pub enum FailureCategory {
     Unknown,
 }
 
-/// Fixed domains keep error tracking useful without ever accepting a free-form
-/// exception message, provider response, file name, endpoint, or user content.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub enum ErrorDomain {
@@ -223,8 +215,6 @@ impl ErrorSeverity {
     }
 }
 
-/// A structured, privacy-safe error report. No `Error`, message, path, URL,
-/// or stack string can enter this type.
 pub struct ErrorReport {
     pub domain: ErrorDomain,
     pub code: &'static str,
@@ -308,10 +298,8 @@ impl Analytics {
         }
     }
 
-    /// Captures a synthetic, content-free `$exception` event that PostHog
-    /// Error Tracking can group. Raw errors are deliberately not accepted.
     pub fn capture_sanitized_exception(&self, report: ErrorReport) {
-        self.capture_exception("$exception", exception_properties(report));
+        self.dispatch_to(DeliveryKind::Exception, "$exception", exception_properties(report));
     }
 
     pub fn capture_frontend_exception(&self, code: &'static str, handled: bool) {
@@ -336,8 +324,6 @@ impl Analytics {
         });
     }
 
-    /// Panic payloads commonly contain arbitrary values, so the hook reports
-    /// a fixed fingerprint and never reads the panic message or location.
     pub fn install_panic_hook(&self) {
         let _ = PANIC_ANALYTICS.set(self.clone());
         if PANIC_HOOK_INSTALLED.set(()).is_err() {
@@ -366,8 +352,6 @@ impl Analytics {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Opt-out is immediate. Deleting the installation identity means a later
-    /// opt-in cannot join activity from before the opt-out.
     pub fn set_enabled(&self, enabled: bool) {
         let already_enabled = self.enabled.load(Ordering::Acquire) == enabled;
         let has_install_id = self
@@ -447,9 +431,6 @@ impl Analytics {
         if matches!(event, "setup_started" | "setup_completed") {
             self.capture_once(event, event, properties);
         } else {
-            // Step views/completions are intentionally repeatable: revisiting
-            // a setup step is useful product behavior, not duplicate startup
-            // noise. The step and event name remain strictly allowlisted.
             self.capture(event, properties);
         }
     }
@@ -763,9 +744,6 @@ impl Analytics {
         self.capture("insertion_attempted", json!({ "run_id": run_id }));
     }
     pub fn delivery_outcome(&self, run_id: &str, outcome: &'static str) {
-        // One final outcome is the denominator for the delivery-quality
-        // dashboard.  Retries and late error paths must not create a second
-        // terminal outcome for the same opaque run ID.
         let resolved = self.resolved_outcome(run_id, outcome);
         let fresh = self
             .sent_once
@@ -908,12 +886,6 @@ impl Analytics {
         }
     }
 
-    /// The only trusted `$exception` producer. It is fed solely by
-    /// `capture_sanitized_exception`, which has no raw error/message input.
-    fn capture_exception(&self, event: &'static str, properties: Value) {
-        self.dispatch_exception(event, properties);
-    }
-
     fn capture(&self, event: &'static str, properties: Value) {
         let safe = safe_properties(event, properties);
         #[cfg(test)]
@@ -931,11 +903,6 @@ impl Analytics {
 
     fn dispatch(&self, event: &'static str, properties: Value) {
         self.dispatch_to(DeliveryKind::Event, event, properties);
-    }
-
-    /// Error Tracking requires the installation ID inside `properties`.
-    fn dispatch_exception(&self, event: &'static str, properties: Value) {
-        self.dispatch_to(DeliveryKind::Exception, event, properties);
     }
 
     fn dispatch_to(&self, kind: DeliveryKind, event: &'static str, properties: Value) {
@@ -1049,17 +1016,12 @@ fn add_common_properties(
     if let Some(version) = first_seen_version.filter(|version| is_official_version(version)) {
         safe.insert("first_seen_version".into(), json!(version));
     }
-    // PostHog's ingestion endpoint otherwise derives GeoIP data from the
-    // connection address. These are processing controls, not analytics
-    // dimensions: keep no IP-derived location and no person profile.
     safe.insert("$ip".into(), json!("0.0.0.0"));
     safe.insert("$geoip_disable".into(), json!(true));
     safe.insert("$process_person_profile".into(), json!(false));
     Value::Object(safe)
 }
 
-/// Builds the exact custom property object placed in the outbound `$exception`
-/// payload. Its input is typed so caller-provided error text cannot enter it.
 fn exception_properties(report: ErrorReport) -> Value {
     let domain = report.domain.as_str();
     let code = normalize_error_code(report.code);
@@ -1074,9 +1036,6 @@ fn exception_properties(report: ErrorReport) -> Value {
         "$exception_list": [{
             "type": format!("Verenu.{domain}.{code}"),
             "value": format!("{domain}_{code}"),
-            // This represents a real application error path even though its
-            // content is normalized before transport. PostHog uses this flag
-            // when deciding whether to materialize an Error Tracking issue.
             "mechanism": { "handled": report.handled, "synthetic": false },
             "stacktrace": {
                 "type": "raw",
@@ -1187,18 +1146,12 @@ fn safe_properties(event: &str, properties: Value) -> Value {
         return Value::Object(serde_json::Map::new());
     };
     map.retain(|key, _| allowed.contains(&key.as_str()));
-    // A dictation correlation ID must be the random UUID made at the start of
-    // a run. Dropping any other value prevents a future caller from smuggling
-    // text or an application identifier through a superficially safe field.
     map.retain(|key, value| {
         key != "run_id"
             || value
                 .as_str()
                 .is_some_and(|run_id| Uuid::parse_str(run_id).is_ok())
     });
-    // Keep this boundary defensive even when a future caller bypasses one of
-    // the typed convenience methods above.  Every string-valued telemetry
-    // field is reduced to an explicit low-cardinality vocabulary here.
     match event {
         "settings_snapshot" => {
             if let Some(value) = map.get_mut("voice_commands_enabled") {
@@ -1458,9 +1411,6 @@ fn add_model_properties(properties: &mut Value, provider_model: Option<&str>) {
 }
 
 fn parse_safe_provider_model(value: &str) -> Option<(&'static str, &'static str)> {
-    // Pipeline strings may contain a primary/secondary description. Only the
-    // first configured provider/model is used, and only its fixed families
-    // leave the process.
     let first = value.split(';').next()?.trim();
     let first = first
         .split_once('=')
@@ -1478,7 +1428,6 @@ fn parse_safe_provider_model(value: &str) -> Option<(&'static str, &'static str)
     (provider != "unknown").then_some((provider, model))
 }
 
-// Return static allowlisted literals rather than caller-owned text.
 macro_rules! category_allowlist {
     ($name:ident, $fallback:literal; $($allowed:literal)|+) => {
         fn $name(value: &str) -> &'static str {
@@ -1506,7 +1455,6 @@ category_allowlist! { normalize_provider, "unknown";
 }
 
 fn normalize_model_family(value: &str) -> &'static str {
-    // Preserve the fixed family when outbound properties are sanitized again.
     if value == "apple_system" {
         return "apple_system";
     }
@@ -1953,7 +1901,6 @@ mod tests {
                 Some(("apple-intelligence", "unknown"))
             );
         }
-        // The existing primary-description parser rejects query-bearing input.
         assert_eq!(
             parse_safe_provider_model("apple-intelligence/system?token=PRIVATE_SENTINEL"),
             None
@@ -2180,9 +2127,6 @@ mod tests {
         );
         let properties = payload["properties"].as_object().unwrap();
 
-        // These are forbidden both as caller-provided properties and as
-        // PostHog-derived metadata. The only IP control present is the
-        // deliberate non-routable placeholder plus the explicit opt-out.
         for key in [
             "$geoip_city_name",
             "$geoip_postal_code",

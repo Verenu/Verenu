@@ -73,18 +73,12 @@
     addName = cleanAppName(app.name || app.exe);
     appSearch = addName;
     appPickerOpen = false;
-    // Keyboard-activated option clicks carry detail 0; return focus to the
-    // search box so the flow continues there (typing more or pressing Enter
-    // to add) instead of stranding focus on a now-hidden menu.
     if (event?.detail === 0) appSearchInput?.focus();
   }
 
   function openProfileDropdown(preferLast = false) {
     profileDropdownOpen = true;
     if (preferLast) {
-      // The shared Dropdown focuses the selected-or-first option on open;
-      // ArrowUp opens to the last option instead, so move focus after the
-      // open effect has landed.
       requestAnimationFrame(() => focusListboxOption(ADD_PROFILE_MENU_ID, true));
     }
   }
@@ -539,8 +533,6 @@
     flex-shrink: 0;
   }
 
-  /* Paired queries — see the note in MacPermissions.svelte. This form also
-     renders on the Style page, which has no settings container. */
   @container settings-panel (max-width: 720px) {
     .app-picker-wrap {
       flex-basis: 100%;

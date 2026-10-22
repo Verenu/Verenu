@@ -14,7 +14,6 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import java.io.File
 
-/** Rust owns release selection and checksum verification. Android owns APK identity and installation. */
 @TauriPlugin
 class VerenuUpdaterPlugin(private val activity: Activity) : Plugin(activity) {
   private fun directory() = File(activity.cacheDir, "verenu-updates")
@@ -31,8 +30,6 @@ class VerenuUpdaterPlugin(private val activity: Activity) : Plugin(activity) {
         }
         val dir = directory()
         check(dir.exists() || dir.mkdirs())
-        // Keep a handed-off APK until the next explicit attempt so the system
-        // installer can still read it after Verenu backgrounds or restarts.
         val apk = File(dir, "update.apk")
         check(!apk.exists() || apk.delete())
         invoke.resolveObject(mapOf("directory" to dir.absolutePath))
@@ -49,7 +46,6 @@ class VerenuUpdaterPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   @Suppress("DEPRECATION")
   fun install(invoke: Invoke) {
-    // Archive inspection can be expensive for APKs with bundled runtimes.
     Thread {
       try {
         val apk = File(directory(), "update.apk")

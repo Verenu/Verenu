@@ -7,8 +7,6 @@ use uuid::Uuid;
 
 mod backup_file;
 
-// Stats are included in the backup for informational reference only; they derive
-// from transcription history which is not backed up and cannot be restored.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct ExportStats {
     pub total_words: i64,
@@ -18,17 +16,12 @@ pub struct ExportStats {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportDictionaryEntry {
     pub term: String,
-    /// Retained for v1 compatibility. v2 stores correction mappings below the
-    /// Context that owns them and always writes this as `null`.
     #[serde(default)]
     pub mistake: Option<String>,
     pub auto_learned: bool,
     pub confidence_tier: String,
     pub correction_count: i64,
     pub created_at: String,
-    /// Canonical dictionary identity is useful when inspecting a backup, but
-    /// v2 import still uses the unique canonical term as its natural key so a
-    /// backup can be restored into a database with different integer IDs.
     #[serde(default)]
     pub uuid: Option<String>,
 }
@@ -101,9 +94,6 @@ fn default_export_match_mode() -> String {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportContext {
-    /// Used only to recognize a renamed Context during import. New local
-    /// Context rows receive a fresh identity; a JSON backup is not a sync
-    /// transport and must not overwrite local row identities.
     #[serde(default)]
     pub uuid: Option<String>,
     pub name: String,
@@ -124,6 +114,8 @@ pub struct ExportContext {
     #[serde(default)]
     pub paste_in_chunks: bool,
     #[serde(default)]
+    pub t3_skill_mentions_disabled: Option<bool>,
+    #[serde(default)]
     pub pinned_at: Option<String>,
     #[serde(default)]
     pub dictionary: Vec<ExportContextDictionaryEntry>,
@@ -133,7 +125,6 @@ pub struct ExportContext {
     pub targets: Vec<ExportContextTarget>,
     #[serde(default)]
     pub website_targets: Vec<ExportContextWebsiteTarget>,
-    /// App + window-title rules. Older backups omit the field.
     #[serde(default)]
     pub sub_apps: Vec<ExportSubApp>,
 }
@@ -150,11 +141,8 @@ pub struct ExportPayload {
     pub dictionary: Vec<ExportDictionaryEntry>,
     #[serde(default)]
     pub snippets: Vec<ExportSnippet>,
-    /// v2's Context graph. Empty for v1 backups.
     #[serde(default)]
     pub contexts: Vec<ExportContext>,
-    /// Sub-apps not assigned to any Context. Assigned ones live under their
-    /// Context in `contexts[].sub_apps`.
     #[serde(default)]
     pub sub_apps: Vec<ExportSubApp>,
 }
@@ -212,14 +200,10 @@ pub struct ImportSummary {
     pub snippets_inserted: usize,
     pub snippets_skipped: usize,
     pub snippets_already_existed: usize,
-    /// App targets restored as-is (native to this platform or installed).
     pub app_targets_kept: usize,
-    /// Targets from another platform/device rebound to the closest local app.
     pub app_targets_matched: usize,
-    /// Targets with no local match; left out so the user can add them later.
     pub app_targets_dropped: usize,
     pub sub_apps_imported: usize,
-    /// Sub-apps whose app is not installed here; left out like app targets.
     pub sub_apps_dropped: usize,
 }
 
@@ -252,10 +236,6 @@ pub async fn export_data(
             },
             settings: serde_json::Value::Object(settings_map),
             dictionary,
-            // v2 stores snippets under their owning Context, just like
-            // context-specific correction mappings. Keeping this top-level
-            // vector empty prevents a shared snippet from being broadened to
-            // Everywhere during a restore.
             snippets: Vec::new(),
             contexts,
             sub_apps: export_unassigned_sub_apps(&db).map_err(|e| e.to_string())?,
@@ -324,7 +304,6 @@ pub async fn import_data(
                             }
                         }
                     }
-                    // Mirrored frontend settings refresh only after both stores succeed.
                     let _ = app.emit("verenu:settings-imported", ());
                 },
             )
@@ -390,9 +369,6 @@ fn import_payload(
                     if key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME {
                         appearance_setting_applied = true;
                     }
-                    // Mirror save_setting's side effect: a backup that
-                    // tightens history retention must prune immediately,
-                    // not silently wait for the next app restart.
                     if key == store::HISTORY_RETENTION {
                         history_prune_days = value.as_str().and_then(store::history_retention_days);
                     }
@@ -408,11 +384,6 @@ fn import_payload(
 
     let mut library_stats = LibraryImportStats::default();
 
-    // Bulk-import dictionary entries and snippets inside a single
-    // transaction (and a single lock acquisition) instead of one
-    // implicit transaction per row - hundreds of individually committed
-    // inserts each force a disk sync, which is slow, and leaves a
-    // partially-imported database if the process dies mid-import.
     {
         let mut conn = db
             .lock()
@@ -425,25 +396,15 @@ fn import_payload(
         } else {
             import_contextual_library_conn(&tx, &payload, installed_apps, &mut library_stats)
                 .map_err(|e| e.to_string())?;
-            // A hand-authored v2 payload may omit the Context graph. In
-            // that case retain the same safe fallback as v1. A v2 payload
-            // that does contain Contexts never imports its top-level
-            // snippets, because doing so would leak targeted content to
-            // Everywhere.
             if payload.contexts.is_empty() {
                 import_legacy_snippets_conn(&tx, &payload.snippets, &mut library_stats)
                     .map_err(|e| e.to_string())?;
             }
         }
 
-        // Rows remain uncommitted if settings persistence fails. On a
-        // returned commit error, restore disk settings before returning;
-        // runtime settings remain unpublished throughout both steps.
         settings.save_values_with_commit(
             pending_settings,
             |previous| {
-                // Compare, delete, persist and publish under one settings
-                // write lock, excluding concurrent endpoint-bound key writes.
                 if let Some(providers) = restored_providers {
                     clear_provider_keys(previous, &providers)?;
                 }
@@ -502,7 +463,6 @@ fn import_payload(
     })
 }
 
-// Keep every restore side effect behind complete decoding and version checks.
 fn with_import_payload<T>(
     json: &str,
     apply: impl FnOnce(ExportPayload) -> Result<T, String>,
@@ -524,21 +484,10 @@ mod import_safety_tests;
 #[cfg(test)]
 mod cross_store_tests;
 
-// ---------------------------------------------------------------------------
-// Context-aware library backup helpers
-// ---------------------------------------------------------------------------
-
-/// Export the persistent vocabulary graph without exporting AutoLearn's
-/// short-lived evidence.  The canonical dictionary row is emitted once, while
-/// assignments and correction mappings live under the Context that owns them.
-/// This mirrors the runtime data model and means a restore cannot accidentally
-/// turn a targeted mapping into an Everywhere mapping.
 fn export_contextual_library(
     db: &db::Db,
 ) -> AnyhowResult<(Vec<ExportDictionaryEntry>, Vec<ExportContext>)> {
-    let conn = db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
 
     let dictionary = {
         let mut stmt = conn.prepare(
@@ -552,8 +501,6 @@ fn export_contextual_library(
                 Ok(ExportDictionaryEntry {
                     uuid: row.get(0)?,
                     term: row.get(1)?,
-                    // v2 never uses the retired global projection. Scoped mappings
-                    // are carried below in each Context.
                     mistake: None,
                     auto_learned: row.get::<_, i64>(2)? != 0,
                     correction_count: row.get(3)?,
@@ -601,7 +548,7 @@ fn export_contextual_library(
     let mut contexts = Vec::new();
     let mut context_stmt = conn.prepare(
         "SELECT id, uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks
+                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled
            FROM contexts
           ORDER BY is_everywhere DESC, id",
     )?;
@@ -620,6 +567,7 @@ fn export_contextual_library(
                 contextual_formatting_disabled: row.get::<_, i64>(9)? != 0,
                 pinned_at: row.get(10)?,
                 paste_in_chunks: row.get::<_, i64>(11)? != 0,
+                t3_skill_mentions_disabled: Some(row.get::<_, bool>(12)?),
                 dictionary: Vec::new(),
                 snippets: Vec::new(),
                 targets: Vec::new(),
@@ -739,7 +687,6 @@ fn export_sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportSu
     })
 }
 
-/// Sub-apps waiting in the list, not assigned to a Context.
 fn export_unassigned_sub_apps(db: &db::Db) -> AnyhowResult<Vec<ExportSubApp>> {
     let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
     let mut stmt = conn.prepare(
@@ -836,9 +783,6 @@ fn import_contextual_library_conn(
 ) -> AnyhowResult<()> {
     let mut dictionary_ids: HashMap<String, i64> = HashMap::new();
 
-    // Create canonical rows first.  The canonical term remains globally unique
-    // and shared; Context-specific correction rows are restored in the second
-    // pass below.
     for entry in &payload.dictionary {
         let Some(dictionary_id) = import_canonical_dictionary_conn(conn, entry, stats)? else {
             continue;
@@ -847,9 +791,6 @@ fn import_contextual_library_conn(
     }
 
     if payload.contexts.is_empty() {
-        // A v2-shaped hand-authored payload without a Context graph has no safe
-        // targeted owner. Treat its top-level rows as a legacy Everywhere
-        // backup, preserving compatibility without inventing a target Context.
         let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
         for entry in &payload.dictionary {
             let dictionary_id =
@@ -900,7 +841,6 @@ fn import_contextual_library_conn(
         context_ids.insert(context_key(context), context_id);
     }
 
-    // Context-owned vocabulary and correction mappings.
     for context in &payload.contexts {
         let Some(context_id) = context_ids.get(&context_key(context)).copied() else {
             continue;
@@ -1018,10 +958,6 @@ fn import_contextual_library_conn(
                 |row| row.get(0),
             )?;
             if existing {
-                // The contextual import is idempotent. Avoid calling the
-                // insert helper for an assignment that is already present:
-                // it intentionally rejects duplicate Context membership and
-                // would otherwise misclassify a successful no-op as skipped.
                 stats.snippets_already_existed += 1;
                 continue;
             }
@@ -1057,12 +993,9 @@ struct ResolvedImportTarget {
     app_name: Option<String>,
     developer: Option<String>,
     platform: Option<String>,
-    /// True when the target was rebound to a different local app.
     matched: bool,
 }
 
-/// Whether an executable identity has the shape this OS uses: `.exe` on
-/// Windows, `.app` bundles on macOS, suffix-less desktop ids/classes on Linux.
 fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
     match platform {
         Some("windows") => executable.ends_with(".exe"),
@@ -1072,10 +1005,6 @@ fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
     }
 }
 
-/// Maps a backed-up app target onto this device. Targets from this platform
-/// are restored verbatim; targets from another platform (or an unresolved
-/// sync marker) are rebound to the closest installed app, and dropped when
-/// nothing is close enough so the Context still imports cleanly.
 fn resolve_import_target(
     target: &ExportContextTarget,
     installed_apps: &[crate::system::apps::InstalledApp],
@@ -1127,8 +1056,6 @@ fn resolve_import_target(
     })
 }
 
-/// Rebinds a backed-up sub-app to a local app (same matching as app targets)
-/// and inserts it, assigned to `context_id` or left in the list.
 fn import_sub_app_conn(
     conn: &Connection,
     sub_app: &ExportSubApp,
@@ -1202,7 +1129,7 @@ fn import_context_conn(
         conn.execute(
             "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3,
                     color = ?4, custom_instructions = ?5,
-                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
+                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
                     updated_at = datetime('now')
               WHERE id = ?8",
             params![
@@ -1215,6 +1142,7 @@ fn import_context_conn(
                 source.pinned_at,
                 id,
                 source.paste_in_chunks,
+                source.t3_skill_mentions_disabled,
             ],
         )?;
         stats.contexts_already_existed += 1;
@@ -1245,15 +1173,11 @@ fn import_context_conn(
     let existing: Option<i64> = existing_by_uuid.or(existing_by_name);
 
     if let Some(id) = existing {
-        // A UUID identifies the local Context even when another local Context
-        // already owns the imported name. Preserve that stable identity and
-        // local name rather than aborting the whole import on the UNIQUE name
-        // constraint; the remaining settings still import deterministically.
         if existing_by_name.is_none() || existing_by_name == Some(id) {
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
                         cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
-                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10,
+                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
                   WHERE id = ?9",
                 params![
@@ -1267,13 +1191,14 @@ fn import_context_conn(
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
+                    source.t3_skill_mentions_disabled,
                 ],
             )?;
         } else {
             conn.execute(
                 "UPDATE contexts SET icon = ?1, tone = ?2,
                         cleanup_intensity = ?3, color = ?4, custom_instructions = ?5,
-                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9,
+                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
                   WHERE id = ?8",
                 params![
@@ -1286,6 +1211,7 @@ fn import_context_conn(
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
+                    source.t3_skill_mentions_disabled,
                 ],
             )?;
         }
@@ -1312,8 +1238,8 @@ fn import_context_conn(
     let inserted = conn.execute(
         "INSERT INTO contexts
            (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 0))",
         params![
             uuid,
             name,
@@ -1325,6 +1251,7 @@ fn import_context_conn(
             source.contextual_formatting_disabled as i64,
             source.pinned_at,
             source.paste_in_chunks,
+            source.t3_skill_mentions_disabled,
         ],
     );
     match inserted {
@@ -1333,10 +1260,6 @@ fn import_context_conn(
             Ok(Some(conn.last_insert_rowid()))
         }
         Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
-            // A backup can carry a UUID already used by a different local
-            // record. The name is the conservative fallback; if it also
-            // conflicts, skip the graph rather than merging into the wrong
-            // Context.
             let by_name: Option<i64> = conn
                 .query_row(
                     "SELECT id FROM contexts WHERE name = ?1 COLLATE NOCASE",
@@ -1457,9 +1380,6 @@ fn import_correction_conn(
         |row| row.get(0),
     )?;
     if competing {
-        // One wrong spelling cannot mechanically map to two canonical terms in
-        // a Context. Preserve the effective local mapping instead of letting a
-        // backup import silently change dictation behavior.
         stats.dictionary_corrections_skipped += 1;
         return Ok(());
     }
@@ -1497,9 +1417,6 @@ fn import_correction_conn(
             return Ok(());
         }
         if !correction.auto_learned && existing_auto {
-            // An explicit manual import is allowed to promote an existing
-            // automatic mapping to manual authority in this Context. The
-            // reverse (automatic over manual) is never allowed.
             conn.execute(
                 "UPDATE dictionary_corrections
                     SET auto_learned = 0, correction_count = 0,
@@ -1533,8 +1450,6 @@ fn import_correction_conn(
                 ],
             )?;
         }
-        // Existing manual data remains authoritative, including when the
-        // backup also contains a manual copy of the same mapping.
         stats.dictionary_corrections_skipped += 1;
         return Ok(());
     }
@@ -1621,6 +1536,38 @@ mod tests {
         old.as_object_mut().unwrap().remove("paste_in_chunks");
         let old: ExportContext = serde_json::from_value(old).unwrap();
         assert!(!old.paste_in_chunks);
+    }
+
+    #[test]
+    fn t3_context_backup_preserves_opt_out_and_legacy_imports() {
+        let source = db::open(":memory:").unwrap();
+        let context =
+            db::insert_context_returning(&source, "T3 backup", None, None, None, None, false)
+                .unwrap();
+        db::update_context_t3_skill_mentions(&source, context.id, false).unwrap();
+        let (_, contexts) = export_contextual_library(&source).unwrap();
+        let mut exported = contexts
+            .into_iter()
+            .find(|c| c.name == "T3 backup")
+            .unwrap();
+        assert_eq!(exported.t3_skill_mentions_disabled, Some(true));
+        let target = db::open(":memory:").unwrap();
+        let conn = target.lock().unwrap();
+        let mut stats = LibraryImportStats::default();
+        let id = import_context_conn(&conn, &exported, &mut stats)
+            .unwrap()
+            .unwrap();
+        exported.t3_skill_mentions_disabled = None;
+        import_context_conn(&conn, &exported, &mut stats).unwrap();
+        assert!(conn
+            .query_row(
+                "SELECT t3_skill_mentions_disabled FROM contexts WHERE id=?1",
+                [id],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap());
+        assert!(!exportable_setting_keys().any(|key| key == store::T3_CONNECTION));
+        assert!(!exportable_setting_keys().any(|key| key == store::KEY_T3_INTEGRATION));
     }
 
     #[test]
@@ -1797,10 +1744,7 @@ mod tests {
             ),
             None
         );
-        assert_eq!(
-            resolve_import_target(&target("?::photoshop.app", None, None), &installed, Some("linux")),
-            None
-        );
+        assert_eq!(resolve_import_target(&target("?::photoshop.app", None, None), &installed, Some("linux")), None);
     }
 
     #[test]
@@ -1813,7 +1757,6 @@ mod tests {
         .expect("native target kept");
         assert_eq!(resolved.executable, "obsidian.exe");
         assert!(!resolved.matched);
-        // Untagged legacy targets are judged by their shape.
         assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("windows")).is_some());
         assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("linux")).is_none());
     }
@@ -1841,10 +1784,8 @@ mod tests {
                 .id,
             );
         }
-        // Two are assigned; "Loose" stays in the list.
         db::assign_sub_app(&source, ids[0], Some(work.id)).expect("assign");
         db::assign_sub_app(&source, ids[1], Some(work.id)).expect("assign");
-        // The Photoshop rule was captured on a Mac.
         source
             .lock()
             .expect("lock")
@@ -1878,7 +1819,6 @@ mod tests {
         assert_eq!(acme.icon.as_deref(), Some("briefcase"));
         let loose = imported.iter().find(|s| s.label == "Loose").expect("loose");
         assert!(loose.context_id.is_none(), "unassigned sub-app returns to the list");
-        // The macOS-only .app has no match off macOS and is left out.
         let expected_dropped = if cfg!(target_os = "macos") { 0 } else { 1 };
         assert_eq!(stats.sub_apps_dropped, expected_dropped);
         assert_eq!(stats.sub_apps_imported, 3 - expected_dropped);

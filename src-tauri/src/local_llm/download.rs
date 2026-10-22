@@ -41,18 +41,10 @@ fn final_file_path(
     manifest.final_path(root).join(artifact.filename)
 }
 
-/// Pure SHA256-of-a-file helper, kept separate from `verify_artifact_checksum`
-/// so the actual hashing/comparison logic is unit-testable without needing a
-/// real `AppHandle` to drive event emission.
 pub(super) fn sha256_hex(path: &Path) -> anyhow::Result<String> {
     model_download::sha256_with_progress(path, &AtomicBool::new(false), |_| {})
 }
 
-/// Same hash as `sha256_hex`, but emits `local-llm-model-verification-progress`
-/// as it reads so the UI can show a moving bar during the checksum pass on a
-/// multi-hundred-MB weights file (which otherwise leaves the bar frozen at the
-/// download's 100%). Progress is per-file; cleanup models are typically a
-/// single `.gguf`, so that reads as whole-model progress.
 fn sha256_hex_with_progress(
     app: &AppHandle,
     model_id: &str,
@@ -68,13 +60,6 @@ fn sha256_hex_with_progress(
     )
 }
 
-/// Verifies a freshly-downloaded artifact's SHA256 against its manifest
-/// checksum before it's renamed into the final model directory and made
-/// available to llama-server to load and execute. On mismatch, the
-/// corrupted `.partial` file is deleted (not left for a future attempt to
-/// "resume" from — appending more bytes to already-corrupted data can never
-/// fix it, so leaving it in place would make every subsequent download
-/// attempt fail identically forever).
 fn verify_artifact_checksum(
     app: &AppHandle,
     manifest: &LocalLlmModelManifest,
@@ -159,9 +144,6 @@ async fn negotiate_total_bytes(
             .send()
             .await?;
         match response.status() {
-            // A 206 response's Content-Length is only the *remaining* bytes
-            // from the requested range, so the already-downloaded `partial`
-            // bytes must be added back on top to get the full artifact size.
             reqwest::StatusCode::PARTIAL_CONTENT => {
                 if let Some(len) = response.content_length() {
                     total = total.saturating_add(len + partial);
@@ -169,9 +151,6 @@ async fn negotiate_total_bytes(
                     return Ok(None);
                 }
             }
-            // A 200 means the server ignored the Range header and is
-            // sending the whole file from byte 0 — Content-Length here is
-            // already the full size, so adding `partial` would overcount.
             reqwest::StatusCode::OK => {
                 if let Some(len) = response.content_length() {
                     total = total.saturating_add(len);
@@ -235,11 +214,6 @@ async fn download_one_artifact(
     };
 
     if already_complete {
-        // `partial_size` is already folded into `*aggregate_downloaded` by
-        // the caller's `manifest.partial_size(root)` accounting, so it must
-        // not be added again here. The file itself is left untouched — it
-        // must NOT be opened with `truncate(true)` below, or the completed
-        // download gets zeroed out right before checksum verification.
         emit_progress(app, manifest.id, *aggregate_downloaded, aggregate_total);
         return Ok(());
     }
@@ -309,9 +283,6 @@ pub async fn download_model(
     for artifact in manifest.artifacts {
         ensure_not_cancelled(&cancel)?;
         let partial_path = partial_file_path(root, manifest, artifact);
-        // Hashes a multi-hundred-MB file synchronously — run it off the
-        // Tokio worker thread so it can't stall other async tasks (audio
-        // capture, hotkey handling, etc.) for the seconds it takes.
         let app = app.clone();
         let manifest = manifest.clone();
         let artifact = artifact.clone();
@@ -322,9 +293,6 @@ pub async fn download_model(
         .await??;
     }
 
-    // Only now, after every artifact has downloaded and passed checksum
-    // verification, replace whatever was previously in final_dir — so a
-    // failed or cancelled download never destroys a working installed model.
     let install_manifest = manifest.clone();
     let install_root = root.to_path_buf();
     tokio::task::spawn_blocking(move || install_downloaded_model(&install_manifest, &install_root))
@@ -333,9 +301,6 @@ pub async fn download_model(
     Ok(())
 }
 
-/// Atomically installs verified artifacts. This is intentionally synchronous,
-/// but only runs inside `spawn_blocking`: directory replacement and cleanup can
-/// touch hundreds of MB and must not occupy an async runtime worker.
 fn install_downloaded_model(manifest: &LocalLlmModelManifest, root: &Path) -> anyhow::Result<()> {
     let final_dir = manifest.final_path(root);
     let partial_dir = manifest.partial_download_path(root);
@@ -391,7 +356,6 @@ mod tests {
 
     #[test]
     fn sha256_hex_matches_a_known_vector() {
-        // SHA256("abc") is a standard published test vector.
         let dir = std::env::temp_dir().join(format!("verenu-sha-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("abc.txt");

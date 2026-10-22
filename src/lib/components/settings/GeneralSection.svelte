@@ -41,18 +41,6 @@
   let selectedLanguage = $state<TranscriptionLanguageCode>('en');
   let languageDropdownOpen = $state(false);
   let languageTouched = false;
-  // Guards the language auto-correct effect below until the real persisted
-  // selection has loaded — without this, the effect could see the placeholder
-  // initial state (selectedLanguage='en', transcriptionModelStore at its
-  // default) as "unsupported," call saveLanguage('en'), and that call's
-  // languageTouched=true side effect would then make loadSettings() skip
-  // applying the user's actual saved language once it resolves.
-  //
-  // Must be $state, not a plain let: the auto-correct effect's first line is
-  // `if (!initialLanguageLoaded) return`, which on the mount run short-circuits
-  // before reading any reactive value — so unless THIS flag is reactive, the
-  // effect registers no dependencies and never re-runs when loadSettings later
-  // flips it true.
   let initialLanguageLoaded = $state(false);
   let microphones = $state<string[]>([]);
   let selectedMic = $state('');
@@ -110,6 +98,13 @@
   let capsLockUppercase = $state(false);
   let legacyFeaturesError = $state('');
   let hotkey = $state(defaultHotkey);
+  type CaptureTarget = 'dictation' | 'cancel' | 'handsfree';
+  let captureTarget = $state<CaptureTarget>('dictation');
+  let controlKeys = $state({ cancel: 'Escape', handsfree: 'Space' });
+  const secondaryControls = [
+    { id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' },
+    { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' },
+  ] as const;
   let recordingHotkey = $state(false);
   let capturedKeys = $state<string[]>([]);
   let hotkeyError = $state('');
@@ -145,15 +140,14 @@
     return formatKeyLabel(code);
   }
 
-  // A macOS hotkey can be a single key (e.g. F5) — later slots are empty.
   function formatHotkeyDisplay(hk: string[]): string {
     return hk.filter(Boolean).map(formatHotkeyBadgeLabel).join(' + ');
   }
 
   let buttonText = $derived(
-    recordingHotkey
+    recordingHotkey && captureTarget === 'dictation'
       ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Hold your shortcut...'
-      : hotkeyState === 'saving' ? 'Saving...'
+      : hotkeyState === 'saving' && captureTarget === 'dictation' ? 'Saving...'
       : isLinux && !isAndroid && desktopShortcut('dictation') ? desktopShortcut('dictation')?.active?.split('+').join(' + ') ?? 'Unavailable' : formatHotkeyDisplay(hotkey)
   );
 
@@ -176,7 +170,6 @@
     el.style.width = `${newW}px`;
   });
 
-  /** Take saved placements as given; an unknown or missing value falls back to the default. */
   function applyPillPlacement(position: AndroidPillPosition | null, dock: AndroidPillScreenPosition | null) {
     pillPosition = ANDROID_PILL_POSITION_OPTIONS.some((o) => o.id === position)
       ? (position as AndroidPillPosition)
@@ -186,11 +179,6 @@
       : DEFAULT_ANDROID_PILL_DOCK_POSITION;
   }
 
-  /**
-   * The pill can change its own placement (dragging it snaps and saves), and
-   * this page only read the settings once on mount, so re-read them whenever
-   * the pill reports a move or the app comes back to the foreground.
-   */
   async function refreshPillPlacement() {
     if (!isAndroid) return;
     try {
@@ -211,6 +199,7 @@
       'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
       'microphone_device', 'legacy_features_enabled', 'android_pill_position',
       'android_pill_cover_keyboard_mic', 'android_pill_hide_offline', 'android_pill_dock_position',
+      'linux_cancel_key', 'linux_handsfree_key',
     ] as const;
     const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
     requests.splice(7, 0, invoke<string[]>('get_microphones'));
@@ -226,10 +215,9 @@
 
     const hk = val<string[] | null>(1, null);
     if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
+    controlKeys = { cancel: val(14, 'Escape'), handsfree: val(15, 'Space') };
 
     const appearance = val<AppearanceMode | null>(2, null);
-    // A theme being edited is previewing through these store fields; the saved
-    // values must not overwrite the preview.
     if (!themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
       appStore.appearanceMode = appearance;
     }
@@ -305,11 +293,6 @@
     }
   }
 
-  // Which of the 57 Spoken Language options the active transcription model
-  // actually supports — 'all' for every current cloud model (Verenu's full
-  // list already matches Whisper's official language support exactly, and
-  // Gemini publishes no narrower restriction), a real subset for most local
-  // models (e.g. Moonshine is English-only).
   const languageScope = $derived.by(() => {
     const parsed = splitModelId(transcriptionModelStore.defaultModel);
     return parsed ? getLanguageSupport(parsed.provider, parsed.model) : 'all';
@@ -327,13 +310,6 @@
     return ` · ${count} ${count === 1 ? 'language' : 'languages'} for ${modelName}`;
   });
 
-  // If switching models drops the currently selected language out of the
-  // now-narrower list, snap back to a supported one rather than leaving a
-  // silently unsupported selection in place. Prefer English (most models
-  // include it), but fall back to the model's first supported language for
-  // the English-excluding ones (e.g. GigaAM is Russian-only). Gated on
-  // initialLanguageLoaded so this never fires during the initial hydration
-  // race (see the flag's declaration comment).
   $effect(() => {
     if (!initialLanguageLoaded) return;
     if (languageScope === 'all') return;
@@ -375,9 +351,6 @@
     }
   }
 
-  // Turning Legacy on surfaces unmaintained pages (App Mappings, Dictionary,
-  // Snippets), so it gets a heads-up first. Turning it back off needs no
-  // confirmation — that's just restoring the default.
   let confirmLegacyOn = $state(false);
   let legacyCancelButton: HTMLButtonElement | null = $state(null);
 
@@ -439,10 +412,6 @@
     }
   }
 
-  // Turning Cleanup off is a bigger behavioral change than most toggles here
-  // (it silently makes the Style and App Mappings pages inert), so it gets a
-  // confirmation instead of taking effect immediately. Turning it back on
-  // needs no confirmation — that's just restoring the default.
   let confirmCleanupOff = $state(false);
   let cleanupCancelButton: HTMLButtonElement | null = $state(null);
 
@@ -493,10 +462,11 @@
     guardThemeEditor(() => void withAppearanceLock(() => persistAccentColor(color)));
   }
 
-  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent) {
+  async function startRecordingHotkey(e: MouseEvent | KeyboardEvent, target: CaptureTarget = 'dictation') {
     e.stopPropagation();
     if (recordingHotkey || hotkeyState === 'saving') return;
     clearTimeout(feedbackTimer);
+    captureTarget = target;
     hotkeyError = '';
     capture.reset();
     hotkeyState = 'saving';
@@ -528,7 +498,7 @@
   }
 
   async function cancelRecordingHotkey(e?: MouseEvent | KeyboardEvent) {
-    if (e && (e.target as HTMLElement).closest('.keybind-btn')) return;
+    if (e && (e.target as HTMLElement).closest('.keybind-btn, .secondary-keybind-btn')) return;
     if (recordingHotkey) {
       removeHotkeyCaptureListeners();
       recordingHotkey = false;
@@ -550,7 +520,7 @@
   function handleHotkeyKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === 'Escape' && capturedKeys.length === 0) {
+    if (captureTarget === 'dictation' && e.code === 'Escape' && capturedKeys.length === 0) {
       cancelRecordingHotkey();
       return;
     }
@@ -571,11 +541,19 @@
     hotkeyState = 'saving';
     let outcome: 'success' | 'error' = 'success';
     try {
-      const available = await invoke<boolean>('check_hotkey', { keys });
-      if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
-      await invoke('save_hotkey', { keys });
-      hotkey = keys;
-      await loadHotkey();
+      if (captureTarget === 'dictation') {
+        const available = await invoke<boolean>('check_hotkey', { keys });
+        if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
+        await invoke('save_hotkey', { keys });
+        hotkey = keys;
+        await loadHotkey();
+      } else {
+        if (keys.length !== 1 || /^(Control|Alt|Shift|Meta)/.test(keys[0]) || keys[0] === 'Fn') {
+          throw new Error('Choose a single key without modifiers.');
+        }
+        await saveSetting(captureTarget === 'cancel' ? 'linux_cancel_key' : 'linux_handsfree_key', keys[0]);
+        controlKeys[captureTarget] = keys[0];
+      }
     } catch (error) {
       outcome = 'error';
       hotkeyError = formatIpcError(error, 'Could not save this shortcut');
@@ -612,8 +590,6 @@
         .catch(() => {});
     }
     listenForSyncCompletion(() => {
-      // Refresh shared values only. Do not reset a theme preview, microphone,
-      // shortcut capture, or other device-local controls during a peer sync.
       void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
         cleanup_enabled: cleanup, transcription_language: language,
         voice_commands_enabled: commands }) => {
@@ -650,8 +626,7 @@
       <div class="label">Pill position</div>
       <div class="desc">Where the dictation pill appears while the keyboard is up. Hold the pill and drag it to move it; it snaps to the nearest position here.</div>
     </div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="ui-dropdown pill-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
+    <div class="ui-dropdown pill-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && pillDropdownOpen) { pillDropdownOpen = false; e.stopPropagation(); } }}>
       <button
         class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
         onclick={() => (pillDropdownOpen = !pillDropdownOpen)}
@@ -666,12 +641,11 @@
         </svg>
       </button>
       {#if pillDropdownOpen}
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div
           id={PILL_MENU_ID}
           class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          role="group"
           aria-label="Pill position options"
-          onclick={(e) => e.stopPropagation()}
           in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
           out:fade={{ duration: motionMs(MOTION_MS.fast) }}
         >
@@ -687,8 +661,7 @@
       <div class="label">Pill position without a keyboard</div>
       <div class="desc">Where the pill rests when a dictation continues after the keyboard closes. Hold the pill and drag it to move it; it snaps to the nearest position and saves here.</div>
     </div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="ui-dropdown dock-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && dockDropdownOpen) { dockDropdownOpen = false; e.stopPropagation(); } }}>
+    <div class="ui-dropdown dock-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && dockDropdownOpen) { dockDropdownOpen = false; e.stopPropagation(); } }}>
       <button
         class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
         onclick={() => (dockDropdownOpen = !dockDropdownOpen)}
@@ -703,12 +676,11 @@
         </svg>
       </button>
       {#if dockDropdownOpen}
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div
           id={DOCK_MENU_ID}
           class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+          role="group"
           aria-label="Pill position without a keyboard options"
-          onclick={(e) => e.stopPropagation()}
           in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
           out:fade={{ duration: motionMs(MOTION_MS.fast) }}
         >
@@ -739,24 +711,24 @@
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
-      onclick={startRecordingHotkey}
-      disabled={hotkeyState === 'saving'}
-      aria-label={recordingHotkey ? 'Recording shortcut' : 'Change dictation hotkey'}
+      onclick={(e) => startRecordingHotkey(e)}
+      disabled={hotkeyState === 'saving' || (recordingHotkey && captureTarget !== 'dictation')}
+      aria-label={recordingHotkey && captureTarget === 'dictation' ? 'Recording shortcut' : 'Change dictation hotkey'}
       aria-describedby="hotkey-help"
-      class:recording={recordingHotkey}
-      class:armed={hotkeyState === 'armed'}
-      class:first={hotkeyState === 'first'}
-      class:saving={hotkeyState === 'saving'}
-      class:success={hotkeyState === 'success'}
-      class:error={hotkeyState === 'error'}
+      class:recording={recordingHotkey && captureTarget === 'dictation'}
+      class:armed={captureTarget === 'dictation' && hotkeyState === 'armed'}
+      class:first={captureTarget === 'dictation' && hotkeyState === 'first'}
+      class:saving={captureTarget === 'dictation' && hotkeyState === 'saving'}
+      class:success={captureTarget === 'dictation' && hotkeyState === 'success'}
+      class:error={captureTarget === 'dictation' && hotkeyState === 'error'}
     >
       {#key buttonText}
         <span aria-live="polite" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>{buttonText}</span>
       {/key}
     </button>
   </div>
-  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={Boolean(hotkeyError)} role={hotkeyError ? 'alert' : undefined}>
-    {hotkeyError || (recordingHotkey ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
+    {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
   </p>
 {/if}
 {#if isMac && hotkey[0] === 'F5'}
@@ -767,8 +739,6 @@
   </p>
 {/if}
 {#if isLinux && !isAndroid}<DesktopShortcutStatus id="dictation" />{/if}
-<!-- Keyboard chord, OS autostart, and Caps Lock have no phone equivalent —
-     Android hides them rather than showing dead or Windows-worded controls. -->
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-copy-last">
     <div><div class="label">Copy last dictation</div><div class="desc">Re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
@@ -777,18 +747,30 @@
 {/if}
 {#if isLinux && !isAndroid}
   <DesktopShortcutStatus id="copy" />
-  {#each [{ id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' }, { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' }] as control}
+  {#each secondaryControls as control}
+    {@const status = desktopShortcut(control.id)}
+    {@const capturing = recordingHotkey && captureTarget === control.id}
     <div class="setting-row">
       <div><div class="label">{control.label}</div><div class="desc">{control.description}</div></div>
-      <span class="badge key-badge">{desktopShortcut(control.id as 'cancel' | 'handsfree')?.active ?? 'Unavailable'}</span>
+      <button class="badge key-badge secondary-keybind-btn" class:recording={capturing}
+        disabled={hotkeyState === 'saving' || (recordingHotkey && !capturing)}
+        aria-label={`Change ${control.label} shortcut`} aria-describedby={`${control.id}-help`}
+        onclick={(e) => startRecordingHotkey(e, control.id)}>
+        {capturing ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Press a key…'
+          : `${formatKeyLabel(controlKeys[control.id])}${status?.active === null ? ' · Unavailable' : ''}`}
+      </button>
     </div>
+    <p id={`${control.id}-help`} class="hotkey-tip" role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
+      {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
+        ? 'Press and release one key to save, including Escape. Click outside to cancel.'
+        : 'Click to change. Uses one key with any held modifiers; desktop bindings on that key take priority.'}
+    </p>
     <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
   {/each}
 {/if}
 <div class="setting-row" data-setting-target="general-language">
   <div class="lang-setting-text"><div class="label">Spoken Language</div><div class="desc">Tells transcription what language to expect{languageScopeNote}</div></div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ui-dropdown language-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && languageDropdownOpen) { languageDropdownOpen = false; e.stopPropagation(); } }}>
+  <div class="ui-dropdown language-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && languageDropdownOpen) { languageDropdownOpen = false; e.stopPropagation(); } }}>
     <button
       class="ui-dropdown-trigger ui-dropdown-trigger--compact language-btn"
       use:animateWidth={{ text: getTranscriptionLanguageLabel(selectedLanguage) }}
@@ -805,12 +787,11 @@
       </svg>
     </button>
     {#if languageDropdownOpen}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div
         id={LANGUAGE_MENU_ID}
         class="ui-dropdown-menu ui-dropdown-menu--padded language-menu scroll-styled scroll-thumb-elev"
+        role="group"
         aria-label="Spoken language options"
-        onclick={(e) => e.stopPropagation()}
         in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
         out:fade={{ duration: motionMs(MOTION_MS.fast) }}
       >
@@ -833,8 +814,7 @@
     <div class="label">{microphoneCopy.inputDeviceLabel}</div>
     <div class="desc">{microphoneCopy.inputDeviceDescription}</div>
   </div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ui-dropdown mic-dropdown" onkeydown={(e) => { if (e.key === 'Escape' && micDropdownOpen) { micDropdownOpen = false; e.stopPropagation(); } }}>
+  <div class="ui-dropdown mic-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && micDropdownOpen) { micDropdownOpen = false; e.stopPropagation(); } }}>
     <button
       class="ui-dropdown-trigger ui-dropdown-trigger--compact mic-btn"
       use:animateWidth={{ text: selectedMic || microphoneCopy.defaultDevice, max: 180 }}
@@ -850,12 +830,11 @@
       </svg>
     </button>
     {#if micDropdownOpen}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div
         id={MIC_MENU_ID}
         class="ui-dropdown-menu ui-dropdown-menu--padded mic-menu scroll-styled scroll-thumb-elev"
+        role="group"
         aria-label="Microphone device options"
-        onclick={(e) => e.stopPropagation()}
         in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }}
         out:fade={{ duration: motionMs(MOTION_MS.fast) }}
       >
@@ -938,7 +917,6 @@
 {/if}
 
 {#if confirmCleanupOff}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmCleanupOff = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
     class="modal-card"
@@ -972,7 +950,6 @@
 {/if}
 
 {#if confirmLegacyOn}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmLegacyOn = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
     class="modal-card"
@@ -1016,7 +993,7 @@
   }
   .hotkey-tip strong { color: var(--ink-soft); font-weight: 600; }
 
-  .keybind-btn {
+  .keybind-btn, .secondary-keybind-btn {
     cursor: pointer;
     border: 1px solid transparent;
     transition:
@@ -1034,8 +1011,8 @@
     overflow-wrap: anywhere;
   }
   .hotkey-error { color: var(--danger); }
-  .keybind-btn:hover { background: var(--control-hover); }
-  .keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
+  .keybind-btn:hover, .secondary-keybind-btn:hover { background: var(--control-hover); }
+  .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }
   .keybind-btn.first { transform: scale(1.03); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .keybind-btn.saving { opacity: 0.9; }
@@ -1082,9 +1059,6 @@
     width: 220px;
   }
   .mic-empty { padding: 8px 10px; font-size: 12px; color: var(--ink-mute); text-align: center; }
-  /* Let the label+desc column take remaining width and wrap within itself,
-     so the (sometimes long) language-scope note never runs under the
-     fixed-width dropdown button to its right. */
   .lang-setting-text { min-width: 0; flex: 1; padding-right: 14px; }
   .language-btn { max-width: 210px; }
   .language-btn span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
@@ -1110,7 +1084,6 @@
     font-size: 10.5px;
     text-transform: uppercase;
   }
-  /* ── cleanup-off confirm modal ── */
   .modal-backdrop {
     position: fixed;
     inset: 0;

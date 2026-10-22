@@ -6,7 +6,7 @@ import os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { root } from '../../scripts/verification/identity.mjs';
-import { requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
+import { requiredCiContextDiff, requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
 
 const workflow = name => YAML.parse(fs.readFileSync(path.join(root, '.github/workflows', name), 'utf8'));
 
@@ -15,7 +15,6 @@ test('required CI aggregate cannot pass when a job fails, skips or is cancelled'
   assert.equal(gate.if, 'always()');
   for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
   const step = gate.steps[0];
-  // Execute the gate's actual command against adverse job results.
   const source = step.run.match(/node -e '([\s\S]+)'/)?.[1];
   assert.ok(source);
   const evaluate = new Function('process', 'console', source);
@@ -80,7 +79,6 @@ test('nightly version snapshot preserves CRLF files and still rejects trailing s
     assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_sha=${releaseSha}`));
     for (const [file, contents] of Object.entries(originals)) assert.equal(fs.readFileSync(path.join(checkout, file), 'utf8'), contents);
 
-    // Exercise the exact workflow check again with a real trailing-space defect.
     const check = step.run.split('\n').find(line => line.includes('diff --check')).trim();
     fs.writeFileSync(path.join(checkout, 'package.json'), originals['package.json'].replace('0.20.0"', '0.20.0" '));
     const invalid = spawnSync('bash', ['-c', check], { cwd: checkout, encoding: 'utf8', timeout: 10_000 });
@@ -114,11 +112,22 @@ test('PR checks compile and run Android native regressions and native WebViews',
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);
   assert.ok(shared.runs.steps.some(step => step.run?.includes('cargo clippy')));
+  const deletedReviewTestCommand = ['node --test scripts/verenu', 'ai', 'review-*.test.mjs'].join('-');
+  assert.ok(!jobs['workflow-tests'].steps.some(step => step.run === deletedReviewTestCommand));
 });
 
 test('master required-check rules preserve other rules and add no bypass actors', () => {
   const rules = fs.readFileSync(path.join(root, 'scripts/ci/merge-rules.mjs'), 'utf8');
   assert.match(rules, /'CI required'/);
+  assert.match(rules, /configuredDiff\.unexpected\.length/);
+  assert.doesNotMatch(rules, /effectiveDiff\.unexpected\.length/);
+  const contexts = rules.match(/const contexts = \[(.*?)\];/s)?.[1] || '';
+  assert.ok(contexts);
+  assert.doesNotMatch(contexts, /['"]review['"]/);
+  assert.deepEqual(requiredCiContextDiff([
+    { context: 'CI required', integration_id: 15368 },
+    { context: 'review', integration_id: 15368 },
+  ], ['CI required']), { missing: [], unexpected: ['review'] });
   const existingRule = { type: 'required_linear_history' };
   const payload = requiredCiRulesetPayload({ rules: [existingRule, { type: 'required_status_checks' }], bypass_actors: [{ actor_type: 'OrganizationAdmin' }] }, ['CI required']);
   assert.deepEqual(payload.bypass_actors, []);

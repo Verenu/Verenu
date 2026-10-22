@@ -2,7 +2,6 @@ import test from 'node:test';
 import { runBasicCases } from './helpers/basic-cleanup.mjs';
 
 test('production filler and command edits preserve identifier boundaries', { timeout: 180_000 }, async () => {
-  // Independent default-30 worker; existing Basic36 and boundary26 stay intact.
   await runBasicCases([
     [true, 'contact um@example.com', 'contact um@example.com'],
     [true, 'visit um.edu', 'visit um.edu'],
