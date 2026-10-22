@@ -1,5 +1,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(test)]
+#[path = "../build_support/posthog.rs"]
+mod posthog_build_support;
+
 #[allow(dead_code)]
 mod analytics;
 mod android;
