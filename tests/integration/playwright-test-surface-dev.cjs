@@ -83,6 +83,7 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     const dictionaryRowHandle = await dictionaryRow.elementHandle();
     if (!dictionaryRowHandle) throw new Error('New dictionary row disappeared before selection');
     await page.waitForFunction((row) => row.getAttribute('aria-pressed') === 'false', dictionaryRowHandle, { timeout: TIMEOUT });
+    await page.locator('.inspector-empty').waitFor({ state: 'visible', timeout: TIMEOUT });
     await dictionaryRow.click();
     await page.waitForFunction((row) => row.getAttribute('aria-pressed') === 'true', dictionaryRowHandle, { timeout: TIMEOUT });
     const dictionaryInspector = page.locator('.insp-often');
