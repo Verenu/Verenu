@@ -1,8 +1,6 @@
 # Roadmap: Verenu
 
-## Current line: 0.18.1
-
-The current release is 0.18.1. Short-lived release work belongs in the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md). This page records open follow-up work and longer-term status.
+Short-lived release work belongs in the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md). This page records open follow-up work and longer-term status.
 
 ## Completed foundations
 
