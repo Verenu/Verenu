@@ -45,16 +45,17 @@ and does not establish end-to-end dictation speed or platform integration.
 
 ## Fragment fix measurement (2026-10-21)
 
-The email/path fragment fix was compared with source at `0136168058a1d96abd560e928feb5661d3cbde78` using the same expanded 5,172-case corpus. The prior source had 16 expected-output mismatches; the fixed source had none. Five optimized processes per side alternated, with five measured rounds per process and the warmup round excluded.
+The final formatter at `e3285d69001a9082a7082ff51058d9377aa34740` was compared with the pre-fix source at `0136168058a1d96abd560e928feb5661d3cbde78` using the 5,172-case corpus. The pre-fix source had 16 expected-output mismatches; the fixed source had none. Five optimized processes per side alternated, with five measured rounds per process and the warmup round excluded (25 samples per side).
 
 | Source | Median | Range |
 | --- | ---: | ---: |
-| Before | 203.3 ns/insertion | 200.5–220.1 ns/insertion |
-| After | 216.0 ns/insertion | 213.2–225.5 ns/insertion |
+| Before | 218.8 ns/insertion | 208.2–259.3 ns/insertion |
+| After | 221.4 ns/insertion | 218.4–275.1 ns/insertion |
 
-The ranges overlap, so this is inconclusive and does not establish a measurable
-latency change. `rustc 1.99.1` compiled both sides with `-O`. The host had a load
-average of 7.16 on 12 cores and another compiler process was active; the two
-sides were interleaved. A full harness run used 6.873 seconds of CPU in 6.900
-seconds elapsed, consistent with a CPU-bound formatter. `perf` was unavailable,
-so no call-level profile or exact instruction-level limiter is claimed.
+The fixed source median is 2.6 ns (1.2%) higher, but the sample ranges overlap
+and vary substantially, so this result is inconclusive and does not establish a
+measurable latency change. `rustc 1.99.1` compiled both sides with `-O`. The
+host had 12 cores and load averages of `6.50, 6.03, 5.24` at the start and
+`6.72, 6.24, 5.38` at the end; no concurrent builds were launched by this task.
+`perf` was unavailable, so no call-level profile or exact instruction-level
+limiter is claimed.
