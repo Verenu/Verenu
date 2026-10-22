@@ -65,7 +65,7 @@ fn custom_provider_credential_roundtrip() {
 #[cfg(all(test, target_os = "linux"))]
 #[test]
 #[ignore = "Requires an existing locked Verenu credential; does not read or unlock secrets"]
-fn locked_provider_credential_is_reported_as_saved() {
+fn locked_provider_credential_is_reported_as_saved_without_unlocking_on_config_read() {
     let provider = linux_secret_service(async {
         use secret_service::{EncryptionType, SecretService};
         let service = SecretService::connect(EncryptionType::Dh)
@@ -95,6 +95,22 @@ fn locked_provider_credential_is_reported_as_saved() {
         has(provider),
         "A saved locked credential must not be reported as missing"
     );
+    let settings = crate::data::store::SettingsSnapshot::from_pairs([]);
+    let _config = crate::data::store::load_pipeline_config(&settings);
+    let still_locked = linux_secret_service(async {
+        use secret_service::{EncryptionType, SecretService};
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        let account = linux_account(provider)?;
+        let items = service
+            .search_items(linux_attributes(&account))
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(!items.locked.is_empty() && items.unlocked.is_empty())
+    })
+    .unwrap();
+    assert!(still_locked, "Configuration loading must leave the key locked");
 }
 
 #[cfg(windows)]

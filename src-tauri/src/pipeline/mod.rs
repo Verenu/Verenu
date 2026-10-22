@@ -255,7 +255,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     let mut last_err: Option<anyhow::Error> = None;
     for (provider_id, model) in transcription_model_chain(&cfg) {
         let language = cfg.transcription_language.clone();
-        let key = cfg.key_for(&provider_id).to_owned();
+        let key = cfg.key_for_request(&provider_id);
         match transcribe_any(
             &app,
             &captured_audio,

@@ -189,7 +189,7 @@ pub(super) fn validate_transcription_chain(
                     .any(|p| p.id == *provider && p.supports_transcription)
                     && cfg.provider_has_auth(provider)
             } else {
-                !cfg.key_for(provider).is_empty()
+                cfg.provider_has_auth(provider)
             }
         });
 

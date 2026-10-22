@@ -23,6 +23,7 @@ pub struct PipelineConfig {
     pub key_xai: String,
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
     pub custom_keys: std::collections::HashMap<String, String>,
+    pub allow_native_credential_lookup: bool,
     pub default_tone: String,
     pub cleanup_intensity: String,
     pub auto_learn_enabled: bool,
@@ -201,12 +202,53 @@ impl PipelineConfig {
         }
     }
 
+    pub fn key_for_request(&self, provider: &str) -> String {
+        self.key_for_request_with(provider, crate::data::credentials::get)
+    }
+
+    fn key_for_request_with(
+        &self,
+        provider: &str,
+        read_key: impl FnOnce(&str) -> String,
+    ) -> String {
+        let key = self.key_for(provider);
+        if !key.is_empty() {
+            return key.to_owned();
+        }
+        if provider == LOCAL || provider == APPLE_INTELLIGENCE {
+            return String::new();
+        }
+        if self.custom_providers.iter().any(|p| p.id == provider && !p.requires_key) {
+            return String::new();
+        }
+        if crate::api::custom::is_custom_id(provider)
+            && !crate::api::custom::native_credentials_available()
+        {
+            return String::new();
+        }
+        read_key(provider)
+    }
+
     pub fn provider_has_auth(&self, provider: &str) -> bool {
+        self.provider_has_auth_with(provider, crate::data::credentials::has)
+    }
+
+    fn provider_has_auth_with(
+        &self,
+        provider: &str,
+        credential_exists: impl FnOnce(&str) -> bool,
+    ) -> bool {
         !self.key_for(provider).is_empty()
             || self
                 .custom_providers
                 .iter()
                 .any(|p| p.id == provider && !p.requires_key)
+            || (provider != LOCAL
+                && provider != APPLE_INTELLIGENCE
+                && self.allow_native_credential_lookup
+                && (!crate::api::custom::is_custom_id(provider)
+                    || crate::api::custom::native_credentials_available())
+                && credential_exists(provider))
     }
 
     pub fn has_style_instructions(&self, profile: &str) -> bool {
@@ -368,12 +410,6 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
         .unwrap_or_default();
 
     let custom_providers = crate::api::custom::parse_stored(store.get(CUSTOM_PROVIDERS));
-    let custom_keys = custom_providers
-        .iter()
-        .filter(|p| p.requires_key && crate::api::custom::native_credentials_available())
-        .map(|p| (p.id.clone(), crate::data::credentials::get(&p.id)))
-        .collect();
-
     PipelineConfig {
         speech_vocabulary: Default::default(),
         transcription_provider,
@@ -396,14 +432,15 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             .get(VOICE_COMMANDS_ENABLED)
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        key_groq: crate::data::credentials::get(GROQ),
-        key_openai: crate::data::credentials::get(OPENAI),
-        key_google: crate::data::credentials::get(GOOGLE),
-        key_assemblyai: crate::data::credentials::get(ASSEMBLYAI),
-        key_openrouter: crate::data::credentials::get(OPENROUTER),
-        key_xai: crate::data::credentials::get(XAI),
+        key_groq: String::new(),
+        key_openai: String::new(),
+        key_google: String::new(),
+        key_assemblyai: String::new(),
+        key_openrouter: String::new(),
+        key_xai: String::new(),
         custom_providers,
-        custom_keys,
+        custom_keys: Default::default(),
+        allow_native_credential_lookup: true,
         default_tone: supported_or_default(DEFAULT_TONE, "casual", is_supported_default_tone),
         cleanup_intensity: supported_or_default(
             CLEANUP_INTENSITY,
@@ -448,6 +485,50 @@ pub fn load_pipeline_config(store: &SettingsSnapshot) -> PipelineConfig {
             "unload_after_5m",
             is_supported_local_model_memory_policy,
         ),
+    }
+}
+
+#[cfg(test)]
+mod credential_access_tests {
+    use super::*;
+
+    #[test]
+    fn locked_provider_is_available_without_reading_its_secret_until_request() {
+        let mut config = PipelineConfig::default();
+        config.allow_native_credential_lookup = true;
+        let mut status_provider = String::new();
+        assert!(config.provider_has_auth_with("openai", |provider| {
+            status_provider = provider.to_owned();
+            true
+        }));
+        assert_eq!(status_provider, "openai");
+
+        let mut requested_provider = String::new();
+        let key = config.key_for_request_with("openai", |provider| {
+            requested_provider = provider.to_owned();
+            "synthetic-key".to_owned()
+        });
+        assert_eq!(key, "synthetic-key");
+        assert_eq!(requested_provider, "openai");
+    }
+
+    #[test]
+    fn local_provider_does_not_read_a_credential() {
+        let config = PipelineConfig::default();
+        let key = config.key_for_request_with(LOCAL, |_| panic!("local provider has no key"));
+        assert!(key.is_empty());
+    }
+
+    #[test]
+    fn settings_config_contains_no_provider_secrets() {
+        let config = load_pipeline_config(&SettingsSnapshot::from_pairs([]));
+        assert!(config.key_groq.is_empty());
+        assert!(config.key_openai.is_empty());
+        assert!(config.key_google.is_empty());
+        assert!(config.key_assemblyai.is_empty());
+        assert!(config.key_openrouter.is_empty());
+        assert!(config.key_xai.is_empty());
+        assert!(config.custom_keys.is_empty());
     }
 }
 
