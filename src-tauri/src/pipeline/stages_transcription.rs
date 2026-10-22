@@ -500,7 +500,7 @@ fn spawn_transcription_candidate(
 ) {
     let app = app.clone();
     let audio = audio.clone();
-    let key = cfg.key_for(&candidate.0).to_owned();
+    let key = cfg.key_for_request(&candidate.0);
     let language = cfg.transcription_language.clone();
     let customs = cfg.custom_providers.clone();
     let vocabulary = cfg.speech_vocabulary.clone();
@@ -576,13 +576,17 @@ async fn run_primary_transcription_chain(
         if provider_index > 0 {
             telemetry.fallback("transcription");
         }
-        let key = cfg.key_for(&provider_id);
+        let key = cfg.key_for_request(&provider_id);
         match transcribe_any(
             app,
             audio,
             &provider_id,
             &cfg.custom_providers,
-            if key.is_empty() { None } else { Some(key) },
+            if key.is_empty() {
+                None
+            } else {
+                Some(key.as_str())
+            },
             &cfg.transcription_language,
             &model,
             gen,
