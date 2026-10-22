@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Reduced desktop analytics ingestion by reporting feature adoption and healthy input states once per app session, and deduplicating repeated sanitized errors while preserving severity and recovery changes. Dictation counts, outcomes, stage timings, and failures keep their existing frequency. Documented the separate PostHog billing limits needed to prevent paid ingestion.
 - Release installer workflows now validate the required PostHog project ingestion token and HTTPS host before building. Release compilation fails closed if analytics configuration is lost; local analytics-off builds and the in-app opt-out remain supported.
 - Updated ZIP extraction and TLS certificate dependencies to resolve six dependency-audit advisories blocking release analytics CI.
 - Improved dictation capitalization and spacing around closing quotes, Markdown-wrapped sentence endings, ellipses, Unicode sentence punctuation, and indented new lines. Leading dictated punctuation now participates in the sentence decision, URL and mention casing stays intact, and unreliable caret text cannot suppress spacing on the reliable side. Added a reusable insertion edge-case corpus and optimized-build benchmark.
