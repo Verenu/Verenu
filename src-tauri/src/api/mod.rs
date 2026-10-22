@@ -36,7 +36,7 @@ const MAX_CUSTOM_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub struct Wire {
     pub omit_auth: bool,
     pub auth_header: Option<String>,
-    pub anthropic: bool,
+    pub anthropic_version: Option<String>,
     pub headers: Vec<(String, String)>,
     pub hardened: bool,
 }
@@ -73,20 +73,17 @@ impl Wire {
 
     pub fn apply(&self, request: reqwest::RequestBuilder, key: &str) -> reqwest::RequestBuilder {
         let mut request = if self.omit_auth || (self.hardened && key.is_empty()) {
-            if self.anthropic {
-                request.header("anthropic-version", "2023-06-01")
-            } else {
-                request
-            }
-        } else if self.anthropic {
             request
-                .header(self.auth_header.as_deref().unwrap_or("x-api-key"), key)
-                .header("anthropic-version", "2023-06-01")
+        } else if self.anthropic_version.is_some() {
+            request.header(self.auth_header.as_deref().unwrap_or("x-api-key"), key)
         } else if let Some(name) = &self.auth_header {
             request.header(name.as_str(), key)
         } else {
             request.bearer_auth(key)
         };
+        if let Some(version) = &self.anthropic_version {
+            request = request.header("anthropic-version", version);
+        }
         for (name, value) in &self.headers {
             request = request.header(name.as_str(), value.as_str());
         }
