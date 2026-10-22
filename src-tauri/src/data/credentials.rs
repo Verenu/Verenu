@@ -62,6 +62,57 @@ fn custom_provider_credential_roundtrip() {
     assert!(!has(&id));
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+#[ignore = "Requires an existing locked Verenu credential; does not read or unlock secrets"]
+fn locked_provider_credential_is_reported_as_saved_without_unlocking_on_config_read() {
+    let provider = linux_secret_service(async {
+        use secret_service::{EncryptionType, SecretService};
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        for provider in [
+            crate::data::store::GROQ,
+            crate::data::store::OPENAI,
+            crate::data::store::GOOGLE,
+            crate::data::store::ASSEMBLYAI,
+            crate::data::store::OPENROUTER,
+            crate::data::store::XAI,
+        ] {
+            let account = linux_account(provider)?;
+            let items = service
+                .search_items(linux_attributes(&account))
+                .await
+                .map_err(|err| err.to_string())?;
+            if !items.locked.is_empty() && items.unlocked.is_empty() {
+                return Ok(provider);
+            }
+        }
+        Err("No locked Verenu provider credential is available for this check".into())
+    })
+    .unwrap();
+    assert!(
+        has(provider),
+        "A saved locked credential must not be reported as missing"
+    );
+    let settings = crate::data::store::SettingsSnapshot::from_pairs([]);
+    let _config = crate::data::store::load_pipeline_config(&settings);
+    let still_locked = linux_secret_service(async {
+        use secret_service::{EncryptionType, SecretService};
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        let account = linux_account(provider)?;
+        let items = service
+            .search_items(linux_attributes(&account))
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(!items.locked.is_empty() && items.unlocked.is_empty())
+    })
+    .unwrap();
+    assert!(still_locked, "Configuration loading must leave the key locked");
+}
+
 #[cfg(windows)]
 fn wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -735,7 +786,14 @@ pub fn get(provider: &str) -> String {
             .search_items(linux_attributes(&account))
             .await
             .map_err(|err| err.to_string())?;
-        let Some(item) = items.unlocked.first() else {
+        let item = if let Some(item) = items.unlocked.first() {
+            item
+        } else if let Some(item) = items.locked.first() {
+            item.unlock().await.map_err(|err| {
+                format!("Secret Service could not unlock the saved key: {err}")
+            })?;
+            item
+        } else {
             return Ok(String::new());
         };
         let secret = item.get_secret().await.map_err(|err| err.to_string())?;
@@ -750,7 +808,29 @@ pub fn get(provider: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub fn has(provider: &str) -> bool { !get(provider).is_empty() }
+pub fn has(provider: &str) -> bool {
+    let Ok(account) = linux_account(provider) else {
+        return false;
+    };
+    match linux_secret_service(async move {
+        use secret_service::{EncryptionType, SecretService};
+
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        let items = service
+            .search_items(linux_attributes(&account))
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(!items.unlocked.is_empty() || !items.locked.is_empty())
+    }) {
+        Ok(present) => present,
+        Err(err) => {
+            log::warn!("credentials: Secret Service status unavailable for {provider}: {err}");
+            false
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub fn delete(provider: &str) -> Result<(), String> {

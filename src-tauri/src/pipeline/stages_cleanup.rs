@@ -248,10 +248,10 @@ async fn run_cleanup_provider_chain(
         }
         let is_local = provider_id == store::LOCAL;
         let is_apple = provider_id == store::APPLE_INTELLIGENCE;
-        let key = cfg.key_for(&provider_id).to_owned();
         if !cfg.provider_has_auth(&provider_id) && !is_local && !is_apple {
             continue;
         }
+        let key = cfg.key_for_request(&provider_id);
         let attempts = if is_local || is_apple {
             1
         } else {
