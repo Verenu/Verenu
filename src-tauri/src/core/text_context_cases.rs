@@ -91,7 +91,17 @@ pub fn insertion_cases() -> Vec<(String, String, String, String)> {
         ("$skill-name", "", "", "$skill-name"),
         ("@alice", "", "", "@alice"),
         ("@alice", "Hello", "", " @alice"),
+        ("@example.com", "name", "", "@example.com"),
+        ("@example.com", "Hello", "", " @example.com"),
+        ("@alice.dev", "Hello", "", " @alice.dev"),
+        ("@example..com", "name", "", " @example..com"),
         ("#topic", "Discuss", "", " #topic"),
+        ("#section", "/docs/page+", "", "#section"),
+        ("#section", "docs/page", "", "#section"),
+        ("#section", "(/docs/page+", "", "#section"),
+        // A hyphen fragment is ambiguous with a single-dash option. Keep the
+        // prose-boundary spacing rather than guessing from a word list.
+        ("-known", "well", "", " -known"),
         ("www.example.com", "Done.", "", " www.example.com"),
         ("example.com", "Done.", "", " example.com"),
         ("--help", "Done.", "", " --help"),
