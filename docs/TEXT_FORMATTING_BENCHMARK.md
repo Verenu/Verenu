@@ -6,8 +6,12 @@ with quotes, brackets, Markdown closers, whitespace and right-hand text, plus
 abbreviations, decimals, URLs, contractions, protected casing and empty input.
 The Rust unit suite also checks idempotence and unreliable-context independence.
 
-At a prose boundary, a dotted `@domain` fragment joins an existing lowercase
-email-like token, and a `#fragment` joins a slash-delimited URL or path prefix.
+At a prose boundary, a dotted `@domain` fragment joins a valid lowercase
+dot-atom and may continue into a path, query, or numeric port. Terminal
+sentence punctuation and malformed local parts keep their separating space.
+A `#fragment` joins an open slash- or backslash-delimited URL or path prefix;
+closed paths, fractions, slash-separated prose, and sentence-ending paths keep
+their separating space. Inch marks after digits do not count as open quotes.
 Handles such as `@alice` and hashtags in prose still receive a separating
 space. A single-dash fragment such as `well` + `-known` is ambiguous with an
 option such as `-help`; the formatter keeps the prose-boundary space instead
@@ -59,3 +63,23 @@ host had 12 cores and load averages of `6.50, 6.03, 5.24` at the start and
 `6.72, 6.24, 5.38` at the end; no concurrent builds were launched by this task.
 `perf` was unavailable, so no call-level profile or exact instruction-level
 limiter is claimed.
+
+## Review-finding follow-up measurement (2026-10-21)
+
+The follow-up formatter at `2cd04dfec` was compared with the pre-fix source at
+`0136168058a1d96abd560e928feb5661d3cbde78` using the expanded 5,290-case
+corpus. The pre-fix source had 50 expected-output mismatches; the fixed source
+had none. Five optimized processes per side alternated, with five measured
+rounds per process and the warmup round excluded (25 samples per side).
+
+| Source | Median | Range |
+| --- | ---: | ---: |
+| Before | 203.3 ns/insertion | 201.5–206.3 ns/insertion |
+| After | 201.8 ns/insertion | 198.4–205.3 ns/insertion |
+
+The fixed source median is 1.5 ns (0.7%) lower, but the sample ranges overlap,
+so this result is inconclusive and does not establish a measurable latency
+change. `rustc 1.99.1` compiled both sides with `-O`. The host had 12 cores and
+load averages of `3.32, 10.13, 9.76` at the start and `2.48, 8.58, 9.25` at the
+end; no concurrent builds were launched by this task. `perf` was unavailable,
+so no call-level profile or exact instruction-level limiter is claimed.
