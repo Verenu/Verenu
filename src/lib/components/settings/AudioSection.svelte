@@ -264,6 +264,9 @@
   }
   .gain-ticks { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10px; color: var(--ink-mute); font-family: var(--mono); user-select: none; }
   .gain-tip {
+    grid-column: 1 / -1;
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     gap: 6px;
