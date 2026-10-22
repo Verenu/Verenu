@@ -84,6 +84,40 @@ During the identity migration, an existing valid analytics installation ID is
 kept; if it has no prior first-seen sidecar, the first release observing it is
 recorded. Verenu does not reconstruct or merge the old process identities.
 
+## Desktop ingestion budget
+
+Desktop `feature_used` events describe adoption: each normalized feature is
+reported once per analytics session, with the first run's correlation ID.
+They must not be interpreted as a count of feature invocations. Healthy
+`input_health` values (`microphone_available`, `capture_initialized`, and
+`vad_passed`) are also reported once per value per session. Unhealthy input
+events, dictation starts, deliveries, outcomes, stage timings, retries, and
+fallbacks retain their existing frequency.
+
+Desktop exceptions are reported once per session for each sanitized combination
+of fingerprint, stage, severity, handled/recovered state, and recovery method.
+This prevents an error loop from generating an unbounded stream of identical
+reports while preserving escalation and different recovery paths. Exception
+counts measure distinct session/error states, not every occurrence. Restarting
+the app or toggling analytics resets this in-memory deduplication state. Android
+continues using its existing event frequency and per-run failure deduplication.
+
+These controls reduce ingestion; they do not impose an organization-wide free
+tier limit. PostHog charges for monthly ingestion, so deleting historical events
+or shortening retention does not undo that usage. Configure a $0 billing limit
+for each enabled product in the organization's billing settings to stop paid
+ingestion when its free allocation is exhausted. Excess data is discarded.
+See [billing limits](https://posthog.com/docs/billing/limits-alerts) and
+[Error Tracking pricing](https://posthog.com/docs/error-tracking/pricing).
+
+The deterministic Rust test `telemetry_volume_workload` prints product-event,
+exception, and serialized-payload byte counts for 100 synthetic dictations plus
+100 repeated handled errors. Run it with
+`cargo test --manifest-path src-tauri/Cargo.toml telemetry_volume_workload --lib -- --nocapture`.
+It exercises the production analytics boundary without contacting PostHog.
+It measures ingestion volume, not latency, actual billed usage, or compressed
+network traffic. Full dictation outcomes and deliveries are asserted separately.
+
 ## Error Tracking
 
 Raw exception capture is disabled. The desktop boundary accepts only a typed
