@@ -2,7 +2,6 @@ import test from 'node:test';
 import { runBasicCases } from './helpers/basic-cleanup.mjs';
 
 test('production rollback and filler removal preserve external punctuation', { timeout: 180_000 }, async () => {
-  // Independent default-30 worker; all prior production cases stay unchanged.
   await runBasicCases([
     [true, 'Did you visit example.com? change this scratch that tomorrow', 'Did you visit example.com? Tomorrow'],
     [true, 'Visit https://example.com! change this scratch that tomorrow', 'Visit https://example.com! Tomorrow'],

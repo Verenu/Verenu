@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RollSpring } from './rollingSpring';
 
-/** Runs a roll to completion and reports how long it took, in ms. */
 function settleMs(frameMs: number, carriedVelocity = 0): number {
   const spring = new RollSpring();
   spring.vel = carriedVelocity;
@@ -15,8 +14,6 @@ function settleMs(frameMs: number, carriedVelocity = 0): number {
 }
 
 describe('RollSpring', () => {
-  // The budget is a product requirement, not a detail: a digit roll that
-  // outlasts it stops reading as feedback and starts reading as lag.
   it('settles inside the 500ms budget at any frame rate', () => {
     for (const frameMs of [8.33, 16.67, 32]) {
       expect(settleMs(frameMs)).toBeLessThan(500);

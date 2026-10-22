@@ -34,8 +34,6 @@
   const basicFields = allFields.filter((f) => BASIC.includes(f.id));
   const advancedFields = allFields.filter((f) => !BASIC.includes(f.id));
 
-  // Palettes with values the basic editor would not have chosen open Advanced,
-  // so those values stay discoverable.
   let advancedOpen = $state(hasPaletteOverrides(themeEditor.draft.palette));
   const dark = $derived(isDarkColor(themeEditor.draft.palette.background));
 
@@ -43,8 +41,6 @@
     return field === 'accent' ? themeEditor.draft.accent : (themeEditor.draft.palette[field] ?? null);
   }
 
-  // Text being typed, kept apart from the committed color so a half-typed hex
-  // never reaches the live preview.
   let texts = $state<Record<FieldId, string>>(
     Object.fromEntries(fields.map((f) => [f.id, currentValue(f.id) ?? ''])) as Record<FieldId, string>,
   );
@@ -78,8 +74,6 @@
     if (field === 'accent') {
       updateThemeDraft({ accent: value });
     } else if (field === 'background' && value && !hasPaletteOverrides(themeEditor.draft.palette)) {
-      // While the palette is automatic, text follows the background and the
-      // sidebar and surface stay derived.
       updateThemeDraft({ palette: { background: value, foreground: deriveForeground(value), sidebar: null, surface: null } });
       syncTexts();
       return;
@@ -91,7 +85,6 @@
 
   function chooseMode(next: boolean) {
     if (next === dark) return;
-    // A fresh palette for the other mode; the chosen accent carries over.
     updateThemeDraft({ palette: basicThemePalette(next) });
     syncTexts();
     advancedOpen = false;
@@ -101,7 +94,6 @@
     const text = (event.currentTarget as HTMLInputElement).value.replace(/^#+/, '').slice(0, 6);
     texts[field] = text ? `#${text}` : '';
     invalid[field] = false;
-    // Apply as soon as a complete code is typed so the app previews live.
     if (/^[0-9a-f]{6}$/i.test(text)) commit(field, `#${text}`.toUpperCase());
   }
 

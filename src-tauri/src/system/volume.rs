@@ -12,14 +12,33 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MuteOutcome {
+    Muted,
+    AlreadyMuted,
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    Requested,
+    Failed,
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
+fn confirm_output(
+    outcome: MuteOutcome,
+    confirm: impl FnOnce() -> Result<bool, String>,
+) -> Result<MuteOutcome, String> {
+    if confirm()? {
+        Ok(outcome)
+    } else {
+        Err("Current default output is not confirmed muted".into())
+    }
+}
+
 #[cfg(windows)]
 static MUTED_ENDPOINT: Mutex<WindowsMuteState> = Mutex::new(WindowsMuteState::new());
 
 #[cfg(any(windows, test))]
 const MAX_PENDING_WINDOWS_RESTORES: usize = 8;
 
-/// Tracks the endpoint for the current mute owner separately from endpoints
-/// whose restoration failed. A stale endpoint must not block muting a new one.
 #[cfg(any(windows, test))]
 #[derive(Default)]
 struct WindowsMuteState {
@@ -39,18 +58,42 @@ impl WindowsMuteState {
     fn begin(
         &mut self,
         snapshot_and_mute: impl FnOnce() -> Result<Option<String>, String>,
+        confirm_current_mute: impl FnOnce() -> Result<bool, String>,
         mut restore: impl FnMut(&str) -> Result<(), String>,
-    ) -> Vec<String> {
+    ) -> (MuteOutcome, Vec<String>) {
         if self.active_endpoint.is_some() {
-            return Vec::new();
+            return match confirm_current_mute() {
+                Ok(true) => (MuteOutcome::AlreadyMuted, Vec::new()),
+                Ok(false) => (
+                    MuteOutcome::Failed,
+                    vec!["Current Windows output is no longer muted".into()],
+                ),
+                Err(err) => (MuteOutcome::Failed, vec![err]),
+            };
         }
 
         let mut failures = self.retry_pending(&mut restore);
-        match snapshot_and_mute() {
-            Ok(endpoint) => self.active_endpoint = endpoint,
-            Err(err) => failures.push(err),
+        let mut outcome = match snapshot_and_mute() {
+            Ok(Some(endpoint)) => {
+                self.active_endpoint = Some(endpoint);
+                MuteOutcome::Muted
+            }
+            Ok(None) => MuteOutcome::AlreadyMuted,
+            Err(err) => {
+                failures.push(err);
+                MuteOutcome::Failed
+            }
+        };
+        if outcome != MuteOutcome::Failed {
+            match confirm_output(outcome, confirm_current_mute) {
+                Ok(confirmed) => outcome = confirmed,
+                Err(err) => {
+                    failures.push(err);
+                    outcome = MuteOutcome::Failed;
+                }
+            }
         }
-        failures
+        (outcome, failures)
     }
 
     fn end(&mut self, mut restore: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
@@ -114,8 +157,6 @@ enum MacRestoreState {
     },
 }
 
-// ---- exclusive microphone access (macOS hog mode) ----
-
 #[cfg(target_os = "macos")]
 static HOG_STATE: Mutex<HogState> = Mutex::new(HogState::Idle);
 #[cfg(target_os = "macos")]
@@ -147,14 +188,21 @@ fn snapshot_and_mute_windows() -> Result<Option<String>, String> {
         if volume.GetMute().map_err(|e| e.to_string())?.as_bool() {
             return Ok(None);
         }
-        let id = device.GetId().map_err(|e| e.to_string())?;
-        let endpoint = id.to_string().map_err(|e| e.to_string());
-        windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
-        let endpoint = endpoint?;
+        let endpoint = windows_endpoint_id(&device)?;
         volume
             .SetMute(true, std::ptr::null())
             .map_err(|e| e.to_string())?;
         Ok(Some(endpoint))
+    }
+}
+
+#[cfg(windows)]
+fn windows_endpoint_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<String, String> {
+    unsafe {
+        let id = device.GetId().map_err(|e| e.to_string())?;
+        let endpoint = id.to_string().map_err(|e| e.to_string());
+        windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
+        endpoint
     }
 }
 
@@ -172,6 +220,27 @@ fn restore_windows_endpoint(endpoint: &str) -> Result<(), String> {
         volume
             .SetMute(false, std::ptr::null())
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn confirm_current_windows_mute() -> Result<bool, String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| e.to_string())?;
+        let endpoint = windows_endpoint_id(&device)?;
+        let volume: IAudioEndpointVolume = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| e.to_string())?;
+        let muted = volume.GetMute().map_err(|e| e.to_string())?.as_bool();
+        let current = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| e.to_string())?;
+        Ok(muted && windows_endpoint_id(&current)? == endpoint)
     }
 }
 
@@ -432,6 +501,35 @@ mod macos {
         }
     }
 
+    pub fn confirm_current_mute() -> Result<bool, String> {
+        let device_id = default_output_device()?;
+        let muted = if property_is_settable(
+            device_id,
+            kAudioDevicePropertyMute,
+            kAudioObjectPropertyScopeOutput,
+        )? && get_u32_property(
+            device_id,
+            kAudioDevicePropertyMute,
+            kAudioObjectPropertyScopeOutput,
+        )? != 0
+        {
+            true
+        } else if property_is_settable(
+            device_id,
+            kAudioDevicePropertyVolumeScalar,
+            kAudioObjectPropertyScopeOutput,
+        )? {
+            get_f32_property(
+                device_id,
+                kAudioDevicePropertyVolumeScalar,
+                kAudioObjectPropertyScopeOutput,
+            )? == 0.0
+        } else {
+            false
+        };
+        Ok(muted && default_output_device()? == device_id)
+    }
+
     pub(super) fn default_input_device() -> Result<AudioDeviceID, String> {
         let property_address = property_address(
             kAudioHardwarePropertyDefaultInputDevice,
@@ -512,9 +610,6 @@ mod macos {
         }
     }
 
-    /// Acquires exclusive (hog-mode) ownership of the default input device for
-    /// this process. Returns the device id on success, `None` if hog mode isn't
-    /// settable or another process already owns the device (nothing to restore).
     pub fn snapshot_and_hog() -> Result<Option<AudioDeviceID>, String> {
         let device_id = default_input_device()?;
 
@@ -526,7 +621,6 @@ mod macos {
             return Ok(None);
         }
 
-        // Hog mode owner is a pid_t; pass our pid to acquire, -1 to release.
         let our_pid = std::process::id() as i32;
         set_i32_property(
             device_id,
@@ -543,8 +637,6 @@ mod macos {
         if owner == our_pid {
             Ok(Some(device_id))
         } else {
-            // The HAL declined or another process holds the device — we own
-            // nothing, so there is nothing to release later.
             Ok(None)
         }
     }
@@ -569,16 +661,16 @@ fn set_system_muted(_muted: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Default-sink mute through PipeWire (`wpctl`), with a PulseAudio `pactl`
-/// fallback. The sink is pinned by id when muting so a default-device change
-/// mid-dictation cannot leave a different sink muted.
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::process::Command;
+    use super::MuteOutcome;
+    use std::process::{Command, Stdio};
 
     fn run(program: &str, args: &[&str]) -> Result<String, String> {
         let output = Command::new(program)
             .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
             .output()
             .map_err(|e| format!("{program} unavailable: {e}"))?;
         if !output.status.success() {
@@ -601,7 +693,6 @@ mod linux {
         })
     }
 
-    /// Returns the default sink and whether it is currently muted.
     pub fn default_sink() -> Result<(Sink, bool), String> {
         if let Ok(inspect) = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]) {
             if let Some(id) = parse_wpctl_id(&inspect) {
@@ -618,6 +709,49 @@ mod linux {
         Ok((Sink::Pulse(name), mute.contains("yes")))
     }
 
+    pub fn current_default(sink: &Sink) -> Result<Sink, String> {
+        if matches!(sink, Sink::PipeWire(_)) {
+            let inspect = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"])?;
+            return parse_wpctl_id(&inspect)
+                .map(Sink::PipeWire)
+                .ok_or_else(|| "could not resolve the current PipeWire default".into());
+        }
+        let name = run("pactl", &["get-default-sink"])?.trim().to_string();
+        if name.is_empty() {
+            return Err("no default audio sink".into());
+        }
+        Ok(Sink::Pulse(name))
+    }
+
+    pub fn mute_current_output(
+        muted_sinks: &mut Vec<Sink>,
+        mut snapshot: impl FnMut() -> Result<(Sink, bool), String>,
+        mut set_mute: impl FnMut(&Sink) -> Result<(), String>,
+        mut read_mute: impl FnMut(&Sink) -> Result<bool, String>,
+        mut current: impl FnMut(&Sink) -> Result<Sink, String>,
+    ) -> Result<MuteOutcome, String> {
+        for _ in 0..3 {
+            let (sink, already_muted) = snapshot()?;
+            if !already_muted {
+                set_mute(&sink)?;
+                if !muted_sinks.contains(&sink) {
+                    muted_sinks.push(sink.clone());
+                }
+                if !read_mute(&sink)? {
+                    return Err("System audio mute was not reflected by the audio server".into());
+                }
+            }
+            if current(&sink)? == sink {
+                return Ok(if already_muted {
+                    MuteOutcome::AlreadyMuted
+                } else {
+                    MuteOutcome::Muted
+                });
+            }
+        }
+        Err("Default audio output kept changing during mute confirmation".into())
+    }
+
     pub fn set_muted(sink: &Sink, muted: bool) -> Result<(), String> {
         let flag = if muted { "1" } else { "0" };
         match sink {
@@ -625,15 +759,20 @@ mod linux {
             Sink::Pulse(name) => run("pactl", &["set-sink-mute", name, flag]).map(|_| ()),
         }
     }
+
+    pub fn is_muted(sink: &Sink) -> Result<bool, String> {
+        match sink {
+            Sink::PipeWire(id) => Ok(run("wpctl", &["get-volume", id])?.contains("[MUTED]")),
+            Sink::Pulse(name) => Ok(run("pactl", &["get-sink-mute", name])?.contains("yes")),
+        }
+    }
 }
 
-/// The sink Verenu muted, if any. A sink that was already muted by the user is
-/// never recorded, so it is never unmuted on their behalf.
 #[cfg(target_os = "linux")]
-static LINUX_MUTED_SINK: Mutex<Option<linux::Sink>> = Mutex::new(None);
+static LINUX_MUTED_SINKS: Mutex<Vec<linux::Sink>> = Mutex::new(Vec::new());
 
 #[cfg(windows)]
-pub fn mute() {
+pub fn mute() -> MuteOutcome {
     let mut muted = match MUTED_ENDPOINT.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -642,9 +781,15 @@ pub fn mute() {
         }
     };
 
-    for err in muted.begin(snapshot_and_mute_windows, restore_windows_endpoint) {
+    let (outcome, failures) = muted.begin(
+        snapshot_and_mute_windows,
+        confirm_current_windows_mute,
+        restore_windows_endpoint,
+    );
+    for err in &failures {
         log::warn!("Failed to apply Windows audio mute state: {err}");
     }
+    outcome
 }
 
 #[cfg(windows)]
@@ -663,7 +808,7 @@ pub fn unmute() {
 }
 
 #[cfg(target_os = "macos")]
-pub fn mute() {
+pub fn mute() -> MuteOutcome {
     let mut restore_state = match RESTORE_STATE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -673,12 +818,26 @@ pub fn mute() {
     };
 
     if !matches!(*restore_state, MacRestoreState::Idle) {
-        return;
+        return match macos::confirm_current_mute() {
+            Ok(true) => MuteOutcome::AlreadyMuted,
+            Ok(false) => MuteOutcome::Failed,
+            Err(err) => {
+                log::warn!("Could not confirm current macOS output mute: {err}");
+                MuteOutcome::Failed
+            }
+        };
     }
 
     match macos::snapshot_and_mute() {
         Ok(Some(snapshot)) => {
             *restore_state = snapshot;
+            match confirm_output(MuteOutcome::Muted, macos::confirm_current_mute) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    log::warn!("Could not confirm initial macOS output mute: {err}");
+                    MuteOutcome::Failed
+                }
+            }
         }
         Ok(None) => {
             if !WARNED_UNSUPPORTED_AUDIO_CONTROL.swap(true, Ordering::Relaxed) {
@@ -686,9 +845,11 @@ pub fn mute() {
                     "Default macOS output device does not expose a writable mute or master volume property; auto-mute is unavailable for this device"
                 );
             }
+            MuteOutcome::Failed
         }
         Err(err) => {
             log::warn!("Failed to mute system audio: {err}");
+            MuteOutcome::Failed
         }
     }
 }
@@ -715,9 +876,6 @@ pub fn unmute() {
     }
 }
 
-/// Reserves the microphone exclusively for this process (macOS hog mode), so no
-/// other app can capture it while dictating. Safe to call repeatedly — a no-op
-/// if exclusive access is already held.
 #[cfg(target_os = "macos")]
 pub fn register_session() -> u64 {
     let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::SeqCst);
@@ -794,7 +952,6 @@ pub fn hog_mic(session_id: u64) {
     }
 }
 
-/// Releases exclusive microphone access taken by [`hog_mic`]. No-op if not held.
 #[cfg(target_os = "macos")]
 pub fn release_mic(session_id: u64) {
     let _ = ACTIVE_SESSION_ID.compare_exchange(session_id, 0, Ordering::SeqCst, Ordering::SeqCst);
@@ -824,31 +981,33 @@ pub fn release_mic(session_id: u64) {
 }
 
 #[cfg(target_os = "linux")]
-pub fn mute() {
-    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+pub fn mute() -> MuteOutcome {
+    let mut muted_sinks = match LINUX_MUTED_SINKS.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if muted_sink.is_some() {
-        return;
-    }
-    match linux::default_sink() {
-        Ok((_, true)) => {}
-        Ok((sink, false)) => match linux::set_muted(&sink, true) {
-            Ok(()) => *muted_sink = Some(sink),
-            Err(err) => log::warn!("Failed to mute system audio: {err}"),
-        },
-        Err(err) => log::warn!("Failed to read system audio state: {err}"),
+    match linux::mute_current_output(
+        &mut muted_sinks,
+        linux::default_sink,
+        |sink| linux::set_muted(sink, true),
+        linux::is_muted,
+        linux::current_default,
+    ) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            log::warn!("Could not confirm system audio mute: {err}");
+            MuteOutcome::Failed
+        }
     }
 }
 
 #[cfg(target_os = "linux")]
 pub fn unmute() {
-    let mut muted_sink = match LINUX_MUTED_SINK.lock() {
+    let mut muted_sinks = match LINUX_MUTED_SINKS.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(sink) = muted_sink.take() {
+    for sink in muted_sinks.drain(..) {
         if let Err(err) = linux::set_muted(&sink, false) {
             log::warn!("Failed to unmute system audio: {err}");
         }
@@ -857,6 +1016,84 @@ pub fn unmute() {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
+    use super::linux::{mute_current_output, Sink};
+    use super::MuteOutcome;
+    use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn default_switch_during_confirmation_mutes_the_new_output() {
+        for sink in [Sink::PipeWire as fn(String) -> Sink, Sink::Pulse] {
+            for initially_muted in [false, true] {
+                let a = sink("A".into());
+                let b = sink("B".into());
+                let os_muted = RefCell::new(if initially_muted {
+                    vec![a.clone()]
+                } else {
+                    vec![]
+                });
+                let snapshots = Cell::new(0);
+                let mut owned = Vec::new();
+                let outcome = mute_current_output(
+                    &mut owned,
+                    || {
+                        let output = if snapshots.replace(snapshots.get() + 1) == 0 {
+                            &a
+                        } else {
+                            &b
+                        };
+                        Ok((output.clone(), os_muted.borrow().contains(output)))
+                    },
+                    |output| {
+                        os_muted.borrow_mut().push(output.clone());
+                        Ok(())
+                    },
+                    |output| Ok(os_muted.borrow().contains(output)),
+                    |_| Ok(b.clone()),
+                )
+                .unwrap();
+                assert_eq!(outcome, MuteOutcome::Muted);
+                assert_eq!(snapshots.get(), 2);
+                assert!(os_muted.borrow().contains(&b));
+                assert_eq!(owned, if initially_muted { vec![b] } else { vec![a, b] });
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_default_changes_are_bounded_and_keep_restore_ownership() {
+        let attempts = Cell::new(0);
+        let mut owned = Vec::new();
+        let outcome = mute_current_output(
+            &mut owned,
+            || {
+                let id = attempts.replace(attempts.get() + 1);
+                Ok((Sink::PipeWire(id.to_string()), false))
+            },
+            |_| Ok(()),
+            |_| Ok(true),
+            |_| Ok(Sink::PipeWire("next".into())),
+        );
+        assert!(outcome.is_err());
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(owned.len(), 3);
+    }
+
+    #[test]
+    fn stable_already_muted_output_is_confirmed_without_taking_restore_ownership() {
+        let sink = Sink::PipeWire("A".into());
+        let mut owned = Vec::new();
+        let outcome = mute_current_output(
+            &mut owned,
+            || Ok((sink.clone(), true)),
+            |_| panic!("must not modify an already-muted output"),
+            |_| panic!("snapshot already read mute state"),
+            |_| Ok(sink.clone()),
+        )
+        .unwrap();
+        assert_eq!(outcome, MuteOutcome::AlreadyMuted);
+        assert!(owned.is_empty());
+    }
+
     #[test]
     fn wpctl_inspect_header_yields_node_id() {
         assert_eq!(
@@ -873,6 +1110,45 @@ mod linux_tests {
         );
         assert_eq!(super::linux::parse_wpctl_id("Object not found"), None);
     }
+
+    fn wpctl_default_sink_muted() -> bool {
+        let out = std::process::Command::new("wpctl")
+            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+            .output()
+            .expect("wpctl");
+        String::from_utf8_lossy(&out.stdout).contains("[MUTED]")
+    }
+
+    #[test]
+    #[ignore = "mutes the real default sink"]
+    fn live_mute_latency() {
+        if wpctl_default_sink_muted() {
+            eprintln!("default sink already muted; skipping");
+            return;
+        }
+        let mut samples = Vec::new();
+        for _ in 0..8 {
+            let start = std::time::Instant::now();
+            let _ = super::mute();
+            let elapsed = start.elapsed();
+            let muted = wpctl_default_sink_muted();
+            super::unmute();
+            assert!(muted, "mute() returned but the sink is not muted");
+            assert!(!wpctl_default_sink_muted(), "unmute() did not restore");
+            samples.push(elapsed.as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "LIVE mute() latency ms: min={:.1} median={:.1} max={:.1} all={:?}",
+            samples[0],
+            samples[samples.len() / 2],
+            samples[samples.len() - 1],
+            samples
+                .iter()
+                .map(|s| format!("{s:.1}"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[cfg(not(any(
@@ -881,8 +1157,11 @@ mod linux_tests {
     target_os = "linux",
     target_os = "android"
 )))]
-pub fn mute() {
-    let _ = set_system_muted(true);
+pub fn mute() -> MuteOutcome {
+    match set_system_muted(true) {
+        Ok(()) => MuteOutcome::Muted,
+        Err(_) => MuteOutcome::Failed,
+    }
 }
 
 #[cfg(not(any(
@@ -895,7 +1174,6 @@ pub fn unmute() {
     let _ = set_system_muted(false);
 }
 
-// The bridge mirrors this state for the pill; the Application applies it directly.
 static ANDROID_MUTE_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -904,9 +1182,13 @@ pub(crate) fn android_mute_requested() -> bool {
 }
 
 #[cfg(target_os = "android")]
-pub fn mute() {
+pub fn mute() -> MuteOutcome {
     ANDROID_MUTE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
-    update_android_media_mute(true);
+    if update_android_media_mute(true) {
+        MuteOutcome::Requested
+    } else {
+        MuteOutcome::Failed
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -916,12 +1198,11 @@ pub fn unmute() {
 }
 
 #[cfg(target_os = "android")]
-fn update_android_media_mute(muted: bool) {
+fn update_android_media_mute(muted: bool) -> bool {
     use jni::objects::{JObject, JValue};
 
     let result = (|| -> jni::errors::Result<()> {
         let context = ndk_context::android_context();
-        // ndk-context owns a process-lifetime Application global reference.
         let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast())? };
         let mut env = vm.attach_current_thread()?;
         let application = unsafe { JObject::from_raw(context.context().cast()) };
@@ -931,18 +1212,17 @@ fn update_android_media_mute(muted: bool) {
             "(Z)V",
             &[JValue::Bool(muted.into())],
         );
-        // Never leave a pending Java exception on a Rust worker thread.
         if env.exception_check()? {
             env.exception_clear()?;
         }
         result.map(|_| ())
     })();
-    if let Err(error) = result {
+    if let Err(error) = &result {
         log::warn!("Could not update Android media mute: {error}");
     }
+    result.is_ok()
 }
 
-/// Exclusive microphone access is macOS-only; no-op everywhere else.
 #[cfg(not(target_os = "macos"))]
 pub fn register_session() -> u64 {
     0
@@ -956,8 +1236,47 @@ pub fn release_mic(_session_id: u64) {}
 
 #[cfg(test)]
 mod windows_mute_state_tests {
-    use super::WindowsMuteState;
+    use super::{MuteOutcome, WindowsMuteState};
     use std::cell::Cell;
+
+    #[test]
+    fn fresh_windows_mute_requires_current_output_confirmation_and_retains_restore() {
+        for confirmation in [Ok(false), Err("output unavailable".into()), Ok(true)] {
+            let mut state = WindowsMuteState::new();
+            let confirmed = confirmation == Ok(true);
+            let (outcome, _) = state.begin(
+                || Ok(Some("original-output".into())),
+                || confirmation,
+                |_| Ok(()),
+            );
+            assert_eq!(
+                outcome,
+                if confirmed {
+                    MuteOutcome::Muted
+                } else {
+                    MuteOutcome::Failed
+                }
+            );
+            assert_eq!(state.active_endpoint.as_deref(), Some("original-output"));
+            let mut restored = None;
+            state
+                .end(|endpoint| {
+                    restored = Some(endpoint.to_string());
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(restored.as_deref(), Some("original-output"));
+        }
+    }
+
+    #[test]
+    fn initial_and_already_muted_outcomes_require_current_output_confirmation() {
+        for outcome in [MuteOutcome::Muted, MuteOutcome::AlreadyMuted] {
+            assert_eq!(super::confirm_output(outcome, || Ok(true)), Ok(outcome));
+            assert!(super::confirm_output(outcome, || Ok(false)).is_err());
+            assert!(super::confirm_output(outcome, || Err("read failed".into())).is_err());
+        }
+    }
 
     #[test]
     fn failed_restore_does_not_block_a_later_default_endpoint_mute() {
@@ -966,6 +1285,7 @@ mod windows_mute_state_tests {
 
         state.begin(
             || Ok(Some("removed-endpoint".to_string())),
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -987,6 +1307,7 @@ mod windows_mute_state_tests {
                 new_endpoint_muted.set(true);
                 Ok(Some("current-endpoint".to_string()))
             },
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 if endpoint == "removed-endpoint" {
@@ -1010,6 +1331,7 @@ mod windows_mute_state_tests {
 
         state.begin(
             || Ok(None),
+            || Ok(true),
             |endpoint| {
                 restore_attempts.push(endpoint.to_string());
                 Ok(())
@@ -1051,7 +1373,11 @@ mod windows_mute_state_tests {
     #[test]
     fn unmute_retries_pending_restore_without_an_active_endpoint() {
         let mut state = WindowsMuteState::new();
-        state.begin(|| Ok(Some("temporarily-missing".to_string())), |_| Ok(()));
+        state.begin(
+            || Ok(Some("temporarily-missing".to_string())),
+            || Ok(true),
+            |_| Ok(()),
+        );
         assert!(state
             .end(|_| Err("endpoint unavailable".to_string()))
             .is_err());
@@ -1069,5 +1395,38 @@ mod windows_mute_state_tests {
         assert_eq!(restored.as_deref(), Some("temporarily-missing"));
         assert!(state.pending_restores.is_empty());
         assert_eq!(state.active_endpoint, None);
+    }
+
+    #[test]
+    fn existing_windows_lease_requires_fresh_default_output_confirmation() {
+        let mut state = WindowsMuteState::new();
+        state.begin(
+            || Ok(Some("original-output".into())),
+            || Ok(true),
+            |_| Ok(()),
+        );
+
+        for current in [Ok(false), Err("audio server unavailable".into()), Ok(true)] {
+            let expected = if current == Ok(true) {
+                MuteOutcome::AlreadyMuted
+            } else {
+                MuteOutcome::Failed
+            };
+            let (outcome, _) = state.begin(
+                || panic!("must preserve restore snapshot"),
+                || current,
+                |_| panic!("must not restore during confirmation"),
+            );
+            assert_eq!(outcome, expected);
+            assert_eq!(state.active_endpoint.as_deref(), Some("original-output"));
+        }
+        let mut restored = Vec::new();
+        state
+            .end(|endpoint| {
+                restored.push(endpoint.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(restored, ["original-output"]);
     }
 }

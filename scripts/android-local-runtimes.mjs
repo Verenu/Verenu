@@ -1,4 +1,3 @@
-// Package native inference code with the APK. Models remain optional downloads.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -6,8 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const ORT_VERSION = '1.24.3'; // 1.24.x patch release; matches ort 2.0.0-rc.12's C API.
-export const LLAMA_COMMIT = '6f4f53f2b7da54fcdbbecaaa734337c337ad6176'; // b9842
+export const ORT_VERSION = '1.24.3';
+export const LLAMA_COMMIT = '6f4f53f2b7da54fcdbbecaaa734337c337ad6176';
 export const RUNTIME_ABIS = ['arm64-v8a', 'x86_64'];
 export const LLAMA_ANDROID_BINARY = 'libverenu_llama_server.so';
 const ORT_SHA256 = '67397e4a970e75617f765d2015ceaf911917e1d822276cfb5792744e8085cbce';
@@ -22,12 +21,11 @@ export function cmakeArguments(source, build, ndk, abi) {
     `-DANDROID_ABI=${abi}`, '-DANDROID_PLATFORM=android-28',
     '-DANDROID_STL=c++_static', '-DCMAKE_BUILD_TYPE=Release',
     '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
-    // A single PIE executable avoids missing/versioned llama/ggml shared libs.
     '-DBUILD_SHARED_LIBS=OFF', '-DGGML_BACKEND_DL=OFF', '-DGGML_NATIVE=OFF',
     '-DGGML_OPENMP=OFF', '-DGGML_LLAMAFILE=OFF', '-DGGML_VULKAN=OFF',
     '-DLLAMA_CURL=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF',
     '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_SERVER=ON',
-    '-DMTMD_VIDEO=OFF', // Dictation cleanup never invokes ffmpeg/posix_spawn.
+    '-DMTMD_VIDEO=OFF',
     '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384',
   ];
 }
@@ -96,7 +94,6 @@ export async function syncAndroidLocalRuntimes(root = projectRoot) {
     // It cannot execute binaries downloaded into the app's writable data dir.
     const packagedBinary = join(dest, LLAMA_ANDROID_BINARY);
     copyFileSync(binary, packagedBinary);
-    // Keep symbols in the build cache for diagnosis, not in every phone APK.
     execFileSync(strip, ['--strip-unneeded', packagedBinary]);
   }
   const licenses = join(root, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'assets', 'inference-licenses');

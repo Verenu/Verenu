@@ -49,8 +49,6 @@ try {
   report.node = nodeSummary;
   report.checks.push({ name: 'Every owned-session test file executed without unexpected skips', status: report.node.status });
   report.checks.push(...nodes.checks);
-  // Browser interactions and restart persistence retain one shared lifetime,
-  // independently of the file-local Node verification workers above.
   session = await startOwnedSession({ id, fixtures, directory, synthetic });
   const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
   const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;

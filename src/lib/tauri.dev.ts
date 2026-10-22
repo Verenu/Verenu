@@ -62,6 +62,7 @@ type DevContext = {
   custom_instructions: string | null;
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
+  t3_skill_mentions_disabled?: boolean;
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
@@ -106,11 +107,6 @@ let devSyncPairing: {
   code: string | null;
   error: string | null;
 } | null = null;
-// Bumped each time a dev-mock model download starts. Captured per-call below
-// so `stillDownloading`/`stillDownloadingLlm` can tell a cancelled-then-
-// restarted download's stale `setTimeout` steps apart from the current
-// session's. Without this, orphaned timers from a prior cancelled download
-// of the same model ID would fire alongside the new session's timers.
 let devSttDownloadSession = 0;
 let devLlmDownloadSession = 0;
 let devLlmRuntimeDownloadSession = 0;
@@ -196,7 +192,6 @@ function writeDevSetting(key: string, value: unknown) {
     const next = { ...readDevSettings(), [key]: value };
     localStorage.setItem(DEV_STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // Browser dev mode should keep working even when persistent storage is blocked.
   }
 }
 
@@ -221,7 +216,6 @@ function writeDevList(key: string, rows: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(rows));
   } catch {
-    // Browser dev mode should keep working even when persistent storage is blocked.
   }
 }
 
@@ -290,7 +284,6 @@ function writeDevContextAssignments(assignments: DevContextAssignments) {
   try {
     localStorage.setItem(DEV_CONTEXT_ASSIGNMENTS_KEY, JSON.stringify(assignments));
   } catch {
-    // Browser dev mode should keep working even when persistent storage is blocked.
   }
 }
 
@@ -414,8 +407,6 @@ function devContextDictionaryRows(contextId: number) {
           dictionary_id: row.id,
           context_id: contextId,
           correction_id: null,
-          // Keep legacy unscoped entries visible in browser-dev mode. New
-          // Context-owned mappings take precedence through the branch above.
           mistake: row.mistake,
           auto_learned: false,
           correction_count: 0,
@@ -612,6 +603,18 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return { ...defaultSettings, ...readDevSettings() } as T;
     case 'get_app_mappings':
       return getDevSetting('app_mappings') as T;
+    case 'get_t3_skills':
+    case 'pull_t3_skills':
+      return { minimumVersion: '0.46', connection: null, skills: [] } as T;
+    case 'connect_t3':
+      throw new Error('Connect T3 from the installed desktop app.');
+    case 'set_context_t3_skill_mentions': {
+      const rows = readDevContexts();
+      const id = Number(args?.contextId);
+      if (!rows.some(row => row.id === id)) throw new Error('Context no longer exists.');
+      writeDevList(DEV_CONTEXTS_KEY, rows.map(row => row.id === id ? { ...row, t3_skill_mentions_disabled: !args?.enabled } : row));
+      return undefined as T;
+    }
     case 'get_contexts':
       return readDevContexts() as T;
     case 'create_context': {
@@ -675,11 +678,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return undefined as T;
     }
     case 'update_context_color': {
-      // Real Tauri IPC auto-converts camelCase JS args to the snake_case Rust
-      // param names; this browser-only mock doesn't, so accept whichever
-      // casing the caller actually used instead of assuming snake_case like
-      // the other cases below (a pre-existing mismatch — call sites in
-      // Contexts.svelte pass `contextId`, not `context_id`).
       const id = Number(args?.contextId ?? args?.context_id);
       const rows = readDevContexts();
       const index = rows.findIndex((row) => row.id === id);
@@ -693,8 +691,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return undefined as T;
     }
     case 'get_context_stats': {
-      // Browser dev mode has no dictation history to attribute, so the strip
-      // gets deterministic sample numbers rather than a permanent zero state.
       const id = Number(args?.contextId ?? args?.context_id) || 0;
       if (id === DEV_EVERYWHERE_CONTEXT_ID) {
         return { dictations: 128, words: 9_412, last_used_at: devNow() } as T;
@@ -878,9 +874,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'get_dictionary':
       return readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY) as T;
     case 'get_recent':
-      // Dev-mode history is empty; returning installed-app objects here
-      // (as the shared case below does) crashes the history list, which
-      // reads entry.created_at. See get_history_apps for the app filter list.
       return [] as T;
     case 'get_cancelled_capture':
       return null as T;
@@ -1000,8 +993,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       writeDevLocalLlmRuntimeState({ installed: false, is_downloading: true });
       const session = ++devLlmRuntimeDownloadSession;
 
-      // Runtime cycle: download the archive, then extract it (its own
-      // progress stage), then complete.
       const runtimeSteps: Array<{ progress: number; stage: 'downloading' | 'extracting' }> = [
         { progress: 0.25, stage: 'downloading' },
         { progress: 0.6, stage: 'downloading' },
@@ -1053,9 +1044,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         session === devSttDownloadSession &&
         readDevLocalTranscriptionState().downloading_model_id === modelId;
 
-      // Walk the full download → verify → extract → done cycle so the browser
-      // dev preview exercises every stage the real backend emits (STT models
-      // are archives, so they extract after verifying).
       const steps: Array<() => void> = [];
       for (const percent of [15, 48, 79, 100]) {
         steps.push(() => {
@@ -1139,8 +1127,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         session === devLlmDownloadSession &&
         readDevLocalLlmState().downloading_model_id === modelId;
 
-      // Cleanup models are raw weight files, so the cycle is download → verify
-      // → done (no extraction stage, unlike the STT archives above).
       const llmSteps: Array<() => void> = [];
       for (const percent of [20, 52, 81, 100]) {
         llmSteps.push(() => {
@@ -1392,8 +1378,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return '' as T;
     case 'save_api_key':
     case 'delete_api_key': {
-      // Round-trip "saved" state through dev storage so the API Keys section
-      // (saved indicator + Save⇄Clear flip) is actually demoable in browser dev.
       const provider = String(args?.provider ?? '');
       if (provider) {
         const current = (getDevSetting('__provider_connected') as Record<string, boolean> | null) ?? {};
@@ -1528,8 +1512,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         }
         bucket.push(existing.id);
         writeDevContextAssignments(dictionaryAssignments);
-        // Even when the spelling matches the legacy canonical projection, the
-        // Context needs its own mapping so later edits or rejection stay scoped.
         const correctionId = setDevDictionaryCorrection(existing.id, targetContext, mistake);
         emitDevTauriEvent('verenu:dictionary-updated', { context_id: targetContext, dictionary_id: existing.id, correction_id: correctionId });
         return { ...devCreated(existing.id), dictionary_id: existing.id, correction_id: correctionId, context_id: targetContext } as T;
@@ -1539,9 +1521,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       rows.unshift({
         id,
         term,
-        // A targeted Context owns its mistake mapping; keeping it off the
-        // canonical row prevents this new item from leaking through another
-        // Context that later shares the same canonical term.
         mistake: scopedContext ? null : mistake,
         auto_learned: false,
         correction_count: 0,
@@ -1587,8 +1566,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         writeDevList(DEV_DICTIONARY_KEY, rows);
         emitDevTauriEvent('verenu:dictionary-updated', { context_id: contextId, dictionary_id: id, correction_id: correctionId });
       } else {
-        // The legacy Dictionary page edits the canonical/default fields.  It
-        // must not be used to rewrite any Context-owned correction rows.
         rows[index] = { ...rows[index], term, mistake };
         writeDevList(DEV_DICTIONARY_KEY, rows);
         emitDevTauriEvent('verenu:dictionary-updated', { context_id: null, dictionary_id: id });
@@ -1680,8 +1657,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return undefined as T;
     case 'download_logs':
       return 'browser-dev://verenu-logs.txt' as T;
-    // LAN sync — browser dev mode has no backend to sync with; return a quiet
-    // empty snapshot so the Sync settings section renders its empty states.
     case 'sync_get_status':
       return {
         this_device: { uuid: 'dev-device', name: 'This browser' },

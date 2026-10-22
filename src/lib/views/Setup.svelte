@@ -37,13 +37,7 @@
   import TryItStep from '../setup/steps/TryItStep.svelte';
   import DoneStep from '../setup/steps/DoneStep.svelte';
 
-  // macOS and Android both need an OS-permission step after provider setup
-  // (macOS:
-  // Accessibility + Microphone; Android: microphone, accessibility service,
-  // battery exemption, notifications). Windows has none.
   const hasOsPermissionStep = isMac || isAndroid;
-  // Android has no preset picker or system-audio muting, so it skips the
-  // Models and Audio steps (their step numbers are -1 and never match).
   const onboardingTotalSteps = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const analyticsStep = 1;
   const providerStep = 2;
@@ -57,7 +51,6 @@
   const doneStep = onboardingTotalSteps + 1;
 
   let step = $state(0);
-  // Saved progress is read once on mount; nothing may overwrite it before then.
   let progressLoaded = false;
   let direction = $state<'forward' | 'back'>('forward');
   let animating = $state(false);
@@ -88,16 +81,11 @@
 
   let allCoreGranted = $state(false);
   let modelPreset = $state<Preset | null>(null);
-  // Explicit opt-in on the Models step. Applies only while cleanup itself is on:
-  // intensity Off keeps the original preset, so Apple is never written or required.
   let appleCleanupChoice = $state(false);
 
   let cleanupIntensity = $state<CleanupIntensity>('medium');
-  // Apple Intelligence is an AI cleanup engine. Off runs no cleanup and Basic ('rules')
-  // runs on-device rules with no model, so neither applies, saves, or requires Apple.
   const aiCleanupSelected = $derived(cleanupIntensity !== 'none' && cleanupIntensity !== 'rules');
   const useAppleCleanup = $derived(appleCleanupChoice && aiCleanupSelected);
-  // The choice is kept even if the Mac stops being ready; finish() refuses it then.
   const appleReadiness = $derived(appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, appleIntelligence.status));
   let tone = $state<ToneId>('casual');
   let language = $state<TranscriptionLanguageCode>('en');
@@ -112,7 +100,6 @@
   let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let defaultModels = $derived(applyAppleCleanupDefaults(setupDefaultModels(provider), useAppleCleanup));
   let effectiveTarget = $derived(applyAppleCleanup(modelPreset?.target, useAppleCleanup));
-  // Basic stays on even when the preset has no cleanup model (see setupCleanupEnabled).
   let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, effectiveTarget));
   let effectiveCleanupName = $derived(effectiveCleanupEnabled ? cleanupName : 'Off');
   let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
@@ -130,7 +117,6 @@
   onMount(async () => {
     sendSetupEvent('setup_started');
     void loadHotkey();
-    // Android skips Models, including when resuming directly at Done.
     if (isAndroid) {
       await Promise.all([
         refreshLocalModels(), refreshLocalState(),
@@ -138,9 +124,6 @@
       ]);
     }
     if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
-      // Browser-dev runs can exercise the Android-shaped wizard at a narrow
-      // viewport, but have no native capability probe. Keep the local option
-      // visible so the layout and download flow remain testable.
       localAiSupported = true;
     } else if (isAndroid) {
       void invoke<{ localAiSupported?: boolean; localAiUnsupportedReason?: string }>('android_get_platform_info')
@@ -150,8 +133,6 @@
           if (!localAiSupported && provider === 'local') provider = 'groq';
         })
         .catch(() => {
-          // Keep the safe Android default: local models stay hidden when the
-          // capability probe is unavailable.
           localAiSupported = false;
         });
     }
@@ -175,7 +156,6 @@
       if (keyStatus) {
         providerKeyStatus = { ...providerKeyStatus, ...keyStatus, local: true };
       }
-      // Muting implies speakers — that's the only reason the setting is on.
       if (savedMute === true) usesHeadphones = false;
       analyticsEnabled = savedAnalytics ?? true;
       await resumeSavedProgress(parseSetupProgress(savedProgress, providers.map((p) => p.id)), keyStatus);
@@ -199,11 +179,6 @@
     };
   });
 
-  /**
-   * Reopen the wizard where it was left. Signing in to a provider happens in a
-   * browser and granting permissions in system settings, and Android may drop
-   * the app while the user is away, so the wizard must not restart at step 0.
-   */
   async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Record<ProviderId, boolean> | null) {
     if (!saved) return;
     if (saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {
@@ -211,8 +186,6 @@
     }
     let keys: Partial<Record<ProviderId, boolean>> = { ...(keyStatus ?? {}) };
     if (isAndroid && '__TAURI_INTERNALS__' in window) {
-      // Rust's key cache is memory-only and is empty after a restart until the
-      // accessibility service is on. The key itself survives in the Keystore.
       try {
         const durable = await invoke<Partial<Record<ProviderId, boolean>>>('plugin:verenu-security|getCredentialStatus');
         keys = { ...keys, ...Object.fromEntries(Object.entries(durable).filter(([, present]) => present)) };
@@ -226,8 +199,6 @@
     });
   }
 
-  // Remember every move and provider change. Writes wait for the saved value
-  // to be read so a fresh mount cannot overwrite it with step 0.
   $effect(() => {
     const progress = { step, provider };
     if (progressLoaded) void saveSetting('setup_progress', progress).catch(() => {});
@@ -284,9 +255,6 @@
 
   function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
-  // Slide direction follows travel: going forward, the old step leaves to the
-  // left and the new one arrives from the right. The previous version sent both
-  // the same way, which is why it read as a flat fade rather than movement.
   const STEP_SHIFT = 26;
   const stepInParams = $derived({
     axis: 'x' as const,
@@ -312,8 +280,6 @@
     step = target;
     await delay(motionMs(300));
     animating = false;
-    // A progress dot or recovery link used mid-transition is replayed now, once,
-    // through the normal guards, instead of being dropped.
     const queued = queuedJump;
     queuedJump = null;
     if (queued !== null) jumpToStep(queued);
@@ -323,9 +289,6 @@
   const skip = goNext;
 
   function goBack() {
-    // Always leaves the step. The API key step's fork/tutorial/paste states have
-    // their own in-page controls; making Back unwind those instead trapped
-    // people on step 2.
     if (step > 0) void animateTo(step - 1, 'back');
   }
 
@@ -341,10 +304,7 @@
   }
 
   function jumpToStep(target: number) {
-    // A save is in flight on the Done step; moving steps now would hide its progress.
     if (finishing) return;
-    // Back, Next and Skip are disabled while a step slides, but the progress dots
-    // stay clickable. Keep the latest request and honor it when the slide ends.
     if (animating) {
       queuedJump = target;
       return;
@@ -373,14 +333,7 @@
     keyError = '';
     keyValidation = { status: 'idle', message: '' };
     try {
-      // Android owns durable credential storage in the Keystore. Do this even
-      // when AccessibilityService is disabled: onboarding must not leave a key
-      // only in Rust memory waiting for a service that may never connect.
       if (isAndroid) {
-        // Prefer the native plugin when available, but do not make onboarding
-        // fail if an OEM/WebView plugin registration is temporarily missing.
-        // The Rust command below stages the same rotation for the connected
-        // AccessibilityService, which owns the durable Keystore sync path.
         try {
           await invoke('plugin:verenu-security|saveCredential', { provider, key: trimmed });
         } catch (error) {
@@ -390,12 +343,8 @@
       try {
         await invoke('save_api_key', { provider, key: trimmed });
       } catch (error) {
-        // On Android the native Keystore rotation below is authoritative;
-        // keep going if the compatibility cache command is unavailable.
         console.warn('Android in-memory credential cache unavailable; continuing with rotation', error);
       }
-      // Also stage the rotation so a connected AccessibilityService can hydrate
-      // Rust immediately without requiring the main activity to stay alive.
       if (isAndroid) await invoke('android_keystore_save', { provider, key: trimmed });
       providerKeyStatus = { ...providerKeyStatus, [provider]: true };
       keySaved = true;
@@ -423,7 +372,6 @@
     }
   }
 
-  /** Base model lists the wizard seeds, plus whatever the chosen preset points at. */
   function modelsByProvider(...selected: string[]): ProviderModelMap {
     const map: ProviderModelMap = {
       groq: ['whisper-large-v3-turbo', 'whisper-large-v3'],
@@ -468,13 +416,8 @@
 
   async function finish() {
     if (finishing) return;
-    // Set before the first await so a second click cannot start another save.
     finishing = true;
     saveError = '';
-    // The Models step read Apple availability when it opened, and the Mac can
-    // lose it while the wizard is open. Re-check before any write so a stale
-    // "ready" never saves an engine that cannot run. The shared refresh is
-    // de-duplicated and fails closed to 'unavailable'.
     const readiness = useAppleCleanup
       ? appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, await refreshAppleIntelligence())
       : appleReadiness;
@@ -487,20 +430,12 @@
     const providerDefaultTranscription = defaultModels.transcriptionDefaultModel;
     const providerDefaultCleanup = defaultModels.cleanupDefaultModel;
 
-    // The Models step is the more specific answer, so its target wins over the
-    // provider-derived defaults whenever one was chosen.
     const transcriptionDefaultModel = target?.transcriptionDefaultModel ?? providerDefaultTranscription;
     const cleanupDefaultModel = target?.cleanupDefaultModel ?? providerDefaultCleanup;
     const transcriptionProvider = splitModelId(transcriptionDefaultModel)?.provider ?? provider;
     const cleanupProvider = splitModelId(cleanupDefaultModel)?.provider ?? provider;
 
-    // Intensity 'none' and cleanup_enabled=false are ANDed by the pipeline
-    // (see should_run_cleanup_llm), so keep the Settings toggle agreeing with
-    // what the wizard was actually told. A preset with no cleanup model (e.g.
-    // "Transcription only") turns AI cleanup off, but Basic ('rules') needs no
-    // model and stays on (see setupCleanupEnabled).
     const cleanupEnabled = effectiveCleanupEnabled;
-    // Speakers means playback bleeds into the mic; headphones means it can't.
     const silenceOtherAudio = !usesHeadphones;
 
     try {
@@ -523,20 +458,14 @@
         () => saveSetting('appearance_mode', SETUP_APPEARANCE_MODE),
         () => saveSetting('mute_audio', silenceOtherAudio),
         () => saveSetting('pause_media_during_dictation', silenceOtherAudio),
-        // The wizard no longer asks about these one by one; they are the
-        // recommended defaults and are disclosed on the Done screen.
         () => saveSetting('noise_reduction', true),
         () => saveSetting('contextual_formatting_enabled', true),
         () => saveSetting('caps_lock_uppercase_enabled', true),
         () => saveSetting('auto_learn_enabled', true),
       ];
       for (const save of settingsToSave) await save();
-      // No autostart API on Android — background reliability comes from the
-      // battery-exemption grant (see AndroidPermissionsStep) instead.
       if (!isAndroid) await invoke('set_autostart', { enabled: true });
     } catch (err) {
-      // Previously this was swallowed, leaving a half-written config behind an
-      // apparently successful setup. Stop before marking setup complete.
       console.error('Failed to save setup settings:', err);
       saveError = formatIpcError(err, 'Could not save your setup choices');
       finishing = false;
@@ -618,9 +547,6 @@
       if (provider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
       if (keySaving) return bar({ leftLabel: 'Skip for now', rightLabel: 'Saving…', rightDisabled: true, onRight: () => {} });
       if (apiKeyDraft.trim()) return bar({ leftLabel: 'Skip for now', rightLabel: 'Save Key', onRight: saveKey });
-      // On the fork the two cards are the real choice, so the bar offers the way
-      // out rather than a second, disabled "Continue" that strands anyone who
-      // does not pick a card.
       if (apiKeyMode === 'fork' && !keySaved) return bar({ rightLabel: "I'll add it later", onRight: goNext });
       if (apiKeyMode === 'paste') return bar({ leftLabel: 'Skip for now', rightLabel: 'Continue', onRight: goNext });
       return bar({ leftLabel: 'Skip for now', rightLabel: 'Continue', onRight: goNext });
@@ -650,19 +576,11 @@
       });
     }
     if (step === onboardingTryItStep) return bar({ leftLabel: 'Skip for now', rightLabel: 'Next', onRight: goNext });
-    // Writing style, language and audio all have a working default already —
-    // "Skip for now" next to "Next" would be two words for the same action.
     return bar({ rightLabel: 'Next', onRight: goNext });
   });
 
   const canGoBack = $derived(step > 0 && step <= onboardingTotalSteps);
 
-  // Landing focus for keyboard users: on wizard open and on every step change,
-  // move focus to the new step's heading (falling back to its first focusable
-  // control). Steps that manage their own focus — the language listbox focuses
-  // the selected option on load — already own the focus and are left alone.
-  // The wizard is a page, not a dialog, so Tab still reaches the header and
-  // action bar; this is context, not a trap.
   $effect(() => {
     step;
     if (typeof document === 'undefined') return;
@@ -670,8 +588,6 @@
       const content = stepWrapEl;
       if (!content?.isConnected) return;
       if (content.contains(document.activeElement)) return;
-      // h1 covers the header-less steps (Intro, Done), which center a hero
-      // lockup instead of a settings-style heading.
       const heading = content.querySelector<HTMLElement>('.settings-h, .settings-subhead, h1, h2');
       const target = heading ?? firstFocusableInStep(content);
       if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');

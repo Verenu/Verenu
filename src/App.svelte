@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { appStore } from './lib/stores';
   import { cleanupPromptEditor } from './lib/stores.svelte';
-  import { isWindows, isLinux } from './lib/platform';
+  import { isWindows, isLinuxDesktop } from './lib/platform';
   import Sidebar from './lib/components/layout/Sidebar.svelte';
   import Home from './lib/views/Home.svelte';
   import DeferredView from './lib/components/DeferredView.svelte';
@@ -19,6 +19,7 @@
   import { startAutomaticUpdateChecks } from './lib/updates';
   import { startPolling } from './lib/polling';
   import { startGithubRefresh } from './lib/githubStore.svelte';
+  import { startT3Refresh } from './lib/t3Store.svelte';
   import { startLocalSttListeners } from './lib/localSttStore.svelte';
   import { startLocalLlmListeners } from './lib/localLlmStore.svelte';
   import { startDownloadManagerListeners } from './lib/downloadManager.svelte';
@@ -60,8 +61,6 @@
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
 
   function applyNativeTitleBarMetrics(metrics: NativeTitleBarMetrics | null) {
-    // Browser dev mode and the test harness have no Windows caption; skip
-    // silently instead of logging a crash for a missing metrics payload.
     if (!metrics) return;
     const root = document.documentElement;
     root.style.setProperty('--native-titlebar-height', `${metrics.height}px`);
@@ -85,26 +84,14 @@
   function applyTheme() {
     const theme = effectiveTheme(appStore.appearanceMode);
     document.documentElement.dataset.theme = theme;
-    // Applied before the native title bar reads the resolved tokens below.
     applyOmarchyPalette(document.documentElement, activePalette());
-    // isLinux is UA-derived and Android's UA also contains "Linux", so it
-    // must be paired with !isAndroid before it means "Linux desktop".
-    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
-      // Read the actual resolved surface/ink/sidebar/hover tokens rather
-      // than hardcoding a duplicate palette on the Rust side — the native
-      // Linux title bar CSS is built from these exact values, so it can
-      // never drift from theme.css, and Light/Dark/accent changes follow
-      // automatically. Windows' native caption theming ignores these.
+    if ((isWindows || isLinuxDesktop) && isTauriRuntime()) {
       const rootStyles = getComputedStyle(document.documentElement);
       const surface = rootStyles.getPropertyValue('--paper').trim();
       const text = rootStyles.getPropertyValue('--ink').trim();
       const border = rootStyles.getPropertyValue('--line').trim();
       const hover = rootStyles.getPropertyValue('--control-hover').trim();
       const sidebarSurface = rootStyles.getPropertyValue('--sidebar-bg').trim();
-      // --sidebar-w is only ever overridden on .app (the compact-rail and
-      // Android no-rail breakpoints), not :root, so it has to be read from
-      // .app itself — reading it from documentElement would silently miss
-      // those overrides and let the native split drift from the real rail.
       const appEl = document.querySelector('.app');
       const sidebarWidth = (appEl ? getComputedStyle(appEl) : rootStyles)
         .getPropertyValue('--sidebar-w')
@@ -135,28 +122,16 @@
     if (typeof document !== 'undefined') applyAccentTheme(document.documentElement, accentColor);
   });
 
-  // Adaptive shell: live window-size class for foldables, rotation,
-  // split-screen, and freeform windows. Defaults to expanded so desktop
-  // first paint is unchanged; the tracker corrects it on mount.
   let viewport = $state<ViewportSnapshot>(
     snapshotForSize(1280, 800),
   );
-  // Compact Android windows collapse the desktop rail to the bottom bar.
-  // Desktop keeps its rail at every width.
   const compactNav = $derived(isAndroid && viewport.widthClass !== 'expanded');
-  // Settings needs to know whether it is the one-screen-at-a-time phone layout.
   $effect(() => {
     appStore.mobileCompact = isAndroid && viewport.widthClass === 'compact';
   });
 
-  // The Android shell shrinks the page by the keyboard's height (MainActivity),
-  // so a viewport much shorter than the tallest one seen at this width means the
-  // keyboard is open. Pages hide the bottom bar then, instead of stacking it on
-  // top of the keyboard and squeezing the form being typed into.
   let keyboardOpen = $state(false);
   let stableViewport = { width: 0, height: 0 };
-  // The native shell reports whether the keyboard is really up. Window size alone
-  // cannot say: a split-screen or freeform window made shorter looks the same.
   function nativeKeyboardOpen(): boolean | null {
     const value = (window as any).VerenuInsets?.imeVisible?.();
     return typeof value === 'boolean' ? value : null;
@@ -168,7 +143,6 @@
       keyboardOpen = native;
       return;
     }
-    // No native bridge (a browser session): fall back to the window-size heuristic.
     if (Math.abs(snapshot.widthDp - stableViewport.width) > 1) {
       stableViewport = { width: snapshot.widthDp, height: snapshot.heightDp };
     } else if (snapshot.heightDp > stableViewport.height) {
@@ -177,7 +151,6 @@
     keyboardOpen = snapshot.heightDp < stableViewport.height - 140;
   }
 
-  // Error toast
   let errorToast = $state('');
   let errorToastKind = $state<ErrorKind | null>(null);
   let toastTimer: ReturnType<typeof setTimeout>;
@@ -213,10 +186,6 @@
     }
   });
 
-  // The wizard is the first thing in the app and unmounts when it finishes;
-  // without this, focus drops to <body> and a keyboard user lands nowhere.
-  // Land on the first rail entry (Home) only on a real completion transition
-  // (wizard → app), so a normal app start never gets an unexpected focus ring.
   let prevSetupComplete = appStore.setupComplete;
   $effect(() => {
     const complete = appStore.setupComplete;
@@ -283,6 +252,7 @@
 
   onMount(() => {
     const stopGithubRefresh = startGithubRefresh();
+    const stopT3Refresh = startT3Refresh();
     let mounted = true;
     let cleanupFn: (() => void) | undefined;
     let stopNotificationClickListener: (() => void) | undefined;
@@ -306,9 +276,6 @@
       const message = (event as CustomEvent<unknown>).detail;
       showErrorToast(typeof message === 'string' ? message : '');
     };
-    // Never send Error.message, rejected values, source URLs, line numbers, or
-    // JavaScript stacks across IPC. The native analytics boundary converts
-    // these two fixed signals into a sanitized PostHog `$exception` event.
     const reportFrontendException = (kind: 'frontend_unhandled' | 'frontend_handled', handled: boolean) => {
       if (isTauriRuntime()) {
         void invoke('analytics_frontend_exception', { kind, handled }).catch(() => {});
@@ -320,7 +287,7 @@
     window.addEventListener('error', onWindowError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
 
-    if ((isWindows || (isLinux && !isAndroid)) && isTauriRuntime()) {
+    if ((isWindows || isLinuxDesktop) && isTauriRuntime()) {
       invoke<NativeTitleBarMetrics>('get_native_titlebar_metrics')
         .then(applyNativeTitleBarMetrics)
         .catch((error) => console.error('Failed to read native title bar metrics:', error));
@@ -329,10 +296,6 @@
         .catch((error) => console.error('Failed to listen for native title bar metrics:', error));
     }
 
-    // On a cold start (Android launches the backend alongside the page) the
-    // first reads can fail before it is ready. Treating that as "setup never
-    // finished" would send a configured user back through onboarding, so wait
-    // briefly for the backend instead of giving up on the first error.
     async function readSettingsWithRetry<T>(read: () => Promise<T>, attempts = 5): Promise<T> {
       for (let attempt = 1; ; attempt++) {
         try {
@@ -344,12 +307,8 @@
       }
     }
 
-    // Re-reads the settings the app mirrors globally. Called once on mount and
-    // again whenever a backup import lands, so an import can't leave these
-    // stores disagreeing with what import_data actually wrote to disk.
     async function reloadGlobalSettings() {
       try {
-        // Saved themes are optional, but transient startup failures should retry too.
         const savedThemesRead = readSettingsWithRetry(() =>
           invoke<unknown>('get_setting', { key: 'custom_themes' }),
         ).catch(() => null);
@@ -369,7 +328,6 @@
         ]));
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
         appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
-        // An open theme editor is previewing through these fields; keep its draft.
         if (!themeEditor.open) {
           if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
             appStore.appearanceMode = appearance;
@@ -428,10 +386,6 @@
       })
       .catch((error) => { console.warn('Failed to listen for notification clicks:', error); });
 
-    // The backend fires this after a transcription request fails with a
-    // connection error and it has actively confirmed the connection is down —
-    // re-ping immediately so the persistent offline toast shows up now instead
-    // of on the next 60s interval.
     listen('verenu:recheck-connectivity', () => void pingConnectivity())
       .then((unlisten) => {
         if (!mounted) {
@@ -454,9 +408,6 @@
       })
       .catch((error) => { console.warn('Failed to listen for storage-full events:', error); });
 
-    // Synchronous: startAutomaticUpdateChecks fires its first check in the
-    // background and returns the cleanup immediately, so there's no unmount
-    // race to guard and the interval is always registered before we return.
     try {
       if (!isBrowserDevSession()) stopAutomaticUpdateChecks = startAutomaticUpdateChecks();
     } catch (error) {
@@ -476,14 +427,10 @@
       console.error('Failed to load transcription model:', error);
     });
 
-    // Shown in the sidebar footer and About; fetched once here since both read it.
     getVersion()
       .then((version) => { appStore.appVersion = version; })
       .catch((error) => { console.error('Failed to read app version:', error); });
 
-    // Sub-app capture hotkey: the backend snapshots the focused window, then
-    // raises this window. A capture that fired while the page was still
-    // loading is picked up with take_pending_sub_app_capture.
     const openSubAppCapture = async (capture: SubAppCapture | null) => {
       if (!capture) return;
       await loadContexts();
@@ -492,8 +439,6 @@
     const stopSubAppListeners: Array<() => void> = [];
     if (isTauriRuntime()) {
       void listen<SubAppCapture>(SUB_APP_CAPTURED_EVENT, () => {
-        // The payload is also held backend-side; taking it clears it so a
-        // later window reload cannot reopen a finished capture.
         void invoke<SubAppCapture | null>('take_pending_sub_app_capture').then(openSubAppCapture);
       }).then((unlisten) => stopSubAppListeners.push(unlisten));
       void listen<string>(SUB_APP_CAPTURE_FAILED_EVENT, (event) => {
@@ -504,10 +449,8 @@
         .catch(() => {});
     }
 
-    // Omarchy palette: fetched once, then pushed by the backend whenever
-    // `omarchy theme set` switches themes.
     let stopOmarchyTheme: (() => void) | undefined;
-    if (isLinux && !isAndroid && isTauriRuntime()) {
+    if (isLinuxDesktop && isTauriRuntime()) {
       const setOmarchyTheme = (value: unknown) => {
         appStore.omarchyTheme = isOmarchyTheme(value) ? value : null;
       };
@@ -524,17 +467,11 @@
 
     const connectivityPoll = startPolling(pingConnectivity, 60_000);
 
-    // Live window dimensions drive data-width-class (fold/unfold, rotation,
-    // split-screen, freeform). No restart, no lost state on reclassification.
     const stopViewport = trackViewport(
       () => ({ width: window.innerWidth, height: window.innerHeight }),
       (snapshot) => { viewport = snapshot; trackKeyboard(snapshot); },
     );
 
-    // The WebView draws under the system navigation/gesture bar on most
-    // devices but CSS env() reports no inset for it. MainActivity exposes how
-    // far the WebView actually overlaps the bar (0 where the viewport already
-    // excludes it), and the shell pads by that amount.
     let stopInsets = () => {};
     if (isAndroid) {
       const applyInsets = () => {
@@ -547,7 +484,6 @@
       applyInsets();
       const timers = [150, 600, 1500].map((ms) => window.setTimeout(applyInsets, ms));
       window.addEventListener('resize', applyInsets);
-      // Keep the field being typed in visible once the keyboard has resized the page.
       let focusTimer: ReturnType<typeof setTimeout> | undefined;
       const revealFocused = (event: FocusEvent) => {
         const target = event.target;
@@ -575,6 +511,7 @@
 
     return () => {
       stopGithubRefresh();
+      stopT3Refresh();
       mounted = false;
       stopInsets();
       if (cleanupFn) cleanupFn();
@@ -608,13 +545,13 @@
 <div
   class="app"
   class:app-windows={isWindows}
-  class:app-linux={isLinux && !isAndroid}
+  class:app-linux={isLinuxDesktop}
   data-android={isAndroid ? 'true' : 'false'}
   data-width-class={viewport.widthClass}
   data-compact-nav={compactNav ? 'true' : 'false'}
   data-keyboard={keyboardOpen ? 'open' : 'closed'}
 >
-  {#if isLinux && !isAndroid}
+  {#if isLinuxDesktop}
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
   {#if appStore.setupComplete === false}
@@ -752,23 +689,15 @@
     flex-direction: column;
     font-family: var(--sans);
     position: relative;
-    /* Edge-to-edge: draw behind system bars; children consume safe-area
-       insets individually so desktop (where env() is 0) is unaffected. */
     padding-top: var(--safe-top);
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
   }
 
-  /* The native Windows caption is non-client chrome, so it does not consume
-     space inside this app shell. Keep Windows pages close to that boundary
-     without changing the established macOS page rhythm. */
   .app.app-windows {
     --page-pad-y: calc(var(--native-titlebar-height, 32px) + 10px);
   }
 
-  /* Linux chrome is an upper-right exclusion zone, not a full-width row.
-     Page content keeps the normal top rhythm; only controls that can collide
-     with the native cluster consume its measured bounds. */
   .app.app-linux {
     --page-pad-y: clamp(20px, 2vw, 24px);
     --native-chrome-inline-clearance: max(0px, calc(var(--native-caption-right-inset, 54px) - var(--page-pad-x) + 8px));
@@ -801,8 +730,6 @@
     position: relative;
   }
 
-  /* Layout-neutral wrapper so compact Android can hide the desktop rail
-     without touching Sidebar's own layout. */
   .rail {
     display: contents;
   }
@@ -816,20 +743,11 @@
     padding-bottom: 0;
   }
 
-  /* The rail is gone, so nothing should offset for its width anymore, and
-     any full-bleed overlay (Settings, modals, toasts) needs to know how much
-     room the sticky bottom nav actually takes so its content isn't hidden
-     behind it. */
   .app[data-compact-nav='true'] {
     --sidebar-w: 0px;
     --mobile-nav-h: calc(68px + var(--safe-bottom));
   }
 
-  /* MainActivity applies the top/side WindowInsets to the WebView content root,
-     and reports only the part of the navigation bar the WebView really draws
-     under (--android-safe-bottom). Do not add the WebView's CSS env() values
-     again on Android, since some devices expose them inconsistently and would
-     otherwise double-pad. */
   .app[data-android='true'] {
     --safe-top: 0px;
     --safe-bottom: var(--android-safe-bottom, 0px);
@@ -837,13 +755,6 @@
     --safe-right: 0px;
   }
 
-  /*
-   * The scroll fades are cut to the desktop shell: inset from the left for the
-   * rail, from the right for the scrollbar gutter, and lifted off the bottom by
-   * --app-gutter. None of those exist in the compact layout, which left the
-   * bottom fade hanging in mid-air above the nav bar with unfaded content on
-   * either side of it. Run them edge to edge and flush to the bar instead.
-   */
   .app[data-compact-nav='true'] .content-fade {
     left: 0;
     right: 0;
@@ -853,8 +764,6 @@
     bottom: 0;
   }
 
-  /* Compact windows (phones, narrow foldables, snapped split-screen):
-     tighten page rhythm and keep the gesture bar clear of content. */
   .app[data-compact-nav='true'] {
     --page-pad-x: 16px;
     --page-pad-y: 16px;
@@ -868,24 +777,11 @@
     padding-right: 0;
   }
 
-  /*
-   * Phones get a full-height page column so views can distribute themselves
-   * down the screen instead of stacking into the top third and leaving the
-   * rest of a tall display empty. .page-wrapper already resolves a definite
-   * min-height against the content grid area, so flex children can claim it.
-   */
   .app[data-compact-nav='true'] .page-wrapper {
     display: flex;
     flex-direction: column;
   }
 
-  /*
-   * Soft top/bottom scroll fades over the main content column (same treatment as
-   * the settings panel). Geometry mirrors the content region: it starts to the
-   * right of the sidebar and stops short of the scrollbar gutter and the bottom
-   * gutter. They fade to the page background and only appear when there's more
-   * to scroll in that direction — and never while settings covers the content.
-   */
   .content-fade {
     position: absolute;
     left: calc(var(--sidebar-w) + var(--app-gutter));
@@ -927,18 +823,7 @@
 
   .content::-webkit-scrollbar-thumb { border: 3px solid var(--paper); }
 
-  /*
-   * Opening settings is a page change, not a panel appearing over a frozen
-   * page: the current view rises and fades out with the same vocabulary the
-   * Home/Dictionary/Style swaps use, while the settings page enters beneath the
-   * fading wash. Without this the underlying page just sat there and the
-   * transition read as nothing happening.
-   */
   .content {
-    /* Both properties on one curve — cubic-bezier(0.33, 1, 0.68, 1) is the CSS
-       form of cubicOut, matching pageSwap. Opacity was on `ease` before, which
-       is what made the exit read as slightly out of step with the movement.
-       Keep --content-swap-y in sync with SETTINGS_SWAP_PX in Settings.svelte. */
     transition:
       opacity var(--content-swap-ms) cubic-bezier(0.33, 1, 0.68, 1),
       transform var(--content-swap-ms) cubic-bezier(0.33, 1, 0.68, 1);
@@ -983,8 +868,6 @@
     font-size: 12.5px;
     color: var(--danger);
     box-shadow: var(--shadow-popover);
-    /* Settings sits above the app content; errors must remain visible while a
-       setting change fails inside that page. */
     z-index: 80;
     width: max-content;
     max-width: min(560px, calc(100% - 36px));

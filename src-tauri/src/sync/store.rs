@@ -1,17 +1,10 @@
-//! SQLite access for sync bookkeeping: peers, the change log, remote lifetime
-//! counters, and settings sync timestamps. Schema lives in `data/db/schema.rs`
-//! (v19); this module is the only place that touches those tables.
-
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::protocol::SyncOp;
 
-/// A peer that has not completed a session recently no longer gets to pin
-/// the append-only log.  It is marked for a full resnapshot when it returns.
 pub const PEER_STALE_AFTER_DAYS: i64 = 30;
 
-/// Row of `sync_peers` - a paired, trusted device.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPeer {
     pub device_uuid: String,
@@ -24,7 +17,6 @@ pub struct SyncPeer {
     pub last_error: Option<String>,
 }
 
-/// One device's lifetime counters as reported by that device.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeviceStats {
     pub device_id: String,
@@ -53,8 +45,6 @@ pub fn ensure_self_identity(conn: &Connection, uuid: &str, name: &str) -> Result
         Some(existing) if existing == uuid => {
             conn.execute("UPDATE sync_identity SET name = ?1", params![name])?;
         }
-        // A changed uuid (keychain wiped and regenerated) keeps the row single:
-        // old log entries keep their original origin, which stays valid history.
         _ => {
             conn.execute("DELETE FROM sync_identity", [])?;
             conn.execute(
@@ -110,8 +100,6 @@ pub fn get_peer(conn: &Connection, device_uuid: &str) -> Result<Option<SyncPeer>
     Ok(row)
 }
 
-/// Inserts or updates a paired device. `cert_fp` is the hex SHA-256 of the
-/// peer's certificate DER - the pin every future connection is checked against.
 pub fn upsert_peer(conn: &Connection, device_uuid: &str, name: &str, cert_fp: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO sync_peers (device_uuid, name, cert_fp, needs_snapshot)
@@ -158,13 +146,7 @@ fn truncate_error(error: &str) -> String {
     error.chars().take(300).collect()
 }
 
-/// Highest log position this device has sent (and had acknowledged) to the
-/// peer, and whether the peer still needs a full snapshot (new pairing, or its
-/// cursor points before our oldest retained log entry).
 pub fn peer_send_position(conn: &Connection, device_uuid: &str) -> Result<(i64, bool)> {
-    // A missing row (peer removed mid-session, or a defensive caller) means
-    // "start over from a snapshot" rather than a hard error - the trust check
-    // happened before the session started.
     let row = conn
         .query_row(
             "SELECT send_cursor, needs_snapshot FROM sync_peers WHERE device_uuid = ?1",
@@ -176,9 +158,6 @@ pub fn peer_send_position(conn: &Connection, device_uuid: &str) -> Result<(i64, 
     Ok((row.0, row.1 != 0))
 }
 
-/// Decides whether a pull from `device_uuid` must be a full snapshot: either
-/// the peer was just paired, or its cursor predates our oldest retained log
-/// entry (it was offline longer than the log's retention window).
 pub fn needs_snapshot_for(conn: &Connection, device_uuid: &str, since_seq: i64) -> Result<bool> {
     let (_, peer_flag) = peer_send_position(conn, device_uuid)?;
     if peer_flag {
@@ -203,10 +182,6 @@ pub fn set_peer_send_position(
     Ok(())
 }
 
-/// Highest position of THE PEER'S log this device has pulled and applied.
-/// Kept separate from `send_cursor` on purpose: serving a pull advances what
-/// we've sent, pulling advances what we've received, and conflating the two
-/// made each session skip the peer's oldest changes.
 pub fn peer_recv_cursor(conn: &Connection, device_uuid: &str) -> Result<i64> {
     let cursor: i64 = conn
         .query_row(
@@ -227,9 +202,6 @@ pub fn set_peer_recv_cursor(conn: &Connection, device_uuid: &str, cursor: i64) -
     Ok(())
 }
 
-/// Marks long-absent peers as requiring a snapshot. Pairings and deletion
-/// stamps stay durable: an old device can be restored or re-paired years
-/// later, and a merging snapshot must still see its historical deletes.
 pub fn maintain_peer_lifecycle(conn: &Connection) -> Result<(usize, usize)> {
     let marked = conn.execute(
         "UPDATE sync_peers
@@ -243,7 +215,6 @@ pub fn maintain_peer_lifecycle(conn: &Connection) -> Result<(usize, usize)> {
     Ok((marked, 0))
 }
 
-/// Oldest sequence number still present in the change log (None = empty log).
 fn oldest_log_seq(conn: &Connection) -> Result<Option<i64>> {
     let seq: Option<i64> = conn
         .query_row("SELECT MIN(seq) FROM sync_log", [], |r| r.get(0))
@@ -252,7 +223,6 @@ fn oldest_log_seq(conn: &Connection) -> Result<Option<i64>> {
     Ok(seq)
 }
 
-/// Latest log entry recorded for a row, used as the local LWW stamp.
 pub fn latest_op_stamp(
     conn: &Connection,
     table_name: &str,
@@ -271,8 +241,6 @@ pub fn latest_op_stamp(
     Ok(row)
 }
 
-/// Appends an op to the local change log, preserving the original timestamp
-/// and origin so peers can dedup and order it deterministically.
 pub fn append_op(
     conn: &Connection,
     op: &SyncOp,
@@ -297,7 +265,6 @@ pub fn append_op(
     Ok(())
 }
 
-/// One collapsed change-log entry: the latest op for a (table, row uuid).
 #[derive(Debug, Clone)]
 pub struct LogEntry {
     #[allow(dead_code)]
@@ -310,9 +277,6 @@ pub struct LogEntry {
     pub origin_seq: i64,
 }
 
-/// Latest op per (table, row uuid) with `seq > after_seq`, ordered by seq.
-/// SQLite's bare-column-with-MAX behavior returns the columns of the max-seq
-/// row within each group.
 pub fn changes_since(conn: &Connection, after_seq: i64, limit: i64) -> Result<Vec<LogEntry>> {
     let mut stmt = conn.prepare_cached(
         "SELECT seq, table_name, row_uuid, op, ts_ms, origin, origin_seq
@@ -346,12 +310,6 @@ pub fn max_log_seq(conn: &Connection) -> Result<i64> {
     Ok(seq)
 }
 
-/// Drops change-log history that every active paired device has acknowledged,
-/// always keeping the newest entry per row (the LWW stamp the apply path
-/// compares against). A stale peer is first moved to resnapshot state and is
-/// deliberately excluded from the minimum cursor. The newest delete for every
-/// row remains a durable tombstone, because re-pairing an old device still
-/// merges its snapshot and must not resurrect deleted content.
 pub fn compact_log(conn: &Connection) -> Result<usize> {
     let _ = maintain_peer_lifecycle(conn)?;
     let min_cursor: Option<i64> = conn
@@ -416,9 +374,6 @@ pub fn remove_remote_stats(conn: &Connection, device_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Effective lifetime totals: this device's own counters plus every synced
-/// peer's counters. Each dictation is counted exactly once (by the device it
-/// happened on), so the sum never double-counts. Asserted by the merge tests.
 #[cfg(test)]
 pub fn effective_lifetime_totals(conn: &Connection) -> Result<(i64, i64)> {
     let row: (i64, i64) = conn.query_row(
@@ -432,8 +387,6 @@ pub fn effective_lifetime_totals(conn: &Connection) -> Result<(i64, i64)> {
     Ok(row)
 }
 
-/// Per-key sync stamps for synced settings (settings.json itself stays the
-/// value store - this table only carries the LWW metadata).
 #[derive(Debug, Clone)]
 pub struct SettingStamp {
     pub ts_ms: i64,
@@ -481,9 +434,6 @@ pub fn set_setting_stamp(conn: &Connection, key: &str, ts_ms: i64, origin: &str)
     Ok(())
 }
 
-/// Called once per sync session on both sides: seeds stamps for every synced
-/// key that doesn't have one yet, so the first session compares real
-/// timestamps instead of treating every existing value as ancient.
 pub fn seed_setting_stamps(conn: &Connection, origin: &str, keys: &[String]) -> Result<()> {
     let now_ms = now_ms();
     for key in keys {
@@ -495,8 +445,6 @@ pub fn seed_setting_stamps(conn: &Connection, origin: &str, keys: &[String]) -> 
     Ok(())
 }
 
-/// Wall-clock milliseconds since the Unix epoch (UTC), matching what the
-/// change-capture triggers write into `sync_log.ts_ms`.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

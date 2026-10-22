@@ -43,10 +43,6 @@ impl RejectionTarget {
 }
 
 fn rejection_monitor_key(injected_text: &str, target: &RejectionTarget) -> String {
-    // A global active-monitor set must distinguish identical injected text in
-    // two resolved Contexts. Cache invalidation has no Context scope, while a
-    // dictionary rejection does, so only the latter contributes its stable
-    // Context ID to the key.
     let prefix = target.monitor_key_prefix();
     let key_context = target
         .context_id()
@@ -126,8 +122,6 @@ fn run_rejection_monitor(
     }
 
     let guard = MonitorKeyGuard::new(key);
-    // Keep native accessibility identities on one OS thread. In particular,
-    // UIA elements belong to the COM apartment that read the baseline.
     let spawned = std::thread::Builder::new()
         .name("auto_learn_rejection".into())
         .spawn(move || {
@@ -154,8 +148,6 @@ fn run_rejection_monitor(
             }
 
             let Some((baseline, anchor)) = baseline else {
-                // Missing text can mean focus moved to another field in the same
-                // app. Without an observed insertion there is no proof of deletion.
                 log::debug!("{prefix}: no verified baseline, skipping");
                 return;
             };
@@ -192,8 +184,6 @@ fn run_rejection_monitor(
                 };
 
                 if rejected {
-                    // Guard against false positives from window switches: only fire
-                    // if the original injection window is still in the foreground.
                     let still_focused = is_target_window_focused(target_hwnd);
                     if still_focused {
                         log::info!("{prefix}: deletion detected, firing rejection");
@@ -258,6 +248,7 @@ mod tests {
         let target = RejectionTarget::DictionaryCorrections {
             correction_ids: vec![701, 702],
             context: ResolvedContextIdentity {
+                t3_skills: None,
                 id: 11,
                 label: "Development".to_string(),
             },
@@ -282,6 +273,7 @@ mod tests {
             let target = RejectionTarget::DictionaryCorrections {
                 correction_ids: vec![701],
                 context: ResolvedContextIdentity {
+                    t3_skills: None,
                     id: context_id,
                     label: "context".to_string(),
                 },

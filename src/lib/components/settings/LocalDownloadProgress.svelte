@@ -20,11 +20,6 @@
 
   const clampedPercent = $derived(Math.max(0, Math.min(100, percent)));
 
-  // One tween drives both the bar width and the counter so they stay in
-  // lockstep and animate smoothly between the coarse checkpoints the backend
-  // emits. Each stage restarts its own 0→100 fill, so on a stage change we
-  // snap to 0 (duration 0) rather than letting the bar sweep backwards from
-  // the previous stage's 100%.
   const value = new Tween(0, { duration: motionMs(MOTION_MS.base), easing: cubicOut });
   let prevStage: Stage | undefined = undefined;
 
@@ -102,8 +97,6 @@
     white-space: nowrap;
   }
 
-  /* Crossfading stage labels stack in the same slot so the row height and the
-     percentage on the right never jump as the text swaps. */
   .dl-stage-slot :global(.dl-stage:not(:first-child)) {
     position: absolute;
     inset: 0;
@@ -142,9 +135,6 @@
     overflow: hidden;
   }
 
-  /* A soft highlight sweeps across the filled portion so the bar reads as
-     actively working even while a coarse percentage sits still (e.g. during a
-     multi-second checksum pass between emitted checkpoints). */
   .dl-fill::after {
     content: '';
     position: absolute;

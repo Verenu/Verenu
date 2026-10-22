@@ -1,13 +1,6 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-// Serializes the whole save-clipboard -> probe/sniff -> write -> paste ->
-// restore-clipboard critical section across every call site (main pipeline,
-// retry, settings "try it" preview) so two injections can never interleave
-// their clipboard operations — one's "restore" putting back the *other's*
-// dictated text instead of the user's real original clipboard, or clobbering
-// a paste that's still settling. `tokio::sync::Mutex`, not `std::sync::Mutex`,
-// since the guard is held across `.await` points.
 static INJECTION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 pub(super) fn injection_lock() -> &'static tokio::sync::Mutex<()> {
     INJECTION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -27,12 +20,8 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 
-// Maximum bytes stored for backspace-tracking. Covers any practical editing sequence
-// while keeping the per-injection allocation bounded.
 const HISTORY_TAIL: usize = 512;
 
-// Retry gap between successive OpenClipboard attempts when the clipboard is held
-// by another process.
 #[cfg(target_os = "windows")]
 const CLIPBOARD_OPEN_RETRY_MS: u64 = 50;
 #[cfg(target_os = "windows")]
@@ -40,68 +29,26 @@ const CLIPBOARD_RESTORE_RETRY_MS: u64 = 60;
 #[cfg(target_os = "windows")]
 const CLIPBOARD_RESTORE_ATTEMPTS: usize = 3;
 
-// Settle time after SetForegroundWindow before writing to the clipboard; some
-// compositor/DWM frame cycles are needed before the HWND is fully active.
 #[cfg(target_os = "windows")]
 const REFOCUS_SETTLE_MS: u64 = 150;
 
-// Settle time after a successful clipboard write before beginning the Ctrl+V
-// sequence - ensures the data is visible to the target app's clipboard reader.
 #[cfg(target_os = "windows")]
 const CLIPBOARD_WRITE_SETTLE_MS: u64 = 50;
 
-// Retry gap between successive clipboard write attempts.
 #[cfg(target_os = "windows")]
 const CLIPBOARD_WRITE_RETRY_MS: u64 = 50;
 
-// Gap between releasing modifier keys (Alt/Ctrl) and sending Ctrl+V.
-// Without this, some apps (browsers, IDEs) process V without Ctrl because
-// the alt-up and V-down land in the same message-pump cycle.
 #[cfg(target_os = "windows")]
 const MODIFIER_GAP_MS: u64 = 30;
 
-// Grace window for a Win key that still reads down right before a paste —
-// releasing Ctrl to stop dictation and releasing Win a beat later is normal
-// human timing, not the stuck-key OS bug this guards against. Polled at
-// WIN_KEY_GRACE_POLL_MS intervals up to WIN_KEY_GRACE_POLL_ATTEMPTS times
-// (150ms total) before escalating to forced recovery.
 #[cfg(target_os = "windows")]
 const WIN_KEY_GRACE_POLL_MS: u64 = 30;
 #[cfg(target_os = "windows")]
 const WIN_KEY_GRACE_POLL_ATTEMPTS: u32 = 5;
 
-// Settle time after releasing Win specifically, before the first
-// is_win_key_down() check. Win participates in OS-wide/shell hotkey
-// dispatch (unlike a plain app-level Ctrl/Alt release), which can need more
-// time to settle than MODIFIER_GAP_MS's 30ms — that constant was tuned for
-// beating an app's own message pump, not a system-wide hotkey matcher.
 #[cfg(target_os = "windows")]
 const WIN_KEY_RELEASE_SETTLE_MS: u64 = 80;
 
-// Settle time after the paste (Ctrl+V) before restoring saved clipboard
-// formats - gives the target app time to read the clipboard before we
-// overwrite it with the original contents. `SendInput` only queues the
-// keystroke into the system input queue; it does not block until the target
-// window's message loop has actually processed it. Under CPU/GPU contention
-// (e.g. a local STT/LLM model still winding down on the same machine) that
-// processing can lag, and heavier editors (rich-text frameworks doing
-// paste-parsing/transaction work, not a plain textbox) take longer to read
-// the clipboard than a simple control does.
-//
-// Losing this race is not a cosmetic glitch: the target reads the clipboard
-// AFTER we've already restored it, so it pastes whatever the user's
-// clipboard held *before* dictation - silently, with no error - which can be
-// arbitrarily large/irrelevant content overwriting their actual selection
-// (observed in practice: a "ginormous" prior clipboard item pasted in place
-// of the transcription). The cost of waiting longer than necessary is a
-// fraction of a second of perceived latency; the cost of not waiting long
-// enough is silent data corruption in whatever the user was working on. That
-// asymmetry justifies a wide margin over a "usually enough" one - 80ms had
-// none, 150ms still weakly matched a real report of this exact failure, so
-// this doubles the margin again rather than inching it up. Lowered from 300
-// to 250 per explicit user request to shorten perceived latency between
-// back-to-back dictations; still well above the 150ms that produced a real
-// corruption report, so the safety margin is kept, just narrower.
 #[cfg(target_os = "windows")]
 const PASTE_SETTLE_MS: u64 = 250;
 
@@ -119,23 +66,9 @@ enum CursorContextState {
     },
 }
 
-// Post-paste verification text helpers. Pure functions (no UIA/OS access) so
-// they're unit-testable on every platform; the Windows injection path drives
-// the actual reads and owns the retry timing. They exist because Chromium/
-// ProseMirror-style editors (ChatGPT, Claude, Slack, ...) commit a paste to
-// their own state before the accessibility tree catches up — a caret-local
-// read taken too early still sees the pre-paste text, which used to flag a
-// *successful* paste as failed (the false positives reported in Chrome).
-
-// Capped suffix for the cheap tail check — enough to catch "nothing landed" or
-// "wrong window" without being thrown off by trailing whitespace/newline
-// normalization differences between what we sent and what UIA reports back.
 #[cfg_attr(not(windows), allow(dead_code))]
 const PASTE_VERIFY_SUFFIX_CHARS: usize = 20;
 
-// A `contains` cross-check on the control's full text only counts when the
-// fragment is long enough to be distinctive; short dictations rely on the
-// precise ends-with check instead.
 #[cfg_attr(not(windows), allow(dead_code))]
 const PASTE_VERIFY_CONTAINS_MIN_CHARS: usize = 12;
 
@@ -151,9 +84,6 @@ fn injected_suffix(injected: &str) -> String {
     chars.into_iter().collect()
 }
 
-// Cheap, lenient tail check for post-paste verification: true if the
-// control's freshly-read caret-local tail ends with (roughly) the end of what
-// we just injected.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn paste_tail_matches(injected: &str, probe_tail: &str) -> bool {
     if injected.trim_end().is_empty() {
@@ -162,10 +92,6 @@ fn paste_tail_matches(injected: &str, probe_tail: &str) -> bool {
     probe_tail.trim_end().ends_with(&injected_suffix(injected))
 }
 
-// Full-text cross-check for the caret-range-lag case: the caret-range read
-// can stay stale/anchored (or scoped to a stale block) even after the
-// accessibility tree reflects the paste in the document/value text. Verifies
-// the injected text actually reached the field by looking at the whole thing.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn full_text_confirms_paste(injected: &str, full_text: &str) -> bool {
     let injected_trim = injected.trim_end();
@@ -176,8 +102,6 @@ fn full_text_confirms_paste(injected: &str, full_text: &str) -> bool {
     if full_text.trim_end().ends_with(&suffix) {
         return true;
     }
-    // A paste into the middle of existing text leaves our tail mid-field, not
-    // at the very end — only trust that when the fragment is distinctive.
     suffix.chars().count() >= PASTE_VERIFY_CONTAINS_MIN_CHARS && full_text.contains(&suffix)
 }
 
@@ -192,16 +116,53 @@ mod tests {
         assert_eq!(fmt("Hello.", "", "next sentence"), " Next sentence");
         assert_eq!(fmt("Hello", "", "World"), " world");
         assert_eq!(fmt("Hello ", "", "World"), "world");
-        // Both options off leaves the dictation exactly as spoken.
         assert_eq!(
             format_for_caret_text("World", "Hello", "", true, true, false, false, "casual", "en", false),
             "World"
         );
-        // An unreadable left edge must not invent a sentence boundary.
         assert_eq!(
             format_for_caret_text("world", "", "", false, false, true, true, "casual", "en", false),
             "world"
         );
+    }
+
+    #[test]
+    fn native_cursor_formatting_preserves_terminal_t3_skill_token() {
+        let catalog = crate::system::t3_skills::Catalog {
+            environment_id: "synthetic".into(),
+            id: "catalog".into(),
+            label: "Codex".into(),
+            provider_instance_id: "codex".into(),
+            workspace_id: "synthetic".into(),
+            revision: "1".into(),
+            skills: vec![crate::system::t3_skills::Skill {
+                name: "babysit-pr".into(),
+                display_name: None,
+                description: None,
+            }],
+        };
+        for (spoken, expected) in [
+            ("$BABYSIT-PR?", "$babysit-pr ? "),
+            ("$BABYSIT-PR", "$babysit-pr "),
+        ] {
+            let normalized = catalog.normalize_mentions(spoken);
+            assert_eq!(normalized, expected);
+            assert_eq!(
+                format_for_caret_text(
+                    &normalized,
+                    "Previous sentence. ",
+                    "",
+                    true,
+                    true,
+                    true,
+                    true,
+                    "casual",
+                    "en",
+                    catalog.starts_with_skill_mention(&normalized),
+                ),
+                expected
+            );
+        }
     }
 
     use super::*;
@@ -240,10 +201,6 @@ mod tests {
 
     #[test]
     fn contextual_caps_disabled_preserves_caps_lock_uppercased_text() {
-        // Regression: caps-lock uppercasing must be the final casing decision.
-        // With contextual_caps off (as finalize.rs forces when caps lock is on),
-        // a mid-sentence continuation must not lowercase the first letter of an
-        // already-all-caps word ("THE" -> "tHE").
         let probe = InjectionContextProbe {
             context: crate::core::text_context::SentenceContext::MidSentence,
             source: ContextProbeSource::CaretLocal,
@@ -369,39 +326,29 @@ mod tests {
     fn paste_tail_matches_matches_our_suffix() {
         assert!(paste_tail_matches("hello world", "some prefix hello world"));
         assert!(paste_tail_matches("hello world", "hello world"));
-        // trailing whitespace / newline normalization is tolerated
         assert!(paste_tail_matches("hello world ", "prefix hello world\n"));
-        // long injected text only needs its final fragment to match
         let long = "the quick brown fox jumps over the lazy dog near the river";
         assert!(paste_tail_matches(
             long,
             "stale pre-paste text the quick brown fox jumps over the lazy dog near the river"
         ));
-        // empty injected text trivially passes
         assert!(paste_tail_matches("", "anything at all"));
-        // a genuinely different tail fails
         assert!(!paste_tail_matches("hello world", "some other text"));
     }
 
     #[test]
     fn full_text_confirms_paste_checks_whole_document() {
-        // appended at the end of the field
         assert!(full_text_confirms_paste(
             "dictated text here",
             "existing prompt dictated text here"
         ));
-        // pasted mid-document: our suffix sits mid-field, not at the end
         assert!(full_text_confirms_paste(
             "dictated text here",
             "start dictated text here rest of document"
         ));
-        // short dictation still verified by the precise ends-with check
         assert!(full_text_confirms_paste("short", "abc short"));
-        // ...but a short fragment is never trusted as a mid-field contains
         assert!(!full_text_confirms_paste("short", "abc shortx"));
-        // empty injected text trivially passes
         assert!(full_text_confirms_paste("", "anything at all"));
-        // unrelated text fails
         assert!(!full_text_confirms_paste(
             "didn't paste",
             "totally unrelated text"
@@ -505,9 +452,6 @@ fn unavailable_injection_probe() -> InjectionContextProbe {
     InjectionContextProbe::unavailable(ContextProbeSource::Unavailable, "unavailable")
 }
 
-/// Smart capitalization and spacing for a caret whose surrounding text the
-/// caller already read (Android's accessibility service reports the text on
-/// either side of the caret). Same rules as the desktop probes.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn format_for_caret_text(
@@ -607,9 +551,6 @@ fn apply_probe_adjustments(
         }
     };
 
-    // Redacted diagnostics for capitalization decisions (issue follow-up: CLI /
-    // terminal inputs being read as mid-sentence). Logs the control identity and
-    // the *class* of the last char before the caret — never the tail content.
     log::debug!(
         "injection: smart-format control_type={} probe_source={} context={} tail_len={} head_len={} left_reliable={} right_reliable={} tail_signal={} head_signal={} case_decision={} leading_space={} trailing_space={} reason={}",
         probe.control_type,
@@ -645,9 +586,6 @@ fn context_head_signal(head: &str) -> &'static str {
     }
 }
 
-/// Redacted classification of the last meaningful character before the caret,
-/// for diagnosing contextual-capitalization decisions. Returns only a category
-/// label, never the tail content.
 fn context_tail_signal(tail: &str) -> &'static str {
     match tail.chars().rev().find(|c| !c.is_whitespace()) {
         None => {
@@ -717,13 +655,7 @@ pub fn append_or_reset_injection_history(hwnd: usize, ch: char) {
         }
     }
 }
-/// Write `text` to the OS clipboard without injecting. Used as a fallback
-/// when Verenu itself holds foreground focus and a normal paste would
-/// land in our own WebView.
 pub async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
-    // Doesn't restore anything itself, but writing while another call is mid
-    // save/restore could still corrupt that call's "original" snapshot or get
-    // immediately clobbered — share the same critical section.
     let _guard = injection_lock().lock().await;
     #[cfg(windows)]
     {
@@ -744,8 +676,6 @@ pub async fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     }
 }
 
-/// Snapshot current plain text before the pipeline writes its injection payload.
-/// Clipboard phrase insertion is deliberately Windows-only for now.
 pub async fn read_current_clipboard_text() -> Option<String> {
     #[cfg(windows)]
     {
@@ -758,7 +688,6 @@ pub async fn read_current_clipboard_text() -> Option<String> {
 }
 
 #[allow(unused_variables)]
-// Keep the existing injection arguments explicit across native backends.
 #[allow(clippy::too_many_arguments)]
 pub async fn inject_text(
     text: &str,
@@ -771,7 +700,7 @@ pub async fn inject_text(
     paste_in_chunks: bool,
 ) -> anyhow::Result<InjectionOutcome> {
     #[cfg(any(test, debug_assertions))]
-    if crate::testing::is_enabled() {
+    if crate::testing::injection_capture_enabled() {
         crate::testing::record_injection(crate::testing::InjectionRecord {
             text: text.to_string(),
             target_hwnd: target.id,
@@ -828,13 +757,6 @@ pub async fn inject_text(
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        // Android hands the final text to the Kotlin overlay service through
-        // the loopback bridge outbox (see crate::android::bridge): Kotlin
-        // inserts via accessibility APIs (ACTION_SET_TEXT with cursor
-        // preservation, clipboard fallback where blocked) and acks, which
-        // drives the pill + diagnostics. History was already written by the
-        // pipeline before this call, so the handoff is infallible from the
-        // pipeline's perspective — delivery failures surface via the ack.
         #[cfg(target_os = "android")]
         {
             let seq = crate::android::bridge::publish_android_insertion_with(

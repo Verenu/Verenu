@@ -15,8 +15,6 @@ function check(command, args, cwd = root) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 check(process.execPath, ['scripts/android-sync.mjs', '--sources-only']);
-// Tauri's Rust build scripts generate the framework Kotlin classes and Gradle
-// dependency files. Compile a real debug APK first rather than inventing stubs.
 check(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['tauri', 'android', 'build', '--debug', '--target', 'aarch64', '--apk']);
 const directory = path.join(root, 'src-tauri/gen/android');
 const results = path.join(directory, 'app/build/test-results/testUniversalDebugUnitTest');

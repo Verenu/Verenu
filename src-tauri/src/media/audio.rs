@@ -28,22 +28,12 @@ fn finite_sample_or_zero(v: f32) -> f32 {
     }
 }
 
-/// Share of loud samples that hit full scale at or above which a recording is
-/// reported as clipping. A few stray peaks are normal; sustained flat-topping
-/// means the software gain is fighting a microphone that is already hot.
 const CLIPPING_WARN_FRACTION: f32 = 0.01;
 
-/// Boosted amplitude (about -20 dBFS) above which a sample counts as loud.
-/// Clipping is judged against loud samples only, so pauses and room tone
-/// cannot dilute a distorted stretch of speech below the warning threshold.
 const LOUD_SAMPLE_FLOOR: f32 = 0.1;
 
-/// Raw peak at which the capture itself, before any software gain, is clipped.
 const RAW_FULL_SCALE: f32 = 0.99;
 
-/// Pre-gain level statistics for one recording, kept so a log line can tell
-/// "the input is too quiet, raise the system mic volume" apart from "the gain
-/// is clipping the signal" without ever retaining audio.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct InputLevelStats {
     sum_sq: f64,
@@ -54,7 +44,6 @@ struct InputLevelStats {
 }
 
 impl InputLevelStats {
-    /// Record one raw (pre-gain) mono sample against the configured gain.
     fn observe(&mut self, raw: f32, gain: f32) {
         let raw_abs = raw.abs();
         self.sum_sq += f64::from(raw) * f64::from(raw);
@@ -79,7 +68,6 @@ impl InputLevelStats {
         }
     }
 
-    /// Clipped samples as a share of loud samples (see `LOUD_SAMPLE_FLOOR`).
     fn clipped_fraction(&self) -> f32 {
         if self.loud == 0 {
             0.0
@@ -117,9 +105,6 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
     }
 }
 
-/// Where the clipping starts decides the fix. If the microphone signal already
-/// reaches full scale (or no gain is being applied) the system or hardware
-/// input level is too hot; otherwise the software gain is pushing it over.
 fn clipping_advice(stats: &InputLevelStats, gain: f32) -> &'static str {
     if gain <= 1.0 || stats.peak >= RAW_FULL_SCALE {
         "the microphone signal is already at full scale; lower the system microphone volume or the device's hardware gain"
@@ -134,9 +119,6 @@ pub fn list_input_devices() -> Vec<String> {
         .input_devices()
         .map(|iter| iter.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default();
-    // Android reports every input endpoint (built-in mic, telephony, bus, …)
-    // under the same product name, and devices are selected by name, so the
-    // duplicates are indistinguishable and only clutter the picker.
     #[cfg(target_os = "android")]
     let names = {
         let mut seen = std::collections::HashSet::new();
@@ -227,10 +209,6 @@ fn ensure_configured_capture_profile() {
         return;
     };
 
-    // Prefer the microphone-only profile. Switching to `pro-audio` can create
-    // a new playback node and cause some WirePlumber sessions to reroute audio
-    // away from the user's existing default sink. Dictation must not change
-    // where system audio is played.
     let selected = profiles
         .iter()
         .find(|profile| {
@@ -271,7 +249,6 @@ fn pipewire_has_no_capture_sources(dump: &serde_json::Value) -> bool {
     let Some(objects) = dump.as_array() else {
         return false;
     };
-    // Only trust a complete PipeWire graph, not an empty or malformed response.
     objects.iter().any(|object| {
         object.get("type").and_then(serde_json::Value::as_str) == Some("PipeWire:Interface:Core")
     }) && !objects.iter().any(|object| {
@@ -350,26 +327,8 @@ impl FrameDenoiser {
     }
 }
 
-/// Short-window amplitude envelope for the recording visualizer.
-///
-/// The pill used to be driven by the single per-buffer RMS value alone, and one
-/// scalar every 50ms is fundamentally not enough to show audio *flowing*: RMS
-/// over a 50ms window exists precisely to average away everything that happens
-/// inside that window, so a sustained vowel produces a near-constant stream of
-/// identical numbers. The visualizer can carry that value outward across its
-/// bars all it likes -- with every bar holding the same number, the motion is
-/// invisible.
-///
-/// So the audio thread also keeps a compact envelope: the PEAK of each
-/// ENVELOPE_WINDOW_MS slice. Peak rather than RMS because it preserves
-/// transients and micro-variation instead of smoothing them away, and at 10ms a
-/// voiced vowel carries real pitch-period and vibrato structure (a 100Hz voice
-/// is one glottal pulse per window). That is what makes a held vowel visibly
-/// flow while its average level barely moves.
-///
-/// This is ~100 f32/sec, drained and shipped in small batches -- not PCM.
 pub const ENVELOPE_WINDOW_MS: u32 = 10;
-const ENVELOPE_QUEUE_CAP: usize = 512; // ~5s of slack; the reader drains 20x/sec
+const ENVELOPE_QUEUE_CAP: usize = 512;
 
 pub struct EnvelopeTap {
     queue: ArrayQueue<f32>,
@@ -384,8 +343,6 @@ impl EnvelopeTap {
             queue: ArrayQueue::new(ENVELOPE_QUEUE_CAP),
             peak: AtomicU32::new(0f32.to_bits()),
             count: AtomicU32::new(0),
-            // Zero until the device's real rate is known; push_sample is inert
-            // until then rather than guessing a rate.
             window_samples: AtomicU32::new(0),
         }
     }
@@ -395,9 +352,6 @@ impl EnvelopeTap {
         self.window_samples.store(w, Ordering::Relaxed);
     }
 
-    /// Called once per mono frame on the audio callback thread. Only that
-    /// thread touches the accumulator, so Relaxed ordering is sufficient and
-    /// there is no lock on the realtime path.
     #[inline]
     fn push_sample(&self, mono: f32, display_gain: f32) {
         let window = self.window_samples.load(Ordering::Relaxed);
@@ -412,8 +366,6 @@ impl EnvelopeTap {
             let peak = f32::from_bits(self.peak.load(Ordering::Relaxed));
             self.peak.store(0f32.to_bits(), Ordering::Relaxed);
             self.count.store(0, Ordering::Relaxed);
-            // Overwrite oldest rather than block, matching the sample queue's
-            // policy -- a stalled reader must never stall audio capture.
             if self.queue.push(peak).is_err() {
                 let _ = self.queue.pop();
                 let _ = self.queue.push(peak);
@@ -421,7 +373,6 @@ impl EnvelopeTap {
         }
     }
 
-    /// Drains everything captured since the last call, oldest first.
     pub fn drain_into(&self, out: &mut Vec<f32>) {
         out.clear();
         while let Some(v) = self.queue.pop() {
@@ -436,11 +387,6 @@ impl EnvelopeTap {
     }
 }
 
-/// Optional crash-recovery sink for a dictation. The audio worker pushes
-/// gain-adjusted, optionally denoised 16 kHz samples here; implementations
-/// must keep disk work off this worker and must not run on the CPAL callback.
-/// A sink failure only disables crash recovery for the current take. It must
-/// never make the in-memory recording unavailable to transcription.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurableSinkError {
     Disk,
@@ -450,9 +396,6 @@ pub enum DurableSinkError {
 pub type DurableSinkResult = std::result::Result<(), DurableSinkError>;
 
 pub trait DurableSink: Send {
-    /// Returns an error when the sink cannot accept more data. The processing
-    /// worker keeps capturing in memory after this error, but will not promise
-    /// that the take can be recovered after a crash.
     fn extend(&mut self, samples_16k: &[f32]) -> DurableSinkResult;
     fn finish(&mut self) -> DurableSinkResult;
 }
@@ -464,12 +407,7 @@ pub struct RecordingSession {
     pub raw_level: Arc<AtomicU32>,
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
-    /// Latched by the audio worker when live VAD or its RMS fallback hears
-    /// speech in the current recording.
     pub speech_detected: Arc<AtomicBool>,
-    /// Set by CPAL's stream-error callback. The callback must not block or
-    /// touch lifecycle state; the pill/session watcher consumes this flag on
-    /// the async side and ends the recording cleanly.
     pub stream_error: Arc<AtomicBool>,
 }
 
@@ -487,15 +425,10 @@ pub enum RecordingTermination {
     Complete,
     DurationLimit,
     DroppedSamples,
-    /// The input stream stopped unexpectedly. The captured prefix may be
-    /// usable, but must not be misreported as a normal short recording.
     StreamError,
-    /// The optional recovery spool failed, but the in-memory take is intact.
     RecoveryWriteFailed,
 }
 
-// Stream setup can fail after the processing thread starts. Always stop and
-// join it, including those early returns, so its queue and recovery sink die.
 struct ProcessingWorker {
     stop: Arc<AtomicBool>,
     wake: Arc<WorkerWake>,
@@ -520,10 +453,6 @@ impl Drop for ProcessingWorker {
     }
 }
 
-/// A one-way, allocation-free wake path from the audio callback to the
-/// processing worker. `unpark` is nonblocking and does not require taking a
-/// mutex in the realtime callback. The sequence counter closes the race
-/// between draining the queue and parking the worker.
 struct WorkerWake {
     sequence: AtomicU64,
     thread: OnceLock<std::thread::Thread>,
@@ -589,8 +518,6 @@ impl StreamingResampler {
         }
         let drop = self.source_position.floor() as usize;
         if drop > 0 {
-            // Keep the final source sample: the next chunk may need it as the
-            // lower interpolation endpoint for the first output it produces.
             let drop = drop.min(self.tail.len().saturating_sub(1));
             self.tail.drain(..drop);
             self.source_position -= drop as f64;
@@ -629,6 +556,22 @@ impl StreamingResampler {
 }
 
 impl RecordingSession {
+    #[cfg(test)]
+    pub(crate) fn lifecycle_fixture() -> Self {
+        let (stop_tx, _) = mpsc::sync_channel(1);
+        let (_, result_rx) = mpsc::channel();
+        Self {
+            stop_tx,
+            result_rx,
+            level: Arc::new(AtomicU32::new(0)),
+            raw_level: Arc::new(AtomicU32::new(0)),
+            envelope: Arc::new(EnvelopeTap::new()),
+            active: Arc::new(AtomicBool::new(true)),
+            speech_detected: Arc::new(AtomicBool::new(false)),
+            stream_error: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn start(
         device_name: Option<String>,
         noise_reduction: bool,
@@ -690,9 +633,6 @@ impl RecordingSession {
         let speech_detected_w = Arc::clone(&speech_detected);
         let stream_error_w = Arc::clone(&stream_error);
         envelope_w.set_sample_rate(sample_rate);
-        // `processed` already contains the configured microphone gain. Keep
-        // the remaining display multiplier explicit so the envelope and the
-        // scalar level use the same effective gain without applying it twice.
         let processed_display_gain = if gain > 0.0 { display_gain / gain } else { 0.0 };
 
         let limit_stop_tx = stop_tx.clone();
@@ -711,8 +651,6 @@ impl RecordingSession {
                 let _ = worker_wake.thread.set(std::thread::current());
                 let mut durable = durable;
                 let max_output_samples = max_output_samples.unwrap_or(MAX_RECORDING_SAMPLES);
-                // Grow with the take instead of reserving the 15-minute cap
-                // for every short dictation.
                 let mut samples_16k = Vec::<f32>::new();
                 let mut batch = Vec::<f32>::with_capacity(2048);
                 let mut processed_batch = if noise_reduction {
@@ -753,12 +691,6 @@ impl RecordingSession {
                         } else {
                             &batch
                         };
-                        // Pill envelope must stay on the device sample rate.
-                        // 0.18.1 pushed native-rate peaks (~100 bins/sec at
-                        // 10ms). After streaming resample landed, this loop
-                        // fed 16 kHz samples into a tap still configured for
-                        // 48 kHz, so each bin took ~30ms and the visualizer
-                        // looked slow and dead compared to the release build.
                         for &sample in processed {
                             worker_envelope.push_sample(sample, processed_display_gain);
                         }
@@ -855,9 +787,6 @@ impl RecordingSession {
             let stream_error_cb = Arc::clone(&stream_error_w);
             let active_cb = Arc::clone(&active_w);
             let err_fn = move |e| {
-                // CPAL may invoke this from an audio-related thread. Keep the
-                // callback allocation-free and nonblocking: a failed stream
-                // must be observed by the session owner, not handled here.
                 log::error!("Audio stream error: {e}");
                 stream_error_cb.store(true, Ordering::Release);
                 active_cb.store(false, Ordering::Release);
@@ -939,8 +868,6 @@ impl RecordingSession {
                     return;
                 }
             };
-            // The callback and worker have both stopped. Release the bounded
-            // capture queue before allocating transcription output.
             drop(queue);
 
             let dropped = dropped_samples.load(Ordering::Relaxed);
@@ -1098,8 +1025,6 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Re
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    // PCM16 payload plus hound's 44-byte PCM header. Avoid geometric growth
-    // and its unused retained capacity in every completed recording.
     let mut buf = std::io::Cursor::new(Vec::with_capacity(44 + samples.len() * 2));
     let mut writer = hound::WavWriter::new(&mut buf, spec)?;
     for &s in samples {
@@ -1235,7 +1160,6 @@ mod tests {
     fn wav_allocation_matches_pcm_payload_and_round_trips() {
         let samples = vec![0.5; 16_000 * 60];
         let wav = super::encode_wav(&samples, 16_000, 1).unwrap();
-        // Reproduce the previous grow-from-empty allocation on this fixture.
         let mut legacy = std::io::Cursor::new(Vec::new());
         let mut writer = hound::WavWriter::new(
             &mut legacy,
@@ -1385,8 +1309,6 @@ mod tests {
 
     #[test]
     fn eight_x_gain_clips_a_hot_signal_but_moderate_gain_does_not() {
-        // A 0.2-peak voice is a healthy level for a USB mic with its hardware
-        // gain set correctly. 8x pushes it far past full scale.
         let hot = level_stats_for_sine(0.2, 8.0);
         assert!(hot.is_clipping(), "clipped {:.3}", hot.clipped_fraction());
         let moderate = level_stats_for_sine(0.2, 2.0);
@@ -1396,21 +1318,16 @@ mod tests {
 
     #[test]
     fn clipping_advice_depends_on_where_the_clipping_starts() {
-        // Software gain pushed a healthy signal over full scale.
         let boosted = level_stats_for_sine(0.2, 8.0);
         assert!(clipping_advice(&boosted, 8.0).starts_with("lower the microphone gain"));
-        // The microphone itself is already at full scale: lowering the
-        // software gain cannot help and raising the system volume would hurt.
         let hot_mic = level_stats_for_sine(1.0, 2.0);
         assert!(clipping_advice(&hot_mic, 2.0).contains("lower the system microphone volume"));
-        // At unity gain the software multiplier is not the cause at all.
         let unity = level_stats_for_sine(0.5, 1.0);
         assert!(clipping_advice(&unity, 1.0).contains("lower the system microphone volume"));
     }
 
     #[test]
     fn silence_does_not_dilute_clipping() {
-        // 1 s of flat-topped speech inside 60 s of room tone must still warn.
         let mut stats = level_stats_for_sine(0.2, 8.0);
         for _ in 0..59 * 48_000 {
             stats.observe(0.001, 8.0);
@@ -1420,8 +1337,6 @@ mod tests {
 
     #[test]
     fn quiet_input_needs_gain_without_clipping() {
-        // The case that drove the 8x setting: a mic whose system volume is far
-        // too low. It is quiet, and boosting it still does not clip.
         let quiet = level_stats_for_sine(0.02, 8.0);
         assert!(!quiet.is_clipping());
         assert!(dbfs(quiet.peak * 8.0) < -6.0);

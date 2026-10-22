@@ -1,12 +1,3 @@
-//! SQLite access layer for Verenu.
-//!
-//! Split by domain into submodules; every public item is re-exported here so the
-//! external surface (`crate::data::db::*`) is unchanged. Add new queries to the
-//! submodule that matches their table. Shared low-level pieces (`Db`, `lock_conn`,
-//! `CreatedRecordMeta`) live in this file; reusable validation/normalization
-//! helpers live in `validation`. API keys are never stored here — see
-//! `data/credentials.rs`.
-
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -53,7 +44,6 @@ fn query_all<T>(
         .map_err(Into::into)
 }
 
-/// Metadata returned after inserting a row: the new id and its `created_at`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CreatedRecordMeta {
     pub id: i64,

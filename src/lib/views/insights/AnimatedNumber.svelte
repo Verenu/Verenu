@@ -9,8 +9,6 @@
     format = (n: number) => Math.round(n).toLocaleString(),
   }: { value: number; format?: (n: number) => string } = $props();
 
-  // Only the value at mount seeds the tween; every later change is picked up
-  // by the $effect below, which is the point — silence the reactivity lint.
   const display = tweened(untrack(() => value), { duration: motionMs(700), easing: expoOut });
 
   $effect(() => {

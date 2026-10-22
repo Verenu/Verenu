@@ -7,12 +7,10 @@ import './ui.css';
 import './mobile.css';
 import { initializeDevSession, isBrowserDevSession } from './lib/devSession';
 
-disableBrowserContextMenu(); // The app webview lives until the process exits.
+disableBrowserContextMenu();
 
 async function start() {
   if (import.meta.env.DEV && import.meta.env.VITE_VERENU_NATIVE_TEST === '1') await import('@wdio/tauri-plugin');
-  // The worker WebView exists only to supply Tauri command context. It must
-  // not run a second UI's polling, notifications, or automatic update checks.
   if (import.meta.env.VITE_VERENU_SESSION === '1' && !isBrowserDevSession()) return;
   let App: typeof import('./App.svelte').default;
   try {

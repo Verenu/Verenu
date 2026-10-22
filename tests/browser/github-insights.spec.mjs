@@ -12,11 +12,28 @@ test('daily counts remain inside the chart at both date edges', async ({ page, s
   db.exec('PRAGMA busy_timeout=5000');
   const row = db.prepare('INSERT INTO transcriptions(raw_text,clean_text,words,spoken_words,duration_ms,api_used,app_name) VALUES(?,?,200,200,40000,?,?) RETURNING id')
     .get('Public synthetic chart sample.', 'Public synthetic chart sample.', 'fixture-model', 'Synthetic app');
+  const dayWords = db.prepare("SELECT SUM(words) AS words FROM transcriptions WHERE date(created_at, 'localtime') = date('now', 'localtime')").get().words;
   try {
     await page.reload();
     await page.locator('[data-debug-id="nav.insights"]').click();
     const plot = page.locator('.plot').first();
     await expect(plot).toBeVisible();
+    await expect(plot).toHaveRole('slider');
+    await plot.focus();
+    await page.keyboard.press('Home');
+    await expect(plot).toHaveAttribute('aria-valuenow', '0');
+    await page.keyboard.press('ArrowRight');
+    await expect(plot).toHaveAttribute('aria-valuenow', '1');
+    await page.keyboard.press('ArrowUp');
+    await expect(plot).toHaveAttribute('aria-valuenow', '2');
+    await page.keyboard.press('ArrowDown');
+    await expect(plot).toHaveAttribute('aria-valuenow', '1');
+    await page.keyboard.press('ArrowLeft');
+    await expect(plot).toHaveAttribute('aria-valuenow', '0');
+    await page.keyboard.press('End');
+    await expect(plot).toHaveAttribute('aria-valuenow', await plot.getAttribute('aria-valuemax'));
+    await expect(plot).toHaveAttribute('aria-valuetext', new RegExp(`${new Intl.NumberFormat('en-US').format(dayWords)} words`));
+    await plot.blur();
     const tooltip = plot.locator('.chart-tooltip');
     const bounds = await plot.boundingBox();
     for (const x of [1, bounds.width - 1]) {

@@ -84,8 +84,6 @@ check('local model selections and provider maps persist through the real setting
     for (const [key, value] of Object.entries(values)) assert.deepEqual(saved[key], value);
   } finally {
     for (const key of Object.keys(values)) {
-      // A fresh isolated session can have no persisted provider map yet; an
-      // empty map is the equivalent default and passes the native validator.
       const value = before[key] ?? (key.endsWith('_by_provider') ? {} : null);
       await invoke('save_setting', { key, value });
     }
@@ -213,7 +211,6 @@ check('sub-app pattern Enter saves on desktop and Sub-apps stay hidden on Androi
           continue;
         }
         const label = `Synthetic sub-app ${viewport.width} ${Date.now()}`;
-        // Supply a public synthetic capture instead of invoking native hotkeys.
         await page.evaluate(async (label) => {
           const { contextsStore } = await import('/src/lib/contextsStore.svelte.ts');
           contextsStore.subAppSheet = { mode: 'capture', capture: {

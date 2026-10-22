@@ -16,8 +16,6 @@ struct Response: Encodable {
     let boosting: String?
 }
 
-// One private pipe, one serialized manager. No network access during loading
-// or inference. Exiting the process releases all CoreML model allocations.
 @main struct Bridge {
     static func main() async {
         AppLogger.minimumLevel = .fault
@@ -57,7 +55,6 @@ struct Response: Encodable {
                     try await manager.loadModels(AsrModels.loadLocal(from: URL(fileURLWithPath: path), version: version))
                     response = Response(text: nil, error: nil, boosting: nil)
                 } else if request.operation == "transcribe" {
-                    // Match media/audio.rs MAX_RECORDING_SECONDS (15 minutes).
                     let maximumBytes = 16_000 * 900 * 4
                     guard let encoded = request.audioPcm,
                           encoded.utf8.count <= ((maximumBytes + 2) / 3) * 4,
@@ -75,8 +72,6 @@ struct Response: Encodable {
                         language: request.language.flatMap(Language.init(rawValue:)))
                     var text = result.text
                     var boosting = "skipped"
-                    // Automatic language has no acoustic English guarantee. Only
-                    // explicitly English dictation uses this English CTC model.
                     if request.language == "en", version != .tdtJa,
                        let path = request.boosterPath, let terms = request.vocabulary,
                        !terms.isEmpty, let timings = result.tokenTimings, !timings.isEmpty {

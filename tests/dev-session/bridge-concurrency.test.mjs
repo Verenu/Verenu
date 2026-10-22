@@ -20,7 +20,6 @@ test('concurrent appearance updates keep UI-thread icon handling and worker aliv
   try {
     for (let batch = 0; batch < 24; batch++) {
       await Promise.all(['light', 'dark', 'system'].map(value => invoke('save_setting', { key: 'appearance_mode', value })));
-      // Let the UI queue process native icon callbacks before the next batch.
       await invoke('get_setting', { key: 'appearance_mode' });
     }
     const response = await fetch(`${base}/__verenu_dev/session`, { headers: { Authorization: `Bearer ${access.token}` }, signal: AbortSignal.timeout(10_000) });
@@ -40,8 +39,6 @@ test('concurrent browser polling and native commands keep the worker alive', { t
     assert.equal(response.status, 200, route);
     await response.json();
   }
-  // Separate browser tabs poll and subscribe while settings issue native IPC.
-  // Tauri runtime state must not be cloned concurrently by Axum's workers.
   for (let batch = 0; batch < 40; batch++) {
     await Promise.all(Array.from({ length: 32 }, (_, index) => {
       if (index % 3 === 0) return request('events?after=0');

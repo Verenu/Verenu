@@ -1,8 +1,4 @@
-//! Transcription history, stats, and cleanup-cache status.
-
 use super::*;
-
-// ---------- history / stats ----------
 
 #[tauri::command]
 pub async fn get_recent(
@@ -27,17 +23,12 @@ pub async fn get_recent(
                 app_name.as_deref(),
             )
         } else {
-            // Compatibility for older clients. The current Home view always
-            // supplies before_id after its first page, so normal scrolling
-            // never pays the deep-OFFSET cost. The first page also uses this
-            // shape so an app filter can use its index.
             db::query_recent_page(db, limit, offset, search.as_deref(), app_name.as_deref())
         }
     })
     .await
 }
 
-/// Distinct apps present in transcription history, for the History app filter.
 #[tauri::command]
 pub async fn get_history_apps(app: AppHandle) -> Result<Vec<String>, String> {
     run_db(&app, "get_history_apps", db::query_distinct_apps).await
@@ -48,9 +39,6 @@ pub async fn get_stats(app: AppHandle) -> Result<db::Stats, String> {
     run_db(&app, "get_stats", db::query_stats).await
 }
 
-/// Aggregated insights for the Insights page. `days` is 7 | 30 | 90 | 0,
-/// where 0 means all time. `context_id` narrows every per-dictation figure to
-/// one context group; `None` covers all of them.
 #[tauri::command]
 pub async fn get_insights(
     app: AppHandle,
@@ -63,9 +51,6 @@ pub async fn get_insights(
     .await
 }
 
-/// Returns the locally cached OpenRouter rate table, refreshing it at most
-/// once every 48 hours. A failed refresh falls back to the last good snapshot
-/// so a pricing outage never blocks the Insights page.
 #[tauri::command]
 pub async fn get_insights_pricing(app: AppHandle) -> Result<db::PricingSnapshot, String> {
     let fresh = run_db(
@@ -111,8 +96,6 @@ pub async fn retry_transcription(
 ) -> Result<db::RecentEntry, String> {
     pipeline::retry_transcription_impl(&app, &state)
         .await
-        // The pill shows its own sanitized message; the command return must
-        // not leak the raw provider context (AUTH_401 wire format, bodies).
         .map_err(|e| crate::api::user_facing_error(&e))
 }
 

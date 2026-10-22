@@ -1,17 +1,6 @@
 import { isAndroid, isMac } from './platform';
 import type { SettingsSectionId } from './settingsSections';
 
-/**
- * Shared frontend error classification.
- *
- * Backend errors arrive over IPC as strings (command `Err` payloads or the
- * `verenu:error` event). Some of those strings are already user-crafted, some
- * carry structured markers (AUTH_401|..., QUOTA_EXCEEDED:...), and some could
- * still embed provider response bodies. This module is the single place that
- * turns any of those into a stable `ErrorKind` plus a safe, human message, so
- * components stop substring-matching backend strings in their own scripts.
- */
-
 export type ErrorKind =
   | 'unknown'
   | 'already-recording'
@@ -58,7 +47,6 @@ interface ClassifiedError {
   message: string;
 }
 
-/** Order matters: checked top to bottom, first match wins. */
 const KIND_HINTS: ReadonlyArray<readonly [ErrorKind, readonly string[]]> = [
   ['already-recording', ['already recording']],
   [
@@ -68,9 +56,6 @@ const KIND_HINTS: ReadonlyArray<readonly [ErrorKind, readonly string[]]> = [
   ['accessibility-permission', ['accessibility permission']],
   ['auth-401', ['auth_401', 'invalid or revoked', 'rejected this key', 'rejected authentication']],
   ['quota', ['quota exceeded', 'quota reached', 'request limit reached', 'request limit was reached']],
-  // "Recording was too quiet — nothing was transcribed" must classify as
-  // nothing-transcribed (the original mic-button wording); keep it before
-  // the too-quiet hint.
   ['no-speech', ['no speech detected']],
   ['nothing-transcribed', ['nothing was transcribed', 'nothing transcribed']],
   ['too-short', ['too short']],
@@ -119,7 +104,6 @@ const KIND_HINTS: ReadonlyArray<readonly [ErrorKind, readonly string[]]> = [
   ['provider-response', ['no choices in', 'no candidates', 'no transcript', 'response parse error', 'finish_reason', 'gemini blocked']],
 ];
 
-/** Copy for kinds whose wording is fixed and shared across surfaces. */
 const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
   'already-recording': 'Already recording. Finish or cancel the current recording before starting another.',
   'mic-permission': isAndroid
@@ -164,7 +148,6 @@ const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
   'provider-unavailable': 'The provider is temporarily unavailable. Wait a moment, then try again or choose another provider.',
 };
 
-/** Extracts a displayable string from any IPC/JS error shape. */
 export function extractIpcErrorMessage(err: unknown): string {
   if (typeof err === 'object' && err !== null) {
     if ('message' in err) {
@@ -190,11 +173,6 @@ export function extractIpcErrorMessage(err: unknown): string {
   return raw;
 }
 
-/**
- * Defense-in-depth for strings that bypass the Rust-side sanitizer (e.g. a
- * future command that returns a raw provider context string). Strips response
- * bodies and internal request ids. Keep complete recovery instructions visible.
- */
 function stripInternalMarkers(message: string): string {
   const cleaned = message
     .replace(/(?:—|-) recent runtime log:[\s\S]*$/g, '')
@@ -221,7 +199,6 @@ function messageForKind(kind: ErrorKind, raw: string): string {
       return stripInternalMarkers(raw);
     }
     case 'quota': {
-      // "QUOTA_EXCEEDED: Groq quota reached" or the already-friendly message.
       const provider = raw.match(/\b(Groq|OpenAI|Google|Gemini|AssemblyAI|OpenRouter|xAI)\b/i)?.[0];
       return `${provider ?? 'Your provider'} request limit reached. Wait for the limit to reset, check your provider plan, or choose another provider.`;
     }
@@ -265,7 +242,6 @@ function messageForKind(kind: ErrorKind, raw: string): string {
 
 export function classifyIpcError(err: unknown): ClassifiedError {
   const raw = extractIpcErrorMessage(err);
-  // Never classify the provider body as the cause of a local app failure.
   const safe = stripInternalMarkers(raw);
   const lower = safe.toLowerCase();
   const status = safe.match(/(?:HTTP\s+|status[=:]?\s+|status[=:])(4\d\d|5\d\d)\b/i)?.[1];
@@ -293,14 +269,12 @@ export function classifyIpcError(err: unknown): ClassifiedError {
   return { kind: 'unknown', message: safe };
 }
 
-/** Add the failed action when a native error only describes its cause. */
 export function formatIpcError(err: unknown, action?: string): string {
   const { message } = classifyIpcError(err);
   return action && !message.toLowerCase().startsWith(action.replace(/[.!?]+$/, '').toLowerCase())
     ? `${action.replace(/[.!?]+$/, '')}. ${message}` : message;
 }
 
-/** LAN sync uses the local network, so do not send people to internet settings. */
 export function formatSyncError(err: unknown, action?: string): string {
   const raw = stripInternalMarkers(extractIpcErrorMessage(err));
   const classified = classifyIpcError(err);
@@ -313,8 +287,6 @@ export function formatSyncError(err: unknown, action?: string): string {
   }
   const lower = raw.toLowerCase();
   if (lower.includes('a firewall or network rule may be blocking tcp port')) {
-    // Preserve the native connection target and port so the recovery step is
-    // actionable. The native message does not contain dictation/provider data.
     message = raw;
   } else if (lower.includes('already running') || lower.includes('pairing is already in progress')) {
     message = 'A sync or pairing session is already running. Wait for it to finish, or cancel pairing before starting again.';
@@ -333,10 +305,6 @@ export function formatSyncError(err: unknown, action?: string): string {
   return prefix && !message.toLowerCase().startsWith(prefix.toLowerCase()) ? `${prefix}. ${message}` : message;
 }
 
-/**
- * Which settings section, if any, is the useful next step for this error.
- * `null` means there is nothing actionable to jump to.
- */
 export function settingsSectionForKind(kind: ErrorKind): SettingsSectionId | null {
   switch (kind) {
     case 'auth-401':

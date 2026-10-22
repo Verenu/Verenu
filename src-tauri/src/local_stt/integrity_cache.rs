@@ -1,6 +1,3 @@
-//! A loaded helper can reuse verification while its installed files are unchanged.
-//! Replacement or modification invalidates the cache before native loading.
-//! Platforms without file identity and change-time stamps always reverify.
 use std::path::PathBuf;
 
 #[derive(PartialEq, Eq)]

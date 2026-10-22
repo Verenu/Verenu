@@ -19,8 +19,6 @@
 {/if}
 
 <style>
-  /* Not a modal: no backdrop and no focus trap, so the app stays usable and
-     previews every edit live while the dock is open. */
   .theme-dock {
     background: var(--bg-elev);
     border: 1px solid var(--line-strong);
@@ -32,11 +30,9 @@
     position: fixed;
     right: 16px;
     width: 316px;
-    /* Settings is a persistent overlay at 60, including during navigation. */
     z-index: 70;
   }
   @media (max-width: 520px) {
-    /* Keep the 58px compact navigation rail reachable while editing. */
     .theme-dock { bottom: 8px; right: 8px; max-width: calc(100vw - 74px); }
   }
 </style>

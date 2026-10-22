@@ -1,5 +1,3 @@
-//! Settings, API keys, prompt configuration, and data import/export.
-
 use super::*;
 
 mod api_keys;
@@ -7,6 +5,26 @@ mod custom_providers;
 mod model_catalog;
 mod import_export;
 mod prompts;
+
+#[cfg(test)]
+mod secondary_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn secondary_shortcuts_accept_single_keys_and_remain_device_local() {
+        for key in [store::LINUX_CANCEL_KEY, store::LINUX_HANDSFREE_KEY] {
+            for code in ["Escape", "Space", "F8", "ArrowUp", "KeyK"] {
+                assert!(validate_setting(key, &serde_json::json!(code)).is_ok());
+            }
+            for value in [serde_json::json!("Ctrl+F8"), serde_json::json!("MetaLeft"),
+                serde_json::json!(["F8"]), serde_json::Value::Null] {
+                assert!(validate_setting(key, &value).is_err());
+            }
+            assert!(!SETTING_SPECS.iter().find(|spec| spec.key == key).unwrap().exportable);
+            assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&key));
+        }
+    }
+}
 
 pub use api_keys::*;
 pub use custom_providers::*;
@@ -30,16 +48,12 @@ fn save_github_username(
     let changed =
         github_identity_changed(current.as_deref(), value.as_str().unwrap_or_default());
     if changed {
-        // Invalidate in-flight responses and the prior account's cooldown
-        // before publishing the new owner in settings.
         crate::commands::github::invalidate_github_refresh_owner();
         settings.save_values([
             (store::GITHUB_USERNAME, value),
             (store::GITHUB_COMMIT_CACHE, serde_json::Value::Null),
         ])
     } else {
-        // GitHub logins are case-insensitive. Keep the stored spelling stable
-        // so an in-flight response still matches its exact settings owner.
         Ok(())
     }
 }
@@ -75,6 +89,7 @@ enum SettingKind {
     Hotkey,
     ClipboardPhrase,
     SubAppChord,
+    ControlKey,
 }
 
 #[derive(Clone, Copy)]
@@ -85,7 +100,6 @@ pub struct SettingSpec {
     exportable: bool,
 }
 
-// The table is the allowlist; every listed key is readable.
 macro_rules! setting_specs {
     ($($key:ident: $kind:ident = $exportable:literal),* $(,)?) => {
         const SETTING_SPECS: &[SettingSpec] = &[$(
@@ -114,6 +128,8 @@ setting_specs! {
     CLEANUP_CACHE_ENABLED: Bool = true,
     HOTKEY: Hotkey = true,
     SUB_APP_CAPTURE_HOTKEY: SubAppChord = false,
+    LINUX_CANCEL_KEY: ControlKey = false,
+    LINUX_HANDSFREE_KEY: ControlKey = false,
     MICROPHONE_DEVICE: StringOrNull = false,
     DEFAULT_TONE: DefaultTone = true,
     CLEANUP_INTENSITY: CleanupIntensity = true,
@@ -184,7 +200,6 @@ fn exportable_setting_keys() -> impl Iterator<Item = &'static str> {
         .map(|spec| spec.key)
 }
 
-/// Bounded device-local theme library, using the active palette's validation.
 fn is_saved_themes(value: &serde_json::Value) -> bool {
     use crate::system::omarchy_theme::{is_custom_theme, is_hex_color};
     let Some(themes) = value.as_array().filter(|themes| themes.len() <= 24) else {
@@ -252,10 +267,6 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
                     })
         })
     };
-    // Strict reject, not normalize: this function only answers yes/no and never
-    // mutates the value before it is saved. The catalog store is the sole
-    // writer and normalizes on its side; anything malformed reaching here is a
-    // hand-edited settings file, which should bounce rather than be guessed at.
     let is_provider_model_cache = |v: &serde_json::Value| {
         let Some(obj) = v.as_object() else {
             return false;
@@ -338,6 +349,7 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::SubAppChord => value
             .as_str()
             .is_some_and(|v| crate::core::hotkey::chord::Chord::parse(v).is_some()),
+        SettingKind::ControlKey => value.as_str().is_some_and(crate::core::hotkey::is_control_key),
         SettingKind::ClipboardPhrase => value
             .as_str()
             .map(store::normalize_clipboard_phrase)
@@ -397,11 +409,8 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
     }
 }
 
-/// Highest wizard step number any platform uses (the Done screen).
 const SETUP_PROGRESS_MAX_STEP: u64 = 12;
 
-/// `null` clears the saved progress; otherwise a bounded step and, optionally,
-/// the provider the wizard was configuring.
 fn is_setup_progress(value: &serde_json::Value) -> bool {
     if value.is_null() {
         return true;
@@ -623,11 +632,7 @@ mod setting_key_tests {
         assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&store::CUSTOM_THEMES));
     }
 }
-// ---------- generic settings ----------
 
-/// Enables a process-local failure mode for exercising full-disk error UI.
-/// The flag intentionally never touches settings.json, so it can be disabled
-/// even while simulated saves are failing.
 #[tauri::command]
 pub fn set_storage_full_simulation(enabled: bool) -> Result<(), String> {
     store::set_storage_full_simulation(enabled);
@@ -710,9 +715,6 @@ pub async fn save_setting(
         .await?;
     }
 
-    // LAN sync: stamp the change so peers LWW-compare it, and nudge the sync
-    // manager to schedule a session. Both are best-effort — a sync failure
-    // never blocks saving a setting.
     if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
         let db = app.state::<DbHandle>().inner().clone();
         let key_for_stamp = key.clone();
@@ -753,6 +755,10 @@ pub async fn save_setting(
 
     if key == store::SUB_APP_CAPTURE_HOTKEY {
         apply_sub_app_capture_hotkey(&app);
+    }
+    #[cfg(target_os = "linux")]
+    if key == store::LINUX_CANCEL_KEY || key == store::LINUX_HANDSFREE_KEY {
+        apply_linux_control_keys(&app)?;
     }
 
     if key == store::MIC_MUTE_BUTTON_DICTATION || key == store::MICROPHONE_DEVICE {
@@ -842,6 +848,8 @@ pub struct AllSettings {
     pub verenu_service_checks_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
     pub sub_app_capture_hotkey: Option<String>,
+    pub linux_cancel_key: Option<String>,
+    pub linux_handsfree_key: Option<String>,
     pub appearance_mode: Option<String>,
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
@@ -856,8 +864,6 @@ pub struct AllSettings {
     pub custom_providers: Vec<crate::api::custom::CustomProvider>,
 }
 
-// The struct above is the IPC contract (tests/OnePyFone.py parses it); this
-// table keeps each field's store key and reader together.
 macro_rules! all_settings {
     ($($field:ident = $reader:ident($key:path)),* $(,)?) => {
         fn read_all_settings(s: &store::SettingsSnapshot) -> AllSettings {
@@ -932,6 +938,8 @@ all_settings! {
     verenu_service_checks_enabled = bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
     hotkey = str_array_val(store::HOTKEY),
     sub_app_capture_hotkey = str_val(store::SUB_APP_CAPTURE_HOTKEY),
+    linux_cancel_key = str_val(store::LINUX_CANCEL_KEY),
+    linux_handsfree_key = str_val(store::LINUX_HANDSFREE_KEY),
     appearance_mode = str_val(store::APPEARANCE_MODE),
     accent_color = str_val(store::ACCENT_COLOR),
     custom_theme = json_val(store::CUSTOM_THEME),
@@ -1212,7 +1220,18 @@ mod provider_model_cache_tests {
     }
 }
 
-/// Applies the saved sub-app capture chord (or the platform default).
+#[cfg(target_os = "linux")]
+pub fn apply_linux_control_keys(app: &AppHandle) -> Result<(), String> {
+    let settings = store::settings_handle(app)?;
+    let key = |name, default: &str| settings.get(name)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| default.into());
+    crate::core::hotkey::update_control_keys(
+        &key(store::LINUX_CANCEL_KEY, "Escape"),
+        &key(store::LINUX_HANDSFREE_KEY, "Space"),
+    )
+}
+
 pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
     let chord = store::settings_handle(app)
         .ok()

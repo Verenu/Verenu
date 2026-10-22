@@ -1,5 +1,3 @@
-//! Snippet CRUD and use-count tracking.
-
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -61,8 +59,6 @@ pub fn insert_snippet_returning(
     instructions: &str,
     context_id: Option<i64>,
 ) -> Result<CreatedRecordMeta> {
-    // Insert and read last_insert_rowid under a single lock to prevent another
-    // thread's insert racing between the two acquisitions and returning the wrong id.
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let created = insert_snippet_returning_conn(&tx, trigger, expansion, instructions, context_id)?;
@@ -70,16 +66,6 @@ pub fn insert_snippet_returning(
     Ok(created)
 }
 
-/// Same as `insert_snippet_returning` but takes an already-locked connection,
-/// so a caller doing many inserts (e.g. bulk import) can wrap them all in one
-/// transaction instead of locking per row.
-///
-/// `context_id: None` (bulk import, legacy standalone Snippets page) keeps
-/// the original strict behavior: a duplicate trigger always fails, and new
-/// snippets land in Everywhere. When `context_id` names a specific context
-/// and the trigger already exists elsewhere, the existing snippet is linked
-/// into that context instead of failing — see the matching dictionary
-/// version of this logic for the reasoning.
 pub fn insert_snippet_returning_conn(
     conn: &rusqlite::Connection,
     trigger: &str,
@@ -208,9 +194,6 @@ pub fn query_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippe
     )
 }
 
-/// Removes a snippet from Everywhere and assigns the existing row to a
-/// specific context. The expansion, instructions, and use count remain on
-/// the same global row.
 pub fn move_snippet_entry_to_context(
     db: &Db,
     trigger: &str,

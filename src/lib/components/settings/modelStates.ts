@@ -23,13 +23,6 @@ import {
   type TaskType,
 } from './models';
 
-/**
- * - `ready`        usable right now
- * - `needs-setup`  known-good, but missing a key, a download, or the RAM
- * - `unavailable`  was offered once, and a trustworthy list no longer has it
- * - `not-found`    never seen in any successful list — a typo or a stale pick
- * - `unverified`   the provider returned it, but Verenu knows nothing about it
- */
 export type ModelState = 'ready' | 'needs-setup' | 'unavailable' | 'not-found' | 'unverified';
 
 export type Remedy = 'add-key' | 'download' | 'none';
@@ -37,12 +30,10 @@ export type Remedy = 'add-key' | 'download' | 'none';
 export type ModelRow = {
   provider: ProviderId;
   id: string;
-  /** Canonical `provider/model`. */
   key: string;
   label: string;
   tags: ModelTag[];
   state: ModelState;
-  /** Short human reason, shown on the row. Empty for a plain ready model. */
   note: string;
   remedy: Remedy;
   sizeMb?: number;
@@ -61,25 +52,14 @@ export type LocalModelInfo = {
   prompt_family?: string;
 };
 
-/**
- * Everything the picker needs to manage local models in place — downloading,
- * deleting and (for cleanup) the shared runtime and per-model prompts. These
- * used to live in a separate "Local models" section that listed the same
- * models again under a different UI.
- */
 export type LocalControls = {
   models: LocalModelInfo[];
-  /**
-   * False on hardware where on-device models haven't been validated. Apple
-   * Speech and whisper.cpp transcription remain offered (see `localModelOffered`).
-   */
   supported: boolean;
   downloadProgress: Record<string, { progress?: number } | undefined>;
   downloadStage: Record<string, string | undefined>;
   onDownload: (id: string) => void;
   onCancel: (id: string) => void;
   onDelete: (id: string) => void;
-  /** Cleanup only: the local LLM runtime every on-device model needs. */
   runtime?: {
     info?: { installed: boolean; backend?: string; approx_download_mb?: number; is_downloading?: boolean };
     progress?: { stage?: string; progress?: number };
@@ -98,15 +78,10 @@ export type PickerContext = {
   appleIntelligence?: AppleIntelligenceAvailability;
 };
 
-/**
- * Apple Intelligence is offered only on a supported Mac. Hidden rather than
- * disabled elsewhere, so a stored or pinned Apple choice never lists as usable.
- */
 export function appleIntelligenceVisible(ctx: Pick<PickerContext, 'appleIntelligence'>): boolean {
   return appleIntelligenceSupported(ctx.appleIntelligence ?? appleIntelligence.status);
 }
 
-/** Providers whose absence from a list means something. Local has no list. */
 const LISTED_PROVIDERS = CLOUD_PROVIDERS;
 const GOOGLE_DEDICATED_TRANSCRIBER = 'gemini-3.5-transcribe';
 
@@ -123,23 +98,12 @@ function row(entry: CatalogEntry, state: ModelState, note = '', remedy: Remedy =
   };
 }
 
-/**
- * Local speech models the backend only lists on hardware that supports them
- * (Apple Speech and FluidAudio on Macs, whisper.cpp off Android). Absence from
- * `list_models` therefore means "unsupported here", never "not downloaded".
- */
 const PLATFORM_GATED_LOCAL = (id: string) =>
   id === 'apple-speech' || id.startsWith('fluid-') || id.startsWith('whisper-');
 const UNSUPPORTED_LOCAL_NOTE = 'Not available on this device · choose another model';
 
-/**
- * Speech models that stay offered where the blanket on-device gate (Intel
- * Macs) is closed: Apple Speech ships with macOS and whisper.cpp is portable.
- * Availability itself still comes from the backend list.
- */
 const isPortableLocalSpeech = (id: string) => id === 'apple-speech' || id.startsWith('whisper-');
 
-/** Whether a local row may be listed given the picker's `supported` gate. */
 export function localModelOffered(local: Pick<LocalControls, 'supported'>, task: TaskType, id: string): boolean {
   return local.supported || (task === 'transcription' && isPortableLocalSpeech(id));
 }
@@ -152,8 +116,6 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return { ...base, state: 'unavailable', note: UNSUPPORTED_LOCAL_NOTE };
   }
 
-  // Apple Speech has no download; its permission and language assets are
-  // checked when dictation starts, so it is selectable as soon as it is listed.
   if (info?.install_kind === 'system_managed') {
     return { ...base, note: 'Managed by macOS · permission and language assets required' };
   }
@@ -166,7 +128,6 @@ function localRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
   return { ...base, note: 'Installed' };
 }
 
-/** A picked local model this machine cannot run (imported settings, another device). */
 function unsupportedLocalPick(id: string, ctx: PickerContext): boolean {
   const parsed = splitModelId(id);
   if (parsed?.provider !== 'local' || ctx.localModels.length === 0) return false;
@@ -184,17 +145,12 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
     return row(entry, 'needs-setup', 'No API key', 'add-key');
   }
 
-  // Interactions API models are not returned by Google's generateContent
-  // model listing. Keep the dedicated transcriber selectable when the key is
-  // present instead of misclassifying it as retired.
   if (entry.provider === 'google' && entry.id === GOOGLE_DEDICATED_TRANSCRIBER) {
     return row(entry, 'ready');
   }
 
   const cache = ctx.cache[entry.provider];
   if (!isTrustworthy(cache)) {
-    // A key alone isn't proof the model exists, but refusing to offer anything
-    // until a fetch lands would leave a fresh install with an empty picker.
     return row(entry, 'ready', `Not verified against ${providerDisplayLabel(entry.provider)} yet`);
   }
   if (cache!.ids.includes(entry.id)) return row(entry, 'ready');
@@ -203,15 +159,6 @@ function cloudRow(entry: CatalogEntry, ctx: PickerContext): ModelRow {
   return row(entry, 'unavailable', `No longer offered by ${providerDisplayLabel(entry.provider)}`);
 }
 
-/**
- * Every curated model for the task, classified.
- *
- * A model a trustworthy live list no longer contains is dropped outright
- * rather than shown as retired — the picker is a list of what you can pick,
- * and a retired model is not one of those. `keep` pins ids that must stay
- * visible anyway: your current selections, which need somewhere to display
- * their state and be replaced from.
- */
 export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[] {
   const pinned = new Set(keep);
   const customEntries: CatalogEntry[] = customProviderStore.providers
@@ -224,7 +171,6 @@ export function curatedRows(ctx: PickerContext, keep: string[] = []): ModelRow[]
     .filter((row) => row.state !== 'unavailable' || pinned.has(row.key));
 }
 
-/** New models with compatible capability metadata appear without an app update. */
 export function discoveredRows(ctx: PickerContext): ModelRow[] {
   const rows: ModelRow[] = [];
   for (const provider of LISTED_PROVIDERS) {
@@ -243,15 +189,8 @@ export function discoveredRows(ctx: PickerContext): ModelRow[] {
   return rows;
 }
 
-/**
- * Ids a provider returned that aren't in the catalog.
- *
- * Groq's and OpenAI's lists have no modality fields. IDs without capability
- * metadata use a name heuristic and remain under Show more models.
- */
 export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   const transcriptionish = /whisper|transcribe|speech|[-/]stt\b/i;
-  // Neither task can use these, and a provider list is full of them.
   const otherModality =
     /\b(tts|text-to-speech|embed|embedding|rerank|moderation|guard|safeguard|image|vision|video|veo|imagen|lyria|dall-e|sora|robotics|orpheus|playai)\b/i;
   const rows: ModelRow[] = [];
@@ -281,11 +220,6 @@ export function unverifiedRows(ctx: PickerContext): ModelRow[] {
   return rows;
 }
 
-/**
- * The row for whatever is selected right now, even when it is in neither the
- * catalog nor the live list. Without it a deprecated or hand-typed id has
- * nowhere to show its state and no way to be replaced in place.
- */
 export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRow | null {
   const parsed = splitModelId(selectedId);
   if (!parsed) return null;
@@ -330,8 +264,6 @@ export function rowForSelection(selectedId: string, ctx: PickerContext): ModelRo
     : { ...base, state: 'not-found', note: `Not in ${providerDisplayLabel(parsed.provider)}'s model list` };
 }
 
-// ── Deprecation ────────────────────────────────────────────────────────────
-
 export type UnavailableReason = 'deprecated' | 'not-found';
 
 export type UnavailableSelection = {
@@ -339,24 +271,15 @@ export type UnavailableSelection = {
   provider: ProviderId;
   model: string;
   reason: UnavailableReason;
-  /** 'default', or the model's 0-based index in the fallback chain. */
   position: 'default' | number;
   suggestion: string | null;
 };
 
-/** Two misses only count once they're far enough apart to mean anything. */
 function confirmedMissing(cache: ModelCatalogCache[ProviderId], id: string): boolean {
   const counter = cache?.missing[id];
   return !!counter && counter.count >= 2;
 }
 
-/**
- * Selected models a trustworthy provider list no longer contains.
- *
- * Silence is the safe answer: an unreachable provider, a missing key, a 429, or
- * a partial Google pagination all leave `lastError` set, and none of them mean
- * a model went away.
- */
 export function unavailableSelections(
   task: TaskType,
   selected: string[],
@@ -368,8 +291,6 @@ export function unavailableSelections(
     const parsed = splitModelId(id);
     if (!parsed) return;
     if (!LISTED_PROVIDERS.includes(parsed.provider)) return;
-    // AssemblyAI's list is a static const on the Rust side, so a model missing
-    // from it is a Verenu bug, not a provider deprecation.
     if (parsed.provider === 'assemblyai') return;
     if (parsed.provider === 'google' && parsed.model === GOOGLE_DEDICATED_TRANSCRIBER) return;
 
@@ -391,10 +312,6 @@ export function unavailableSelections(
   return found;
 }
 
-/**
- * Closest still-usable sibling from the same provider: most shared tags wins,
- * premium beats standard on a tie, then catalog order.
- */
 export function suggestReplacement(
   task: TaskType,
   provider: ProviderId,
@@ -420,7 +337,6 @@ export function suggestReplacement(
   return ranked.length ? modelId(provider, ranked[0].entry.id) : null;
 }
 
-/** First entry in the chain that can actually run right now. */
 export function firstRunnable(chain: string[], ctx: PickerContext): string | null {
   for (const id of chain) {
     const row = rowForSelection(id, ctx);
@@ -429,10 +345,6 @@ export function firstRunnable(chain: string[], ctx: PickerContext): string | nul
   return null;
 }
 
-/**
- * One sentence per unavailable selection, built from the real chain — whether a
- * fallback picks up the work, and whether the task is about to fail outright.
- */
 export function unavailableMessages(
   task: TaskType,
   defaultModel: string,

@@ -1,6 +1,3 @@
-//! Style resolution: App Mappings, Context overrides, and the tone/intensity
-//! priority chain that decides the cleanup profile for a dictation.
-
 use super::*;
 use crate::core::window_geometry::WindowTarget;
 pub(super) fn resolve_app_mapping(
@@ -17,12 +14,6 @@ pub(super) fn resolve_app_mapping(
     })
 }
 
-/// Resolves the effective tone profile, in priority order: the active
-/// Context's tone override, then the app-mapping's profile, then the global
-/// `default_tone`. Cleanup intensity follows the same priority and is
-/// applied onto `cfg` in place. The Context override is the most specific
-/// signal (it can be a per-website match), so it wins over the exe-keyed
-/// AppMapping when both are set.
 pub(super) fn apply_app_style_overrides(
     cfg: &mut store::PipelineConfig,
     mapping: Option<&AppMapping>,
@@ -55,24 +46,16 @@ pub(super) fn apply_app_style_overrides(
         .unwrap_or_else(|| cfg.default_tone.clone())
 }
 
-/// Resolves the context that would apply to a foreground window without
-/// running the full pipeline. The identity is retained for the dictation,
-/// including retries and history, even if focus moves after recording starts.
 pub(super) fn resolve_context_for_window(
     app: &AppHandle,
     target: &WindowTarget,
 ) -> Option<crate::core::context::ResolvedContextIdentity> {
     let process_name = target.process_name().unwrap_or_default();
-    // Read the domain from the captured browser window as well as the exe.
-    // This keeps website-only context groups accurate on the recording pill;
-    // the bounded UIA probe remains best-effort and falls back to exe lookup.
     let browser_domain = if window_context::is_browser_target(&process_name, target.id) {
         crate::core::browser_probe::read_browser_domain_for_target(target)
     } else {
         None
     };
-    // Sub-app rules match on the captured window's title. It is read here
-    // only and never stored or logged.
     let window_title = target.window_title();
     let db_handle = app.state::<crate::DbHandle>().inner().clone();
     let (context, sub_app) = crate::core::context::resolve_context_for_captured_window(
@@ -83,10 +66,21 @@ pub(super) fn resolve_context_for_window(
         target.id,
     )
     .ok()?;
-    Some(crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
+    let mut identity = crate::core::context::ResolvedContextIdentity::from_context_and_sub_app(
         &context,
         sub_app.as_ref(),
-    ))
+    );
+    identity.t3_skills = store::settings_snapshot(app)
+        .ok()
+        .as_ref()
+        .and_then(|settings| {
+            crate::commands::catalog_for_destination(
+                settings,
+                &process_name,
+                context.t3_skill_mentions_disabled,
+            )
+        });
+    Some(identity)
 }
 
 pub(super) fn emit_context_for_window(
@@ -98,19 +92,6 @@ pub(super) fn emit_context_for_window(
     Some(context)
 }
 
-/// Casual/formal cleanup sometimes omits a closing period on short utterances.
-/// That leaves a bare word before the caret, which the contextual-capitalization
-/// probe then reads as a mid-sentence continuation — so the *next* dictation has
-/// its first letter lowercased. Appending a period when the cleaned text ends on
-/// a plain word makes consecutive dictations read as separate sentences and
-/// capitalize naturally.
-///
-/// Deliberately conservative:
-/// - `very_casual` is skipped (its style is intentionally near-punctuation-free).
-/// - `none`/verbatim intensity is skipped (must echo speech without editorializing).
-/// - Only acts when the last non-space character is alphanumeric. Text already
-///   ending in terminal punctuation, a comma/colon/dash (intentional
-///   continuation), or a closing bracket/quote is left untouched.
 pub(super) fn ensure_terminal_punctuation(
     text: &str,
     profile: &str,
@@ -122,10 +103,7 @@ pub(super) fn ensure_terminal_punctuation(
     let trimmed = text.trim_end();
     match trimmed.chars().next_back() {
         Some(last) if last.is_alphanumeric() => {
-            // Chinese/Japanese text uses the full-width period; a Western "."
-            // reads as out of place after CJK ideographs or kana.
             let punct = if is_cjk(last) { "。" } else { "." };
-            // Preserve any trailing whitespace the model emitted after the word.
             format!("{trimmed}{punct}{}", &text[trimmed.len()..])
         }
         _ => text.to_owned(),
@@ -134,9 +112,9 @@ pub(super) fn ensure_terminal_punctuation(
 
 fn is_cjk(c: char) -> bool {
     matches!(c,
-        '\u{4e00}'..='\u{9fff}'   // CJK Unified Ideographs
-        | '\u{3400}'..='\u{4dbf}' // CJK Unified Ideographs Extension A
-        | '\u{3040}'..='\u{309f}' // Hiragana
-        | '\u{30a0}'..='\u{30ff}' // Katakana
+        '\u{4e00}'..='\u{9fff}'
+        | '\u{3400}'..='\u{4dbf}'
+        | '\u{3040}'..='\u{309f}'
+        | '\u{30a0}'..='\u{30ff}'
     )
 }

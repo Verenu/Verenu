@@ -1,7 +1,5 @@
 <script lang="ts">
-  // Review a capture and save it as a sub-app: an app plus a window-title
-  // rule. It goes into the sub-app list and is assigned to a context group
-  // from that group's page.
+  import { untrack } from 'svelte';
   import { invoke } from '../tauri';
   import { formatIpcError, type ContextSubApp, type TitleMatchMode } from '../stores';
   import { contextsStore } from '../contextsStore.svelte';
@@ -28,9 +26,7 @@
     onClose: () => void;
   } = $props();
 
-  // The sheet mounts fresh for each capture, so reading it once is intended.
-  // svelte-ignore state_referenced_locally
-  const capture = sheet.capture;
+  const capture = untrack(() => sheet.capture);
   const executable = capture.executable;
   const appName = capture.app_name || executable;
 
@@ -68,7 +64,6 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    // An open menu inside the sheet closes first (Dropdown's convention).
     if (event.key === 'Escape' && !document.querySelector('.sub-app-sheet [aria-expanded="true"]')) onClose();
   }
 </script>
@@ -173,8 +168,6 @@
     flex-direction: column;
   }
 
-  /* The title-match menu opens downward; the body's scroll clipping would
-     hide it behind the footer. */
   .sub-app-sheet .ui-modal-body {
     overflow: visible;
   }

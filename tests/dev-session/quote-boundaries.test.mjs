@@ -2,7 +2,6 @@ import test from 'node:test';
 import { runBasicCases } from './helpers/basic-cleanup.mjs';
 
 test('production quoted contractions keep fillers and voice commands literal', { timeout: 180_000 }, async () => {
-  // Independent default-30 worker; all existing scenario groups stay intact.
   await runBasicCases([
     [true, "say 'don't um pause' literally", "say 'don't um pause' literally"],
     [false, "say 'don't um pause' literally", "say 'don't um pause' literally"],

@@ -46,7 +46,6 @@
     { value: 'anthropic', label: protocolLabels.anthropic },
     { value: 'xai', label: protocolLabels.xai },
   ];
-  // A preset with two wire formats offers just those two, recommended first.
   const formatOptions = $derived(preset?.alt && !savedOriginal
     ? [{ value: preset.protocol, label: `${protocolLabels[preset.protocol]} (recommended)` }, { value: preset.alt.protocol, label: protocolLabels[preset.alt.protocol] }]
     : protocols);
@@ -57,8 +56,6 @@
   }
   onMount(() => { load().catch(e => error = formatIpcError(e, 'Could not load custom providers')); });
 
-  // preventScroll: the drawer is still sliding in, and focus must not jump the layout.
-  // Grow with the content instead of showing a resize handle or scrollbar.
   function autosize(node: HTMLTextAreaElement, _value: string) {
     const fit = () => { node.style.height = 'auto'; node.style.height = `${node.scrollHeight + 2}px`; };
     fit(); node.addEventListener('input', fit);
@@ -68,7 +65,6 @@
   const drawerOpen = $derived(picking || !!editing);
   function closeDrawer() { picking = false; editing = null; preset = null; key = ''; error = ''; }
   function backdropClose() { if (!busy) closeDrawer(); }
-  // A new provider's form sits one level below the preset picker; an existing one has nowhere to go back to.
   const canGoBack = $derived(!!editing && !savedOriginal);
   function goBack() { if (!busy) startPicking(); }
   function startPicking() {
@@ -112,7 +108,6 @@
     try { const { open } = await import('@tauri-apps/plugin-shell'); await open(url); }
     catch { window.open(url, '_blank', 'noopener'); }
   }
-  // At least one task must stay on, so switching off the last one turns the other on.
   function setCapability(task: 'transcription' | 'cleanup', on: boolean) {
     if (!editing) return;
     const other = task === 'transcription' ? 'cleanup' : 'transcription';
@@ -178,7 +173,6 @@
           if (validation.status === 'invalid') throw new Error(validation.message);
           await invoke('save_api_key', { provider: provider.id, key: key.trim() });
         } catch (keyError) {
-          // The provider is already stored, so say so rather than implying nothing happened.
           error = `The provider was saved, but its API key was not. ${formatIpcError(keyError, 'The key could not be saved.')}`;
           await load();
           return;
@@ -257,7 +251,6 @@
 
   {#if drawerOpen}
     <div class="drawer-wrap" use:portal>
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
       <div class="drawer-backdrop" role="presentation" onclick={backdropClose} in:modalBackdrop={{ duration: MOTION_MS.base }} out:modalBackdrop={{ duration: MOTION_MS.fast }}></div>
       <div class="drawer" role="dialog" aria-modal="true" aria-label={editing ? (savedOriginal ? 'Edit custom provider' : 'Set up custom provider') : 'Add custom provider'} tabindex="-1"
         bind:this={drawerEl}
@@ -451,7 +444,6 @@
   .models-row.no-tx { grid-template-columns: minmax(0, 0fr) minmax(0, 1fr); column-gap: 0; }
   .models-row.no-cl { grid-template-columns: minmax(0, 1fr) minmax(0, 0fr); column-gap: 0; }
   .mfield { min-width: 0; max-height: 900px; overflow: hidden; padding: 3px; margin: -3px; transition: opacity 220ms ease, max-height 320ms cubic-bezier(0.22, 1, 0.36, 1); }
-  /* Keep the content from rewrapping into a tall sliver while its column shrinks. */
   .mfield > :global(.mid) { min-width: 160px; }
   .mfield.off { opacity: 0; pointer-events: none; max-height: 0; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

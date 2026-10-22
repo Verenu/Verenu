@@ -1,6 +1,3 @@
-/** Bound the data-URI strings retained after icon components unmount.
- * Eviction only removes the cache's reference; mounted icons keep their image.
- */
 export function createIconCache(maxEntries = 128, maxBytes = 4 * 1024 * 1024) {
   const entries = new Map<string, { promise: Promise<string | null>; bytes: number }>();
   let bytes = 0;
@@ -23,14 +20,10 @@ export function createIconCache(maxEntries = 128, maxBytes = 4 * 1024 * 1024) {
       const entry = { promise: Promise.resolve(null) as Promise<string | null>, bytes: 0 };
       entry.promise = Promise.resolve().then(load).catch(() => null).then((value) => {
         if (entries.get(key) === entry) {
-          // A missing icon or failed IPC request can recover after installing
-          // an app or reopening the picker. Deduplicate the pending request,
-          // but retain only successful results.
           if (value === null) {
             entries.delete(key);
             return value;
           }
-          // UTF-16 is a conservative budget even on engines using Latin-1.
           entry.bytes = (value?.length ?? 0) * 2;
           bytes += entry.bytes;
           trim();

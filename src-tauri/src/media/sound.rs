@@ -1,17 +1,3 @@
-//! Short synthesized audio cues for dictation start / stop / error / cancel.
-//!
-//! Each cue is built by additive synthesis into a small PCM buffer, then played
-//! on a background thread that opens the default output device, plays the buffer,
-//! and drops the stream. No shared state, no held device, no `Send`/lifetime
-//! juggling. Playback is fire-and-forget and never panics the pipeline.
-//!
-//! The cues are designed to be *categorically* distinguishable, which (per UI
-//! sound-design research — auditory icons / earcons) comes from **timbre, register
-//! and gesture**, not pitch alone:
-//! - Complete: a clean "soft" tone, higher register, rising — a plain "done".
-//! - Error: a low, **buzzy** reed (odd harmonics, sustained), descending — "wrong".
-//! - Start / Cancel: the same soft tone, kept unobtrusive.
-
 use rodio::buffer::SamplesBuffer;
 use std::f32::consts::{PI, TAU};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -19,41 +5,31 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-/// Which dictation transition the cue represents.
+use crate::system::volume::MuteOutcome;
+
 #[derive(Clone, Copy)]
 pub enum SoundCue {
-    /// Recording started (hotkey pressed) — a soft, airy rising arpeggio.
     Start,
-    /// Recording finished (hotkey released) — a clean rising tone: "done".
     Stop,
-    /// Processing failed — a low, buzzy descending "womp": "wrong".
     Error,
-    /// Recording cancelled (Escape) — a quiet, soft two-note dismiss.
     Cancel,
 }
 
 const SAMPLE_RATE: u32 = 44_100;
-const ATTACK_MS: f32 = 6.0; // smooth swell-in so the onset never clicks
-const RELEASE_MS: f32 = 60.0; // release for sustained (buzz) voices
-const AMPLITUDE: f32 = 0.30; // gentle, fixed master level
+const ATTACK_MS: f32 = 6.0;
+const RELEASE_MS: f32 = 60.0;
+const AMPLITUDE: f32 = 0.30;
 
-/// Delay before the start cue for a normal hold-to-talk press. Long enough that
-/// the discarded first tap of a handsfree double-tap (held <200ms, then
-/// cancelled) is suppressed before it sounds, while a genuine hold still chimes.
 pub const START_CUE_NORMAL_DELAY_MS: u64 = 260;
-/// Delay before the start cue when entering handsfree, so it lands after the
-/// pill's entry animation rather than before it looks like it's listening.
 pub const START_CUE_HANDSFREE_DELAY_MS: u64 = 220;
 
-/// Generation counter for the pending start cue. Scheduling a new start cue or
-/// cancelling supersedes any still-pending one, so the discarded first tap of a
-/// handsfree double-tap never sounds and the cue can be held back cleanly.
 static START_CUE_GEN: AtomicU64 = AtomicU64::new(0);
 static SOUND_TX: OnceLock<mpsc::Sender<SoundCommand>> = OnceLock::new();
+static LOCAL_MUTE_CLAIM: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Default)]
 struct MuteOwners {
     shutting_down: bool,
-    local_generation: u64,
     local: bool,
     remote: std::collections::HashSet<u64>,
 }
@@ -63,24 +39,42 @@ impl MuteOwners {
         self.local || !self.remote.is_empty()
     }
 
-    fn acquire_local(&mut self, active: bool, generation: u64) {
-        if !self.shutting_down && active && self.local_generation == generation {
+    fn acquire_local(&mut self, active: bool, claim_is_current: bool) -> bool {
+        let acquired = !self.shutting_down && active && claim_is_current;
+        if acquired {
             self.local = true;
         }
+        acquired
     }
 }
 
 static MUTE_OWNERS: std::sync::LazyLock<std::sync::Mutex<MuteOwners>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(MuteOwners::default()));
 
-fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) {
+fn apply_local_mute(
+    owners: &mut MuteOwners,
+    claim_is_current: bool,
+    mute: impl FnOnce() -> MuteOutcome,
+) -> MuteOutcome {
+    if owners.acquire_local(true, claim_is_current) {
+        mute()
+    } else {
+        MuteOutcome::Failed
+    }
+}
+
+fn update_mute_owners(update: impl FnOnce(&mut MuteOwners)) -> Option<MuteOutcome> {
     let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     let before = owners.muted();
     update(&mut owners);
     match (before, owners.muted()) {
-        (false, true) => crate::system::volume::mute(),
-        (true, false) => crate::system::volume::unmute(),
-        _ => {}
+        (false, true) => Some(crate::system::volume::mute()),
+        (true, false) => {
+            crate::system::volume::unmute();
+            None
+        }
+        (true, true) => Some(crate::system::volume::mute()),
+        (false, false) => None,
     }
 }
 
@@ -88,13 +82,12 @@ fn release_mute_owners_on_exit(owners: &mut MuteOwners, restore_audio: impl FnOn
     owners.shutting_down = true;
     owners.local = false;
     owners.remote.clear();
-    owners.local_generation = owners.local_generation.wrapping_add(1);
     restore_audio();
 }
 
 #[cfg(test)]
 mod mute_tests {
-    use super::MuteOwners;
+    use super::{MuteOutcome, MuteOwners};
     use std::cell::Cell;
 
     #[test]
@@ -121,13 +114,97 @@ mod mute_tests {
 
     #[test]
     fn immediate_local_mute_acquires_the_same_owner_as_the_delayed_path() {
-        let mut owners = MuteOwners {
-            local_generation: 1,
-            ..Default::default()
-        };
-        owners.acquire_local(true, 1);
+        let mut owners = MuteOwners::default();
+        assert!(owners.acquire_local(true, true));
         assert!(owners.local);
         assert!(owners.muted());
+    }
+
+    #[test]
+    fn stale_claim_is_not_acquired() {
+        let mut owners = MuteOwners::default();
+        assert!(!owners.acquire_local(true, false));
+        assert!(!owners.local);
+        assert!(owners.acquire_local(true, true));
+    }
+
+    #[test]
+    fn superseded_mute_task_fails_even_while_another_owner_holds_the_mute() {
+        let remote_owner = u64::MAX - 7;
+        let mut owners = MuteOwners::default();
+        owners.remote.insert(remote_owner);
+        let outcome = super::apply_local_mute(&mut owners, false, || {
+            panic!("a rejected claim must not call the OS mute")
+        });
+        assert_eq!(outcome, MuteOutcome::Failed);
+        assert!(!owners.local);
+        assert_eq!(owners.remote, [remote_owner].into_iter().collect());
+    }
+
+    #[test]
+    fn current_local_claim_returns_the_actual_mute_outcome() {
+        let mut owners = MuteOwners::default();
+        let calls = Cell::new(0);
+        let outcome = super::apply_local_mute(&mut owners, true, || {
+            calls.set(calls.get() + 1);
+            MuteOutcome::Failed
+        });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(outcome, MuteOutcome::Failed);
+        assert!(
+            owners.local,
+            "failed mute still needs the normal release path"
+        );
+    }
+
+    #[test]
+    fn late_opener_and_queued_release_cannot_release_a_replacement_mute() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let claims = AtomicU64::new(1);
+        let queued_release = super::invalidate_local_claim(&claims, 1).unwrap();
+        let b = claims.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        assert_eq!(super::invalidate_local_claim(&claims, 1), None);
+        assert_eq!(claims.load(Ordering::SeqCst), b);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == queued_release,
+            || panic!("A must not restore B's output"),
+        );
+        assert!(owners.local);
+        let released_b = super::invalidate_local_claim(&claims, b).unwrap();
+        let restored = Cell::new(false);
+        super::apply_local_release(
+            &mut owners,
+            claims.load(Ordering::SeqCst) == released_b,
+            || restored.set(true),
+        );
+        assert!(restored.get());
+        assert!(!owners.muted());
+    }
+
+    #[test]
+    fn releasing_local_claim_preserves_remote_mute() {
+        let mut owners = MuteOwners {
+            local: true,
+            ..Default::default()
+        };
+        owners.remote.insert(7);
+        super::apply_local_release(&mut owners, true, || {
+            panic!("remote owner still needs mute")
+        });
+        assert!(!owners.local);
+        assert!(owners.muted());
+    }
+
+    #[test]
+    fn superseded_mute_task_mutes_nothing() {
+        let stale = super::claim_local_mute().task();
+        let _newer = super::claim_local_mute();
+        assert_eq!(stale(), MuteOutcome::Failed);
     }
 
     #[test]
@@ -142,12 +219,11 @@ mod mute_tests {
         assert_eq!(restore_calls.get(), 1);
         assert!(owners.shutting_down);
         assert!(!owners.muted());
-        owners.acquire_local(true, owners.local_generation);
+        assert!(!owners.acquire_local(true, true));
         assert!(!owners.local);
     }
 }
 
-/// Connection-scoped remote ownership is independent of local dictation.
 pub fn set_remote_mute(owner: u64, muted: bool) {
     update_mute_owners(|owners| {
         if muted {
@@ -160,7 +236,6 @@ pub fn set_remote_mute(owner: u64, muted: bool) {
     });
 }
 
-/// Restore audio before the runtime exits; late network workers cannot remute.
 pub fn release_all_mutes_on_exit() {
     let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     release_mute_owners_on_exit(&mut owners, crate::system::volume::unmute);
@@ -177,28 +252,18 @@ enum SoundCommand {
     },
 }
 
-/// Instrument/voice a note is played with — the main lever for making cues
-/// sound like different *kinds* of event rather than the same beep.
 #[derive(Clone, Copy)]
 enum Timbre {
-    /// Near-sine, faintly warm — a clean, "normal" tone (start, complete, cancel).
     Soft,
-    /// Reedy buzzer — odd harmonics, sustained, a "wrong" edge (error).
     Buzz,
 }
 
-/// One harmonic of a timbre: frequency `ratio` to the fundamental, relative
-/// `gain`, and `decay_mult` (>1 = decays faster than the body, which gives bells
-/// their bright-onset/mellow-tail shimmer). `decay_mult` is unused for sustained
-/// voices.
 struct Harmonic {
     ratio: f32,
     gain: f32,
     decay_mult: f32,
 }
 
-/// One note in a cue: fundamental `freq`, when it begins, how long it rings, a
-/// relative `gain`, and the `timbre` it is voiced with.
 struct Note {
     freq: f32,
     start_ms: f32,
@@ -207,7 +272,6 @@ struct Note {
     timbre: Timbre,
 }
 
-/// Play the cue on a background thread. Returns immediately.
 pub fn play(cue: SoundCue) {
     if sound_tx()
         .send(SoundCommand::Play {
@@ -221,22 +285,14 @@ pub fn play(cue: SoundCue) {
     }
 }
 
-/// Set the master volume for future sound effects.
 pub fn set_volume(volume: f32) {
     SOUND_EFFECTS_VOLUME.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-/// Schedule the start cue after `delay_ms`. Claims a new generation, so any
-/// previously scheduled start cue is superseded and will not sound. This is how
-/// the discarded first tap of a handsfree double-tap is silenced and how the
-/// handsfree cue is held back until its entry animation has played.
 pub fn play_start_delayed(delay_ms: u64) {
     play_start_delayed_then(delay_ms, || {});
 }
 
-/// Schedule the start cue after `delay_ms`, then run `after` once that same cue
-/// has either finished playing or failed. Superseded or cancelled generations
-/// never invoke the callback.
 pub fn play_start_delayed_then<F>(delay_ms: u64, after: F)
 where
     F: FnOnce() + Send + 'static,
@@ -247,7 +303,7 @@ where
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
         if START_CUE_GEN.load(Ordering::SeqCst) != generation {
-            return; // superseded or cancelled
+            return;
         }
 
         let after_cb = Box::new(after) as AfterPlay;
@@ -264,41 +320,74 @@ where
     });
 }
 
-/// Cancel a pending (not-yet-played) start cue — e.g. when a quick tap is
-/// discarded or the recording is escaped before the cue fires.
 pub fn cancel_pending_start() {
     START_CUE_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Mute only if the same volume session is still current after the call
-/// returns. If an unmute raced in between, immediately undo the stale mute.
-pub fn coordinated_mute(active: Arc<std::sync::atomic::AtomicBool>) {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
+#[derive(Clone, Copy)]
+pub struct LocalMuteClaim(u64);
+
+pub fn claim_local_mute() -> LocalMuteClaim {
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    LocalMuteClaim(generation)
+}
+
+impl LocalMuteClaim {
+    pub fn is_current(self) -> bool {
+        LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == self.0
+    }
+
+    pub fn task(self) -> impl FnOnce() -> MuteOutcome + Send + 'static {
+        move || {
+            let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+            apply_local_mute(&mut owners, self.is_current(), crate::system::volume::mute)
+        }
+    }
+
+    pub fn release(self) {
+        if let Some(generation) = invalidate_local_claim(&LOCAL_MUTE_CLAIM, self.0) {
+            queue_local_release(generation);
+        }
+    }
+}
+
+fn invalidate_local_claim(counter: &AtomicU64, claim: u64) -> Option<u64> {
+    let released = claim.wrapping_add(1);
+    counter
+        .compare_exchange(claim, released, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| released)
+}
+
+fn apply_local_release(owners: &mut MuteOwners, claim_is_current: bool, restore: impl FnOnce()) {
+    if !claim_is_current {
+        return;
+    }
+    let before = owners.muted();
+    owners.local = false;
+    if before && !owners.muted() {
+        restore();
+    }
+}
+
+fn queue_local_release(generation: u64) {
     tauri::async_runtime::spawn_blocking(move || {
-        update_mute_owners(|owners| {
-            owners.acquire_local(active.load(Ordering::Relaxed), generation)
-        });
+        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        apply_local_release(
+            &mut owners,
+            LOCAL_MUTE_CLAIM.load(Ordering::SeqCst) == generation,
+            crate::system::volume::unmute,
+        );
     });
 }
 
-/// Invalidate any pending coordinated mute before unmuting the system.
 pub fn coordinated_unmute() {
-    let generation = {
-        let mut owners = MUTE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        owners.local_generation = owners.local_generation.wrapping_add(1);
-        owners.local_generation
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        update_mute_owners(|owners| {
-            if owners.local_generation == generation {
-                owners.local = false;
-            }
-        });
-    });
+    let generation = LOCAL_MUTE_CLAIM
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    queue_local_release(generation);
 }
 
 fn sound_tx() -> &'static mpsc::Sender<SoundCommand> {
@@ -338,9 +427,6 @@ fn sound_worker(rx: mpsc::Receiver<SoundCommand>) {
 
         let this_playback_id = playback_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
 
-        // Do not keep an idle device handle across cues. Releasing it here
-        // lets the next cue reopen the current default output after a device
-        // switch, while an actively playing sink still keeps its stream alive.
         if current_sink.as_ref().is_some_and(|sink| sink.empty()) {
             current_sink = None;
             output = None;
@@ -353,10 +439,6 @@ fn sound_worker(rx: mpsc::Receiver<SoundCommand>) {
         let sink = match play_with_cached_output(&mut output, cue) {
             Ok(sink) => Arc::new(sink),
             Err(e) => {
-                // Keep this at warning level: a missing cue is user-visible
-                // and the diagnostics console must show the backend reason on
-                // Linux, where ALSA/PipeWire failures otherwise disappear at
-                // the default log level. No dictated content is included.
                 log::warn!("sound cue playback failed: {e:?}");
                 output = None;
 
@@ -429,7 +511,6 @@ fn play_with_cached_output(
 
 fn harmonics(timbre: Timbre) -> &'static [Harmonic] {
     match timbre {
-        // Near-sine with a whisper of octave for warmth.
         Timbre::Soft => &[
             Harmonic {
                 ratio: 1.0,
@@ -442,8 +523,6 @@ fn harmonics(timbre: Timbre) -> &'static [Harmonic] {
                 decay_mult: 1.6,
             },
         ],
-        // Odd harmonics for a reedy "buzzer" edge, but softened: dropped the
-        // bright 7th, eased the 3rd/5th so it reads as "wrong" without being harsh.
         Timbre::Buzz => &[
             Harmonic {
                 ratio: 1.0,
@@ -469,15 +548,12 @@ fn harmonics(timbre: Timbre) -> &'static [Harmonic] {
     }
 }
 
-/// Sustained voices hold at full level (attack → sustain → release) like a
-/// buzzer; plucked voices decay exponentially like a struck bell.
 fn is_sustained(timbre: Timbre) -> bool {
     matches!(timbre, Timbre::Buzz)
 }
 
 fn notes(cue: SoundCue) -> &'static [Note] {
     match cue {
-        // Begin listening: a soft, airy rising arpeggio — anticipatory, light.
         SoundCue::Start => &[
             Note {
                 freq: 523.25,
@@ -485,24 +561,22 @@ fn notes(cue: SoundCue) -> &'static [Note] {
                 dur_ms: 220.0,
                 gain: 1.0,
                 timbre: Timbre::Soft,
-            }, // C5
+            },
             Note {
                 freq: 659.25,
                 start_ms: 60.0,
                 dur_ms: 240.0,
                 gain: 1.05,
                 timbre: Timbre::Soft,
-            }, // E5
+            },
             Note {
                 freq: 783.99,
                 start_ms: 120.0,
                 dur_ms: 340.0,
                 gain: 1.1,
                 timbre: Timbre::Soft,
-            }, // G5
+            },
         ],
-        // Completed: a plain, clean rising tone (perfect fifth) — a simple "done",
-        // no bell shimmer.
         SoundCue::Stop => &[
             Note {
                 freq: 587.33,
@@ -510,17 +584,15 @@ fn notes(cue: SoundCue) -> &'static [Note] {
                 dur_ms: 200.0,
                 gain: 1.0,
                 timbre: Timbre::Soft,
-            }, // D5
+            },
             Note {
                 freq: 880.00,
                 start_ms: 90.0,
                 dur_ms: 360.0,
                 gain: 1.05,
                 timbre: Timbre::Soft,
-            }, // A5
+            },
         ],
-        // Failure: a low, buzzy descending "womp" — shorter and a touch softer,
-        // low register + reedy edge still read clearly as "wrong".
         SoundCue::Error => &[
             Note {
                 freq: 220.00,
@@ -528,16 +600,15 @@ fn notes(cue: SoundCue) -> &'static [Note] {
                 dur_ms: 150.0,
                 gain: 0.6,
                 timbre: Timbre::Buzz,
-            }, // A3
+            },
             Note {
                 freq: 174.61,
                 start_ms: 165.0,
                 dur_ms: 240.0,
                 gain: 0.6,
                 timbre: Timbre::Buzz,
-            }, // F3
+            },
         ],
-        // Cancelled: a quiet, soft, neutral two-note dismiss.
         SoundCue::Cancel => &[
             Note {
                 freq: 392.00,
@@ -545,14 +616,14 @@ fn notes(cue: SoundCue) -> &'static [Note] {
                 dur_ms: 150.0,
                 gain: 0.5,
                 timbre: Timbre::Soft,
-            }, // G4
+            },
             Note {
                 freq: 293.66,
                 start_ms: 70.0,
                 dur_ms: 220.0,
                 gain: 0.5,
                 timbre: Timbre::Soft,
-            }, // D4
+            },
         ],
     }
 }
@@ -579,14 +650,13 @@ fn render_samples(notes: &[Note], volume: f32) -> Vec<f32> {
         }
         let lenf = len as f32;
         let sustained = is_sustained(note.timbre);
-        // Plucked bodies decay to roughly -60 dB by the note's end.
         let base_decay = 6.9 / lenf;
         let release = ((RELEASE_MS / 1000.0) * sr).min(lenf * 0.5);
 
         for h in harmonics(note.timbre) {
             let freq = note.freq * h.ratio;
             if freq > 18_000.0 {
-                continue; // skip inaudible/aliasing partials
+                continue;
             }
             let amp = AMPLITUDE * note.gain * h.gain * volume;
             let h_decay = base_decay * h.decay_mult;
@@ -618,7 +688,6 @@ fn render_samples(notes: &[Note], volume: f32) -> Vec<f32> {
         }
     }
 
-    // Guard against summed overlap/harmonic clipping.
     for s in &mut buf {
         *s = s.clamp(-1.0, 1.0);
     }
@@ -629,10 +698,6 @@ fn render_samples(notes: &[Note], volume: f32) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    /// Audition the cues without launching the app: renders each to a 16-bit WAV
-    /// in `$VERENU_CUE_OUT` (or the cwd). Ignored by default; run explicitly:
-    ///   cargo test -p verenu --manifest-path src-tauri/Cargo.toml \
-    ///     render_cue_previews -- --ignored --nocapture
     #[test]
     #[ignore]
     fn render_cue_previews() {
@@ -672,5 +737,93 @@ mod tests {
         assert!(render_samples(notes(SoundCue::Start), 0.0)
             .iter()
             .all(|sample| *sample == 0.0));
+    }
+    #[cfg(target_os = "linux")]
+    fn wpctl_default_sink_muted() -> bool {
+        let out = std::process::Command::new("wpctl")
+            .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+            .output()
+            .expect("wpctl");
+        String::from_utf8_lossy(&out.stdout).contains("[MUTED]")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "mutes the real default sink"]
+    fn live_mute_precedes_recording() {
+        if wpctl_default_sink_muted() {
+            eprintln!("default sink already muted; skipping");
+            return;
+        }
+        let mut totals = Vec::new();
+        for _ in 0..8 {
+            let begin = std::time::Instant::now();
+            let (muted_at_open, report) = crate::media::mute_gate::start_after_mute(
+                Some(claim_local_mute().task()),
+                crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+                wpctl_default_sink_muted,
+            );
+            let confirmed_total = begin.elapsed();
+            coordinated_unmute();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while wpctl_default_sink_muted() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!wpctl_default_sink_muted(), "sink was not restored");
+            assert!(report.gate.is_confirmed(), "gate: {:?}", report.gate);
+            assert!(muted_at_open, "recording opened before the sink was muted");
+            totals.push(report.waited.as_secs_f64() * 1000.0);
+            eprintln!(
+                "LIVE gate={:?} mute confirmed in {:.1} ms (hotkey-to-mic-open path {:.1} ms)",
+                report.gate,
+                report.waited.as_secs_f64() * 1000.0,
+                confirmed_total.as_secs_f64() * 1000.0
+            );
+        }
+        totals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "LIVE confirmed-mute ms: min={:.1} median={:.1} max={:.1}",
+            totals[0],
+            totals[totals.len() / 2],
+            totals[totals.len() - 1]
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "mutes the real default sink and opens the real microphone"]
+    fn live_mute_then_real_mic_open() {
+        if wpctl_default_sink_muted() {
+            eprintln!("default sink already muted; skipping");
+            return;
+        }
+        for _ in 0..3 {
+            let (opened, report) = crate::media::mute_gate::start_after_mute(
+                Some(claim_local_mute().task()),
+                crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
+                || {
+                    let muted_before_open = wpctl_default_sink_muted();
+                    let opening = std::time::Instant::now();
+                    let session =
+                        crate::media::audio::RecordingSession::start(None, false, 1.0, None, None);
+                    (muted_before_open, session, opening.elapsed())
+                },
+            );
+            coordinated_unmute();
+            let (muted_before_open, session, open_time) = opened;
+            let session = session.expect("default microphone failed to open");
+            eprintln!(
+                "LIVE mute confirmed in {:.1} ms; mic opened {:.1} ms after that",
+                report.waited.as_secs_f64() * 1000.0,
+                open_time.as_secs_f64() * 1000.0
+            );
+            let _ = session.stop();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while wpctl_default_sink_muted() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!wpctl_default_sink_muted(), "sink was not restored");
+            assert!(report.gate.is_confirmed(), "gate: {:?}", report.gate);
+            assert!(muted_before_open, "mic opened before the sink was muted");
+        }
     }
 }

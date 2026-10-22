@@ -40,7 +40,6 @@ fn is_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '\'' || ch == '\u{2019}' || ch == '-'
 }
 
-/// Strip all non-alphanumeric characters and collapse whitespace for fuzzy trigger matching.
 fn strip_punctuation_for_matching(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut last_was_space = true;
@@ -59,9 +58,6 @@ fn strip_punctuation_for_matching(s: &str) -> String {
     result
 }
 
-/// Split a trigger field into individual trigger phrases.
-/// A trigger field may contain multiple phrases separated by commas,
-/// e.g. "Gemini Goal, Gemini Gold". Empty segments are filtered out.
 fn parse_triggers(trigger: &str) -> impl Iterator<Item = &str> {
     trigger
         .split(',')
@@ -159,9 +155,6 @@ fn prepare_snippets(snippets: &[db::Snippet]) -> Arc<PreparedSnippetTriggers> {
 }
 
 fn collect_trigger_matches(text: &str, prepared: &PreparedSnippetTriggers) -> Vec<Match> {
-    // Flatten all aliases into individual targets sorted by needle length descending.
-    // This prevents a shorter alias from one snippet shadowing a longer trigger from another
-    // snippet, which snippet-level sorting by max-length cannot guarantee.
     let (haystack, source_map) = lowercase_with_source_map(text);
     let mut all_matches: Vec<Match> = Vec::new();
 
@@ -251,11 +244,6 @@ pub fn count_words_without_snippet_triggers(text: &str, snippets: &[db::Snippet]
     count
 }
 
-/// Words dictated, without snippet awareness: whitespace-delimited tokens
-/// containing at least one alphanumeric character. Punctuation-only tokens
-/// (`...`, em dashes, stray periods from the transcription model) are not
-/// words. This is the shared definition behind history totals, lifetime
-/// stats, and Insights aggregates.
 #[cfg(test)]
 pub fn count_alphanumeric_words(text: &str) -> i64 {
     text.split_whitespace()
@@ -263,14 +251,6 @@ pub fn count_alphanumeric_words(text: &str) -> i64 {
         .count() as i64
 }
 
-/// If the entire transcription is just a snippet trigger (ignoring punctuation
-/// added by the transcription model), return the expansion directly.
-///
-/// The transcription model always appends a period — "roblox" becomes "roblox." —
-/// which `expand_snippets` would leave as an orphaned "." after replacing the trigger.
-/// This function strips all punctuation before matching and returns the raw expansion
-/// text, so no period bleeds through. Also increments the snippet's use_count.
-///
 pub fn try_pure_snippet_expand_from(
     text: &str,
     snippets: &[db::Snippet],
@@ -341,8 +321,6 @@ pub fn expand_snippets_from(text: &str, snippets: &mut [db::Snippet], db: &Db) -
     result
 }
 
-/// Resolve triggers against untouched speech, then edit only spoken spans.
-/// Payloads are expansion barriers so a rollback cannot erase saved content.
 pub(crate) fn expand_snippets_with_spoken_transform(
     text: &str,
     snippets: &mut [db::Snippet],
@@ -376,9 +354,6 @@ pub(crate) fn expand_snippets_with_spoken_transform(
     out
 }
 
-/// Alternate candidates may expand only snippets admitted by the primary
-/// transcript, whose instructions are already included in cleanup. Other
-/// triggers stay literal barriers, including triggers named like commands.
 pub(crate) fn transform_alternate_with_primary_snippets(
     primary: &str,
     alternate: &str,
@@ -403,9 +378,6 @@ pub(crate) fn transform_alternate_with_primary_snippets(
     out
 }
 
-/// Apply mechanical final-output constraints from matched snippet instructions.
-/// These are intentionally narrow: they only cover hard formatting rules that
-/// should be guaranteed even if the cleanup model misses the prompt override.
 pub fn apply_cleanup_instruction_overrides(text: &str, instructions: &str) -> String {
     if instructions.trim().is_empty() {
         return text.to_string();
@@ -426,7 +398,6 @@ pub fn apply_cleanup_instruction_overrides(text: &str, instructions: &str) -> St
         result = ensure_final_exclamation(&result);
     }
 
-    // Always collapse consecutive trailing periods — prevents "expansion." + LLM "." = ".."
     if !wants_final_exclamation(&normalized) && !wants_no_final_period(&normalized) {
         result = dedup_trailing_periods(&result);
     }
@@ -487,15 +458,11 @@ fn strip_final_periods(text: &str) -> String {
     format!("{body}{trailing_ws}")
 }
 
-/// Remove duplicate consecutive trailing periods (e.g. ".." → ".").
-/// Called unconditionally so a snippet expansion that already has a period
-/// doesn't gain a second one from the LLM.
 fn dedup_trailing_periods(text: &str) -> String {
     let trimmed_len = text.trim_end().len();
     let trailing_ws = &text[trimmed_len..];
     let mut body = text[..trimmed_len].to_string();
 
-    // Pop extras, keep exactly one if multiple periods trail.
     let mut period_count = 0usize;
     while body.ends_with('.') {
         body.pop();
