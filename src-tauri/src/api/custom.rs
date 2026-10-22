@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub const CUSTOM_PREFIX: &str = "custom:";
+pub const ANTHROPIC_API_VERSION: &str = "2026-10-21";
+const LEGACY_ANTHROPIC_API_VERSION: &str = "2023-06-01";
 pub fn native_credentials_available() -> bool {
     #[cfg(feature = "dev-session")]
     {
@@ -230,13 +232,30 @@ impl CustomProvider {
     }
 
     pub fn wire(&self) -> super::Wire {
+        let anthropic_version = (self.protocol == CustomProtocol::Anthropic).then(|| {
+            self.extra_headers
+                .get("anthropic-version")
+                .cloned()
+                .unwrap_or_else(|| {
+                    if reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
+                        url.scheme() == "https" && url.host_str() == Some("api.anthropic.com")
+                    }) {
+                        ANTHROPIC_API_VERSION.to_owned()
+                    } else {
+                        LEGACY_ANTHROPIC_API_VERSION.to_owned()
+                    }
+                })
+        });
         super::Wire {
             omit_auth: !self.requires_key,
             auth_header: self.auth_header.clone(),
-            anthropic: self.protocol == CustomProtocol::Anthropic,
+            anthropic_version,
             headers: self
                 .extra_headers
                 .iter()
+                .filter(|(k, _)| {
+                    self.protocol != CustomProtocol::Anthropic || k.as_str() != "anthropic-version"
+                })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             hardened: true,
@@ -391,6 +410,90 @@ mod tests {
             body_overrides: None,
             transcription_models: vec![" whisper ".into(), "whisper".into(), "".into()],
             cleanup_models: vec!["llama".into()],
+        }
+    }
+
+    #[test]
+    fn anthropic_version_headers_follow_endpoint_and_explicit_selection() {
+        for (base_url, default_version) in [
+            ("https://api.anthropic.com/v1", ANTHROPIC_API_VERSION),
+            (
+                "https://api.minimax.io/anthropic",
+                LEGACY_ANTHROPIC_API_VERSION,
+            ),
+            (
+                "https://api.anthropic.com.example.org/v1",
+                LEGACY_ANTHROPIC_API_VERSION,
+            ),
+            ("http://localhost:1234/v1", LEGACY_ANTHROPIC_API_VERSION),
+        ] {
+            for explicit in [
+                None,
+                Some(ANTHROPIC_API_VERSION),
+                Some(LEGACY_ANTHROPIC_API_VERSION),
+            ] {
+                for requires_key in [false, true] {
+                    let mut p = sample();
+                    p.protocol = CustomProtocol::Anthropic;
+                    p.base_url = base_url.into();
+                    p.requires_key = requires_key;
+                    if let Some(version) = explicit {
+                        p.extra_headers
+                            .insert("Anthropic-Version".into(), version.into());
+                    }
+                    p.normalize().unwrap();
+                    let wire = p.wire();
+                    for url in [p.cleanup_url(), p.models_url()] {
+                        let request = wire
+                            .apply(wire.client().get(url), "test-key")
+                            .build()
+                            .unwrap();
+                        let headers = request.headers();
+                        assert_eq!(headers.get_all("anthropic-version").iter().count(), 1);
+                        assert_eq!(
+                            headers["anthropic-version"],
+                            explicit.unwrap_or(default_version)
+                        );
+                        assert_eq!(headers.contains_key("x-api-key"), requires_key);
+                    }
+                }
+            }
+        }
+        let p = sample();
+        let wire = p.wire();
+        let request = wire
+            .apply(wire.client().get(p.models_url()), "test-key")
+            .build()
+            .unwrap();
+        assert!(!request.headers().contains_key("anthropic-version"));
+        assert_eq!(request.headers()["authorization"], "Bearer test-key");
+    }
+
+    #[tokio::test]
+    async fn anthropic_new_version_rejects_removed_sampling_before_sending() {
+        for parameter in ["temperature", "top_p", "top_k"] {
+            let mut p = sample();
+            p.protocol = CustomProtocol::Anthropic;
+            p.base_url = "https://api.anthropic.com/v1".into();
+            p.body_overrides = Some(Map::from_iter([(parameter.into(), Value::from(0))]));
+            p.normalize().unwrap();
+            let error = super::super::cleanup::cleanup(
+                "hello",
+                super::super::Target::Custom(Box::new(p)),
+                "test-key",
+                "vendor/model",
+                "casual",
+                "medium",
+                "",
+                None,
+                None,
+                0,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(&format!("does not support {parameter}")));
+            assert!(error.contains("2023-06-01"));
         }
     }
 
@@ -665,35 +768,57 @@ mod tests {
 
     #[tokio::test]
     async fn sends_custom_anthropic_cleanup() {
-        let (url, request) = server("200 OK", r#"{"content":[{"type":"text","text":"Hello."}]}"#);
-        let mut p = sample();
-        p.base_url = url;
-        p.protocol = CustomProtocol::Anthropic;
-        p.normalize().unwrap();
-        assert_eq!(
-            super::super::cleanup::cleanup(
-                "hello",
-                super::super::Target::Custom(Box::new(p)),
-                "test-key",
-                "vendor/model",
-                "casual",
-                "medium",
-                "",
-                None,
-                None,
-                0
-            )
-            .await
-            .unwrap(),
-            "Hello."
-        );
-        let request = request.join().unwrap();
-        assert!(request.starts_with("POST /v1/messages"));
-        assert!(request.contains("x-api-key: test-key"));
-        assert!(request.contains("anthropic-version: 2023-06-01"));
-        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert!(body["system"].is_string());
-        assert!(body["max_tokens"].as_u64().unwrap() > 0);
+        for version in [
+            None,
+            Some(ANTHROPIC_API_VERSION),
+            Some(LEGACY_ANTHROPIC_API_VERSION),
+        ] {
+            let (url, request) =
+                server("200 OK", r#"{"content":[{"type":"text","text":"Hello."}]}"#);
+            let mut p = sample();
+            p.base_url = url;
+            p.protocol = CustomProtocol::Anthropic;
+            if let Some(version) = version {
+                p.extra_headers
+                    .insert("anthropic-version".into(), version.into());
+            }
+            if version != Some(ANTHROPIC_API_VERSION) {
+                p.body_overrides = Some(Map::from_iter([("temperature".into(), Value::from(0))]));
+            }
+            p.normalize().unwrap();
+            assert_eq!(
+                super::super::cleanup::cleanup(
+                    "hello",
+                    super::super::Target::Custom(Box::new(p)),
+                    "test-key",
+                    "vendor/model",
+                    "casual",
+                    "medium",
+                    "",
+                    None,
+                    None,
+                    0
+                )
+                .await
+                .unwrap(),
+                "Hello."
+            );
+            let request = request.join().unwrap();
+            assert!(request.starts_with("POST /v1/messages"));
+            assert!(request.contains("x-api-key: test-key"));
+            assert!(request.contains(&format!(
+                "anthropic-version: {}",
+                version.unwrap_or(LEGACY_ANTHROPIC_API_VERSION)
+            )));
+            let body: Value =
+                serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert!(body["system"].is_string());
+            assert!(body["max_tokens"].as_u64().unwrap() > 0);
+            assert_eq!(
+                body.get("temperature").is_some(),
+                version != Some(ANTHROPIC_API_VERSION)
+            );
+        }
     }
 
     #[tokio::test]
