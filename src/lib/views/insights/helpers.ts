@@ -110,22 +110,6 @@ export function fmtHour(hour: number): string {
   return `${h} ${suffix}`;
 }
 
-export function accentStep(level: 0 | 1 | 2 | 3 | 4): string {
-  if (level === 0) return 'var(--control-hover)';
-  const pct = [0, 22, 45, 70, 100][level];
-  return `color-mix(in srgb, var(--accent) ${pct}%, var(--paper-2))`;
-}
-
-export function intensityLevel(value: number, max: number): 0 | 1 | 2 | 3 | 4 {
-  if (value <= 0) return 0;
-  if (max <= 0) return 1;
-  const ratio = value / max;
-  if (ratio > 0.66) return 4;
-  if (ratio > 0.33) return 3;
-  if (ratio > 0.12) return 2;
-  return 1;
-}
-
 export const PACE_TICKS = 44;
 
 export function paceScale(bestWpm: number, ticks = PACE_TICKS): { max: number; bestTick: number } {
