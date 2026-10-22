@@ -551,6 +551,16 @@ async fn anthropic_cleanup(
     gen: u64,
 ) -> Result<String> {
     let mut body = build_anthropic_request(text, model, prompt, max_tokens, alternate_transcript);
+    if wire.anthropic_version.as_deref() == Some(super::custom::ANTHROPIC_API_VERSION) {
+        for parameter in ["temperature", "top_p", "top_k"] {
+            if overrides.is_some_and(|overrides| overrides.contains_key(parameter)) {
+                anyhow::bail!(
+                    "Anthropic API version {} does not support {parameter}. Remove it from body overrides or set the anthropic-version extra header to 2023-06-01.",
+                    super::custom::ANTHROPIC_API_VERSION
+                );
+            }
+        }
+    }
     if !reqwest::Url::parse(url)
         .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
     {
