@@ -392,7 +392,48 @@ fn language_uses_english_case_policy(language: &str) -> bool {
 }
 
 fn is_sentence_terminator(ch: char) -> bool {
-    matches!(ch, '.' | '!' | '?' | '。' | '！' | '？')
+    matches!(
+        ch,
+        '.' | '!' | '?' | '…' | '。' | '！' | '？' | '؟' | '۔' | '‼' | '⁉'
+    )
+}
+
+fn is_terminal_wrapper(ch: char) -> bool {
+    is_closing_delimiter(ch) || matches!(ch, '*' | '_' | '~' | '`')
+}
+
+fn has_unclosed_quote(chars: impl Iterator<Item = char>, quote: char) -> bool {
+    let mut chars = chars.peekable();
+    let mut previous = None;
+    let mut escaped = false;
+    let mut open = false;
+    while let Some(ch) = chars.next() {
+        if ch == quote
+            && !escaped
+            && !(quote == '\''
+                && previous.is_some_and(char::is_alphanumeric)
+                && chars.peek().is_some_and(|ch| ch.is_alphanumeric()))
+        {
+            open = !open;
+        }
+        escaped = ch == '\\' && !escaped;
+        previous = Some(ch);
+    }
+    open
+}
+
+fn ends_with_opening_delimiter(text: &str) -> bool {
+    let Some(last) = text.chars().next_back() else {
+        return false;
+    };
+    if matches!(last, '\'' | '"') {
+        let prefix = &text[..text.len() - last.len_utf8()];
+        return !has_unclosed_quote(prefix.chars(), last)
+            && prefix.chars().next_back().is_none_or(|ch| {
+                ch.is_whitespace() || is_opening_delimiter(ch) || matches!(ch, ':' | ',')
+            });
+    }
+    is_opening_delimiter(last)
 }
 
 fn is_opening_delimiter(ch: char) -> bool {
@@ -517,6 +558,43 @@ fn transform_word_first_char(text: &str, start: usize, uppercase: bool) -> Strin
     out
 }
 
+fn starts_with_literal_token(text: &str) -> bool {
+    let token = text
+        .trim_start_matches(|ch: char| ch.is_whitespace() || is_opening_delimiter(ch))
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    let bare = token.trim_end_matches(|ch| is_closing_delimiter(ch) || is_punctuation(ch));
+    if bare.eq_ignore_ascii_case("and/or") || bare.eq_ignore_ascii_case("either/or") {
+        return false;
+    }
+    let dotted_literal = !bare.eq_ignore_ascii_case("e.g")
+        && !bare.eq_ignore_ascii_case("i.e")
+        && bare.contains('.')
+        && bare.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|ch| ch.is_alphanumeric() || ch == '-')
+        });
+    token.contains(['@', '/', '\\', '_', '`', '='])
+        || token.starts_with(['#', '$'])
+        || (token.starts_with('-') && token.chars().any(char::is_alphabetic))
+        || token
+            .strip_prefix('.')
+            .is_some_and(|rest| rest.chars().next().is_some_and(char::is_alphanumeric))
+        || dotted_literal
+}
+
+fn starts_with_quoted_phrase(text: &str) -> bool {
+    let Some(quote @ ('\'' | '"')) = text.chars().next() else {
+        return false;
+    };
+    let rest = &text[quote.len_utf8()..];
+    rest.chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphanumeric() || is_opening_delimiter(ch))
+        && rest.contains(quote)
+        && !starts_with_contraction_suffix(text)
+}
+
 fn line_is_list_prefix(line: &str) -> bool {
     let trimmed = line.trim();
     if matches!(trimmed, "-" | "*" | "+" | "•" | "[ ]" | "[x]" | "[X]") {
@@ -538,7 +616,7 @@ fn period_is_nonterminal(text: &str) -> bool {
     let lowercase = token.to_lowercase();
     const ABBREVIATIONS: &[&str] = &[
         "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e", "no", "fig",
-        "dept", "inc", "ltd", "co",
+        "dept", "inc", "ltd", "co", "ph.d", "b.sc", "m.sc", "d.phil", "ed.d",
     ];
     if ABBREVIATIONS.contains(&lowercase.as_str()) {
         return true;
@@ -547,10 +625,13 @@ fn period_is_nonterminal(text: &str) -> bool {
         return true;
     }
     token.contains('.')
-        && token
-            .split('.')
-            .filter(|part| !part.is_empty())
-            .all(|part| part.chars().all(char::is_alphabetic) && part.chars().count() <= 3)
+        && token.split('.').any(|part| part.chars().count() == 1)
+        && token.split('.').all(|part| {
+            let length = part.chars().count();
+            (1..=3).contains(&length)
+                && part.chars().all(char::is_alphabetic)
+                && (length == 1 || part.chars().next().is_some_and(char::is_uppercase))
+        })
 }
 
 fn at_sentence_boundary(left: &str) -> bool {
@@ -558,13 +639,13 @@ fn at_sentence_boundary(left: &str) -> bool {
         return true;
     }
     let line = left.rsplit(['\n', '\r']).next().unwrap_or_default();
-    if line_is_list_prefix(line) {
+    if line.trim().is_empty() || line_is_list_prefix(line) {
         return true;
     }
 
     let trimmed = left.trim_end_matches(char::is_whitespace);
     if let Some(last) = trimmed.chars().next_back() {
-        if is_opening_delimiter(last) {
+        if ends_with_opening_delimiter(trimmed) {
             let prefix = &trimmed[..trimmed.len() - last.len_utf8()];
             let prefix = prefix.trim_end_matches(char::is_whitespace);
             if prefix.is_empty()
@@ -579,7 +660,7 @@ fn at_sentence_boundary(left: &str) -> bool {
         }
     }
 
-    let without_closers = trimmed.trim_end_matches(is_closing_delimiter);
+    let without_closers = trimmed.trim_end_matches(is_terminal_wrapper);
     match without_closers.chars().next_back() {
         None => true,
         Some('.') => !period_is_nonterminal(without_closers),
@@ -599,13 +680,23 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
         };
     }
 
-    let boundary = context
-        .left_reliable
-        .then(|| at_sentence_boundary(context.left));
-    let (mut adjusted, case_action) = if !context.casing_enabled || context.protected_initial_case {
+    let first_word = first_word_span(text);
+    let boundary = context.left_reliable.then(|| {
+        if let Some((start, _)) = first_word {
+            let prefix = &text[..start];
+            if prefix.contains(['\n', '\r']) || prefix.chars().any(is_sentence_terminator) {
+                return at_sentence_boundary(&format!("{}{prefix}", context.left));
+            }
+        }
+        at_sentence_boundary(context.left)
+    });
+    let (mut adjusted, case_action) = if !context.casing_enabled
+        || context.protected_initial_case
+        || starts_with_literal_token(text)
+    {
         (text.to_owned(), CaseAction::Preserve)
     } else {
-        match first_word_span(text) {
+        match first_word {
             Some((start, end)) if boundary == Some(true) && !context.preserve_sentence_case => {
                 let word = &text[start..end];
                 if word_is_all_lowercase(word) {
@@ -645,15 +736,25 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
     let right_immediate = context.right.chars().next();
     let auto_detected_no_space_script = matches!(context.language, "auto" | "")
         && left_immediate
+            .filter(|_| context.left_reliable)
             .into_iter()
-            .chain(right_immediate)
+            .chain(right_immediate.filter(|_| context.right_reliable))
             .chain(first)
             .chain(last)
             .any(is_cjk);
     let uses_spaces =
         language_uses_interword_spaces(context.language) && !auto_detected_no_space_script;
-    let token_local = (context.left_reliable && left_immediate.is_some_and(is_token_joiner))
-        || (context.right_reliable && right_immediate.is_some_and(is_token_joiner));
+    let terminal_markup = context.left_reliable
+        && left_immediate.is_some_and(|ch| matches!(ch, '_' | '*' | '~' | '`'))
+        && context
+            .left
+            .trim_end_matches(is_terminal_wrapper)
+            .chars()
+            .next_back()
+            .is_some_and(is_sentence_terminator);
+    let token_local =
+        (context.left_reliable && left_immediate.is_some_and(is_token_joiner) && !terminal_markup)
+            || (context.right_reliable && right_immediate.is_some_and(is_token_joiner));
 
     let leading_space = context.left_reliable
         && uses_spaces
@@ -661,15 +762,17 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
         && !starts_with_contraction_suffix(text)
         && !text.starts_with(char::is_whitespace)
         && left_immediate.is_some_and(|ch| {
-            !ch.is_whitespace() && !is_opening_delimiter(ch) && !is_token_joiner(ch)
+            !ch.is_whitespace()
+                && !ends_with_opening_delimiter(context.left)
+                && (!is_token_joiner(ch) || terminal_markup)
         })
         && first.is_some_and(|ch| {
             (!is_closing_delimiter(ch) || is_opening_delimiter(ch))
-                && !is_token_joiner(ch)
-                && !matches!(
-                    ch,
-                    ',' | ';' | ':' | '.' | '!' | '?' | '。' | '，' | '！' | '？'
-                )
+                && (!is_token_joiner(ch)
+                    || matches!(ch, '@' | '#')
+                    || (ch == '-' && starts_with_literal_token(text)))
+                && !is_sentence_terminator(ch)
+                && !matches!(ch, ',' | ';' | ':' | '，' | '；' | '：')
         });
     let trailing_space = context.right_reliable
         && uses_spaces
@@ -677,11 +780,14 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
         && !text.ends_with(char::is_whitespace)
         && right_immediate.is_some_and(|ch| {
             !ch.is_whitespace()
-                && !is_closing_delimiter(ch)
+                && (!is_closing_delimiter(ch)
+                    || (starts_with_quoted_phrase(context.right)
+                        && (!context.left_reliable
+                            || !has_unclosed_quote(context.left.chars().chain(text.chars()), ch))))
                 && !is_token_joiner(ch)
-                && !is_punctuation(ch)
+                && (!is_punctuation(ch) || is_opening_delimiter(ch))
         })
-        && last.is_some_and(|ch| !is_opening_delimiter(ch) && !is_token_joiner(ch));
+        && last.is_some_and(|ch| !ends_with_opening_delimiter(text) && !is_token_joiner(ch));
 
     if leading_space {
         adjusted.insert(0, ' ');
@@ -710,10 +816,87 @@ pub fn decide_insertion(text: &str, context: CaretTextContext<'_>) -> InsertionD
 mod tests {
     use super::*;
 
+    include!("text_context_cases.rs");
+
+    #[test]
+    fn insertion_edge_case_corpus() {
+        for (text, left, right, expected) in insertion_cases() {
+            assert_eq!(
+                smart(&text, &left, &right).text,
+                expected,
+                "left={left:?}, text={text:?}, right={right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unreliable_edges_cannot_influence_formatting() {
+        for left_reliable in [false, true] {
+            for right_reliable in [false, true] {
+                for ignored in ["", "中", "/", "\n", "Done.", "\"", "_"] {
+                    let decide = |left, right| {
+                        decide_insertion(
+                            "Hello",
+                            CaretTextContext {
+                                left,
+                                right,
+                                left_reliable,
+                                right_reliable,
+                                language: "auto",
+                                casing_enabled: true,
+                                preserve_sentence_case: false,
+                                protected_initial_case: false,
+                            },
+                        )
+                        .text
+                    };
+                    assert_eq!(
+                        decide(
+                            if left_reliable { "word" } else { ignored },
+                            if right_reliable { "word" } else { ignored }
+                        ),
+                        decide(
+                            if left_reliable { "word" } else { "" },
+                            if right_reliable { "word" } else { "" }
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn formatting_is_idempotent_and_keeps_protected_case() {
+        for (text, left, right, _) in insertion_cases() {
+            let once = smart(&text, &left, &right).text;
+            assert_eq!(smart(&once, &left, &right).text, once);
+            for (casing_enabled, preserve_sentence_case, protected_initial_case) in
+                [(false, false, false), (true, false, true)]
+            {
+                let decision = decide_insertion(
+                    &text,
+                    CaretTextContext {
+                        left: &left,
+                        right: &right,
+                        left_reliable: true,
+                        right_reliable: true,
+                        language: "en",
+                        casing_enabled,
+                        preserve_sentence_case,
+                        protected_initial_case,
+                    },
+                );
+                assert_eq!(decision.case_action, CaseAction::Preserve);
+                assert_eq!(decision.text.trim(), text.trim());
+            }
+        }
+    }
+
     #[test]
     fn contraction_prefix_matches_whole_string_lowercasing() {
         const SUFFIXES: &[&str] = &[
-            "'s", "’s", "'re", "’re", "'ve", "’ve", "'ll", "’ll", "'d", "’d", "'m", "’m", "n't", "n’t",
+            "'s", "’s", "'re", "’re", "'ve", "’ve", "'ll", "’ll", "'d", "’d", "'m", "’m", "n't",
+            "n’t",
         ];
         for prefix in SUFFIXES.iter().copied().chain(["", "n", "'", "word", "İ"]) {
             for prefix in [prefix.to_owned(), prefix.to_uppercase()] {
