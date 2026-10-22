@@ -410,6 +410,7 @@ fn has_unclosed_quote(chars: impl Iterator<Item = char>, quote: char) -> bool {
     while let Some(ch) = chars.next() {
         if ch == quote
             && !escaped
+            && !(quote == '"' && previous.is_some_and(char::is_numeric))
             && !(quote == '\''
                 && previous.is_some_and(char::is_alphanumeric)
                 && chars.peek().is_some_and(|ch| ch.is_alphanumeric()))
@@ -465,6 +466,62 @@ fn is_email_local_part_char(ch: char) -> bool {
     ch.is_alphanumeric() || matches!(ch, '.' | '_' | '%' | '+' | '-')
 }
 
+fn is_email_dot_atom(text: &str) -> bool {
+    let mut has_char = false;
+    let mut previous_was_dot = true;
+    for ch in text.chars() {
+        if ch == '.' {
+            if previous_was_dot {
+                return false;
+            }
+            previous_was_dot = true;
+        } else if is_email_local_part_char(ch) {
+            has_char = true;
+            previous_was_dot = false;
+        } else {
+            return false;
+        }
+    }
+    has_char && !previous_was_dot
+}
+
+fn is_email_uri_suffix_char(ch: char) -> bool {
+    ch.is_alphanumeric()
+        || matches!(
+            ch,
+            '/' | '\\' | '?' | '#' | '&' | '=' | '+' | '%' | '_' | '-' | '.' | '~' | ':'
+        )
+}
+
+fn is_valid_email_domain_suffix(suffix: &str) -> bool {
+    let suffix = suffix.trim_end_matches(is_terminal_wrapper);
+    if suffix.is_empty() {
+        return true;
+    }
+    if suffix
+        .chars()
+        .next_back()
+        .is_some_and(|ch| is_sentence_terminator(ch) || matches!(ch, ',' | ';'))
+    {
+        return false;
+    }
+    if let Some(after_colon) = suffix.strip_prefix(':') {
+        let port_length = after_colon
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if port_length == 0 {
+            return false;
+        }
+        let remainder = &after_colon[port_length..];
+        return remainder.is_empty()
+            || (remainder.starts_with(['/', '?', '#'])
+                && remainder.chars().all(is_email_uri_suffix_char));
+    }
+    suffix.starts_with(['/', '?', '#']) && suffix.chars().all(is_email_uri_suffix_char)
+}
+
 fn starts_with_email_domain_fragment(text: &str) -> bool {
     let Some(candidate) = text.strip_prefix('@') else {
         return false;
@@ -472,9 +529,17 @@ fn starts_with_email_domain_fragment(text: &str) -> bool {
     let Some(candidate) = candidate.split_whitespace().next() else {
         return false;
     };
-    let domain = candidate.trim_end_matches(|ch: char| {
-        is_closing_delimiter(ch) || is_sentence_terminator(ch) || matches!(ch, ',' | ';' | ':')
-    });
+    let domain_end = candidate
+        .char_indices()
+        .find_map(|(index, ch)| {
+            (!ch.is_alphanumeric() && !matches!(ch, '.' | '-')).then_some(index)
+        })
+        .unwrap_or(candidate.len());
+    if candidate.ends_with('.') {
+        return false;
+    }
+    let domain = &candidate[..domain_end];
+    let suffix = &candidate[domain_end..];
     let mut labels = domain.split('.');
     let Some(first) = labels.next() else {
         return false;
@@ -485,17 +550,19 @@ fn starts_with_email_domain_fragment(text: &str) -> bool {
             && label.chars().next_back().is_some_and(char::is_alphanumeric)
             && label.chars().all(|ch| ch.is_alphanumeric() || ch == '-')
     };
-    valid_label(first) && labels.next().is_some_and(valid_label) && labels.all(valid_label)
+    valid_label(first)
+        && labels.next().is_some_and(valid_label)
+        && labels.all(valid_label)
+        && is_valid_email_domain_suffix(suffix)
 }
 
 fn is_email_domain_continuation(left: &str, text: &str) -> bool {
     let Some(local_part) = left.split_whitespace().next_back() else {
         return false;
     };
-    !local_part.is_empty()
-        && local_part
-            .chars()
-            .all(|ch| is_email_local_part_char(ch) && !ch.is_uppercase())
+    let local_part = local_part.trim_start_matches(is_opening_delimiter);
+    is_email_dot_atom(local_part)
+        && local_part.chars().all(|ch| !ch.is_uppercase())
         && starts_with_email_domain_fragment(text)
 }
 
@@ -503,10 +570,26 @@ fn is_url_or_path_prefix(left: &str) -> bool {
     let Some(token) = left.split_whitespace().next_back() else {
         return false;
     };
-    let token = token
-        .trim_start_matches(is_opening_delimiter)
-        .trim_end_matches(is_terminal_wrapper);
-    let has_path_marker = token.starts_with('/') || token.contains('/');
+    let token = token.trim_start_matches(is_opening_delimiter);
+    if token.is_empty() || token.ends_with(['.', '?', '#', ':']) {
+        return false;
+    }
+    let path = token.split(['?', '#']).next().unwrap_or(token);
+    if path.eq_ignore_ascii_case("and/or") || path.eq_ignore_ascii_case("either/or") {
+        return false;
+    }
+    let mut segments = path.trim_matches(['/', '\\']).split(['/', '\\']);
+    let first = segments.next().unwrap_or_default();
+    let second = segments.next();
+    let all_numeric_segments = !first.is_empty()
+        && first.chars().all(char::is_numeric)
+        && second
+            .is_some_and(|segment| !segment.is_empty() && segment.chars().all(char::is_numeric))
+        && segments.all(|segment| !segment.is_empty() && segment.chars().all(char::is_numeric));
+    if all_numeric_segments {
+        return false;
+    }
+    let has_path_marker = token.starts_with('/') || token.contains(['/', '\\']);
     has_path_marker
         && token.chars().all(|ch| {
             ch.is_alphanumeric()
