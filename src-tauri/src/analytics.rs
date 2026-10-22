@@ -299,7 +299,21 @@ impl Analytics {
     }
 
     pub fn capture_sanitized_exception(&self, report: ErrorReport) {
-        self.dispatch_to(DeliveryKind::Exception, "$exception", exception_properties(report));
+        let properties = exception_properties(report);
+        let key = format!(
+            "exception:{}",
+            json!([
+                properties["$exception_fingerprint"],
+                properties["error_stage"],
+                properties["error_severity"],
+                properties["handled"],
+                properties["recovered"],
+                properties["recovery_method"],
+            ])
+        );
+        if self.first_in_session(&key) {
+            self.dispatch_to(DeliveryKind::Exception, "$exception", properties);
+        }
     }
 
     pub fn capture_frontend_exception(&self, code: &'static str, handled: bool) {
@@ -492,7 +506,9 @@ impl Analytics {
     pub fn setting_changed(&self, key: &str, value: &Value) {
         let (property, safe_value) = match key {
             crate::data::store::CLEANUP_ENABLED => ("cleanup_enabled", json!(value.as_bool())),
-            crate::data::store::VOICE_COMMANDS_ENABLED => ("voice_commands_enabled", json!(value.as_bool())),
+            crate::data::store::VOICE_COMMANDS_ENABLED => {
+                ("voice_commands_enabled", json!(value.as_bool()))
+            }
             crate::data::store::DUAL_TRANSCRIPTION_ENABLED => {
                 ("dual_transcription_enabled", json!(value.as_bool()))
             }
@@ -539,14 +555,16 @@ impl Analytics {
     }
 
     fn capture_once(&self, event: &'static str, key: &str, properties: Value) {
-        let fresh = self
-            .sent_once
-            .lock()
-            .map(|mut seen| seen.insert(key.to_owned()))
-            .unwrap_or(true);
-        if fresh {
+        if self.first_in_session(key) {
             self.capture(event, properties);
         }
+    }
+
+    fn first_in_session(&self, key: &str) -> bool {
+        self.sent_once
+            .lock()
+            .map(|mut seen| seen.insert(key.to_owned()))
+            .unwrap_or(false)
     }
 
     pub fn dictation_started(&self, run_id: &str, handsfree: bool, noise_reduction: bool) {
@@ -581,8 +599,9 @@ impl Analytics {
     }
     pub fn feature_used(&self, run_id: &str, feature: &'static str) {
         let feature = normalize_feature(feature);
-        self.capture(
+        self.capture_once(
             "feature_used",
+            &format!("feature_used:{feature}"),
             json!({ "run_id": run_id, "feature": feature }),
         );
     }
@@ -631,10 +650,20 @@ impl Analytics {
         );
     }
     pub fn input_health(&self, outcome: &'static str) {
-        self.capture(
-            "input_health",
-            json!({ "input_outcome": normalize_input_outcome(outcome) }),
-        );
+        let outcome = normalize_input_outcome(outcome);
+        let properties = json!({ "input_outcome": outcome });
+        if matches!(
+            outcome,
+            "microphone_available" | "capture_initialized" | "vad_passed"
+        ) {
+            self.capture_once(
+                "input_health",
+                &format!("input_health:{outcome}"),
+                properties,
+            );
+        } else {
+            self.capture("input_health", properties);
+        }
     }
     pub fn sync_event(&self, event: &'static str, status: &'static str) {
         self.capture(
@@ -888,11 +917,6 @@ impl Analytics {
 
     fn capture(&self, event: &'static str, properties: Value) {
         let safe = safe_properties(event, properties);
-        #[cfg(test)]
-        self.captured_events
-            .lock()
-            .unwrap()
-            .push((event, safe.clone()));
         self.dispatch(event, safe);
     }
 
@@ -906,6 +930,11 @@ impl Analytics {
     }
 
     fn dispatch_to(&self, kind: DeliveryKind, event: &'static str, properties: Value) {
+        #[cfg(test)]
+        self.captured_events
+            .lock()
+            .unwrap()
+            .push((event, properties.clone()));
         if !self.enabled() {
             return;
         }
@@ -961,7 +990,8 @@ impl Analytics {
                 .post(format!("{host}/{}", kind.endpoint()))
                 .json(&payload)
                 .send()
-                .await;
+                .await
+                .and_then(reqwest::Response::error_for_status);
             if let Err(error) = result {
                 log::debug!(
                     "{} delivery unavailable ({})",
@@ -1688,23 +1718,193 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adoption_and_healthy_input_are_once_per_session_but_failures_are_not() {
+        let path = std::env::temp_dir().join(format!("verenu-adoption-{}", Uuid::new_v4()));
+        let analytics = Analytics::new(false, path.clone());
+        for _ in 0..3 {
+            let run = analytics.new_run_id();
+            analytics.feature_used(&run, "noise_reduction");
+            analytics.feature_used(&run, "media_pause");
+            analytics.input_health("vad_passed");
+            analytics.input_health("capture_stream_failed");
+        }
+        let events = analytics.captured_events();
+        assert_eq!(events.iter().filter(|e| e.0 == "feature_used").count(), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.1["input_outcome"] == "vad_passed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.1["input_outcome"] == "capture_stream_failed")
+                .count(),
+            3
+        );
+        // An opt-out boundary clears the policy along with identity state.
+        analytics.set_enabled(true);
+        analytics.set_enabled(false);
+        analytics.feature_used(&analytics.new_run_id(), "noise_reduction");
+        assert_eq!(
+            analytics
+                .captured_events()
+                .iter()
+                .filter(|e| e.0 == "feature_used")
+                .count(),
+            3
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn exception_loops_are_deduplicated_without_hiding_escalation_or_recovery() {
+        let path = std::env::temp_dir().join(format!("verenu-errors-{}", Uuid::new_v4()));
+        let analytics = Analytics::new(false, path.clone());
+        for variant in 0..7 {
+            for _ in 0..3 {
+                let run = analytics.new_run_id();
+                analytics.capture_sanitized_exception(ErrorReport {
+                    domain: ErrorDomain::Frontend,
+                    code: if variant == 6 {
+                        "frontend_unhandled"
+                    } else {
+                        "frontend_handled"
+                    },
+                    stage: Some(if variant == 1 {
+                        Stage::Cleanup
+                    } else {
+                        Stage::Transcription
+                    }),
+                    severity: if variant == 2 {
+                        ErrorSeverity::Fatal
+                    } else {
+                        ErrorSeverity::Error
+                    },
+                    handled: variant != 3,
+                    recovered: variant == 4,
+                    recovery_method: if variant == 5 { Some("retry") } else { None },
+                    run_id: Some(run),
+                    callsite: "frontend_boundary",
+                });
+            }
+        }
+        assert_eq!(analytics.captured_events().len(), 7);
+        analytics.set_enabled(true);
+        analytics.set_enabled(false);
+        analytics.capture_frontend_exception("frontend_handled", true);
+        analytics.capture_frontend_exception("frontend_handled", true);
+        assert_eq!(analytics.captured_events().len(), 8);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    // Measures serialized ingestion payloads, not network latency or PostHog billing.
+    #[test]
+    fn telemetry_volume_workload() {
+        let path = std::env::temp_dir().join(format!("verenu-volume-{}", Uuid::new_v4()));
+        let analytics = Analytics::new(false, path.clone());
+        for _ in 0..100 {
+            let run = analytics.new_run_id();
+            analytics.dictation_started(&run, false, true);
+            analytics.feature_used(&run, "noise_reduction");
+            analytics.feature_used(&run, "media_pause");
+            analytics.recording_finished(&run, 4_000);
+            analytics.pipeline_stage_started(&run, Stage::Transcription);
+            analytics.pipeline_stage_completed_with_model(
+                &run,
+                Stage::Transcription,
+                500,
+                Some("groq/whisper-large-v3/transcription"),
+            );
+            analytics.input_health("vad_passed");
+            analytics.context_outcome(&run, true, "automatic");
+            analytics.insertion_attempted(&run);
+            analytics.dictation_inserted(&run, "direct_insertion", 42);
+            analytics.delivery_outcome(&run, "success_clean");
+        }
+        for _ in 0..100 {
+            analytics.capture_frontend_exception("frontend_handled", true);
+        }
+        let events = analytics.captured_events();
+        let products = events
+            .iter()
+            .filter(|(event, _)| *event != "$exception")
+            .count();
+        let exceptions = events.len() - products;
+        assert_eq!(products, 803);
+        assert_eq!(exceptions, 1);
+        let bytes: usize = events
+            .iter()
+            .map(|(event, properties)| {
+                let common = add_common_properties(
+                    properties.as_object().unwrap().clone(),
+                    "00000000-0000-4000-8000-000000000001",
+                    Some("0.20.0"),
+                );
+                let kind = if *event == "$exception" {
+                    DeliveryKind::Exception
+                } else {
+                    DeliveryKind::Event
+                };
+                serde_json::to_vec(&kind.payload(
+                    "synthetic-token",
+                    event,
+                    "00000000-0000-4000-8000-000000000002",
+                    common,
+                ))
+                .unwrap()
+                .len()
+            })
+            .sum();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| *event == "dictation_outcome")
+                .count(),
+            100
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(event, _)| *event == "dictation_inserted")
+                .count(),
+            100
+        );
+        println!(
+            "telemetry_volume runs=100 products={products} exceptions={exceptions} bytes={bytes}"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn basic_and_voice_commands_remain_bounded_analytics_values() {
         assert_eq!(normalize_category("rules"), "rules");
         assert_eq!(normalize_category("private dictated text"), "unknown");
-        let snapshot = safe_properties("settings_snapshot", json!({
-            "cleanup_intensity": "rules", "voice_commands_enabled": true, "raw_text": "private"
-        }));
+        let snapshot = safe_properties(
+            "settings_snapshot",
+            json!({
+                "cleanup_intensity": "rules", "voice_commands_enabled": true, "raw_text": "private"
+            }),
+        );
         assert_eq!(snapshot["cleanup_intensity"], "rules");
         assert_eq!(snapshot["voice_commands_enabled"], true);
         assert!(snapshot.get("raw_text").is_none());
-        let change = safe_properties("setting_changed", json!({
-            "setting": "voice_commands_enabled", "value": false
-        }));
+        let change = safe_properties(
+            "setting_changed",
+            json!({
+                "setting": "voice_commands_enabled", "value": false
+            }),
+        );
         assert_eq!(change["setting"], "voice_commands_enabled");
         assert_eq!(change["value"], false);
-        let untrusted = safe_properties("settings_snapshot", json!({
-            "voice_commands_enabled": "private dictated text", "cleanup_intensity": "private dictated text"
-        }));
+        let untrusted = safe_properties(
+            "settings_snapshot",
+            json!({
+                "voice_commands_enabled": "private dictated text", "cleanup_intensity": "private dictated text"
+            }),
+        );
         assert_eq!(untrusted["voice_commands_enabled"], false);
         assert_eq!(untrusted["cleanup_intensity"], "unknown");
     }
@@ -1712,8 +1912,10 @@ mod tests {
     #[test]
     fn delivery_routes_keep_distinct_wire_contracts() {
         let properties = json!({ "schema_version": SCHEMA_VERSION });
-        let event = DeliveryKind::Event.payload("token", "event", "installation", properties.clone());
-        let exception = DeliveryKind::Exception.payload("token", "$exception", "installation", properties);
+        let event =
+            DeliveryKind::Event.payload("token", "event", "installation", properties.clone());
+        let exception =
+            DeliveryKind::Exception.payload("token", "$exception", "installation", properties);
         assert_eq!(DeliveryKind::Event.endpoint(), "capture/");
         assert_eq!(DeliveryKind::Exception.endpoint(), "i/v0/e/");
         assert_eq!(event["api_key"], "token");

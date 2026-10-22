@@ -265,6 +265,11 @@ async fn download_to_file(
 
 #[cfg(windows)]
 fn extract_archive(archive_path: &Path, dest: &Path) -> anyhow::Result<()> {
+    extract_zip_archive(archive_path, dest)
+}
+
+#[cfg(any(windows, test))]
+fn extract_zip_archive(archive_path: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     for i in 0..archive.len() {
@@ -539,6 +544,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn zip_runtime_extraction_preserves_files_and_skips_parent_paths() {
+        use std::io::Write;
+
+        let root = std::env::temp_dir().join(format!("verenu-zip-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        let archive_path = root.join("runtime.zip");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive.add_directory("nested/", options).unwrap();
+        archive
+            .start_file("nested/llama-server.exe", options)
+            .unwrap();
+        archive.write_all(b"synthetic runtime").unwrap();
+        archive.start_file("../outside.dll", options).unwrap();
+        archive.write_all(b"must not extract").unwrap();
+        archive.finish().unwrap();
+
+        super::extract_zip_archive(&archive_path, &root.join("runtime")).unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("runtime/llama-server.exe")).unwrap(),
+            b"synthetic runtime"
+        );
+        assert_eq!(std::fs::read_dir(root.join("runtime")).unwrap().count(), 1);
+        assert!(!root.join("outside.dll").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
