@@ -46,13 +46,6 @@ function fmtActivityCount(count: number, noun: string): string {
   return `${new Intl.NumberFormat().format(count)} ${noun}${count === 1 ? '' : 's'}`;
 }
 
-export function activitySourceInfo(snapshot: GithubSnapshot): string {
-  if (snapshot.source === 'public_commits') {
-    return 'GitHub search returns public commits and can miss activity outside its public index. Results are limited to 1,000 commits.';
-  }
-  return "GitHub's profile calendar groups contributions such as commits, pull requests, and reviews by its calendar dates. It can include anonymized private contributions only when you enable Show private contributions on your profile.";
-}
-
 export function alignActivity(daily: InsightsDay[], snapshot: GithubSnapshot | null): Array<number | null> {
   const counts = new Map(snapshot?.daily.map(d => [d.day, d.commits]));
   return daily.map(({ day }) => {

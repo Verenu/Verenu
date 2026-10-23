@@ -6,7 +6,7 @@
   import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
-  import { activityDescription, activityLabel, activityRangeDescription, activitySourceInfo, alignActivity, activityPath, type GithubSnapshot } from './github';
+  import { activityDescription, activityLabel, activityRangeDescription, alignActivity, activityPath, type GithubSnapshot } from './github';
 
   let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
 
@@ -148,10 +148,6 @@
     <div class="chart-legend">
       <span class="legend-item"><span class="legend-line" aria-hidden="true"></span>Words</span>
       <span class="legend-item"><span class="legend-line commits" aria-hidden="true"></span>{activityLabel(github)}</span>
-      <details class="scale-details">
-        <summary class="ui-focus-ring" aria-label="Chart scale details" title="Chart scale details">ⓘ</summary>
-        <p>Each line uses its own scale to compare trends: words 0–{fmtNumber(max)}, {activityLabel(github).toLowerCase()} 0–{fmtNumber(activityMax)}. {activitySourceInfo(github)}</p>
-      </details>
     </div>
   {/if}
 
@@ -275,11 +271,6 @@
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
   .legend-line { width: 14px; border-top: 2px solid var(--accent); }
   .legend-line.commits { border-color: var(--success); }
-  .scale-details { position: relative; margin-left: auto; }
-  .scale-details summary { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: var(--r-sm); color: var(--ink-mute); cursor: pointer; list-style: none; font-size: 14px; }
-  .scale-details summary::-webkit-details-marker { display: none; }
-  .scale-details summary:hover { color: var(--ink); background: var(--control-hover); }
-  .scale-details p { position: absolute; z-index: 3; right: 0; top: 100%; width: 240px; max-width: calc(100vw - 72px); margin: 4px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-elev); box-shadow: var(--shadow-popover); color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
   .commits-scale { color: var(--success); }
   .chart-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
