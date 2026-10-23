@@ -157,9 +157,9 @@
     <Toggle checked={exclusiveMic} onchange={handleExclusiveMic} label="Exclusive microphone access" bind:error={exclusiveMicError} />
   </div>
 {/if}
-{#if isWindows}
+{#if isWindows || (isLinux && !isAndroid)}
   <div class="setting-row" data-setting-target="audio-pause-media">
-    <div><div class="label">Pause media while dictating</div><div class="desc">Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.</div></div>
+    <div><div class="label">Pause media while dictating</div><div class="desc">{isWindows ? 'Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.' : 'Pauses playing music and videos and resumes them after transcription finishes. Works with apps and browsers that expose Linux media controls (MPRIS). Turn off Mute PC Audio if you only want to pause playback.'}</div></div>
     <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" bind:error={pauseMediaError} />
   </div>
 {/if}
