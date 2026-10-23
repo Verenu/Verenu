@@ -145,6 +145,7 @@
 
   {#if showDetails}
     <dl id="github-integration-details" class="details" in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }}>
+      <div><dt>Insights chart</dt><dd>Words and GitHub activity each use their own scale to compare trends, not equal counts. GitHub's profile calendar groups contributions such as commits, pull requests, and reviews by its calendar dates.</dd></div>
       {#if connected}
         <div><dt>Refresh</dt><dd>Refreshes automatically every 15 minutes.</dd></div>
       {/if}
