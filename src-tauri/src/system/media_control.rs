@@ -391,7 +391,11 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "media_control_linux.rs"]
+mod platform;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     pub fn begin() {}
     pub fn end() {}
