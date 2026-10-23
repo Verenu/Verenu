@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Moved the GitHub chart explanation from the Insights info popover to About GitHub in Settings > Integrations.
 - Reduced desktop analytics ingestion by reporting feature adoption and healthy input states once per app session, and deduplicating repeated sanitized errors while preserving severity and recovery changes. Dictation counts, outcomes, stage timings, and failures keep their existing frequency. Documented the separate PostHog billing limits needed to prevent paid ingestion.
 - Release installer workflows now validate the required PostHog project ingestion token and HTTPS host before building. Release compilation fails closed if analytics configuration is lost; local analytics-off builds and the in-app opt-out remain supported.
 - Updated ZIP extraction and TLS certificate dependencies to resolve six dependency-audit advisories blocking release analytics CI.
