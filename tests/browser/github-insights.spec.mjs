@@ -59,6 +59,14 @@ test('GitHub comparison is opt-in and invalid usernames never enable it', async 
   await expect(page.locator('#github-username')).toHaveCount(0);
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.integrations"]').click();
+  await page.getByRole('button', { name: 'About GitHub', exact: true }).click();
+  const details = page.locator('#github-integration-details');
+  await expect(details).toContainText('Words and GitHub activity each use their own scale');
+  await expect(details).toContainText('by its calendar dates');
+  await expect(details).toContainText('Show private contributions');
+  await expect(details).toContainText('1,000 results');
+  await page.keyboard.press('Escape');
+  await expect(details).toHaveCount(0);
   const input = page.getByRole('textbox', { name: 'GitHub username', exact: true });
   await input.fill('a repo:private');
   await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
@@ -68,6 +76,7 @@ test('GitHub comparison is opt-in and invalid usernames never enable it', async 
   await page.reload();
   await page.locator('[data-debug-id="nav.insights"]').click();
   await expect(page.locator('#github-username')).toHaveCount(0);
+  await expect(page.getByLabel('Chart scale details')).toHaveCount(0);
   expect(await session.invoke('get_setting', { key: 'github_username' })).toBe('');
   expect(await session.invoke('get_github_commits')).toBeNull();
   await expect(page.locator('.github-line')).toHaveCount(0);
