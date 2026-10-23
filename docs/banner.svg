@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 150">
-  <!-- Colors mirror the dark theme tokens in src/theme.css (docs/colors.md). -->
-  <rect width="800" height="150" rx="16" fill="#161514"/>
+  <!-- Mark, text, and border colors mirror the dark theme tokens in src/theme.css (docs/colors.md). -->
+  <rect width="800" height="150" rx="16" fill="#000000"/>
   <rect x="0.5" y="0.5" width="799" height="149" rx="15.5" fill="none" stroke="#2b2928"/>
 
   <!-- Five-bar mark, inlined from src-tauri/icons/verenu-mark.svg (GitHub blocks external <use> refs). -->
