@@ -1708,8 +1708,19 @@ fn attempt_bucket(attempt: u8) -> &'static str {
     }
 }
 fn is_official_version(value: &str) -> bool {
-    let mut parts = value.split('.');
-    parts.clone().count() == 3
+    let (core, suffix) = value.split_once('-').unwrap_or((value, ""));
+    let valid_suffix = suffix.is_empty()
+        || suffix == "beta"
+        || suffix.strip_prefix("beta.").is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        || suffix.strip_prefix("nightly.").is_some_and(|date| {
+            date.len() == 8 && date.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    let mut parts = core.split('.');
+    valid_suffix
+        && !value.ends_with('-')
+        && parts.clone().count() == 3
         && parts.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
 }
 
@@ -1973,6 +1984,30 @@ mod tests {
         assert_eq!(payload["identity_schema_version"], IDENTITY_SCHEMA_VERSION);
         assert_eq!(payload["first_seen_version"], "0.18.1");
         assert!(payload.get("analytics_install_id").is_none());
+    }
+
+    #[test]
+    fn identity_metadata_accepts_release_channels_without_arbitrary_suffixes() {
+        for version in [
+            "0.20.0",
+            "0.18.1-beta",
+            "0.21.0-beta.1",
+            "0.20.0-nightly.20261005",
+        ] {
+            let payload = add_common_properties(serde_json::Map::new(), "session", Some(version));
+            assert_eq!(payload["first_seen_version"], version);
+        }
+        for version in [
+            "private text",
+            "0.21.0-",
+            "0.21.0-beta.",
+            "0.21.0-beta.private-text",
+            "0.21.0-nightly.20261005-private-text",
+            "0.21.0-nightly.2026100",
+        ] {
+            let payload = add_common_properties(serde_json::Map::new(), "session", Some(version));
+            assert!(payload.get("first_seen_version").is_none());
+        }
     }
     #[test]
     fn unknown_values_collapse_to_bounded_categories() {
