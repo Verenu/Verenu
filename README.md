@@ -5,7 +5,7 @@
 <p align="center">
   Free, open-source AI dictation for Windows, macOS, and Linux. Hold a hotkey, talk, release, and cleaned-up text is typed into any app.
   <br/>
-  <em>Local-first. BYOK or local models. No subscriptions. Optional pseudonymous product analytics, off whenever you want. A free, open-source alternative to closed-source dictation apps like Wispr Flow and Superwhisper.</em>
+  <em>Local-first. BYOK or local models. Optional product analytics, off whenever you want. A free, open-source alternative to closed-source dictation Wispr Flow.</em>
 </p>
 
 <p align="center">
