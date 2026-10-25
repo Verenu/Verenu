@@ -83,7 +83,9 @@ The owned suite generates WAVs, starts Rust, runs transport and Playwright flows
 restarts the backend with its isolated database, verifies persistence, and stops
 only its own processes. Default runs use public synthetic settings without
 installed customization. `--live` uses an isolated installed-configuration
-snapshot and native credentials. That snapshot and all artifacts remain private.
+snapshot and native credentials for the Node and provider checks. Browser and
+restart checks always use a separate public synthetic session, including in
+`--live` mode. The installed-configuration snapshot and all artifacts remain private.
 
 Every `tests/dev-session/*.test.mjs` file runs sequentially. Structured reports
 name every executed case and identify missing files. The optional live corpus is

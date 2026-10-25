@@ -49,7 +49,7 @@ try {
   report.node = nodeSummary;
   report.checks.push({ name: 'Every owned-session test file executed without unexpected skips', status: report.node.status });
   report.checks.push(...nodes.checks);
-  session = await startOwnedSession({ id, fixtures, directory, synthetic });
+  session = await startOwnedSession({ id, fixtures, directory, synthetic: true });
   const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
   const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
   const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
@@ -88,7 +88,7 @@ try {
   const restartThemes = [{ id: 'synthetic-restart', name: 'Synthetic restart', palette: { background: '#182633', foreground: '#eeeeee' }, accent: '#5ca6e8' }];
   await invokeSession(session, 'save_setting', { key: 'custom_themes', value: restartThemes });
   await session.stop(); session = undefined;
-  session = await startOwnedSession({ id, fixtures, directory, synthetic });
+  session = await startOwnedSession({ id, fixtures, directory, synthetic: true });
   assert.ok((await invokeSession(session, 'get_contexts')).some((row) => row.id === context.id && row.name === 'Synthetic restart'));
   assert.equal((await invokeSession(session, 'get_all_settings')).legacy_features_enabled, !initialLegacy);
   assert.deepEqual((await invokeSession(session, 'get_all_settings')).custom_themes, restartThemes);
