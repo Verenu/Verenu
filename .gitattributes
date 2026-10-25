@@ -1,1 +1,6 @@
 /src-tauri/Cargo.toml text eol=lf
+installers/0.21.0-beta.1/*.exe filter=lfs diff=lfs merge=lfs -text
+installers/0.21.0-beta.1/*.msi filter=lfs diff=lfs merge=lfs -text
+installers/0.21.0-beta.1/*.dmg filter=lfs diff=lfs merge=lfs -text
+installers/0.21.0-beta.1/*.AppImage filter=lfs diff=lfs merge=lfs -text
+installers/0.21.0-beta.1/*.pkg.tar.zst filter=lfs diff=lfs merge=lfs -text
