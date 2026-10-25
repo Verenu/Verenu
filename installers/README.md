@@ -22,6 +22,12 @@ in its notes).
 
 ## Verifying a download
 
+The `0.21.0-beta.1/` installers use Git LFS because the Arch package exceeds
+GitHub's regular Git file limit. For a cloned repository, install Git LFS and
+run `git lfs pull --include="installers/0.21.0-beta.1/*"` to fetch the binaries.
+GitHub Release assets remain direct downloads. Older installer folders are
+unchanged.
+
 Each version folder includes a `SHA256SUMS.txt`. After downloading, verify the
 file is intact:
 

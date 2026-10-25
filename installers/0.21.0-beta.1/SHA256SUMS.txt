@@ -1,0 +1,6 @@
+f7d9aba42e88b3b130cb5967f2b4e6a6637a2f1f22e419dabb6a765a68353189  Verenu_0.21.0-beta.1_Apple_Silicon.dmg
+ca5d278fa51ad9bffcae6d0e83cfbacbc2c42a7fc6ec14b4a1095a6e3d10f949  Verenu_0.21.0-beta.1_Intel.dmg
+4bc9e0550e7134f38b83289c1e14eebd1db4f69a66aa38972ef48dfac3fa4128  Verenu_0.21.0-beta.1_x64-setup.exe
+01e060b64d6c185cb6f042ab33e780cead64f7a3db520ec174d5b4607768987a  Verenu_0.21.0-beta.1_x64_en-US.msi
+f4dc70b1e3c149069cc00c127f12537d60c303ad13268fcc838e3919f8b959ab  Verenu_0.21.0-beta.1_x86_64.AppImage
+4383d6b1275a27ad8058739d3bb09a56d68eaccc1c324120b2dc426ff1a9b905  verenu-0.21.0_beta.1-1-x86_64.pkg.tar.zst
