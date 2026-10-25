@@ -178,7 +178,7 @@ For more details: [Install Verenu](docs/INSTALL.md), [Contributing](docs/CONTRIB
 
 The normal flow is:
 
-1. Create a short-lived feature or fix fork from `master`.
+1. Create a short-lived feature or fix branch from `master`.
 2. Open a pull request directly into `master`.
 3. Let the required CI checks run, review the change, and merge it into `master`.
 4. The morning nightly workflow reads `master`; run the manual installer
