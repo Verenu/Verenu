@@ -337,7 +337,7 @@ fn window_rule_block() -> String {
     let (start, end) = WINDOW_RULE_MARKERS;
     format!(r#"{start}
 hl.window_rule({{ name = "verenu-main", match = {{ class = "^(com\\.verenu\\.app|[Vv]erenu)$", title = "^Verenu$" }}, float = true, center = true, min_size = {{ 1100, 700 }} }})
-hl.window_rule({{ name = "verenu-pill", match = {{ class = "^(com\\.verenu\\.app|[Vv]erenu)$", title = "^Verenu Dictation Pill$" }}, float = true, pin = true, border_size = 0, no_initial_focus = true }})
+hl.window_rule({{ name = "verenu-pill", match = {{ class = "^(com\\.verenu\\.app|[Vv]erenu)$", title = "^Verenu Dictation Pill$" }}, float = true, pin = true, border_size = 0, no_blur = true, no_shadow = true, no_initial_focus = true }})
 {end}"#)
 }
 
@@ -728,6 +728,25 @@ mod tests {
         assert_eq!(upgraded.matches("name = \"verenu-pill\"").count(), 1);
         assert!(block.contains("no_initial_focus = true"));
         assert!(!block.contains("no_focus = true"));
+    }
+
+    #[test]
+    fn pill_rule_upgrade_disables_compositor_effects_only_for_the_pill() {
+        let (start, end) = super::WINDOW_RULE_MARKERS;
+        let block = super::window_rule_block();
+        let previous = block.replace("no_blur = true, no_shadow = true, ", "");
+        assert_ne!(previous, block);
+        let current = format!("-- personal head\n{previous}\n-- personal tail");
+        let upgraded = super::replace_managed_block(&current, start, end, &block).unwrap();
+        assert_eq!(upgraded, format!("-- personal head\n{block}\n-- personal tail"));
+        let pill = upgraded.lines().find(|line| line.contains("name = \"verenu-pill\"")).unwrap();
+        assert!(pill.contains("title = \"^Verenu Dictation Pill$\""));
+        assert!(pill.contains("no_blur = true"));
+        assert!(pill.contains("no_shadow = true"));
+        let main = upgraded.lines().find(|line| line.contains("name = \"verenu-main\"")).unwrap();
+        assert!(!main.contains("no_blur"));
+        assert!(!main.contains("no_shadow"));
+        assert_eq!(super::replace_managed_block(&upgraded, start, end, &block).unwrap(), upgraded);
     }
 
     #[test]

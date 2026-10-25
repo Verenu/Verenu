@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Disabled Hyprland blur and shadows around the Linux dictation pill so transparent space stays clear on newer Omarchy desktops.
 - Added Linux support for Pause media while dictating in Settings > Audio. Verenu pauses playing MPRIS media players and resumes only those players after dictation, leaving already-paused, stopped, and closed players alone. Mute PC Audio remains a separate option.
 - Moved the GitHub chart explanation from the Insights info popover to About GitHub in Settings > Integrations.
 - Reduced desktop analytics ingestion by reporting feature adoption and healthy input states once per app session, and deduplicating repeated sanitized errors while preserving severity and recovery changes. Dictation counts, outcomes, stage timings, and failures keep their existing frequency. Documented the separate PostHog billing limits needed to prevent paid ingestion.
