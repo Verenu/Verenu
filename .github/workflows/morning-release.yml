@@ -73,12 +73,13 @@ jobs:
             console.error(`Master version files disagree: ${JSON.stringify(versions)}`);
             process.exit(1);
           }
-          if (!/^\d+\.\d+\.\d+$/.test(packageVersion)) {
-            console.error(`Master package.json version is not a stable numeric version: ${packageVersion}`);
+          const releaseVersion = packageVersion.match(/^(\d+\.\d+\.\d+)(?:-beta(?:\.\d+)?)?$/);
+          if (!releaseVersion) {
+            console.error(`Master package.json version is not a supported stable or beta version: ${packageVersion}`);
             process.exit(1);
           }
 
-          process.stdout.write(packageVersion);
+          process.stdout.write(releaseVersion[1]);
           NODE
           )"
 
