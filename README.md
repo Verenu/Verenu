@@ -5,7 +5,7 @@
 <p align="center">
   Free, open-source AI dictation for Windows, macOS, and Linux. Hold a hotkey, talk, release, and cleaned-up text is typed into any app.
   <br/>
-  <em>Local-first. BYOK or local models. No subscriptions. Optional pseudonymous product analytics, off whenever you want. A free, open-source alternative to closed-source dictation apps like Wispr Flow and Superwhisper.</em>
+  <em>Local-first. BYOK or local models. Optional product analytics, off whenever you want. A free, open-source alternative to closed-source dictation Wispr Flow.</em>
 </p>
 
 <p align="center">
@@ -178,7 +178,7 @@ For more details: [Install Verenu](docs/INSTALL.md), [Contributing](docs/CONTRIB
 
 The normal flow is:
 
-1. Create a short-lived feature or fix branch from `master`.
+1. Create a short-lived feature or fix fork from `master`.
 2. Open a pull request directly into `master`.
 3. Let the required CI checks run, review the change, and merge it into `master`.
 4. The morning nightly workflow reads `master`; run the manual installer
