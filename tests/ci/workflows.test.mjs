@@ -35,6 +35,24 @@ test('nightly publication requires exact-source regression verification', () => 
   }
 });
 
+test('nightly preparation derives a numeric base from stable and beta manifests', () => {
+  const step = workflow('morning-release.yml').jobs.prepare.steps.find(step => step.id === 'changes');
+  const source = step.run.match(/nightly_base_version="\$\(node <<'NODE'\n([\s\S]*?)\nNODE\n/)[1];
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-nightly-base-'));
+  try {
+    fs.mkdirSync(path.join(directory, 'src-tauri'));
+    for (const [version, expected] of [['0.20.0', '0.20.0'], ['0.21.0-beta', '0.21.0'], ['0.21.0-beta.1', '0.21.0'], ['0.21.0-private', null], ['0.21.0-beta.', null]]) {
+      for (const file of ['package.json', 'src-tauri/tauri.conf.json']) fs.writeFileSync(path.join(directory, file), JSON.stringify({version}));
+      fs.writeFileSync(path.join(directory, 'src-tauri/Cargo.toml'), `[package]\nversion = "${version}"\n`);
+      const result = spawnSync(process.execPath, ['-e', source], {cwd:directory, encoding:'utf8', timeout:10_000});
+      if (expected) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, expected);
+      } else assert.notEqual(result.status, 0);
+    }
+  } finally { fs.rmSync(directory, {recursive:true, force:true}); }
+});
+
 test('nightly version snapshot preserves CRLF files and still rejects trailing spaces', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-nightly-crlf-'));
   const checkout = path.join(directory, 'checkout');
