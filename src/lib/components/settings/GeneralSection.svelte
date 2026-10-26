@@ -757,13 +757,13 @@
         aria-label={`Change ${control.label} shortcut`} aria-describedby={`${control.id}-help`}
         onclick={(e) => startRecordingHotkey(e, control.id)}>
         {capturing ? capturedKeys.length ? formatHotkeyDisplay(capturedKeys) : 'Press a key…'
-          : `${formatKeyLabel(controlKeys[control.id])}${status?.active === null ? ' · Unavailable' : ''}`}
+          : `${formatKeyLabel(controlKeys[control.id])}${status?.active === null || (status?.conflict && control.id === 'handsfree') ? ' · Unavailable' : status?.conflict ? ' · Conflict' : ''}`}
       </button>
     </div>
     <p id={`${control.id}-help`} class="hotkey-tip" role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
       {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
         ? 'Press and release one key to save, including Escape. Click outside to cancel.'
-        : 'Click to change. Uses one key with any held modifiers; desktop bindings on that key take priority.'}
+        : 'Click to change. Desktop shortcuts take priority when the full key combination matches.'}
     </p>
     <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
   {/each}

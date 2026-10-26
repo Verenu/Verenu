@@ -12,6 +12,15 @@ pub struct ShortcutStatus {
     pub active: Option<String>,
     pub codes: Vec<String>,
     pub note: Option<String>,
+    pub conflict: Option<ShortcutConflict>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ShortcutConflict {
+    pub trigger: String,
+    pub description: Option<String>,
+    pub desktop: String,
+    pub while_holding: bool,
 }
 
 static STATUS: Mutex<Vec<ShortcutStatus>> = Mutex::new(Vec::new());

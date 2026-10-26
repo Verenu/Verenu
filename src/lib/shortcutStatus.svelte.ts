@@ -7,6 +7,7 @@ export type ShortcutStatus = {
   active: string | null;
   codes: string[];
   note: string | null;
+  conflict: { trigger: string; description: string | null; desktop: string; while_holding: boolean } | null;
 };
 
 export const shortcutStatus = $state<{ items: ShortcutStatus[] }>({ items: [] });
