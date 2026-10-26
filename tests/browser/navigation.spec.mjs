@@ -112,3 +112,41 @@ test('slow Context data fills the same tab panel without replaying its entrance'
     await expect(page.locator('.tab-panel')).toHaveAttribute('id', 'context-panel-vocabulary');
   } finally { release(); }
 });
+
+test('page swaps keep the screen covered and the leaving page in place', async ({ page }) => {
+  await expect(page.locator('h1.page-h').filter({ hasText: 'Welcome back' })).toBeVisible();
+  for (const target of ['insights', 'home', 'insights']) {
+    await page.evaluate(() => {
+      const content = document.querySelector('.content');
+      const filler = document.createElement('div');
+      filler.dataset.testFiller = '';
+      filler.style.height = '1200px';
+      content.querySelector('.page-wrapper').append(filler);
+      content.scrollTop = 300;
+      const frames = (window.__swapFrames = []);
+      const loop = () => {
+        const wrappers = [...content.querySelectorAll('.page-wrapper')];
+        frames.push({
+          opacity: wrappers.map(w => Number(getComputedStyle(w).opacity)),
+          top: wrappers.length > 1 ? wrappers[0].offsetTop - content.scrollTop : null,
+        });
+        window.__swapRaf = requestAnimationFrame(loop);
+      };
+      loop();
+    });
+    await page.locator(`[data-debug-id="nav.${target}"]`).click();
+    await page.waitForTimeout(700);
+    const frames = await page.evaluate(() => { cancelAnimationFrame(window.__swapRaf); return window.__swapFrames; });
+    const overlap = frames.filter(frame => frame.opacity.length > 1);
+    expect(overlap.length).toBeGreaterThan(2);
+    // Translucent panels stacked on the background must not leave a see-through dip.
+    for (const frame of overlap) {
+      const coverage = 1 - frame.opacity.reduce((rest, opacity) => rest * (1 - opacity), 1);
+      expect(coverage).toBeGreaterThan(0.9);
+    }
+    // The leaving page keeps its on-screen position while it fades.
+    const tops = overlap.map(frame => frame.top);
+    expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(2);
+    await expect(page.locator('.content')).toHaveJSProperty('scrollTop', 0);
+  }
+});

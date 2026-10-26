@@ -1,4 +1,4 @@
-import { cubicOut } from 'svelte/easing';
+import { cubicIn, cubicOut } from 'svelte/easing';
 
 export { SETTINGS_SECTION_ORDER } from './settingsSections';
 
@@ -88,6 +88,15 @@ export function modalCard(_node: Element, params: MotionTransitionParams = {}) {
   };
 }
 
+/**
+ * Slide and fade a panel in or out. Inert state is applied once when the
+ * transition starts, not on every frame.
+ *
+ * Swapped panels overlap while both are translucent. An outro runs with an
+ * ease-in so the leaving panel stays opaque while the entering one rises;
+ * easing both out lets the background show through mid-swap and reads as a
+ * flicker.
+ */
 export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {}, options: TransitionOptions = {}) {
   const duration = motionMs(params.duration ?? 260);
   const axis = params.axis ?? 'y';
@@ -106,18 +115,7 @@ export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {},
 
   return {
     duration,
-    easing: cubicOut,
-    tick: () => {
-      if (isOutro) {
-        node.inert = true;
-        node.setAttribute('aria-hidden', 'true');
-        node.style.pointerEvents = 'none';
-      } else {
-        node.inert = false;
-        node.removeAttribute('aria-hidden');
-        node.style.pointerEvents = '';
-      }
-    },
+    easing: isOutro ? cubicIn : cubicOut,
     css: (t: number) => {
       const u = 1 - t;
       const x = axis === 'x' ? u * distance : 0;
