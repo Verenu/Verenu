@@ -14,18 +14,19 @@ pub async fn create_context(
     tone: Option<String>,
     cleanup_intensity: Option<String>,
     custom_instructions: Option<String>,
-    contextual_formatting_disabled: bool,
+    contextual_formatting_disabled: Option<bool>,
+    contextual_formatting_override: Option<bool>,
     paste_in_chunks: Option<bool>,
 ) -> Result<db::Context, String> {
     run_db(&app, "create_context", move |db| {
-        db::insert_context_with_delivery(
+        db::insert_context_with_override_and_delivery(
             db,
             &name,
             icon.as_deref(),
             tone.as_deref(),
             cleanup_intensity.as_deref(),
             custom_instructions.as_deref(),
-            contextual_formatting_disabled,
+            contextual_formatting_override.or_else(|| contextual_formatting_disabled.filter(|disabled| *disabled)),
             paste_in_chunks.unwrap_or(false),
         )
     })
@@ -65,18 +66,19 @@ pub async fn update_context_settings(
     tone: Option<String>,
     cleanup_intensity: Option<String>,
     custom_instructions: Option<String>,
-    contextual_formatting_disabled: bool,
+    contextual_formatting_disabled: Option<bool>,
+    contextual_formatting_override: Option<bool>,
     paste_in_chunks: Option<bool>,
 ) -> Result<(), String> {
     run_db(&app, "update_context_settings", move |db| {
-        db::update_context_settings_with_delivery(
+        db::update_context_settings_with_override_and_delivery(
             db,
             context_id,
             icon.as_deref(),
             tone.as_deref(),
             cleanup_intensity.as_deref(),
             custom_instructions.as_deref(),
-            contextual_formatting_disabled,
+            contextual_formatting_override.or_else(|| contextual_formatting_disabled.filter(|disabled| *disabled)),
             paste_in_chunks,
         )
     })
@@ -217,7 +219,7 @@ pub async fn get_context_dictionary(
     app: AppHandle,
     context_id: i64,
 ) -> Result<Vec<db::DictionaryEntry>, String> {
-    run_db(&app, "get_context_dictionary", move |db| db::query_dictionary_for_context(db, context_id))
+    run_db(&app, "get_context_dictionary", move |db| db::query_effective_dictionary_for_context(db, context_id))
         .await
 }
 
@@ -226,7 +228,7 @@ pub async fn get_context_snippets(
     app: AppHandle,
     context_id: i64,
 ) -> Result<Vec<db::Snippet>, String> {
-    run_db(&app, "get_context_snippets", move |db| db::query_snippets_for_context(db, context_id))
+    run_db(&app, "get_context_snippets", move |db| db::query_effective_snippets_for_context(db, context_id))
         .await
 }
 

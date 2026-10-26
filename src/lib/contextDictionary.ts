@@ -7,11 +7,14 @@ export type ContextDictionaryEntry = DictionaryEntry & {
   correction_id: number | null;
   correction_ids: number[];
   corrections: DictionaryCorrection[];
+  context_corrections: DictionaryCorrection[];
+  inherited_from_everywhere: boolean;
+  assigned_to_context: boolean;
 };
 
 export type ContextDictionaryIdentity = Pick<
   DictionaryEntry,
-  'id' | 'dictionary_id' | 'correction_id' | 'correction_ids' | 'corrections'
+  'id' | 'dictionary_id' | 'correction_id' | 'correction_ids' | 'corrections' | 'context_corrections'
 >;
 
 export interface DictionaryUpdatedPayload {
@@ -108,18 +111,23 @@ export function normalizeContextDictionaryEntry(value: unknown, contextId: numbe
   const corrections = nestedCorrections
     .map((correction) => normalizeCorrection(correction, dictionaryId, contextId))
     .filter((correction): correction is DictionaryCorrection => correction !== null);
+  const localCorrections = (Array.isArray(row.context_corrections)
+    ? row.context_corrections
+    : nestedCorrections)
+    .map((correction) => normalizeCorrection(correction, dictionaryId, contextId))
+    .filter((correction): correction is DictionaryCorrection => correction !== null);
   const flatCorrectionIds = Array.isArray(row.correction_ids)
     ? row.correction_ids.filter((id): id is number => finiteNumber(id) !== null)
     : [];
   const correctionId = firstFinite(
+    localCorrections[0]?.id,
     row.correction_id,
     row.correctionId,
     row.mapping_id,
     row.mappingId,
     flatCorrectionIds[0],
-    corrections[0]?.id,
   );
-  const correctionIds = corrections.length > 0 ? corrections.map((correction) => correction.id) : flatCorrectionIds;
+  const correctionIds = localCorrections.length > 0 ? localCorrections.map((correction) => correction.id) : flatCorrectionIds;
   const correctionMistake = corrections.map((correction) => correction.mistake).join(', ') || null;
   const autoLearned = booleanValue(row.auto_learned, corrections.some((correction) => correction.auto_learned));
   const correctionConfidence = corrections
@@ -148,6 +156,9 @@ export function normalizeContextDictionaryEntry(value: unknown, contextId: numbe
     correction_id: correctionId,
     correction_ids: correctionIds,
     corrections,
+    context_corrections: localCorrections,
+    inherited_from_everywhere: booleanValue(row.inherited_from_everywhere, false),
+    assigned_to_context: booleanValue(row.assigned_to_context, true),
     term: requiredText(row.term ?? row.canonical_term, 'term'),
     mistake: nullableText(row.mistake) ?? correctionMistake,
     auto_learned: autoLearned,
@@ -167,7 +178,8 @@ export function dictionaryEntryId(entry: Pick<DictionaryEntry, 'id' | 'dictionar
   return entry.dictionary_id ?? entry.id;
 }
 
-export function dictionaryEntryCorrectionIds(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections'>): number[] {
+export function dictionaryEntryCorrectionIds(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections' | 'context_corrections'>): number[] {
+  if (entry.context_corrections) return entry.context_corrections.map((correction) => correction.id);
   if (entry.correction_ids?.length) return [...entry.correction_ids];
   if (entry.corrections?.length) return entry.corrections.map((correction) => correction.id);
   return entry.correction_id === null || entry.correction_id === undefined
@@ -175,7 +187,7 @@ export function dictionaryEntryCorrectionIds(entry: Pick<DictionaryEntry, 'corre
     : [entry.correction_id];
 }
 
-export function dictionaryEntryCorrectionId(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections'>): number | null {
+export function dictionaryEntryCorrectionId(entry: Pick<DictionaryEntry, 'correction_id' | 'correction_ids' | 'corrections' | 'context_corrections'>): number | null {
   return dictionaryEntryCorrectionIds(entry)[0] ?? null;
 }
 
@@ -189,7 +201,7 @@ export function dictionaryUpdateContextId(payload: unknown): number | null | und
 
 export function shouldRefreshContextDictionary(payload: unknown, contextId: number): boolean {
   const updateContextId = dictionaryUpdateContextId(payload);
-  return updateContextId === undefined || updateContextId === null || updateContextId === contextId;
+  return updateContextId === undefined || updateContextId === null || updateContextId === 1 || updateContextId === contextId;
 }
 
 export async function editContextDictionaryEntry(

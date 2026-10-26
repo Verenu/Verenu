@@ -433,6 +433,9 @@ mod tests {
             last_seen_at: None,
             created_at: "now".to_string(),
             corrections: Vec::new(),
+            context_corrections: Vec::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }
     }
 
@@ -465,6 +468,9 @@ mod tests {
                 last_seen_at: None,
                 created_at: "now".to_string(),
             }],
+            context_corrections: Vec::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }
     }
 

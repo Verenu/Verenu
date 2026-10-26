@@ -191,9 +191,9 @@ macro_rules! registry {
             get_all_settings {}, get_setting { key: String },
             test_cleanup_prompt { provider: String, model: String, template: String, intensity: Option<String>, tone: Option<String> },
             get_contexts {},
-            create_context { name: String, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: bool, paste_in_chunks: Option<bool> },
+            create_context { name: String, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
             duplicate_context { context_id: i64 }, update_context { context_id: i64, name: String },
-            update_context_settings { context_id: i64, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: bool, paste_in_chunks: Option<bool> },
+            update_context_settings { context_id: i64, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
             update_context_color { context_id: i64, color: Option<String> },
             set_context_pinned { context_id: i64, pinned: bool }, delete_context { context_id: i64 },
             get_context_stats { context_id: i64 }, get_context_targets { context_id: Option<i64> },
@@ -304,6 +304,19 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_context_commands_advertise_nullable_formatting_overrides() {
+        let described = registry!(describe, app, request);
+        for command in ["create_context", "update_context_settings"] {
+            let entry = described.as_array().unwrap().iter()
+                .find(|entry| entry["command"] == command).unwrap();
+            for field in ["contextualFormattingDisabled", "contextualFormattingOverride"] {
+                let argument_type = entry["arguments"][field].as_str().unwrap();
+                assert_eq!(argument_type.replace(' ', ""), "Option<bool>");
+            }
+        }
+    }
+
     #[test]
     fn agent_api_rejects_browser_origins_and_invalid_tokens() {
         let token = "a".repeat(64);

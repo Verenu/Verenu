@@ -33,7 +33,7 @@
   },
   {
     "target": [
-      ".field-label-row:nth-child(6) > .char-counter"
+      ".field-label-row:nth-child(7) > .char-counter"
     ],
     "checks": [
       {

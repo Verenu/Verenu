@@ -1141,7 +1141,8 @@ pub async fn retry_transcription_impl(
     let context = db::query_context(&db_handle, capture.context.id).ok();
     cfg.speech_vocabulary = capture.speech_vocabulary.clone();
     cfg.t3_skill_catalog = capture.context.t3_skills.clone();
-    capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref());
+    let everywhere_context = db::query_context(&db_handle, db::EVERYWHERE_CONTEXT_ID).ok();
+    capture.profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context.as_ref(), everywhere_context.as_ref());
     cfg.paste_in_chunks = cfg!(desktop) && capture.paste_in_chunks;
     emit_pill_context(app, &capture.context.label);
 
