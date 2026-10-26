@@ -49,6 +49,7 @@
       && contextId !== EVERYWHERE_ID
       && conflictContexts.some((context) => context.is_everywhere),
   );
+  const inheritedTerm = $derived(contextScoped && contextId !== EVERYWHERE_ID && Boolean(entry?.inherited_from_everywhere));
 
   function conflictLocation() {
     const names = conflictContexts.map((context) => context.is_everywhere ? 'Everywhere' : context.name);
@@ -195,9 +196,10 @@
         bind:this={termInput}
         autocomplete="off"
         spellcheck="false"
+        readonly={inheritedTerm}
       />
     </div>
-    <p class="field-hint">{contextScoped ? 'The term is shared across contexts; correction patterns are specific to this group.' : 'The exact word or phrase you want the AI to use.'}</p>
+    <p class="field-hint">{inheritedTerm ? 'Rename this term in Everywhere. Customize its correction patterns below for this group.' : contextScoped ? 'The term is shared across contexts; correction patterns are specific to this group.' : 'The exact word or phrase you want the AI to use.'}</p>
 
     <label class="field-label" for="dict-mistake">
       Often mistranscribed as <span class="field-optional">optional</span>

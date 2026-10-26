@@ -3,6 +3,34 @@ import { devInvoke } from './tauri.dev';
 
 afterEach(() => vi.unstubAllGlobals());
 
+function browserStorage() {
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  });
+}
+
+it('keeps a first group-only word out of Everywhere and other groups', async () => {
+  browserStorage();
+  await devInvoke('create_dictionary_entry', { term: 'LocalOnly', mistake: 'local-only', contextId: 2 });
+  expect(await devInvoke('get_context_dictionary', { contextId: 1 })).toEqual([]);
+  expect(await devInvoke('get_context_dictionary', { contextId: 3 })).toEqual([]);
+  expect(await devInvoke('get_context_dictionary', { contextId: 2 })).toMatchObject([{ term: 'LocalOnly', assigned_to_context: true }]);
+});
+
+it('persists an inherited word customization locally and preserves its global spelling', async () => {
+  browserStorage();
+  const created = await devInvoke<{ id: number }>('create_dictionary_entry', { term: 'GlobalWord', mistake: 'global-word', contextId: 1 });
+  await expect(devInvoke('edit_dictionary_entry', { id: created.id, term: 'Renamed', contextId: 2 })).rejects.toThrow('Rename inherited terms in Everywhere');
+  await devInvoke('edit_dictionary_entry', { id: created.id, term: 'GlobalWord', mistake: 'local-word', contextId: 2 });
+  expect(await devInvoke('get_context_dictionary', { contextId: 2 })).toMatchObject([{
+    term: 'GlobalWord', assigned_to_context: true, inherited_from_everywhere: true,
+    context_corrections: [{ mistake: 'local-word', context_id: 2 }],
+  }]);
+  expect(await devInvoke('get_context_dictionary', { contextId: 1 })).toMatchObject([{ term: 'GlobalWord', mistake: 'global-word' }]);
+});
+
 it('preserves Android pill defaults in individual and full browser settings reads', async () => {
   vi.stubGlobal('localStorage', { getItem: () => null });
   expect(await devInvoke('get_setting', { key: 'android_pill_position' })).toBe('keyboard-center');

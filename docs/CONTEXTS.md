@@ -77,7 +77,8 @@ group can add more entries. Vocabulary corrections for the same mistranscribed
 variant can be customized in one group, including a different preferred term
 for that variant; distinct variants add to the inherited ones. A shared vocabulary term keeps one canonical spelling, while its
 correction patterns can differ by group. Clearing a local correction restores
-the Everywhere pattern.
+the Everywhere pattern. Rename inherited terms in Everywhere; customizing them
+inside a group only changes that group's correction patterns.
 
 Auto-learn keeps its existing enable setting. New corrections belong to the
 selected group; corrections learned in Everywhere are inherited by all groups
@@ -88,6 +89,9 @@ snippet or add a new trigger, but cannot redefine an inherited trigger just for
 that group. Targets are not inherited: each dictation selects one group by
 sub-app, website, app, then Everywhere fallback. A website match takes priority
 over its browser app, and a matching sub-app takes priority over both.
+
+When several snippets match, Everywhere snippet instructions run before group
+snippet instructions.
 
 You can assign the same local vocabulary entry or snippet to more than one
 context. Use a row's menu and choose **Move to...** when you want to remove it
