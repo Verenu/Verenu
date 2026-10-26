@@ -86,6 +86,61 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn serialized_backup_merges_independent_history_and_is_idempotent() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    let transcription_id: i64 = source.db.lock().unwrap().query_row("SELECT id FROM transcriptions LIMIT 1", [], |r| r.get(0)).unwrap();
+    db::insert_api_calls(&source.db, &[db::ApiCall { transcription_id, model: "synthetic".into(), provider: "test".into(), task: "stt".into(), audio_ms: 1000, input_chars: 0, output_chars: 9, created_at: "2020-01-01 00:00:00".into() }]).unwrap();
+    let source_before = db::query_stats(&source.db).unwrap().total_words;
+    let dest_before = db::query_stats(&dest.db).unwrap().total_words;
+    let conn = source.db.lock().unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload {
+        version: "3".into(), app_version: "test".into(), exported_at: "test".into(),
+        stats: ExportStats::default(), activity: Some(backup_stats::export_activity_conn(&conn).unwrap()),
+        history: Some(backup_history::export_history_conn(&conn).unwrap()), settings: serde_json::json!({}),
+        dictionary, contexts, snippets: vec![], sub_apps: export_unassigned_sub_apps_conn(&conn).unwrap(),
+    };
+    drop(conn);
+    let json = serde_json::to_string(&payload).unwrap();
+    let mut malformed = serde_json::to_value(&payload).unwrap();
+    malformed["history"]["transcriptions"][0]["words"] = serde_json::json!(-1);
+    assert!(with_import_payload(&malformed.to_string(), |payload| import_payload(&dest.settings, &dest.db, payload, &[], |_, _| Ok(()), |_| {})).is_err());
+    assert_eq!(dest.history_count(), 1);
+    assert_eq!(db::query_stats(&dest.db).unwrap().total_words, dest_before);
+    for expected_inserted in [1, 0] {
+        let summary = with_import_payload(&json, |payload| import_payload(&dest.settings, &dest.db, payload, &[], |_, _| Ok(()), |_| {})).unwrap();
+        assert_eq!(summary.history_inserted, expected_inserted);
+    }
+    assert_eq!(dest.history_count(), 2);
+    assert_eq!(dest.db.lock().unwrap().query_row("SELECT count(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
+    dest.settings.save_value(store::HISTORY_RETENTION, serde_json::json!("7 days")).unwrap();
+    db::prune_transcriptions_for_retention(&dest.db, &dest.settings, 7).unwrap();
+    assert_eq!(dest.history_count(), 0);
+    let summary = with_import_payload(&json, |payload| import_payload(&dest.settings, &dest.db, payload, &[], |_, _| Ok(()), |_| {})).unwrap();
+    assert_eq!(summary.history_conflicts, 1);
+    assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
+}
+
+#[test]
+fn legacy_app_mappings_match_local_apps_and_preserve_existing_mappings() {
+    let f = Fixture::new();
+    f.settings.save_value(store::APP_MAPPINGS, serde_json::json!([{ "exe": "slack", "profile": "formal", "name": "Slack" }])).unwrap();
+    let mut payload = Fixture::payload("2");
+    payload.settings = serde_json::json!({"app_mappings": [
+        {"exe": "word.exe", "profile": "casual", "name": "Microsoft Word"},
+        {"exe": "unknown.exe", "profile": "casual", "name": "Unknown Product"}
+    ]});
+    let installed = [crate::system::apps::InstalledApp { name: "Microsoft Word".into(), exe: "com.microsoft.word".into(), developer: None }];
+    let summary = import_payload(&f.settings, &f.db, payload, &installed, |_, _| Ok(()), |_| {}).unwrap();
+    let mappings = f.settings.get(store::APP_MAPPINGS).unwrap();
+    assert_eq!(mappings.as_array().unwrap().len(), 2);
+    assert!(mappings.as_array().unwrap().iter().any(|m| m["exe"] == "com.microsoft.word"));
+    assert_eq!(summary.app_targets_dropped, 1);
+}
+
+#[test]
 fn concurrent_key_for_old_endpoint_cannot_survive_import_publication() {
     let f = Fixture::new();
     let provider = serde_json::json!({

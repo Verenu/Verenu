@@ -713,7 +713,7 @@ pub fn closest_installed_app<'a>(
         return None;
     }
     let source_developer = normalized_metadata(source_developer);
-    apps.iter()
+    let mut candidates = apps.iter()
         .filter_map(|app| {
             let candidate_developer = normalized_metadata(app.developer.as_deref());
             if source_developer.is_some()
@@ -752,15 +752,15 @@ pub fn closest_installed_app<'a>(
                 ranking_score,
             ))
         })
-        .max_by(
-            |(_, left_score, left_same, left_rank), (_, right_score, right_same, right_rank)| {
-                left_rank
-                    .total_cmp(right_rank)
-                    .then_with(|| left_score.total_cmp(right_score))
-                    .then_with(|| left_same.cmp(right_same))
-            },
-        )
-        .map(|(app, _, _, _)| app)
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.3.total_cmp(&left.3));
+    let best = candidates.first()?;
+    if candidates.iter().skip(1).any(|candidate| {
+        !candidate.0.exe.eq_ignore_ascii_case(&best.0.exe) && best.3 - candidate.3 < 0.05
+    }) {
+        return None;
+    }
+    Some(best.0)
 }
 
 fn normalized_metadata(value: Option<&str>) -> Option<String> {

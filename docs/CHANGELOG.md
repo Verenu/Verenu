@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Smoothed the dictation pill's error animation. The native window now finishes growing before the error pill animates into the new space, so a message or card is never painted into a window that is still catching up (the flicker when the pill resized to fit an error, most visible on Linux/Hyprland). With reduced motion enabled, pill states now cross-fade without sliding, scaling, or width morphs.
+- Expanded privacy backups to include retained transcription history and Insights. Imports deduplicate retained records, preserve unrelated activity, report uncertain aggregate overlaps, and match app targets conservatively across devices. Backup files contain private transcription text; credentials and device-local state remain excluded.
 
 - Fixed the flicker when switching pages, Settings sections, Style tabs, and context groups. The leaving panel faded out too fast, so both panels were half-transparent at once and the background showed through (coverage dipped to 74%). It now stays opaque while the new panel rises (98% minimum). Scroll now resets without moving the page that is still on screen, and the transition no longer rewrites accessibility attributes on every frame.
 - Updated About, update checks and installer validation, package metadata, and documentation to use the `Verenu/Verenu` organization repository.
