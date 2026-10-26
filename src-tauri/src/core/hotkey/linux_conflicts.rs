@@ -152,13 +152,30 @@ fn keycode(key: &str) -> Option<u32> {
 
 pub(super) fn free(bindings: &[Binding], triggers: &[String], ignore_mods: bool) -> bool {
     triggers.iter().all(|trigger| {
-        let (mask, key) = parse(trigger);
-        !bindings.iter().filter(|b| !owned(&b.description)).any(|b| {
-            (ignore_mods || b.ignore_mods || b.modmask == mask)
-                && (b.catch_all
-                    || b.key.eq_ignore_ascii_case(&key)
-                    || (b.keycode > 0 && keycode(&key) == Some(b.keycode as u32)))
-        })
+        matching_binding(bindings, trigger, ignore_mods).is_none()
+    })
+}
+
+fn matching_binding<'a>(bindings: &'a [Binding], trigger: &str, ignore_mods: bool) -> Option<&'a Binding> {
+    let (mask, key) = parse(trigger);
+    bindings.iter().filter(|b| !owned(&b.description)).find(|b| {
+        (ignore_mods || b.ignore_mods || b.modmask == mask)
+            && (b.catch_all || b.key.eq_ignore_ascii_case(&key)
+                || (b.keycode > 0 && keycode(&key) == Some(b.keycode as u32)))
+    })
+}
+
+pub(super) fn control_conflict(id: &str, requested: &str, bindings: &[Binding], keys: &[u32]) -> Option<super::super::shortcut_status::ShortcutConflict> {
+    let mut parts: Vec<&str> = keys.iter().filter_map(|key| super::portal_modifier_name(*key)).collect();
+    parts.push(requested);
+    let held = parts.join(" + ");
+    let candidates = if id == "handsfree" { vec![held.as_str()] } else { vec![requested, held.as_str()] };
+    let (trigger, binding) = candidates.into_iter().find_map(|trigger| matching_binding(bindings, trigger, false).map(|binding| (trigger, binding)))?;
+    Some(super::super::shortcut_status::ShortcutConflict {
+        trigger: trigger.into(),
+        description: (!binding.description.is_empty()).then(|| binding.description.clone()),
+        desktop: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "Hyprland".into()),
+        while_holding: trigger == held && held != requested,
     })
 }
 
@@ -175,10 +192,26 @@ pub(super) fn choose(
 }
 
 pub(super) fn control_key(bindings: &[Binding], requested: &str) -> Option<String> {
-    choose(bindings, requested, &[], true)
+    (!control_triggers(bindings, requested).is_empty()).then(|| requested.to_string())
+}
+
+pub(super) fn control_triggers(bindings: &[Binding], key: &str) -> Vec<(u32, String)> {
+    (0..16).filter_map(|bits| {
+        let modifiers = [(1, "SHIFT"), (4, "CTRL"), (8, "ALT"), (64, "SUPER")];
+        let mask = modifiers.iter().enumerate().fold(0, |mask, (index, (bit, _))| {
+            if bits & (1 << index) != 0 { mask | bit } else { mask }
+        });
+        let mut parts: Vec<&str> = modifiers.iter().filter(|(bit, _)| mask & bit != 0).map(|(_, name)| *name).collect();
+        parts.push(key);
+        let trigger = parts.join(" + ");
+        free(bindings, std::slice::from_ref(&trigger), false).then_some((mask, trigger))
+    }).collect()
 }
 
 pub(super) fn status(id: &str, requested: String, active: Option<String>, codes: Vec<String>) {
+    let conflict = if matches!(id, "cancel" | "handsfree") {
+        bindings(id).ok().and_then(|bindings| control_conflict(id, &requested, &bindings, &super::configured_keys(&super::EFFECTIVE_KEYS)))
+    } else { None };
     let note = match active.as_deref() {
         Some(active) if active != requested => Some(format!(
             "{requested} is already assigned on this desktop. Using {active}."
@@ -194,12 +227,24 @@ pub(super) fn status(id: &str, requested: String, active: Option<String>, codes:
         active,
         codes,
         note,
+        conflict,
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handsfree_reports_only_the_desktop_chord_used_while_holding_dictation() {
+        let bindings = vec![Binding { modmask: 68, key: "SPACE".into(), description: "Background switcher".into(), ..Binding::default() }];
+        assert!(control_key(&bindings, "Space").is_some());
+        let conflict = control_conflict("handsfree", "Space", &bindings, &[super::super::CTRL, super::super::SUPER]).unwrap();
+        assert_eq!(conflict.trigger, "CTRL + SUPER + Space");
+        assert_eq!(conflict.description.as_deref(), Some("Background switcher"));
+        assert!(control_conflict("handsfree", "Space", &bindings, &[super::super::ALT]).is_none());
+        assert!(control_conflict("cancel", "Space", &bindings, &[super::super::CTRL, super::super::SUPER]).unwrap().while_holding);
+    }
 
     #[test]
     fn owned_binding_names_require_an_exact_name_or_annotation() {
@@ -215,8 +260,8 @@ mod tests {
     fn unavailable_controls_do_not_fall_back_to_free_function_keys() {
         let bindings = [Binding { key: "Escape".into(), ..Binding::default() },
             Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
-        assert_eq!(control_key(&bindings, "Escape"), None);
-        assert_eq!(control_key(&bindings, "Space"), None);
+        assert_eq!(control_key(&bindings, "Escape"), Some("Escape".into()));
+        assert_eq!(control_key(&bindings, "Space"), Some("Space".into()));
         assert_eq!(control_key(&[], "Escape"), Some("Escape".into()));
         assert_eq!(control_key(&[], "Space"), Some("Space".into()));
     }
@@ -224,11 +269,35 @@ mod tests {
     #[test]
     fn secondary_controls_can_choose_another_key_and_recover_the_requested_key() {
         let bindings = [Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
-        assert_eq!(control_key(&bindings, "Space"), None);
+        assert_eq!(control_key(&bindings, "Space"), Some("Space".into()));
         assert_eq!(control_key(&bindings, "F8"), Some("F8".into()));
         assert_eq!(control_key(&[], "Space"), Some("Space".into()));
         let another_control = [Binding { key: "F8".into(), ignore_mods: true, ..Binding::default() }];
         assert_eq!(control_key(&another_control, "F8"), None);
+    }
+
+    #[test]
+    fn controls_leave_occupied_modifier_combinations_to_the_desktop() {
+        let bindings = [Binding { key: "Space".into(), modmask: 64, ..Binding::default() }];
+        let triggers = control_triggers(&bindings, "Space");
+        assert!(triggers.iter().any(|(mask, _)| *mask == 0));
+        assert!(triggers.iter().any(|(mask, _)| *mask == 68));
+        assert!(!triggers.iter().any(|(mask, _)| *mask == 64));
+    }
+
+    #[test]
+    fn bare_space_conflict_does_not_disable_free_held_combination() {
+        let bindings = [Binding { key: "Space".into(), ..Binding::default() }];
+        assert_eq!(control_key(&bindings, "Space").as_deref(), Some("Space"));
+        assert!(control_triggers(&bindings, "Space").iter().any(|(mask, _)| *mask == 68));
+        assert!(!control_triggers(&bindings, "Space").iter().any(|(mask, _)| *mask == 0));
+        assert!(control_conflict("handsfree", "Space", &bindings, &[super::super::CTRL, super::super::SUPER]).is_none());
+    }
+
+    #[test]
+    fn unknown_desktop_bindings_block_every_control_combination() {
+        let bindings = [Binding { catch_all: true, ignore_mods: true, ..Binding::default() }];
+        assert!(control_triggers(&bindings, "Space").is_empty());
     }
 
     #[test]
