@@ -32,6 +32,29 @@ static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static LOGGER: SessionLogger = SessionLogger;
 static VERBOSE_MODE: AtomicBool = AtomicBool::new(false);
 static LOG_SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
+static PARSER_WARNINGS_SUPPRESSED: AtomicUsize = AtomicUsize::new(0);
+static PARSER_WARNING_SEEN: AtomicBool = AtomicBool::new(false);
+static DEPENDENCY_INFO_FILTERED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn suppressed_parser_warnings() -> usize {
+    PARSER_WARNINGS_SUPPRESSED.load(Ordering::Relaxed)
+}
+
+pub fn filtered_dependency_info() -> usize {
+    DEPENDENCY_INFO_FILTERED.load(Ordering::Relaxed)
+}
+
+fn suppress_repeated_parser_warning(target: &str, level: log::Level, message: &str) -> bool {
+    if target == "html5ever::tree_builder"
+        && level == log::Level::Warn
+        && message == "foster parenting not implemented"
+        && PARSER_WARNING_SEEN.swap(true, Ordering::Relaxed)
+    {
+        PARSER_WARNINGS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+        return true;
+    }
+    false
+}
 
 pub fn init_early() {
     crate::system::diagnostics::init();
@@ -308,10 +331,21 @@ impl Log for SessionLogger {
         if !verbose && record.level() >= log::Level::Debug {
             return;
         }
+        if !verbose && record.level() == log::Level::Info
+            && record.target() != "verenu" && !record.target().starts_with("verenu::")
+        {
+            DEPENDENCY_INFO_FILTERED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let msg = record.args().to_string();
+        if suppress_repeated_parser_warning(record.target(), record.level(), &msg) {
+            return;
+        }
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let redacted = redact_message(&msg);
-        let line = format!("[{}] {:<5} {}", timestamp, record.level(), redacted);
+        let line = format!(
+            "[{}] {:<5} [{}] {}", timestamp, record.level(), record.target(), redacted
+        );
         super::log_files::append(&line);
         let structured = crate::system::diagnostics::record_log(
             record.level().as_str(),
@@ -429,6 +463,26 @@ mod tests {
     }
 
     #[test]
+    fn parser_warning_flood_keeps_one_and_preserves_other_warnings() {
+        let _guard = LOGGER_TEST_LOCK.lock().expect("lock");
+        reset_buffer();
+        super::PARSER_WARNING_SEEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        let before = super::suppressed_parser_warnings();
+        for _ in 0..1005 {
+            log_record(
+                log::Level::Warn, "html5ever::tree_builder", "foster parenting not implemented"
+            );
+        }
+        log_record(log::Level::Warn, "html5ever::tree_builder", "another parser warning");
+        log_record(log::Level::Info, "verenu::pipeline", "pipeline: complete");
+        let lines = buffer_lines();
+        assert_eq!(lines.iter().filter(|line| line.contains("foster parenting not implemented")).count(), 1);
+        assert!(lines.iter().any(|line| line.contains("another parser warning")));
+        assert!(lines.iter().any(|line| line.contains("[verenu::pipeline] pipeline: complete")));
+        assert_eq!(super::suppressed_parser_warnings() - before, 1004);
+    }
+
+    #[test]
     fn verbose_on_keeps_app_debug() {
         let _guard = LOGGER_TEST_LOCK.lock().expect("lock");
         reset_buffer();
@@ -443,6 +497,27 @@ mod tests {
             buffer_lines().iter().any(|l| l.contains("stage detail")),
             "app debug must reach the buffer in verbose mode"
         );
+    }
+
+    #[test]
+    fn dependency_info_is_filtered_by_default_but_warnings_and_verbose_info_remain() {
+        let _guard = LOGGER_TEST_LOCK.lock().expect("lock");
+        reset_buffer();
+        super::set_verbose(false);
+        let before = super::filtered_dependency_info();
+        for _ in 0..1005 {
+            log_record(log::Level::Info, "ort::logging", "runtime detail");
+        }
+        log_record(log::Level::Warn, "ort::logging", "runtime warning");
+        log_record(log::Level::Info, "verenu::pipeline", "pipeline result");
+        super::set_verbose(true);
+        log_record(log::Level::Info, "ort::logging", "verbose runtime detail");
+        super::set_verbose(false);
+        let lines = buffer_lines();
+        assert_eq!(super::filtered_dependency_info() - before, 1005);
+        assert!(lines.iter().any(|line| line.contains("runtime warning")));
+        assert!(lines.iter().any(|line| line.contains("pipeline result")));
+        assert!(lines.iter().any(|line| line.contains("verbose runtime detail")));
     }
 
     #[test]
