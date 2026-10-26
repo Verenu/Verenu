@@ -29,9 +29,10 @@ test('CLI refuses malformed or absent local grants before making a request', asy
   await assert.rejects(invoke('describe', {}, { VERENU_AGENT_TOKEN: 'a'.repeat(64), VERENU_AGENT_PORT: 'https://example.com' }), /Set VERENU_AGENT_TOKEN/);
 });
 
-test('audio policy gives confirmed Yeti headphones priority and leaves unknown routes unchanged', () => {
-  assert.equal(muteForRoute({ input: 'Yeti Nano', output: 'Headphones', activePort: 'headphones' }), false);
-  assert.equal(muteForRoute({ input: 'Yeti Nano', output: 'Pebble V3', activePort: 'speakers' }), true);
-  assert.equal(muteForRoute({ input: 'Yeti Nano', output: 'Unknown', activePort: 'speakers' }), null);
-  assert.equal(muteForRoute({ input: 'Other', output: 'Pebble V3', activePort: 'speakers' }), true);
+test('audio policy uses explicit portable rules, prioritizes unmute and leaves unknown routes unchanged', () => {
+  const policy = { muteOutput: 'speakers', unmuteOutput: 'headphones' };
+  assert.equal(muteForRoute({ output: 'Speakers', activePort: 'headphones' }, policy), false);
+  assert.equal(muteForRoute({ output: 'USB Speakers', activePort: 'lineout' }, policy), true);
+  assert.equal(muteForRoute({ output: 'Unknown', activePort: 'lineout' }, policy), null);
+  assert.equal(muteForRoute({ output: 'Speakers', activePort: 'speakers' }), null);
 });

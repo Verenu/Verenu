@@ -143,13 +143,14 @@ Report gaps when investigating weeks or months; never manufacture a top ten.
 `scripts/audio-policy.mjs` supplies a one-shot Linux PipeWire/PulseAudio example:
 
 ```bash
-node Agent-Skills/verenu-control/scripts/audio-policy.mjs
-node Agent-Skills/verenu-control/scripts/audio-policy.mjs --apply
+node Agent-Skills/verenu-control/scripts/audio-policy.mjs --mute-output speakers --unmute-output headphones
+node Agent-Skills/verenu-control/scripts/audio-policy.mjs --mute-output speakers --unmute-output headphones --apply
 ```
 
-It uses `pactl`'s default input/output and active port. Yeti Nano input with a
-headphone output sets mute off; Pebble V3 output sets it on; an unknown route
-leaves it unchanged. Default mode is a dry run. `--apply` uses validated
+It uses `pactl`'s default output and active port. Supply case-insensitive literal
+substrings matching your output names or ports; there are no built-in device
+rules. An unmute match takes priority, and an unmatched route leaves the setting
+unchanged. Default mode is a dry run. `--apply` uses validated
 `save_setting` and reads the result back. It installs no background watcher and
 does not claim that a saved microphone selection proves the live output route.
 Other platforms can feed their supported device inventory into the same native
