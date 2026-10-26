@@ -38,6 +38,37 @@ async function waitForPanelMotion(target) {
   });
 }
 
+test('long spoken language menu keeps options readable and scrollable', async ({ page, session }) => {
+  const originalLanguage = await session.invoke('get_setting', { key: 'transcription_language' });
+  try {
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    const trigger = page.getByRole('button', { name: 'Spoken language' });
+    await waitForPanelMotion(trigger);
+    await trigger.scrollIntoViewIfNeeded();
+    await trigger.click();
+    const menu = page.locator('#spoken-language-menu');
+    await waitForPanelMotion(menu);
+    const dimensions = await menu.evaluate(element => ({
+      scrollable: element.scrollHeight > element.clientHeight,
+      clippedRows: [...element.querySelectorAll('.ui-dropdown-option')]
+        .filter(option => option.scrollHeight > option.clientHeight + 1).length,
+    }));
+    expect(dimensions.scrollable).toBe(true);
+    expect(dimensions.clippedRows).toBe(0);
+    const lastOption = menu.locator('.ui-dropdown-option').last();
+    const label = await lastOption.locator('span').first().innerText();
+    const code = await lastOption.locator('span').last().textContent();
+    await lastOption.scrollIntoViewIfNeeded();
+    await expect(lastOption).toBeInViewport();
+    await lastOption.click();
+    await expect(menu).toBeHidden();
+    await expect(trigger).toContainText(label);
+    await expect.poll(() => session.invoke('get_setting', { key: 'transcription_language' })).toBe(code);
+  } finally {
+    await session.invoke('save_setting', { key: 'transcription_language', value: originalLanguage ?? 'en' });
+  }
+});
+
 test('privacy and model choice menus use compact styling and stay in the viewport', async ({ page, session }) => {
   const initialAdvanced = await session.invoke('get_setting', { key: 'advanced_model_ui' });
   await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
