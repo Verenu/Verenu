@@ -11,6 +11,7 @@
 
   import DeferredView from '../components/DeferredView.svelte';
   import { lazyComponent } from '../lazyComponent.svelte';
+  import { navigation } from '../navigation.svelte';
   import AboutSection from '../components/settings/AboutSection.svelte';
   import { isAndroid, isMac } from '../platform';
 
@@ -33,9 +34,19 @@
   let previousFocusEl: HTMLElement | null = null;
   let searchHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const section = $derived(appStore.settingsSection);
+  const sectionNavigation = navigation(
+    () => appStore.settingsSection,
+    (next) => !appStore.settingsOpen || next === 'about' ? null : sections[next],
+  );
+  const section = $derived(sectionNavigation.current);
   const sectionReady = $derived(section === 'about' || !!sections[section].component);
-  const animDir = $derived(appStore.settingsAnimDir);
+  let previousSection = appStore.settingsSection;
+  let animDir = $state(1);
+  $effect(() => {
+    const next = section;
+    animDir = directionFromOrder(previousSection, next, SETTINGS_SECTION_ORDER);
+    previousSection = next;
+  });
   const appVersion = $derived(appStore.appVersion);
 
   const mobileGroups = $derived(
@@ -381,18 +392,21 @@
         {#each mobileSections as entry (entry.id)}
           <button
             class="settings-tab"
-            class:active={section === entry.id}
+            class:active={appStore.settingsSection === entry.id}
             role="tab"
-            aria-selected={section === entry.id}
+            aria-selected={appStore.settingsSection === entry.id}
             onclick={() => selectSection(entry.id)}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={section === entry.id ? '2.2' : '1.6'} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html icons[entry.icon]}</svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width={appStore.settingsSection === entry.id ? '2.2' : '1.6'} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html icons[entry.icon]}</svg>
             {entry.label}
           </button>
         {/each}
       </div>
 
       <div class="settings-body" inert={appStore.mobileCompact && appStore.settingsMobileList}>
+        {#if sectionNavigation.loading}
+          <p class="section-loading" role="status">Loading settings…</p>
+        {/if}
         <div class="fade-edge fade-edge-top" class:visible={fadeTop} aria-hidden="true"></div>
         <div class="fade-edge fade-edge-bottom" class:visible={fadeBottom} aria-hidden="true"></div>
         {#key section}
@@ -403,7 +417,7 @@
             in:pageSwap={{ axis: 'y', distance: animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel) }}
             out:pageSwap={{ axis: 'y', distance: -animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}
           >
-            <div class="panel-inner">
+            <div class="panel-inner" inert={sectionNavigation.pending} aria-busy={sectionNavigation.pending}>
               {#if section === 'about'}
                 <AboutSection {appVersion} />
               {:else if (section !== 'permissions' || isMac || isAndroid) && (section !== 'developer' || appStore.devModeEnabled)}
@@ -561,6 +575,20 @@
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     overflow-y: auto;
     scrollbar-gutter: stable;
+  }
+
+  .section-loading {
+    position: absolute;
+    right: 24px;
+    top: max(8px, calc(var(--native-titlebar-height, 0px) + 8px));
+    z-index: 6;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--paper);
+    color: var(--ink-mute);
+    font-size: 12px;
   }
 
   :global(.app[data-android='true']) .panel-inner { width: 100%; }
