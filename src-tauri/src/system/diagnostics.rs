@@ -662,7 +662,7 @@ pub fn record_failure(input: FailureEventInput) -> FailureEvent {
         flags: input.flags,
     };
 
-    with_store(|state| {
+    let event = with_store(|state| {
         let mut event = event;
         event.measurements = bound_measurements(
             std::mem::take(&mut event.measurements),
@@ -714,7 +714,9 @@ pub fn record_failure(input: FailureEventInput) -> FailureEvent {
         }
         state.touch(timestamp_ms);
         event
-    })
+    });
+    super::diagnostic_journal::record(&event);
+    event
 }
 
 pub type FailureInput = FailureEventInput;

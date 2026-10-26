@@ -31,6 +31,12 @@ Stored locally in app storage and SQLite:
 - Custom provider definitions, including base URLs, task-specific model IDs, and non-secret request options. Definitions are included in settings backups; their API keys are not. Custom definitions are device-local and do not participate in LAN settings sync.
 - Context groups, their app/website targets, per-context tone/cleanup overrides, vocabulary, and snippets
 - Transcription history
+- An optional metadata-only agent failure journal. It is off by default and
+  stores daily UTC counts, fixed subsystem/category labels, and diagnostic
+  fingerprints for up to 365 calendar days, including today. It has no history
+  backfill and stores no error messages, prompts, transcripts, paths, model
+  names, or credentials. Disabling it clears its rows logically; it does not
+  promise secure erasure of backups or disk blocks. See [Agent control](AGENT_CONTROL.md).
 - Auto-learn events and candidate data
 - Update-dismiss state
 - A short-lived dictation failover spool (`dictation-failover/` under the app data directory): in-progress audio so a crash or reboot can offer Continue. Deleted after history is saved, on dismiss, or after 24 hours. Not included in backups.
@@ -66,6 +72,22 @@ restart. They contain no dictated text and are not sent as analytics.
 Current logging paths are intended to use redacted metadata rather than raw private content. That means counts, ids, model names, app identifiers, filenames, and redacted path labels are preferred over dictated text, prompt bodies, raw dictionary terms, raw snippet expansions, or full local paths.
 
 Even with that hardening, log exports can still contain sensitive operational detail. Do not share them casually.
+
+### Optional local agent control
+
+Desktop builds can expose the versioned agent API only when they are launched
+with an explicit 64-character hexadecimal bearer grant (generate it from 32
+random bytes) and a port. The listener binds to `127.0.0.1`; Verenu does not
+save the grant. A local process holding it can read app settings (including
+prompt and custom-provider configuration), Contexts, the current redacted
+diagnostics snapshot, and retained history, and can change allowlisted settings
+and Contexts. It does not read API keys from the native credential store.
+History text is returned only when the caller explicitly requests it. The API
+has no credential-read, arbitrary SQL,
+shell, audio-capture, or text-injection operation. Requests stay on the device;
+the prompt-test operation can make the same provider request as the app and
+send its test prompt to the configured provider. See [Agent control](AGENT_CONTROL.md)
+for installation, access, bounds, and retention details.
 
 ### Backups
 
@@ -286,6 +308,7 @@ That said, once data is sent to a third-party AI provider, that provider's reten
 | API health check | current app state stays local | on-demand GET to `api.verenu.com/v1/health`; no automatic polling |
 | Export data | backup file on local disk | nothing unless you share the file yourself |
 | Logs export | log file on local disk | nothing unless you share the file yourself |
+| Optional agent control | settings, Contexts, and explicitly requested history stay in the local app and local caller; the failure journal is opt-in and metadata-only | local loopback only, except when its prompt-test operation calls the configured AI provider |
 | Optional desktop/Android product analytics | random installation identity, first-seen version, milestone state, and local queues | approved events with random installation/session/run IDs and sanitized failure reports; see [contract](ANALYTICS.md) |
 
 ## If You Change Privacy Behavior
