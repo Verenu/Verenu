@@ -58,6 +58,7 @@ fn malformed_import_never_reaches_restore_side_effects() {
     assert_rejected_without_restore(&missing_field.to_string());
     assert_rejected_without_restore(&(valid_backup("2").to_string() + " trailing garbage"));
     assert_rejected_without_restore(&valid_backup("future").to_string());
+    assert_rejected_without_restore(&valid_backup("3").to_string());
 }
 
 #[test]
@@ -71,4 +72,14 @@ fn supported_import_versions_reach_restore_after_complete_decode() {
         .unwrap();
         assert!(applied);
     }
+}
+
+#[test]
+fn legacy_backup_word_total_is_decoded() {
+    let mut value = valid_backup("2");
+    value["stats"] = serde_json::json!({"total_words": 123, "avg_wpm": 42.0});
+    with_import_payload(&value.to_string(), |payload| {
+        assert_eq!(payload.stats.total_words, 123);
+        Ok(())
+    }).unwrap();
 }

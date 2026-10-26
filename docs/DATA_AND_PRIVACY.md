@@ -98,14 +98,28 @@ Current backup export includes:
 - Settings
 - Context groups, app/website targets, context assignments, context-specific
   vocabulary and AutoLearn correction mappings, and snippets
-- Derived stats
+- Retained transcription history, including raw and cleaned text, timestamps,
+  Contexts, and provider usage records. The backup file is sensitive.
+- Lifetime, daily, Context, hourly and provider Insights, including summaries
+  retained after history is pruned. Import deduplicates retained records by UUID.
+  Historical summaries do not identify individual dictations; overlapping
+  summaries are reconciled conservatively and reported when uncertain, so some
+  totals can be incomplete. Imported history remains subject to retention.
+  Per-device counters from LAN sync are excluded because adding them to imported
+  history or reconnecting the same peer could count the same words twice; the
+  import report flags this limitation. Pairing identity is never transferred.
 
 Short-lived AutoLearn candidate/pending evidence is intentionally local-only
 and is not exported or synchronized. Pending correction evidence expires after
 30 days. Persistent promoted mappings retain their originating Context during
 backup restore and LAN sync.
 
-Current backup export does not include full transcription history.
+Backups exclude API keys, device pairing and sync identity, local microphone
+and shortcut selections, downloaded models, temporary caches, pending learning
+evidence, and the in-progress audio spool. These are credentials, device-local
+state, replaceable downloads, or transient data. App targets are matched to
+installed apps on the destination; weak, ambiguous, or conflicting matches are
+left out and reported.
 
 Import and restore paths validate supported setting values and reject oversized prompt overrides, snippet bodies, and unsupported context-target values instead of silently accepting junk. Legacy app-mapping exports remain supported for migration.
 

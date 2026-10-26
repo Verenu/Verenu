@@ -26,11 +26,14 @@ fn stage_backup(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) ->
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
             Ok(file) => {
                 created = Some((StagedBackup(candidate), file));
                 break;
@@ -94,6 +97,16 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
         assert_eq!(fs::read(destination).unwrap(), b"previous good backup");
         fixture.assert_no_staging_files();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_is_private_to_the_current_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let path = fixture.destination();
+        write_backup(&path, b"synthetic").unwrap();
+        assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o077, 0);
     }
 
     #[test]
