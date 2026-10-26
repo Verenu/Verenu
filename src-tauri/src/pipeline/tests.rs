@@ -520,7 +520,7 @@ fn mapping(exe: &str, profile: &str, cleanup_intensity: Option<&str>) -> AppMapp
 fn app_mapping_override_applies_for_matching_app() {
     let mut cfg = base_config();
     let m = mapping("appa.exe", "very_casual", Some("high"));
-    let profile = apply_app_style_overrides(&mut cfg, Some(&m), None);
+    let profile = apply_app_style_overrides(&mut cfg, Some(&m), None, None);
     assert_eq!(profile, "very_casual");
     assert_eq!(cfg.cleanup_intensity, "high");
 }
@@ -528,7 +528,7 @@ fn app_mapping_override_applies_for_matching_app() {
 #[test]
 fn app_mapping_no_match_leaves_global_defaults_untouched() {
     let mut cfg = base_config();
-    let profile = apply_app_style_overrides(&mut cfg, None, None);
+    let profile = apply_app_style_overrides(&mut cfg, None, None, None);
     assert_eq!(profile, "casual");
     assert_eq!(cfg.cleanup_intensity, "medium");
 }
@@ -537,9 +537,60 @@ fn app_mapping_no_match_leaves_global_defaults_untouched() {
 fn app_mapping_empty_override_fields_fall_back_to_globals() {
     let mut cfg = base_config();
     let m = mapping("appa.exe", "   ", Some("   "));
-    let profile = apply_app_style_overrides(&mut cfg, Some(&m), None);
+    let profile = apply_app_style_overrides(&mut cfg, Some(&m), None, None);
     assert_eq!(profile, "casual");
     assert_eq!(cfg.cleanup_intensity, "medium");
+}
+
+#[test]
+fn everywhere_style_applies_to_unmatched_dictations() {
+    let mut cfg = base_config();
+    let everywhere = style_context(1, true, Some("formal"), Some("high"), Some(true));
+    let profile = apply_app_style_overrides(&mut cfg, None, None, Some(&everywhere));
+    assert_eq!(profile, "formal");
+    assert_eq!(cfg.cleanup_intensity, "high");
+    assert!(!cfg.contextual_formatting_enabled);
+}
+
+#[test]
+fn matched_context_overrides_everywhere_and_clearing_restores_inheritance_order() {
+    let mapping = mapping("editor.exe", "very_casual", Some("medium"));
+    let everywhere = style_context(1, true, Some("formal"), Some("high"), Some(true));
+    let matched = style_context(2, false, Some("casual"), Some("low"), Some(false));
+
+    let mut cfg = base_config();
+    let profile =
+        apply_app_style_overrides(&mut cfg, Some(&mapping), Some(&matched), Some(&everywhere));
+    assert_eq!(profile, "casual");
+    assert_eq!(cfg.cleanup_intensity, "low");
+    assert!(cfg.contextual_formatting_enabled);
+
+    let inherited = style_context(2, false, None, None, None);
+    let mut cfg = base_config();
+    let profile = apply_app_style_overrides(
+        &mut cfg,
+        Some(&mapping),
+        Some(&inherited),
+        Some(&everywhere),
+    );
+    assert_eq!(
+        profile, "very_casual",
+        "legacy per-app tone mapping remains more specific than Everywhere"
+    );
+    assert_eq!(
+        cfg.cleanup_intensity, "medium",
+        "legacy per-app cleanup mapping remains more specific than Everywhere"
+    );
+    assert!(
+        !cfg.contextual_formatting_enabled,
+        "clearing the local formatting override restores the Everywhere value"
+    );
+
+    let mut cfg = base_config();
+    let profile = apply_app_style_overrides(&mut cfg, None, Some(&inherited), Some(&everywhere));
+    assert_eq!(profile, "formal");
+    assert_eq!(cfg.cleanup_intensity, "high");
+    assert!(!cfg.contextual_formatting_enabled);
 }
 
 #[test]
@@ -557,17 +608,49 @@ fn context_can_disable_contextual_formatting_without_changing_global_setting() {
         contextual_formatting_disabled: true,
         paste_in_chunks: true,
         t3_skill_mentions_disabled: false,
+        contextual_formatting_override: Some(true),
         pinned_at: None,
         created_at: String::new(),
         updated_at: String::new(),
     };
 
-    apply_app_style_overrides(&mut cfg, None, Some(&context));
+    apply_app_style_overrides(&mut cfg, None, Some(&context), None);
     assert!(!cfg.contextual_formatting_enabled);
     assert_eq!(cfg.paste_in_chunks, cfg!(desktop));
 
     let global_cfg = base_config();
     assert!(global_cfg.contextual_formatting_enabled);
+}
+
+fn style_context(
+    id: i64,
+    is_everywhere: bool,
+    tone: Option<&str>,
+    cleanup_intensity: Option<&str>,
+    contextual_formatting_override: Option<bool>,
+) -> db::Context {
+    db::Context {
+        id,
+        name: if is_everywhere {
+            "Everywhere"
+        } else {
+            "Targeted"
+        }
+        .into(),
+        is_everywhere,
+        icon: None,
+        tone: tone.map(str::to_owned),
+        cleanup_intensity: cleanup_intensity.map(str::to_owned),
+        color: None,
+        custom_instructions: None,
+        contextual_formatting_disabled: contextual_formatting_override == Some(true),
+        contextual_formatting_override,
+        paste_in_chunks: false,
+        t3_skill_mentions_disabled: false,
+        pinned_at: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
 }
 
 #[test]

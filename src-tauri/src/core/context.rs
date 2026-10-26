@@ -307,6 +307,7 @@ mod tests {
             contextual_formatting_disabled: false,
             paste_in_chunks: false,
             t3_skill_mentions_disabled: false,
+            contextual_formatting_override: None,
             pinned_at: None,
             created_at: String::new(),
             updated_at: String::new(),

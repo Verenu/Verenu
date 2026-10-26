@@ -2,9 +2,9 @@
 
 Vocabulary tells Verenu about words that transcription models often miss, such as names, brands, product names, and technical terms.
 
-Vocabulary belongs to a context. Add it to **Everywhere** for dictation without
-a matching targeted context, or add it to a specific context when it belongs
-in certain apps or websites. Assign an entry to multiple contexts to reuse it.
+Vocabulary saved to **Everywhere** applies to every dictation. A targeted
+context inherits it and can add its own terms or correction patterns. Assign a
+local entry to multiple contexts to reuse it.
 
 ## Add a vocabulary entry
 
@@ -25,14 +25,21 @@ You can dictate into either field with the small microphone button beside it.
 
 When a context is active, Verenu uses its vocabulary while preparing and cleaning the dictation. Distinctive corrections can also be applied mechanically after cleanup. Common, ambiguous corrections are handled contextually so a learned correction does not rewrite every ordinary use of a word.
 
-An entry can belong to several contexts. To reuse one, add it to another context rather than creating a duplicate. To remove it from the current context without deleting it, open the row menu and choose **Move to...**.
+An entry can belong to several contexts. To reuse one, add it to another
+context rather than creating a duplicate. To remove a local entry from the
+current context without deleting it, open the row menu and choose **Move to...**.
 
 The canonical term can therefore be shared while its mistranscription mappings
-remain context-specific. Adding a shared term to another context does not copy
-AutoLearn mappings or evidence into that context; a mapping becomes effective
-there only when it is explicitly entered, intentionally moved, or learned
-there. **Everywhere** is the fallback context when no targeted context matches,
-not a parent whose vocabulary is inherited by every targeted context.
+remain context-specific. Everywhere correction patterns are inherited. A local
+pattern with the same spelling takes precedence; other local patterns are added
+alongside the global ones. Saving a local correction to an inherited term
+creates a group-specific mapping, and clearing that local mapping returns to
+the inherited pattern. Editing the canonical term changes its shared spelling.
+
+Auto-learn remains active. Corrections learned while Everywhere is selected
+become global vocabulary; corrections learned in a targeted group stay with
+that group. A local learned pattern can therefore take precedence over the
+same inherited pattern without disabling learning elsewhere.
 
 Deleting the entry removes it from every context. Deleting a context moves its entries to Everywhere instead.
 

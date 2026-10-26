@@ -49,7 +49,7 @@ test('mobile Context editor hides desktop paste preference and preserves synced 
     await page.getByRole('tab', { name: 'Synced desktop CLI', exact: true }).click();
     await page.getByRole('button', { name: 'Edit context group', exact: true }).click();
     await page.locator('.advanced-trigger').click();
-    await page.getByRole('switch', { name: 'Disable smart formatting for this context', exact: true }).scrollIntoViewIfNeeded();
+    await page.getByRole('button', { name: 'Smart formatting', exact: true }).scrollIntoViewIfNeeded();
     await expect(page.getByRole('switch', { name: 'Paste in Chunks', exact: true })).toHaveCount(0);
     await page.screenshot({ path: path.join(evidenceDir, `paste-chunks-mobile-${test.info().project.name}.png`) });
     await page.getByRole('button', { name: 'Save changes', exact: true }).click();

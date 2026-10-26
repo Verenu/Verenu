@@ -412,8 +412,8 @@
     closeContextMenu();
     try {
       const [dictionary, snippets] = await Promise.all([
-        invoke<{ id: number }[]>('get_context_dictionary', { contextId: context.id }),
-        invoke<{ id: number }[]>('get_context_snippets', { contextId: context.id }),
+        invoke<{ id: number; assigned_to_context?: boolean }[]>('get_context_dictionary', { contextId: context.id }),
+        invoke<{ id: number; assigned_to_context?: boolean }[]>('get_context_snippets', { contextId: context.id }),
       ]);
       const duplicate = await invoke<Context>('create_context', {
         name: duplicateContextName(context.name),
@@ -421,7 +421,7 @@
         tone: context.tone,
         cleanupIntensity: context.cleanup_intensity,
         customInstructions: context.custom_instructions,
-        contextualFormattingDisabled: context.contextual_formatting_disabled,
+        contextualFormattingOverride: context.contextual_formatting_override,
       });
       try {
         if (context.color) {
@@ -429,12 +429,12 @@
           duplicate.color = context.color;
         }
         await Promise.all([
-          ...dictionary.map((entry) => invoke('set_dictionary_context_assignment', {
+          ...dictionary.filter((entry) => entry.assigned_to_context !== false).map((entry) => invoke('set_dictionary_context_assignment', {
             contextId: duplicate.id,
             dictionaryId: entry.id,
             assigned: true,
           })),
-          ...snippets.map((snippet) => invoke('set_snippet_context_assignment', {
+          ...snippets.filter((snippet) => snippet.assigned_to_context !== false).map((snippet) => invoke('set_snippet_context_assignment', {
             contextId: duplicate.id,
             snippetId: snippet.id,
             assigned: true,

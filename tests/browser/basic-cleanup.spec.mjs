@@ -56,12 +56,12 @@ test('Basic selection and independently opt-in commands persist without a prompt
   }
 });
 
-test('Context cleanup hint follows the effective cleanup when Use default is selected', async ({ page, session }) => {
+test('Context cleanup hint follows the effective cleanup when inheritance is selected', async ({ page, session }) => {
   const previousIntensity = await session.invoke('get_setting', { key: 'cleanup_intensity' });
   const name = `Inherited hint ${Date.now()}`;
   let created;
   const basicNote = 'Basic cleanup runs on this device and ignores the tone and custom instructions above.';
-  const aiHint = 'Sent to the AI cleanup model for this context.';
+  const aiHint = 'Everywhere instructions run first. Add group-specific instructions here, or leave blank to inherit only.';
   const openNew = async () => {
     await page.getByRole('button', { name: 'New context group', exact: true }).click();
     return page.getByRole('dialog', { name: 'New context group', exact: true });
@@ -88,11 +88,11 @@ test('Context cleanup hint follows the effective cleanup when Use default is sel
     await expectBasic(dialog, true);
     await choose(dialog, 'Light');
     await expectAi(dialog);
-    await choose(dialog, 'Use default');
+    await choose(dialog, 'Use inherited setting');
     await expectBasic(dialog, true);
     await choose(dialog, 'Basic');
     await expectBasic(dialog, false);
-    await choose(dialog, 'Use default');
+    await choose(dialog, 'Use inherited setting');
     await dialog.getByLabel('Context group name').fill(name);
     await dialog.getByRole('button', { name: 'Create context group', exact: true }).click();
     await expect(dialog).toBeHidden();
