@@ -645,6 +645,8 @@ fn style_context(
         custom_instructions: None,
         contextual_formatting_disabled: contextual_formatting_override == Some(true),
         contextual_formatting_override,
+        paste_in_chunks: false,
+        t3_skill_mentions_disabled: false,
         pinned_at: None,
         created_at: String::new(),
         updated_at: String::new(),

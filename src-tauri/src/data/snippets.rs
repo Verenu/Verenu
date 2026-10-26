@@ -500,6 +500,8 @@ mod tests {
     #[test]
     fn alternate_expands_only_primary_snippets_and_keeps_other_triggers_as_barriers() {
         let snippets = vec![db::Snippet {
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
             id: 1,
             trigger: "signoff, new paragraph".into(),
             expansion: "Thanks! scratch that".into(),

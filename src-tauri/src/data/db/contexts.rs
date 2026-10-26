@@ -283,19 +283,12 @@ pub fn insert_context_returning(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn insert_context_with_delivery(
     db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: bool,
 ) -> Result<Context> {
     insert_context_with_override_and_delivery(db, name, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled.then_some(true), paste_in_chunks)
-}
-
-#[cfg(test)]
-pub fn insert_context_returning_with_override(
-    db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
-    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>,
-) -> Result<Context> {
-    insert_context_with_override_and_delivery(db, name, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_override, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -440,6 +433,7 @@ pub fn update_context_settings(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn update_context_settings_with_delivery(
     db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: Option<bool>,
@@ -1129,6 +1123,8 @@ mod tests {
                 true,
             )
             .expect("context with formatting disabled");
+            update_context_paste_in_chunks(&db, disabled.id, true).unwrap();
+            update_context_t3_skill_mentions(&db, disabled.id, false).unwrap();
             insert_dictionary_entry(&db, "Verenu", Some("Varinu")).expect("dictionary row");
             insert_snippet(&db, "sig", "signature", "").expect("snippet row");
 
@@ -1150,6 +1146,8 @@ mod tests {
         let disabled = query_context(&migrated, disabled_id).expect("disabled context");
         assert_eq!(follows_global.contextual_formatting_override, None);
         assert_eq!(disabled.contextual_formatting_override, Some(true));
+        assert!(disabled.paste_in_chunks);
+        assert!(disabled.t3_skill_mentions_disabled);
         assert_eq!(follows_global.tone.as_deref(), Some("formal"));
         assert_eq!(follows_global.cleanup_intensity.as_deref(), Some("high"));
         assert_eq!(

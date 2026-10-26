@@ -2936,7 +2936,7 @@ mod payload_tests {
                 json!({
                     "name": "Work", "is_everywhere": false, "icon": "W", "tone": "casual",
                     "cleanup_intensity": "light", "color": "#123456", "custom_instructions": "Keep café",
-                    "contextual_formatting_disabled": true, "paste_in_chunks": true,
+                    "contextual_formatting_disabled": true, "contextual_formatting_override": null, "paste_in_chunks": true,
                     "t3_skill_mentions_disabled": false,
                     "pinned_at": "2026-01-02", "created_at": "2026-01-01", "updated_at": "2026-01-02",
                     "targets": [{"executable": "editor", "platform": "linux", "app_name": "Editor", "developer": "Example"}],

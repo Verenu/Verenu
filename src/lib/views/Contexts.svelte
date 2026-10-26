@@ -158,7 +158,6 @@
   let modalTone = $state<string | null>(null);
   let modalCleanupIntensity = $state<string | null>(null);
   let globalCleanupIntensity = $state<string | null>(null);
-  const inheritsBasicCleanup = $derived(modalCleanupIntensity === null && globalCleanupIntensity === 'rules');
   let modalCustomInstructions = $state('');
   let modalPasteInChunks = $state(false);
   let modalT3Enabled = $state(true);
@@ -210,6 +209,8 @@
     contexts.find((context) => context.id === selectedContextId) ?? contexts[0] ?? null,
   );
   const everywhereContext = $derived(contexts.find((context) => context.is_everywhere) ?? null);
+  const inheritsBasicCleanup = $derived(modalCleanupIntensity === null
+    && ((!isEditingEverywhere() && everywhereContext?.cleanup_intensity) || globalCleanupIntensity) === 'rules');
   function isEditingEverywhere(): boolean {
     return contexts.find((context) => context.id === editingContextId)?.is_everywhere ?? false;
   }

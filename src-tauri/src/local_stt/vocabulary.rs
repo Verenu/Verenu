@@ -64,6 +64,18 @@ impl Vocabulary {
 mod tests {
     use super::*;
     #[test]
+    fn everywhere_terms_are_inherited_by_captured_groups() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        let group = crate::data::db::insert_context_returning(&db, "Speech", None, None, None, None, false).unwrap();
+        crate::data::db::insert_dictionary_entry_returning(&db, "Baseline", Some("base line"), None).unwrap();
+        crate::data::db::insert_dictionary_entry_returning(&db, "Specific", None, Some(group.id)).unwrap();
+        let captured = Vocabulary::for_context(&db, group.id).unwrap();
+        assert!(captured.terms().iter().any(|term| term == "Baseline"));
+        assert!(captured.terms().iter().any(|term| term == "Specific"));
+        assert!(!captured.terms().iter().any(|term| term == "base line"));
+    }
+
+    #[test]
     fn captured_context_never_contains_other_contexts_or_mistake_strings() {
         let db = crate::data::db::open(":memory:").unwrap();
         let a = crate::data::db::insert_context_returning(
