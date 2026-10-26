@@ -1,5 +1,4 @@
 <script lang="ts">
-  import T3ContextSetting from '../components/T3ContextSetting.svelte';
   import { isT3App } from '../t3Skills';
   import ContextIcon from '../components/ContextIcon.svelte';
   import ColorSwatches from '../components/ColorSwatches.svelte';
@@ -164,9 +163,12 @@
   let modalContextualFormattingDisabled = $state(false);
   let modalPasteInChunks = $state(false);
   let modalT3Enabled = $state(true);
-  let savingT3 = $state(false);
   let modalAdvancedOpen = $state(false);
   let editingContextId = $state<number | null>(null);
+  const modalHasT3Setting = $derived(!isAndroid && (contextModalMode === 'create'
+    ? modalApps.some(app => isT3App(app.exe))
+    : contexts.some(context => context.id === editingContextId && context.is_everywhere)
+      || [...targets, ...contextsStore.subApps].some(target => target.context_id === editingContextId && isT3App(target.executable))));
   let openFieldMenu = $state<'tone' | 'cleanup' | null>(null);
   let fieldMenuPos = $state<{ top: number; left: number; width: number } | null>(null);
   let toneTrigger = $state<HTMLButtonElement | null>(null);
@@ -201,18 +203,6 @@
   const selectedTargets = $derived(targets.filter((target) => target.context_id === selectedContextId));
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
   const selectedSubApps = $derived(isAndroid ? [] : contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
-  const hasT3Target = $derived([...selectedTargets, ...selectedSubApps].some(target => isT3App(target.executable)));
-
-  async function setT3Enabled(enabled: boolean) {
-    if (!selectedContext || savingT3) return;
-    const id = selectedContext.id;
-    savingT3 = true;
-    try {
-      await invoke('set_context_t3_skill_mentions', { contextId: id, enabled });
-      contextsStore.contexts = contextsStore.contexts.map(context => context.id === id ? { ...context, t3_skill_mentions_disabled: !enabled } : context);
-    } catch (error) { contextErrorMessage = classifyIpcError(error).message; }
-    finally { savingT3 = false; }
-  }
   const unassignedSubApps = $derived(contextsStore.subApps.filter((subApp) => subApp.context_id === null));
   const captureKeys = $derived(subAppCaptureKeys(desktopShortcut('capture')?.active ?? appStore.subAppCaptureHotkey));
   const MATCH_MODE_PHRASE = { contains: 'contains', starts_with: 'starts with', equals: 'is' } as const;
@@ -826,11 +816,14 @@
           contextualFormattingDisabled: modalContextualFormattingDisabled,
           ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
+        if (modalHasT3Setting && !modalT3Enabled !== !!editing.t3_skill_mentions_disabled) {
+          await invoke('set_context_t3_skill_mentions', { contextId: editing.id, enabled: modalT3Enabled });
+        }
         if (modalColor !== editing.color) {
           await invoke('update_context_color', { contextId: editing.id, color: modalColor });
         }
         contextsStore.contexts = contexts.map((context) => context.id === editing.id
-          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: modalContextualFormattingDisabled, paste_in_chunks: modalPasteInChunks, color: modalColor, updated_at: new Date().toISOString() }
+          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: modalContextualFormattingDisabled, paste_in_chunks: modalPasteInChunks, t3_skill_mentions_disabled: modalHasT3Setting ? !modalT3Enabled : context.t3_skill_mentions_disabled, color: modalColor, updated_at: new Date().toISOString() }
           : context);
       } else {
         const created = await invoke<Context>('create_context', {
@@ -843,7 +836,7 @@
           ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         createdContextId = created.id;
-        if (!modalT3Enabled) {
+        if (modalHasT3Setting && !modalT3Enabled) {
           await invoke('set_context_t3_skill_mentions', { contextId: created.id, enabled: false });
           created.t3_skill_mentions_disabled = true;
         }
@@ -1234,9 +1227,6 @@
           </div>
         {/if}
 
-        {#if !isAndroid && (hasT3Target || selectedContext.is_everywhere)}
-          <T3ContextSetting enabled={!selectedContext.t3_skill_mentions_disabled} disabled={savingT3} onchange={(value) => void setT3Enabled(value)} />
-        {/if}
 
         <div class="tabs" role="tablist" tabindex="-1" bind:this={tablistEl} onkeydown={handleTablistKeydown}>
           {#each CONTEXT_TABS as t}
@@ -1605,6 +1595,12 @@
                 <Toggle checked={modalPasteInChunks} onchange={(value) => modalPasteInChunks = value} label="Paste in Chunks" />
               </div>
             {/if}
+            {#if modalHasT3Setting}
+              <div class="advanced-setting-row">
+                <span class="advanced-setting-label">Format T3 Code skill names</span>
+                <Toggle checked={modalT3Enabled} onchange={(value) => modalT3Enabled = value} label="Format spoken skill names in T3 Code" />
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1644,9 +1640,6 @@
           onkeydown={handleModalAppKeydown}
         />
 
-        {#if !isAndroid && modalApps.some(app => isT3App(app.exe))}
-          <T3ContextSetting enabled={modalT3Enabled} onchange={(value) => modalT3Enabled = value} />
-        {/if}
 
         <label class="field-label" for="context-website">Attach websites (optional)</label>
         {#if modalWebsites.length > 0}
