@@ -120,7 +120,7 @@
   let selectedDictionary = $state<DictionaryEntry | null>(null);
   let selectedSnippet = $state<Snippet | null>(null);
   let openRowMenu = $state<{ kind: 'dictionary' | 'snippet'; id: number } | null>(null);
-  let rowMenuPos = $state<{ top: number; right: number } | null>(null);
+  let rowMenuPos = $state<{ top: number; above: number; right: number } | null>(null);
   let rowMenuDeleteArmed = $state(false);
   let rowMenuShowMove = $state(false);
   let modal = $state<'context' | 'dictionary' | 'snippet' | null>(null);
@@ -160,19 +160,28 @@
   let globalCleanupIntensity = $state<string | null>(null);
   const inheritsBasicCleanup = $derived(modalCleanupIntensity === null && globalCleanupIntensity === 'rules');
   let modalCustomInstructions = $state('');
-  let modalContextualFormattingDisabled = $state(false);
   let modalPasteInChunks = $state(false);
   let modalT3Enabled = $state(true);
-  let modalAdvancedOpen = $state(false);
-  let editingContextId = $state<number | null>(null);
   const modalHasT3Setting = $derived(!isAndroid && (contextModalMode === 'create'
     ? modalApps.some(app => isT3App(app.exe))
     : contexts.some(context => context.id === editingContextId && context.is_everywhere)
       || [...targets, ...contextsStore.subApps].some(target => target.context_id === editingContextId && isT3App(target.executable))));
-  let openFieldMenu = $state<'tone' | 'cleanup' | null>(null);
-  let fieldMenuPos = $state<{ top: number; left: number; width: number } | null>(null);
+  let modalContextualFormattingChoice = $state<'inherit' | 'enabled' | 'disabled'>('inherit');
+  let modalAdvancedOpen = $state(false);
+  let editingContextId = $state<number | null>(null);
+  // Tone/cleanup dropdown menus render fixed-position at the top level (not
+  // nested in the modal card) because the modal card and body both clip
+  // overflow — an absolutely-positioned menu inside them gets cut off.
+  let openFieldMenu = $state<'tone' | 'cleanup' | 'formatting' | null>(null);
+  let fieldMenuPos = $state<{ top: number; above: number; left: number; width: number } | null>(null);
   let toneTrigger = $state<HTMLButtonElement | null>(null);
   let cleanupTrigger = $state<HTMLButtonElement | null>(null);
+  let formattingTrigger = $state<HTMLButtonElement | null>(null);
+  const contextualFormattingOptions: { value: 'inherit' | 'enabled' | 'disabled'; label: string }[] = [
+    { value: 'inherit', label: 'Use Everywhere' },
+    { value: 'enabled', label: 'On' },
+    { value: 'disabled', label: 'Off' },
+  ];
   let appPickerOpen = $state(false);
   let appPickerQuery = $state('');
   let appPickerInput = $state<HTMLInputElement | null>(null);
@@ -200,6 +209,16 @@
   const selectedContext = $derived(
     contexts.find((context) => context.id === selectedContextId) ?? contexts[0] ?? null,
   );
+  const everywhereContext = $derived(contexts.find((context) => context.is_everywhere) ?? null);
+  function isEditingEverywhere(): boolean {
+    return contexts.find((context) => context.id === editingContextId)?.is_everywhere ?? false;
+  }
+  function inheritedStyleLabel(kind: 'tone' | 'cleanup'): string {
+    if (isEditingEverywhere()) return 'Use inherited setting';
+    const value = kind === 'tone' ? everywhereContext?.tone : everywhereContext?.cleanup_intensity;
+    if (!value) return 'Use inherited setting';
+    return `Everywhere · ${kind === 'tone' ? getProfileLabel(value) : getCleanupIntensityLabel(value)}`;
+  }
   const selectedTargets = $derived(targets.filter((target) => target.context_id === selectedContextId));
   const selectedWebsites = $derived(websites.filter((site) => site.context_id === selectedContextId));
   const selectedSubApps = $derived(isAndroid ? [] : contextsStore.subApps.filter((subApp) => subApp.context_id === selectedContextId));
@@ -482,14 +501,24 @@
     rowMenuShowMove = false;
   }
 
+  function isInheritedDictionaryEntry(id: number): boolean {
+    const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
+    return Boolean(entry?.inherited_from_everywhere && !entry.assigned_to_context);
+  }
+
+  function isEverywhereSnippet(id: number): boolean {
+    return Boolean(snippets.find((candidate) => candidate.id === id)?.inherited_from_everywhere);
+  }
+
   function toggleRowMenu(kind: 'dictionary' | 'snippet', id: number, trigger: HTMLButtonElement | null) {
+    if (kind === 'snippet' && isEverywhereSnippet(id)) return;
     if (openRowMenu?.kind === kind && openRowMenu.id === id) {
       closeRowMenu();
       return;
     }
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    rowMenuPos = { top: rect.bottom + 4, right: window.innerWidth - rect.right };
+    rowMenuPos = { top: rect.bottom + 4, above: rect.top - 4, right: window.innerWidth - rect.right };
     openRowMenu = { kind, id };
     rowMenuDeleteArmed = false;
     rowMenuShowMove = false;
@@ -501,12 +530,11 @@
         const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
         if (!entry) throw new Error('The dictionary entry is no longer in this context.');
         await moveContextDictionaryEntry(entry, selectedContextId, targetContextId);
-        dictionary = dictionary.filter((candidate) => dictionaryEntryId(candidate) !== id);
       } else {
         await invoke('set_snippet_context_assignment', { contextId: targetContextId, snippetId: id, assigned: true });
         await invoke('set_snippet_context_assignment', { contextId: selectedContextId, snippetId: id, assigned: false });
-        snippets = snippets.filter((snippet) => snippet.id !== id);
       }
+      await loadContextItems(selectedContextId);
     } catch (error) {
       contextErrorMessage = classifyIpcError(error).message;
     } finally {
@@ -516,6 +544,7 @@
 
   function handleItemRowClick(kind: 'dictionary' | 'snippet', id: number, event: MouseEvent) {
     if (event.target instanceof Element && event.target.closest('.item-kebab')) return;
+    if (kind === 'snippet' && isEverywhereSnippet(id)) return;
     const trigger = (event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('.item-kebab');
     toggleRowMenu(kind, id, trigger);
   }
@@ -575,7 +604,12 @@
 
   function editDictionary(entry: DictionaryEntry) {
     closeRowMenu();
-    selectedDictionary = entry;
+    selectedDictionary = entry.inherited_from_everywhere && selectedContextId !== EVERYWHERE_ID
+      ? {
+          ...entry,
+          mistake: (entry.context_corrections ?? []).map((correction) => correction.mistake).join(', ') || null,
+        }
+      : entry;
     dictionaryModalContextId = selectedContextId;
     modal = 'dictionary';
   }
@@ -596,7 +630,7 @@
         const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
         if (!entry) throw new Error('The dictionary entry is no longer in this context.');
         await removeContextDictionaryEntry(entry, selectedContextId);
-        dictionary = dictionary.filter((candidate) => dictionaryEntryId(candidate) !== id);
+        await loadContextItems(selectedContextId);
       } else {
         await invoke('remove_snippet', { id });
         snippets = snippets.filter((snippet) => snippet.id !== id);
@@ -626,7 +660,9 @@
     modalTone = editing?.tone ?? null;
     modalCleanupIntensity = editing?.cleanup_intensity ?? null;
     modalCustomInstructions = editing?.custom_instructions ?? '';
-    modalContextualFormattingDisabled = editing?.contextual_formatting_disabled ?? false;
+    modalContextualFormattingChoice = editing?.contextual_formatting_override === null || editing?.contextual_formatting_override === undefined
+      ? 'inherit'
+      : editing.contextual_formatting_override ? 'disabled' : 'enabled';
     modalPasteInChunks = editing?.paste_in_chunks ?? false;
     modalT3Enabled = !editing?.t3_skill_mentions_disabled;
     modalAdvancedOpen = false;
@@ -670,14 +706,21 @@
     fieldMenuPos = null;
   }
 
-  function toggleFieldMenu(which: 'tone' | 'cleanup', trigger: HTMLButtonElement | null) {
+  function fitMenuToViewport(node: HTMLElement, above: number) {
+    const top = Number.parseFloat(node.style.top);
+    const bottom = document.querySelector('.context-modal .ui-modal-body')?.getBoundingClientRect().bottom ?? window.innerHeight;
+    const fittedTop = top + node.offsetHeight > bottom - 8 ? above - node.offsetHeight : top;
+    node.style.top = `${Math.max(8, fittedTop)}px`;
+  }
+
+  function toggleFieldMenu(which: 'tone' | 'cleanup' | 'formatting', trigger: HTMLButtonElement | null) {
     if (openFieldMenu === which) {
       closeFieldMenu();
       return;
     }
     if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    fieldMenuPos = { top: rect.bottom + 4, left: rect.left, width: rect.width };
+    fieldMenuPos = { top: rect.bottom + 4, above: rect.top - 4, left: rect.left, width: rect.width };
     openFieldMenu = which;
   }
 
@@ -805,6 +848,9 @@
     savingContext = true;
     contextError = '';
     try {
+      const formattingOverride = modalContextualFormattingChoice === 'inherit'
+        ? null
+        : modalContextualFormattingChoice === 'disabled';
       if (editing) {
         await invoke('update_context', { contextId: editing.id, name });
         await invoke('update_context_settings', {
@@ -813,7 +859,7 @@
           tone: modalTone,
           cleanupIntensity: modalCleanupIntensity,
           customInstructions: modalCustomInstructions.trim() || null,
-          contextualFormattingDisabled: modalContextualFormattingDisabled,
+          contextualFormattingOverride: formattingOverride,
           ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         if (modalHasT3Setting && !modalT3Enabled !== !!editing.t3_skill_mentions_disabled) {
@@ -823,7 +869,7 @@
           await invoke('update_context_color', { contextId: editing.id, color: modalColor });
         }
         contextsStore.contexts = contexts.map((context) => context.id === editing.id
-          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: modalContextualFormattingDisabled, paste_in_chunks: modalPasteInChunks, t3_skill_mentions_disabled: modalHasT3Setting ? !modalT3Enabled : context.t3_skill_mentions_disabled, color: modalColor, updated_at: new Date().toISOString() }
+          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: formattingOverride === true, contextual_formatting_override: formattingOverride, paste_in_chunks: modalPasteInChunks, t3_skill_mentions_disabled: modalHasT3Setting ? !modalT3Enabled : context.t3_skill_mentions_disabled, color: modalColor, updated_at: new Date().toISOString() }
           : context);
       } else {
         const created = await invoke<Context>('create_context', {
@@ -832,7 +878,7 @@
           tone: modalTone,
           cleanupIntensity: modalCleanupIntensity,
           customInstructions: modalCustomInstructions.trim() || null,
-          contextualFormattingDisabled: modalContextualFormattingDisabled,
+          contextualFormattingOverride: formattingOverride,
           ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
         });
         createdContextId = created.id;
@@ -1057,7 +1103,7 @@
         <div class="context-header">
           <div>
             <h2>{selectedContext.name}</h2>
-            <p>{selectedContext.is_everywhere ? 'These items are used when no specific app context group is active.' : 'These items are used when this context group is active.'}</p>
+            <p>{selectedContext.is_everywhere ? 'Used for every dictation. Matching context groups can override style and add instructions or content.' : 'Layers over Everywhere when this context group matches.'}</p>
             {#if isAndroid}
               <button class="btn-ghost btn-compact context-edit-btn" type="button" onclick={() => openContextModal('edit', selectedContext.id)}>Edit context group</button>
             {/if}
@@ -1290,9 +1336,12 @@
                 {:else}
                   <div class="item-list">
                     {#each filteredDictionary as e (e.id)}
-                      <div class="item-row" role="presentation" onclick={(event) => handleItemRowClick('dictionary', e.id, event)}>
+                      <div class="item-row" role="presentation" class:inherited-only={e.inherited_from_everywhere && !e.assigned_to_context} onclick={(event) => handleItemRowClick('dictionary', e.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{e.term}</span>
+                          {#if e.inherited_from_everywhere}
+                            <span class="item-origin">{e.assigned_to_context ? 'Everywhere + this group' : 'Everywhere'}</span>
+                          {/if}
                           {#if e.auto_learned}
                             <svg class="item-auto-star" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-label="Auto-learned"><title>Added automatically by Auto-learn</title><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                           {/if}
@@ -1339,9 +1388,12 @@
                 {:else}
                   <div class="item-list">
                     {#each filteredSnippets as s (s.id)}
-                      <div class="item-row" role="presentation" onclick={(event) => handleItemRowClick('snippet', s.id, event)}>
+                      <div class="item-row" role="presentation" class:inherited-only={s.inherited_from_everywhere} onclick={(event) => handleItemRowClick('snippet', s.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{s.trigger}</span>
+                          {#if s.inherited_from_everywhere}
+                            <span class="item-origin">Everywhere</span>
+                          {/if}
                           <span class="item-arrow" aria-hidden="true">→</span>
                           <span class="item-detail">{s.expansion}</span>
                         </span>
@@ -1349,6 +1401,7 @@
                           <span>{s.use_count} {s.use_count === 1 ? 'use' : 'uses'}</span>
                           <span>{fmtSnippetDate(s.created_at)}</span>
                         </span>
+                        {#if !s.inherited_from_everywhere}
                         <button
                           type="button"
                           class="item-kebab"
@@ -1359,6 +1412,7 @@
                         >
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
                         </button>
+                        {/if}
                       </div>
                     {/each}
                   </div>
@@ -1378,6 +1432,8 @@
 {#if openRowMenu && rowMenuPos}
   <div
     class="ui-dropdown-menu row-menu-fixed"
+    use:portal
+    use:fitMenuToViewport={rowMenuPos.above}
     role="menu"
     tabindex="-1"
     style="top: {rowMenuPos.top}px; right: {rowMenuPos.right}px;"
@@ -1393,10 +1449,11 @@
           const snippet = snippets.find((sn) => sn.id === openRowMenu!.id);
           if (snippet) editSnippet(snippet);
         }
-      }}>Edit</button>
-      {#if contexts.length > 1}
+      }}>{openRowMenu.kind === 'dictionary' && isInheritedDictionaryEntry(openRowMenu.id) ? 'Customize here' : 'Edit'}</button>
+      {#if contexts.length > 1 && !(openRowMenu.kind === 'dictionary' && isInheritedDictionaryEntry(openRowMenu.id))}
         <button class="ui-dropdown-option" type="button" role="menuitem" onclick={() => rowMenuShowMove = true}>Move to…</button>
       {/if}
+      {#if !(openRowMenu.kind === 'dictionary' && isInheritedDictionaryEntry(openRowMenu.id))}
       <button
         class="ui-dropdown-option row-menu-delete"
         class:is-armed={rowMenuDeleteArmed}
@@ -1404,8 +1461,9 @@
         role="menuitem"
         onclick={() => openRowMenu && void confirmDeleteRow(openRowMenu.kind, openRowMenu.id)}
       >
-        {rowMenuDeleteArmed ? 'Confirm delete' : 'Delete'}
+        {rowMenuDeleteArmed ? 'Confirm delete' : openRowMenu.kind === 'dictionary' && dictionary.find((entry) => dictionaryEntryId(entry) === openRowMenu!.id)?.inherited_from_everywhere ? 'Clear local override' : 'Delete'}
       </button>
+      {/if}
     {:else}
       <button class="ui-dropdown-option row-menu-back" type="button" role="menuitem" onclick={() => rowMenuShowMove = false}>
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
@@ -1432,6 +1490,7 @@
     mode={selectedDictionary ? 'edit' : 'add'}
     entry={selectedDictionary ?? undefined}
     contextId={dictionaryModalContextId ?? selectedContextId}
+    contextScoped={selectedContextId !== EVERYWHERE_ID}
     onClose={closeModal}
     onSaved={handleDictionarySaved}
     onGoToSnippets={() => modal = 'snippet'}
@@ -1522,7 +1581,7 @@
             aria-expanded={openFieldMenu === 'tone'}
             onclick={() => toggleFieldMenu('tone', toneTrigger)}
           >
-            {modalTone ? getProfileLabel(modalTone) : 'Use default'}
+            {modalTone ? getProfileLabel(modalTone) : inheritedStyleLabel('tone')}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
         </div>
@@ -1536,11 +1595,12 @@
             aria-expanded={openFieldMenu === 'cleanup'}
             onclick={() => toggleFieldMenu('cleanup', cleanupTrigger)}
           >
-            {modalCleanupIntensity ? getCleanupIntensityLabel(modalCleanupIntensity) : 'Use default'}
+            {modalCleanupIntensity ? getCleanupIntensityLabel(modalCleanupIntensity) : inheritedStyleLabel('cleanup')}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
         </div>
       </div>
+      <p class="field-hint style-inheritance-hint">{isEditingEverywhere() ? 'App mappings remain more specific than Everywhere.' : 'Unset values use an app mapping first, then Everywhere, then app defaults.'}</p>
 
       <div class="field-label-row">
         <label class="field-label" for="context-custom-instructions">Custom instructions</label>
@@ -1558,7 +1618,7 @@
       {#if modalCleanupIntensity === 'rules' || inheritsBasicCleanup}
         <p class="field-hint basic-hint" role="note">{inheritsBasicCleanup ? 'Your default cleanup is Basic. ' : ''}Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > General.</p>
       {:else}
-        <p class="field-hint">Sent to the AI cleanup model for this context. Voice commands are a separate global option in Settings > General and stay inactive with Off.</p>
+        <p class="field-hint">{isEditingEverywhere() ? 'Sent to the AI cleanup model for every dictation.' : 'Everywhere instructions run first. Add group-specific instructions here, or leave blank to inherit only.'} Voice commands are a separate global option in Settings > General and stay inactive with Off.</p>
       {/if}
 
       <div class="advanced-disclosure">
@@ -1579,10 +1639,21 @@
           <div id="context-advanced-settings" class="advanced-content" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
             <div class="advanced-setting-row">
               <div>
-                <span class="advanced-setting-label">Disable smart formatting</span>
-                <p>Skips automatic spacing and capitalization in this context.</p>
+                <span class="advanced-setting-label">Smart formatting</span>
+                <p>Choose whether this context uses the Everywhere setting or overrides it.</p>
               </div>
-              <Toggle checked={modalContextualFormattingDisabled} onchange={(value) => modalContextualFormattingDisabled = value} label="Disable smart formatting for this context" />
+              <button
+                type="button"
+                class="ui-dropdown-trigger ui-dropdown-trigger--compact"
+                bind:this={formattingTrigger}
+                aria-label="Smart formatting"
+                aria-haspopup="listbox"
+                aria-expanded={openFieldMenu === 'formatting'}
+                onclick={() => toggleFieldMenu('formatting', formattingTrigger)}
+              >
+                {modalContextualFormattingChoice === 'inherit' ? isEditingEverywhere() ? 'Use app setting' : 'Use Everywhere' : modalContextualFormattingChoice === 'enabled' ? 'On' : 'Off'}
+                <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
             </div>
             {#if !isMobile}
               <div class="advanced-setting-row">
@@ -1728,22 +1799,27 @@
     <div
       class="ui-dropdown-menu field-menu-fixed"
       use:portal
+      use:fitMenuToViewport={fieldMenuPos.above}
       role="listbox"
       tabindex="-1"
-      aria-label={openFieldMenu === 'tone' ? 'Tone' : 'Cleanup intensity'}
+      aria-label={openFieldMenu === 'tone' ? 'Tone' : openFieldMenu === 'cleanup' ? 'Cleanup intensity' : 'Smart formatting'}
       style="top: {fieldMenuPos.top}px; left: {fieldMenuPos.left}px; min-width: {fieldMenuPos.width}px;"
       onpointerdown={(event) => event.stopPropagation()}
       in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}
     >
       {#if openFieldMenu === 'tone'}
-        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalTone === null} onclick={() => { modalTone = null; closeFieldMenu(); }}>Use default</button>
+        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalTone === null} onclick={() => { modalTone = null; closeFieldMenu(); }}>{inheritedStyleLabel('tone')}</button>
         {#each profileOptions as profile}
           <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalTone === profile.id} onclick={() => { modalTone = profile.id; closeFieldMenu(); }}>{profile.label}</button>
         {/each}
-      {:else}
-        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalCleanupIntensity === null} onclick={() => { modalCleanupIntensity = null; closeFieldMenu(); }}>Use default</button>
+      {:else if openFieldMenu === 'cleanup'}
+        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalCleanupIntensity === null} onclick={() => { modalCleanupIntensity = null; closeFieldMenu(); }}>{inheritedStyleLabel('cleanup')}</button>
         {#each cleanupIntensityOptions as choice}
           <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalCleanupIntensity === choice.id} onclick={() => { modalCleanupIntensity = choice.id; closeFieldMenu(); }}>{choice.label}</button>
+        {/each}
+      {:else}
+        {#each contextualFormattingOptions as option}
+          <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalContextualFormattingChoice === option.value} onclick={() => { modalContextualFormattingChoice = option.value; closeFieldMenu(); }}>{option.value === 'inherit' && isEditingEverywhere() ? 'Use app setting' : option.label}</button>
         {/each}
       {/if}
     </div>
@@ -1961,12 +2037,14 @@
   .item-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 11px 8px 11px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .item-row:last-child { border-bottom: 0; }
   .item-row:hover { background: var(--control-hover); }
+  .item-row.inherited-only:not(.dictionary-customizable) { cursor: default; }
   .item-main { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; }
   .item-term { font-size: 13px; font-weight: 500; color: var(--ink); flex-shrink: 0; }
   .item-auto-star { color: var(--accent); flex-shrink: 0; position: relative; top: -1px; }
   .item-often { font-family: var(--sans); font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--ink-mute); flex-shrink: 0; }
   .item-arrow { color: var(--ink-faint); flex-shrink: 0; }
   .item-detail { font-size: 12.5px; color: var(--ink-mute); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .item-origin { flex: 0 0 auto; padding: 2px 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-faint); font-size: 9px; line-height: 1.2; white-space: nowrap; }
   .item-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
   .item-kebab { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); cursor: pointer; flex-shrink: 0; }
   .item-kebab:hover, .item-kebab[aria-expanded="true"] { background: var(--control-active); color: var(--ink-soft); }

@@ -81,7 +81,7 @@ try {
       : browserSummary.reason || 'Real-session Playwright flows failed.'), { verificationStatus: browserSummary.status });
   }
   report.checks.push({ name: 'Real UI settings save/reload and invalid Context recovery at desktop and phone widths', status: 'passed' });
-  const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingDisabled: false });
+  const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingOverride: null });
   const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;
   await invokeSession(session, 'save_setting', { key: 'legacy_features_enabled', value: !initialLegacy });
   const previousThemes = await invokeSession(session, 'get_setting', { key: 'custom_themes' });

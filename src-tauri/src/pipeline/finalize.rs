@@ -408,6 +408,9 @@ mod tests {
             last_seen_at: None,
             created_at: String::new(),
             corrections: Vec::new(),
+            context_corrections: Vec::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }
     }
 

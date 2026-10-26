@@ -449,8 +449,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     gen: u64,
     telemetry: Option<&PipelineTelemetry>,
 ) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String)> {
-    let mut db_snippets = db::query_snippets_for_context(db_handle, context_id).unwrap_or_default();
-    let dict_entries = db::query_dictionary_for_context(db_handle, context_id).unwrap_or_default();
+    let mut db_snippets =
+        db::query_effective_snippets_for_context(db_handle, context_id).unwrap_or_default();
+    let dict_entries =
+        db::query_effective_dictionary_for_context(db_handle, context_id).unwrap_or_default();
     log::debug!(
         "pipeline: cleanup inputs gen={} snippets={} dict_entries={}",
         gen,
@@ -555,9 +557,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         })
     } else { None };
     let alternate = processed_alternate.as_ref().or(alternate);
-    let context_custom_instructions = db::query_context(db_handle, context_id)
-        .ok()
-        .and_then(|c| c.custom_instructions);
+    let context_custom_instructions = db::query_effective_context_instructions(db_handle, context_id).unwrap_or_default();
     let command_instruction = if commands_active && pure_expansion.is_none() {
         let protected_payload = protected_instruction.is_some()
             || snippets::has_snippet_trigger(raw, &db_snippets)

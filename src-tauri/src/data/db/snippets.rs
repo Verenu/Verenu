@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use super::*;
 
@@ -12,6 +13,12 @@ pub struct Snippet {
     pub instructions: String,
     pub use_count: i64,
     pub created_at: String,
+    /// True when this row is also available through Everywhere inheritance.
+    #[serde(default)]
+    pub inherited_from_everywhere: bool,
+    /// True when the active group has its own assignment for this row.
+    #[serde(default)]
+    pub assigned_to_context: bool,
 }
 
 fn snippet_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snippet> {
@@ -22,6 +29,8 @@ fn snippet_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snippet> {
         instructions: row.get(3)?,
         use_count: row.get(4)?,
         created_at: row.get(5)?,
+        inherited_from_everywhere: false,
+        assigned_to_context: false,
     })
 }
 
@@ -180,20 +189,80 @@ pub fn query_snippets(db: &Db) -> Result<Vec<Snippet>> {
     Ok(rows)
 }
 
+#[cfg(test)]
 pub fn query_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippet>> {
     let conn = lock_conn(db)?;
-    query_all(
-        &conn,
+    query_snippets_for_context_conn(&conn, context_id)
+}
+
+fn query_snippets_for_context_conn(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+) -> Result<Vec<Snippet>> {
+    let mut stmt = conn.prepare(
         "SELECT s.id, s.trigger, s.expansion, s.instructions, s.use_count, s.created_at
          FROM snippets s
          INNER JOIN snippet_contexts sc ON sc.snippet_id = s.id
          WHERE sc.context_id = ?1
          ORDER BY s.created_at DESC",
-        params![context_id],
-        snippet_from_row,
-    )
+    )?;
+    let mut rows = stmt
+        .query_map(params![context_id], snippet_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for row in &mut rows {
+        row.assigned_to_context = true;
+    }
+    Ok(rows)
 }
 
+/// The effective snippet library is additive: Everywhere snippets are
+/// available in every targeted group, followed by that group's own rows.
+/// Triggers are globally unique, so a context cannot redefine an inherited
+/// trigger with a different expansion.
+pub fn query_effective_snippets_for_context(db: &Db, context_id: i64) -> Result<Vec<Snippet>> {
+    let conn = lock_conn(db)?;
+    let context = query_context_conn(&conn, context_id)?;
+    let everywhere_id = ensure_everywhere_context_conn(&conn)?;
+    let local = query_snippets_for_context_conn(&conn, context_id)?;
+    if context.is_everywhere || context_id == everywhere_id {
+        return Ok(local);
+    }
+
+    let everywhere = query_snippets_for_context_conn(&conn, everywhere_id)?;
+    let everywhere_ids = everywhere
+        .iter()
+        .map(|snippet| snippet.id)
+        .collect::<HashSet<_>>();
+    let mut local = local;
+    let local_ids = local
+        .iter()
+        .map(|snippet| snippet.id)
+        .collect::<HashSet<_>>();
+    for snippet in &mut local {
+        snippet.inherited_from_everywhere = everywhere_ids.contains(&snippet.id);
+        snippet.assigned_to_context = true;
+    }
+    let mut everywhere = everywhere;
+    for snippet in &mut everywhere {
+        snippet.inherited_from_everywhere = true;
+        snippet.assigned_to_context = local_ids.contains(&snippet.id);
+    }
+    let mut effective = local;
+    let mut seen = effective
+        .iter()
+        .map(|snippet| snippet.id)
+        .collect::<HashSet<_>>();
+    effective.extend(
+        everywhere
+            .into_iter()
+            .filter(|snippet| seen.insert(snippet.id)),
+    );
+    Ok(effective)
+}
+
+/// Removes a snippet from Everywhere and assigns the existing row to a
+/// specific context. The expansion, instructions, and use count remain on
+/// the same global row.
 pub fn move_snippet_entry_to_context(
     db: &Db,
     trigger: &str,

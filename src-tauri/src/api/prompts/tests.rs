@@ -380,6 +380,9 @@ fn selected_vocabulary_stays_bounded_after_prompt_composition() {
             last_seen_at: None,
             created_at: "now".into(),
             corrections: Vec::new(),
+            context_corrections: Vec::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         })
         .collect();
     let raw = entries

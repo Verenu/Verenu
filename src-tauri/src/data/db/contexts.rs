@@ -23,6 +23,11 @@ pub struct Context {
     pub paste_in_chunks: bool,
     #[serde(default)]
     pub t3_skill_mentions_disabled: bool,
+    /// `None` inherits the global smart-formatting setting, `Some(false)`
+    /// explicitly enables it, and `Some(true)` explicitly disables it.
+    pub contextual_formatting_override: Option<bool>,
+    /// `NULL` when unpinned. Pinned contexts sort newest-pin-first in the
+    /// sidebar; Everywhere is pinned implicitly by the UI and never sets this.
     pub pinned_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -91,6 +96,7 @@ fn context_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Context> {
         pinned_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
+        contextual_formatting_override: row.get::<_, Option<i64>>(14)?.map(|value| value != 0),
     })
 }
 
@@ -154,7 +160,7 @@ pub fn query_contexts(db: &Db) -> Result<Vec<Context>> {
     let conn = lock_conn(db)?;
     query_all(
         &conn,
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled, contextual_formatting_override
          FROM contexts
          ORDER BY id ASC",
         [], context_from_row,
@@ -174,6 +180,39 @@ pub fn count_user_contexts(db: &Db) -> Result<i64> {
 pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
     let conn = lock_conn(db)?;
     query_context_conn(&conn, context_id)
+}
+
+/// Returns instruction layers in application order: Everywhere first, then
+/// the selected group. Empty layers are omitted so callers can join this with
+/// snippet and protected instructions without introducing blank prompt gaps.
+pub fn query_effective_context_instructions(db: &Db, context_id: i64) -> Result<Option<String>> {
+    let conn = lock_conn(db)?;
+    let context = query_context_conn(&conn, context_id)?;
+    let everywhere_id = ensure_everywhere_context_conn(&conn)?;
+    let everywhere_instructions: Option<String> = conn.query_row(
+        "SELECT custom_instructions FROM contexts WHERE id = ?1",
+        params![everywhere_id],
+        |row| row.get(0),
+    )?;
+    let mut layers = Vec::with_capacity(2);
+    if let Some(instructions) = everywhere_instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        layers.push(instructions);
+    }
+    if context_id != everywhere_id {
+        if let Some(instructions) = context
+            .custom_instructions
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            layers.push(instructions);
+        }
+    }
+    Ok((!layers.is_empty()).then(|| layers.join("\n\n")))
 }
 
 pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<ContextAssignment>> {
@@ -222,7 +261,7 @@ pub fn query_snippet_entry_contexts(db: &Db, trigger: &str) -> Result<Vec<Contex
 
 pub(super) fn query_context_conn(conn: &rusqlite::Connection, context_id: i64) -> Result<Context> {
     conn.query_row(
-        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
+        "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions, contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled, contextual_formatting_override
          FROM contexts WHERE id = ?1",
         params![context_id],
         context_from_row,
@@ -248,6 +287,22 @@ pub fn insert_context_with_delivery(
     db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: bool,
 ) -> Result<Context> {
+    insert_context_with_override_and_delivery(db, name, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled.then_some(true), paste_in_chunks)
+}
+
+#[cfg(test)]
+pub fn insert_context_returning_with_override(
+    db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>,
+) -> Result<Context> {
+    insert_context_with_override_and_delivery(db, name, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_override, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_context_with_override_and_delivery(
+    db: &Db, name: &str, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>, paste_in_chunks: bool,
+) -> Result<Context> {
     let normalized_name = normalize_context_name(name)?;
     if normalized_name.eq_ignore_ascii_case("Everywhere") {
         anyhow::bail!("The Everywhere context already exists");
@@ -264,15 +319,16 @@ pub fn insert_context_with_delivery(
         anyhow::bail!("You've reached the limit of {MAX_USER_CONTEXTS} context groups");
     }
     conn.execute(
-        "INSERT INTO contexts (name, is_everywhere, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled, paste_in_chunks) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO contexts (name, is_everywhere, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled, paste_in_chunks, contextual_formatting_override) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             normalized_name,
             normalize_optional_trimmed(icon),
             normalize_optional_trimmed(tone),
             normalize_optional_trimmed(cleanup_intensity),
             normalized_custom_instructions,
-            contextual_formatting_disabled,
+            contextual_formatting_override == Some(true),
             paste_in_chunks,
+            contextual_formatting_override,
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -295,7 +351,12 @@ fn duplicate_context_name(conn: &Connection, source_name: &str) -> Result<String
             format!(" copy {copy_number}")
         };
         let base_len = CONTEXT_NAME_CHAR_LIMIT.saturating_sub(suffix.chars().count());
-        let base: String = source_name.chars().take(base_len).collect::<String>().trim_end().to_string();
+        let base: String = source_name
+            .chars()
+            .take(base_len)
+            .collect::<String>()
+            .trim_end()
+            .to_string();
         let candidate = format!("{base}{suffix}");
         if !context_name_exists(conn, &candidate)? {
             return Ok(candidate);
@@ -325,8 +386,8 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
     tx.execute(
         "INSERT INTO contexts (
            name, is_everywhere, icon, tone, cleanup_intensity, color,
-           custom_instructions, contextual_formatting_disabled, paste_in_chunks, t3_skill_mentions_disabled
-         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+           custom_instructions, contextual_formatting_disabled, paste_in_chunks, t3_skill_mentions_disabled, contextual_formatting_override
+         ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             name,
             source.icon,
@@ -337,6 +398,7 @@ pub fn duplicate_context(db: &Db, context_id: i64) -> Result<Context> {
             source.contextual_formatting_disabled,
             source.paste_in_chunks,
             source.t3_skill_mentions_disabled,
+            source.contextual_formatting_override,
         ],
     )?;
     let duplicate_id = tx.last_insert_rowid();
@@ -382,18 +444,35 @@ pub fn update_context_settings_with_delivery(
     db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>, contextual_formatting_disabled: bool, paste_in_chunks: Option<bool>,
 ) -> Result<()> {
+    update_context_settings_with_override_and_delivery(db, context_id, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_disabled.then_some(true), paste_in_chunks)
+}
+
+#[cfg(test)]
+pub fn update_context_settings_with_override(
+    db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>,
+) -> Result<()> {
+    update_context_settings_with_override_and_delivery(db, context_id, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_override, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_context_settings_with_override_and_delivery(
+    db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool>,
+) -> Result<()> {
     let normalized_custom_instructions = normalize_custom_instructions(custom_instructions)?;
     let conn = lock_conn(db)?;
     let changed = conn.execute(
-        "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, paste_in_chunks = COALESCE(?7, paste_in_chunks), updated_at = datetime('now') WHERE id = ?1",
+        "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, paste_in_chunks = COALESCE(?7, paste_in_chunks), contextual_formatting_override = ?8, updated_at = datetime('now') WHERE id = ?1",
         params![
             context_id,
             normalize_optional_trimmed(icon),
             normalize_optional_trimmed(tone),
             normalize_optional_trimmed(cleanup_intensity),
             normalized_custom_instructions,
-            contextual_formatting_disabled,
+            contextual_formatting_override == Some(true),
             paste_in_chunks,
+            contextual_formatting_override,
         ],
     )?;
     require_row_changed(changed, "Context", context_id)
@@ -918,6 +997,7 @@ pub fn set_snippet_context_assignment(
             params![context_id, snippet_id],
         )?;
     }
+    invalidate_snippet_cache();
     Ok(())
 }
 
@@ -1015,6 +1095,85 @@ mod tests {
         assert!(duplicate_context(&db, context.id).unwrap().paste_in_chunks);
         update_context_settings_with_delivery(&db, context.id, None, None, None, None, false, Some(false)).unwrap();
         assert!(!query_context(&db, context.id).unwrap().paste_in_chunks);
+    }
+
+    #[test]
+    fn version_32_migration_preserves_context_data_and_translates_formatting_overrides() {
+        let path = std::env::temp_dir().join(format!(
+            "verenu_context_v33_migration_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let (enabled_id, disabled_id) = {
+            let db = open(&path).expect("create current db");
+            let enabled = insert_context_returning(
+                &db,
+                "Legacy follow",
+                None,
+                Some("formal"),
+                Some("high"),
+                Some("Global rule"),
+                false,
+            )
+            .expect("context following global formatting");
+            let disabled = insert_context_returning(
+                &db,
+                "Legacy disabled",
+                None,
+                Some("casual"),
+                Some("low"),
+                Some("Local rule"),
+                true,
+            )
+            .expect("context with formatting disabled");
+            insert_dictionary_entry(&db, "Verenu", Some("Varinu")).expect("dictionary row");
+            insert_snippet(&db, "sig", "signature", "").expect("snippet row");
+
+            let conn = lock_conn(&db).expect("lock current db");
+            // Recreate the v32 state: the nullable column did not exist, and
+            // the legacy boolean carried only an explicit disable.
+            conn.execute_batch(
+                "ALTER TABLE contexts DROP COLUMN contextual_formatting_override;
+                 PRAGMA user_version = 32;",
+            )
+            .expect("prepare v32 state");
+            drop(conn);
+            drop(db);
+            (enabled.id, disabled.id)
+        };
+
+        let migrated = open(&path).expect("run v33 migration");
+        let follows_global = query_context(&migrated, enabled_id).expect("follow context");
+        let disabled = query_context(&migrated, disabled_id).expect("disabled context");
+        assert_eq!(follows_global.contextual_formatting_override, None);
+        assert_eq!(disabled.contextual_formatting_override, Some(true));
+        assert_eq!(follows_global.tone.as_deref(), Some("formal"));
+        assert_eq!(follows_global.cleanup_intensity.as_deref(), Some("high"));
+        assert_eq!(
+            follows_global.custom_instructions.as_deref(),
+            Some("Global rule")
+        );
+        assert_eq!(disabled.tone.as_deref(), Some("casual"));
+        assert_eq!(disabled.cleanup_intensity.as_deref(), Some("low"));
+        assert_eq!(disabled.custom_instructions.as_deref(), Some("Local rule"));
+        assert_eq!(
+            query_dictionary(&migrated)
+                .expect("dictionary preserved")
+                .len(),
+            1
+        );
+        assert_eq!(
+            query_snippets(&migrated).expect("snippets preserved").len(),
+            1
+        );
+
+        drop(migrated);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]
@@ -1139,6 +1298,171 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn effective_content_inherits_everywhere_and_clears_local_assignments() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(&db, "Writing", None, None, None, None, false)
+            .expect("context");
+        insert_dictionary_entry(&db, "Verenu", Some("Varinu")).expect("global vocabulary");
+        let dictionary_id = query_dictionary(&db).unwrap()[0].id;
+
+        let inherited =
+            query_effective_dictionary_for_context(&db, context.id).expect("effective dictionary");
+        assert_eq!(inherited.len(), 1);
+        assert!(inherited[0].inherited_from_everywhere);
+        assert!(!inherited[0].assigned_to_context);
+        assert_eq!(inherited[0].mistake.as_deref(), Some("Varinu"));
+
+        update_dictionary_entry_for_context(
+            &db,
+            context.id,
+            dictionary_id,
+            "Verenu",
+            Some("VARINU, Vreenu"),
+        )
+        .expect("customize inherited correction locally");
+        let customized = query_effective_dictionary_for_context(&db, context.id)
+            .expect("effective customized dictionary");
+        let corrections = &customized[0].corrections;
+        assert!(customized[0].inherited_from_everywhere);
+        assert!(customized[0].assigned_to_context);
+        assert_eq!(corrections.len(), 2);
+        assert!(corrections
+            .iter()
+            .any(|item| item.mistake == "VARINU" && item.context_id == context.id));
+        assert!(corrections
+            .iter()
+            .any(|item| item.mistake == "Vreenu" && item.context_id == context.id));
+        assert_eq!(
+            query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap()[0]
+                .mistake
+                .as_deref(),
+            Some("Varinu")
+        );
+
+        set_dictionary_context_assignment(&db, context.id, dictionary_id, false)
+            .expect("clear local vocabulary override");
+        let cleared = query_effective_dictionary_for_context(&db, context.id)
+            .expect("effective dictionary after clearing local override");
+        assert_eq!(cleared.len(), 1);
+        assert!(cleared[0].inherited_from_everywhere);
+        assert!(!cleared[0].assigned_to_context);
+        assert_eq!(cleared[0].mistake.as_deref(), Some("Varinu"));
+
+        insert_snippet(&db, "thanks", "Thank you.", "").expect("global snippet");
+        let global_snippet = query_snippets(&db).unwrap()[0].clone();
+        let local_snippet =
+            insert_snippet_returning(&db, "status", "In progress.", "", Some(context.id))
+                .expect("local snippet");
+        let effective =
+            query_effective_snippets_for_context(&db, context.id).expect("effective snippets");
+        assert_eq!(effective.len(), 2);
+        let inherited = effective
+            .iter()
+            .find(|item| item.id == global_snippet.id)
+            .unwrap();
+        assert!(inherited.inherited_from_everywhere);
+        assert!(!inherited.assigned_to_context);
+        let local = effective
+            .iter()
+            .find(|item| item.id == local_snippet.id)
+            .unwrap();
+        assert!(!local.inherited_from_everywhere);
+        assert!(local.assigned_to_context);
+
+        set_snippet_context_assignment(&db, context.id, global_snippet.id, true).unwrap();
+        let assigned = query_effective_snippets_for_context(&db, context.id)
+            .expect("explicitly assigned inherited snippet");
+        let global_in_context = assigned
+            .iter()
+            .find(|item| item.id == global_snippet.id)
+            .unwrap();
+        assert!(global_in_context.inherited_from_everywhere);
+        assert!(global_in_context.assigned_to_context);
+        set_snippet_context_assignment(&db, context.id, global_snippet.id, false).unwrap();
+        let cleared = query_effective_snippets_for_context(&db, context.id)
+            .expect("inherited snippet after clearing local assignment");
+        let global_in_context = cleared
+            .iter()
+            .find(|item| item.id == global_snippet.id)
+            .unwrap();
+        assert!(global_in_context.inherited_from_everywhere);
+        assert!(!global_in_context.assigned_to_context);
+    }
+
+    #[test]
+    fn local_spoken_variant_overrides_a_different_global_term_until_cleared() {
+        let db = open(":memory:").expect("db");
+        let group =
+            insert_context_returning(&db, "Development", None, None, None, None, false).unwrap();
+        insert_dictionary_entry(&db, "GlobalTool", Some("tool-x")).unwrap();
+        insert_dictionary_entry_returning(&db, "LocalTool", Some("TOOL-X"), Some(group.id))
+            .unwrap();
+        let effective = query_effective_dictionary_for_context(&db, group.id).unwrap();
+        let global = effective
+            .iter()
+            .find(|entry| entry.term == "GlobalTool")
+            .unwrap();
+        assert!(global.corrections.is_empty());
+        assert!(
+            global.mistake.is_none(),
+            "shadowed mappings must not survive through the legacy fallback"
+        );
+        let (text, _) = crate::data::dictionary::apply_substitutions_from("Use tool-x", &effective);
+        assert_eq!(text, "Use LocalTool");
+        let local_id = effective
+            .iter()
+            .find(|entry| entry.term == "LocalTool")
+            .unwrap()
+            .id;
+        set_dictionary_context_assignment(&db, group.id, local_id, false).unwrap();
+        let inherited = query_effective_dictionary_for_context(&db, group.id).unwrap();
+        let (text, _) = crate::data::dictionary::apply_substitutions_from("Use tool-x", &inherited);
+        assert_eq!(text, "Use GlobalTool");
+        let everywhere =
+            query_effective_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap();
+        assert_eq!(everywhere[0].mistake.as_deref(), Some("tool-x"));
+    }
+
+    #[test]
+    fn context_instructions_run_global_then_local_and_can_be_cleared() {
+        let db = open(":memory:").expect("db");
+        let context = insert_context_returning(
+            &db,
+            "Support",
+            None,
+            None,
+            None,
+            Some("Use the team's style."),
+            false,
+        )
+        .expect("context");
+        update_context_settings_with_override(
+            &db,
+            EVERYWHERE_CONTEXT_ID,
+            None,
+            None,
+            None,
+            Some("Be concise."),
+            None,
+        )
+        .expect("global instructions");
+        assert_eq!(
+            query_effective_context_instructions(&db, context.id)
+                .unwrap()
+                .as_deref(),
+            Some("Be concise.\n\nUse the team's style.")
+        );
+        update_context_settings_with_override(&db, context.id, None, None, None, None, None)
+            .expect("clear local instructions");
+        assert_eq!(
+            query_effective_context_instructions(&db, context.id)
+                .unwrap()
+                .as_deref(),
+            Some("Be concise.")
         );
     }
 
@@ -1613,6 +1937,83 @@ mod tests {
     }
 
     #[test]
+    fn sub_app_then_website_then_app_then_everywhere_selects_one_group() {
+        let db = open(":memory:").expect("db");
+        let app = insert_context_returning(&db, "Browser", None, None, None, None, false).unwrap();
+        let site = insert_context_returning(&db, "Mail", None, None, None, None, false).unwrap();
+        let sub_app_context =
+            insert_context_returning(&db, "Project", None, None, None, None, false).unwrap();
+        assign_context_target(&db, app.id, "chrome.exe").unwrap();
+        assign_context_website(&db, site.id, "mail.example").unwrap();
+        let sub_app = create_sub_app(
+            &db,
+            NewSubApp {
+                executable: "chrome.exe",
+                app_name: Some("Chrome"),
+                label: "Project",
+                icon: None,
+                title_pattern: "#engineering",
+                match_mode: TitleMatchMode::Contains,
+            },
+        )
+        .unwrap();
+        assign_sub_app(&db, sub_app.id, Some(sub_app_context.id)).unwrap();
+
+        assert_eq!(
+            resolve_context_with_sub_app(
+                &db,
+                "chrome.exe",
+                Some("mail.example"),
+                Some("#engineering | Mail")
+            )
+            .unwrap()
+            .0
+            .id,
+            sub_app_context.id
+        );
+        assert_eq!(
+            resolve_context_with_sub_app(
+                &db,
+                "chrome.exe",
+                Some("mail.example"),
+                Some("#general | Mail")
+            )
+            .unwrap()
+            .0
+            .id,
+            site.id
+        );
+        assert_eq!(
+            resolve_context_with_sub_app(&db, "chrome.exe", Some("docs.example"), None)
+                .unwrap()
+                .0
+                .id,
+            app.id
+        );
+        assert_eq!(
+            resolve_context_with_sub_app(&db, "unknown.exe", None, None)
+                .unwrap()
+                .0
+                .id,
+            EVERYWHERE_CONTEXT_ID
+        );
+
+        assign_sub_app(&db, sub_app.id, None).unwrap();
+        assert_eq!(
+            resolve_context_with_sub_app(
+                &db,
+                "chrome.exe",
+                Some("mail.example"),
+                Some("#engineering | Mail")
+            )
+            .unwrap()
+            .0
+            .id,
+            site.id
+        );
+    }
+
+    #[test]
     fn website_domain_normalizes_pasted_urls() {
         let db = open(":memory:").expect("db");
         let context = insert_context_returning(&db, "Work Email", None, None, None, None, false)
@@ -1837,8 +2238,8 @@ mod tests {
         assert_eq!(snippet_locations[0].id, EVERYWHERE_CONTEXT_ID);
         assert!(snippet_locations[0].is_everywhere);
 
-        let moved_dictionary =
-            move_dictionary_entry_by_term_to_context(&db, "Grok", context.id).expect("move dictionary");
+        let moved_dictionary = move_dictionary_entry_by_term_to_context(&db, "Grok", context.id)
+            .expect("move dictionary");
         assert_eq!(moved_dictionary.id, dictionary.id);
         assert_eq!(moved_dictionary.mistake.as_deref(), Some("Glock"));
         assert!(query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID)
