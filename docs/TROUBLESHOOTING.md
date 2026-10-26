@@ -170,9 +170,42 @@ Logs during a pause are discarded, not accumulated in memory. The in-app
 recent buffer remains available. Normal shutdown requests a bounded flush.
 
 For diagnosis, inspect the newest session and relevant prior sessions. Default
-logs include info, warnings, and errors. Developer verbose logging adds debug
-records only when explicitly enabled. Logs can contain operational details;
+logs include application info, warnings, and errors, plus dependency warnings
+and errors. Developer verbose logging also includes dependency info and debug
+records when explicitly enabled. Logs can contain operational details;
 review them before sharing. Never put keys or dictated content into an issue.
+
+New log lines include the Rust subsystem in brackets after the level. Older
+files do not. The repeated html5ever "foster parenting not implemented"
+warning is kept once per process; subsequent occurrences are counted in the
+agent log query. Other parser warnings remain visible. The query also counts
+dependency info messages filtered while verbose logging was off. The query's
+`file_records_dropped_this_process` also reports file-writer losses immediately,
+even if the writer never recovers to write an omission marker.
+
+With an existing explicit local agent grant, run:
+
+```bash
+npm run agent -- diagnostics.logs '{"subsystem":"pipeline","level":"warn","limit":200}'
+```
+
+This searches the current process's retained structured logs. `since_ms` is inclusive, `until_ms` is
+exclusive, and both use UTC Unix milliseconds. Check `matching_retained`,
+`omitted_by_limit`, `oldest_retained_ms`, and `evicted_since_reset` before
+concluding that a log is missing. The query is limited to 1,000 newest matches;
+the ring holds up to 4,000 and is cleared on diagnostics reset or restart. The
+snapshot exposes only its newest 800. For older launches, read the files above;
+the optional historical diagnostics journal stores aggregate failure metadata,
+not log lines. A writer omission marker means disk logs have a gap.
+
+`diagnostics.snapshot` also contains recent pipeline traces, failures, and
+operation metrics. Its pipeline spans are separate from ordinary log lines:
+most log lines do not carry a trace ID, so use timestamps and pipeline generation
+markers cautiously when correlating concurrent runs. Frontend IPC metrics live
+in the Diagnostics console for that WebView and are not part of the agent API or
+session files. Frontend console errors are likewise not captured by the backend;
+inspect the relevant WebView or private dev-session output when investigating
+frontend-only failures. A missing entry in any one source is not proof of success.
 
 Browser dev sessions write only to their private `<session>/data/logs/` folder,
 as described in [dev sessions](DEV_SESSIONS.md). They do not write to the

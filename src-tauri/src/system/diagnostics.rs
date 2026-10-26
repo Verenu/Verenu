@@ -1096,6 +1096,48 @@ pub fn snapshot() -> DiagnosticsSnapshot {
     with_store(|state| snapshot_locked(state, now_ms()))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogQuery {
+    pub since_ms: Option<u64>,
+    pub until_ms: Option<u64>,
+    pub subsystem: Option<String>,
+    pub level: Option<LogLevel>,
+    pub limit: Option<usize>,
+}
+
+pub fn query_logs(query: LogQuery) -> Result<serde_json::Value, String> {
+    if query.limit.is_some_and(|limit| !(1..=1000).contains(&limit)) {
+        return Err("limit must be between 1 and 1000".into());
+    }
+    if query.since_ms.zip(query.until_ms).is_some_and(|(start, end)| start >= end) {
+        return Err("since_ms must be less than until_ms".into());
+    }
+    Ok(with_store(|state| {
+        let matching: Vec<_> = state.logs.iter().filter(|entry| {
+            query.since_ms.is_none_or(|start| entry.timestamp_ms >= start)
+                && query.until_ms.is_none_or(|end| entry.timestamp_ms < end)
+                && query.subsystem.as_ref().is_none_or(|subsystem| entry.subsystem.contains(subsystem))
+                && query.level.is_none_or(|level| entry.level == level)
+        }).collect();
+        let limit = query.limit.unwrap_or(200);
+        let omitted = matching.len().saturating_sub(limit);
+        serde_json::json!({
+            "logs": &matching[omitted..],
+            "matching_retained": matching.len(),
+            "omitted_by_limit": omitted,
+            "retained": state.logs.len(),
+            "oldest_retained_ms": state.logs.front().map(|entry| entry.timestamp_ms),
+            "newest_retained_ms": state.logs.back().map(|entry| entry.timestamp_ms),
+            "evicted_since_reset": state.dropped_logs,
+            "parser_warnings_suppressed_this_process": super::logger::suppressed_parser_warnings(),
+            "dependency_info_filtered_this_process": super::logger::filtered_dependency_info(),
+            "file_records_dropped_this_process": super::log_files::dropped_total(),
+            "scope": "current process, since diagnostics reset; timestamps are UTC milliseconds"
+        })
+    }))
+}
+
 pub fn snapshot_for_ui() -> DiagnosticsSnapshot {
     let mut snapshot = snapshot();
     snapshot.logs = snapshot.logs.into_iter().rev().take(800).collect();
@@ -1682,6 +1724,38 @@ mod tests {
         assert_eq!(snapshot.logs[0].message, "event 2");
         assert_eq!(snapshot.logs[0].measurements.len(), 1);
         assert_eq!(snapshot.health.dropped_logs, 2);
+    }
+
+    #[test]
+    fn agent_log_query_filters_and_reports_coverage() {
+        let _guard = TEST_LOCK.lock().expect("test lock");
+        reset();
+        for (timestamp, level, subsystem) in [
+            (100, LogLevel::Info, "pipeline"),
+            (200, LogLevel::Warn, "pipeline"),
+            (300, LogLevel::Warn, "audio"),
+        ] {
+            record_log_with_fields(level, subsystem, "safe event", StructuredFields::default());
+            with_store(|state| state.logs.back_mut().unwrap().timestamp_ms = timestamp);
+        }
+        let result = query_logs(LogQuery {
+            level: Some(LogLevel::Warn), limit: Some(1), ..Default::default()
+        }).unwrap();
+        assert_eq!(result["retained"], 2);
+        assert_eq!(result["evicted_since_reset"], 1);
+        assert_eq!(result["matching_retained"], 2);
+        assert_eq!(result["omitted_by_limit"], 1);
+        assert_eq!(result["logs"][0]["subsystem"], "audio");
+        let filtered = query_logs(LogQuery {
+            since_ms: Some(200), until_ms: Some(300), subsystem: Some("pipe".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(filtered["logs"].as_array().unwrap().len(), 1);
+        assert_eq!(filtered["logs"][0]["timestamp_ms"], 200);
+        assert!(query_logs(LogQuery { limit: Some(0), ..Default::default() }).is_err());
+        assert!(query_logs(LogQuery {
+            since_ms: Some(3), until_ms: Some(3), ..Default::default()
+        }).is_err());
     }
 
     #[test]
