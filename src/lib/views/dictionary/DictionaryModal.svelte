@@ -14,6 +14,7 @@
     mode,
     entry,
     contextId,
+    contextScoped = false,
     onClose,
     onSaved,
     onGoToSnippets,
@@ -21,6 +22,7 @@
     mode: 'add' | 'edit';
     entry?: DictionaryEntry;
     contextId?: number | null;
+    contextScoped?: boolean;
     onClose: () => void;
     onSaved: (entry: DictionaryEntry) => void;
     onGoToSnippets: () => void;
@@ -195,7 +197,7 @@
         spellcheck="false"
       />
     </div>
-    <p class="field-hint">The exact word or phrase you want the AI to use.</p>
+    <p class="field-hint">{contextScoped ? 'The term is shared across contexts; correction patterns are specific to this group.' : 'The exact word or phrase you want the AI to use.'}</p>
 
     <label class="field-label" for="dict-mistake">
       Often mistranscribed as <span class="field-optional">optional</span>
@@ -213,7 +215,7 @@
         spellcheck="false"
       />
     </div>
-    <p class="field-hint">What the transcription model typically writes instead. Separate multiple mistranscriptions with commas. Skip if the term just needs to be in the AI's awareness.</p>
+    <p class="field-hint">{contextScoped ? 'Correction patterns here take precedence over matching Everywhere patterns. Leave blank to inherit them.' : "What the transcription model typically writes instead. Separate multiple mistranscriptions with commas. Skip if the term just needs to be in the AI's awareness."}</p>
   </div>
 
   <div class="modal-footer">

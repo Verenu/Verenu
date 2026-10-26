@@ -29,6 +29,8 @@ type DevSnippet = {
   instructions: string;
   use_count: number;
   created_at: string;
+  inherited_from_everywhere?: boolean;
+  assigned_to_context?: boolean;
 };
 type DevDictionaryEntry = {
   id: number;
@@ -39,6 +41,14 @@ type DevDictionaryEntry = {
   confidence_tier: 'manual' | 'low' | 'medium' | 'high';
   last_seen_at: string | null;
   created_at: string;
+  context_id?: number;
+  dictionary_id?: number;
+  correction_id?: number | null;
+  correction_ids?: number[];
+  corrections?: DevDictionaryCorrection[];
+  context_corrections?: DevDictionaryCorrection[];
+  inherited_from_everywhere?: boolean;
+  assigned_to_context?: boolean;
 };
 type DevDictionaryCorrection = {
   id: number;
@@ -63,6 +73,7 @@ type DevContext = {
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
   t3_skill_mentions_disabled?: boolean;
+  contextual_formatting_override: boolean | null;
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
@@ -228,6 +239,8 @@ function readDevContexts(): DevContext[] {
     ...row,
     contextual_formatting_disabled: row.contextual_formatting_disabled ?? false,
     paste_in_chunks: row.paste_in_chunks ?? false,
+    contextual_formatting_override: row.contextual_formatting_override
+      ?? (row.contextual_formatting_disabled ? true : null),
     pinned_at: row.pinned_at ?? null,
   }));
   if (rows.some((context) => context.id === DEV_EVERYWHERE_CONTEXT_ID)) return rows;
@@ -243,6 +256,7 @@ function readDevContexts(): DevContext[] {
     custom_instructions: null,
     contextual_formatting_disabled: false,
     paste_in_chunks: false,
+    contextual_formatting_override: null,
     pinned_at: null,
     created_at: now,
     updated_at: now,
@@ -415,6 +429,82 @@ function devContextDictionaryRows(contextId: number) {
           corrections: [],
         };
   });
+}
+
+function devEffectiveContextDictionaryRows(contextId: number) {
+  const local = devContextDictionaryRows(contextId) as Array<DevDictionaryEntry & Record<string, unknown>>;
+  if (contextId === DEV_EVERYWHERE_CONTEXT_ID) {
+    return local.map((entry) => ({
+      ...entry,
+      inherited_from_everywhere: false,
+      assigned_to_context: true,
+      context_corrections: entry.corrections ?? [],
+    }));
+  }
+  const localVariants = new Set(local.flatMap((entry) => entry.corrections ?? []).map((correction) => correction.mistake.toLowerCase()));
+  const everywhere = devContextDictionaryRows(DEV_EVERYWHERE_CONTEXT_ID).map((entry) => {
+    const corrections = (entry.corrections ?? []).filter((correction) => !localVariants.has(correction.mistake.toLowerCase()));
+    return { ...entry, corrections, mistake: corrections.map((correction) => correction.mistake).join(', ') || null };
+  }) as Array<DevDictionaryEntry & Record<string, unknown>>;
+  const globalById = new Map(everywhere.map((entry) => [entry.id, entry]));
+  const localById = new Map(local.map((entry) => [entry.id, entry]));
+  const merged: Array<DevDictionaryEntry & Record<string, unknown>> = local.map((entry) => {
+    const global = globalById.get(entry.id);
+    const globalCorrections = (global?.corrections as DevDictionaryCorrection[] | undefined) ?? [];
+    const localCorrections = (entry.corrections as DevDictionaryCorrection[] | undefined) ?? [];
+    const corrections = [...globalCorrections];
+    for (const correction of localCorrections) {
+      const index = corrections.findIndex((candidate) => candidate.mistake.toLowerCase() === correction.mistake.toLowerCase());
+      if (index === -1) corrections.push(correction); else corrections[index] = correction;
+    }
+    return {
+      ...entry,
+      mistake: corrections.map((correction) => correction.mistake).join(', ') || entry.mistake,
+      auto_learned: corrections.some((correction) => correction.auto_learned),
+      correction_count: corrections.reduce((sum, correction) => sum + correction.correction_count, 0),
+      corrections,
+      context_corrections: localCorrections,
+      correction_id: localCorrections[0]?.id ?? null,
+      correction_ids: localCorrections.map((correction) => correction.id),
+      inherited_from_everywhere: Boolean(global),
+      assigned_to_context: true,
+    };
+  });
+  for (const entry of everywhere) {
+    if (localById.has(entry.id)) continue;
+    const corrections = (entry.corrections as DevDictionaryCorrection[] | undefined) ?? [];
+    merged.push({
+      ...entry,
+      context_id: contextId,
+      dictionary_id: entry.id,
+      correction_id: null,
+      correction_ids: [],
+      context_corrections: [],
+      corrections,
+      inherited_from_everywhere: true,
+      assigned_to_context: false,
+    });
+  }
+  return merged;
+}
+
+function devEffectiveContextSnippetRows(contextId: number) {
+  const local = devContextRows(contextId, readDevList<DevSnippet>(DEV_SNIPPETS_KEY), 'snippets');
+  if (contextId === DEV_EVERYWHERE_CONTEXT_ID) {
+    return local.map((snippet) => ({ ...snippet, inherited_from_everywhere: false, assigned_to_context: true }));
+  }
+  const everywhere = devContextRows(DEV_EVERYWHERE_CONTEXT_ID, readDevList<DevSnippet>(DEV_SNIPPETS_KEY), 'snippets');
+  const localIds = new Set(local.map((snippet) => snippet.id));
+  const rows = local.map((snippet) => ({
+    ...snippet,
+    inherited_from_everywhere: everywhere.some((global) => global.id === snippet.id),
+    assigned_to_context: true,
+  }));
+  for (const snippet of everywhere) {
+    if (localIds.has(snippet.id)) continue;
+    rows.push({ ...snippet, inherited_from_everywhere: true, assigned_to_context: false });
+  }
+  return rows;
 }
 
 function devContextRows<T extends { id: number }>(
@@ -637,8 +727,11 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         cleanup_intensity: (args?.cleanupIntensity ?? args?.cleanup_intensity) as string | null | undefined ?? null,
         color: null,
         custom_instructions: ((args?.customInstructions ?? args?.custom_instructions) as string | null | undefined) ?? null,
-        contextual_formatting_disabled: Boolean(args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
+        contextual_formatting_disabled: Boolean(args?.contextualFormattingOverride ?? args?.contextual_formatting_override
+          ?? args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
         paste_in_chunks: Boolean(args?.pasteInChunks ?? args?.paste_in_chunks ?? false),
+        contextual_formatting_override: (args?.contextualFormattingOverride ?? args?.contextual_formatting_override) as boolean | null | undefined
+          ?? ((args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled) ? true : null),
         pinned_at: null,
         created_at: now,
         updated_at: now,
@@ -670,8 +763,11 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         tone: (args?.tone as string | null | undefined) ?? null,
         cleanup_intensity: (args?.cleanupIntensity ?? args?.cleanup_intensity) as string | null | undefined ?? null,
         custom_instructions: (args?.customInstructions ?? args?.custom_instructions) as string | null | undefined ?? null,
-        contextual_formatting_disabled: Boolean(args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
+        contextual_formatting_disabled: Boolean(args?.contextualFormattingOverride ?? args?.contextual_formatting_override
+          ?? args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled),
         paste_in_chunks: Boolean(args?.pasteInChunks ?? args?.paste_in_chunks ?? rows[index]?.paste_in_chunks ?? false),
+        contextual_formatting_override: (args?.contextualFormattingOverride ?? args?.contextual_formatting_override) as boolean | null | undefined
+          ?? ((args?.contextualFormattingDisabled ?? args?.contextual_formatting_disabled) ? true : null),
         updated_at: devNow(),
       };
       writeDevList(DEV_CONTEXTS_KEY, rows);
@@ -835,11 +931,11 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return null as T;
     case 'get_context_dictionary': {
       const contextId = Number(args?.contextId ?? args?.context_id);
-      return devContextDictionaryRows(contextId) as T;
+      return devEffectiveContextDictionaryRows(contextId) as T;
     }
     case 'get_context_snippets': {
       const contextId = Number(args?.contextId ?? args?.context_id);
-      return devContextRows(contextId, readDevList<DevSnippet>(DEV_SNIPPETS_KEY), 'snippets') as T;
+      return devEffectiveContextSnippetRows(contextId) as T;
     }
     case 'set_dictionary_context_assignment':
     case 'set_snippet_context_assignment': {
@@ -1424,6 +1520,15 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       const rows = readDevList<DevSnippet>(DEV_SNIPPETS_KEY);
       const existing = rows.find((row) => row.trigger === trigger);
       const snippetAssignments = readDevContextAssignments();
+      if (
+        targetContext &&
+        snippetAssignments.snippets[String(DEV_EVERYWHERE_CONTEXT_ID)] === undefined
+      ) {
+        // An absent Everywhere bucket represents the legacy default where
+        // existing snippets are global. Snapshot that set before creating a
+        // context-only snippet so it does not become global by accident.
+        snippetAssignments.snippets[String(DEV_EVERYWHERE_CONTEXT_ID)] = rows.map((row) => row.id);
+      }
       if (existing) {
         if (!targetContext) throw new Error('UNIQUE constraint failed: snippets.trigger');
         const bucket = (snippetAssignments.snippets[String(targetContext)] ??= []);

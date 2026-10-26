@@ -37,22 +37,33 @@ Sub-apps sync between paired devices, whether or not they are in a context group
 
 ## The Everywhere context
 
-Every install has an **Everywhere** context. It is the fallback when no app or website context matches.
+Every install has an **Everywhere** context. Its saved style, instructions,
+vocabulary, and snippets apply to every dictation. When no app, website, or
+sub-app target matches, Everywhere is also the selected context. A matching
+group layers its own settings and content over Everywhere.
 
-Everywhere can contain vocabulary and snippets that should apply to ordinary dictation. It cannot have app or website targets because it already covers everything else.
+Everywhere cannot have app or website targets because it already covers every
+dictation.
 
 ## Create a context
 
 1. Open **Contexts** from the sidebar and choose **New context group**.
 2. Enter a name. Names can be up to 30 characters.
 3. Optionally choose an icon and color.
-4. Choose a **Tone** override, or leave it at **Use default**.
-5. Choose a **Cleanup** override, or leave it at **Use default**.
-6. Add **Custom instructions** if this context needs a rule the normal cleanup settings do not cover. The field accepts up to 300 characters and is sent to the cleanup model whenever the context is active.
+4. Choose a **Tone** override, or leave it at **Use inherited setting**.
+5. Choose a **Cleanup** override, or leave it at **Use inherited setting**.
+6. Add **Custom instructions** if this context needs an additional rule. Everywhere instructions run first; this group's instructions follow them. The field accepts up to 300 characters and is sent to the cleanup model whenever the group is active.
 7. Add apps and websites. You can add more from the context page later.
 8. Save the context group.
 
-The **Advanced** section has one context-specific option, **Disable smart formatting**. It turns off automatic spacing and capitalization for that context. Use it for destinations where Verenu should leave those decisions alone.
+The **Advanced** section controls **Smart formatting**. A group can use the
+Everywhere setting or explicitly turn formatting on or off. Clearing the group
+override returns it to Everywhere.
+
+For tone and cleanup, an explicit group value wins. An unset group value uses a
+matching legacy App Mapping first, then Everywhere, then the app's normal
+default. Clearing the group value restores that inheritance order. App mappings
+remain useful as intentional per-app overrides.
 
 ## Add content to a context
 
@@ -61,7 +72,26 @@ Each context has two tabs:
 - [Vocabulary](VOCABULARY.md) contains words and phrases Verenu should recognize or correct.
 - [Snippets](SNIPPETS.md) contains spoken triggers that expand into saved text.
 
-You can assign the same vocabulary entry or snippet to more than one context. Use a row's menu and choose **Move to...** when you want to remove it from the current context and place it in another one.
+Everywhere vocabulary and snippets are inherited by every targeted group. A
+group can add more entries. Vocabulary corrections for the same mistranscribed
+variant can be customized in one group, including a different preferred term
+for that variant; distinct variants add to the inherited ones. A shared vocabulary term keeps one canonical spelling, while its
+correction patterns can differ by group. Clearing a local correction restores
+the Everywhere pattern.
+
+Auto-learn keeps its existing enable setting. New corrections belong to the
+selected group; corrections learned in Everywhere are inherited by all groups
+with the same local-override rules as manually saved vocabulary.
+
+Snippet triggers are unique across the library, so a group can use an inherited
+snippet or add a new trigger, but cannot redefine an inherited trigger just for
+that group. Targets are not inherited: each dictation selects one group by
+sub-app, website, app, then Everywhere fallback. A website match takes priority
+over its browser app, and a matching sub-app takes priority over both.
+
+You can assign the same local vocabulary entry or snippet to more than one
+context. Use a row's menu and choose **Move to...** when you want to remove it
+from the current context and place it in another one.
 
 Deleting a context removes its app and website targets. Its vocabulary and
 snippets are returned to Everywhere so they are not orphaned. Context-specific

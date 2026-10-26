@@ -115,6 +115,7 @@ pub struct ExportContext {
     pub paste_in_chunks: bool,
     #[serde(default)]
     pub t3_skill_mentions_disabled: Option<bool>,
+    pub contextual_formatting_override: Option<bool>,
     #[serde(default)]
     pub pinned_at: Option<String>,
     #[serde(default)]
@@ -548,7 +549,7 @@ fn export_contextual_library(
     let mut contexts = Vec::new();
     let mut context_stmt = conn.prepare(
         "SELECT id, uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled
+                custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled, contextual_formatting_override
            FROM contexts
           ORDER BY is_everywhere DESC, id",
     )?;
@@ -568,6 +569,7 @@ fn export_contextual_library(
                 pinned_at: row.get(10)?,
                 paste_in_chunks: row.get::<_, i64>(11)? != 0,
                 t3_skill_mentions_disabled: Some(row.get::<_, bool>(12)?),
+                contextual_formatting_override: row.get(13)?,
                 dictionary: Vec::new(),
                 snippets: Vec::new(),
                 targets: Vec::new(),
@@ -688,7 +690,9 @@ fn export_sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportSu
 }
 
 fn export_unassigned_sub_apps(db: &db::Db) -> AnyhowResult<Vec<ExportSubApp>> {
-    let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    let conn = db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
     let mut stmt = conn.prepare(
         "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
            FROM context_sub_apps
@@ -893,11 +897,9 @@ fn import_contextual_library_conn(
         }
 
         for target in &context.targets {
-            let Some(resolved) = resolve_import_target(
-                target,
-                installed_apps,
-                db::current_platform_tag(),
-            ) else {
+            let Some(resolved) =
+                resolve_import_target(target, installed_apps, db::current_platform_tag())
+            else {
                 stats.app_targets_dropped += 1;
                 continue;
             };
@@ -1012,7 +1014,13 @@ fn resolve_import_target(
 ) -> Option<ResolvedImportTarget> {
     let raw = target.executable.trim().to_lowercase();
     let unresolved = raw.starts_with("?::");
-    let executable = raw.trim_start_matches("?::").split('#').next().unwrap_or("").trim().to_string();
+    let executable = raw
+        .trim_start_matches("?::")
+        .split('#')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if executable.is_empty() {
         return None;
     }
@@ -1119,6 +1127,9 @@ fn import_context_conn(
     source: &ExportContext,
     stats: &mut LibraryImportStats,
 ) -> AnyhowResult<Option<i64>> {
+    let formatting_override = source
+        .contextual_formatting_override
+        .or_else(|| source.contextual_formatting_disabled.then_some(true));
     let name = source.name.trim();
     if name.is_empty() {
         stats.contexts_skipped += 1;
@@ -1129,16 +1140,17 @@ fn import_context_conn(
         conn.execute(
             "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3,
                     color = ?4, custom_instructions = ?5,
-                    contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
+                    contextual_formatting_disabled = ?6, contextual_formatting_override = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled),
                     updated_at = datetime('now')
-              WHERE id = ?8",
+              WHERE id = ?9",
             params![
                 source.icon,
                 source.tone,
                 source.cleanup_intensity,
                 source.color,
                 source.custom_instructions,
-                source.contextual_formatting_disabled as i64,
+                (formatting_override == Some(true)) as i64,
+                formatting_override.map(i64::from),
                 source.pinned_at,
                 id,
                 source.paste_in_chunks,
@@ -1177,9 +1189,9 @@ fn import_context_conn(
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
                         cleanup_intensity = ?4, color = ?5, custom_instructions = ?6,
-                        contextual_formatting_disabled = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled),
+                        contextual_formatting_disabled = ?7, contextual_formatting_override = ?8, pinned_at = ?9, paste_in_chunks = ?11, t3_skill_mentions_disabled = COALESCE(?12, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
-                  WHERE id = ?9",
+                  WHERE id = ?10",
                 params![
                     name,
                     source.icon,
@@ -1187,7 +1199,8 @@ fn import_context_conn(
                     source.cleanup_intensity,
                     source.color,
                     source.custom_instructions,
-                    source.contextual_formatting_disabled as i64,
+                    (formatting_override == Some(true)) as i64,
+                    formatting_override.map(i64::from),
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
@@ -1198,16 +1211,17 @@ fn import_context_conn(
             conn.execute(
                 "UPDATE contexts SET icon = ?1, tone = ?2,
                         cleanup_intensity = ?3, color = ?4, custom_instructions = ?5,
-                        contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled),
+                        contextual_formatting_disabled = ?6, contextual_formatting_override = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled),
                         updated_at = datetime('now')
-                  WHERE id = ?8",
+                  WHERE id = ?9",
                 params![
                     source.icon,
                     source.tone,
                     source.cleanup_intensity,
                     source.color,
                     source.custom_instructions,
-                    source.contextual_formatting_disabled as i64,
+                    (formatting_override == Some(true)) as i64,
+                    formatting_override.map(i64::from),
                     source.pinned_at,
                     id,
                     source.paste_in_chunks,
@@ -1238,8 +1252,8 @@ fn import_context_conn(
     let inserted = conn.execute(
         "INSERT INTO contexts
            (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-            custom_instructions, contextual_formatting_disabled, pinned_at, paste_in_chunks, t3_skill_mentions_disabled)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 0))",
+            custom_instructions, contextual_formatting_disabled, contextual_formatting_override, pinned_at, paste_in_chunks, t3_skill_mentions_disabled)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, COALESCE(?12, 0))",
         params![
             uuid,
             name,
@@ -1248,7 +1262,8 @@ fn import_context_conn(
             source.cleanup_intensity,
             source.color,
             source.custom_instructions,
-            source.contextual_formatting_disabled as i64,
+            (formatting_override == Some(true)) as i64,
+            formatting_override.map(i64::from),
             source.pinned_at,
             source.paste_in_chunks,
             source.t3_skill_mentions_disabled,
@@ -1579,6 +1594,26 @@ mod tests {
         let writing =
             db::insert_context_returning(&source, "Writing", None, None, None, None, false)
                 .expect("writing context");
+        db::update_context_settings_with_override(
+            &source,
+            db::EVERYWHERE_CONTEXT_ID,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .unwrap();
+        db::update_context_settings_with_override(
+            &source,
+            development.id,
+            None,
+            None,
+            None,
+            None,
+            Some(false),
+        )
+        .unwrap();
         db::assign_context_target(&source, development.id, "code.exe").expect("app target");
         db::assign_context_website(&source, writing.id, "mail.example.com")
             .expect("website target");
@@ -1649,6 +1684,17 @@ mod tests {
             .iter()
             .find(|context| context.name == "Writing")
             .expect("target writing");
+        assert_eq!(
+            db::query_context(&target, db::EVERYWHERE_CONTEXT_ID)
+                .unwrap()
+                .contextual_formatting_override,
+            Some(true)
+        );
+        assert_eq!(
+            target_development.contextual_formatting_override,
+            Some(false)
+        );
+        assert_eq!(target_writing.contextual_formatting_override, None);
         let development_entry = db::query_dictionary_for_context(&target, target_development.id)
             .expect("development dictionary")
             .into_iter()
@@ -1767,7 +1813,11 @@ mod tests {
         let work = db::insert_context_returning(&source, "Work", None, None, None, None, false)
             .expect("ctx");
         let mut ids = Vec::new();
-        for (exe, label) in [("discord", "Acme"), ("photoshop.app", "Retouch"), ("slack", "Loose")] {
+        for (exe, label) in [
+            ("discord", "Acme"),
+            ("photoshop.app", "Retouch"),
+            ("slack", "Loose"),
+        ] {
             ids.push(
                 db::create_sub_app(
                     &source,
@@ -1789,7 +1839,10 @@ mod tests {
         source
             .lock()
             .expect("lock")
-            .execute("UPDATE context_sub_apps SET platform = 'macos' WHERE executable = 'photoshop.app'", [])
+            .execute(
+                "UPDATE context_sub_apps SET platform = 'macos' WHERE executable = 'photoshop.app'",
+                [],
+            )
             .expect("tag");
         let (dictionary, contexts) = export_contextual_library(&source).expect("export");
         let payload = ExportPayload {
@@ -1815,7 +1868,10 @@ mod tests {
         }
         let imported = db::query_sub_apps(&target).expect("sub-apps");
         let acme = imported.iter().find(|s| s.label == "Acme").expect("acme");
-        assert!(acme.context_id.is_some(), "assigned sub-app keeps its Context");
+        assert!(
+            acme.context_id.is_some(),
+            "assigned sub-app keeps its Context"
+        );
         assert_eq!(acme.icon.as_deref(), Some("briefcase"));
         let loose = imported.iter().find(|s| s.label == "Loose").expect("loose");
         assert!(loose.context_id.is_none(), "unassigned sub-app returns to the list");

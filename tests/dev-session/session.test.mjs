@@ -57,7 +57,7 @@ check('authentication, origin checks, and native command restrictions hold', asy
 });
 check('Context edits persist in the real session database', async () => {
   const name = `Test ${Date.now()}`;
-  const created = await invoke('create_context', { name, contextualFormattingDisabled: false });
+  const created = await invoke('create_context', { name, contextualFormattingOverride: null });
   try {
     assert.equal((await invoke('get_contexts')).some((row) => row.id === created.id && row.name === name), true);
     await invoke('update_context', { contextId: created.id, name: `${name} edited` });
@@ -98,7 +98,7 @@ check('malformed audio fails without invoking providers', async () => {
 check('custom Context artwork survives native saves and duplication', async () => {
   const artwork = (kind, text) => 'custom-icon:' + JSON.stringify({ kind, text, background: '#164e63', foreground: '#38bdf8' });
   const icon = artwork('letters', 'WE');
-  const created = await invoke('create_context', { name: 'Custom icon regression', icon, contextualFormattingDisabled: false });
+  const created = await invoke('create_context', { name: 'Custom icon regression', icon, contextualFormattingOverride: null });
   let duplicate;
   try {
     await invoke('update_context_color', { contextId: created.id, color: '#a855f7' });
@@ -106,7 +106,7 @@ check('custom Context artwork survives native saves and duplication', async () =
     assert.equal(duplicate.icon, icon);
     assert.equal(duplicate.color, '#a855f7');
     const emoji = artwork('emoji', '👩🏽‍💻');
-    await invoke('update_context_settings', { contextId: created.id, icon: emoji, contextualFormattingDisabled: false });
+    await invoke('update_context_settings', { contextId: created.id, icon: emoji, contextualFormattingOverride: null });
     const saved = (await invoke('get_contexts')).find(row => row.id === created.id);
     assert.equal(saved.icon, emoji);
     assert.equal(saved.color, '#a855f7');
@@ -251,7 +251,7 @@ check('live synthetic corpus reaches providers, Context rules, events, and exact
     t.skip(row.reason); return;
   }
   const corpus = JSON.parse(await fs.readFile(new URL('../fixtures/dev-audio.json', import.meta.url), 'utf8'));
-  const context = await invoke('create_context', { name: 'Synthetic speech', tone: 'casual', cleanupIntensity: 'medium', contextualFormattingDisabled: true });
+  const context = await invoke('create_context', { name: 'Synthetic speech', tone: 'casual', cleanupIntensity: 'medium', contextualFormattingOverride: true });
   const snippet = await invoke('create_snippet', { trigger: 'insert the test signature', expansion: 'Synthetic signature confirmed.', instructions: '', contextId: context.id });
   const vocabulary = await invoke('create_dictionary_entry', { term: 'Verenu', mistake: 'Verenoo', contextId: context.id });
   try {

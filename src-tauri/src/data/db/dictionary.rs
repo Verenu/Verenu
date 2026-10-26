@@ -31,6 +31,16 @@ pub struct DictionaryEntry {
     pub created_at: String,
     #[serde(default)]
     pub corrections: Vec<DictionaryCorrection>,
+    /// The selected group's own mappings, used for scoped edit/delete IDs
+    /// when `corrections` also contains inherited Everywhere mappings.
+    #[serde(default)]
+    pub context_corrections: Vec<DictionaryCorrection>,
+    /// True when the canonical entry is available through Everywhere.
+    #[serde(default)]
+    pub inherited_from_everywhere: bool,
+    /// True when this group has its own dictionary assignment.
+    #[serde(default)]
+    pub assigned_to_context: bool,
 }
 
 fn dictionary_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DictionaryEntry> {
@@ -44,6 +54,9 @@ fn dictionary_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Dictio
         last_seen_at: row.get(6)?,
         created_at: row.get(7)?,
         corrections: Vec::new(),
+        context_corrections: Vec::new(),
+        inherited_from_everywhere: false,
+        assigned_to_context: false,
     })
 }
 
@@ -105,9 +118,131 @@ pub fn query_dictionary(db: &Db) -> Result<Vec<DictionaryEntry>> {
     query_dictionary_conn(&conn, None)
 }
 
+#[cfg(test)]
 pub fn query_dictionary_for_context(db: &Db, context_id: i64) -> Result<Vec<DictionaryEntry>> {
     let conn = lock_conn(db)?;
-    query_dictionary_conn(&conn, Some(context_id))
+    let mut entries = query_dictionary_conn(&conn, Some(context_id))?;
+    for entry in &mut entries {
+        entry.assigned_to_context = true;
+    }
+    Ok(entries)
+}
+
+/// Returns the additive vocabulary available to a context. Everywhere
+/// corrections are inherited, while a local correction with the same
+/// case-insensitive mistake variant takes precedence and distinct local
+/// variants are added.
+pub fn query_effective_dictionary_for_context(
+    db: &Db,
+    context_id: i64,
+) -> Result<Vec<DictionaryEntry>> {
+    let conn = lock_conn(db)?;
+    let context = query_context_conn(&conn, context_id)?;
+    let everywhere_id = ensure_everywhere_context_conn(&conn)?;
+    let mut local = query_dictionary_conn(&conn, Some(context_id))?;
+    for entry in &mut local {
+        entry.assigned_to_context = true;
+    }
+    if context.is_everywhere || context_id == everywhere_id {
+        return Ok(local);
+    }
+
+    // A group's spoken variant wins across the whole effective vocabulary,
+    // including when it names a different canonical term than Everywhere.
+    // Resolve this before prompt ranking and substitutions, which otherwise
+    // could choose different winners for the same variant.
+    let local_variants = local
+        .iter()
+        .flat_map(|entry| &entry.corrections)
+        .map(|correction| correction.mistake.to_lowercase())
+        .collect::<HashSet<_>>();
+    let global = query_dictionary_conn(&conn, Some(everywhere_id))?;
+    let mut indices = local
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.id, index))
+        .collect::<HashMap<_, _>>();
+    let mut effective = local;
+    for mut inherited in global {
+        inherited
+            .corrections
+            .retain(|correction| !local_variants.contains(&correction.mistake.to_lowercase()));
+        inherited.mistake = None;
+        inherited.auto_learned = false;
+        inherited.correction_count = 0;
+        inherited.confidence_tier = "manual".to_string();
+        inherited.last_seen_at = None;
+        refresh_dictionary_entry_correction_summary(&mut inherited);
+        inherited.inherited_from_everywhere = true;
+        inherited.assigned_to_context = false;
+        inherited.context_corrections.clear();
+        if let Some(index) = indices.get(&inherited.id).copied() {
+            let selected = &mut effective[index];
+            selected.inherited_from_everywhere = true;
+            selected.corrections =
+                merge_dictionary_corrections(&inherited.corrections, &selected.corrections);
+            refresh_dictionary_entry_correction_summary(selected);
+        } else {
+            indices.insert(inherited.id, effective.len());
+            effective.push(inherited);
+        }
+    }
+    Ok(effective)
+}
+
+fn merge_dictionary_corrections(
+    inherited: &[DictionaryCorrection],
+    local: &[DictionaryCorrection],
+) -> Vec<DictionaryCorrection> {
+    let mut merged = inherited.to_vec();
+    for correction in local {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|item| item.mistake.eq_ignore_ascii_case(&correction.mistake))
+        {
+            *existing = correction.clone();
+        } else {
+            merged.push(correction.clone());
+        }
+    }
+    merged
+}
+
+fn refresh_dictionary_entry_correction_summary(entry: &mut DictionaryEntry) {
+    if entry.corrections.is_empty() {
+        return;
+    }
+    let mut seen = HashSet::new();
+    entry.mistake = Some(
+        entry
+            .corrections
+            .iter()
+            .filter(|correction| seen.insert(correction.mistake.to_lowercase()))
+            .map(|correction| correction.mistake.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    entry.auto_learned = entry
+        .corrections
+        .iter()
+        .any(|correction| correction.auto_learned);
+    entry.correction_count = entry
+        .corrections
+        .iter()
+        .map(|correction| correction.correction_count)
+        .sum();
+    entry.confidence_tier = entry
+        .corrections
+        .iter()
+        .filter(|correction| correction.auto_learned)
+        .max_by_key(|correction| confidence_tier_rank(&correction.confidence_tier))
+        .map(|correction| correction.confidence_tier.clone())
+        .unwrap_or_else(|| "manual".to_string());
+    entry.last_seen_at = entry
+        .corrections
+        .iter()
+        .filter_map(|correction| correction.last_seen_at.clone())
+        .max();
 }
 
 fn query_dictionary_conn(
@@ -213,7 +348,10 @@ fn materialize_dictionary_entry(
             confidence_tier: legacy.confidence_tier,
             last_seen_at: legacy.last_seen_at,
             created_at: legacy.created_at,
+            context_corrections: corrections.clone(),
             corrections,
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         };
     }
 
@@ -250,7 +388,10 @@ fn materialize_dictionary_entry(
         confidence_tier,
         last_seen_at,
         created_at: legacy.created_at,
+        context_corrections: corrections.clone(),
         corrections,
+        inherited_from_everywhere: false,
+        assigned_to_context: false,
     }
 }
 
@@ -1471,7 +1612,25 @@ fn update_dictionary_entry_for_context_conn(
         |row| row.get(0),
     )?;
     if !assigned {
-        anyhow::bail!("Dictionary entry {id} is not assigned to this context");
+        let everywhere_id = ensure_everywhere_context_conn(conn)?;
+        let inherited: bool = context_id != everywhere_id
+            && conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dictionary_contexts
+                                WHERE context_id = ?1 AND dictionary_id = ?2)",
+                params![everywhere_id, id],
+                |row| row.get(0),
+            )?;
+        if !inherited {
+            anyhow::bail!("Dictionary entry {id} is not assigned to this context");
+        }
+        // Saving an edit to inherited vocabulary creates a Context-owned
+        // correction override atomically. Opening and cancelling the editor
+        // therefore never leaves a redundant local assignment behind.
+        conn.execute(
+            "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
+             VALUES (?1, ?2)",
+            params![context_id, id],
+        )?;
     }
     check_dictionary_mistake_conflicts(conn, context_id, Some(id), normalized_mistake)?;
 

@@ -36,7 +36,7 @@ impl Vocabulary {
     }
 
     pub fn for_context(db: &crate::data::db::Db, context_id: i64) -> anyhow::Result<Self> {
-        let entries = crate::data::db::query_dictionary_for_context(db, context_id)?;
+        let entries = crate::data::db::query_effective_dictionary_for_context(db, context_id)?;
         Ok(Self::from_terms(
             entries.iter().map(|entry| entry.term.as_str()),
         ))

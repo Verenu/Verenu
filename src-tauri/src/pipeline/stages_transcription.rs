@@ -185,7 +185,8 @@ pub(super) async fn open_config_and_context(
         return None;
     }
     let mapping = resolve_app_mapping(Some(&settings_store), process_name);
-    let profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context);
+    let everywhere_context = db::query_context(app.state::<DbHandle>().inner(), db::EVERYWHERE_CONTEXT_ID).ok();
+    let profile = apply_app_style_overrides(&mut cfg, mapping.as_ref(), context, everywhere_context.as_ref());
     if let Some(context) = context {
         cfg.speech_vocabulary = crate::local_stt::vocabulary::Vocabulary::for_context(
             app.state::<DbHandle>().inner(), context.id,
