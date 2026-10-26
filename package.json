@@ -4,6 +4,7 @@
   "description": "Verenu - An open-source AI dictation app for Windows, macOS, and Linux",
   "type": "module",
   "scripts": {
+    "agent": "node Agent-Skills/verenu-control/scripts/verenu-agent.mjs",
     "dev": "vite",
     "dev:session": "node scripts/dev-session.mjs",
     "dev:fixtures": "node scripts/dev-audio-fixtures.mjs",
