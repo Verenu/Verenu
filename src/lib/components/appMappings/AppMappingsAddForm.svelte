@@ -402,7 +402,7 @@
   }
 
   .app-search-input:focus {
-    border-color: var(--accent);
+    border-color: var(--line-strong);
   }
 
   .app-picker-menu {

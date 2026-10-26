@@ -431,7 +431,7 @@
     line-height: 1.5;
   }
   .input-row .field-input { flex: 1; width: auto; min-width: 0; }
-  .field-input:focus { border-color: var(--arm-400); }
+  .field-input:focus { border-color: var(--line-strong); }
   .field-input.scrollbar-standard {
     max-height: var(--field-input-max-height);
   }
@@ -476,6 +476,6 @@
     border-style: dashed;
     font-size: 12.5px;
   }
-  .instructions-input:focus { border-color: var(--arm-400); border-style: solid; }
+  .instructions-input:focus { border-color: var(--line-strong); border-style: solid; }
 
 </style>
