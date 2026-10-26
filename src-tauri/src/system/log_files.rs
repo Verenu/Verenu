@@ -28,6 +28,16 @@ struct Sink {
 }
 
 static SINK: OnceLock<Sink> = OnceLock::new();
+static DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+pub(super) fn dropped_total() -> usize {
+    DROPPED_TOTAL.load(Ordering::Relaxed)
+}
+
+fn count_dropped(pending: &AtomicUsize, count: usize) {
+    pending.fetch_add(count, Ordering::Relaxed);
+    DROPPED_TOTAL.fetch_add(count, Ordering::Relaxed);
+}
 
 pub(super) fn init(directory: PathBuf) {
     SINK.get_or_init(|| {
@@ -49,7 +59,7 @@ pub(super) fn append(line: &str) {
             bounded.push_str(" [truncated]");
         }
         if sink.tx.try_send(Message::Line(bounded)).is_err() {
-            sink.dropped.fetch_add(1, Ordering::Relaxed);
+            count_dropped(&sink.dropped, 1);
         }
     }
 }
@@ -232,7 +242,8 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
                 writer.write(&batch, free)
             })();
             if !matches!(result, Ok(true)) {
-                dropped.fetch_add(records + omitted, Ordering::Relaxed);
+                count_dropped(&dropped, records);
+                dropped.fetch_add(omitted, Ordering::Relaxed);
                 if result.is_err() {
                     writer.file = None;
                     writer.space_checked = None;
@@ -242,9 +253,8 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
             }
             batch.clear();
         } else if !batch.is_empty() {
-            dropped.fetch_add(
+            count_dropped(&dropped,
                 batch.iter().filter(|&&b| b == b'\n').count(),
-                Ordering::Relaxed,
             );
             batch.clear();
         }
@@ -360,6 +370,26 @@ mod tests {
             fs::read_to_string(log_paths(&dir.0).into_iter().next().unwrap()).unwrap(),
             "recovered\nresumed\n"
         );
+    }
+
+    #[test]
+    fn failed_writer_reports_lost_records_without_waiting_for_recovery() {
+        let dir = Directory::new();
+        let invalid_directory = dir.0.join("not-a-directory");
+        fs::write(&invalid_directory, b"file").unwrap();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = pending.clone();
+        let before = dropped_total();
+        let worker = std::thread::spawn(move || run(invalid_directory, rx, worker_pending));
+        tx.send(Message::Line("safe event".into())).unwrap();
+        let (ack, done) = mpsc::sync_channel(1);
+        tx.send(Message::Flush(ack)).unwrap();
+        done.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+        assert!(dropped_total() > before);
+        drop(tx);
+        worker.join().unwrap();
     }
 
     #[test]

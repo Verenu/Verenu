@@ -38,6 +38,15 @@ description: "Use for Verenu dictation problems, top recurring issues over a dat
    and target membership; do not invent historic errors or reconstruct deleted data.
    Use `prompts.lint` before saving a template. `test_cleanup_prompt` makes a live
    provider call using saved native credentials and can incur provider charges.
+   For targeted current-process logs, use `diagnostics.logs`, for example
+   `{"subsystem":"pipeline","level":"warn","limit":200}`. Optional
+   `since_ms` and `until_ms` are UTC milliseconds, inclusive and exclusive.
+   Check `oldest_retained_ms`, `evicted_since_reset`, and `omitted_by_limit`;
+   a filtered empty result does not prove an event never occurred. The snapshot
+   returns only the newest 800 logs; the query searches the full retained ring.
+   For earlier launches inspect the private session files in
+   `docs/TROUBLESHOOTING.md#session-logs-for-agents`; the opt-in daily journal
+   contains counts and fingerprints, not historical log messages.
 6. For authorized edits, use `save_setting`, Context CRUD and target commands;
    never write live SQLite or settings.json. Read back changed values, reload
    the relevant app view, and check persistence after a normal restart when

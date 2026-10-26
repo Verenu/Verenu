@@ -218,6 +218,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             "additional_commands": {
                 "save_setting": {"key": "writable setting", "value": "native validated JSON"},
                 "get_microphones": {}, "diagnostics.snapshot": {},
+                "diagnostics.logs": {"since_ms": "optional inclusive UTC milliseconds", "until_ms": "optional exclusive UTC milliseconds", "subsystem": "optional substring", "level": "optional exact level: error, warn, info, debug, trace", "limit": "1..1000 (default 200); newest matches"},
                 "prompts.lint": {"template": "string", "intensity": "optional string", "tone": "optional string"},
                 "history.report": {"start": "YYYY-MM-DD UTC inclusive", "end": "YYYY-MM-DD UTC exclusive"},
                 "history.page": {"start": "date", "end": "date", "after_id": "optional integer", "limit": "1..500 (default 100)", "include_text": "boolean, default false"},
@@ -265,6 +266,9 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 .await?,
         )
         .map_err(|e| e.to_string()),
+        "diagnostics.logs" => crate::system::diagnostics::query_logs(
+            serde_json::from_value(request.args).map_err(|e| e.to_string())?,
+        ),
         "history.report" | "history.page" | "diagnostics.top" | "diagnostics.retention" => {
             let db = app.state::<crate::DbHandle>().inner().clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
