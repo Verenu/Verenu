@@ -83,7 +83,8 @@ mutation: cancellation does not guarantee a native operation was undone.
   stats, dictionary and snippets; assign/remove apps and website targets.
   Reassignment moves a target. `update_context_settings` replaces its settings:
   read first and preserve fields you are not changing. Everywhere semantics
-  remain owned by the existing native handlers.
+  remain owned by the existing native handlers. `create_context` and
+  `update_context_settings` accept the optional `pasteInChunks` preference.
 - Read `diagnostics.snapshot`, lint current prompt templates using `prompts.lint`,
   or explicitly invoke `test_cleanup_prompt` with the existing saved provider
   credentials. That last command makes a live provider request and may cost
