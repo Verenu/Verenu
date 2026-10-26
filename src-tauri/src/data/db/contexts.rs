@@ -1316,6 +1316,20 @@ mod tests {
         assert!(!inherited[0].assigned_to_context);
         assert_eq!(inherited[0].mistake.as_deref(), Some("Varinu"));
 
+        assert!(update_dictionary_entry_for_context(
+            &db,
+            context.id,
+            dictionary_id,
+            "Renamed globally",
+            Some("Vreenu"),
+        )
+        .is_err());
+        assert!(
+            !query_effective_dictionary_for_context(&db, context.id).unwrap()[0]
+                .assigned_to_context
+        );
+        assert_eq!(query_dictionary(&db).unwrap()[0].term, "Verenu");
+
         update_dictionary_entry_for_context(
             &db,
             context.id,
@@ -1352,14 +1366,23 @@ mod tests {
         assert!(!cleared[0].assigned_to_context);
         assert_eq!(cleared[0].mistake.as_deref(), Some("Varinu"));
 
-        insert_snippet(&db, "thanks", "Thank you.", "").expect("global snippet");
+        insert_snippet(&db, "thanks", "Thank you.", "Use global style.").expect("global snippet");
         let global_snippet = query_snippets(&db).unwrap()[0].clone();
-        let local_snippet =
-            insert_snippet_returning(&db, "status", "In progress.", "", Some(context.id))
-                .expect("local snippet");
+        let local_snippet = insert_snippet_returning(
+            &db,
+            "status",
+            "In progress.",
+            "Use local style.",
+            Some(context.id),
+        )
+        .expect("local snippet");
         let effective =
             query_effective_snippets_for_context(&db, context.id).expect("effective snippets");
         assert_eq!(effective.len(), 2);
+        assert_eq!(
+            crate::data::snippets::collect_snippet_instructions_from("thanks status", &effective),
+            "Use global style.\nUse local style."
+        );
         let inherited = effective
             .iter()
             .find(|item| item.id == global_snippet.id)

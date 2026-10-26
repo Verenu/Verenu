@@ -1605,6 +1605,24 @@ fn update_dictionary_entry_for_context_conn(
     if !context_exists {
         anyhow::bail!("Context {context_id} was not found");
     }
+    let everywhere_id = ensure_everywhere_context_conn(conn)?;
+    let inherited: bool = context_id != everywhere_id
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary_contexts
+                            WHERE context_id = ?1 AND dictionary_id = ?2)",
+            params![everywhere_id, id],
+            |row| row.get(0),
+        )?;
+    if inherited {
+        let canonical: String = conn.query_row(
+            "SELECT term FROM dictionary WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if normalized_term != canonical {
+            anyhow::bail!("Rename inherited terms in Everywhere; only correction patterns can be customized here");
+        }
+    }
     let assigned: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM dictionary_contexts
                         WHERE context_id = ?1 AND dictionary_id = ?2)",
@@ -1612,14 +1630,6 @@ fn update_dictionary_entry_for_context_conn(
         |row| row.get(0),
     )?;
     if !assigned {
-        let everywhere_id = ensure_everywhere_context_conn(conn)?;
-        let inherited: bool = context_id != everywhere_id
-            && conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM dictionary_contexts
-                                WHERE context_id = ?1 AND dictionary_id = ?2)",
-                params![everywhere_id, id],
-                |row| row.get(0),
-            )?;
         if !inherited {
             anyhow::bail!("Dictionary entry {id} is not assigned to this context");
         }

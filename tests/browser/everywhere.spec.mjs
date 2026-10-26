@@ -45,6 +45,7 @@ test('Everywhere content is visible in groups and clearing local formatting rest
     expect((await session.invoke('get_context_dictionary', { contextId: group.id })).some((entry) => entry.id === word.id && entry.inherited_from_everywhere)).toBeTruthy();
     await row.click();
     await page.getByRole('menuitem', { name: 'Customize here', exact: true }).click();
+    await expect(page.locator('#dict-term')).not.toBeEditable();
     await page.locator('#dict-mistake').fill('local-baseline');
     await page.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(page.getByRole('dialog')).not.toBeVisible();

@@ -494,15 +494,15 @@ function devEffectiveContextSnippetRows(contextId: number) {
     return local.map((snippet) => ({ ...snippet, inherited_from_everywhere: false, assigned_to_context: true }));
   }
   const everywhere = devContextRows(DEV_EVERYWHERE_CONTEXT_ID, readDevList<DevSnippet>(DEV_SNIPPETS_KEY), 'snippets');
-  const localIds = new Set(local.map((snippet) => snippet.id));
-  const rows = local.map((snippet) => ({
+  const globalIds = new Set(everywhere.map((snippet) => snippet.id));
+  const rows = everywhere.map((snippet) => ({
     ...snippet,
-    inherited_from_everywhere: everywhere.some((global) => global.id === snippet.id),
-    assigned_to_context: true,
+    inherited_from_everywhere: true,
+    assigned_to_context: local.some((entry) => entry.id === snippet.id),
   }));
-  for (const snippet of everywhere) {
-    if (localIds.has(snippet.id)) continue;
-    rows.push({ ...snippet, inherited_from_everywhere: true, assigned_to_context: false });
+  for (const snippet of local) {
+    if (globalIds.has(snippet.id)) continue;
+    rows.push({ ...snippet, inherited_from_everywhere: false, assigned_to_context: true });
   }
   return rows;
 }
@@ -1608,9 +1608,9 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       const rows = readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY);
       const existing = rows.find((row) => row.term === term);
       const dictionaryAssignments = readDevContextAssignments();
+      ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
       if (existing) {
         if (!scopedContext) throw new Error('UNIQUE constraint failed: dictionary.term');
-        ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
         const bucket = (dictionaryAssignments.dictionary[String(targetContext)] ??= []);
         if (bucket.includes(existing.id)) {
           throw new Error(`"${term}" is already in this context`);
@@ -1634,7 +1634,6 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         created_at: created.created_at,
       });
       writeDevList(DEV_DICTIONARY_KEY, rows);
-      ensureDevEverywhereDictionaryAssignment(dictionaryAssignments, rows);
       const bucket = (dictionaryAssignments.dictionary[String(targetContext)] ??= []);
       bucket.push(id);
       writeDevContextAssignments(dictionaryAssignments);
@@ -1666,6 +1665,18 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Dictionary entry ${id} was not found`);
       if (contextId !== null) {
+        const assignments = readDevContextAssignments();
+        ensureDevEverywhereDictionaryAssignment(assignments, rows);
+        const globalIds = assignments.dictionary[String(DEV_EVERYWHERE_CONTEXT_ID)] ?? [];
+        const bucket = (assignments.dictionary[String(contextId)] ??= []);
+        if (contextId !== DEV_EVERYWHERE_CONTEXT_ID && globalIds.includes(id) && rows[index].term !== term) {
+          throw new Error('Rename inherited terms in Everywhere; only correction patterns can be customized here');
+        }
+        if (!bucket.includes(id)) {
+          if (!globalIds.includes(id)) throw new Error('Dictionary entry is not assigned to this context');
+          bucket.push(id);
+        }
+        writeDevContextAssignments(assignments);
         rows[index] = { ...rows[index], term };
         const correctionId = setDevDictionaryCorrection(id, contextId, mistake);
         writeDevList(DEV_DICTIONARY_KEY, rows);

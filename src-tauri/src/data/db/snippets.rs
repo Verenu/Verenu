@@ -247,16 +247,12 @@ pub fn query_effective_snippets_for_context(db: &Db, context_id: i64) -> Result<
         snippet.inherited_from_everywhere = true;
         snippet.assigned_to_context = local_ids.contains(&snippet.id);
     }
-    let mut effective = local;
+    let mut effective = everywhere;
     let mut seen = effective
         .iter()
         .map(|snippet| snippet.id)
         .collect::<HashSet<_>>();
-    effective.extend(
-        everywhere
-            .into_iter()
-            .filter(|snippet| seen.insert(snippet.id)),
-    );
+    effective.extend(local.into_iter().filter(|snippet| seen.insert(snippet.id)));
     Ok(effective)
 }
 
