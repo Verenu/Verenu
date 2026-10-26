@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { detectedHarnesses, installSkill, invoke } from '../../Agent-Skills/verenu-control/scripts/verenu-agent.mjs';
 import { muteForRoute } from '../../Agent-Skills/verenu-control/scripts/audio-policy.mjs';
 
@@ -21,6 +22,9 @@ test('skill installation requires consent and an explicit selection of detected 
     await assert.rejects(fs.stat(path.join(home, '.claude/skills/verenu-control')), /ENOENT/);
     await assert.rejects(installSkill(['codex'], { home, permanent: true }), /already exists/);
     await installSkill(['codex'], { home, permanent: true, replace: true });
+    const installed = await import(pathToFileURL(path.join(destination, 'scripts/verenu-agent.mjs')).href);
+    await installed.installSkill(['codex', 'claude'], { home, permanent: true, replace: true });
+    assert.equal(await fs.readFile(path.join(home, '.claude/skills/verenu-control/SKILL.md'), 'utf8'), await fs.readFile(path.join(destination, 'SKILL.md'), 'utf8'));
   } finally { await fs.rm(home, { recursive: true, force: true }); }
 });
 

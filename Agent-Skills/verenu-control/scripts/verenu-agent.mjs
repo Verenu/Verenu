@@ -30,12 +30,16 @@ export async function installSkill(selected, { home = os.homedir(), permanent = 
     return harness.destination;
   });
   // Preflight the entire selection before writing any harness.
+  const source = await fs.realpath(skillRoot);
+  const copies = [];
   for (const destination of destinations) {
     const stat = await fs.lstat(destination).catch((error) => { if (error.code !== 'ENOENT') throw error; });
     if (stat?.isSymbolicLink()) throw new Error('Refusing to replace a linked skill');
+    if (stat && await fs.realpath(destination) === source) continue;
     if (stat && !replace) throw new Error('Skill already exists; inspect it and use --replace to update');
+    copies.push(destination);
   }
-  for (const destination of destinations) {
+  for (const destination of copies) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.cp(skillRoot, destination, { recursive: true, force: replace, errorOnExist: !replace });
   }
