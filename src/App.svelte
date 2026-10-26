@@ -32,7 +32,7 @@
   import { scrollEdges } from './lib/scrollFade';
   import { fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
-  import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
+  import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
   import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
   import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
@@ -175,9 +175,18 @@
 
   $effect(() => {
     pageNavigation.current;
-    requestAnimationFrame(() => {
-      contentEl?.scrollTo({ top: 0, behavior: reducedMotionEnabled() ? 'auto' : 'smooth' });
-    });
+    if (!contentEl) return;
+    // Reset scroll without moving the leaving page: it keeps its place on screen
+    // while it fades, and the entering page starts at the top.
+    const offset = contentEl.scrollTop;
+    if (offset > 0) {
+      const wrappers = contentEl.querySelectorAll<HTMLElement>('.page-wrapper');
+      for (const leaving of Array.from(wrappers).slice(0, -1)) {
+        leaving.style.position = 'relative';
+        leaving.style.top = `${-offset}px`;
+      }
+      contentEl.scrollTo({ top: 0, behavior: 'auto' });
+    }
   });
 
   $effect(() => {
