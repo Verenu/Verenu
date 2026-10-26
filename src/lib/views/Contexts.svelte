@@ -1260,9 +1260,6 @@
           </button>
         </div>
 
-        {#if loading && dictionary.length === 0 && snippets.length === 0}
-          <div class="context-loading" role="status">Loading this context group…</div>
-        {:else}
           {#key tab}
             <div
               class="tab-panel"
@@ -1272,7 +1269,9 @@
               aria-labelledby="context-tab-{tab}"
               in:pageSwap={{ axis: 'x', distance: tabDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.base) }}
             >
-              {#if tab === 'vocabulary'}
+              {#if loading && dictionary.length === 0 && snippets.length === 0}
+                <div class="context-loading" role="status">Loading this context group…</div>
+              {:else if tab === 'vocabulary'}
                 {#if filteredDictionary.length === 0}
                   <div class="section-empty">
                     <div class="section-empty-mark" aria-hidden="true">
@@ -1367,7 +1366,6 @@
               {/if}
             </div>
           {/key}
-        {/if}
         </div>
       {:else}
         <div class="context-empty" in:pageSwap={{ axis: 'y', distance: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}>Create a context group to get started.</div>

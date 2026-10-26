@@ -7,6 +7,7 @@
   import Home from './lib/views/Home.svelte';
   import DeferredView from './lib/components/DeferredView.svelte';
   import { lazyComponent } from './lib/lazyComponent.svelte';
+  import { navigation } from './lib/navigation.svelte';
   import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import Settings from './lib/views/Settings.svelte';
@@ -57,6 +58,10 @@
   const devPanel = lazyComponent(() => import('./lib/components/DevSessionPanel.svelte'));
   const cleanupModal = lazyComponent(() => import('./lib/components/settings/CleanupPromptModal.svelte'));
   const syncModal = lazyComponent(() => import('./lib/components/settings/SyncPairModal.svelte'));
+  const pageNavigation = navigation(
+    () => appStore.currentPage,
+    (page) => page === 'home' ? null : pages[page],
+  );
   import type { AppearanceMode } from './lib/settings';
   type NativeTitleBarMetrics = { height: number; leftInset: number; rightInset: number; scaleFactor: number };
 
@@ -163,13 +168,13 @@
   let fadeBottom = $state(false);
 
   $effect(() => {
-    const next = appStore.currentPage;
+    const next = pageNavigation.current;
     pageDir = directionFromOrder(prevPage, next, NAV_ORDER);
     prevPage = next;
   });
 
   $effect(() => {
-    appStore.currentPage;
+    pageNavigation.current;
     requestAnimationFrame(() => {
       contentEl?.scrollTo({ top: 0, behavior: reducedMotionEnabled() ? 'auto' : 'smooth' });
     });
@@ -568,24 +573,28 @@
     <div
       class="content scroll-styled"
       class:content-behind={appStore.settingsOpen}
-      inert={appStore.settingsOpen}
+      inert={appStore.settingsOpen || pageNavigation.pending}
+      aria-busy={pageNavigation.pending}
       bind:this={contentEl}
       use:scrollEdges={(top, bottom) => { fadeTop = top; fadeBottom = bottom; }}
     >
-      {#key appStore.currentPage}
+      {#key pageNavigation.current}
         <div
           class="page-wrapper"
           in:pageSwap={{ axis: 'y', distance: pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.panel) }}
           out:pageSwap={{ axis: 'y', distance: -pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.base + 40) }}
         >
-          {#if appStore.currentPage === 'home'}
+          {#if pageNavigation.current === 'home'}
             <Home />
           {:else}
-            <DeferredView view={pages[appStore.currentPage]} />
+            <DeferredView view={pages[pageNavigation.current]} />
           {/if}
         </div>
       {/key}
     </div>
+    {#if pageNavigation.loading && !appStore.settingsOpen}
+      <p class="navigation-loading" role="status">Loading page…</p>
+    {/if}
   </div>
   <Settings />
   <ThemeEditorDock />
@@ -822,6 +831,20 @@
   }
 
   .content::-webkit-scrollbar-thumb { border: 3px solid var(--paper); }
+
+  .navigation-loading {
+    position: absolute;
+    right: 24px;
+    top: max(16px, calc(var(--native-titlebar-height, 0px) + 8px));
+    z-index: 6;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--paper);
+    color: var(--ink-mute);
+    font-size: 12px;
+  }
 
   .content {
     transition:
