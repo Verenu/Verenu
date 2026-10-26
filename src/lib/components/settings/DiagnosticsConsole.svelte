@@ -572,7 +572,7 @@
   .log-filters { flex:1 1 520px; }
   .log-actions { flex:0 0 auto; padding-left:4px; }
   input { background:var(--bg-elev); border:1px solid var(--line); color:var(--ink); border-radius:var(--r-sm); padding:6px 8px; font-size:11px; min-width:0; font-family:var(--sans); transition:border-color var(--ui-duration-fast, 150ms) ease; }
-  input:focus-visible { outline:none; border-color:var(--ink-strong); }
+  input:focus-visible { outline:none; border-color:var(--line-strong); }
   .log-filters input:first-child { flex:1 1 180px; }
   .log-filters .trace-filter { flex:0 1 110px; width:110px; }
   .log-level-dropdown .ui-dropdown-trigger { min-width:100px; }

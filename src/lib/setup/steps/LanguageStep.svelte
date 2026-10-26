@@ -129,7 +129,7 @@
     color: var(--ink-faint);
   }
 
-  .lang-search:focus-within { color: var(--accent); }
+  .lang-search:focus-within { color: var(--ink-mute); }
 
   .lang-search-input {
     flex: 1;

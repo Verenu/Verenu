@@ -82,7 +82,7 @@
 <style>
   .mid { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 12px; color: var(--ink-soft); }
   .box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 38px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; cursor: text; transition: border-color 120ms ease; }
-  .box:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .box:focus-within { border-color: var(--line-strong); }
   .box.disabled { opacity: 0.6; cursor: default; }
   .tag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 3px 4px 3px 9px; border-radius: 6px; background: var(--paper-2); color: var(--ink); font-family: var(--mono); font-size: 11.5px; }
   .tag-text { overflow-wrap: anywhere; }

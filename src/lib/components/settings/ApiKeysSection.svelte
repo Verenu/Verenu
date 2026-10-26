@@ -310,8 +310,7 @@
   }
   .key-input:focus {
     outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+    border-color: var(--line-strong);
   }
   .btn-clear {
     color: var(--danger);
@@ -348,7 +347,6 @@
   }
   .key-input.failed:focus {
     border-color: var(--danger);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
   }
   @keyframes key-shake {
     0%, 100% { transform: translateX(0); }
