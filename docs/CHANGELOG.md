@@ -5,7 +5,6 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Reduced dependency info and repeated parser-warning noise, included subsystem names in session logs, and added a filtered current-process log query with retention and suppression counts for agent debugging.
-
 - Text inputs no longer show colored accent outlines, rings, or glows when focused; focused fields only get a subtle neutral border change.
 - Disabled Hyprland blur and shadows around the Linux dictation pill so transparent space stays clear on newer Omarchy desktops.
 - Added Linux support for Pause media while dictating in Settings > Audio. Verenu pauses playing MPRIS media players and resumes only those players after dictation, leaving already-paused, stopped, and closed players alone. Mute PC Audio remains a separate option.
