@@ -54,6 +54,7 @@
     }
   },
   "bundle": {
+    "resources": { "../Agent-Skills/verenu-control/": "agent-skill/" },
     "active": true,
     "targets": "all",
     "category": "Productivity",

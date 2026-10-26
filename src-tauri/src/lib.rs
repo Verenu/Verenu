@@ -6,6 +6,8 @@ mod posthog_build_support;
 
 #[allow(dead_code)]
 mod analytics;
+#[cfg(desktop)]
+mod agent_api;
 mod android;
 mod api;
 mod app_hotkey;
@@ -296,6 +298,7 @@ pub fn run() {
             if let Err(e) = db::seed_default_dictionary_entries(&db_handle) {
                 log::warn!("failed to seed default dictionary entries: {e}");
             }
+            crate::system::diagnostic_journal::start(db_handle.clone());
             app.manage(db_handle);
             crate::system::logger::attach_app(app.handle());
             #[cfg(target_os = "linux")]
@@ -410,6 +413,9 @@ pub fn run() {
                 ));
                 first_launch
             };
+
+            #[cfg(desktop)]
+            agent_api::start(app.handle().clone())?;
 
             #[cfg(desktop)]
             if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {

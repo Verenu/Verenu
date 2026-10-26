@@ -34,6 +34,10 @@ For more details: [Contexts](docs/CONTEXTS.md), [Vocabulary](docs/VOCABULARY.md)
 
 Appearance can follow the operating system or stay in light or dark mode. Page surfaces use neutral near-white and charcoal colors, and the accent can be changed independently to any six-digit hex color. See [Appearance and settings](docs/APPEARANCE.md).
 
+Agents and scripts can opt into validated native settings/Context control and
+private historical diagnostics. See [Agent control](docs/AGENT_CONTROL.md) for
+access, retention limits and the optional harness skill installer.
+
 ## Platform Support
 
 Verenu supports Windows, macOS, and Linux (with Omarchy Quattro/Hyprland as the primary Linux environment).
