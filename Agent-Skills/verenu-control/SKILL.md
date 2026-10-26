@@ -55,11 +55,13 @@ description: "Use for Verenu dictation problems, top recurring issues over a dat
 
 For device automation, read `get_microphones` and `microphone_device`, then set
 `mute_audio` through `save_setting`. A selected microphone does not prove the
-active output/headphone route. Use the OS's supported audio inventory to confirm
-Pebble V3 output versus Yeti Nano/headphones before deciding, and read back the
-toggle. The API provides primitives; it does not install a background device watcher.
+active output/headphone route. Confirm routing through the OS's supported audio
+inventory and apply the user's device policy; read back the toggle.
+The API does not install a background device watcher.
 On Linux, `scripts/audio-policy.mjs` inspects default PipeWire/PulseAudio routes
-with `pactl`. Run its dry run first; `--apply` changes and reads back `mute_audio`.
+with `pactl`. Supply `--mute-output TEXT` and/or `--unmute-output TEXT` matching
+the user's output names or ports. Run its dry run first; `--apply` changes and
+reads back `mute_audio`.
 
 Installation is optional: run `harnesses` or `install-skill`. Interactive setup
 asks whether installation is permanent and which detected harnesses to use.

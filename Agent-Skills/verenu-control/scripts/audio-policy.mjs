@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { invoke } from './verenu-agent.mjs';
 
-export function muteForRoute({ input, output, activePort }) {
-  if (/yeti\s*nano/i.test(input) && /headphone/i.test(`${activePort} ${output}`)) return false;
-  if (/pebble\s*v3/i.test(output)) return true;
+export function muteForRoute({ output, activePort }, { muteOutput, unmuteOutput } = {}) {
+  const route = `${activePort} ${output}`.toLowerCase();
+  if (unmuteOutput?.trim() && route.includes(unmuteOutput.trim().toLowerCase())) return false;
+  if (muteOutput?.trim() && route.includes(muteOutput.trim().toLowerCase())) return true;
   return null;
 }
 
@@ -21,10 +22,17 @@ function inventory(kind) {
 
 async function main() {
   if (process.platform !== 'linux') throw new Error('This example uses Linux PipeWire/PulseAudio pactl; use the native audio inventory on other platforms');
-  if (process.argv.slice(2).some((arg) => arg !== '--apply')) throw new Error('Usage: node audio-policy.mjs [--apply] (default: dry run)');
-  const input = inventory('sources');
+  const args = process.argv.slice(2);
+  const policy = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--apply') continue;
+    const key = { '--mute-output': 'muteOutput', '--unmute-output': 'unmuteOutput' }[args[i]];
+    if (!key || !args[i + 1]?.trim() || args[i + 1].startsWith('--')) throw new Error('Usage: node audio-policy.mjs [--mute-output TEXT] [--unmute-output TEXT] [--apply] (default: dry run; unmute match takes priority)');
+    policy[key] = args[++i];
+  }
+  if (!policy.muteOutput && !policy.unmuteOutput) throw new Error('Specify --mute-output or --unmute-output; no device rules are assumed');
   const output = inventory('sinks');
-  const mute = muteForRoute({ input: input.name, output: output.name, activePort: output.port });
+  const mute = muteForRoute({ output: output.name, activePort: output.port }, policy);
   if (mute === null) { console.log(JSON.stringify({ applied: false, reason: 'No matching route; mute_audio unchanged' })); return; }
   if (process.argv.includes('--apply')) {
     await invoke('save_setting', { key: 'mute_audio', value: mute });
