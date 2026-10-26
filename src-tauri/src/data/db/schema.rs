@@ -9,6 +9,18 @@ use uuid::Uuid;
 use super::*;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS diagnostic_policy (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  retention_days INTEGER NOT NULL DEFAULT 0 CHECK (retention_days BETWEEN 0 AND 365)
+);
+INSERT OR IGNORE INTO diagnostic_policy(id) VALUES (1);
+CREATE TABLE IF NOT EXISTS diagnostic_daily_failures (
+  day TEXT NOT NULL,
+  subsystem TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(day, subsystem, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS transcriptions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   raw_text    TEXT    NOT NULL,
