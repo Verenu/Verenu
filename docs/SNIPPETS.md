@@ -2,10 +2,9 @@
 
 Snippets turn a short spoken trigger into saved text. They are useful for email addresses, signatures, boilerplate replies, code fragments, and other text you use often.
 
-Snippets belong to a context. Add them to **Everywhere** for dictation without
-a matching targeted context, or to a specific context for app- or
-website-specific text. Everywhere is a fallback, not a parent whose snippets
-are inherited by every targeted context.
+Snippets saved to **Everywhere** are available in every targeted context. Add a
+snippet to a specific context when its trigger and expansion only belong in
+those apps or websites.
 
 ## Create a snippet
 
@@ -54,7 +53,12 @@ Use the context's **Custom instructions** when a rule applies to everything you 
 
 ## Reuse and move snippets
 
-A snippet can belong to more than one context. Add the existing snippet to another context when you want to reuse it. From a snippet row menu, choose **Move to...** to remove it from the current context and assign it elsewhere.
+A snippet can belong to more than one context. Add the existing snippet to
+another context when you want to reuse it. Triggers are unique across the
+library, so a targeted context cannot redefine an inherited trigger with a
+different expansion. Remove a snippet from Everywhere to stop it from applying
+globally; this also removes it from every group's inherited set. A group can
+still have its own local assignment for the same snippet.
 
 Deleting a snippet removes it from every context. Deleting a context moves its snippets to Everywhere instead.
 

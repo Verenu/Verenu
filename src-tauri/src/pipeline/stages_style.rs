@@ -18,9 +18,15 @@ pub(super) fn apply_app_style_overrides(
     cfg: &mut store::PipelineConfig,
     mapping: Option<&AppMapping>,
     context: Option<&db::Context>,
+    everywhere_context: Option<&db::Context>,
 ) -> String {
     cfg.paste_in_chunks = cfg!(desktop) && context.is_some_and(|c| c.paste_in_chunks);
+    let specific_context = context.filter(|value| !value.is_everywhere);
+    let global_context = context
+        .filter(|value| value.is_everywhere)
+        .or(everywhere_context);
     let context_intensity = context
+        .filter(|value| !value.is_everywhere)
         .and_then(|c| c.cleanup_intensity.as_deref())
         .map(str::trim)
         .filter(|i| !i.is_empty());
@@ -28,20 +34,46 @@ pub(super) fn apply_app_style_overrides(
         .and_then(|m| m.cleanup_intensity.as_deref())
         .map(str::trim)
         .filter(|i| !i.is_empty());
-    if let Some(intensity) = context_intensity.or(mapping_intensity) {
+    let everywhere_intensity = global_context
+        .and_then(|c| c.cleanup_intensity.as_deref())
+        .map(str::trim)
+        .filter(|i| !i.is_empty());
+    if let Some(intensity) = context_intensity
+        .or(mapping_intensity)
+        .or(everywhere_intensity)
+    {
         cfg.cleanup_intensity = intensity.to_owned();
     }
-    if context.is_some_and(|context| context.contextual_formatting_disabled) {
-        cfg.contextual_formatting_enabled = false;
+    let formatting_disabled_override = specific_context
+        .and_then(|value| value.contextual_formatting_override)
+        .or_else(|| {
+            specific_context
+                .filter(|value| value.contextual_formatting_disabled)
+                .map(|_| true)
+        })
+        .or_else(|| {
+            global_context.and_then(|value| {
+                value
+                    .contextual_formatting_override
+                    .or_else(|| value.contextual_formatting_disabled.then_some(true))
+            })
+        });
+    if let Some(disabled) = formatting_disabled_override {
+        cfg.contextual_formatting_enabled = !disabled;
     }
 
-    let context_tone = context
+    let context_tone = specific_context
         .and_then(|c| c.tone.as_deref())
         .map(str::trim)
         .filter(|t| !t.is_empty());
     let mapping_profile = mapping.map(|m| m.profile.trim()).filter(|p| !p.is_empty());
+    let everywhere_tone = global_context
+        .and_then(|c| c.tone.as_deref())
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
     context_tone
         .or(mapping_profile)
+        .or(everywhere_tone)
         .map(str::to_owned)
         .unwrap_or_else(|| cfg.default_tone.clone())
 }

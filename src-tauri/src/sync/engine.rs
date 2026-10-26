@@ -260,6 +260,7 @@ pub struct ContextAggregate {
     pub paste_in_chunks: bool,
     #[serde(default)]
     pub t3_skill_mentions_disabled: Option<bool>,
+    pub contextual_formatting_override: Option<bool>,
     #[serde(default)]
     pub pinned_at: Option<String>,
     pub created_at: String,
@@ -566,7 +567,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
     let row = conn
         .prepare_cached(
             "SELECT id, name, is_everywhere, icon, tone, cleanup_intensity, color, custom_instructions,
-                    contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled
+                    contextual_formatting_disabled, pinned_at, created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled, contextual_formatting_override
              FROM contexts WHERE uuid = ?1",
         )?
         .query_row(
@@ -588,6 +589,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
                         updated_at: r.get(11)?,
                         paste_in_chunks: r.get::<_, i64>(12)? != 0,
                         t3_skill_mentions_disabled: Some(r.get::<_, bool>(13)?),
+                        contextual_formatting_override: r.get(14)?,
                         targets: Vec::new(),
                         websites: Vec::new(),
                         dictionary_uuids: Vec::new(),
@@ -1886,20 +1888,24 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         return Ok(Applied::Yes);
     }
 
+    let formatting_override = aggregate
+        .contextual_formatting_override
+        .or_else(|| aggregate.contextual_formatting_disabled.then_some(true));
     let insert = |conn: &Connection| -> rusqlite::Result<usize> {
         conn.execute(
             "INSERT INTO contexts (uuid, name, is_everywhere, icon, tone, cleanup_intensity, color,
-                                   custom_instructions, contextual_formatting_disabled, pinned_at,
+                                   custom_instructions, contextual_formatting_disabled, contextual_formatting_override, pinned_at,
                                    created_at, updated_at, paste_in_chunks, t3_skill_mentions_disabled)
-             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, COALESCE(?13, 0))
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE(?14, 0))
              ON CONFLICT(uuid) DO UPDATE SET
                name = excluded.name, icon = excluded.icon, tone = excluded.tone,
                cleanup_intensity = excluded.cleanup_intensity, color = excluded.color,
                custom_instructions = excluded.custom_instructions,
                contextual_formatting_disabled = excluded.contextual_formatting_disabled,
+               contextual_formatting_override = excluded.contextual_formatting_override,
                pinned_at = excluded.pinned_at, updated_at = excluded.updated_at,
                paste_in_chunks = excluded.paste_in_chunks,
-               t3_skill_mentions_disabled = COALESCE(?13, contexts.t3_skill_mentions_disabled)",
+               t3_skill_mentions_disabled = COALESCE(?14, contexts.t3_skill_mentions_disabled)",
             params![
                 op.row_uuid,
                 aggregate.name,
@@ -1908,7 +1914,8 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
                 aggregate.cleanup_intensity,
                 aggregate.color,
                 aggregate.custom_instructions,
-                aggregate.contextual_formatting_disabled as i64,
+                (formatting_override == Some(true)) as i64,
+                formatting_override.map(i64::from),
                 aggregate.pinned_at,
                 aggregate.created_at,
                 aggregate.updated_at,
@@ -1968,6 +1975,11 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
 
 fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -> Result<()> {
     let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
+    let formatting_override = aggregate
+        .contextual_formatting_override
+        .or_else(|| aggregate.contextual_formatting_disabled.then_some(true));
+    // A rename can still collide with a user context's name; keep the local
+    // name on collision rather than deleting a user context over it.
     let rename = conn.execute(
         "UPDATE contexts SET name = ?1, updated_at = ?2 WHERE id = ?3",
         params![aggregate.name, aggregate.updated_at, everywhere_id],
@@ -1977,15 +1989,16 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
     }
     conn.execute(
         "UPDATE contexts SET icon = ?1, tone = ?2, cleanup_intensity = ?3, color = ?4,
-                custom_instructions = ?5, contextual_formatting_disabled = ?6, pinned_at = ?7, paste_in_chunks = ?9, t3_skill_mentions_disabled = COALESCE(?10, t3_skill_mentions_disabled)
-         WHERE id = ?8",
+                custom_instructions = ?5, contextual_formatting_disabled = ?6, contextual_formatting_override = ?7, pinned_at = ?8, paste_in_chunks = ?10, t3_skill_mentions_disabled = COALESCE(?11, t3_skill_mentions_disabled)
+         WHERE id = ?9",
         params![
             aggregate.icon,
             aggregate.tone,
             aggregate.cleanup_intensity,
             aggregate.color,
             aggregate.custom_instructions,
-            aggregate.contextual_formatting_disabled as i64,
+            (formatting_override == Some(true)) as i64,
+            formatting_override.map(i64::from),
             aggregate.pinned_at,
             everywhere_id,
             aggregate.paste_in_chunks,
@@ -2068,9 +2081,10 @@ fn reconcile_context_children(
                  AND (platform = ?2 OR (?2 IS NULL AND platform IS NULL))
                  AND executable NOT LIKE '?::%' AND ?3",
         )?
-        .query_map(params![context_id, my_platform, has_unresolved_targets], |r| {
-            r.get::<_, String>(0)
-        })?
+        .query_map(
+            params![context_id, my_platform, has_unresolved_targets],
+            |r| r.get::<_, String>(0),
+        )?
         .collect::<rusqlite::Result<_>>()?;
     for entry in &aggregate.targets {
         let normalized = entry.executable().trim().to_lowercase();
@@ -2665,7 +2679,9 @@ where
     summary.applied.merge(pulled);
 
     if summary.applied.deferred {
-        return Err(anyhow!("Sync is waiting for referenced data; the next session will retry"));
+        return Err(anyhow!(
+            "Sync is waiting for referenced data; the next session will retry"
+        ));
     }
 
     send_message(stream, &Message::SyncDone).await?;
@@ -2678,7 +2694,9 @@ where
 
 fn check_hello(remote: &Hello, expected_uuid: &str) -> Result<()> {
     if remote.device_uuid != expected_uuid {
-        return Err(anyhow!("sync peer identity does not match the paired device"));
+        return Err(anyhow!(
+            "sync peer identity does not match the paired device"
+        ));
     }
     if remote.protocol != PROTOCOL_VERSION {
         return Err(anyhow!(
@@ -2853,6 +2871,19 @@ mod payload_tests {
     use serde_json::json;
 
     #[test]
+    fn peers_without_nullable_formatting_overrides_are_rejected() {
+        let mut hello = Hello {
+            device_uuid: "peer".into(),
+            device_name: "Peer".into(),
+            protocol: 2,
+            app_version: "0.0.0".into(),
+        };
+        assert!(check_hello(&hello, "peer").is_err());
+        hello.protocol = PROTOCOL_VERSION;
+        assert!(check_hello(&hello, "peer").is_ok());
+    }
+
+    #[test]
     fn sync_record_payloads_preserve_wire_bytes_and_round_trip() {
         let db = db::open(":memory:").unwrap();
         let conn = db.lock().unwrap();
@@ -2918,7 +2949,7 @@ mod payload_tests {
                 json!({
                     "name": "Work", "is_everywhere": false, "icon": "W", "tone": "casual",
                     "cleanup_intensity": "light", "color": "#123456", "custom_instructions": "Keep café",
-                    "contextual_formatting_disabled": true, "paste_in_chunks": true,
+                    "contextual_formatting_disabled": true, "contextual_formatting_override": null, "paste_in_chunks": true,
                     "t3_skill_mentions_disabled": false,
                     "pinned_at": "2026-01-02", "created_at": "2026-01-01", "updated_at": "2026-01-02",
                     "targets": [{"executable": "editor", "platform": "linux", "app_name": "Editor", "developer": "Example"}],

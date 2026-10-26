@@ -500,6 +500,8 @@ mod tests {
     #[test]
     fn alternate_expands_only_primary_snippets_and_keeps_other_triggers_as_barriers() {
         let snippets = vec![db::Snippet {
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
             id: 1,
             trigger: "signoff, new paragraph".into(),
             expansion: "Thanks! scratch that".into(),
@@ -546,6 +548,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let first = prepare_snippets(&snippets);
@@ -590,6 +594,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let out = expand_snippets_from("I can't do that", &mut snippets, &db);
@@ -606,6 +612,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let out = expand_snippets_from("pre-test run", &mut snippets, &db);
@@ -621,6 +629,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let count = count_words_without_snippet_triggers("please add email sig thanks", &snippets);
@@ -637,6 +647,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let count = count_words_without_snippet_triggers("sig.", &snippets);
@@ -653,6 +665,8 @@ mod tests {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         }];
 
         let count = count_words_without_snippet_triggers("pre-test run", &snippets);

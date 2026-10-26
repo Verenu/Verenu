@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS contexts (
   contextual_formatting_disabled INTEGER NOT NULL DEFAULT 0 CHECK (contextual_formatting_disabled IN (0, 1)),
   paste_in_chunks INTEGER NOT NULL DEFAULT 0 CHECK (paste_in_chunks IN (0, 1)),
   t3_skill_mentions_disabled INTEGER NOT NULL DEFAULT 0 CHECK (t3_skill_mentions_disabled IN (0, 1)),
+  contextual_formatting_override INTEGER CHECK (contextual_formatting_override IN (0, 1)),
   pinned_at         DATETIME,
   created_at        DATETIME NOT NULL DEFAULT (datetime('now')),
   updated_at        DATETIME NOT NULL DEFAULT (datetime('now'))
@@ -966,6 +967,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             ensure_table_column(conn, "contexts", "t3_skill_mentions_disabled",
                 "ALTER TABLE contexts ADD COLUMN t3_skill_mentions_disabled INTEGER NOT NULL DEFAULT 0 CHECK (t3_skill_mentions_disabled IN (0, 1));")?;
             conn.execute_batch("PRAGMA user_version = 32;")?;
+            Ok(())
+        })?;
+    }
+    if user_version < 33 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "contexts", "contextual_formatting_override",
+                "ALTER TABLE contexts ADD COLUMN contextual_formatting_override INTEGER CHECK (contextual_formatting_override IN (0, 1));")?;
+            conn.execute_batch("UPDATE contexts SET contextual_formatting_override = CASE WHEN contextual_formatting_disabled = 1 THEN 1 ELSE NULL END; PRAGMA user_version = 33;")?;
             Ok(())
         })?;
     }
@@ -2326,6 +2335,8 @@ fn load_snippet_rows(conn: &Connection) -> Result<Vec<Snippet>> {
                 instructions: r.get(3)?,
                 use_count: r.get(4)?,
                 created_at: r.get(5)?,
+                inherited_from_everywhere: false,
+                assigned_to_context: false,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2342,6 +2353,8 @@ fn load_snippet_trigger_rows(conn: &Connection) -> Result<Vec<Snippet>> {
             instructions: String::new(),
             use_count: 0,
             created_at: String::new(),
+            inherited_from_everywhere: false,
+            assigned_to_context: false,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

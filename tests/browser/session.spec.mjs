@@ -18,7 +18,7 @@ test('real settings save, reload, and restore through the UI', async ({ page, se
 
 test('failed Context validation leaves real data intact and session recovers', async ({ session }) => {
   const before = await session.invoke('get_contexts');
-  const created = await session.invoke('create_context', { name: 'Synthetic recovery', contextualFormattingDisabled: false });
+  const created = await session.invoke('create_context', { name: 'Synthetic recovery', contextualFormattingOverride: null });
   try {
     const response = await fetch(new URL('/__verenu_dev/invoke', session.access.localAccessUrl), { method: 'POST', headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command: 'update_context', args: { contextId: created.id, name: 'x'.repeat(31) } }) });
     expect(response.ok).toBeFalsy();

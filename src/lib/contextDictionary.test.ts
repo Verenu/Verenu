@@ -104,6 +104,21 @@ describe('Context dictionary update events', () => {
 });
 
 describe('Context dictionary mutations', () => {
+  it('customizes inherited vocabulary without sending Everywhere mapping IDs', async () => {
+    ipc.invoke.mockReset().mockResolvedValue(undefined);
+    const [entry] = normalizeContextDictionary([{
+      id: 41, term: 'Acme', created_at: '2026-01-01T00:00:00Z',
+      inherited_from_everywhere: true, assigned_to_context: false,
+      corrections: [{ id: 902, context_id: 1, mistake: 'Ackme', created_at: '2026-01-01T00:00:00Z' }],
+      context_corrections: [],
+    }], 7);
+    await editContextDictionaryEntry(entry, 7, 'Acme', 'Acmee');
+    expect(ipc.invoke).toHaveBeenLastCalledWith('edit_dictionary_entry', expect.objectContaining({
+      contextId: 7, correctionId: null, correctionIds: [],
+    }));
+    expect(shouldRefreshContextDictionary({ context_id: 1 }, 7)).toBe(true);
+  });
+
   it('passes canonical, mapping, and Context identities to IPC', async () => {
     ipc.invoke.mockReset().mockResolvedValue(undefined);
     const entry = {

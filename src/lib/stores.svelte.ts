@@ -17,6 +17,8 @@ export interface Snippet {
   instructions: string;
   use_count: number;
   created_at: string;
+  inherited_from_everywhere?: boolean;
+  assigned_to_context?: boolean;
 }
 
 export interface DictionaryCorrection {
@@ -38,6 +40,10 @@ export interface DictionaryEntry {
   correction_id?: number | null;
   correction_ids?: number[];
   corrections?: DictionaryCorrection[];
+  /** This group's mappings, excluding inherited Everywhere corrections. */
+  context_corrections?: DictionaryCorrection[];
+  inherited_from_everywhere?: boolean;
+  assigned_to_context?: boolean;
   term: string;
   mistake: string | null;
   auto_learned: boolean;
@@ -59,6 +65,8 @@ export interface Context {
   contextual_formatting_disabled: boolean;
   paste_in_chunks: boolean;
   t3_skill_mentions_disabled?: boolean;
+  contextual_formatting_override: boolean | null;
+  /** ISO timestamp of when the user pinned this context, or null if unpinned. */
   pinned_at: string | null;
   created_at: string;
   updated_at: string;
