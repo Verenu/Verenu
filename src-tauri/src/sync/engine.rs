@@ -2871,6 +2871,19 @@ mod payload_tests {
     use serde_json::json;
 
     #[test]
+    fn peers_without_nullable_formatting_overrides_are_rejected() {
+        let mut hello = Hello {
+            device_uuid: "peer".into(),
+            device_name: "Peer".into(),
+            protocol: 2,
+            app_version: "0.0.0".into(),
+        };
+        assert!(check_hello(&hello, "peer").is_err());
+        hello.protocol = PROTOCOL_VERSION;
+        assert!(check_hello(&hello, "peer").is_ok());
+    }
+
+    #[test]
     fn sync_record_payloads_preserve_wire_bytes_and_round_trip() {
         let db = db::open(":memory:").unwrap();
         let conn = db.lock().unwrap();
