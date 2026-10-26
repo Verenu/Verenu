@@ -59,6 +59,14 @@ await assert.rejects(invoke('history.page', { ...range, limit: 501 }));
 await assert.rejects(invoke('history.report', { start: 'yesterday', end: 'tomorrow' }));
 await invoke('prompts.lint', { template: '{text}' });
 await invoke('diagnostics.snapshot');
+assert.ok(api.additional_commands['diagnostics.logs']);
+const logs = await invoke('diagnostics.logs', { level: 'warn', limit: 1 });
+assert.ok(logs.logs.length <= 1);
+assert.ok(logs.matching_retained >= logs.logs.length);
+assert.equal(logs.omitted_by_limit, logs.matching_retained - logs.logs.length);
+assert.ok(Number.isInteger(logs.evicted_since_reset));
+assert.ok(Number.isInteger(logs.file_records_dropped_this_process));
+await assert.rejects(invoke('diagnostics.logs', { limit: 0 }));
 const url = `http://127.0.0.1:${process.env.VERENU_AGENT_PORT}/v1/invoke`;
 for (const headers of [{}, { authorization: `Bearer ${'a'.repeat(64)}` }, { authorization: `Bearer ${process.env.VERENU_AGENT_TOKEN}`, origin: 'http://localhost' }]) {
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ command: 'describe' }) });
