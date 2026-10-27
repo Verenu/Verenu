@@ -169,3 +169,29 @@ test('returning to a page mid-swap clears the scroll hold on its wrapper', async
   await expect(page.locator('.content')).toHaveJSProperty('scrollTop', 0);
   await expect(home).toBeInViewport();
 });
+
+test('rapid navigation keeps leaving pages held and hidden from assistive tech', async ({ page }) => {
+  await expect(page.locator('h1.page-h').filter({ hasText: 'Welcome back' })).toBeVisible();
+  await page.evaluate(() => {
+    const content = document.querySelector('.content');
+    const filler = document.createElement('div');
+    filler.style.height = '1200px';
+    content.querySelector('.page-wrapper').append(filler);
+    content.scrollTop = 300;
+  });
+  await page.locator('[data-debug-id="nav.insights"]').click();
+  await page.locator('[data-debug-id="nav.style"]').click();
+  // The first page is still fading: it must keep its place, not jump with the scroll reset.
+  const held = await page.evaluate(() => {
+    const first = document.querySelector('.content .page-wrapper[data-page="home"]');
+    return first ? first.style.top : null;
+  });
+  if (held !== null) expect(held).toMatch(/^-[1-9]\d*px$/);
+  await page.waitForTimeout(700);
+  for (const target of ['home', 'insights', 'home', 'insights']) {
+    await page.locator(`[data-debug-id="nav.${target}"]`).click();
+  }
+  const leaving = await page.evaluate(() =>
+    [...document.querySelectorAll('.content .page-wrapper')].filter(w => w.dataset.page !== 'insights').map(w => w.getAttribute('aria-hidden')));
+  for (const hidden of leaving) expect(hidden).toBe('true');
+});

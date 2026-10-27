@@ -90,7 +90,8 @@ export function modalCard(_node: Element, params: MotionTransitionParams = {}) {
 
 /**
  * Slide and fade a panel in or out. Inert state is applied once when the
- * transition starts, not on every frame.
+ * transition starts, not on every frame. Callers that can reverse a swap
+ * mid-flight (the page wrappers in App.svelte) set that state themselves.
  *
  * Swapped panels overlap while both are translucent. An outro runs with an
  * ease-in so the leaving panel stays opaque while the entering one rises;
@@ -103,15 +104,10 @@ export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {},
   const distance = params.distance ?? motionPx(MOTION_PX.page);
   const isOutro = options.direction === 'out';
 
-  if (isOutro) {
-    node.inert = true;
-    node.setAttribute('aria-hidden', 'true');
-    node.style.pointerEvents = 'none';
-  } else {
-    node.inert = false;
-    node.removeAttribute('aria-hidden');
-    node.style.pointerEvents = '';
-  }
+  node.inert = isOutro;
+  if (isOutro) node.setAttribute('aria-hidden', 'true');
+  else node.removeAttribute('aria-hidden');
+  node.style.pointerEvents = isOutro ? 'none' : '';
 
   return {
     duration,
