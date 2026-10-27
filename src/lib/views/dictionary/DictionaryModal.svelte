@@ -370,7 +370,7 @@
     line-height: 1.5;
   }
   .input-row .field-input { flex: 1; width: auto; min-width: 0; }
-  .field-input:focus { border-color: var(--arm-400); }
+  .field-input:focus { border-color: var(--line-strong); }
 
   .field-hint { font-size: 11px; color: var(--ink-mute); margin: 4px 0 0; }
 

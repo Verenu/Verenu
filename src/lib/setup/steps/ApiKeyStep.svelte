@@ -528,7 +528,7 @@
     transition: border-color 0.15s;
   }
 
-  .key-input-row:focus-within { border-color: var(--accent); }
+  .key-input-row:focus-within { border-color: var(--line-strong); }
 
   .key-input {
     flex: 1;

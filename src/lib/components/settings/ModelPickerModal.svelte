@@ -729,8 +729,8 @@
   }
 
   .picker-search:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
+    border-color: var(--line-strong);
+    outline: none;
   }
 
   .picker-body {
@@ -1129,8 +1129,8 @@
   }
 
   .custom-input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
+    border-color: var(--line-strong);
+    outline: none;
   }
 
   .custom-add {
