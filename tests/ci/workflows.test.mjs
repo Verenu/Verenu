@@ -11,6 +11,14 @@ import { sessionPartition, partitionFiles } from '../../scripts/verification/ses
 
 const workflow = name => YAML.parse(fs.readFileSync(path.join(root, '.github/workflows', name), 'utf8'));
 
+test('master builds seed caches accessible to new PRs without running on task-branch pushes', () => {
+  const checks = workflow('pr-checks.yml');
+  assert.deepEqual(checks.on.push.branches, ['master']);
+  assert.deepEqual(checks.on.pull_request.branches, ['master']);
+  const guard = checks.jobs['blob-size-guard'].steps.find(step => step.env?.PR_BASE_SHA);
+  assert.equal(guard.env.PR_BASE_SHA, '${{ github.event.pull_request.base.sha || github.event.before }}');
+});
+
 test('required CI aggregate cannot pass when a job fails, skips or is cancelled', () => {
   const gate = workflow('pr-checks.yml').jobs.required;
   assert.equal(gate.if, 'always()');

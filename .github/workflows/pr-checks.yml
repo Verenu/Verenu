@@ -1,6 +1,9 @@
 name: PR Checks
 
 on:
+  push:
+    branches:
+      - master
   pull_request:
     branches:
       - master
@@ -154,7 +157,7 @@ jobs:
 
       - name: Fail if any changed file exceeds 10 MB
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           PR_HEAD_SHA: ${{ github.sha }}
         run: |
           base="$PR_BASE_SHA"
