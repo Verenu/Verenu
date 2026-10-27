@@ -1236,7 +1236,6 @@
     width: var(--bar-w, 3px);
     background: var(--pill-bar);
     border-radius: calc(var(--bar-w, 3px) / 2);
-    clip-path: inset(0 round 999px);
     flex-shrink: 0;
   }
 
