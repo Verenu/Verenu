@@ -94,6 +94,12 @@ browser jobs and the deterministic Linux checks. Each browser job also checks
 restart persistence. `CI required` requires every partition to succeed; no
 test files are filtered by changed paths. Release checks and the default local
 command still run the complete suite.
+
+The same workflow runs after merges to `master`, seeding dependency caches that
+future PRs can restore. GitHub isolates PR-created caches to that PR; sibling
+PRs cannot reuse them. Cache warming starts after the first successful `master`
+run. Task-branch pushes do not start a duplicate workflow.
+
 PR Rust dev/test builds omit debugger symbols to reduce build, link, and cache
 work. Debug assertions, overflow checks, and the test suite remain enabled;
 release artifacts and local developer profiles keep their existing settings.
