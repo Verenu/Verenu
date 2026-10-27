@@ -99,3 +99,13 @@ export const test = base.extend({
   },
 });
 export { expect };
+
+// The picker lists only providers with a saved key. Present these providers as keyed without touching the real credential store.
+export async function keyProviders(page, session, providers) {
+  const status = await session.invoke('get_api_key_status');
+  const keyed = Object.fromEntries(Object.keys(status).map(provider => [provider, status[provider] === true || providers.includes(provider)]));
+  await page.route('**/__verenu_dev/invoke', async route => {
+    if (route.request().postDataJSON()?.command !== 'get_api_key_status') return route.fallback();
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(keyed) });
+  });
+}

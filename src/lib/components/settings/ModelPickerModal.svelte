@@ -2,15 +2,14 @@
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
-  import { fade, fly, slide } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
   import { modalFocusTrap } from '../../modalFocus';
   import { portal } from '../../portal';
   import { isTrustworthy, CLOUD_PROVIDERS, modelCatalogStore, refreshCatalog, trackedIds } from '../../modelCatalogStore.svelte';
   import { expandFromOrigin, modalBackdrop, MOTION_MS, motionMs } from '../../motion';
-  import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import { isAndroid } from '../../platform';
-  import LocalDownloadProgress from './LocalDownloadProgress.svelte';
   import type { ProviderId } from '../../settings';
   import { modelId, providerDisplayLabel, splitModelId, taskLabel, type TaskType } from './models';
   import {
@@ -32,10 +31,9 @@
     defaultModel,
     fallbackModels,
     advancedModelUi,
-    customDraft,
     onSelect,
     onAddFallback,
-    onCustomDraftChange,
+    onRemoveFallback,
     onAddCustomModel,
     onOpenApiKeys,
     onClose,
@@ -48,10 +46,9 @@
     defaultModel: string;
     fallbackModels: string[];
     advancedModelUi: boolean;
-    customDraft: string;
     onSelect: (id: string) => void;
     onAddFallback: (id: string) => void;
-    onCustomDraftChange: (value: string) => void;
+    onRemoveFallback: (id: string) => void;
     onAddCustomModel: (id: string) => void;
     onOpenApiKeys: () => void;
     onClose: () => void;
@@ -62,6 +59,12 @@
   const localModel = (id: string) => local.models.find((m) => m.id === id);
   const isDownloading = (id: string) => localModel(id)?.is_downloading === true;
   const isDownloaded = (id: string) => localModel(id)?.is_downloaded === true;
+  const downloadPercent = (id: string) => {
+    const progress = local.downloadProgress[id]?.progress;
+    return progress == null ? null : Math.round(progress * 100);
+  };
+  const sizeLabel = (mb?: number) =>
+    mb ? (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`) : '';
 
   const runtimePending = $derived(
     !!local.runtime && !local.runtime.info?.installed && !!local.runtime.info,
@@ -83,6 +86,17 @@
       ? fly(node, { y: 36, duration: motionMs(params.duration ?? MOTION_MS.base), easing: cubicOut })
       : expandFromOrigin(node, params);
   let showUnverified = $state(false);
+  let railEl = $state<HTMLElement | null>(null);
+  let ink = $state({ x: 0, w: 0, ready: false });
+  $effect(() => {
+    filter;
+    tabProviders;
+    const active = railEl?.querySelector<HTMLElement>('.rail-active');
+    if (!active) return;
+    const ready = untrack(() => ink.ready);
+    ink = { x: active.offsetLeft, w: active.offsetWidth, ready };
+    if (!ready) requestAnimationFrame(() => (ink.ready = true));
+  });
   let panelLeft = $state(0);
 
   onMount(() => {
@@ -106,14 +120,24 @@
   const RAIL_ORDER = $derived<ProviderId[]>(['groq', 'openai', 'google', 'assemblyai', 'openrouter', 'xai', 'local', ...(task === 'cleanup' && appleIntelligenceVisible(context) ? ['apple-intelligence' as const] : []),
     ...customProviderStore.providers.filter(p => task === 'transcription' ? p.supports_transcription : p.supports_cleanup).map(p => p.id)]);
 
-  const current = $derived(rowForSelection(defaultModel, context));
   const pinned = $derived([defaultModel, ...fallbackModels].filter(Boolean));
   const supportedHere = (row: ModelRow) => row.provider !== 'local' || localModelOffered(local, task, row.id);
   const curated = $derived([...curatedRows(context, pinned), ...discoveredRows(context)].filter(supportedHere));
+  const unverified = $derived(unverifiedRows(context).filter(supportedHere));
+  // Providers without a saved key stay out of the picker; "+ Provider" is the way in.
+  const usable = (row: ModelRow) => row.remedy !== 'add-key';
+
+  const tabProviders = $derived(
+    RAIL_ORDER.filter((provider) => curated.some((row) => row.provider === provider && usable(row))),
+  );
+  const filter = $derived(
+    providerFilter === 'all' || tabProviders.includes(providerFilter) ? providerFilter : 'all',
+  );
+
   let refreshingApple = $state(false);
-  const canRefreshApple = $derived(task === 'cleanup' && (providerFilter === 'all' || providerFilter === 'apple-intelligence'));
+  const canRefreshApple = $derived(task === 'cleanup' && (filter === 'all' || filter === 'apple-intelligence'));
   const refreshProviders = $derived(CLOUD_PROVIDERS.filter((provider) =>
-    (providerFilter === 'all' || providerFilter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
+    (filter === 'all' || filter === provider) && (context.apiKeyStatus[provider] || provider === 'openrouter')));
   const refreshing = $derived((canRefreshApple && refreshingApple) || refreshProviders.some((provider) => modelCatalogStore.refreshing[provider]));
   async function refreshAppleModels() {
     refreshingApple = true;
@@ -126,13 +150,13 @@
       ...refreshProviders.map((provider) => refreshCatalog(provider, trackedIds(pinned, []))),
     ]);
   }
-  const catalogNote = $derived(refreshProviders.some((provider) => context.cache[provider]?.lastError)
-    ? 'Refresh unavailable. Keeping cached models.'
-    : refreshProviders.some((provider) => context.cache[provider]?.warning)
-      ? 'Some capability metadata is unavailable. Keeping known models.'
-      : 'Model lists refresh daily. Your selections stay the same.');
-  const unverified = $derived(unverifiedRows(context).filter(supportedHere));
-  const listedCount = $derived(curated.length + (showUnverified ? unverified.length : 0));
+  const catalogNote = $derived(refreshing
+    ? 'Refreshing model lists… You can still choose a model.'
+    : refreshProviders.some((provider) => context.cache[provider]?.lastError)
+      ? 'Refresh unavailable. Keeping cached models.'
+      : refreshProviders.some((provider) => context.cache[provider]?.warning)
+        ? 'Some capability metadata is unavailable. Keeping known models.'
+        : '');
 
   const needle = $derived(query.trim().toLowerCase());
   function matches(row: ModelRow): boolean {
@@ -143,24 +167,8 @@
       providerDisplayLabel(row.provider).toLowerCase().includes(needle)
     );
   }
-
-  const matchedCurated = $derived(curated.filter(matches));
-  const matchedUnverified = $derived(unverified.filter(matches));
-  const searched = $derived(
-    showUnverified ? [...matchedCurated, ...matchedUnverified] : matchedCurated,
-  );
-  const inFilter = (row: ModelRow) =>
-    providerFilter === 'all' || row.provider === providerFilter;
-  const shown = $derived(searched.filter(inFilter));
-  const ROW_BATCH = 20;
-  let rowLimits = $state<Partial<Record<ProviderId, number>>>({});
-  $effect(() => {
-    query;
-    providerFilter;
-    showUnverified;
-    rowLimits = {};
-  });
-  const hiddenCount = $derived(matchedUnverified.filter(inFilter).length);
+  const inFilter = (row: ModelRow) => filter === 'all' || row.provider === filter;
+  const wanted = (row: ModelRow) => matches(row) && inFilter(row);
 
   const RANK: Record<ModelRow['state'], number> = {
     ready: 0,
@@ -173,32 +181,45 @@
   const phonePreferred = (row: ModelRow) =>
     isAndroid && row.provider === 'local' && row.id === 'qwen2.5-0.5b-instruct' ? 0 : 1;
 
-  const grouped = $derived(
-    RAIL_ORDER.map((provider) => ({
-      provider,
-      rows: shown
-        .filter((row) => row.provider === provider)
-        .sort((a, b) => Number(b.key === defaultModel) - Number(a.key === defaultModel)
-          || Number(pinned.includes(b.key)) - Number(pinned.includes(a.key))
-          || RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
-    })).filter((group) => group.rows.length > 0),
+  const everyRow = $derived([...curated, ...(showUnverified ? unverified : [])]);
+  const pinnedRows = $derived(
+    pinned
+      .map((key) => everyRow.find((row) => row.key === key) ?? rowForSelection(key, context))
+      .filter((row): row is ModelRow => !!row && wanted(row)
+        && (row.provider !== 'apple-intelligence' || appleIntelligenceVisible(context))),
+  );
+  const restRows = $derived(
+    everyRow
+      .filter((row) => usable(row) && wanted(row) && !pinned.includes(row.key))
+      .sort((a, b) => RAIL_ORDER.indexOf(a.provider) - RAIL_ORDER.indexOf(b.provider)
+        || RANK[a.state] - RANK[b.state] || phonePreferred(a) - phonePreferred(b) || a.label.localeCompare(b.label)),
   );
 
-  const counts = $derived(
-    Object.fromEntries(
-      RAIL_ORDER.map((provider) => [
-        provider,
-        searched.filter((row) => row.provider === provider).length,
-      ]),
-    ) as Record<ProviderId, number>,
-  );
+  const PER_PROVIDER = 8;
+  const PAGE = 60;
+  let limit = $state(PAGE);
+  $effect(() => {
+    query;
+    providerFilter;
+    showUnverified;
+    limit = PAGE;
+  });
 
-  function isActive(key: string) {
-    return key === defaultModel;
-  }
-  function isFallback(key: string) {
-    return fallbackModels.includes(key);
-  }
+  const collapsed = $derived(filter === 'all' && !needle);
+  const byProvider = $derived(
+    RAIL_ORDER.map((provider) => restRows.filter((row) => row.provider === provider)).filter((rows) => rows.length > 0),
+  );
+  const listed = $derived(collapsed ? byProvider.flatMap((rows) => rows.slice(0, PER_PROVIDER)) : restRows.slice(0, limit));
+  const overflow = $derived(
+    collapsed
+      ? byProvider.filter((rows) => rows.length > PER_PROVIDER).map((rows) => ({ provider: rows[0].provider, count: rows.length - PER_PROVIDER }))
+      : [],
+  );
+  const showProvider = $derived(filter === 'all' || !!needle);
+  const hiddenCount = $derived(
+    unverified.filter((row) => matches(row) && inFilter(row) && usable(row)).length,
+  );
+  const empty = $derived(pinnedRows.length + listed.length === 0);
 
   function activate(row: ModelRow) {
     if (row.remedy === 'add-key') return onOpenApiKeys();
@@ -209,7 +230,7 @@
       return;
     }
     if (mode === 'fallback') {
-      if (isActive(row.key) || isFallback(row.key)) return;
+      if (row.key === defaultModel || fallbackModels.includes(row.key)) return;
       onAddFallback(row.key);
     } else {
       onSelect(row.key);
@@ -222,24 +243,25 @@
       if (!local.runtime?.info?.is_downloading) local.runtime?.onDownload();
       return;
     }
-    if (isActive(row.key) || isFallback(row.key)) return;
     onAddFallback(row.key);
   }
 
   const customProvider = $derived<ProviderId>(
-    providerFilter !== 'all'
-      ? providerFilter
-      : (splitModelId(defaultModel)?.provider ?? 'groq'),
+    filter !== 'all' ? filter : (splitModelId(defaultModel)?.provider ?? 'groq'),
+  );
+  const canAddCustom = $derived(
+    advancedModelUi && customProvider !== 'local' && customProvider !== 'apple-intelligence',
   );
 
+  let customId = $state('');
   let customError = $state('');
 
   function submitCustom() {
-    const value = customDraft.trim();
+    const value = customId.trim();
     if (!value) return;
 
     const cache = context.cache[customProvider];
-    if (customProvider !== 'local' && isTrustworthy(cache) && !cache!.ids.includes(value)) {
+    if (isTrustworthy(cache) && !cache!.ids.includes(value)) {
       customError = `${providerDisplayLabel(customProvider)} doesn't list a model called “${value}”.`;
       return;
     }
@@ -255,7 +277,7 @@
   }
 
   $effect(() => {
-    customDraft;
+    customId;
     customError = '';
   });
 
@@ -264,9 +286,76 @@
       event.preventDefault();
       event.stopPropagation();
       onClose();
+      return;
+    }
+    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && modalEl) {
+      const stops = [...modalEl.querySelectorAll<HTMLElement>('.picker-search, .row-main')];
+      const next = stops[stops.indexOf(document.activeElement as HTMLElement) + (event.key === 'ArrowDown' ? 1 : -1)];
+      if (!next) return;
+      event.preventDefault();
+      next.focus();
+      next.scrollIntoView({ block: 'nearest' });
     }
   }
+
+  function onSearchKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    modalEl?.querySelector<HTMLElement>('.row-main')?.click();
+  }
 </script>
+
+{#snippet modelRow(row: ModelRow)}
+  {@const position = pinned.indexOf(row.key)}
+  {@const isMain = row.key === defaultModel}
+  {@const isLocal = row.provider === 'local'}
+  {@const localManaged = isLocal && row.state !== 'unavailable' && localModel(row.id)?.install_kind !== 'system_managed'}
+  <div class="model-row" class:row-pinned={position >= 0} class:row-dim={row.state === 'needs-setup' && row.remedy !== 'download'}>
+    <button
+      class="row-main"
+      type="button"
+      title={row.note ? `${row.id} · ${row.note}` : row.id}
+      aria-current={isMain ? 'true' : undefined}
+      onclick={() => activate(row)}
+    >
+      <span class="row-num" class:row-state={position >= 0} aria-hidden="true">{position >= 0 ? position + 1 : ''}</span>
+      <span class="row-name">{row.label}</span>
+      {#if position >= 0}
+        <span class="sr-only">{isMain ? 'Main model' : `Fallback ${position}`}</span>
+      {/if}
+    </button>
+
+    <span class="row-meta">
+      {#if localManaged && isDownloading(row.id)}
+        <span>{downloadPercent(row.id) === null ? '…' : `${downloadPercent(row.id)}%`}</span>
+        <button class="row-tool" data-testid="cancel-model-download" type="button" onclick={() => local.onCancel(row.id)}>Cancel</button>
+      {:else if localManaged && !isDownloaded(row.id)}
+        <button class="row-tool row-tool-strong" data-testid="download-model" type="button" onclick={() => local.onDownload(row.id)}>
+          Download{row.sizeMb ? ` ${sizeLabel(row.sizeMb)}` : ''}
+        </button>
+      {:else}
+        <span class="row-swap">
+          <span class="row-provider">{showProvider ? providerDisplayLabel(row.provider) : ''}</span>
+          <span class="row-acts">
+            {#if localManaged}
+              <button class="row-tool" data-testid="delete-model" type="button" onclick={() => local.onDelete(row.id)}>Delete</button>
+            {/if}
+            {#if mode === 'select' && !isMain && row.remedy === 'none'}
+              {#if fallbackModels.includes(row.key)}
+                <button class="row-tool" type="button" onclick={() => onRemoveFallback(row.key)}>Remove</button>
+              {:else}
+                <button class="row-tool" type="button" onclick={() => addFallback(row)}>Add fallback</button>
+              {/if}
+            {/if}
+          </span>
+        </span>
+      {/if}
+    </span>
+    {#if isLocal && isDownloading(row.id)}
+      <span class="row-bar" aria-hidden="true"><i style="width: {downloadPercent(row.id) ?? 8}%"></i></span>
+    {/if}
+  </div>
+{/snippet}
 
 <div class="picker-wrap" use:portal style="padding-left: {panelLeft}px">
   <div
@@ -302,327 +391,154 @@
     in:cardMotion={{ origin: origin ?? undefined, duration: MOTION_MS.base }}
     out:cardMotion={{ origin: origin ?? undefined, duration: MOTION_MS.fast }}
   >
-    <header class="picker-head">
-      <div class="picker-title">
-        <h3>
-          {mode === 'fallback'
-            ? `Add a ${taskLabel(task).toLowerCase()} fallback`
-            : `Choose a ${taskLabel(task).toLowerCase()} model`}
-        </h3>
-        <p>
-          {mode === 'fallback'
-            ? 'Used in order when the model above cannot run.'
-            : 'The model Verenu reaches for first.'}
-        </p>
-      </div>
-      <button type="button" class="picker-close" aria-label="Close" onclick={onClose}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-    </header>
-
     <div class="picker-search-row">
-      <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
         <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
       </svg>
       <input
         class="picker-search"
         type="search"
-        placeholder="Search {listedCount} models…"
+        placeholder={mode === 'fallback' ? `Search ${taskLabel(task).toLowerCase()} fallbacks` : `Search ${taskLabel(task).toLowerCase()} models`}
         bind:value={query}
+        onkeydown={onSearchKeydown}
         autocomplete="off"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
         aria-label="Search models"
       />
-    </div>
-
-    <div class="catalog-refresh">
-      <span role="status">{refreshing ? 'Refreshing model lists… You can still choose a model.' : catalogNote}</span>
-      <button type="button" class="btn-ghost" onclick={refreshModels} disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}>
-        {refreshing ? 'Refreshing…' : 'Refresh models'}
+      <button type="button" class="picker-close" aria-label="Close" onclick={onClose}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
     </div>
 
-    <div class="picker-body">
-      <nav class="picker-rail" aria-label="Filter by provider">
-        <button
-          type="button"
-          class="rail-item"
-          class:rail-active={providerFilter === 'all'}
-          onclick={() => (providerFilter = 'all')}
-        >
-          <span class="rail-name">All providers</span>
-          {#key searched.length}
-            <span class="rail-count" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-              {searched.length}
-            </span>
-          {/key}
-        </button>
-        {#each RAIL_ORDER.filter((p) => counts[p] > 0) as provider (provider)}
+    <div class="picker-tabs">
+      <nav class="picker-rail" aria-label="Filter by provider" bind:this={railEl}>
+        {#each ['all', ...tabProviders] as provider (provider)}
           <button
             type="button"
             class="rail-item"
-            class:rail-active={providerFilter === provider}
-            onclick={() => (providerFilter = provider)}
-          >
-            <span class="rail-logo" class:plate-bleed={getProviderPlate(provider) === 'bleed'}>
-              {@html getProviderLogo(provider)}
-            </span>
-            <span class="rail-name">{providerDisplayLabel(provider)}</span>
-            {#key counts[provider]}
-            <span class="rail-count" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-              {counts[provider]}
-            </span>
-          {/key}
-          </button>
+            class:rail-active={filter === provider}
+            aria-pressed={filter === provider}
+            onclick={() => (providerFilter = provider as ProviderId | 'all')}
+          >{provider === 'all' ? 'All' : providerDisplayLabel(provider as ProviderId)}</button>
         {/each}
+        <span class="rail-ink" class:rail-ink-ready={ink.ready} style="transform: translateX({ink.x}px) scaleX({ink.w})" aria-hidden="true"></span>
       </nav>
-
-      <div class="picker-list scroll-styled scroll-thumb-elev">
-        {#if grouped.length === 0}
-          <p class="picker-empty">No models match “{query.trim()}”.</p>
-        {/if}
-
-        {#if !local.supported}
-          <p class="picker-note">
-            {#if task === 'transcription'}
-              Other on-device speech models aren’t available on Intel Macs yet — they haven’t been
-              validated on that hardware. Apple Speech and Whisper are still offered, and a cloud
-              provider works with no download.
-            {:else}
-              On-device models aren’t available on Intel Macs yet — they haven’t been validated on
-              that hardware, and older Intel machines struggle to run a local model well. A cloud
-              provider above works with no download.
-            {/if}
-          </p>
-        {/if}
-
-        {#each grouped as group (group.provider)}
-          <p class="group-label" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-            {providerDisplayLabel(group.provider)}
-          </p>
-
-          {#if group.provider === 'local' && local.runtime?.info && runtimePending}
-            <div class="runtime-note">
-              {#if local.runtime.info.is_downloading}
-                <span>Fetching the on-device runtime…</span>
-                <button class="row-tool" type="button" onclick={() => local.runtime?.onCancel()}>Cancel</button>
-              {:else}
-                <span>
-                  On-device cleanup needs a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
-                  Downloading any model below fetches it too.
-                </span>
-                <button class="btn-ghost btn-compact" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
-              {/if}
-            </div>
-          {:else if group.provider === 'local' && local.runtime?.info?.installed}
-            <div class="runtime-note">
-              <span>On-device runtime installed{local.runtime.info.backend ? ` (${local.runtime.info.backend})` : ''}.</span>
-              {#if local.runtime.info.approx_download_mb === 0}
-                <span class="row-tool">Included with app</span>
-              {:else}
-                <button class="row-tool" type="button" onclick={() => local.runtime?.onDelete()}>Remove</button>
-              {/if}
-            </div>
-          {/if}
-          {#if group.provider === 'local' && local.supported && localModel('fluid-english-booster')}
-            {@const booster = localModel('fluid-english-booster')!}
-            <div class="runtime-note runtime-booster" data-testid="vocabulary-booster">
-              <span>
-                <strong>English vocabulary booster</strong> · optional{booster.size_mb ? `, ${booster.size_mb} MB` : ''}.
-                Not a speech model: it re-checks Context vocabulary spelling after Parakeet CoreML
-                transcribes, only when Language is set to English. Auto-detect, other languages, and
-                Japanese skip it.
-              </span>
-              {#if booster.is_downloading}
-                <button class="btn-ghost btn-compact" type="button" onclick={() => local.onCancel(booster.id)}>Cancel</button>
-              {:else if booster.is_downloaded}
-                <button class="btn-danger btn-compact" type="button" aria-label="Remove vocabulary booster" onclick={() => local.onDelete(booster.id)}>Remove</button>
-              {:else}
-                <button class="btn-ghost btn-compact" type="button" aria-label="Install vocabulary booster" onclick={() => local.onDownload(booster.id)}>Install</button>
-              {/if}
-            </div>
-            {#if booster.is_downloading}
-              <div class="row-progress" transition:slide={{ duration: motionMs(MOTION_MS.fast), easing: cubicOut }}>
-                <LocalDownloadProgress
-                  stage={local.downloadStage[booster.id] === 'verifying' ? 'verifying' : 'downloading'}
-                  percent={(local.downloadProgress[booster.id]?.progress ?? 0) * 100}
-                  label={local.downloadStage[booster.id] === 'verifying' ? 'Verifying booster…' : 'Downloading booster…'}
-                  indeterminate={local.downloadProgress[booster.id] == null}
-                />
-              </div>
-            {/if}
-          {/if}
-          {#each group.rows.slice(0, rowLimits[group.provider] ?? ROW_BATCH) as row (row.key)}
-            {@const active = isActive(row.key)}
-            {@const fallback = isFallback(row.key)}
-            <div
-              class="model-row"
-              class:row-active={active}
-              class:row-dim={row.state === 'needs-setup'}
-            >
-              <button
-                class="row-main"
-                type="button"
-                aria-current={active ? 'true' : undefined}
-                onclick={() => activate(row)}
-              >
-                <span class="row-logo" class:plate-bleed={getProviderPlate(row.provider, row.id) === 'bleed'}>
-                  {@html getProviderLogo(row.provider, row.id)}
-                </span>
-                <span class="row-text">
-                  <span class="row-name">{row.label}</span>
-                  <span class="row-sub">
-                    <code>{row.id}</code>
-                    {#each row.tags as tag (tag)}
-                      <span class="row-tag">{tag}</span>
-                    {/each}
-                    {#if row.note}<span class="row-note">{row.note}</span>{/if}
-                  </span>
-                </span>
-                {#if active}
-                  <span class="row-state row-state-active">Active</span>
-                {:else if fallback}
-                  <span class="row-state">Fallback {fallbackModels.indexOf(row.key) + 1}</span>
-                {:else if row.remedy === 'add-key'}
-                  <span class="row-state row-state-cta">Add key →</span>
-                {/if}
-              </button>
-
-              {#if row.provider === 'local'}
-                {@const phase = isDownloading(row.id)
-                  ? 'busy'
-                  : isDownloaded(row.id)
-                    ? 'ready'
-                    : 'absent'}
-                {#key phase}
-                  <span class="row-tools" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-                  {#if localModel(row.id)?.install_kind === 'system_managed'}
-                    <span class="row-state">No download</span>
-                  {:else if row.state === 'unavailable'}
-                    <span class="row-state">Unavailable</span>
-                  {:else if isDownloading(row.id)}
-                    <button
-                      class="row-tool"
-                      data-testid="cancel-model-download"
-                      type="button"
-                      onclick={() => local.onCancel(row.id)}>Cancel</button
-                    >
-                  {:else if !isDownloaded(row.id)}
-                    <button
-                      class="row-tool row-tool-accent"
-                      data-testid="download-model"
-                      type="button"
-                      onclick={() => local.onDownload(row.id)}>Download</button
-                    >
-                  {:else}
-                    <button
-                      class="row-tool row-tool-danger"
-                      data-testid="delete-model"
-                      type="button"
-                      onclick={() => local.onDelete(row.id)}>Delete</button
-                    >
-                  {/if}
-                  </span>
-                {/key}
-              {:else if mode === 'select' && row.remedy === 'none' && !active && !fallback}
-                <button
-                  class="row-add"
-                  type="button"
-                  aria-label="Add {row.label} as a fallback"
-                  title="Add as fallback"
-                  onclick={() => addFallback(row)}
-                >+</button>
-              {/if}
-            </div>
-
-            {#if row.provider === 'local' && isDownloading(row.id)}
-              <div class="row-progress" transition:slide={{ duration: motionMs(MOTION_MS.fast), easing: cubicOut }}>
-                <LocalDownloadProgress
-                  stage={local.downloadStage[row.id] === 'verifying' ? 'verifying' : 'downloading'}
-                  percent={(local.downloadProgress[row.id]?.progress ?? 0) * 100}
-                  label={local.downloadStage[row.id] === 'verifying' ? 'Verifying…' : 'Downloading…'}
-                  indeterminate={local.downloadProgress[row.id] == null}
-                />
-              </div>
-            {/if}
-          {/each}
-          {#if group.rows.length > (rowLimits[group.provider] ?? ROW_BATCH)}
-            <button
-              type="button"
-              class="more-toggle"
-              onclick={() => (rowLimits[group.provider] = (rowLimits[group.provider] ?? ROW_BATCH) + ROW_BATCH)}
-            >
-              Show next {Math.min(ROW_BATCH, group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH))} {providerDisplayLabel(group.provider)} models
-              <span>({group.rows.length - (rowLimits[group.provider] ?? ROW_BATCH)} remaining · search all models above)</span>
-            </button>
-          {/if}
-        {/each}
-
-        {#if hiddenCount > 0 || showUnverified}
-          <button
-            class="more-toggle"
-            type="button"
-            aria-expanded={showUnverified}
-            onclick={() => (showUnverified = !showUnverified)}
-          >
-            {#if showUnverified}
-              Hide unverified models
-            {:else}
-              Show {hiddenCount} more model{hiddenCount === 1 ? '' : 's'}
-              <span class="more-note">listed by the provider, unverified and possibly buggy</span>
-            {/if}
-          </button>
-        {/if}
-      </div>
+      <button type="button" class="tab-tool tab-add" aria-label="Add provider" onclick={onOpenApiKeys}>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9" /></svg>
+        <span class="tab-add-label">Provider</span>
+      </button>
+      <button
+        type="button"
+        class="tab-tool tab-icon"
+        class:spinning={refreshing}
+        aria-label="Refresh models"
+        title="Refresh models"
+        onclick={refreshModels}
+        disabled={refreshing || (!canRefreshApple && refreshProviders.length === 0)}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />
+        </svg>
+      </button>
     </div>
 
-    {#if advancedModelUi && customProvider !== 'local' && customProvider !== 'apple-intelligence'}
-      <footer class="picker-foot" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-        <div class="custom-row">
-          <label class="custom-label" for="picker-custom-id">
-            Add to {providerDisplayLabel(customProvider)}
-          </label>
-          <input
-            id="picker-custom-id"
-            class="custom-input"
-            class:custom-invalid={!!customError}
-            placeholder="Exact model id"
-            value={customDraft}
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            aria-invalid={!!customError}
-            aria-describedby={customError ? 'picker-custom-error' : undefined}
-            oninput={(event) => onCustomDraftChange((event.currentTarget as HTMLInputElement).value)}
-            onkeydown={(event) => {
-              if (event.key === 'Enter') {
-                event.stopPropagation();
-                submitCustom();
-              }
-            }}
-          />
-          <button class="custom-add" type="button" disabled={!customDraft.trim()} onclick={submitCustom}>
-            Add
-          </button>
+    <p class="catalog-note" role="status">{catalogNote}</p>
+
+    <div class="picker-list scroll-styled scroll-thumb-elev">
+      {#key filter}
+      <div in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
+      {#if filter === 'local' && local.runtime?.info && runtimePending}
+        <p class="list-note runtime-note">
+          {#if local.runtime.info.is_downloading}
+            Fetching the on-device runtime…
+            <button class="row-tool" type="button" onclick={() => local.runtime?.onCancel()}>Cancel</button>
+          {:else}
+            On-device models need a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
+            <button class="row-tool row-tool-strong" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
+          {/if}
+        </p>
+      {/if}
+
+      {#each pinnedRows as row (row.key)}
+        <div animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+          {@render modelRow(row)}
         </div>
-        {#if customError}
-          <p class="custom-error" id="picker-custom-error" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-            {customError}
-          </p>
-        {/if}
-      </footer>
+      {/each}
+      {#if pinnedRows.length > 0 && listed.length > 0}
+        <div class="list-sep"></div>
+      {/if}
+      {#each listed as row (row.key)}
+        <div animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+          {@render modelRow(row)}
+        </div>
+      {/each}
+
+      {#each overflow as group (group.provider)}
+        <button type="button" class="list-more" onclick={() => (providerFilter = group.provider)}>
+          {group.count} more on {providerDisplayLabel(group.provider)}
+        </button>
+      {/each}
+      {#if !collapsed && restRows.length > limit}
+        <button type="button" class="list-more" onclick={() => (limit += PAGE)}>
+          Show next {Math.min(PAGE, restRows.length - limit)}{filter === 'all' ? '' : ` ${providerDisplayLabel(filter)}`} models
+        </button>
+      {/if}
+      {#if hiddenCount > 0 || showUnverified}
+        <button type="button" class="list-more" aria-expanded={showUnverified} onclick={() => (showUnverified = !showUnverified)}>
+          {showUnverified ? 'Hide unverified models' : `${hiddenCount} unverified, listed by the provider`}
+        </button>
+      {/if}
+
+      {#if empty}
+        <p class="list-empty">{needle ? `No model called “${query.trim()}”` : 'No models yet'}</p>
+      {/if}
+
+      {#if filter === 'local' && local.supported && localModel('fluid-english-booster')}
+        {@const booster = localModel('fluid-english-booster')!}
+        <p class="list-note" data-testid="vocabulary-booster">
+          <span>English vocabulary booster, optional{booster.size_mb ? ` · ${sizeLabel(booster.size_mb)}` : ''}. Re-checks Context vocabulary spelling after Parakeet CoreML, English only.</span>
+          {#if booster.is_downloading}
+            <button class="row-tool" type="button" onclick={() => local.onCancel(booster.id)}>Cancel</button>
+          {:else if booster.is_downloaded}
+            <button class="row-tool" type="button" aria-label="Remove vocabulary booster" onclick={() => local.onDelete(booster.id)}>Remove</button>
+          {:else}
+            <button class="row-tool row-tool-strong" type="button" aria-label="Install vocabulary booster" onclick={() => local.onDownload(booster.id)}>Install</button>
+          {/if}
+        </p>
+      {/if}
+      </div>
+      {/key}
+    </div>
+
+    {#if canAddCustom}
+      <div class="picker-foot">
+        <input
+          class="custom-input"
+          class:custom-invalid={!!customError}
+          placeholder="Custom {providerDisplayLabel(customProvider)} model ID"
+          bind:value={customId}
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Custom model ID"
+          aria-invalid={!!customError}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') {
+              event.stopPropagation();
+              submitCustom();
+            }
+          }}
+        />
+        {#if customError}<p class="list-error" role="alert">{customError}</p>{/if}
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
-  .catalog-refresh { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 20px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--ink-mute); }
-  .catalog-refresh .btn-ghost { flex-shrink: 0; }
   .picker-wrap {
     position: fixed;
     inset: 0;
@@ -643,9 +559,9 @@
   .picker-card {
     position: relative;
     z-index: 1;
-    width: min(720px, calc(100% - 32px));
+    width: min(640px, calc(100% - 32px));
     max-width: 100%;
-    height: min(600px, 88vh);
+    height: min(520px, 88vh);
     background: var(--bg-elev);
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
@@ -653,623 +569,361 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .picker-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 18px 20px 10px;
-  }
-
-  .picker-title h3 {
-    margin: 0;
     font-family: var(--sans);
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--ink);
-  }
-
-  .picker-title p {
-    margin: 4px 0 0;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink-mute);
-  }
-
-  .picker-close {
-    flex-shrink: 0;
-    width: 26px;
-    height: 26px;
-    display: grid;
-    place-items: center;
-    padding: 0;
-    box-sizing: border-box;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    background: transparent;
-    color: var(--ink-mute);
-    cursor: pointer;
-  }
-
-  .picker-close svg {
-    display: block;
-  }
-
-  .picker-close:hover {
-    background: var(--control-hover);
-    color: var(--ink);
   }
 
   .picker-search-row {
     position: relative;
-    padding: 4px 20px 14px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    height: 58px;
+    padding: 0 22px;
   }
 
   .search-icon {
-    position: absolute;
-    left: 30px;
-    top: 4px;
-    bottom: 14px;
-    margin: auto 0;
-    color: var(--ink-faint);
-    pointer-events: none;
+    flex-shrink: 0;
+    color: var(--ink-mute);
   }
 
   .picker-search {
-    width: 100%;
-    font-family: var(--sans);
-    font-size: 13px;
-    padding: 8px 10px 8px 32px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--paper);
-    color: var(--ink);
-  }
-
-  .picker-search:focus-visible {
-    border-color: var(--line-strong);
-    outline: none;
-  }
-
-  .picker-body {
     flex: 1;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: 178px 1fr;
+    min-width: 0;
+    height: 100%;
+    margin-left: 12px;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    appearance: none;
+    box-shadow: none;
+  }
+
+  .picker-search::placeholder { color: var(--ink-mute); }
+  .picker-search::-webkit-search-cancel-button { appearance: none; }
+
+  .picker-tabs {
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+    gap: 18px;
+    height: 38px;
+    padding: 0 22px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
   }
 
   .picker-rail {
-    border-right: 1px solid var(--line);
-    padding: 10px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    overflow-y: auto;
-  }
-
-  .rail-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 7px 9px;
-    border: none;
-    border-radius: 7px;
-    background: transparent;
-    font-family: var(--sans);
-    font-size: 12.5px;
-    color: var(--ink-soft);
-    cursor: pointer;
-    text-align: left;
-    transition: background 0.14s, color 0.14s;
-  }
-
-  .rail-item:hover:not(:disabled) {
-    background: var(--control-hover);
-    color: var(--ink);
-  }
-
-  .rail-item:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .rail-active,
-  .rail-active:hover:not(:disabled) {
-    background: var(--control-hover);
-    color: var(--ink);
-    font-weight: 500;
-  }
-
-  .rail-name {
+    position: relative;
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: flex;
+    gap: 20px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .rail-count {
-    font-variant-numeric: tabular-nums;
-    font-size: 11px;
-    color: var(--ink-faint);
-  }
+  .picker-rail::-webkit-scrollbar { display: none; }
 
-  .rail-logo,
-  .row-logo {
+  .rail-item,
+  .tab-tool {
+    position: relative;
     flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--ink-mute);
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color var(--ui-duration-fast) var(--ui-ease-out);
+  }
+
+  .rail-item:hover,
+  .tab-tool:hover:not(:disabled),
+  .rail-active { color: var(--ink); }
+
+  .rail-ink {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    background: var(--ink);
+    transform-origin: left;
+    pointer-events: none;
+  }
+
+  .rail-ink-ready { transition: transform var(--ui-duration-base) var(--ui-ease-out); }
+
+  .tab-icon {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 22px;
+  }
+
+  .tab-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tab-tool:disabled { opacity: 0.4; cursor: default; }
+  .spinning svg { animation: picker-spin 0.9s linear infinite; }
+  @keyframes picker-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinning svg { animation: none; }
+    .rail-ink-ready,
+    .row-main,
+    .row-provider,
+    .row-acts { transition: none; }
+  }
+
+  .rail-item:focus-visible,
+  .tab-tool:focus-visible,
+  .row-main:focus-visible,
+  .row-tool:focus-visible,
+  .list-more:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
     border-radius: 6px;
-    overflow: hidden;
-    color: var(--ink-soft);
-  }
-
-  .rail-logo :global(svg),
-  .row-logo :global(svg) {
-    width: 15px;
-    height: 15px;
-  }
-
-  .plate-bleed :global(svg) {
-    width: 100%;
-    height: 100%;
-  }
-
-  .row-logo {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-  }
-
-  .row-logo :global(svg) {
-    width: 18px;
-    height: 18px;
   }
 
   .picker-list {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 10px 12px 14px;
-  }
-
-  .group-label {
-    margin: 10px 0 4px 6px;
-    font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: none;
-    letter-spacing: 0;
-    color: var(--ink-faint);
-  }
-
-  .picker-list > .group-label:first-child {
-    margin-top: 0;
+    padding: 8px 10px 10px;
+    scrollbar-gutter: stable;
   }
 
   .model-row {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 4px;
+    min-height: 38px;
+    padding-right: 12px;
+    border-radius: 9px;
+    transition: background var(--ui-duration-fast) var(--ui-ease-out);
   }
+
+  .model-row:hover,
+  .model-row:focus-within { background: var(--control-hover); }
+  .row-dim .row-name { color: var(--ink-faint); }
 
   .row-main {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: transparent;
+    align-self: stretch;
+    padding: 0;
+    border: none;
+    background: none;
     color: var(--ink);
     font-family: var(--sans);
+    font-size: 14px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.14s, border-color 0.14s;
   }
 
-  .row-main:hover {
-    background: var(--control-hover);
-  }
-
-  .row-main:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
-  }
-
-  .row-active .row-main {
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-    background: var(--accent-soft);
-  }
-
-  .row-dim .row-main {
-    opacity: 0.62;
-  }
-
-  .row-text {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  .row-num {
+    flex-shrink: 0;
+    width: 34px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--accent);
   }
 
   .row-name {
-    font-size: 13px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .row-sub {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    min-width: 0;
-    font-size: 10.5px;
-    color: var(--ink-faint);
-  }
-
-  .row-sub code {
-    font-family: var(--mono);
-    font-size: 10px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .row-sub > :not(:first-child)::before {
-    content: '·';
-    margin-right: 6px;
-  }
-
-  .row-tag {
-    text-transform: capitalize;
-    white-space: nowrap;
-  }
-
-  .row-note {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .row-state {
+  .row-pinned .row-name { font-weight: 500; }
+
+  .row-meta {
     flex-shrink: 0;
-    font-size: 10.5px;
-    color: var(--ink-faint);
-    white-space: nowrap;
-  }
-
-  .row-state-active {
-    color: var(--accent-ink);
-    font-weight: 500;
-  }
-
-  .row-state-cta {
-    color: var(--accent-ink);
-  }
-
-  .row-tools {
     display: flex;
     align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .row-tool {
-    font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 500;
-    padding: 3px 9px;
-    border: 1px solid var(--line-strong);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--ink-soft);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.14s, color 0.14s, border-color 0.14s;
-  }
-
-  .row-tool:hover {
-    background: var(--control-hover);
-    color: var(--ink);
-  }
-
-  .row-tool-accent {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
-    color: var(--accent-ink);
-  }
-
-  .row-tool-danger:hover {
-    border-color: var(--danger-line);
-    color: var(--danger);
-  }
-
-  .row-progress {
-    padding: 2px 10px 8px 46px;
-  }
-
-  .runtime-note {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin: 2px 6px 6px;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    font-family: var(--sans);
-    font-size: 11.5px;
-    line-height: 1.45;
+    gap: 14px;
+    font-size: 12px;
     color: var(--ink-mute);
   }
 
-  .row-add {
-    flex-shrink: 0;
-    width: 24px;
-    height: 24px;
+  .row-tool {
+    padding: 0;
     border: none;
-    background: transparent;
-    color: var(--ink-faint);
-    font-size: 15px;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.14s, color 0.14s;
-  }
-
-  .model-row:hover .row-add,
-  .row-add:focus-visible {
-    opacity: 1;
-  }
-
-  .row-add:hover {
+    background: none;
     color: var(--ink);
+    font: inherit;
+    cursor: pointer;
   }
 
-  .picker-note {
-    margin: 10px 6px 4px;
-    padding: 9px 11px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
+  .row-tool:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .row-tool-strong { color: var(--ink); }
+
+  .row-swap {
+    display: grid;
+    justify-items: end;
+    align-items: center;
+  }
+
+  .row-swap > * { grid-area: 1 / 1; }
+
+  .row-provider,
+  .row-acts { transition: opacity var(--ui-duration-fast) var(--ui-ease-out); }
+
+  .row-acts {
+    display: flex;
+    gap: 14px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .model-row:hover .row-provider,
+  .model-row:focus-within .row-provider { opacity: 0; }
+
+  .model-row:hover .row-acts,
+  .model-row:focus-within .row-acts {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  @media (hover: none) {
+    .row-acts { display: none; }
+    .model-row:hover .row-provider { opacity: 1; }
+  }
+
+  .row-main { transition: transform var(--ui-duration-fast) var(--ui-ease-out); }
+  .row-main:active { transform: scale(0.995); }
+
+  .row-bar {
+    position: absolute;
+    left: 34px;
+    right: 12px;
+    bottom: 3px;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .row-bar i {
+    display: block;
+    height: 1px;
+    background: var(--accent);
+    transition: width var(--ui-duration-base) var(--ui-ease-out);
+  }
+
+  .list-sep {
+    height: 1px;
+    margin: 6px 12px;
+    background: var(--line);
+  }
+
+  .list-more {
+    display: block;
+    width: 100%;
+    min-height: 38px;
+    padding: 0 12px 0 34px;
+    border: none;
+    border-radius: 9px;
+    background: none;
+    color: var(--ink-mute);
     font-family: var(--sans);
-    font-size: 11.5px;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .list-more:hover { background: var(--control-hover); color: var(--ink); }
+  .picker-close {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--ink-mute);
+    cursor: pointer;
+    transition: color var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out);
+  }
+
+  .picker-close:hover { background: var(--control-hover); color: var(--ink); }
+  .picker-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .catalog-note {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 6px 22px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--ink-mute);
+  }
+
+  .catalog-note:empty { height: 0; padding: 0; border: 0; overflow: hidden; }
+
+  .picker-foot {
+    flex-shrink: 0;
+    padding: 0 22px;
+    border-top: 1px solid var(--line);
+  }
+
+  .custom-input {
+    width: 100%;
+    height: 44px;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+
+  .custom-input::placeholder { color: var(--ink-mute); font-family: var(--sans); }
+  .custom-invalid { color: var(--danger); }
+  .picker-foot .list-error { padding: 0 0 8px; }
+
+  .list-note,
+  .list-empty,
+  .list-error {
+    margin: 0;
+    padding: 8px 12px 8px 34px;
+    font-size: 12px;
     line-height: 1.5;
     color: var(--ink-mute);
   }
 
-  .more-toggle {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    width: 100%;
-    margin-top: 12px;
-    padding: 9px 11px;
-    border: 1px dashed var(--line);
-    border-radius: 8px;
-    background: transparent;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink-soft);
-    text-align: left;
-    cursor: pointer;
-    transition: background 0.14s, color 0.14s, border-color 0.14s;
-  }
+  .list-note { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+  .list-empty { padding-top: 56px; text-align: center; font-size: 13px; }
+  .list-error { color: var(--danger); }
 
-  .more-toggle:hover {
-    background: var(--control-hover);
-    color: var(--ink);
-    border-color: var(--line-strong);
-  }
-
-  .more-toggle:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
-  }
-
-  .more-note {
-    font-size: 11px;
-    color: var(--ink-faint);
-  }
-
-  .picker-empty {
-    margin: 18px 8px;
-    font-family: var(--sans);
-    font-size: 13px;
-    color: var(--ink-mute);
-  }
-
-  .picker-foot {
-    padding: 12px 20px;
-    border-top: 1px solid var(--line);
-    background: var(--paper);
-  }
-
-  .custom-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .custom-invalid {
-    border-color: var(--danger-line);
-  }
-
-  .custom-error {
-    margin: 7px 0 0;
-    font-family: var(--sans);
-    font-size: 11.5px;
-    color: var(--danger);
-  }
-
-  .custom-label {
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink-mute);
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
     white-space: nowrap;
   }
 
-  .custom-input {
-    flex: 1;
-    min-width: 0;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    padding: 6px 9px;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    background: var(--bg-elev);
-    color: var(--ink);
-  }
-
-  .custom-input:focus-visible {
-    border-color: var(--line-strong);
-    outline: none;
-  }
-
-  .custom-add {
-    flex-shrink: 0;
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    padding: 6px 12px;
-    border: 1px solid var(--line-strong);
-    border-radius: 7px;
-    background: transparent;
-    color: var(--ink-soft);
-    cursor: pointer;
-  }
-
-  .custom-add:hover:not(:disabled) {
-    background: var(--control-hover);
-    color: var(--ink);
-  }
-
-  .custom-add:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
   @media (max-height: 520px) {
-    .picker-card {
-      height: calc(100vh - 16px);
-    }
-
-    .picker-head {
-      padding: 10px 16px 6px;
-    }
-
-    .picker-title p {
-      display: none;
-    }
-
-    .picker-search-row {
-      padding: 2px 16px 8px;
-    }
-
-    .search-icon {
-      left: 26px;
-      bottom: 8px;
-    }
-
-    .catalog-refresh {
-      padding: 4px 16px;
-    }
-
-    .picker-foot {
-      padding: 8px 16px;
-    }
+    .picker-card { height: calc(100vh - 16px); }
+    .picker-search-row { height: 46px; }
   }
 
   @media (max-width: 640px) {
-    .picker-body {
-      grid-template-columns: 1fr;
-      grid-template-rows: auto minmax(0, 1fr);
-    }
-
-    .picker-rail {
-      flex-direction: row;
-      overflow-x: auto;
-      border-right: none;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .picker-rail .rail-item {
-      width: auto;
-      flex-shrink: 0;
-    }
-
-    .rail-count,
-    .rail-name {
-      white-space: nowrap;
-    }
-
-    .picker-head,
     .picker-search-row,
-    .picker-foot {
-      padding-left: 14px;
-      padding-right: 14px;
-    }
-
-    .row-name {
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
-
-    .row-sub {
-      flex-wrap: wrap;
-      column-gap: 6px;
-      row-gap: 1px;
-    }
-
-    .row-sub code {
-      max-width: 100%;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-
-    .row-sub > :not(:first-child)::before {
-      content: none;
-    }
-
-    .row-sub > :not(:first-child) {
-      white-space: normal;
-    }
-
-    .custom-row {
-      flex-wrap: wrap;
-    }
-
-    .custom-label {
-      flex: 1 1 100%;
-    }
-
-    .custom-input {
-      min-width: 0;
-    }
-
-    .row-sub {
-      flex-wrap: wrap;
-      row-gap: 2px;
-    }
-
-    .row-sub > .row-note {
-      flex: 1 1 100%;
-      white-space: normal;
-      overflow: visible;
-      text-overflow: clip;
-      overflow-wrap: anywhere;
-      line-height: 1.4;
-    }
-
-    .row-sub > .row-note::before {
-      content: none;
-    }
+    .picker-tabs { padding-left: 16px; padding-right: 16px; }
+    .picker-tabs { gap: 14px; }
+    .picker-rail { gap: 16px; }
+    .tab-add-label { display: none; }
   }
 </style>

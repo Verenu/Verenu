@@ -26,6 +26,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Cleanup rejects truncated chat responses and explains when reasoning exhausted the output budget instead of reporting a missing `content` field. T3 skill validation logs acceptance and whether cleanup changed the transcript, without recording its contents.
 - Live pipeline tests can capture delivery independently of provider fixtures so synthetic speech exercises the configured providers and imported catalog.
 - Model pickers open with a small batch per provider instead of rendering every discovered model at once. Search covers the full catalog, current selections stay first, and more models remain available in each provider group while catalogs refresh or a provider is offline.
+- Redesigned the model picker as a single minimal list. Search sits at the top, provider tabs show only providers with a saved key plus on-device models, and your main model and fallbacks are pinned first as 1, 2, 3. Click a model to make it main; hover to add or remove a fallback. Model IDs stay in the tooltip and search, and a custom model ID is offered when a search finds nothing. Download progress, the on-device runtime, and unverified models stay available. Transitions are smoother and respect reduced motion.
 
 - Linux Cancel dictation and Switch to hands-free shortcuts can now be changed in General settings, including when unavailable. Each selected key stays on this device, is checked against desktop shortcuts, and recovers when its conflict is removed.
 
