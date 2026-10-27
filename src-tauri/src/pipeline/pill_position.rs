@@ -364,6 +364,7 @@ mod tests {
                 work_y: 1106.0,
                 work_width: 2048.0,
                 work_height: 1126.0,
+                scale: 1.25,
             },
             200.0,
             200.0,
