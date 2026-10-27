@@ -32,7 +32,7 @@
   import { scrollEdges } from './lib/scrollFade';
   import { fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
-  import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap, reducedMotionEnabled } from './lib/motion';
+  import { MOTION_MS, MOTION_PX, NAV_ORDER, SETTINGS_SECTION_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from './lib/motion';
   import { applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
   import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
   import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
@@ -174,10 +174,28 @@
   });
 
   $effect(() => {
-    pageNavigation.current;
-    requestAnimationFrame(() => {
-      contentEl?.scrollTo({ top: 0, behavior: reducedMotionEnabled() ? 'auto' : 'smooth' });
-    });
+    const active = pageNavigation.current;
+    if (!contentEl) return;
+    // Reset scroll without moving the leaving page: it keeps its place on screen
+    // while it fades, and the entering page starts at the top.
+    const offset = contentEl.scrollTop;
+    for (const wrapper of contentEl.querySelectorAll<HTMLElement>('.page-wrapper')) {
+      const leaving = wrapper.dataset.page !== active;
+      // A reversed swap can leave a wrapper in the wrong state, so derive it here.
+      wrapper.inert = leaving;
+      wrapper.style.pointerEvents = leaving ? 'none' : '';
+      if (leaving) wrapper.setAttribute('aria-hidden', 'true');
+      else wrapper.removeAttribute('aria-hidden');
+      if (!leaving) {
+        // A page navigated back to mid-outro becomes active again; drop its hold.
+        wrapper.style.position = '';
+        wrapper.style.top = '';
+      } else if (offset > 0) {
+        wrapper.style.position = 'relative';
+        wrapper.style.top = `${-offset}px`;
+      }
+    }
+    if (offset > 0) contentEl.scrollTo({ top: 0, behavior: 'auto' });
   });
 
   $effect(() => {
@@ -581,6 +599,7 @@
       {#key pageNavigation.current}
         <div
           class="page-wrapper"
+          data-page={pageNavigation.current}
           in:pageSwap={{ axis: 'y', distance: pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.panel) }}
           out:pageSwap={{ axis: 'y', distance: -pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.base + 40) }}
         >
