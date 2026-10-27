@@ -181,9 +181,19 @@
     const offset = contentEl.scrollTop;
     for (const wrapper of contentEl.querySelectorAll<HTMLElement>('.page-wrapper')) {
       const leaving = wrapper.dataset.page !== active;
-      // A page navigated back to mid-outro becomes active again; drop its hold.
-      wrapper.style.position = leaving && offset > 0 ? 'relative' : '';
-      wrapper.style.top = leaving && offset > 0 ? `${-offset}px` : '';
+      // A reversed swap can leave a wrapper in the wrong state, so derive it here.
+      wrapper.inert = leaving;
+      wrapper.style.pointerEvents = leaving ? 'none' : '';
+      if (leaving) wrapper.setAttribute('aria-hidden', 'true');
+      else wrapper.removeAttribute('aria-hidden');
+      if (!leaving) {
+        // A page navigated back to mid-outro becomes active again; drop its hold.
+        wrapper.style.position = '';
+        wrapper.style.top = '';
+      } else if (offset > 0) {
+        wrapper.style.position = 'relative';
+        wrapper.style.top = `${-offset}px`;
+      }
     }
     if (offset > 0) contentEl.scrollTo({ top: 0, behavior: 'auto' });
   });
