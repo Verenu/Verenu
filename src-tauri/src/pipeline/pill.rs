@@ -26,6 +26,8 @@ static LINUX_PILL_INPUT: Mutex<LinuxPillInput> = Mutex::new(LinuxPillInput {
 struct PillSnapshot {
     state: String,
     context: Option<String>,
+    #[cfg(target_os = "linux")]
+    monitor_scale: Option<f64>,
 }
 
 impl PillSnapshot {
@@ -40,7 +42,23 @@ impl PillSnapshot {
 static CURRENT_PILL_SNAPSHOT: Mutex<PillSnapshot> = Mutex::new(PillSnapshot {
     state: String::new(),
     context: None,
+    #[cfg(target_os = "linux")]
+    monitor_scale: None,
 });
+
+#[cfg(target_os = "linux")]
+fn publish_monitor_scale(
+    snapshot: &Mutex<PillSnapshot>,
+    update: Option<Option<f64>>,
+    emit: impl FnOnce(Option<f64>),
+) -> Option<PillSnapshot> {
+    let mut snapshot = snapshot.lock().ok()?;
+    if let Some(scale) = update {
+        snapshot.monitor_scale = scale;
+    }
+    emit(snapshot.monitor_scale);
+    Some(snapshot.clone())
+}
 
 #[cfg(target_os = "windows")]
 static PILL_PLACED_ONCE: AtomicBool = AtomicBool::new(false);
@@ -63,6 +81,11 @@ pub(crate) fn current_pill_state() -> String {
 }
 
 pub(crate) fn replay_pill_state(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    let snapshot = publish_monitor_scale(&CURRENT_PILL_SNAPSHOT, None, |scale| {
+        app.emit_to("pill", "pill-monitor-scale", scale).ok();
+    });
+    #[cfg(not(target_os = "linux"))]
     let snapshot = CURRENT_PILL_SNAPSHOT
         .lock()
         .ok()
@@ -413,7 +436,9 @@ fn show_native_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
             .and_then(|point| crate::core::hyprland::logical_monitor_for_point(point.x, point.y))
             .or_else(|| crate::core::hyprland::logical_monitor_for_point(f64::NAN, f64::NAN))
             .map(|monitor| monitor.scale);
-        app.emit_to("pill", "pill-monitor-scale", scale).ok();
+        publish_monitor_scale(&CURRENT_PILL_SNAPSHOT, Some(scale), |scale| {
+            app.emit_to("pill", "pill-monitor-scale", scale).ok();
+        });
     }
 
     let generation = REVEAL_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
@@ -855,6 +880,44 @@ pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
 mod context_replay_tests {
     use super::{pill_interactivity_for_state, PillSnapshot};
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_scale_replay_cannot_follow_a_new_scale() {
+        use super::publish_monitor_scale;
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::time::Duration;
+
+        let snapshot = Arc::new(Mutex::new(PillSnapshot::default()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        let replay_snapshot = Arc::clone(&snapshot);
+        let replay_events = event_tx.clone();
+        let replay = std::thread::spawn(move || {
+            publish_monitor_scale(&replay_snapshot, None, |scale| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                replay_events.send(scale).unwrap();
+            });
+        });
+        entered_rx.recv().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let update = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            publish_monitor_scale(&snapshot, Some(Some(1.25)), |scale| {
+                event_tx.send(scale).unwrap();
+            });
+        });
+        started_rx.recv().unwrap();
+        let premature = event_rx.recv_timeout(Duration::from_millis(250));
+        release_tx.send(()).unwrap();
+        replay.join().unwrap();
+        update.join().unwrap();
+        assert!(premature.is_err(), "new scale emitted before the old replay finished");
+        assert_eq!(event_rx.recv().unwrap(), None);
+        assert_eq!(event_rx.recv().unwrap(), Some(1.25));
+    }
+
     #[test]
     fn passive_pills_reject_even_an_explicit_input_enable() {
         for state in [
@@ -951,6 +1014,7 @@ mod context_replay_tests {
             let mut snapshot = PillSnapshot {
                 state: "processing".to_string(),
                 context: Some("Previous context".to_string()),
+                ..Default::default()
             };
             snapshot.set_state(state);
             assert!(snapshot.context.is_none(), "stale context in {state}");
