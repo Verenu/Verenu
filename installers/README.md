@@ -5,7 +5,7 @@ directly from the repository without waiting on a maintainer. Each release has
 its own version folder (e.g. [`0.15.0/`](0.15.0/)).
 
 The same files are also attached to the matching
-[GitHub Release](https://github.com/MONKE2525E/Verenu/releases), which remains
+[GitHub Release](https://github.com/Verenu/Verenu/releases), which remains
 the primary, scannable download location (every release lists VirusTotal links
 in its notes).
 

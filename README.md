@@ -157,7 +157,7 @@ For more details: [Add Your API Key](docs/API_KEYS.md) and [Privacy & Data](docs
 ### Run in development
 
 ```bash
-git clone https://github.com/MONKE2525E/Verenu.git
+git clone https://github.com/Verenu/Verenu.git
 cd Verenu
 npm install
 npm run tauri dev

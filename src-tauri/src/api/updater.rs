@@ -79,8 +79,7 @@ impl UpdateChannel {
     }
 }
 
-const RELEASE_REPO: &str = "MONKE2525E/Verenu";
-const LEGACY_RELEASE_REPO: &str = "Verenu/Verenu";
+const RELEASE_REPO: &str = "Verenu/Verenu";
 
 pub(crate) fn request_error(error: reqwest::Error) -> anyhow::Error {
     anyhow::anyhow!(request_error_message(&error))
@@ -142,7 +141,7 @@ pub fn is_authorized_release_asset_url(url: &str) -> bool {
         let expected_repo = expected.next().unwrap_or_default();
         owner.eq_ignore_ascii_case(expected_owner) && repo.eq_ignore_ascii_case(expected_repo)
     };
-    if !(is_expected_repo(RELEASE_REPO) || is_expected_repo(LEGACY_RELEASE_REPO))
+    if !is_expected_repo(RELEASE_REPO)
         || !releases.eq_ignore_ascii_case("releases")
         || !download.eq_ignore_ascii_case("download")
     {
@@ -797,7 +796,7 @@ mod tests {
     fn official_asset(name: &str) -> GhAsset {
         let mut asset = asset(name);
         asset.browser_download_url =
-            format!("https://github.com/MONKE2525E/Verenu/releases/download/Verenu-1.0.0/{name}");
+            format!("https://github.com/Verenu/Verenu/releases/download/Verenu-1.0.0/{name}");
         asset
     }
 
@@ -1432,9 +1431,14 @@ mod tests {
     }
 
     #[test]
+    fn release_repository_points_to_organization() {
+        assert_eq!(super::RELEASE_REPO, "Verenu/Verenu");
+    }
+
+    #[test]
     fn authorized_url_accepts_official_release_assets() {
         assert!(is_authorized_release_asset_url(
-            "https://github.com/MONKE2525E/Verenu/releases/download/Verenu-0.18.0-beta/Verenu_0.18.0_x64-setup.exe"
+            "https://github.com/Verenu/Verenu/releases/download/Verenu-0.18.0-beta/Verenu_0.18.0_x64-setup.exe"
         ));
         assert!(is_authorized_release_asset_url(
             "https://github.com/Verenu/Verenu/releases/download/v0.15.0/Verenu_0.15.0_x64-setup.exe"
