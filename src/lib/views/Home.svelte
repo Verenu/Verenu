@@ -209,7 +209,7 @@
       await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
-      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
+      void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
     }
   }
 

@@ -131,7 +131,8 @@ AUR packages with other names remain under their package manager's control.
 
 Portable AppImages update in their current folder with an atomic replacement and
 retain `<image>.previous` for manual rollback. The folder must be writable and
-support hard links. Restart Verenu after either installation succeeds. Download,
+support hard links. Verenu restarts after either installation succeeds. If it
+cannot start the replacement, the running app stays open and offers a retry. Download,
 checksum, backup, or authorization failures keep the running app open and allow
 another attempt. Releases without a GitHub SHA256 digest or a matching checksum
 entry cannot be installed automatically. Other Linux installs offer a download.

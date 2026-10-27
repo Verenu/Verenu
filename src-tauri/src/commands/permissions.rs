@@ -682,10 +682,30 @@ pub fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let env = handle.env();
+        let path = tauri::process::current_binary(&env)
+            .map_err(|error| format!("Could not locate Verenu for restart: {error}"))?;
+        spawn_linux_relaunch(&path, &env.args_os)?;
+        handle.exit(0);
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         handle.restart();
     }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_linux_relaunch(path: &std::path::Path, args: &[std::ffi::OsString]) -> Result<(), String> {
+    std::process::Command::new(path)
+        .args(args.iter().skip(1))
+        .spawn()
+        .map_err(|error| {
+            format!("Could not restart Verenu. Quit and reopen it manually: {error}")
+        })?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -826,6 +846,17 @@ pub async fn check_keychain_access(
 #[cfg(test)]
 mod tests {
     use super::core_permissions_granted;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_relaunch_reports_an_error() {
+        let error = super::spawn_linux_relaunch(
+            std::path::Path::new("/nonexistent-verenu-relaunch-test"),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.contains("Quit and reopen"));
+    }
 
     #[test]
     fn summary_requires_accessibility_and_microphone() {

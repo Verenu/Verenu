@@ -23,9 +23,9 @@
       {#if appStore.updateInstallError}<span class="update-hint" role="status">{appStore.updateInstallError}</span>{/if}
     </span>
     <div class="update-actions">
-      <button class="update-dismiss" onclick={onDismiss}>Dismiss</button>
-      <button class="update-btn" onclick={onInstall} disabled={installing || appStore.updateInstalled}>
-        {appStore.updateInstalled ? 'Installed' : installing
+      {#if !appStore.updateInstalled}<button class="update-dismiss" onclick={onDismiss}>Dismiss</button>{/if}
+      <button class="update-btn" onclick={onInstall} disabled={installing}>
+        {appStore.updateInstalled ? (installing ? 'Restarting…' : 'Restart Verenu') : installing
           ? (updateInfo.installMode === 'download' ? 'Opening…' : 'Installing…')
           : installActionLabel(updateInfo)}
       </button>
