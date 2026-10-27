@@ -137,9 +137,12 @@ export function analyze(snapshot: DiagnosticsSnapshot, frontend: readonly Fronte
   const idle = snapshot.active_pipelines.length === 0 && snapshot.runtime.audio?.active !== true;
   const traces = completedTraces(snapshot);
 
-  const groups = [...snapshot.failure_groups].sort((a, b) => b.count - a.count || b.last_seen_ms - a.last_seen_ms);
+  const isRecent = (lastSeen: number) => now - lastSeen < 10 * 60_000;
+  const groups = [...snapshot.failure_groups].sort(
+    (a, b) => Number(isRecent(b.last_seen_ms)) - Number(isRecent(a.last_seen_ms)) || b.count - a.count || b.last_seen_ms - a.last_seen_ms,
+  );
   for (const group of groups.slice(0, 3)) {
-    const recent = now - group.last_seen_ms < 10 * 60_000;
+    const recent = isRecent(group.last_seen_ms);
     add({
       id: `failure:${group.fingerprint}`,
       severity: recent ? 'bad' : 'warn',
@@ -177,46 +180,6 @@ export function analyze(snapshot: DiagnosticsSnapshot, frontend: readonly Fronte
         view: 'pipeline',
       });
     }
-  }
-
-  let retries = 0;
-  let retryMs = 0;
-  for (const trace of traces) {
-    for (const span of trace.spans) {
-      if ((span.retry_number ?? 0) > 0 || (span.fallback_number ?? 0) > 0) {
-        retries += 1;
-        retryMs += span.duration_ms ?? 0;
-      }
-    }
-  }
-  if (retries > 0) {
-    add({
-      id: 'retries',
-      severity: 'warn',
-      title: 'Retries and fallbacks are adding latency',
-      metric: `${retries}`,
-      detail: `${formatDuration(retryMs)} spent in retried or fallback spans across ${traces.length} runs.`,
-      view: 'pipeline',
-    });
-  }
-
-  let hits = 0;
-  let misses = 0;
-  for (const trace of traces) {
-    for (const span of trace.spans) {
-      if (span.cache === 'hit') hits += 1;
-      else if (span.cache === 'miss') misses += 1;
-    }
-  }
-  if (hits + misses >= 4 && misses / (hits + misses) > 0.8) {
-    add({
-      id: 'cache-miss',
-      severity: 'info',
-      title: 'Cache almost never hits',
-      metric: `${Math.round((hits / (hits + misses)) * 100)}%`,
-      detail: `${misses} misses vs ${hits} hits across recent dictations.`,
-      view: 'pipeline',
-    });
   }
 
   const growth = trendGrowthBytes(snapshot);
@@ -384,9 +347,9 @@ export function buildReport(snapshot: DiagnosticsSnapshot, frontend: readonly Fr
     for (const s of stats) out.push(`${stageLabel(s.stage).padEnd(14)} avg ${formatDuration(s.avgMs)} · p95 ${formatDuration(s.p95Ms)} · max ${formatDuration(s.maxMs)} · ${s.runs} runs`);
   }
 
-  const traces = [...snapshot.active_pipelines, ...snapshot.recent_pipelines];
-  const bad = [...traces].reverse().find((t) => t.outcome === 'failure');
-  const last = traces[traces.length - 1];
+  const last = snapshot.recent_pipelines[snapshot.recent_pipelines.length - 1];
+  const bad = [...snapshot.recent_pipelines].reverse().find((t) => t.outcome === 'failure');
+  if (snapshot.active_pipelines.length) out.push('', '## Active pipeline', formatTrace(snapshot.active_pipelines[0]));
   if (last) out.push('', '## Last pipeline', formatTrace(last));
   if (bad && bad !== last) out.push('', '## Last failed pipeline', formatTrace(bad));
 
