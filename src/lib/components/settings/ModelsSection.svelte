@@ -1092,7 +1092,9 @@
       overflow-wrap: anywhere;
       white-space: normal;
     }
+  }
 
+  @container settings-panel (max-width: 440px) {
     .models-dropdown-btn { min-height: 44px; }
     .models-dropdown-item { min-height: 44px; padding-block: 10px; }
   }
