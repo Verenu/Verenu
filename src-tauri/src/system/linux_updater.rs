@@ -646,4 +646,57 @@ mod tests {
         }
         drop(dir);
     }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires a private desktop, network and verified release fixtures"]
+    fn real_appimage_update_with_backup() {
+        let old = std::env::var_os("VERENU_UPDATE_TEST_APPIMAGE").expect("old AppImage fixture");
+        let expected =
+            std::env::var_os("VERENU_UPDATE_TEST_EXPECTED").expect("new AppImage fixture");
+        let dir = StagingDirectory::new(&std::env::temp_dir()).unwrap();
+        let image = dir.0.join("Verenu.AppImage");
+        std::fs::copy(old, &image).unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_hash = Sha256::digest(std::fs::read(&image).unwrap());
+        let new_hash = Sha256::digest(std::fs::read(expected).unwrap());
+        std::env::set_var("APPIMAGE", &image);
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &dir.0);
+        std::env::set_var("XDG_CACHE_HOME", dir.0.join("cache"));
+        let db = crate::data::db::open(dir.0.join("verenu.db")).unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE update_fixture (value TEXT); INSERT INTO update_fixture VALUES ('synthetic');")
+            .unwrap();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        app.manage(db);
+        let url = "https://github.com/Verenu/Verenu/releases/download/v0.21.0/Verenu_0.21.0-beta.1_x86_64.AppImage";
+        let result = tauri::async_runtime::block_on(install(
+            app.handle(),
+            url,
+            crate::api::updater::UpdateChannel::Beta,
+        ));
+        assert!(
+            matches!(result, Ok(crate::commands::InstallOutcome::Installed)),
+            "{result:?}"
+        );
+        let backup = rusqlite::Connection::open_with_flags(
+            dir.0.join("verenu.db.bak"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let saved: String = backup
+            .query_row("SELECT value FROM update_fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(saved, "synthetic");
+        assert_eq!(
+            Sha256::digest(std::fs::read(dir.0.join("Verenu.AppImage.previous")).unwrap()),
+            old_hash
+        );
+        assert_eq!(Sha256::digest(std::fs::read(&image).unwrap()), new_hash);
+        drop(app);
+    }
 }

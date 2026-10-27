@@ -139,18 +139,26 @@ mod tests {
             .allow_name_replacements(false)
             .build()
             .unwrap();
-        let original = super::InstanceOwner { connection: original, name: name.clone() };
-        original.set_ownership_mode(super::OwnershipMode::Transferable).unwrap();
+        let original = super::InstanceOwner {
+            connection: original,
+            name: name.clone(),
+        };
+        original
+            .set_ownership_mode(super::OwnershipMode::Transferable)
+            .unwrap();
         let replacement = zbus::blocking::Connection::session().unwrap();
         assert_eq!(
-            replacement.request_name_with_flags(
-                name.as_str(),
-                RequestNameFlags::ReplaceExisting | RequestNameFlags::DoNotQueue,
-            ).unwrap(),
+            replacement
+                .request_name_with_flags(
+                    name.as_str(),
+                    RequestNameFlags::ReplaceExisting | RequestNameFlags::DoNotQueue,
+                )
+                .unwrap(),
             RequestNameReply::PrimaryOwner
         );
         replacement.release_name(name.as_str()).unwrap();
-        let actual = original.connection
+        let actual = original
+            .connection
             .call_method(
                 Some("org.freedesktop.DBus"),
                 "/org/freedesktop/DBus",
@@ -163,10 +171,14 @@ mod tests {
             .deserialize::<String>()
             .unwrap();
         assert_eq!(actual, original.connection.unique_name().unwrap().as_str());
-        original.set_ownership_mode(super::OwnershipMode::Exclusive).unwrap();
-        assert!(replacement.request_name_with_flags(
-            name.as_str(),
-            RequestNameFlags::ReplaceExisting | RequestNameFlags::DoNotQueue,
-        ).is_err());
+        original
+            .set_ownership_mode(super::OwnershipMode::Exclusive)
+            .unwrap();
+        assert!(replacement
+            .request_name_with_flags(
+                name.as_str(),
+                RequestNameFlags::ReplaceExisting | RequestNameFlags::DoNotQueue,
+            )
+            .is_err());
     }
 }
