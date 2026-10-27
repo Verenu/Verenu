@@ -295,7 +295,7 @@
   const websitePreview = $derived(normalizeDomainInput(websiteInput));
   const websiteValid = $derived(websitePreview.length > 0 && isLikelyValidDomain(websitePreview));
   const sortedDictionary = $derived.by(() => {
-    const list = [...dictionary];
+    const list = dictionary.filter((entry) => entry.assigned_to_context !== false);
     if (sort === 'newest') list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'alpha') list.sort((a, b) => a.term.localeCompare(b.term));
     return list;
@@ -308,7 +308,7 @@
   });
 
   const sortedSnippets = $derived.by(() => {
-    const list = [...snippets];
+    const list = snippets.filter((snippet) => snippet.assigned_to_context !== false);
     if (sort === 'newest') list.sort((a, b) => b.created_at.localeCompare(a.created_at));
     if (sort === 'alpha') list.sort((a, b) => a.trigger.localeCompare(b.trigger));
     return list;
@@ -598,6 +598,7 @@
     if (contextId === EVERYWHERE_ID) return;
     try {
       await invoke('set_snippet_context_assignment', { contextId, snippetId: id, assigned: true });
+      if (selectedContextId === contextId) await loadContextItems(contextId);
     } catch (error) {
       contextErrorMessage = classifyIpcError(error).message;
     }
@@ -1340,9 +1341,6 @@
                       <div class="item-row" role="presentation" class:inherited-only={e.inherited_from_everywhere && !e.assigned_to_context} onclick={(event) => handleItemRowClick('dictionary', e.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{e.term}</span>
-                          {#if e.inherited_from_everywhere}
-                            <span class="item-origin">{e.assigned_to_context ? 'Everywhere + this group' : 'Everywhere'}</span>
-                          {/if}
                           {#if e.auto_learned}
                             <svg class="item-auto-star" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-label="Auto-learned"><title>Added automatically by Auto-learn</title><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                           {/if}
@@ -1392,9 +1390,6 @@
                       <div class="item-row" role="presentation" class:inherited-only={s.inherited_from_everywhere} onclick={(event) => handleItemRowClick('snippet', s.id, event)}>
                         <span class="item-main">
                           <span class="item-term">{s.trigger}</span>
-                          {#if s.inherited_from_everywhere}
-                            <span class="item-origin">Everywhere</span>
-                          {/if}
                           <span class="item-arrow" aria-hidden="true">→</span>
                           <span class="item-detail">{s.expansion}</span>
                         </span>
@@ -2045,7 +2040,6 @@
   .item-often { font-family: var(--sans); font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--ink-mute); flex-shrink: 0; }
   .item-arrow { color: var(--ink-faint); flex-shrink: 0; }
   .item-detail { font-size: 12.5px; color: var(--ink-mute); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  .item-origin { flex: 0 0 auto; padding: 2px 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-faint); font-size: 9px; line-height: 1.2; white-space: nowrap; }
   .item-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
   .item-kebab { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); cursor: pointer; flex-shrink: 0; }
   .item-kebab:hover, .item-kebab[aria-expanded="true"] { background: var(--control-active); color: var(--ink-soft); }
