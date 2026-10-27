@@ -119,16 +119,16 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
       return document.documentElement.dataset.diagnosticsMonitorUnhandled ?? '';
     });
     expect(unhandledMonitorError).toBe('');
-    await page.getByRole('tab', { name: 'Fault Injection' }).click();
+    await page.getByRole('tab', { name: 'Developer Settings' }).click();
 
-    const provider = page.getByRole('button', { name: 'Fault injection provider' });
+    const provider = page.getByRole('button', { name: 'Simulation provider' });
     await waitForPanelMotion(provider);
     await expect(provider).toHaveClass(/ui-dropdown-trigger--compact/);
     await expect(provider).not.toHaveClass(/btn-ghost/);
     await provider.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
     await provider.click();
 
-    const providerMenu = page.getByRole('listbox', { name: 'Fault injection provider options' });
+    const providerMenu = page.getByRole('listbox', { name: 'Simulation provider options' });
     await waitForPanelMotion(providerMenu);
     await expect(providerMenu).toHaveClass(/ui-dropdown-menu--padded/);
     await expectMenuInsideViewport(providerMenu, page);
@@ -141,12 +141,10 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     expect(lastOptionIsUncovered).toBe(true);
 
     await page.getByRole('tab', { name: 'Logs' }).click();
-    const logLevel = page.getByRole('button', { name: 'Log level' });
-    await expect(logLevel).toHaveClass(/ui-dropdown-trigger--compact/);
-    await expect(logLevel).not.toHaveClass(/btn-ghost/);
-    await logLevel.click();
-    await expect(page.getByRole('listbox', { name: 'Log level options' })).toHaveClass(/ui-dropdown-menu--padded/);
-    await page.keyboard.press('Escape');
+    const logLevel = page.getByRole('group', { name: 'Log level' });
+    await expect(logLevel.getByRole('button', { name: 'Problems' })).toBeVisible();
+    await logLevel.getByRole('button', { name: 'Problems' }).click();
+    await expect(logLevel.getByRole('button', { name: 'Problems' })).toHaveAttribute('aria-pressed', 'true');
 
     const logSubsystem = page.getByRole('button', { name: 'Log subsystem' });
     await expect(logSubsystem).toHaveClass(/ui-dropdown-trigger--compact/);

@@ -121,7 +121,10 @@ export function p95(values: readonly number[]): number | null {
 export function filterLogs(logs: readonly StructuredLogEntry[], query: string, level: string, subsystem: string, trace: string): StructuredLogEntry[] {
   const needle = query.trim().toLowerCase(); const traceNeedle = trace.trim().toLowerCase();
   return logs.filter((entry) => {
-    if (level !== 'all' && entry.level.toLowerCase() !== level) return false;
+    const entryLevel = entry.level.toLowerCase();
+    if (level === 'problems') {
+      if (entryLevel !== 'error' && entryLevel !== 'warn') return false;
+    } else if (level !== 'all' && entryLevel !== level) return false;
     if (subsystem !== 'all' && entry.subsystem !== subsystem) return false;
     if (traceNeedle && !(entry.trace_id ?? '').toLowerCase().includes(traceNeedle)) return false;
     if (!needle) return true;
