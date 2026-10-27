@@ -5,6 +5,7 @@ import { root, artifact } from './identity.mjs';
 import { run } from './process.mjs';
 import { sessionIdentityMismatch, startOwnedSession } from './session.mjs';
 import { summarizeNodeTests } from './node-reporter.mjs';
+import { partitionFiles } from './session-partition.mjs';
 
 function checkMetadata(expected, metadata, initial) {
   const mismatch = sessionIdentityMismatch(expected, metadata);
@@ -22,15 +23,20 @@ export async function runNodeSessions(files, { identity, start, execute, metadat
   }
   const result = { status: 'passed', tests: [], checks: [], artifacts: [], sessions: [] };
   for (const file of files) {
-    const shard = { file, status: 'failed' };
+    const started = performance.now();
+    const shard = { file, status: 'failed', timing: {} };
+    console.log(`Owned session: starting ${file}`);
     result.sessions.push(shard);
     let session;
     try {
       session = await start(`verify-${randomUUID()}`, file);
+      shard.timing.startupMs = Math.round(performance.now() - started);
       checkMetadata(identity, session.metadata, true);
       shard.identity = { commit: session.metadata.commit, fingerprint: session.metadata.fingerprint };
       shard.before = { runs: session.metadata.runs, maxRuns: session.metadata.maxRuns };
+      const testStarted = performance.now();
       const executed = await execute(file, session);
+      shard.timing.testMs = Math.round(performance.now() - testStarted);
       result.artifacts.push(...(executed.artifacts ?? []));
       const rows = executed.events?.tests;
       if (!Array.isArray(rows) || rows.some(row => row.file !== file)) {
@@ -65,22 +71,26 @@ export async function runNodeSessions(files, { identity, start, execute, metadat
           shard.reason = 'Owned file final readiness or source identity failed';
           if (error.identityMismatch) shard.identityMismatch = error.identityMismatch;
         } finally {
+          const stopStarted = performance.now();
           try { await session.stop(); }
           catch {
             shard.status = 'failed';
             shard.reason = 'Could not stop owned file worker';
           }
+          shard.timing.stopMs = Math.round(performance.now() - stopStarted);
         }
       }
     }
+    shard.timing.totalMs = Math.round(performance.now() - started);
+    console.log(`Owned session: ${file} ${shard.status} (${shard.timing.totalMs} ms)`);
     if (shard.status === 'failed') result.status = 'failed';
     else if (shard.status !== 'passed' && result.status !== 'failed') result.status = 'incomplete';
   }
   return result;
 }
 
-export async function runOwnedNodeSuite({ identity, fixtures, directory, synthetic = true, live = false }) {
-  const files = (await fs.readdir(path.join(root, 'tests/dev-session'))).filter(file => file.endsWith('.test.mjs')).sort();
+export async function runOwnedNodeSuite({ identity, fixtures, directory, synthetic = true, live = false, partition = { index: 1, count: 1 } }) {
+  const files = partitionFiles((await fs.readdir(path.join(root, 'tests/dev-session'))).filter(file => file.endsWith('.test.mjs')), partition);
   const result = await runNodeSessions(files, {
     identity, live,
     start: (id) => startOwnedSession({ id, fixtures, directory, synthetic }),
