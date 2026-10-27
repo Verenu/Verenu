@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Updated About, update checks and installer validation, package metadata, and documentation to use the `Verenu/Verenu` organization repository.
+
 - Reduced dependency info and repeated parser-warning noise, included subsystem names in session logs, and added a filtered current-process log query with retention and suppression counts for agent debugging.
 - Text inputs no longer show colored accent outlines, rings, or glows when focused; focused fields only get a subtle neutral border change.
 - Redesigned Settings > Developer around debugging. Overview now ranks findings with numbers (failing stages, a dominant pipeline stage, retries, cache misses, memory growth, idle CPU, heavy child processes, chatty or slow operations, log spam), shows where dictation time goes, and **Copy report** puts a compact plain-text report on the clipboard for pasting to an agent. Failures group by cause with per-failure copy and jumps to the trace and its logs. Pipeline shows stage timing (avg, p95, max) and an expandable waterfall per run. Logs add a Problems filter, repeat collapsing, and one-click copy. Runtime, Activity, and Storage merged into Resources, and Fault Injection moved into Developer Settings. The page no longer counts its own polling as app activity.
@@ -266,11 +268,11 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Added website DNS validation, context name limits, character counts, compact icon color selection, and focused add-item animations
 - Improved Insights responsive layout on narrow windows and fixed several settings, prompt-editor, and list-animation issues
 
-The 0.18.1 release description, installer assets, hashes, and platform-specific download details are available on the [GitHub release page](https://github.com/MONKE2525E/Verenu/releases/tag/v0.18.1).
+The 0.18.1 release description, installer assets, hashes, and platform-specific download details are available on the [GitHub release page](https://github.com/Verenu/Verenu/releases/tag/v0.18.1).
 
 ## 0.18.0
 
-The 0.18.0 release notes, installer assets, hashes, and platform-specific download details are available on the [GitHub release page](https://github.com/MONKE2525E/Verenu/releases/tag/v0.18.0).
+The 0.18.0 release notes, installer assets, hashes, and platform-specific download details are available on the [GitHub release page](https://github.com/Verenu/Verenu/releases/tag/v0.18.0).
 
 ## 0.15.1 beta - Audio & Polish
 

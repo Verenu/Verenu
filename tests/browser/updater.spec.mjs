@@ -2,6 +2,18 @@ import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
 const directory = path.dirname(process.env.VERENU_SESSION_ACCESS_FILE);
 
+test('About source opens the organization repository', async ({ page }) => {
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.locator('[data-debug-id="settings.about"]:visible, button.settings-tab:visible').filter({ hasText: 'About' }).click();
+  const source = page.locator('[data-setting-target="about-source"]').getByRole('button', { name: 'github.com/Verenu/Verenu', exact: true });
+  await expect(source).toBeVisible();
+  const popupPromise = page.waitForEvent('popup');
+  await source.click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL('https://github.com/Verenu/Verenu');
+  await popup.close();
+});
+
 test('About update check uses real backend and reports failures honestly', async ({ page }) => {
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.about"]:visible, button.settings-tab:visible').filter({ hasText: 'About' }).click();
@@ -30,7 +42,7 @@ test('browser session cannot invoke native updater installation', async ({ sessi
   const response = await fetch(`${url}/__verenu_dev/invoke`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command: 'install_update', args: { downloadUrl: 'https://github.com/MONKE2525E/Verenu/releases/download/test/Verenu_99.0.0_amd64.AppImage' } }),
+    body: JSON.stringify({ command: 'install_update', args: { downloadUrl: 'https://github.com/Verenu/Verenu/releases/download/test/Verenu_99.0.0_amd64.AppImage' } }),
   });
   expect(response.status).toBe(403);
 });
