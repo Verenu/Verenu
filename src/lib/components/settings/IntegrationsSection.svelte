@@ -192,7 +192,7 @@
   .connect-row { display: flex; align-items: stretch; gap: 10px; }
   .username-field { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; background: var(--paper); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 0 12px; transition: border-color var(--ui-duration-fast) var(--ui-ease-out), box-shadow var(--ui-duration-fast) var(--ui-ease-out); }
   .username-field > span { color: var(--ink-faint); font-size: 14px; }
-  .username-field:focus-within { border-color: var(--accent); box-shadow: var(--ui-focus-ring); }
+  .username-field:focus-within { border-color: var(--line-strong); }
   .username-field.invalid { border-color: var(--danger); }
   input { width: 100%; min-width: 0; height: 40px; padding: 0; border: 0; outline: none; background: transparent; color: var(--ink); font-family: var(--sans); font-size: 13px; }
   input::placeholder { color: var(--ink-faint); }

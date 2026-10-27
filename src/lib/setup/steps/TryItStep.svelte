@@ -256,7 +256,7 @@
     transition: border-color 0.45s var(--ui-ease-out), background 0.45s var(--ui-ease-out), box-shadow 0.45s var(--ui-ease-out);
   }
 
-  .tryit-field:focus { border-color: var(--accent); }
+  .tryit-field:focus { border-color: var(--line-strong); }
   .tryit-field.filled {
     border-color: var(--success-line);
     background: var(--success-bg);
