@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 
 for (const task of ['transcription', 'cleanup']) {
   test(`${task} picker stays usable with a large catalog and a pending refresh`, async ({ page, session }) => {
@@ -33,6 +33,7 @@ for (const task of ['transcription', 'cleanup']) {
     const failPending = async () => {
       for (const entry of pending.splice(0)) { await entry.route.abort('internetdisconnected'); entry.resolve(); }
     };
+    await keyProviders(page, session, ['openrouter']);
     const keys = ['custom_providers', 'advanced_model_ui', 'provider_model_cache', `${task}_default_model`, `${task}_fallback_models`, `${task}_model`, `${task}_provider`, `${task}_models_by_provider`, 'model_selection_mode'];
     try {
       await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });

@@ -28,12 +28,10 @@
     context,
     defaultModel,
     fallbackModels,
-    customDraft,
     onSelectModel,
     onAddFallback,
     onRemoveFallback,
     onMoveFallback,
-    onCustomDraftChange,
     onAddCustomModel,
     onOpenApiKeys,
     local,
@@ -44,12 +42,10 @@
     context: PickerContext;
     defaultModel: string;
     fallbackModels: string[];
-    customDraft: string;
     onSelectModel: (type: TaskType, id: string) => void;
     onAddFallback: (type: TaskType, id: string) => void;
     onRemoveFallback: (type: TaskType, id: string) => void;
     onMoveFallback: (type: TaskType, id: string, delta: -1 | 1) => void;
-    onCustomDraftChange: (type: TaskType, value: string) => void;
     onAddCustomModel: (type: TaskType, id: string) => void;
     onOpenApiKeys: () => void;
     local: LocalControls;
@@ -221,10 +217,9 @@
     {defaultModel}
     {fallbackModels}
     {advancedModelUi}
-    {customDraft}
     onSelect={(id) => onSelectModel(type, id)}
     onAddFallback={(id) => onAddFallback(type, id)}
-    onCustomDraftChange={(value) => onCustomDraftChange(type, value)}
+    onRemoveFallback={(id) => onRemoveFallback(type, id)}
     onAddCustomModel={(id) => onAddCustomModel(type, id)}
     {local}
     onOpenApiKeys={() => {

@@ -19,7 +19,7 @@ test('Apple availability refresh stays reachable with device-appropriate picker 
     if (supported) await appleRail.click();
     else {
       await expect(appleRail).toHaveCount(0);
-      await page.locator('.picker-rail').getByRole('button', { name: /All providers/ }).click();
+      await page.locator('.picker-rail').getByRole('button', { name: 'All', exact: true }).click();
     }
     const refresh = page.getByRole('button', { name: 'Refresh models', exact: true });
     await expect(refresh).toBeEnabled();
