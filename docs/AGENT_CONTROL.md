@@ -10,7 +10,22 @@ Requires Node 20+ for the dependency-free CLI. From a source checkout run
 follow Tauri's platform resource directory (inside the app on macOS and beside
 the installed resources on Windows/Linux).
 
-## Enable access
+## Connect an agent
+
+Start Verenu normally. The agent creates a private session directory, sets
+`VERENU_AGENT_GRANT_FILE` to a new file there, and runs the CLI `connect`
+command. The CLI returns a code; compare it with the request in Verenu before
+approving. The agent runs `status` after approval and uses the same grant file
+for later commands. Grants expire after one hour or when Verenu closes. Revoke
+all agents from Settings > Privacy, or use `disconnect` for the current agent.
+The grant file is private: do not print its contents or send it in chat.
+
+The code identifies the request, not the executable or its publisher. Approve
+only when it matches the code from the agent you intended to connect. Local
+processes running as the same OS user may be able to inspect private files or
+modify Verenu's data directly; this is not a sandbox against such processes.
+
+## Scripted launch
 
 Open Verenu normally, then request access from the bundled CLI:
 
@@ -19,21 +34,26 @@ node Agent-Skills/verenu-control/scripts/verenu-agent.mjs connect
 node Agent-Skills/verenu-control/scripts/verenu-agent.mjs describe
 ```
 
-Approve the request in the Verenu window. The grant allows local agents running
-as your user to read private data and change settings and Contexts until Verenu
-quits. Later agents can reuse it without another prompt during that session.
-The token is kept in a user-private local session file; never print, share or
-commit it. Automatic approval requests are supported on Linux and macOS. On
-Windows, automatic access is unavailable until secure storage is supported; the
-explicit `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` launch grant remains
-available. On all platforms that explicit grant remains supported for testing.
+Use the executable inside the app bundle on macOS. PowerShell examples are in
+the CLI's `--help`. The CLI or agent must inherit the same variables as the app;
+exporting them in a different terminal does not give an existing agent session
+access. Keep the variables in the invoking shell; do not print the
+token, put it in a command argument, or commit it. It grants broad settings and
+data writes, credential replacement/deletion, sync control and explicit transcript
+reads. Restarting without these variables revokes
+access. Invalid configuration or an occupied port fails startup; no port fallback
+or automatic credential discovery occurs for environment grants. Ordinary launches
+expose the approval, status, and revocation endpoints; data commands require an
+approved grant.
 
 The API binds only `127.0.0.1`, requires a 64-character random hex bearer token,
 rejects browser Origin/Fetch-Metadata requests, and provides no CORS access.
-Other processes running as your user can read the shared grant and act as the
-user. Loopback is not a substitute
-for keeping the grant private. No credential, arbitrary SQL, shell, microphone
-capture, or text-injection endpoint exists.
+Other processes with the grant can act as the user. Loopback is not a substitute
+for keeping the grant private. The environment-based grant is not a security
+boundary against malware running as the same operating-system user: such a
+process may be able to inspect the app's environment or modify its data directly.
+Use OS account isolation for that threat. No credential-read, arbitrary SQL,
+shell, microphone capture, or text-injection endpoint exists.
 
 ## Discover and install the skill
 
@@ -87,15 +107,25 @@ failures have a non-2xx status and `error`. Requests are limited to 64 KiB, one
 active request and 60 seconds. After a timeout, read state before retrying a
 mutation: cancellation does not guarantee a native operation was undone.
 
-- Read settings and microphones; write the discovered allowlist of audio,
-  cleanup, caps, spacing, provider/model, language, prompt and history settings.
+- Read settings and microphones; write the discovered allowlist of validated
+  user settings. Use `save_hotkey` and `set_autostart` for their native effects.
+- Create, edit, delete and assign dictionary entries and snippets; create,
+  assign and delete sub-apps. Inspect `describe` for the complete command list.
+- `credentials.save` and `credentials.delete` manage saved provider keys through
+  the native credential store; `get_api_key_status` reports presence, never key
+  values. Pass secrets with `--stdin`, not command arguments, and do not log them.
+  Sync pairing and device-management commands can connect another device and
+  should be invoked only when the user has requested that operation. The same
+  applies to `t3.connect`, whose pairing link must be supplied via private stdin.
+  Use `delete_custom_provider` for removal so selected models are repaired.
 - Create, duplicate, rename, pin, color, edit or delete Context groups; inspect
-  stats, dictionary, snippets and sub-app rules; assign/remove apps and website targets.
-  The API also exposes the vocabulary and snippet inventories, their explicit
-  Context assignments, and the native assignment setters. Effective Context
-  inventories include inherited Everywhere items.
-  Reassignment moves a target. `update_context_settings` replaces its settings:
-  read first and preserve fields you are not changing. Everywhere semantics
+  stats, dictionary and snippets; assign/remove apps and website targets.
+  Reassignment moves a target. Use `context.patch_settings` for a partial edit,
+  for example `{"contextId":4,"settings":{"tone":"professional"}}`.
+  Omitted fields remain unchanged; null clears a nullable setting. The older
+  `update_context_settings` replaces its settings. Use
+  `set_context_t3_skill_mentions` to enable or disable T3 skill mentions for a
+  Context. Everywhere semantics
   remain owned by the existing native handlers. `create_context` and
   `update_context_settings` accept the optional `pasteInChunks` preference.
 - Read `diagnostics.snapshot`, lint current prompt templates using `prompts.lint`,

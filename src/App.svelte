@@ -10,7 +10,7 @@
   import { navigation } from './lib/navigation.svelte';
   import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
-  import AgentPairDialog from './lib/components/AgentPairDialog.svelte';
+  import AgentApproval from './lib/components/AgentApproval.svelte';
   import Settings from './lib/views/Settings.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
@@ -274,23 +274,6 @@
     toastTimer = setTimeout(() => { errorToast = ''; errorToastKind = null; }, Math.min(20000, Math.max(8000, errorToast.length * 65)));
   }
 
-  let agentPairRequest = $state<string | null>(null);
-  let agentPairBusy = $state(false);
-
-  async function respondToAgentPair(approved: boolean) {
-    const requestId = agentPairRequest;
-    if (!requestId || agentPairBusy) return;
-    agentPairBusy = true;
-    try {
-      await invoke('agent_pair_respond', { requestId, approved });
-      if (agentPairRequest === requestId) agentPairRequest = null;
-    } catch (error) {
-      showErrorToast(String(error));
-    } finally {
-      agentPairBusy = false;
-    }
-  }
-
   onMount(() => {
     const stopGithubRefresh = startGithubRefresh();
     const stopT3Refresh = startT3Refresh();
@@ -308,28 +291,6 @@
     let stopSyncListeners: (() => void) | undefined;
     let stopTitleBarMetricsListener: (() => void) | undefined;
     let stopModelNoticeListener: (() => void) | undefined;
-    let stopAgentPairListener: (() => void) | undefined;
-    let stopAgentPairClearListener: (() => void) | undefined;
-    if (!isAndroid && !isWindows && isTauriRuntime()) {
-      let pairRevision = 0;
-      void (async () => {
-        const stopClear = await listen<string>('verenu:agent-pair-cleared', event => {
-          pairRevision++;
-          if (agentPairRequest === event.payload) agentPairRequest = null;
-        });
-        if (!mounted) { stopClear(); return; }
-        stopAgentPairClearListener = stopClear;
-        const stopRequest = await listen<string>('verenu:agent-pair-request', event => {
-          pairRevision++;
-          agentPairRequest = event.payload;
-        });
-        if (!mounted) { stopRequest(); return; }
-        stopAgentPairListener = stopRequest;
-        const revision = pairRevision;
-        const pending = await invoke<string | null>('agent_pair_pending');
-        if (mounted && revision === pairRevision) agentPairRequest = pending;
-      })().catch(() => {});
-    }
     void listen<string>('verenu:model-notice', (event) => {
       modelNotice = [modelNotice, event.payload].filter(Boolean).join(' ');
       clearTimeout(modelNoticeTimer);
@@ -586,8 +547,6 @@
       if (stopSyncListeners) stopSyncListeners();
       if (stopTitleBarMetricsListener) stopTitleBarMetricsListener();
       stopModelNoticeListener?.();
-      stopAgentPairListener?.();
-      stopAgentPairClearListener?.();
       clearTimeout(modelNoticeTimer);
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       window.removeEventListener('error', onWindowError);
@@ -601,11 +560,8 @@
   });
 </script>
 
-{#if agentPairRequest}
-  <AgentPairDialog busy={agentPairBusy} ondeny={() => void respondToAgentPair(false)} onapprove={() => void respondToAgentPair(true)} />
-{/if}
-
 {#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
+{#if !isAndroid}<AgentApproval />{/if}
 
 <div
   class="app"
