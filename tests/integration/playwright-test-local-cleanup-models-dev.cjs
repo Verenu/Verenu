@@ -60,7 +60,7 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     await picker.locator('.rail-item:has-text("Local")').click();
     const installedLocalRow = picker.locator('.model-row').filter({ hasText: 'Qwen 2.5 3B Instruct' });
     await installedLocalRow.waitFor({ state: 'visible', timeout: TIMEOUT });
-    if (!(await installedLocalRow.locator('.row-note:has-text("Installed")').isVisible().catch(() => false))) {
+    if (!(await installedLocalRow.locator('[data-testid="delete-model"]').isVisible().catch(() => false))) {
       errors.push('Picker did not mark the installed local cleanup model as installed');
     }
 
@@ -69,7 +69,7 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings } = require('./_dev-help
     await picker.locator('.runtime-note').filter({ hasText: 'Fetching' }).waitFor({ state: 'visible', timeout: TIMEOUT });
     const pending = await page.evaluate(() => JSON.parse(localStorage.getItem('verenu:dev-settings') || '{}'));
     if (pending.cleanup_default_model?.startsWith('local/')) errors.push('Local cleanup activated before its engine was installed');
-    await picker.locator('.runtime-note').filter({ hasText: 'installed' }).waitFor({ state: 'visible', timeout: TIMEOUT });
+    await picker.locator('.runtime-note').waitFor({ state: 'hidden', timeout: TIMEOUT });
     await installedLocalRow.locator('.row-main').click();
     await page.waitForFunction(
       () => {
