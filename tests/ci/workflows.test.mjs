@@ -20,7 +20,10 @@ test('master builds seed caches accessible to new PRs without running on task-br
 });
 
 test('required CI aggregate cannot pass when a job fails, skips or is cancelled', () => {
-  const gate = workflow('pr-checks.yml').jobs.required;
+  const jobs = workflow('pr-checks.yml').jobs;
+  // Existing branch protection requires this exact context name.
+  assert.equal(jobs['all-in-one-fast'].name, 'All-in-one fast profile');
+  const gate = jobs.required;
   assert.equal(gate.if, 'always()');
   for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'owned-sessions', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
   const step = gate.steps[0];
