@@ -36,10 +36,12 @@ runs:
     - name: Install Linux build and fixture tools
       shell: bash
       run: |
+        # A slow Azure archive route can dominate the entire gate.
+        sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
         sudo apt-get update
-        sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
           libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev \
-          espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring lua5.4
+          espeak-ng ffmpeg xvfb xauth dbus-x11 gnome-keyring lua5.4
     - name: Install dependencies
       shell: bash
       run: npm ci
