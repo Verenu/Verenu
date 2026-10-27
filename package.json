@@ -54,12 +54,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MONKE2525E/Verenu.git"
+    "url": "git+https://github.com/Verenu/Verenu.git"
   },
   "bugs": {
-    "url": "https://github.com/MONKE2525E/Verenu/issues"
+    "url": "https://github.com/Verenu/Verenu/issues"
   },
-  "homepage": "https://github.com/MONKE2525E/Verenu#readme",
+  "homepage": "https://github.com/Verenu/Verenu#readme",
   "overrides": {
     "postcss": "^8.5.24",
     "basic-ftp": "6.2.1"

@@ -23,7 +23,7 @@
   let savingBetaUpdates = $state(false);
   let betaCancelButton = $state<HTMLButtonElement | null>(null);
 
-  const SOURCE_REPO = 'MONKE2525E/Verenu';
+  const SOURCE_REPO = 'Verenu/Verenu';
   const WEBSITE_URL = 'https://verenu.com';
 
   $effect(() => {

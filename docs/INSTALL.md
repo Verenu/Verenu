@@ -20,7 +20,7 @@ Automatic spacing and capitalization use the focused field's AT-SPI accessibilit
 
 ## Windows
 
-1. Download the latest installer from the [GitHub Releases](https://github.com/MONKE2525E/Verenu/releases) page:
+1. Download the latest installer from the [GitHub Releases](https://github.com/Verenu/Verenu/releases) page:
    - `Verenu_X.Y.Z_x64_en-US.msi`, or
    - `Verenu_X.Y.Z_x64-setup.exe`
 2. Run the installer and follow the prompts.
@@ -30,7 +30,7 @@ Requires Windows 10 or 11. Verenu uses the built-in WebView2 runtime — no sepa
 
 ## macOS
 
-1. Download the build that matches your Mac from the [GitHub Releases](https://github.com/MONKE2525E/Verenu/releases) page — Apple Silicon or Intel.
+1. Download the build that matches your Mac from the [GitHub Releases](https://github.com/Verenu/Verenu/releases) page — Apple Silicon or Intel.
 2. Move Verenu to your Applications folder and open it.
 3. macOS may ask for permissions the first time you use Verenu. Dictation requires:
    - **Microphone** — to capture your voice while you hold the hotkey
@@ -51,7 +51,7 @@ If you'd rather build Verenu yourself:
 - macOS: Xcode Command Line Tools (recommended)
 
 ```bash
-git clone https://github.com/MONKE2525E/Verenu.git
+git clone https://github.com/Verenu/Verenu.git
 cd Verenu
 npm install
 npm run tauri build
@@ -87,7 +87,7 @@ When you open Verenu for the first time, macOS may say it **"can't be opened bec
 
 ### Verifying the download yourself
 
-If you want independent confirmation that an installer is clean, every release on the [GitHub Releases](https://github.com/MONKE2525E/Verenu/releases) page includes a **VirusTotal Review** section with a scan link for each installer file. Find the link matching the file you downloaded (e.g. `Verenu_X.Y.Z_x64-setup.exe`) and open it to see the scan results.
+If you want independent confirmation that an installer is clean, every release on the [GitHub Releases](https://github.com/Verenu/Verenu/releases) page includes a **VirusTotal Review** section with a scan link for each installer file. Find the link matching the file you downloaded (e.g. `Verenu_X.Y.Z_x64-setup.exe`) and open it to see the scan results.
 
 ## Next step
 

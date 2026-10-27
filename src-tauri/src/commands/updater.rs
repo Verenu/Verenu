@@ -458,13 +458,13 @@ mod tests {
     #[test]
     fn only_nsis_setup_urls_use_the_silent_installer_handoff() {
         assert!(is_silent_nsis_setup_url(
-            "https://github.com/MONKE2525E/Verenu/releases/download/v0.16.0/Verenu_0.16.0_x64-setup.exe"
+            "https://github.com/Verenu/Verenu/releases/download/v0.16.0/Verenu_0.16.0_x64-setup.exe"
         ));
         assert!(!is_silent_nsis_setup_url(
-            "https://github.com/MONKE2525E/Verenu/releases/download/v0.16.0/Verenu_0.16.0_x64_en-US.msi"
+            "https://github.com/Verenu/Verenu/releases/download/v0.16.0/Verenu_0.16.0_x64_en-US.msi"
         ));
         assert!(!is_silent_nsis_setup_url(
-            "https://github.com/MONKE2525E/Verenu/releases/download/v0.16.0/Verenu-portable.exe"
+            "https://github.com/Verenu/Verenu/releases/download/v0.16.0/Verenu-portable.exe"
         ));
     }
 
