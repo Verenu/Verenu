@@ -30,3 +30,31 @@ test('Arch packaging normalizes nightly versions and makes extracted runtime rea
     assert.match(await fs.readFile(path.join(pkgdir, 'usr/share/applications/verenu.desktop'), 'utf8'), /Exec=verenu\nIcon=verenu/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+test('Arch upgrade repairs private directories from the 0.20 package', {
+  skip: !process.env.VERENU_ARCH_UPDATE_FIXTURES,
+  timeout: 300_000,
+}, () => {
+  const fixtures = path.resolve(process.env.VERENU_ARCH_UPDATE_FIXTURES || '.');
+  const script = `
+    pacman -Sy --noconfirm --needed squashfs-tools >/tmp/dependencies.log
+    useradd -m builder
+    mkdir /tmp/package
+    cp /recipe/PKGBUILD /recipe/verenu.install /input/LICENSE /fixtures/Verenu_0.21.0-beta.1_x86_64.AppImage /tmp/package/
+    chown -R builder:builder /tmp/package
+    cd /tmp/package
+    su builder -s /bin/bash -c 'VERENU_PKGVER=0.21.0-beta.1 makepkg --nodeps --noconfirm' >/tmp/build.log
+    pacman -U --noconfirm /fixtures/previous/verenu-0.20.0-1-x86_64.pkg.tar.zst >/tmp/old.log
+    test "$(stat -c %a /opt/verenu)" = 700
+    pacman -U --noconfirm /tmp/package/verenu-0.21.0_beta.1-1-x86_64.pkg.tar.zst >/tmp/new.log
+    setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'test -x /usr/bin/verenu && test -x /opt/verenu/usr/bin/Verenu'
+  `;
+  const result = spawnSync('docker', [
+    'run', '--rm',
+    '-v', `${path.resolve('packaging/arch')}:/recipe:ro`,
+    '-v', `${path.resolve('LICENSE')}:/input/LICENSE:ro`,
+    '-v', `${fixtures}:/fixtures:ro`,
+    'archlinux:base-devel', 'bash', '-euc', script,
+  ], { encoding: 'utf8', timeout: 290_000 });
+  assert.equal(result.status, 0, result.error?.message || result.stderr);
+});
