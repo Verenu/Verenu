@@ -8,6 +8,7 @@
     body,
     confirmLabel,
     busy = false,
+    priority = false,
     oncancel,
     onconfirm,
     restoreFocus,
@@ -16,6 +17,7 @@
     body: string;
     confirmLabel: string;
     busy?: boolean;
+    priority?: boolean;
     oncancel: () => void;
     onconfirm: () => void;
     restoreFocus: () => HTMLElement | null;
@@ -36,6 +38,7 @@
 <button
   type="button"
   class="ui-modal-backdrop integration-confirm-backdrop"
+  class:priority
   aria-label="Close dialog"
   use:portal
   disabled={busy}
@@ -46,6 +49,7 @@
 
 <div
   class="ui-modal-card ui-modal-card--portalled integration-confirm"
+  class:priority
   use:portal
   use:modalFocusTrap={{ active: true, initialFocus: () => cancelButton, restoreFocus }}
   role="dialog"
@@ -73,4 +77,6 @@
 <style>
   .integration-confirm-backdrop { border: 0; cursor: default; padding: 0; z-index: 70; }
   .integration-confirm { z-index: 71; }
+  .integration-confirm-backdrop.priority { z-index: 110; }
+  .integration-confirm.priority { z-index: 111; }
 </style>

@@ -653,10 +653,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            #[cfg(desktop)]
-            agent_api::agent_pair_pending,
-            #[cfg(desktop)]
-            agent_api::agent_pair_respond,
+            #[cfg(desktop)] agent_api::agent_pending_request,
+            #[cfg(desktop)] agent_api::agent_respond,
+            #[cfg(desktop)] agent_api::agent_revoke_all,
             system::windows_titlebar::get_native_titlebar_metrics,
             system::windows_titlebar::set_native_titlebar_theme,
             system::omarchy_theme::get_omarchy_theme,
@@ -857,8 +856,6 @@ pub fn run() {
                 log::info!("app exit requested");
             }
             if let tauri::RunEvent::Exit = _event {
-                #[cfg(desktop)]
-                agent_api::clear_session(_app);
                 crate::media::sound::release_all_mutes_on_exit();
                 log::info!("app exiting; unloading local models");
                 crate::pipeline::failover::flush_on_exit(_app);

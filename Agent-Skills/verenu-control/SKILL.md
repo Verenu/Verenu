@@ -10,22 +10,19 @@ features, or recommendations for Context groups, also read
 `setup/SKILL.md` next to this file before collecting evidence or making changes.
 
 1. Locate this skill's `scripts/verenu-agent.mjs`. Run it with Node 20+ and
-   `--help`, then `describe`. If access has not been approved, explain that
-   approving in Verenu grants local agents access to private data and settings
-   until the app quits. Tell the user that an approval prompt will appear, then
-   run `connect` and ask them to approve it in Verenu. Use a background command
-   if needed to remain responsive while they decide. Only the user may approve
-   this prompt, not the agent or automation.
-   Do not restart an already-running instance for access. Later agents
-   can reuse the approved grant. Never print or share the token. A missing grant
-   does not require permanent skill installation. Agent harnesses may override
-   `XDG_CONFIG_HOME` or other profile paths; verify the running instance is the
-   user's intended profile before any writes. If Verenu is not running, launch
-   the installed app normally with the user's existing profile, then connect.
-   If more than one profile is running, identify the intended one before
-   selecting its app-data directory with `VERENU_APP_DATA_DIR_OVERRIDE`. If access is unavailable or
-   declined, explain the limitation; never bypass approval with direct database
-   writes.
+   `--help`, then `describe`. If this session has no grant, create a private
+   session directory and set `VERENU_AGENT_GRANT_FILE` to a new file inside it.
+   Run `connect`, tell the user the returned code, and ask them to compare it
+   with the approval prompt in Verenu. After they approve, run `status` and
+   continue only if it says `approved`. Pass the same grant-file path on each
+   CLI invocation. If the request is rejected or expires, remove the grant file
+   and make a fresh request. `disconnect` revokes and removes the session grant.
+   Do not ask the user to restart Verenu or paste a token. Never print the grant
+   file contents. Existing `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` grants
+   remain supported for scripted launches. The
+   native app remains responsible for SQLite and native credential storage.
+   The grant enables private reads and writes: do not enable it without the
+   user's agreement. A missing grant does not require permanent skill installation.
 2. Read `get_all_settings`, `get_contexts`, `get_context_targets` and
    `get_context_websites` before proposing changes. For Context cleanup, also
    inspect `get_sub_apps` and each relevant group's `get_context_dictionary`
@@ -91,13 +88,19 @@ features, or recommendations for Context groups, also read
    For earlier launches inspect the private session files in
    `docs/TROUBLESHOOTING.md#session-logs-for-agents`; the opt-in daily journal
    contains counts and fingerprints, not historical log messages.
-6. For authorized edits, use `save_setting`, Context CRUD and target commands;
+6. For authorized edits, use `save_setting`, Context CRUD, target commands,
+   dictionary and snippet CRUD/assignments, and sub-app commands. Use the native
+   `save_hotkey` and `set_autostart` commands for shortcut and startup changes;
    never write live SQLite or settings.json. Read back changed values, reload
    the relevant app view, and check persistence after a normal restart when
    practical. Target reassignment moves the existing target. Preserve Everywhere
    semantics. A request to fix spacing authorizes investigating and changing
    `auto_spacing` when evidence supports it; read its current value first.
-   No arbitrary SQL, shell execution, credential reads/writes,
+   Credential replacement/deletion uses `credentials.save` or
+   `credentials.delete`; never print a key or place it in command arguments.
+   Use private stdin and the native credential store. Sync pairing can grant
+   another device access; invoke it only for the user's requested operation.
+   No arbitrary SQL, shell execution, credential reads,
    microphone capture or clipboard injection is exposed by this API.
 7. Historical failure recording is off by default. Explain the metadata-only
    journal and retention choice before enabling `diagnostics.retention` with
