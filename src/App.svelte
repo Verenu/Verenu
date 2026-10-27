@@ -174,19 +174,18 @@
   });
 
   $effect(() => {
-    pageNavigation.current;
+    const active = pageNavigation.current;
     if (!contentEl) return;
     // Reset scroll without moving the leaving page: it keeps its place on screen
     // while it fades, and the entering page starts at the top.
     const offset = contentEl.scrollTop;
-    if (offset > 0) {
-      const wrappers = contentEl.querySelectorAll<HTMLElement>('.page-wrapper');
-      for (const leaving of Array.from(wrappers).slice(0, -1)) {
-        leaving.style.position = 'relative';
-        leaving.style.top = `${-offset}px`;
-      }
-      contentEl.scrollTo({ top: 0, behavior: 'auto' });
+    for (const wrapper of contentEl.querySelectorAll<HTMLElement>('.page-wrapper')) {
+      const leaving = wrapper.dataset.page !== active;
+      // A page navigated back to mid-outro becomes active again; drop its hold.
+      wrapper.style.position = leaving && offset > 0 ? 'relative' : '';
+      wrapper.style.top = leaving && offset > 0 ? `${-offset}px` : '';
     }
+    if (offset > 0) contentEl.scrollTo({ top: 0, behavior: 'auto' });
   });
 
   $effect(() => {
@@ -590,6 +589,7 @@
       {#key pageNavigation.current}
         <div
           class="page-wrapper"
+          data-page={pageNavigation.current}
           in:pageSwap={{ axis: 'y', distance: pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.panel) }}
           out:pageSwap={{ axis: 'y', distance: -pageDir * motionPx(MOTION_PX.page), duration: motionMs(MOTION_MS.base + 40) }}
         >

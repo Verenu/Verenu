@@ -150,3 +150,22 @@ test('page swaps keep the screen covered and the leaving page in place', async (
     await expect(page.locator('.content')).toHaveJSProperty('scrollTop', 0);
   }
 });
+
+test('returning to a page mid-swap clears the scroll hold on its wrapper', async ({ page }) => {
+  const home = page.locator('h1.page-h').filter({ hasText: 'Welcome back' });
+  await expect(home).toBeVisible();
+  await page.evaluate(() => {
+    const content = document.querySelector('.content');
+    const filler = document.createElement('div');
+    filler.style.height = '1200px';
+    content.querySelector('.page-wrapper').append(filler);
+    content.scrollTop = 300;
+  });
+  await page.locator('[data-debug-id="nav.insights"]').click();
+  await page.locator('[data-debug-id="nav.home"]').click();
+  await page.waitForTimeout(700);
+  await expect(page.locator('.page-wrapper')).toHaveCount(1);
+  await expect(page.locator('.page-wrapper')).toHaveCSS('top', 'auto');
+  await expect(page.locator('.content')).toHaveJSProperty('scrollTop', 0);
+  await expect(home).toBeInViewport();
+});
