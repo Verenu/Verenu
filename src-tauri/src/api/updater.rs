@@ -1432,7 +1432,7 @@ mod tests {
 
     #[test]
     fn release_repository_points_to_organization() {
-        assert_eq!(RELEASE_REPO, "Verenu/Verenu");
+        assert_eq!(super::RELEASE_REPO, "Verenu/Verenu");
     }
 
     #[test]
