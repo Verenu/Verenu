@@ -47,7 +47,11 @@ test('Arch upgrade repairs private directories from the 0.20 package', {
     pacman -U --noconfirm /fixtures/previous/verenu-0.20.0-1-x86_64.pkg.tar.zst >/tmp/old.log
     test "$(stat -c %a /opt/verenu)" = 700
     pacman -U --noconfirm /tmp/package/verenu-0.21.0_beta.1-1-x86_64.pkg.tar.zst >/tmp/new.log
-    setpriv --reuid=65534 --regid=65534 --clear-groups sh -c 'test -x /usr/bin/verenu && test -x /opt/verenu/usr/bin/Verenu'
+    setpriv --reuid=65534 --regid=65534 --clear-groups sh -c '
+      test -x /usr/bin/verenu && test -x /opt/verenu/usr/bin/Verenu &&
+      test -z "$(find /opt/verenu -type d ! -executable -print -quit)" &&
+      test -z "$(find /opt/verenu -type f ! -readable -print -quit)"
+    '
   `;
   const result = spawnSync('docker', [
     'run', '--rm',

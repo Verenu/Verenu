@@ -181,4 +181,99 @@ mod tests {
             )
             .is_err());
     }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    fn bus_restores_owner_after_replacement_process_dies() {
+        use std::io::{BufRead, BufReader, Read};
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+        use zbus::fdo::{RequestNameFlags, RequestNameReply};
+
+        if let Ok(name) = std::env::var("VERENU_TEST_TRANSFER_NAME") {
+            let connection = zbus::blocking::Connection::session().unwrap();
+            assert_eq!(
+                connection
+                    .request_name_with_flags(
+                        name.as_str(),
+                        RequestNameFlags::ReplaceExisting | RequestNameFlags::DoNotQueue,
+                    )
+                    .unwrap(),
+                RequestNameReply::PrimaryOwner
+            );
+            eprintln!("replacement-acquired");
+            let _ = std::io::stdin().read(&mut [0]);
+            return;
+        }
+
+        struct OwnedChild(Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let name = format!("com.verenu.TransferTest.x{}", uuid::Uuid::new_v4().simple());
+        let connection = zbus::blocking::connection::Builder::session()
+            .unwrap()
+            .name(name.as_str())
+            .unwrap()
+            .replace_existing_names(false)
+            .allow_name_replacements(false)
+            .build()
+            .unwrap();
+        let original = super::InstanceOwner { connection, name };
+        original
+            .set_ownership_mode(super::OwnershipMode::Transferable)
+            .unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
+                "--nocapture",
+            ])
+            .env("VERENU_TEST_TRANSFER_NAME", &original.name)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = OwnedChild(child);
+        let stderr = child.0.stderr.take().unwrap();
+        let (ready, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if line == "replacement-acquired" {
+                    let _ = ready.send(());
+                    break;
+                }
+            }
+        });
+        receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let current = original
+                .connection
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "GetNameOwner",
+                    &(original.name.as_str(),),
+                )
+                .and_then(|message| message.body().deserialize::<String>())
+                .unwrap();
+            if current == original.connection.unique_name().unwrap().as_str() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "original owner was not restored");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        original
+            .set_ownership_mode(super::OwnershipMode::Exclusive)
+            .unwrap();
+    }
 }
