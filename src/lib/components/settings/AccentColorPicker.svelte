@@ -245,7 +245,7 @@
     padding: 0 7px;
     transition: border-color var(--ui-duration-fast) var(--ui-ease-out), box-shadow var(--ui-duration-fast) var(--ui-ease-out);
   }
-  .hex-field:focus-within { border-color: var(--accent); box-shadow: var(--ui-focus-ring); }
+  .hex-field:focus-within { border-color: var(--line-strong); }
   .hex-field.invalid { border-color: var(--danger); }
   .hex-field input {
     background: transparent;

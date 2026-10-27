@@ -282,6 +282,10 @@
   outline: none;
 }
 
+:where(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), textarea):focus-visible {
+  outline: none;
+}
+
 :where(input, textarea).ui-input:disabled {
   opacity: var(--ui-disabled-opacity);
 }

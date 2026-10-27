@@ -113,8 +113,7 @@
     border: 1px solid transparent;
   }
   .search .ui-input:focus-visible {
-    border-color: var(--accent);
-    box-shadow: var(--ui-focus-ring);
+    border-color: var(--line-strong);
     outline: none;
   }
 

@@ -451,7 +451,7 @@
   label, .field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
   input, textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; }
   textarea { resize: none; overflow: hidden; }
-  input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input:focus, textarea:focus { outline: none; border-color: var(--line-strong); }
   small { font-size: 11px; color: var(--ink-mute); line-height: 1.5; }
 
   .callout { margin: 0; padding: 9px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.5; background: var(--paper-2); color: var(--ink-soft); overflow-wrap: anywhere; }

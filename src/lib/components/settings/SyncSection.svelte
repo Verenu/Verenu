@@ -1042,7 +1042,7 @@
   }
   .id-name:focus-visible {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--line-strong);
     background: var(--control-active);
   }
   .id-pencil {

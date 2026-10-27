@@ -634,7 +634,7 @@
     box-sizing: border-box;
     transition: border-color 0.15s;
   }
-  .prompt-textarea:focus { outline: none; border-color: var(--accent); }
+  .prompt-textarea:focus { outline: none; border-color: var(--line-strong); }
   .prompt-textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 
   @media (max-width: 600px) {
