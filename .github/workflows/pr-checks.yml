@@ -179,7 +179,7 @@ jobs:
           echo "No changed file exceeds 10 MB."
 
   all-in-one-fast:
-    name: Deterministic Linux checks
+    name: All-in-one fast profile
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
