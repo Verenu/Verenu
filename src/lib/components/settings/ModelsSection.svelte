@@ -349,8 +349,6 @@
     }
   });
 
-  let customDrafts = $state<Record<TaskType, string>>({ transcription: '', cleanup: '' });
-
   let advancedModelUi = $state(false);
   let localModelMemoryPolicy = $state<LocalModelMemoryPolicy>('unload_after_5m');
   let localModelMemoryDropdownOpen = $state(false);
@@ -711,10 +709,6 @@
     persistAll().catch((err) => console.error('persist fallback reorder failed', err));
   }
 
-  function setCustomDraft(type: TaskType, value: string) {
-    customDrafts = { ...customDrafts, [type]: value };
-  }
-
   function addCustomModelForTask(type: TaskType, draft: string) {
     const raw = draft.trim();
     if (!raw) return;
@@ -724,7 +718,6 @@
     };
     if (!parsed.model) return;
     ensureModelsContainSelection(type, parsed.provider, parsed.model);
-    setCustomDraft(type, '');
     selectModel(type, modelId(parsed.provider, parsed.model));
   }
 
@@ -857,12 +850,10 @@
   context={pickerContext('transcription')}
   defaultModel={transcriptionDefaultModel}
   fallbackModels={transcriptionFallbackModels}
-  customDraft={customDrafts.transcription}
   onSelectModel={selectModel}
   onAddFallback={addFallbackModel}
   onRemoveFallback={removeFallbackModel}
   onMoveFallback={moveFallbackModel}
-  onCustomDraftChange={setCustomDraft}
   onAddCustomModel={addCustomModelForTask}
   onOpenApiKeys={openApiKeysSection}
   local={localControls('transcription')}
@@ -875,12 +866,10 @@
   context={pickerContext('cleanup')}
   defaultModel={cleanupDefaultModel}
   fallbackModels={cleanupFallbackModels}
-  customDraft={customDrafts.cleanup}
   onSelectModel={selectModel}
   onAddFallback={addFallbackModel}
   onRemoveFallback={removeFallbackModel}
   onMoveFallback={moveFallbackModel}
-  onCustomDraftChange={setCustomDraft}
   onAddCustomModel={addCustomModelForTask}
   onOpenApiKeys={openApiKeysSection}
   local={localControls('cleanup')}

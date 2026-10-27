@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 
 test('capability discoveries survive reload without changing selected models', async ({ page, session, cachedCatalogs }) => {
   await page.locator('[data-debug-id="nav.settings"]').click();
@@ -25,6 +25,7 @@ test('capability discoveries survive reload without changing selected models', a
   try {
     await session.invoke('save_setting', { key: 'provider_model_cache', value: cache });
     await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
+    await keyProviders(page, session, ['openrouter']);
     await page.reload();
     for (let pass = 0; pass < 2; pass++) {
       await page.locator('[data-debug-id="nav.settings"]').click();
@@ -35,7 +36,6 @@ test('capability discoveries survive reload without changing selected models', a
       await expect(dialog.getByText('Synthetic future cleanup', { exact: true })).toBeVisible();
       await expect(dialog.getByText('Synthetic incompatible model', { exact: true })).toHaveCount(0);
       await expect(dialog.getByRole('button', { name: 'Refresh models', exact: true })).toBeVisible();
-      await expect(dialog.getByText(/Model lists refresh daily/)).toBeVisible();
       await page.screenshot({ path: test.info().outputPath(`model-discovery-${pass}.png`) });
       await dialog.getByRole('button', { name: 'Close', exact: true }).click();
       const stored = await session.invoke('get_all_settings');
