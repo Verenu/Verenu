@@ -96,7 +96,7 @@
   }
 
   function openTrace(id: string) { selectedTrace = id; view = 'pipeline'; }
-  function openLogs(id: string) { logTrace = id; logLevel = 'all'; view = 'logs'; }
+  function openLogs(id: string) { logTrace = id; logLevel = 'all'; logQuery = ''; logSubsystem = 'all'; view = 'logs'; }
   function navigate(next: FindingView) { view = next; }
 
   onMount(() => {
