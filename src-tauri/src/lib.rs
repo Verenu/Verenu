@@ -35,6 +35,8 @@ mod data;
 mod dev_session;
 mod local_llm;
 mod local_stt;
+#[cfg(target_os = "linux")]
+mod linux_single_instance;
 mod media;
 mod model_performance;
 mod pipeline;
@@ -227,24 +229,13 @@ pub fn run() {
             "Object.defineProperty(window, '__VERENU_ANDROID__', { value: true, configurable: false });",
         );
     }
-    #[cfg(desktop)]
+    #[cfg(target_os = "linux")]
+    if !is_dev_session() {
+        builder = builder.plugin(crate::linux_single_instance::plugin());
+    }
+    #[cfg(all(desktop, not(target_os = "linux")))]
     if !is_dev_session() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            #[cfg(target_os = "linux")]
-            if _argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
-                crate::core::hotkey::notify_release();
-                return;
-            }
-            #[cfg(target_os = "linux")]
-            if _argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
-                crate::core::hotkey::notify_handless();
-                return;
-            }
-            #[cfg(target_os = "linux")]
-            if _argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
-                crate::core::hotkey::notify_capture_sub_app();
-                return;
-            }
             show_main_window(app);
         }));
     }

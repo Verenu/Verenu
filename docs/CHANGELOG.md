@@ -4,7 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
-- Linux updates now restart Verenu after installation, with a retry action and manual recovery instructions if the updated app cannot be launched.
+- Linux updates now clearly explain how to finish installation by reopening Verenu.
 
 - Fixed the flicker when switching pages, Settings sections, Style tabs, and context groups. The leaving panel faded out too fast, so both panels were half-transparent at once and the background showed through (coverage dipped to 74%). It now stays opaque while the new panel rises (98% minimum). Scroll now resets without moving the page that is still on screen, and the transition no longer rewrites accessibility attributes on every frame.
 - Updated About, update checks and installer validation, package metadata, and documentation to use the `Verenu/Verenu` organization repository.
