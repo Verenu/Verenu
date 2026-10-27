@@ -34,7 +34,8 @@ export function updateActionLabel(update: UpdateInfo, restart = true): string {
     if (update.assetName.toLowerCase().endsWith('.appimage')) return 'Download AppImage';
     return 'Download Installer';
   }
-  if (isLinuxInstaller(update) || update.assetName.endsWith('.apk')) return 'Update Verenu';
+  if (isLinuxInstaller(update)) return 'Update & Restart';
+  if (update.assetName.endsWith('.apk')) return 'Update Verenu';
   return restart ? 'Install & Restart' : 'Install Now';
 }
 
@@ -45,7 +46,20 @@ function isLinuxInstaller(update: UpdateInfo): boolean {
 
 export async function installAvailableUpdate(): Promise<void> {
   const update = appStore.updateInfo;
-  if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
+  if (!update || appStore.updateInstalling) return;
+  if (appStore.updateInstalled) {
+    appStore.updateInstalling = true;
+    appStore.updateInstallError = '';
+    try {
+      await invoke('restart_app');
+    } catch (error) {
+      appStore.updateInstallError = formatIpcError(error, 'Could not restart Verenu');
+      throw error;
+    } finally {
+      appStore.updateInstalling = false;
+    }
+    return;
+  }
   appStore.updateInstalling = true;
   appStore.updateInstallError = '';
   appStore.updateProgress = update.installMode === 'download' ? 'Opening download…' : 'Preparing update…';
@@ -58,6 +72,7 @@ export async function installAvailableUpdate(): Promise<void> {
     if (outcome === 'installed') {
       appStore.updateInstalled = true;
       appStore.updateProgress = 'Update installed. Restart Verenu to finish.';
+      await invoke('restart_app');
     } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
     } else if (outcome === 'installerOpened') {
@@ -67,7 +82,7 @@ export async function installAvailableUpdate(): Promise<void> {
     }
   } catch (error) {
     appStore.updateProgress = '';
-    appStore.updateInstallError = formatIpcError(error, 'Could not install the update');
+    appStore.updateInstallError = formatIpcError(error, appStore.updateInstalled ? 'Could not restart Verenu' : 'Could not install the update');
     throw error;
   } finally {
     stop?.();
