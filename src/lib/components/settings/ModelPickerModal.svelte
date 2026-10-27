@@ -185,7 +185,8 @@
   const pinnedRows = $derived(
     pinned
       .map((key) => everyRow.find((row) => row.key === key) ?? rowForSelection(key, context))
-      .filter((row): row is ModelRow => !!row && wanted(row)),
+      .filter((row): row is ModelRow => !!row && wanted(row)
+        && (row.provider !== 'apple-intelligence' || appleIntelligenceVisible(context))),
   );
   const restRows = $derived(
     everyRow
