@@ -1,6 +1,9 @@
 name: PR Checks
 
 on:
+  push:
+    branches:
+      - master
   pull_request:
     branches:
       - master
@@ -11,6 +14,11 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  # CI needs assertions and panic locations, but no debugger symbol bundles.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
 
 jobs:
   frontend:
@@ -149,7 +157,7 @@ jobs:
 
       - name: Fail if any changed file exceeds 10 MB
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           PR_HEAD_SHA: ${{ github.sha }}
         run: |
           base="$PR_BASE_SHA"
@@ -182,6 +190,33 @@ jobs:
         uses: ./.github/actions/regression-checks
         with:
           report-prefix: pr
+          profile: fast
+
+  owned-sessions:
+    name: Owned sessions (${{ matrix.label }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: node-1, suite: node, shard: '1/6', project: all }
+          - { label: node-2, suite: node, shard: '2/6', project: all }
+          - { label: node-3, suite: node, shard: '3/6', project: all }
+          - { label: node-4, suite: node, shard: '4/6', project: all }
+          - { label: node-5, suite: node, shard: '5/6', project: all }
+          - { label: node-6, suite: node, shard: '6/6', project: all }
+          - { label: desktop, suite: browser, shard: '1/1', project: desktop }
+          - { label: phone, suite: browser, shard: '1/1', project: phone }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/regression-checks
+        with:
+          report-prefix: pr-${{ matrix.label }}
+          profile: owned
+          suite: ${{ matrix.suite }}
+          shard: ${{ matrix.shard }}
+          project: ${{ matrix.project }}
 
   workflow-tests:
     name: Workflow and test infrastructure
@@ -274,7 +309,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [frontend, dependency-audits, rust, blob-size-guard, all-in-one-fast, workflow-tests, android, native]
+    needs: [frontend, dependency-audits, rust, blob-size-guard, all-in-one-fast, owned-sessions, workflow-tests, android, native]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI job to succeed
