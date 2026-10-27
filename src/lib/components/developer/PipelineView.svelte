@@ -29,7 +29,12 @@
 
   const stats = $derived(stageStats(completedTraces(snapshot)));
   const maxAvg = $derived(Math.max(1, ...stats.map((s) => s.avgMs)));
-  const runs = $derived([...snapshot.active_pipelines, ...snapshot.recent_pipelines].slice(-12).reverse());
+  const runs = $derived.by(() => {
+    const recent = snapshot.recent_pipelines.slice(-12);
+    const pinned = selected ? snapshot.recent_pipelines.find((t) => t.trace_id === selected) : undefined;
+    const withPinned = pinned && !recent.includes(pinned) ? [pinned, ...recent] : recent;
+    return [...snapshot.active_pipelines, ...[...withPinned].reverse()];
+  });
   const live = $derived(snapshot.active_pipelines[0] ?? null);
   const audio = $derived(snapshot.runtime.audio ?? null);
 

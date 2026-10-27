@@ -113,3 +113,22 @@ describe('filterLogs problems level', () => {
     expect(kept.map((e) => e.level)).toEqual(['warn', 'error']);
   });
 });
+
+describe('review regressions', () => {
+  it('ranks a fresh failure above frequent historical ones', () => {
+    const group = (fingerprint: string, count: number, last_seen_ms: number) => ({ fingerprint, count, first_seen_ms: 0, last_seen_ms, subsystem: 'api', stage: fingerprint, representative_cause: 'x' });
+    const snap = snapshot({ failure_groups: [group('a', 50, 1_000), group('b', 40, 1_000), group('c', 30, 1_000), group('fresh', 1, 999_000)] });
+    const findings = analyze(snap, [], 1_000_000);
+    expect(findings.map((f) => f.id)).toContain('failure:fresh');
+    expect(verdictFor(snap, findings)).toBe('failing');
+  });
+
+  it('includes the active pipeline in the report', () => {
+    const running = { ...trace('live-run', [span('capture', 100)]), ended_at_ms: null };
+    const snap = snapshot({ active_pipelines: [running], recent_pipelines: [trace('done-run', [span('capture', 100)])] });
+    const report = buildReport(snap, [], []);
+    expect(report).toContain('## Active pipeline');
+    expect(report).toContain('trace live-run');
+    expect(report).toContain('trace done-run');
+  });
+});
