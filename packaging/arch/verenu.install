@@ -1,0 +1,5 @@
+post_upgrade() {
+  # Pacman preserves permissions of existing directories on upgrade. Older
+  # packages shipped private directories, so repair traversal for all users.
+  find -P /opt/verenu -type d -exec chmod a+rx -- {} +
+}
