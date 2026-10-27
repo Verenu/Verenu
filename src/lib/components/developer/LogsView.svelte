@@ -36,12 +36,18 @@
   interface Row { key: string; entry: StructuredLogEntry; repeat: number }
   const rows = $derived.by(() => {
     const out: Row[] = [];
+    const seen = new Map<string, number>();
     for (const entry of visible.slice(-RENDER_LIMIT).reverse()) {
+      const base = `${entry.timestamp_ms}|${entry.subsystem}|${entry.level}|${entry.message.slice(0, 80)}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      const key = `${base}#${n}`;
       const prev = out[out.length - 1];
       if (prev && prev.entry.message === entry.message && prev.entry.subsystem === entry.subsystem && prev.entry.level === entry.level) {
         prev.repeat += 1;
+        prev.key = key;
       } else {
-        out.push({ key: `${entry.timestamp_ms}-${entry.subsystem}-${out.length}`, entry, repeat: 1 });
+        out.push({ key, entry, repeat: 1 });
       }
     }
     return out;
