@@ -647,16 +647,22 @@ pub fn caps_lock_is_on() -> bool {
 
 fn escape_bind_snippet(cancel_portal_id: &str) -> String {
     let key = CANCEL_KEY.lock().map(|key| key.clone()).unwrap_or_default();
-    shortcuts::temporary_binding(
+    control_binding(
         "escape",
         if key.is_empty() { "ESCAPE" } else { &key },
         Some(cancel_portal_id),
         "Verenu cancel dictation (while active)",
+        "cancel",
     )
 }
 
 fn escape_unbind_snippet() -> String {
-    shortcuts::temporary_binding("escape", "ESCAPE", None, "")
+    control_binding("escape", "ESCAPE", None, "", "cancel")
+}
+
+fn control_binding(name: &str, key: &str, id: Option<&str>, description: &str, action: &str) -> String {
+    let bindings = if id.is_some() { conflicts::bindings(action).unwrap_or_else(|_| vec![conflicts::Binding { catch_all: true, ignore_mods: true, ..Default::default() }]) } else { vec![] };
+    shortcuts::temporary_controls(name, key, id, description, &bindings)
 }
 
 fn eval_hyprland(snippet: &str) -> Result<(), String> {
@@ -729,11 +735,12 @@ fn refresh_space_listening() {
     if wanted && id.is_none() {
         return;
     }
-    let snippet = shortcuts::temporary_binding(
+    let snippet = control_binding(
         "space",
         &key,
         if wanted { id.as_deref() } else { None },
         "Verenu switch to hands-free (while holding dictation)",
+        "handsfree",
     );
     if eval_hyprland(&snippet).is_ok() {
         SPACE_ARMED.store(wanted, Ordering::SeqCst);
@@ -772,10 +779,10 @@ fn register_temporary_controls() {
         let snippet = match active_id.as_deref() {
             Some(id) => format!(
                 "{}; {}",
-                shortcuts::temporary_binding(name, key, Some(id), description),
-                shortcuts::temporary_binding(name, key, None, "")
+                control_binding(name, key, Some(id), description, control),
+                control_binding(name, key, None, "", control)
             ),
-            None => shortcuts::temporary_binding(name, key, None, ""),
+            None => control_binding(name, key, None, "", control),
         };
         match eval_hyprland(&snippet) {
             Ok(()) => {
@@ -1207,6 +1214,7 @@ fn publish_shortcut_failure(id: &str, requested: &str, failure: portal::Failure)
         active: None,
         codes: vec![],
         note: Some(failure.note()),
+        conflict: None,
     });
 }
 
@@ -1258,6 +1266,7 @@ fn failure_statuses(
             note: Some(if id == "dictation" { failure.note() } else {
                 "Unavailable until global shortcuts reconnect. See Dictation hotkey in Settings > General for details.".into()
             }),
+            conflict: None,
         })
         .collect()
 }
@@ -1269,7 +1278,14 @@ fn shortcuts_need_rebind() -> bool {
             let Ok(bindings) = conflicts::bindings(&status.id) else {
                 return false;
             };
-            let ignore_mods = matches!(status.id.as_str(), "cancel" | "handsfree");
+            let ignore_mods = false;
+            if matches!(status.id.as_str(), "cancel" | "handsfree")
+                && conflicts::control_conflict(&status.id, &status.requested, &bindings, &configured_keys(&EFFECTIVE_KEYS)) != status.conflict {
+                return true;
+            }
+            if matches!(status.id.as_str(), "cancel" | "handsfree") {
+                return conflicts::control_key(&bindings, &status.requested) != status.active;
+            }
             let active_triggers = if status.id == "dictation" {
                 shortcut_configuration_for(&configured_keys(&EFFECTIVE_KEYS))
                     .map(|(_, triggers)| triggers)
@@ -1406,6 +1422,7 @@ mod tests {
             active: Some("Ctrl+Alt+F7".into()),
             codes: vec!["F7".into()],
             note: None,
+            conflict: None,
         }];
         let failure =
             super::portal::Failure::new("Creating shortcut session", "An app id is required");
@@ -1480,7 +1497,7 @@ mod tests {
         assert!(super::validate_hotkey(&two_regular_keys).is_err());
     }
     use super::{
-        escape_bind_snippet, escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
+        escape_unbind_snippet, parse_portal_shortcuts, pick_portal_id,
         shortcut_configuration, should_cancel_hold, PortalGesture, PortalGestureAction,
         PORTAL_CANCEL_DESCRIPTION, PORTAL_SHORTCUT_DESCRIPTION,
     };
@@ -1724,12 +1741,12 @@ mod tests {
 
     #[test]
     fn escape_bind_targets_the_cancel_action_and_unbind_clears_bare_escape() {
-        let snippet = escape_bind_snippet("com.t3tools.T3Code:cancel");
+        let snippet = super::shortcuts::temporary_controls("escape", "ESCAPE", Some("com.t3tools.T3Code:cancel"), "cancel", &[]);
         assert!(snippet.contains("hl.bind(\"ESCAPE\""));
         assert!(snippet.contains("hl.dsp.global(\"com.t3tools.T3Code:cancel\")"));
-        assert!(snippet.contains("ignore_mods = true"));
+        assert!(!snippet.contains("ignore_mods = true"));
         assert!(snippet.contains("submap_universal = true"));
-        assert!(escape_unbind_snippet().contains("_verenu_escape_binding:set_enabled(false)"));
+        assert!(escape_unbind_snippet().contains("_verenu_escape_0_binding:set_enabled(false)"));
         assert!(!escape_unbind_snippet().contains("hl.unbind"));
     }
 }

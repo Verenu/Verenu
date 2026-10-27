@@ -108,11 +108,20 @@ pub(super) fn temporary_binding(
     );
     match id {
         Some(id) => format!(
-            "{disable}; if not {handle} or {portal_id} ~= {id} or {binding_key} ~= {key} then {handle} = hl.bind({key}, hl.dsp.global({id}), {{ description = {description}, ignore_mods = true, submap_universal = true }}); {portal_id} = {id}; {binding_key} = {key} end; {handle}:set_enabled(true)",
+            "{disable}; if not {handle} or {portal_id} ~= {id} or {binding_key} ~= {key} then {handle} = hl.bind({key}, hl.dsp.global({id}), {{ description = {description}, submap_universal = true }}); {portal_id} = {id}; {binding_key} = {key} end; {handle}:set_enabled(true)",
             key = lua_string(key), id = lua_string(id), description = lua_string(description)
         ),
         None => disable,
     }
+}
+
+pub(super) fn temporary_controls(name: &str, key: &str, id: Option<&str>, description: &str, bindings: &[super::conflicts::Binding]) -> String {
+    let available = if id.is_some() { super::conflicts::control_triggers(bindings, key) } else { vec![] };
+    (0..16).map(|bits| {
+        let mask = [(1, 1), (2, 4), (4, 8), (8, 64)].iter().fold(0, |mask, (index, modifier)| if bits & index != 0 { mask | modifier } else { mask });
+        let trigger = available.iter().find(|(candidate, _)| *candidate == mask).map(|(_, trigger)| trigger.as_str());
+        temporary_binding(&format!("{name}_{mask}"), trigger.unwrap_or(""), id.filter(|_| trigger.is_some()), description)
+    }).collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]
@@ -173,7 +182,7 @@ mod tests {
             Some("app:cancel"),
             "Verenu cancel dictation",
         );
-        assert!(armed.contains("ignore_mods = true"));
+        assert!(!armed.contains("ignore_mods = true"));
         assert!(armed.contains("_verenu_escape_binding:set_enabled(false)"));
         assert!(armed.contains("_verenu_escape_binding:set_enabled(true)"));
         assert!(armed.contains("HL.Keybind(expired)"));
