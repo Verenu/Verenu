@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 
 for (const [index, task] of ['transcription', 'cleanup'].entries()) {
   test(`${task} picker opens promptly and stays usable during slow and failed refreshes`, async ({ page, session, cachedCatalogs }) => {
@@ -34,6 +34,7 @@ for (const [index, task] of ['transcription', 'cleanup'].entries()) {
       await session.invoke('save_setting', { key: 'provider_model_cache', value: cache });
       await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
       await session.invoke('save_setting', { key: 'advanced_model_ui', value: true });
+      await keyProviders(page, session, ['openrouter']);
       await session.invoke('save_setting', { key: `${task}_default_model`, value: `${provider.id}/synthetic-primary` });
       await page.reload();
       await page.locator('[data-debug-id="nav.settings"]').click();
