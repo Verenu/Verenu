@@ -87,7 +87,33 @@ snapshot and native credentials for the Node and provider checks. Browser and
 restart checks always use a separate public synthetic session, including in
 `--live` mode. The installed-configuration snapshot and all artifacts remain private.
 
-Every `tests/dev-session/*.test.mjs` file runs sequentially. Structured reports
+Every `tests/dev-session/*.test.mjs` file runs sequentially within its runner,
+with a fresh default-30 backend for each file. PR CI uses six disjoint Node
+shards on separate GitHub-hosted runners, alongside separate desktop and phone
+browser jobs and the deterministic Linux checks. Each browser job also checks
+restart persistence. `CI required` requires every partition to succeed; no
+test files are filtered by changed paths. Release checks and the default local
+command still run the complete suite.
+PR Rust dev/test builds omit debugger symbols to reduce build, link, and cache
+work. Debug assertions, overflow checks, and the test suite remain enabled;
+release artifacts and local developer profiles keep their existing settings.
+
+To reproduce one CI partition:
+
+```bash
+npm run test:session:owned -- --suite node --shard 1/6
+npm run test:session:owned -- --suite browser --project desktop
+npm run test:session:owned -- --suite browser --project phone
+```
+
+Files are sorted and assigned round-robin, so new Node files enter CI
+automatically. Empty or invalid partitions fail. Safe reports record the
+partition, per-file startup/test/stop/total milliseconds, browser startup and
+test milliseconds, persistence milliseconds, and total elapsed time. CI logs
+one progress line at each file start and completion; raw child output stays
+private.
+
+Structured reports
 name every executed case and identify missing files. The optional live corpus is
 the only permitted skip in a deterministic session. Browser verification requires
 both desktop and phone projects and rejects any skipped case. Use

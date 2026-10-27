@@ -31,6 +31,10 @@ test('file workers start fresh, retain internal interactions, capture records, a
   assert.equal(result.status, 'passed');
   assert.deepEqual(f.order, ['start:one.test.mjs', 'execute:one.test.mjs', 'metadata:one.test.mjs', 'stop:one.test.mjs', 'start:session.test.mjs', 'execute:session.test.mjs', 'metadata:session.test.mjs', 'stop:session.test.mjs']);
   assert.notEqual(f.workers[0].id, f.workers[1].id);
+  for (const session of result.sessions) {
+    for (const name of ['startupMs', 'testMs', 'stopMs', 'totalMs']) assert.ok(Number.isSafeInteger(session.timing[name]) && session.timing[name] >= 0);
+    assert.ok(session.timing.totalMs >= session.timing.testMs);
+  }
   assert.deepEqual(result.checks, [{ name: 'same-session interactions', status: 'passed' }]);
   assert.ok(result.sessions.every(shard => shard.before.runs === 0 && shard.after.runs === 3 && shard.after.maxRuns === 30 && shard.identity.fingerprint === identity.fingerprint));
 });
