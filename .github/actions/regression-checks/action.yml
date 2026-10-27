@@ -37,7 +37,10 @@ runs:
       shell: bash
       run: |
         # A slow Azure archive route can dominate the entire gate.
-        sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+        sudo sed -i \
+          -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu|g' \
+          -e 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+          /etc/apt/sources.list.d/ubuntu.sources
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
           libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev \

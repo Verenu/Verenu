@@ -26,7 +26,7 @@ test('Linux setup replaces only the slow Azure mirror and installs explicit fixt
   try {
     const source = path.join(directory, 'ubuntu.sources');
     const calls = path.join(directory, 'calls');
-    fs.writeFileSync(source, 'URIs: http://azure.archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
+    fs.writeFileSync(source, 'URIs: mirror+file:/etc/apt/apt-mirrors.txt\nURIs: http://azure.archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `
       sudo() {
         if [ "$1" = sed ]; then "$@"; else printf '%s\\n' "$*" >> "$APT_CALLS"; fi
@@ -34,7 +34,7 @@ test('Linux setup replaces only the slow Azure mirror and installs explicit fixt
       ${setup.replace('/etc/apt/sources.list.d/ubuntu.sources', '"$APT_SOURCE_FIXTURE"')}
     `], { encoding: 'utf8', env: { ...process.env, APT_SOURCE_FIXTURE: source, APT_CALLS: calls } });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(fs.readFileSync(source, 'utf8'), 'URIs: https://archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
+    assert.equal(fs.readFileSync(source, 'utf8'), 'URIs: https://archive.ubuntu.com/ubuntu\nURIs: https://archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
     const [update, install] = fs.readFileSync(calls, 'utf8').trim().split('\n');
     assert.equal(update, 'apt-get update');
     assert.ok(install.includes('--no-install-recommends'));
