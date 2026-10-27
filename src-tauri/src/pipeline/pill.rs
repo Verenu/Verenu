@@ -405,6 +405,17 @@ fn show_native_pill_msg(app: &AppHandle, state: &str, message: Option<&str>) {
         wait_for_pill_frontend(app);
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        let point = app.try_state::<SharedState>()
+            .and_then(|state| state.lock().ok().and_then(|guard| guard.target.display_point));
+        let scale = point
+            .and_then(|point| crate::core::hyprland::logical_monitor_for_point(point.x, point.y))
+            .or_else(|| crate::core::hyprland::logical_monitor_for_point(f64::NAN, f64::NAN))
+            .map(|monitor| monitor.scale);
+        app.emit_to("pill", "pill-monitor-scale", scale).ok();
+    }
+
     let generation = REVEAL_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     #[cfg(not(target_os = "windows"))]
     let _ = generation;

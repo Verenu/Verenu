@@ -53,6 +53,7 @@ pub(crate) struct LogicalMonitor {
     pub work_y: f64,
     pub work_width: f64,
     pub work_height: f64,
+    pub scale: f64,
 }
 
 #[cfg(target_os = "linux")]
@@ -81,6 +82,7 @@ impl HyprMonitor {
             work_y: f64::from(self.y + top),
             work_width: (logical_width - f64::from(left + right)).max(1.0),
             work_height: (logical_height - f64::from(top + bottom)).max(1.0),
+            scale,
         }
     }
 
@@ -856,6 +858,7 @@ mod tests {
                 work_y: 1106.0,
                 work_width: 2048.0,
                 work_height: 1126.0,
+                scale: 1.25,
             }
         );
         assert!(monitor.contains(1024.0, 2000.0));

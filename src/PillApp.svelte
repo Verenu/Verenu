@@ -5,6 +5,7 @@
   import { createTimers } from './lib/timers';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
+  import { pillBarSizing } from './lib/pillSizing';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import { isAndroid, isLinux } from './lib/platform';
 
@@ -418,9 +419,10 @@
   }
 
   let dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
-  const snap = (px: number, d: number) => Math.round(px * d) / d;
-  $: barW = snap(3, dpr);
-  $: barGap = snap(2, dpr);
+  let monitorScale: number | null = null;
+  $: barSizing = pillBarSizing(monitorScale ?? dpr);
+  $: barW = barSizing.width;
+  $: barGap = barSizing.gap;
 
   $: hfExpandedW = 12 * barW + 11 * barGap + 54;
   const LOADING_LOCAL_W = 144;
@@ -596,6 +598,11 @@
         return registration;
       };
       const registrations: Promise<void>[] = [];
+
+      void listen<number | null>('pill-monitor-scale', (ev) => {
+        const scale = ev.payload;
+        monitorScale = typeof scale === 'number' && Number.isFinite(scale) && scale >= 0.5 && scale <= 8 ? scale : null;
+      });
 
       void listen<string>('pill-state', (ev) => {
         const incoming = (ev.payload as PillState) || 'idle';
