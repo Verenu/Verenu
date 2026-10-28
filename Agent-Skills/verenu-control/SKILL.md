@@ -5,32 +5,76 @@ description: "Use for Verenu dictation problems, top recurring issues over a dat
 
 # Control and diagnose Verenu
 
+For first-time setup after onboarding, requests to optimize Verenu or learn its
+features, or recommendations for Context groups, also read
+`setup/SKILL.md` next to this file before collecting evidence or making changes.
+
 1. Locate this skill's `scripts/verenu-agent.mjs`. Run it with Node 20+ and
-   `--help`, then `describe`. Use the user's existing local grant through
-   `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT`. If unavailable, explain how to
-   start Verenu with a grant; never request or print the token in chat. The
-   native app remains responsible for SQLite and native credential storage.
-   The grant enables private reads and writes: do not enable it without the
-   user's agreement. A missing grant does not require permanent skill installation.
+   `--help`, then `describe`. If access has not been approved, explain that
+   approving in Verenu grants local agents access to private data and settings
+   until the app quits. Tell the user that an approval prompt will appear, then
+   run `connect` and ask them to approve it in Verenu. Use a background command
+   if needed to remain responsive while they decide. Only the user may approve
+   this prompt, not the agent or automation.
+   Do not restart an already-running instance for access. Later agents
+   can reuse the approved grant. Never print or share the token. A missing grant
+   does not require permanent skill installation. Agent harnesses may override
+   `XDG_CONFIG_HOME` or other profile paths; verify the running instance is the
+   user's intended profile before any writes. If Verenu is not running, launch
+   the installed app normally with the user's existing profile, then connect.
+   If more than one profile is running, identify the intended one before
+   selecting its app-data directory with `VERENU_APP_DATA_DIR_OVERRIDE`. If access is unavailable or
+   declined, explain the limitation; never bypass approval with direct database
+   writes.
 2. Read `get_all_settings`, `get_contexts`, `get_context_targets` and
-   `get_context_websites` before proposing changes. Native arguments use
+   `get_context_websites` before proposing changes. For Context cleanup, also
+   inspect `get_sub_apps` and each relevant group's `get_context_dictionary`
+   and `get_context_snippets`. Native arguments use
    camelCase: e.g. `{"contextId": 4}`. `describe` lists available fields and
    writable settings. Omitted optional fields in `update_context_settings`
    become null, so preserve existing fields when editing one property.
-3. For a period, run `history.report` and `diagnostics.top` with
+   For a request to recommend, clean up, optimize, or add Contexts, collect
+   evidence before recommending specific changes as well as before editing.
+   Do not guess plausible categories while approval is pending or unavailable:
+   explain the missing evidence and offer to retry instead. Inspect retained
+   usage and the existing configuration even when the user describes their
+   workflow, and investigate independently while waiting for any clarification.
+   For Context work, collect evidence before deciding:
+   inspect retained history metadata over its available date range with
+   `history.usage` and, if truncated, all pages of `history.page`. Aggregate app
+   identifiers and their current Contexts by frequency; report retention gaps.
+   History's app identifier does not establish which website was open in a
+   browser. Never invent an executable, application, website, or usage pattern
+   from an app name or a plausible workflow. Verify exact identifiers against
+   recorded history and existing assignments, and check that an app is installed
+   or running before assigning it. Treat identifier aliases as uncertain until
+   verified; do not create a duplicate based on a guessed alias.
+
+   Inventory `get_dictionary` and `get_snippets`, then inspect effective items
+   for each relevant Context and explicit assignments via
+   `get_dictionary_entry_contexts` and `get_snippet_entry_contexts`. Respect
+   Everywhere inheritance: an inherited item is already available, not missing.
+   Propose an assignment only when the item's meaning and the user's actual
+   workflow support it. Do not infer which Contexts need an item from counts
+   alone, and ask a focused question if that intent cannot be established.
+   Check the live API's `describe` before promising a supported write; if an
+   assignment operation is unavailable, report the gap instead of editing SQL.
+   Avoid speculative groups, target moves, and instruction changes. If history
+   cannot establish a useful addition, explain that rather than inventing one.
+3. For a troubleshooting or error-analysis request, run `history.report` and `diagnostics.top` with
    `{"start":"2026-01-01","end":"2026-04-01"}` for January through March
    (UTC calendar dates, exclusive end; state the assumed year).
    Check report `oldest`, `newest`, `retained_count`, `truncated`, and journal
    `retention_days`, `oldest_retained_day`, `dropped_this_process`.
    Report missing coverage explicitly. Failure events are not unique failed
    dictations. Capitalization/spacing changes are signals, not proven errors.
-4. Use `history.page` with the same dates and `limit` (1..500), advancing
+4. For that investigation, use `history.page` with the same dates and `limit` (1..500), advancing
    `after_id` to `next_after_id` while `has_more` is true. Metadata is default.
    Only request `include_text:true` when the user's investigation needs raw and
    cleaned text. Keep that output local/private; never upload it as evidence.
    Stored history has no original prompt/settings snapshot or final user edit.
    Do not treat today's settings as proof of the historical prompt.
-5. Correlate current `diagnostics.snapshot` with historical failure fingerprints
+5. For that investigation, correlate current `diagnostics.snapshot` with historical failure fingerprints
    while the originating session is still available. Read current prompt
    overrides/context instructions through settings and Contexts. Recommend up
    to ten issues backed by observed examples/counts; give fewer when evidence
@@ -72,6 +116,10 @@ with `pactl`. Supply `--mute-output TEXT` and/or `--unmute-output TEXT` matching
 the user's output names or ports. Run its dry run first; `--apply` changes and
 reads back `mute_audio`.
 
-Installation is optional: run `harnesses` or `install-skill`. Interactive setup
-asks whether installation is permanent and which detected harnesses to use.
-Never choose every harness silently or change generated global instructions.
+Installation is optional. If the current harness already has this skill, use
+it. Otherwise, if this has not already been settled for the current request,
+ask whether to save it for the current harness or use it in place. If the user
+chooses to save it, install it only
+for the current detected harness first, then offer the other detected harnesses
+and install only those the user selects. Never choose every harness silently,
+replace an existing skill without consent, or change global instructions.
