@@ -287,7 +287,7 @@ pub fn query_stats(db: &Db) -> Result<Stats> {
     let (total_words, avg_wpm): (i64, f64) = conn.query_row(
         "SELECT
            COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-             + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0),
+             + COALESCE((SELECT SUM(total_words) FROM combined_device_counters), 0),
            COALESCE((SELECT wpm_sum / NULLIF(wpm_count, 0)
                        FROM lifetime_stats WHERE id = 1), 0.0)",
         [],
@@ -368,21 +368,42 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
     tx.execute(
+        "INSERT OR IGNORE INTO transcription_receipts(uuid, day, hour, context_uuid, words, spoken_words, duration_ms, counted)
+         SELECT t.uuid, COALESCE(t.activity_day, date(t.created_at, 'localtime')), COALESCE(t.activity_hour, CAST(strftime('%H', t.created_at, 'localtime') AS INTEGER)),
+                COALESCE(c.uuid, p.context_uuid), t.words, t.spoken_words, t.duration_ms, NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
+           FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
+           LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
+          WHERE t.created_at < ?1",
+        [&cutoff],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO call_receipts(uuid, transcription_uuid, day, context_uuid, model, provider, task, audio_ms, input_chars, output_chars, counted)
+         SELECT a.uuid, t.uuid, COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(c.uuid, p.context_uuid), a.model, a.provider, a.task,
+                a.audio_ms, a.input_chars, a.output_chars, NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
+           FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
+           LEFT JOIN contexts c ON c.id = t.context_id
+           LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
+          WHERE a.created_at < ?1 OR t.created_at < ?1 OR t.id IS NULL",
+        [&cutoff],
+    )?;
+    tx.execute(
         "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
-         SELECT date(created_at, 'localtime'), CAST(strftime('%H', created_at, 'localtime') AS INTEGER),
+         SELECT COALESCE(activity_day, date(created_at, 'localtime')), COALESCE(activity_hour, CAST(strftime('%H', created_at, 'localtime') AS INTEGER)),
                 COALESCE(context_id, 0), SUM(words)
            FROM transcriptions
-          WHERE created_at < ?1
+          WHERE created_at < ?1 AND NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid = transcriptions.uuid)
           GROUP BY 1, 2, 3
          ON CONFLICT(day, hour, context_id) DO UPDATE SET total_words = total_words + excluded.total_words",
         [&cutoff],
     )?;
     tx.execute(
         "INSERT INTO provider_daily_stats (day, context_id, model, provider, task, calls, audio_ms, input_chars, output_chars)
-         SELECT date(a.created_at, 'localtime'), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
+         SELECT COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
                 COUNT(*), COALESCE(SUM(a.audio_ms), 0), COALESCE(SUM(a.input_chars), 0), COALESCE(SUM(a.output_chars), 0)
            FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
-          WHERE a.created_at < ?1
+          WHERE (a.created_at < ?1 OR t.created_at < ?1 OR t.id IS NULL)
+            AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
+            AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
           GROUP BY 1, 2, 3, 4, 5
          ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
            calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,
@@ -401,9 +422,13 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
     )?;
     tx.execute(
         "DELETE FROM pending_transcription_contexts
-          WHERE transcription_uuid NOT IN (SELECT uuid FROM transcriptions)",
+          WHERE transcription_uuid NOT IN (SELECT uuid FROM transcriptions)
+            AND transcription_uuid NOT IN (SELECT uuid FROM transcription_receipts)
+            AND transcription_uuid NOT IN (SELECT transcription_uuid FROM call_receipts WHERE transcription_uuid IS NOT NULL)",
         [],
     )?;
+    tx.execute("DELETE FROM backup_held_history WHERE uuid NOT IN (SELECT uuid FROM transcriptions)", [])?;
+    tx.execute("DELETE FROM backup_held_calls WHERE uuid NOT IN (SELECT uuid FROM api_calls)", [])?;
     tx.execute(
         "UPDATE stats_maintenance SET retention_prune = 0 WHERE rowid = 1",
         [],

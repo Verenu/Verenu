@@ -706,8 +706,7 @@ pub fn closest_installed_app<'a>(
     let source_executable = source_executable.trim_start_matches("?::");
     let source_keys = [source_executable, source_name.unwrap_or("")]
         .into_iter()
-        .map(app_match_key)
-        .filter(|key| key.len() >= 3)
+        .flat_map(app_match_keys)
         .collect::<Vec<_>>();
     if source_keys.is_empty() {
         return None;
@@ -725,8 +724,7 @@ pub fn closest_installed_app<'a>(
             }
             let candidate_keys = [app.exe.as_str(), app.name.as_str()]
                 .into_iter()
-                .map(app_match_key)
-                .filter(|key| !key.is_empty())
+                .flat_map(app_match_keys)
                 .collect::<Vec<_>>();
             let score = source_keys
                 .iter()
@@ -805,6 +803,24 @@ fn app_match_key(value: &str) -> String {
         .or_else(|| basename.strip_suffix(".app"))
         .unwrap_or(basename.as_str());
     basename.chars().filter(|ch| ch.is_alphanumeric()).collect()
+}
+
+fn app_match_keys(value: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let key = app_match_key(value);
+    if key.len() >= 3 {
+        keys.push(key);
+    }
+    let name = value.rsplit(['/', '\\']).next().unwrap_or(value);
+    if name.split('.').count() >= 3 {
+        if let Some(component) = name.rsplit('.').next() {
+            let component = app_match_key(component);
+            if component.len() >= 3 && !matches!(component.as_str(), "app" | "desktop" | "exe") && !keys.contains(&component) {
+                keys.push(component);
+            }
+        }
+    }
+    keys
 }
 
 fn app_match_score(left: &str, right: &str) -> f32 {

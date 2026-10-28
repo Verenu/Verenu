@@ -86,9 +86,377 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn resolving_backup_alias_does_not_duplicate_overlapping_legacy_usage() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    {
+        let conn = source.db.lock().unwrap();
+        crate::sync::store::ensure_self_identity(&conn, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "source").unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        conn.execute("INSERT INTO transcription_hourly_stats SELECT '2020-01-01',10,id,5 FROM contexts WHERE name='Work'", []).unwrap();
+        conn.execute("INSERT INTO provider_daily_stats SELECT '2020-01-01',id,'model','provider','stt',1,1,0,0 FROM contexts WHERE name='Work'", []).unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) SELECT 'ffffffff-ffff-4fff-8fff-ffffffffffff','new','new',2,1000,'test',id,'2020-01-01 10:00:00','2020-01-01',10 FROM contexts WHERE name='Work'", []).unwrap();
+        conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,audio_ms,input_chars,output_chars,created_at,activity_day) SELECT '99999999-9999-4999-8999-999999999999',id,'model','provider','stt',1,0,0,'2020-01-01 10:00:00','2020-01-01' FROM transcriptions WHERE uuid='ffffffff-ffff-4fff-8fff-ffffffffffff'", []).unwrap();
+    }
+    {
+        let conn = dest.db.lock().unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", serde_json::json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","transcription_uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0})).unwrap();
+    }
+    let conn = source.db.lock().unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+    drop(conn);
+    let summary = with_import_payload(&serde_json::to_string(&payload).unwrap(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    assert!(summary.activity_conflicts >= 2);
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_hourly_stats WHERE day='2020-01-01'", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats WHERE day='2020-01-01'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT SUM(words) FROM transcriptions WHERE activity_day='2020-01-01'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls WHERE activity_day='2020-01-01'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn actual_context_import_resolves_existing_pending_activity() {
+    let dest = Fixture::new();
+    crate::commands::settings::import_sync_receipt(&dest.db.lock().unwrap(), "transcription_receipts", serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+    let mut value = serde_json::to_value(Fixture::payload("2")).unwrap();
+    value["settings"] = serde_json::json!({});
+    value["contexts"] = serde_json::json!([{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Work"}]);
+    with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT context_uuid FROM transcription_receipts WHERE uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_, String>(0)).unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+}
+
+#[test]
+fn backup_alias_resolves_pending_history_before_importing_calls() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    {
+        let conn = source.db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc','test','test',5,1000,'test',id,'2020-01-01 10:00:00','2020-01-01',10 FROM contexts WHERE name='Work'", []).unwrap();
+        conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,audio_ms,input_chars,output_chars,created_at,activity_day) SELECT 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',id,'model','provider','stt',1,0,0,'2020-01-01 10:00:00','2020-01-01' FROM transcriptions WHERE uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", []).unwrap();
+    }
+    {
+        let conn = dest.db.lock().unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','test','test',5,1000,'test','2020-01-01 10:00:00','2020-01-01',10)", []).unwrap();
+        conn.execute("INSERT INTO pending_transcription_contexts VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+    }
+    let conn = source.db.lock().unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+    drop(conn);
+    with_import_payload(&serde_json::to_string(&payload).unwrap(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls WHERE uuid='dddddddd-dddd-4ddd-8ddd-dddddddddddd'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn named_context_import_resolves_existing_pending_activity() {
+    let dest = Fixture::new();
+    let conn = dest.db.lock().unwrap();
+    conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+    crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+    drop(conn);
+    let mut value = serde_json::to_value(Fixture::payload("2")).unwrap();
+    value["settings"] = serde_json::json!({});
+    value["contexts"] = serde_json::json!([{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Work"}]);
+    with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT context_uuid FROM transcription_receipts WHERE uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_, String>(0)).unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+}
+
+#[test]
+fn deleting_mapped_context_preserves_history_provenance() {
+    let dest = Fixture::new();
+    dest.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+    let mut value = serde_json::to_value(Fixture::payload("2")).unwrap();
+    value["settings"] = serde_json::json!({});
+    value["contexts"] = serde_json::json!([{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Work"}]);
+    value["activity"] = serde_json::json!({"lifetime":{"total_words":0,"dictionary_fixes":0,"wpm_sum":0.0,"wpm_count":0},"daily":[],"transcription_receipts":[{"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000}]});
+    with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    let id: i64 = dest.db.lock().unwrap().query_row("SELECT id FROM contexts WHERE name='Work'", [], |r| r.get(0)).unwrap();
+    db::delete_context(&dest.db, id).unwrap();
+    let conn = dest.db.lock().unwrap();
+    let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE is_everywhere=1", [], |r| r.get(0)).unwrap();
+    assert_eq!(conn.query_row("SELECT local_uuid FROM backup_context_event_sources WHERE transcription_uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_,String>(0)).unwrap(), everywhere);
+    let call = crate::sync::protocol::SyncOp { table:"call_receipts".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(serde_json::json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","transcription_uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0})) };
+    assert!(!crate::sync::engine::apply_ops(&conn, &[call]).unwrap().deferred);
+    assert_eq!(conn.query_row("SELECT context_uuid FROM call_receipts WHERE uuid='dddddddd-dddd-4ddd-8ddd-dddddddddddd'", [], |r| r.get::<_,String>(0)).unwrap(), everywhere);
+}
+
+#[test]
+fn backup_preserves_current_context_alias_independent_of_event_order() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    let conn = source.db.lock().unwrap();
+    conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work'),('cccccccc-cccc-4ccc-8ccc-cccccccccccc','Office')", []).unwrap();
+    for (uuid, context) in [("11111111-1111-4111-8111-111111111111","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),("22222222-2222-4222-8222-222222222222","cccccccc-cccc-4ccc-8ccc-cccccccccccc")] {
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", serde_json::json!({"uuid":uuid,"day":"2020-01-01","hour":10,"context_uuid":context,"words":1,"spoken_words":null,"duration_ms":1000})).unwrap();
+        conn.execute("INSERT INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid,source_name) VALUES (?1,'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',?2,?3)", params![uuid,context,if context.starts_with('b') {"Work"} else {"Office"}]).unwrap();
+    }
+    conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cccccccc-cccc-4ccc-8ccc-cccccccccccc','Office')", []).unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+    drop(conn);
+    with_import_payload(&serde_json::to_string(&payload).unwrap(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    assert_eq!(dest.db.lock().unwrap().query_row("SELECT local_uuid FROM backup_context_aliases WHERE source_uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, String>(0)).unwrap(), "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    let conn = dest.db.lock().unwrap();
+    let call = crate::sync::protocol::SyncOp { table:"call_receipts".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(serde_json::json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","transcription_uuid":"11111111-1111-4111-8111-111111111111","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0})) };
+    assert!(!crate::sync::engine::apply_ops(&conn, &[call]).unwrap().deferred);
+    assert_eq!(conn.query_row("SELECT context_uuid FROM call_receipts WHERE uuid='dddddddd-dddd-4ddd-8ddd-dddddddddddd'", [], |r| r.get::<_,String>(0)).unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+}
+
+#[test]
+fn backup_alias_resolves_existing_pending_activity() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    {
+        let conn = source.db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+    }
+    crate::commands::settings::import_sync_receipt(&dest.db.lock().unwrap(), "transcription_receipts", serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+    let conn = source.db.lock().unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+    drop(conn);
+    with_import_payload(&serde_json::to_string(&payload).unwrap(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT context_uuid FROM transcription_receipts WHERE uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_,String>(0)).unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+}
+
+#[test]
+fn orphan_provider_context_provenance_survives_backup_and_source_deletion() {
+    use crate::sync::{engine, protocol::SyncOp};
+    for everywhere in [false, true] {
+        let source = Fixture::new();
+        let dest = Fixture::new();
+        let third = Fixture::new();
+        crate::sync::store::ensure_self_identity(&source.db.lock().unwrap(), "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "source").unwrap();
+        {
+            let conn = source.db.lock().unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Work')", []).unwrap();
+            crate::commands::settings::import_sync_receipt(&conn, "call_receipts", serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0})).unwrap();
+        }
+        if everywhere {
+            dest.db.lock().unwrap().execute("UPDATE contexts SET name='Work' WHERE is_everywhere=1", []).unwrap();
+        } else {
+            dest.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        }
+        let export = |fixture: &Fixture| {
+            let conn = fixture.db.lock().unwrap();
+            let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+            ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] }
+        };
+        for (from, to) in [(&source, &dest), (&dest, &third)] {
+            with_import_payload(&serde_json::to_string(&export(from)).unwrap(), |p| import_payload(&to.settings, &to.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        }
+        let id: i64 = source.db.lock().unwrap().query_row("SELECT id FROM contexts WHERE name='Work'", [], |r| r.get(0)).unwrap();
+        db::delete_context(&source.db, id).unwrap();
+        let (ops, _, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 1000, &mut engine::SnapshotProgress::default()).unwrap();
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:None };
+        for target in [&dest, &third] {
+            let conn = target.db.lock().unwrap();
+            engine::apply_ops(&conn, &[deletion.clone()]).unwrap();
+            for _ in 0..2 { assert!(!engine::apply_ops(&conn, &ops).unwrap().deferred); }
+            assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        }
+    }
+}
+
+#[test]
+fn source_context_deletion_snapshot_preserves_mapped_history() {
+    use crate::sync::{engine, protocol::SyncOp};
+    for compacted in [false, true] {
+        let source = Fixture::new();
+        let dest = Fixture::new();
+        crate::sync::store::ensure_self_identity(&source.db.lock().unwrap(), "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "source").unwrap();
+        {
+            let conn = source.db.lock().unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Work')", []).unwrap();
+            conn.execute("UPDATE transcriptions SET context_id=(SELECT id FROM contexts WHERE name='Work')", []).unwrap();
+        }
+        let parent: i64 = source.db.lock().unwrap().query_row("SELECT id FROM transcriptions LIMIT 1", [], |r| r.get(0)).unwrap();
+        db::insert_api_calls(&source.db, &[db::ApiCall { transcription_id:parent, model:"synthetic".into(), provider:"test".into(), task:"stt".into(), audio_ms:1000, input_chars:0, output_chars:1, created_at:"2020-01-01 00:00:00".into() }]).unwrap();
+        if compacted { db::prune_transcriptions_older_than(&source.db, 7).unwrap(); }
+        dest.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        let conn = source.db.lock().unwrap();
+        let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+        let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+        let context_id: i64 = conn.query_row("SELECT id FROM contexts WHERE name='Work'", [], |r| r.get(0)).unwrap();
+        drop(conn);
+        with_import_payload(&serde_json::to_string(&payload).unwrap(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        source.db.lock().unwrap().execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) VALUES ('dddddddd-dddd-4ddd-8ddd-dddddddddddd','new','new',2,1000,'test',?1,'2020-01-02 12:00:00','2020-01-02',12)", [context_id]).unwrap();
+        if compacted { db::prune_transcriptions_older_than(&source.db, 7).unwrap(); }
+        let (new_ops, _, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 1000, &mut engine::SnapshotProgress::default()).unwrap();
+        assert!(!engine::apply_ops(&dest.db.lock().unwrap(), &new_ops).unwrap().deferred);
+        let third = Fixture::new();
+        third.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('ffffffff-ffff-4fff-8fff-ffffffffffff','Work')", []).unwrap();
+        let conn = dest.db.lock().unwrap();
+        let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+        let relayed = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+        drop(conn);
+        with_import_payload(&serde_json::to_string(&relayed).unwrap(), |p| import_payload(&third.settings, &third.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        db::delete_context(&source.db, context_id).unwrap();
+        let (ops, _, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 1000, &mut engine::SnapshotProgress::default()).unwrap();
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:None };
+        for target in [&dest, &third] {
+            let conn = target.db.lock().unwrap();
+            engine::apply_ops(&conn, &[deletion.clone()]).unwrap();
+            for _ in 0..2 { assert!(!engine::apply_ops(&conn, &ops).unwrap().deferred); }
+            assert!(conn.query_row("SELECT EXISTS(SELECT 1 FROM transcription_context_daily_stats WHERE context_uuid=(SELECT uuid FROM contexts WHERE name='Work') AND total_words>0)", [], |r| r.get::<_, bool>(0)).unwrap());
+            assert_eq!(conn.query_row("SELECT (SELECT COUNT(*) FROM api_calls)+(SELECT COALESCE(SUM(calls),0) FROM provider_daily_stats)", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        }
+    }
+}
+
+#[test]
+fn invalid_context_identity_rejects_backup_without_persisting_aliases() {
+    let dest = Fixture::new();
+    dest.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+    let mut value = serde_json::to_value(Fixture::payload("2")).unwrap();
+    value["contexts"] = serde_json::json!([{"uuid":"invalid-context-id","name":"Work"}]);
+    assert!(with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).is_err());
+    assert_eq!(dest.db.lock().unwrap().query_row("SELECT COUNT(*) FROM backup_context_aliases", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn restored_named_context_survives_collision_and_sync_replay() {
+    use crate::sync::{engine, protocol::SyncOp};
+    for (compacted, timestamp) in [(false, 1), (true, 1), (false, i64::MAX), (true, i64::MAX)] {
+        let dest = Fixture::new();
+        dest.db.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        dest.db.lock().unwrap().execute("UPDATE transcriptions SET context_id=(SELECT id FROM contexts WHERE name='Work')", []).unwrap();
+        let before: i64 = dest.db.lock().unwrap().query_row("SELECT COALESCE(SUM(total_words),0) FROM transcription_context_daily_stats WHERE context_uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", [], |r| r.get(0)).unwrap();
+        let mut value = serde_json::to_value(Fixture::payload("2")).unwrap();
+        value["settings"] = serde_json::json!({});
+        value["contexts"] = serde_json::json!([{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","name":"Work"}]);
+        let receipt = serde_json::json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":12,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000});
+        let history = serde_json::json!({"raw_text":"synthetic","clean_text":"synthetic","words":5,"spoken_words":null,"duration_ms":1000,"api_used":"test","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","created_at":"2020-01-01 12:00:00","activity_day":"2020-01-01","activity_hour":12});
+        if compacted {
+            value["activity"] = serde_json::json!({"lifetime":{"total_words":0,"dictionary_fixes":0,"wpm_sum":0.0,"wpm_count":0},"daily":[],"transcription_receipts":[receipt.clone()]});
+        } else {
+            let mut record = history.clone();
+            record["uuid"] = serde_json::json!("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+            value["history"] = serde_json::json!({"transcriptions":[record],"calls":[]});
+        }
+        with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        dest.db.lock().unwrap().execute("UPDATE contexts SET name='Personal' WHERE uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", []).unwrap();
+        with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        assert_eq!(dest.db.lock().unwrap().query_row("SELECT COUNT(*) FROM contexts WHERE uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let conn = dest.db.lock().unwrap();
+        let context = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:timestamp, origin:"peer".into(), origin_seq:1, payload:Some(serde_json::json!({"name":"Work","created_at":"2020-01-01","updated_at":"2020-01-01"})) };
+        engine::apply_ops(&conn, &[context]).unwrap();
+        drop(conn);
+        with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        let conn = dest.db.lock().unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM contexts WHERE uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let event = SyncOp { table:if compacted {"transcription_receipts"} else {"transcriptions"}.into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:2, payload:Some(if compacted {receipt} else {history}) };
+        for _ in 0..2 { assert!(!engine::apply_ops(&conn, &[event.clone()]).unwrap().deferred); }
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_context_daily_stats WHERE context_uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", [], |r| r.get::<_, i64>(0)).unwrap(), before + 5);
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:3, payload:None };
+        engine::apply_ops(&conn, &[deletion]).unwrap();
+        assert!(!engine::apply_ops(&conn, &[event.clone()]).unwrap().deferred);
+        drop(conn);
+        value["contexts"][0]["name"] = serde_json::json!("Office");
+        value["history"] = serde_json::Value::Null;
+        value["activity"] = serde_json::Value::Null;
+        with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).unwrap();
+        let conn = dest.db.lock().unwrap();
+        let new_receipt = SyncOp { table:"transcription_receipts".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:4, payload:Some(serde_json::json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","day":"2020-01-02","hour":12,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":7,"spoken_words":null,"duration_ms":1000})) };
+        assert!(!engine::apply_ops(&conn, &[new_receipt]).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_context_daily_stats WHERE context_uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_context_daily_stats WHERE context_uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", [], |r| r.get::<_, i64>(0)).unwrap(), before + 5);
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:9, payload:None };
+        engine::apply_ops(&conn, &[deletion]).unwrap();
+        let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE is_everywhere=1", [], |r| r.get(0)).unwrap();
+        let mut moved = event;
+        moved.payload.as_mut().unwrap()["context_uuid"] = serde_json::json!(everywhere);
+        assert!(!engine::apply_ops(&conn, &[moved]).unwrap().deferred);
+    }
+}
+
+#[test]
+fn retained_and_compacted_hourly_overflow_rolls_back() {
+    let dest = Fixture::new();
+    dest.db.lock().unwrap().execute("INSERT INTO transcription_hourly_stats(day,context_id,hour,total_words) VALUES ('2019-12-31',0,12,?1)", [i64::MAX]).unwrap();
+    let mut payload = Fixture::payload("2");
+    payload.settings = serde_json::json!({});
+    let mut value = serde_json::to_value(payload).unwrap();
+    value["history"] = serde_json::json!({"transcriptions":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","raw_text":"synthetic","clean_text":"synthetic","words":1,"spoken_words":1,"duration_ms":1000,"api_used":"test","created_at":"2020-01-01 12:00:00","activity_day":"2020-01-01","activity_hour":12}],"calls":[]});
+    assert!(with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).is_err());
+    assert_eq!(dest.history_count(), 1);
+}
+
+#[test]
+fn retained_provider_overflow_rolls_back() {
+    for compacted in [false, true] {
+        let dest = Fixture::new();
+        if compacted {
+            dest.db.lock().unwrap().execute("INSERT INTO provider_daily_stats VALUES ('2019-12-31', 0, 'synthetic', 'test', 'stt', 1, ?1, 0, 0)", [i64::MAX]).unwrap();
+        }
+        let mut payload = Fixture::payload("2");
+        payload.settings = serde_json::json!({});
+        let mut value = serde_json::to_value(payload).unwrap();
+        let parent = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let call = |uuid: &str| serde_json::json!({"uuid":uuid,"transcription_uuid":parent,"model":"synthetic","provider":"test","task":"stt","audio_ms":i64::MAX,"input_chars":0,"output_chars":0,"created_at":"2020-01-01 12:00:00","activity_day":"2020-01-01"});
+        let mut calls = vec![call("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")];
+        if !compacted { calls.push(call("cccccccc-cccc-4ccc-8ccc-cccccccccccc")); }
+        value["history"] = serde_json::json!({"transcriptions":[{"uuid":parent,"raw_text":"synthetic","clean_text":"synthetic","words":1,"spoken_words":1,"duration_ms":1000,"api_used":"test","created_at":"2020-01-01 12:00:00","activity_day":"2020-01-01","activity_hour":12}],"calls":calls});
+        assert!(with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).is_err());
+        assert_eq!(dest.history_count(), 1);
+        assert_eq!(dest.db.lock().unwrap().query_row("SELECT count(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+}
+
+#[test]
+fn history_only_backup_overflow_rolls_back() {
+    let dest = Fixture::new();
+    dest.settings.save_value(store::HISTORY_RETENTION, serde_json::json!("Forever")).unwrap();
+    let original = dest.history_count();
+    let mut payload = Fixture::payload("2");
+    payload.settings = serde_json::json!({});
+    let record = |uuid: &str| serde_json::json!({"uuid":uuid, "raw_text":"synthetic", "clean_text":"synthetic", "words":i64::MAX, "spoken_words":1, "duration_ms":1000, "api_used":"test", "created_at":"2020-01-01 12:00:00", "activity_day":"2020-01-01", "activity_hour":12});
+    let mut value = serde_json::to_value(payload).unwrap();
+    value["history"] = serde_json::json!({"transcriptions":[record("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),record("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")],"calls":[]});
+    assert!(with_import_payload(&value.to_string(), |p| import_payload(&dest.settings, &dest.db, p, &[], |_, _| Ok(()), |_| {})).is_err());
+    assert_eq!(dest.history_count(), original);
+}
+
+#[test]
+fn import_applies_existing_retention_when_backup_omits_the_setting() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    dest.settings.save_value(store::HISTORY_RETENTION, serde_json::json!("7 days")).unwrap();
+    let conn = source.db.lock().unwrap();
+    let uuid: String = conn.query_row("SELECT uuid FROM transcriptions LIMIT 1", [], |r| r.get(0)).unwrap();
+    let (dictionary, contexts) = export_contextual_library_conn(&conn).unwrap();
+    let payload = ExportPayload { version:"3".into(), app_version:"test".into(), exported_at:"test".into(), stats:ExportStats::default(), activity:Some(backup_stats::export_activity_conn(&conn).unwrap()), history:Some(backup_history::export_history_conn(&conn).unwrap()), settings:serde_json::json!({}), dictionary, contexts, snippets:vec![], sub_apps:vec![] };
+    drop(conn);
+    let json = serde_json::to_string(&payload).unwrap();
+    for _ in 0..2 {
+        with_import_payload(&json, |payload| import_payload(&dest.settings, &dest.db, payload, &[], |_, _| Ok(()), |_| {})).unwrap();
+    }
+    let conn = dest.db.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions WHERE uuid=?1", [&uuid], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcription_receipts WHERE uuid=?1", [&uuid], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT SUM(total_transcriptions) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
 fn serialized_backup_merges_independent_history_and_is_idempotent() {
     let source = Fixture::new();
     let dest = Fixture::new();
+    crate::sync::store::ensure_self_identity(&source.db.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+    crate::sync::store::ensure_self_identity(&dest.db.lock().unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "destination").unwrap();
     let transcription_id: i64 = source.db.lock().unwrap().query_row("SELECT id FROM transcriptions LIMIT 1", [], |r| r.get(0)).unwrap();
     db::insert_api_calls(&source.db, &[db::ApiCall { transcription_id, model: "synthetic".into(), provider: "test".into(), task: "stt".into(), audio_ms: 1000, input_chars: 0, output_chars: 9, created_at: "2020-01-01 00:00:00".into() }]).unwrap();
     let source_before = db::query_stats(&source.db).unwrap().total_words;
@@ -115,11 +483,17 @@ fn serialized_backup_merges_independent_history_and_is_idempotent() {
     assert_eq!(dest.history_count(), 2);
     assert_eq!(dest.db.lock().unwrap().query_row("SELECT count(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
+    let exchange = crate::sync::engine::build_stats_exchange(&source.db.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    crate::sync::engine::apply_stats_exchange(&dest.db.lock().unwrap(), &exchange, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
+    crate::sync::store::remove_remote_stats(&dest.db.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
     dest.settings.save_value(store::HISTORY_RETENTION, serde_json::json!("7 days")).unwrap();
     db::prune_transcriptions_for_retention(&dest.db, &dest.settings, 7).unwrap();
     assert_eq!(dest.history_count(), 0);
     let summary = with_import_payload(&json, |payload| import_payload(&dest.settings, &dest.db, payload, &[], |_, _| Ok(()), |_| {})).unwrap();
-    assert_eq!(summary.history_conflicts, 1);
+    assert_eq!(summary.history_existing, 1);
+    assert_eq!(summary.history_conflicts, 0);
     assert_eq!(db::query_stats(&dest.db).unwrap().total_words, source_before + dest_before);
 }
 

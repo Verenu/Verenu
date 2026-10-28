@@ -340,7 +340,7 @@ pub fn compact_log(conn: &Connection) -> Result<usize> {
 
 pub fn list_remote_stats(conn: &Connection) -> Result<Vec<DeviceStats>> {
     let mut stmt =
-        conn.prepare("SELECT device_id, total_words, dictionary_fixes FROM sync_remote_stats")?;
+        conn.prepare("SELECT device_id, total_words, dictionary_fixes FROM combined_device_counters")?;
     let rows = stmt
         .query_map([], |r| {
             Ok(DeviceStats {
@@ -378,9 +378,9 @@ pub fn remove_remote_stats(conn: &Connection, device_id: &str) -> Result<()> {
 pub fn effective_lifetime_totals(conn: &Connection) -> Result<(i64, i64)> {
     let row: (i64, i64) = conn.query_row(
         "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-              + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0),
+              + COALESCE((SELECT SUM(total_words) FROM combined_device_counters), 0),
                 COALESCE((SELECT dictionary_fixes FROM lifetime_stats WHERE id = 1), 0)
-              + COALESCE((SELECT SUM(dictionary_fixes) FROM sync_remote_stats), 0)",
+              + COALESCE((SELECT SUM(dictionary_fixes) FROM combined_device_counters), 0)",
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
