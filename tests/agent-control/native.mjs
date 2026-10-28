@@ -9,6 +9,13 @@ const api = await invoke('describe');
 assert.equal(api.version, 1);
 assert.ok(api.native_commands.find((c) => c.command === 'update_context').arguments.contextId);
 assert.ok(api.native_commands.find((c) => c.command === 'create_context').arguments.pasteInChunks);
+assert.ok(api.native_commands.find((c) => c.command === 'get_sub_apps'));
+assert.ok(Array.isArray(await invoke('get_sub_apps')));
+assert.ok(Array.isArray(await invoke('get_dictionary')));
+assert.ok(Array.isArray(await invoke('get_snippets')));
+for (const command of ['get_dictionary_entry_contexts', 'get_snippet_entry_contexts', 'set_dictionary_context_assignment', 'set_snippet_context_assignment']) {
+  assert.ok(api.native_commands.some((entry) => entry.command === command));
+}
 assert.ok(!api.writable_settings.includes('key_openai'));
 const original = await invoke('get_setting', { key: 'mute_audio' });
 await invoke('save_setting', { key: 'mute_audio', value: !original });
@@ -53,6 +60,9 @@ assert.deepEqual((await invoke('diagnostics.top', range)).top_ten, []);
 await assert.rejects(invoke('diagnostics.retention', { days: 366 }));
 const report = await invoke('history.report', range);
 assert.ok(report.retained_count >= 0);
+const usage = await invoke('history.usage', range);
+assert.equal(usage.retained_count, report.retained_count);
+assert.ok(usage.app_contexts.every((row) => !Object.hasOwn(row, 'raw_text') && !Object.hasOwn(row, 'clean_text')));
 const page = await invoke('history.page', { ...range, limit: 1 });
 assert.ok(page.rows.every((r) => !Object.hasOwn(r, 'raw_text')));
 await assert.rejects(invoke('history.page', { ...range, limit: 501 }));
