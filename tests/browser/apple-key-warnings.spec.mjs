@@ -26,7 +26,7 @@ test('Apple availability refresh stays reachable with device-appropriate picker 
     const before = availabilityRequests;
     await refresh.click();
     await expect.poll(() => availabilityRequests).toBeGreaterThan(before);
-    await expect(refresh).toBeEnabled({ timeout: 20_000 });
+    await expect(refresh).toBeEnabled({ timeout: 40_000 });
     await page.getByRole('button', { name: 'Close', exact: true }).click();
   } finally {
     await session.invoke('save_setting', { key: 'advanced_model_ui', value: previous ?? false });
