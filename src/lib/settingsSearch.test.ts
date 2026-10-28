@@ -71,6 +71,14 @@ describe('settings search', () => {
     });
   });
 
+  it('routes LAN device sync search to paired devices', () => {
+    expect(searchSettings('LAN device sync', ['sync'])[0]).toMatchObject({
+      label: 'LAN device sync',
+      section: 'sync',
+      target: 'sync-paired',
+    });
+  });
+
   it('finds the Android pill settings only on Android', () => {
     expect(searchSettings('pill', visibleSections, 24, true).map((entry) => entry.id)).toEqual(
       expect.arrayContaining(['general-pill-position', 'general-cover-keyboard-mic']),

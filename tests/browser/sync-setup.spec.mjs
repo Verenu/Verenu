@@ -19,7 +19,6 @@ async function openSync(page, status = snapshot()) {
   await page.evaluate(async (next) => {
     const { appStore } = await import('/src/lib/stores.ts');
     const { syncStore } = await import('/src/lib/syncStore.svelte.ts');
-    appStore.syncEnabled = true;
     appStore.settingsSection = 'sync';
     syncStore.status = next;
     syncStore.loaded = true;
