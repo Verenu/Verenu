@@ -149,7 +149,6 @@ export const appStore = $state({
   appearanceSaving: false,
   cleanupEnabled: true,
   legacyFeaturesEnabled: false,
-  syncEnabled: false,
   pillState: 'idle' as PillState,
   setupComplete: null as boolean | null,
   snippets: [] as Snippet[],

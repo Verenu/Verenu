@@ -23,7 +23,6 @@ interface SettingsSection {
   macOnly?: boolean;
   devOnly?: boolean;
   legacyOnly?: boolean;
-  syncOnly?: boolean;
   desktopOnly?: boolean;
 }
 
@@ -35,7 +34,7 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },
   { id: 'privacy',     label: 'Privacy',      icon: 'lock',    group: 'Settings' },
   { id: 'integrations', label: 'Integrations', icon: 'layers', group: 'Settings' },
-  { id: 'sync',        label: 'Sync',         icon: 'devices', group: 'Settings', syncOnly: true },
+  { id: 'sync',        label: 'Sync',         icon: 'devices', group: 'Settings' },
   { id: 'advanced',    label: 'Audio',        icon: 'mic',     group: 'Settings' },
   { id: 'permissions', label: 'Permissions',  icon: 'shield',  group: 'Settings', macOnly: true },
   { id: 'developer',   label: 'Developer',    icon: 'command', group: 'Settings', devOnly: true },
@@ -58,14 +57,12 @@ export function visibleSettingsSections(opts: {
   isMac: boolean;
   devMode: boolean;
   legacyMode?: boolean;
-  syncEnabled?: boolean;
 }): SettingsSectionGroup[] {
   const groups: SettingsSectionGroup[] = [];
   for (const section of SETTINGS_SECTIONS) {
     if (section.macOnly && !opts.isMac && !isAndroid) continue;
     if (section.devOnly && !opts.devMode) continue;
     if (section.legacyOnly && !opts.legacyMode) continue;
-    if (section.syncOnly && !opts.syncEnabled) continue;
     if (section.desktopOnly && isAndroid) continue;
     const last = groups[groups.length - 1];
     if (last && last.group === section.group) last.items.push(section);
