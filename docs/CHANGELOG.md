@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Smoothed the dictation pill's error animation. The native window now finishes growing before the error pill animates into the new space, so a message or card is never painted into a window that is still catching up (the flicker when the pill resized to fit an error, most visible on Linux/Hyprland). With reduced motion enabled, pill states now cross-fade without sliding, scaling, or width morphs.
 - Expanded privacy backups to include retained transcription history and Insights. Imports deduplicate retained records, preserve unrelated activity, report uncertain aggregate overlaps, and match app targets conservatively across devices. Backup files contain private transcription text; credentials and device-local state remain excluded.
 
