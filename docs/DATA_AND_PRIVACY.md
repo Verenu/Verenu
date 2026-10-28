@@ -98,14 +98,45 @@ Current backup export includes:
 - Settings
 - Context groups, app/website targets, context assignments, context-specific
   vocabulary and AutoLearn correction mappings, and snippets
-- Derived stats
+- Retained transcription history, including raw and cleaned text, timestamps,
+  Contexts, and provider usage records. The backup file is sensitive.
+- Lifetime, daily, Context, hourly and provider Insights, including summaries
+  retained after history is pruned. Import deduplicates retained records by UUID.
+  Historical summaries do not identify individual dictations; overlapping
+  summaries are reconciled conservatively and reported when uncertain, so some
+  totals can be incomplete. Imported history remains subject to retention.
+  Per-device counter IDs are included to reconcile totals with LAN sync without
+  counting the same device twice. Pairing credentials and certificates are not
+  transferred. If a source device has no counter identity, its aggregate totals
+  cannot safely be merged and the import report flags the limitation. Older
+  backup versions contain only an unidentifiable total; their settings and
+  library still import, but that total cannot safely be restored.
+
+After history retention removes transcript text, Verenu keeps a numeric
+receipt for each dictation and provider call. These receipts contain an event
+identifier, calendar bucket, Context, and usage measurements so that backups
+and LAN sync can recognize activity already counted on another device. They do
+not contain transcript text, prompts, audio, or application names. Older sync
+peers do not understand receipts. A fresh sync snapshot is requested when a
+peer upgrades, so it can receive activity it missed on the older version.
+History with ambiguous older statistics syncs separately, so its text remains
+available without counting its uncertain contribution twice. Incoming history
+outside the receiving device's retention period is kept as a text-free receipt.
 
 Short-lived AutoLearn candidate/pending evidence is intentionally local-only
 and is not exported or synchronized. Pending correction evidence expires after
 30 days. Persistent promoted mappings retain their originating Context during
 backup restore and LAN sync.
 
-Current backup export does not include full transcription history.
+Backups exclude API keys, device pairing credentials, local microphone
+and secondary shortcut selections, downloaded models, temporary caches, pending learning
+evidence, the device's opt-in diagnostic failure journal, and the in-progress
+audio spool. They also exclude sync cursors and logs, unresolved sync
+dependencies, cached provider pricing, and seeded-default bookkeeping. These
+are credentials, device-local diagnostics or sync state, replaceable cache
+entries, or transient data. App targets are matched to installed apps on the
+destination; weak, ambiguous, or conflicting matches are left out and
+reported.
 
 Import and restore paths validate supported setting values and reject oversized prompt overrides, snippet bodies, and unsupported context-target values instead of silently accepting junk. Legacy app-mapping exports remain supported for migration.
 

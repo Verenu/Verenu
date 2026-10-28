@@ -21,7 +21,7 @@ mod model_selection;
 mod permissions;
 mod recording;
 mod service_status;
-mod settings;
+pub(crate) mod settings;
 mod sub_apps;
 mod sync;
 mod system;

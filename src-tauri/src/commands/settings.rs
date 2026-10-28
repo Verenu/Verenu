@@ -30,6 +30,7 @@ pub use api_keys::*;
 pub use custom_providers::*;
 pub use model_catalog::*;
 pub use import_export::*;
+pub(crate) use import_export::{import_sync_receipt, validate_totals};
 pub use prompts::*;
 
 const CLEANUP_PROMPT_OVERRIDE_CHAR_LIMIT: usize = 20_000;

@@ -2245,6 +2245,11 @@ impl SyncHost for ManagerHost {
         env!("CARGO_PKG_VERSION").to_string()
     }
 
+    fn history_retention_days(&self) -> Option<i64> {
+        let value = self.settings.get(store::HISTORY_RETENTION);
+        store::history_retention_days(value.as_ref().and_then(|v| v.as_str()).unwrap_or("30 days"))
+    }
+
     fn settings_payload(&self) -> anyhow::Result<Vec<super::protocol::SettingRecord>> {
         let stamps: HashMap<String, (i64, String)> = (|| {
             let conn = self.db.lock().ok()?;
