@@ -58,9 +58,6 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install frontend dependencies
-        run: npm ci
-
       - name: Audit npm dependencies
         run: npm audit --omit=dev --audit-level=moderate
 
@@ -118,12 +115,13 @@ jobs:
           if (failed) process.exit(1);
           NODE
 
-  rust:
-    name: Rust checks
+  rust-partitions:
+    name: ${{ matrix.check == 'clippy' && 'Rust lint' || matrix.check == 'test' && 'Rust tests' || 'Rust dev-session bridge tests' }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        check: [clippy, test, dev-session]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -136,15 +134,34 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
+          shared-key: pr-${{ matrix.check }}
 
       - name: Run clippy
+        if: matrix.check == 'clippy'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run Rust tests
+        if: matrix.check == 'test'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Check browser dev-session bridge
+        if: matrix.check == 'dev-session'
         run: cargo test --manifest-path src-tauri/Cargo.toml --features dev-session dev_session_ --lib
+
+  rust:
+    name: Rust checks
+    if: always()
+    needs: rust-partitions
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all Rust partitions
+        env:
+          RESULT: ${{ needs.rust-partitions.result }}
+        run: test "$RESULT" = success
 
   blob-size-guard:
     name: No large files
@@ -178,22 +195,56 @@ jobs:
           fi
           echo "No changed file exceeds 10 MB."
 
-  all-in-one-fast:
-    name: All-in-one fast profile
+  fast-partitions:
+    name: Fast regression suites (${{ matrix.suites }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: preflight-contract, suites: 'preflight,contract' }
+          - { label: unit-frontend, suites: 'unit,frontend' }
+          - { label: rust, suites: 'rust' }
+          - { label: ui, suites: 'ui' }
+          - { label: accessibility-state, suites: 'accessibility,state' }
+          - { label: performance, suites: 'performance' }
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Run shared regression gate
+      - name: Run selected fast regression suites
         uses: ./.github/actions/regression-checks
         with:
-          report-prefix: pr
+          report-prefix: pr-fast-${{ matrix.label }}
           profile: fast
+          fast-suites: ${{ matrix.suites }}
+
+  linux-regressions:
+    name: Linux native regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/regression-checks
+        with:
+          report-prefix: pr-linux
+          profile: linux
+
+  all-in-one-fast:
+    name: All-in-one fast profile
+    if: always()
+    needs: [fast-partitions, linux-regressions]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every fast partition
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e 'const jobs=JSON.parse(process.env.RESULTS); const failed=Object.entries(jobs).filter(([,job])=>job.result!=="success"); if(failed.length) { console.error(failed.map(([name,job])=>`${name}: ${job.result}`).join("\n")); process.exit(1); }'
 
   owned-sessions:
-    name: Owned sessions (${{ matrix.label }})
+    name: ${{ matrix.suite == 'node' && 'Rust-backed Node integration tests' || format('Rust-backed {0} browser tests', matrix.project) }} (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -206,11 +257,18 @@ jobs:
           - { label: node-4, suite: node, shard: '4/6', project: all }
           - { label: node-5, suite: node, shard: '5/6', project: all }
           - { label: node-6, suite: node, shard: '6/6', project: all }
-          - { label: desktop, suite: browser, shard: '1/1', project: desktop }
-          - { label: phone, suite: browser, shard: '1/1', project: phone }
+          - { label: desktop-1, suite: browser, shard: '1/4', project: desktop }
+          - { label: desktop-2, suite: browser, shard: '2/4', project: desktop }
+          - { label: desktop-3, suite: browser, shard: '3/4', project: desktop }
+          - { label: desktop-4, suite: browser, shard: '4/4', project: desktop }
+          - { label: phone-1, suite: browser, shard: '1/4', project: phone }
+          - { label: phone-2, suite: browser, shard: '2/4', project: phone }
+          - { label: phone-3, suite: browser, shard: '3/4', project: phone }
+          - { label: phone-4, suite: browser, shard: '4/4', project: phone }
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/regression-checks
+      - name: Run selected isolated session tests
+        uses: ./.github/actions/regression-checks
         with:
           report-prefix: pr-${{ matrix.label }}
           profile: owned
@@ -229,8 +287,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:ci
-      - run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
+      - name: Test and lint CI workflows
+        run: npm run test:ci
+      - name: Test Playwright report validation
+        run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
 
   android:
     name: Android Kotlin and unit tests
@@ -257,7 +317,8 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run build
-      - run: npm run test:android
+      - name: Run Android unit tests
+        run: npm run test:android
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -290,10 +351,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
       - run: npm ci
-      - name: Run native WebView
+      - name: Test native WebView and IPC
         if: runner.os != 'Linux'
         run: npm run test:native:webview -- --report tests/reports/native.json
-      - name: Run Linux native WebView
+      - name: Test Linux native WebView and IPC
         if: runner.os == 'Linux'
         run: |
           runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"

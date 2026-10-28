@@ -89,11 +89,11 @@ restart checks always use a separate public synthetic session, including in
 
 Every `tests/dev-session/*.test.mjs` file runs sequentially within its runner,
 with a fresh default-30 backend for each file. PR CI uses six disjoint Node
-shards on separate GitHub-hosted runners, alongside separate desktop and phone
-browser jobs and the deterministic Linux checks. Each browser job also checks
+shards on separate GitHub-hosted runners, alongside four Playwright shards per
+desktop and phone project and the deterministic Linux checks. Each browser job also checks
 restart persistence. `CI required` requires every partition to succeed; no
-test files are filtered by changed paths. Release checks and the default local
-command still run the complete suite.
+test files are filtered by changed paths. Release checks use the same partitions;
+the default local command still runs the complete suite.
 
 The same workflow runs after merges to `master`, seeding dependency caches that
 future PRs can restore. GitHub isolates PR-created caches to that PR; sibling
@@ -108,9 +108,16 @@ To reproduce one CI partition:
 
 ```bash
 npm run test:session:owned -- --suite node --shard 1/6
-npm run test:session:owned -- --suite browser --project desktop
-npm run test:session:owned -- --suite browser --project phone
+npm run test:session:owned -- --suite browser --project desktop --shard 1/4
+npm run test:session:owned -- --suite browser --project phone --shard 1/4
 ```
+
+The fast profile also runs in separate suite partitions, with Linux Clippy and
+native regression checks on their own runner. A workflow contract checks that
+the partitions cover every fast suite and Playwright case exactly once. Windows
+and macOS Clippy, Rust tests, and dev-session tests run independently. The existing
+`All-in-one fast profile` status aggregates those jobs. Nightly release checks
+use the same partitions against the exact release snapshot.
 
 Files are sorted and assigned round-robin, so new Node files enter CI
 automatically. Empty or invalid partitions fail. Safe reports record the
