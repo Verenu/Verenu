@@ -419,6 +419,29 @@ pub fn update_context(db: &Db, context_id: i64, name: &str) -> Result<()> {
     require_row_changed(changed, "Context", context_id)
 }
 
+pub fn save_context_if_unchanged(db: &Db, original: Context, updated: Context) -> Result<Context> {
+    let name = normalize_context_name(&updated.name)?;
+    let instructions = normalize_custom_instructions(updated.custom_instructions.as_deref())?;
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = query_context_conn(&tx, original.id)?;
+    if original.id != updated.id || current.name != original.name || current.icon != original.icon
+        || current.tone != original.tone || current.cleanup_intensity != original.cleanup_intensity
+        || current.color != original.color || current.custom_instructions != original.custom_instructions
+        || current.contextual_formatting_override != original.contextual_formatting_override
+        || current.paste_in_chunks != original.paste_in_chunks
+        || current.t3_skill_mentions_disabled != original.t3_skill_mentions_disabled {
+        anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+    }
+    tx.execute(
+        "UPDATE contexts SET name = ?2, icon = ?3, tone = ?4, cleanup_intensity = ?5, color = ?6, custom_instructions = ?7, contextual_formatting_disabled = ?8, contextual_formatting_override = ?9, paste_in_chunks = ?10, t3_skill_mentions_disabled = ?11, updated_at = datetime('now') WHERE id = ?1",
+        params![original.id, name, normalize_optional_trimmed(updated.icon.as_deref()), normalize_optional_trimmed(updated.tone.as_deref()), normalize_optional_trimmed(updated.cleanup_intensity.as_deref()), normalize_optional_trimmed(updated.color.as_deref()), instructions, updated.contextual_formatting_override == Some(true), updated.contextual_formatting_override, updated.paste_in_chunks, updated.t3_skill_mentions_disabled],
+    )?;
+    let result = query_context_conn(&tx, original.id)?;
+    tx.commit()?;
+    Ok(result)
+}
+
 #[cfg(test)]
 pub fn update_context_settings(
     db: &Db,
@@ -1055,6 +1078,24 @@ pub fn set_snippet_context_assignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_editor_rejects_stale_save_without_overwriting_agent_change() {
+        let db = open(":memory:").unwrap();
+        let original = insert_context_with_override_and_delivery(&db, "Original", None, None, None, None, None, false).unwrap();
+        let mut edited = original.clone();
+        edited.name = "User edit".into();
+        patch_context_settings(&db, original.id, serde_json::from_value(serde_json::json!({"tone": "formal"})).unwrap()).unwrap();
+        assert!(save_context_if_unchanged(&db, original.clone(), edited).unwrap_err().to_string().contains("changed while you were editing"));
+        let current = query_context(&db, original.id).unwrap();
+        assert_eq!(current.name, "Original");
+        assert_eq!(current.tone.as_deref(), Some("formal"));
+        let mut retry = current.clone();
+        retry.name = "User edit".into();
+        let saved = save_context_if_unchanged(&db, current, retry).unwrap();
+        assert_eq!(saved.name, "User edit");
+        assert_eq!(saved.tone.as_deref(), Some("formal"));
+    }
 
     #[test]
     fn agent_patch_preserves_omitted_settings_and_clears_explicit_null() {

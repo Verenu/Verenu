@@ -645,6 +645,105 @@ pub fn get_storage_full_simulation() -> bool {
     store::storage_full_simulation_enabled()
 }
 
+const MODEL_KEYS: &[&str] = &[
+        store::TRANSCRIPTION_MODELS_BY_PROVIDER, store::CLEANUP_MODELS_BY_PROVIDER,
+        store::TRANSCRIPTION_DEFAULT_MODEL, store::CLEANUP_DEFAULT_MODEL,
+        store::TRANSCRIPTION_FALLBACK_MODELS, store::CLEANUP_FALLBACK_MODELS,
+        store::DUAL_TRANSCRIPTION_ENABLED, store::MODEL_SELECTION_MODE,
+        store::TRANSCRIPTION_MODEL, store::CLEANUP_MODEL,
+        store::TRANSCRIPTION_PROVIDER, store::CLEANUP_PROVIDER,
+        store::CLEANUP_ENABLED,
+];
+
+fn commit_model_settings(
+    settings: &store::SettingsHandle,
+    expected: serde_json::Map<String, serde_json::Value>,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if values.len() != MODEL_KEYS.len() || expected.len() != MODEL_KEYS.len()
+        || MODEL_KEYS.iter().any(|key| !values.contains_key(*key) || !expected.contains_key(*key))
+    {
+        return Err("Invalid model settings snapshot".into());
+    }
+    for (key, value) in &values {
+        validate_setting(key, value)?;
+    }
+    if store::storage_full_simulation_enabled() {
+        return Err(format!("{}: simulated settings write failure", store::STORAGE_FULL_ERROR));
+    }
+    settings.save_values_with_commit(values, |current| {
+            if expected.iter().any(|(key, value)| {
+                current.get(key).unwrap_or(&serde_json::Value::Null) != value
+            }) {
+                return Err("Model settings changed while you were editing. Reload them before saving.".into());
+            }
+            Ok(())
+    }, || Ok(())).map(|_| ())
+}
+
+#[cfg(test)]
+mod model_settings_conflict_tests {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    #[test]
+    fn stale_model_snapshot_cannot_overwrite_a_concurrent_change() {
+        let path = std::env::temp_dir().join(format!("verenu-model-conflict-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let expected: Map<String, Value> = MODEL_KEYS.iter().map(|key| ((*key).into(), Value::Null)).collect();
+        let values = json!({
+            "transcription_models_by_provider": {}, "cleanup_models_by_provider": {},
+            "transcription_default_model": "groq/whisper", "cleanup_default_model": "groq/model",
+            "transcription_fallback_models": [], "cleanup_fallback_models": [],
+            "dual_transcription_enabled": false, "model_selection_mode": "manual",
+            "transcription_model": "groq/whisper", "cleanup_model": "groq/model",
+            "transcription_provider": "groq", "cleanup_provider": "groq", "cleanup_enabled": true
+        }).as_object().unwrap().clone();
+        settings.save_value(store::TRANSCRIPTION_DEFAULT_MODEL, json!("openai/new-model")).unwrap();
+        assert!(commit_model_settings(&settings, expected.clone(), values.clone()).is_err());
+        assert_eq!(settings.get(store::TRANSCRIPTION_DEFAULT_MODEL), Some(json!("openai/new-model")));
+        assert_eq!(settings.get(store::CLEANUP_DEFAULT_MODEL), None);
+        let mut current = expected;
+        current.insert(store::TRANSCRIPTION_DEFAULT_MODEL.into(), json!("openai/new-model"));
+        settings.save_value(store::CLEANUP_ENABLED, json!(false)).unwrap();
+        assert!(commit_model_settings(&settings, current.clone(), values.clone()).is_err());
+        assert_eq!(settings.get(store::CLEANUP_ENABLED), Some(json!(false)));
+        assert_eq!(settings.get(store::CLEANUP_DEFAULT_MODEL), None);
+        current.insert(store::CLEANUP_ENABLED.into(), json!(false));
+        commit_model_settings(&settings, current, values).unwrap();
+        assert_eq!(settings.get(store::CLEANUP_DEFAULT_MODEL), Some(json!("groq/model")));
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tauri::command]
+pub async fn save_model_settings_if_unchanged(
+    app: AppHandle,
+    expected: serde_json::Map<String, serde_json::Value>,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let settings = store::settings_handle(&app)?;
+    let keys: Vec<String> = values.keys().cloned().collect();
+    run_blocking("save_model_settings_if_unchanged", move || {
+        commit_model_settings(&settings, expected, values)
+    }).await?;
+    let db = app.state::<DbHandle>().inner().clone();
+    let stamped = run_blocking("save_model_settings_stamp", move || {
+        let conn = db.lock().map_err(|_| "database lock poisoned".to_string())?;
+        for key in keys {
+            if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
+                if let Err(err) = crate::sync::engine::record_local_setting_change(&conn, &key) {
+                    log::warn!("sync: failed to stamp setting change: {err}");
+                }
+            }
+        }
+        Ok(())
+    }).await;
+    if let Err(err) = stamped { log::warn!("sync: failed to stamp model settings: {err}"); }
+    if let Some(manager) = app.try_state::<crate::sync::SyncManager>() { manager.mark_dirty(); }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn save_setting(
     app: AppHandle,
@@ -965,6 +1064,11 @@ pub struct CleanupCacheStatus {
 #[tauri::command]
 pub async fn get_all_settings(app: AppHandle) -> Result<AllSettings, String> {
     Ok(read_all_settings(&store::settings_snapshot(&app)?))
+}
+
+#[tauri::command]
+pub fn get_effective_transcription_model(app: AppHandle) -> Result<String, String> {
+    Ok(store::load_pipeline_config(&store::settings_snapshot(&app)?).transcription_default_model)
 }
 
 #[cfg(test)]
