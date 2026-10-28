@@ -321,6 +321,8 @@ pub struct TranscriptionRow {
     pub api_used: String,
     #[serde(default)]
     pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website_domain: Option<String>,
     #[serde(default)]
     pub context_uuid: Option<String>,
     pub created_at: String,
@@ -540,7 +542,7 @@ row_payloads! {
     };
     transcription_payload, TranscriptionRow, "serialize transcription row",
     "SELECT t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used,
-            t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour
+            t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour, t.website_domain
      FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
      LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
      WHERE t.uuid = ?1",
@@ -556,6 +558,7 @@ row_payloads! {
         created_at: r.get(8)?,
         activity_day: r.get(9)?,
         activity_hour: r.get(10)?,
+        website_domain: r.get(11)?,
     };
     api_call_payload, ApiCallRow, "serialize api call row",
     "SELECT t.uuid, a.model, a.provider, a.task, a.audio_ms, a.input_chars, a.output_chars, a.created_at, a.activity_day
@@ -2655,8 +2658,8 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     }
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO transcriptions
-           (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+           (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour, website_domain)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             op.row_uuid,
             row.raw_text,
@@ -2669,7 +2672,8 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             context_id,
             row.created_at,
             row.activity_day,
-            row.activity_hour
+            row.activity_hour,
+            row.website_domain.as_deref().and_then(crate::core::browser_probe::extract_domain)
         ],
     )?;
     if inserted > 0 {
@@ -4005,6 +4009,11 @@ mod payload_tests {
                 "{table} missing UUID"
             );
         }
+        conn.execute("UPDATE transcriptions SET website_domain = 'docs.example.test' WHERE uuid = 'transcription'", []).unwrap();
+        let payload = row_payload(&conn, "transcriptions", "transcription").unwrap().unwrap();
+        assert_eq!(payload["website_domain"], "docs.example.test");
+        let decoded: TranscriptionRow = serde_json::from_value(payload).unwrap();
+        assert_eq!(decoded.website_domain.as_deref(), Some("docs.example.test"));
         assert!(row_payload(&conn, "unknown", "dictionary")
             .unwrap()
             .is_none());

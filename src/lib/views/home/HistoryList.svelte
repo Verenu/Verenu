@@ -65,6 +65,7 @@
   function rowMeta(entry: Entry, inventory: InstalledApp[]): string {
     const parts: string[] = [];
     if (entry.app_name) parts.push(formatAppLabel(entry.app_name, inventory));
+    if (entry.website_domain) parts.push(entry.website_domain);
     const duration = durationText(entry);
     if (duration) parts.push(duration);
     return parts.join(' · ');
@@ -441,6 +442,9 @@
                   {#if item.entry.app_name}
                     <div class="day-meta-app">{capAppLabel(item.entry.app_name, installedApps)}</div>
                   {/if}
+                  {#if item.entry.website_domain}
+                    <div class="day-meta-line">{item.entry.website_domain}</div>
+                  {/if}
                   {#if durationText(item.entry)}
                     <div class="day-meta-line">{durationText(item.entry)}</div>
                   {/if}
@@ -502,6 +506,10 @@
   .day-head.muted { margin-top: 22px; color: var(--ink-mute); }
   .day-head-row { display: flex; align-items: center; gap: 12px; }
   .day-head-row > span { flex: 0 0 auto; }
+  @media (max-width: 560px) {
+    .day-head-row:has(:global(.history-search-group.expanded)) { flex-wrap: wrap; }
+    .day-head-row:has(:global(.history-search-group.expanded)) :global(.history-toolbar) { flex-basis: 100%; }
+  }
 
   .day-table { border-top: 1px solid var(--line); }
 
