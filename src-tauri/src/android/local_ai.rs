@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub const LLAMA_BINARY: &str = "libverenu_llama_server.so";
+const ONNX_LIBRARY: &str = "libonnxruntime.so";
 static NATIVE_LIBRARY_DIR: OnceLock<PathBuf> = OnceLock::new();
 static SDK_VERSION: OnceLock<i32> = OnceLock::new();
 
@@ -51,7 +52,15 @@ pub fn llama_binary() -> anyhow::Result<PathBuf> {
 }
 
 pub fn runtimes_present(dir: &Path) -> bool {
-    dir.join("libonnxruntime.so").is_file() && dir.join(LLAMA_BINARY).is_file()
+    dir.join(ONNX_LIBRARY).is_file() && dir.join(LLAMA_BINARY).is_file()
+}
+
+fn onnx_library_path(dir: &Path) -> anyhow::Result<PathBuf> {
+    let path = dir.join(ONNX_LIBRARY);
+    if !path.is_file() {
+        anyhow::bail!("ONNX runtime is missing from this Android build")
+    }
+    Ok(path)
 }
 
 pub fn supported() -> bool {
@@ -69,7 +78,9 @@ pub fn ensure_onnx_runtime() -> anyhow::Result<()> {
     if READY.get().is_some() {
         return Ok(());
     }
-    let path = native_library_dir()?.join("libonnxruntime.so");
+    // ort's dynamic loader recursively initializes itself when reporting a
+    // missing library, so reject the common optional-runtime case first.
+    let path = onnx_library_path(native_library_dir()?)?;
     ort::init_from(&path)?.with_name("Verenu").commit();
     let _ = READY.set(());
     Ok(())
@@ -90,6 +101,20 @@ mod tests {
         assert!(runtimes_present(&dir));
         std::fs::remove_file(dir.join("libonnxruntime.so")).unwrap();
         assert!(!runtimes_present(&dir));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_onnx_runtime_is_reported_without_loading_it() {
+        let dir =
+            std::env::temp_dir().join(format!("verenu-missing-onnx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(onnx_library_path(&dir)
+            .unwrap_err()
+            .to_string()
+            .contains("missing"));
+        std::fs::write(dir.join(ONNX_LIBRARY), b"fixture").unwrap();
+        assert_eq!(onnx_library_path(&dir).unwrap(), dir.join(ONNX_LIBRARY));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
