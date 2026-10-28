@@ -55,6 +55,14 @@ runs:
       if: inputs.profile != 'linux'
       shell: bash
       run: npx playwright install --with-deps chromium
+    - name: Compile Rust prompt contract tests
+      if: (inputs.profile == 'all' || inputs.profile == 'fast') && (inputs.fast-suites == '' || contains(format(',{0},', inputs.fast-suites), ',contract,'))
+      shell: bash
+      run: cargo test --manifest-path src-tauri/Cargo.toml prompt_regression_fixtures_hold --no-run
+    - name: Compile Rust session backend
+      if: inputs.profile == 'all' || inputs.profile == 'owned'
+      shell: bash
+      run: cargo build --manifest-path src-tauri/Cargo.toml --features dev-session
     - name: Run selected deterministic regression suites
       if: inputs.profile == 'all' || inputs.profile == 'fast'
       shell: bash
