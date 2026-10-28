@@ -55,3 +55,77 @@ test('Context creation, editing and deletion persist through the UI without touc
     if (created && (await session.invoke('get_contexts')).some(row => row.id === created.id)) await session.invoke('delete_context', { contextId: created.id });
   }
 });
+
+test('an open editor cannot overwrite a concurrent Context update', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Concurrent ${Date.now()}` });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    if (page.viewportSize().width < 700) {
+      await page.locator(`[data-debug-id="context.${context.id}"]`).click({ button: 'right' });
+    } else {
+      await page.getByRole('button', { name: `More actions for ${context.name}`, exact: true }).click();
+    }
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    const edit = page.getByRole('dialog', { name: 'Edit context group', exact: true });
+    await edit.getByLabel('Context group name').fill('User rename');
+    await session.invoke('update_context_settings', { contextId: context.id, tone: 'formal' });
+    await edit.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(edit.getByText(/changed while you were editing/)).toBeVisible();
+    const current = (await session.invoke('get_contexts')).find(row => row.id === context.id);
+    expect(current.name).toBe(context.name);
+    expect(current.tone).toBe('formal');
+  } finally {
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
+test('refreshing Context items preserves an open vocabulary editor', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Editor refresh ${Date.now()}` });
+  const word = await session.invoke('create_dictionary_entry', { term: 'SyntheticTerm', mistake: 'old spelling', contextId: context.id });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    const row = page.locator('.item-row').filter({ hasText: 'SyntheticTerm' });
+    await row.click();
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await page.locator('#dict-mistake').fill('new spelling');
+    const refresh = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_context_dictionary');
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:agent-contexts-changed'); });
+    await refresh;
+    await expect(page.locator('#dict-mistake')).toHaveValue('new spelling');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    const entries = await session.invoke('get_context_dictionary', { contextId: context.id });
+    expect(entries.filter(entry => entry.id === word.id)).toHaveLength(1);
+    expect(entries.find(entry => entry.id === word.id).mistake).toBe('new spelling');
+  } finally {
+    await session.invoke('remove_dictionary_entry', { id: word.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
+test('refreshing Context items preserves an open snippet editor', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Snippet refresh ${Date.now()}` });
+  const snippet = await session.invoke('create_snippet', { trigger: 'synthetic snippet', expansion: 'old expansion', instructions: '', contextId: context.id });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.getByRole('tab', { name: /Snippets/ }).click();
+    await page.locator('.item-row').filter({ hasText: 'synthetic snippet' }).click();
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await page.locator('#expansion-input').fill('new expansion');
+    const refresh = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_context_snippets');
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:agent-contexts-changed'); });
+    await refresh;
+    await expect(page.locator('#expansion-input')).toHaveValue('new expansion');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    const entries = await session.invoke('get_context_snippets', { contextId: context.id });
+    expect(entries.filter(entry => entry.id === snippet.id)).toHaveLength(1);
+    expect(entries.find(entry => entry.id === snippet.id).expansion).toBe('new expansion');
+  } finally {
+    await session.invoke('remove_snippet', { id: snippet.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});

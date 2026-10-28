@@ -291,6 +291,24 @@
     let stopSyncListeners: (() => void) | undefined;
     let stopTitleBarMetricsListener: (() => void) | undefined;
     let stopModelNoticeListener: (() => void) | undefined;
+    let stopAgentContextsListener: (() => void) | undefined;
+    let stopAgentSettingsListener: (() => void) | undefined;
+    let cleanupRefreshVersion = 0;
+    void listen('verenu:agent-contexts-changed', () => { void loadContexts(true); })
+      .then(unlisten => { if (!mounted) unlisten(); else stopAgentContextsListener = unlisten; });
+    void listen<string[] | null>('verenu:agent-settings-changed', (event) => {
+      window.dispatchEvent(new Event('verenu:setting-saved'));
+      window.dispatchEvent(new CustomEvent('verenu:agent-settings-changed', { detail: event.payload }));
+      if (!event.payload || event.payload.some(key => ['transcription_default_model', 'transcription_model', 'transcription_provider'].includes(key))) {
+        void refreshTranscriptionModel();
+      }
+      if (!event.payload || event.payload.includes('cleanup_enabled')) {
+        const version = ++cleanupRefreshVersion;
+        void invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }).then(value => {
+          if (mounted && version === cleanupRefreshVersion && typeof value === 'boolean') appStore.cleanupEnabled = value;
+        }).catch(error => console.error('refresh cleanup setting failed', error));
+      }
+    }).then(unlisten => { if (!mounted) unlisten(); else stopAgentSettingsListener = unlisten; });
     void listen<string>('verenu:model-notice', (event) => {
       modelNotice = [modelNotice, event.payload].filter(Boolean).join(' ');
       clearTimeout(modelNoticeTimer);
@@ -547,6 +565,8 @@
       if (stopSyncListeners) stopSyncListeners();
       if (stopTitleBarMetricsListener) stopTitleBarMetricsListener();
       stopModelNoticeListener?.();
+      stopAgentContextsListener?.();
+      stopAgentSettingsListener?.();
       clearTimeout(modelNoticeTimer);
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       window.removeEventListener('error', onWindowError);

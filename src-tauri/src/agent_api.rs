@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone)]
 pub(crate) struct Agent {
@@ -575,6 +575,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             commands::save_api_key(app.clone(), args.provider, args.key)
                 .await
                 .map_err(|_| "Could not save credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
             Ok(Value::Null)
         }
         "credentials.delete" => {
@@ -588,6 +589,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             commands::delete_api_key(app.clone(), args.provider)
                 .await
                 .map_err(|_| "Could not delete credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
             Ok(Value::Null)
         }
         "context.patch_settings" => {
@@ -605,6 +607,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             .await
             .map_err(|_| "Context worker unavailable".to_string())?
             .map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
             serde_json::to_value(context).map_err(|e| e.to_string())
         }
         "save_setting" => {
@@ -630,7 +633,8 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                     return Err("Remove providers with delete_custom_provider so model selections are repaired".into());
                 }
             }
-            commands::save_setting(app.clone(), args.key, args.value).await?;
+            commands::save_setting(app.clone(), args.key.clone(), args.value).await?;
+            let _ = app.emit("verenu:agent-settings-changed", vec![args.key]);
             Ok(Value::Null)
         }
         "get_microphones" => {
@@ -698,7 +702,25 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             .map_err(|_| "History worker unavailable".to_string())?
             .map_err(|e| e.to_string())
         }
-        _ => registry!(dispatch, app, request),
+        _ => {
+            let refresh_settings = request.command == "delete_custom_provider";
+            let refresh_contexts = matches!(request.command.as_str(),
+                "create_context" | "duplicate_context" | "update_context" | "update_context_settings"
+                | "update_context_color" | "set_context_t3_skill_mentions" | "set_context_pinned" | "delete_context"
+                | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website"
+                | "create_dictionary_entry" | "edit_dictionary_entry" | "remove_dictionary_entry" | "move_dictionary_entry_to_context"
+                | "move_dictionary_entry_by_term_to_context" | "set_dictionary_context_assignment"
+                | "create_snippet" | "edit_snippet" | "remove_snippet" | "move_snippet_entry_to_context" | "set_snippet_context_assignment"
+                | "create_sub_app" | "assign_sub_app" | "delete_sub_app");
+            let result = registry!(dispatch, app, request);
+            if refresh_contexts && result.is_ok() {
+                let _ = app.emit("verenu:agent-contexts-changed", ());
+            }
+            if refresh_settings && result.is_ok() {
+                let _ = app.emit("verenu:agent-settings-changed", ());
+            }
+            result
+        },
     }
 }
 

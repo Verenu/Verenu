@@ -168,6 +168,7 @@
   let modalContextualFormattingChoice = $state<'inherit' | 'enabled' | 'disabled'>('inherit');
   let modalAdvancedOpen = $state(false);
   let editingContextId = $state<number | null>(null);
+  let editingOriginal = $state<Context | null>(null);
   // Tone/cleanup dropdown menus render fixed-position at the top level (not
   // nested in the modal card) because the modal card and body both clip
   // overflow — an absolutely-positioned menu inside them gets cut off.
@@ -347,8 +348,6 @@
       dictionary = normalizeContextDictionary(nextDictionary, contextId);
       snippets = nextSnippets ?? [];
       void loadContextStats(contextId);
-      selectedDictionary = null;
-      selectedSnippet = null;
       closeRowMenu();
     } catch (error) {
       if (token !== loadToken) return;
@@ -395,6 +394,7 @@
           void loadContextItems(selectedContextId);
         }
       }),
+      listen('verenu:agent-contexts-changed', () => { void loadContextItems(selectedContextId); }),
     ];
     for (const registration of registrations) {
       void registration.then((unlisten) => {
@@ -414,8 +414,6 @@
     if (contexts.length > 0) {
       dictionary = [];
       snippets = [];
-      selectedDictionary = null;
-      selectedSnippet = null;
       closeRowMenu();
       void loadContextItems(contextId);
     }
@@ -651,6 +649,7 @@
       ? contexts.find((context) => context.id === (targetId ?? contextsStore.selectedId)) ?? null
       : null;
     editingContextId = editing?.id ?? null;
+    editingOriginal = editing ? { ...editing } : null;
     contextName = editing?.name ?? '';
     modalIcon = editing?.icon ?? null;
     const customIcon = parseContextIcon(modalIcon);
@@ -843,7 +842,7 @@
     const editing = contextModalMode === 'edit' && editingContextId !== null
       ? contexts.find((context) => context.id === editingContextId) ?? null
       : null;
-    if (contextModalMode === 'edit' && !editing) {
+    if (contextModalMode === 'edit' && (!editing || !editingOriginal)) {
       contextError = 'This context no longer exists.';
       return;
     }
@@ -853,26 +852,12 @@
       const formattingOverride = modalContextualFormattingChoice === 'inherit'
         ? null
         : modalContextualFormattingChoice === 'disabled';
-      if (editing) {
-        await invoke('update_context', { contextId: editing.id, name });
-        await invoke('update_context_settings', {
-          contextId: editing.id,
-          icon: modalIcon,
-          tone: modalTone,
-          cleanupIntensity: modalCleanupIntensity,
-          customInstructions: modalCustomInstructions.trim() || null,
-          contextualFormattingOverride: formattingOverride,
-          ...(isMobile ? {} : { pasteInChunks: modalPasteInChunks }),
+      if (editing && editingOriginal) {
+        const updated = await invoke<Context>('save_context_if_unchanged', {
+          original: editingOriginal,
+          updated: { ...editingOriginal, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_override: formattingOverride, paste_in_chunks: isMobile ? editingOriginal.paste_in_chunks : modalPasteInChunks, t3_skill_mentions_disabled: modalHasT3Setting ? !modalT3Enabled : editingOriginal.t3_skill_mentions_disabled, color: modalColor },
         });
-        if (modalHasT3Setting && !modalT3Enabled !== !!editing.t3_skill_mentions_disabled) {
-          await invoke('set_context_t3_skill_mentions', { contextId: editing.id, enabled: modalT3Enabled });
-        }
-        if (modalColor !== editing.color) {
-          await invoke('update_context_color', { contextId: editing.id, color: modalColor });
-        }
-        contextsStore.contexts = contexts.map((context) => context.id === editing.id
-          ? { ...context, name, icon: modalIcon, tone: modalTone, cleanup_intensity: modalCleanupIntensity, custom_instructions: modalCustomInstructions.trim() || null, contextual_formatting_disabled: formattingOverride === true, contextual_formatting_override: formattingOverride, paste_in_chunks: modalPasteInChunks, t3_skill_mentions_disabled: modalHasT3Setting ? !modalT3Enabled : context.t3_skill_mentions_disabled, color: modalColor, updated_at: new Date().toISOString() }
-          : context);
+        contextsStore.contexts = contexts.map((context) => context.id === editing.id ? updated : context);
       } else {
         const created = await invoke<Context>('create_context', {
           name,
@@ -918,6 +903,7 @@
         contextsStore.selectedId = createdContextId;
         contextModalMode = 'edit';
       }
+      if (editing) await loadSharedContexts(true);
       contextError = classifyIpcError(error).message;
     } finally {
       savingContext = false;
