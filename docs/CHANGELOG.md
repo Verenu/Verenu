@@ -8,6 +8,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
+- Verenu registers a small discovery guide for detected agent harnesses so an agent asked to manage Contexts or settings can find the packaged control skill. Saving the full control skill and enabling agent access remain separate user choices.
+- On Linux and macOS, agents can request access in the running app. An approved grant can be shared by local agents until Verenu quits. The setup guide recommends Contexts from retained usage and existing assignments, with optional browser-history inspection only after explaining its privacy implications.
 - Smoothed the dictation pill's error animation. The native window now finishes growing before the error pill animates into the new space, so a message or card is never painted into a window that is still catching up (the flicker when the pill resized to fit an error, most visible on Linux/Hyprland). With reduced motion enabled, pill states now cross-fade without sliding, scaling, or width morphs.
 - Expanded privacy backups to include retained transcription history and Insights. Imports deduplicate retained records, preserve unrelated activity, report uncertain aggregate overlaps, and match app targets conservatively across devices. Backup files contain private transcription text; credentials and device-local state remain excluded.
 
