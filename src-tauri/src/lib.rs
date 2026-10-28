@@ -441,18 +441,10 @@ pub fn run() {
                 }
             }
 
-            let sync_enabled = settings
-                .get(crate::data::store::SYNC_ENABLED)
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if sync_enabled {
-                app.manage(sync::SyncManager::start(
-                    app.handle().clone(),
-                    app.state::<DbHandle>().inner().clone(),
-                ));
-            } else {
-                log::info!("sync: disabled by setting");
-            }
+            app.manage(sync::SyncManager::start(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+            ));
             #[cfg(target_os = "android")]
             {
                 match crate::android::bridge::start_bridge(app.handle().clone()) {
