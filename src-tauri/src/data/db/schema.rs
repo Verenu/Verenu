@@ -1167,7 +1167,6 @@ pub fn compact_api_calls_older_than(db: &Db, max_age_days: i64) -> Result<usize>
            FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
           WHERE (a.created_at < ?1 OR NOT EXISTS (SELECT 1 FROM transcriptions t2 WHERE t2.id = a.transcription_id))
             AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
-            AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
           GROUP BY 1, 2, 3, 4, 5
          ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
            calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,

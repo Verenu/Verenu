@@ -848,6 +848,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migrated_ambiguous_history_keeps_insights_after_prune_and_restore() {
+        for compact_calls_first in [false, true] {
+            let path = std::env::temp_dir().join(format!("verenu-backup-migration-{}.db", uuid::Uuid::new_v4()));
+            let source = db::open(path.to_str().unwrap()).unwrap();
+            {
+                let conn = source.lock().unwrap();
+                crate::sync::store::ensure_self_identity(&conn, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+                conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','one two three four five','one two three four five',5,1000,'test','2020-01-01 10:00:00','2020-01-01',10)", []).unwrap();
+                conn.execute("UPDATE transcription_daily_stats SET total_words=12,total_transcriptions=2 WHERE day='2020-01-01'", []).unwrap();
+                conn.execute("INSERT INTO transcription_hourly_stats VALUES ('2020-01-01',10,0,7)", []).unwrap();
+                conn.execute("INSERT INTO provider_daily_stats VALUES ('2020-01-01',0,'model','provider','stt',1,1,0,0)", []).unwrap();
+                conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,audio_ms,input_chars,output_chars,created_at,activity_day) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt',1,0,0,'2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+                conn.execute_batch("DELETE FROM backup_preupgrade_history; PRAGMA user_version=33;").unwrap();
+            }
+            drop(source);
+            let source = db::open(path.to_str().unwrap()).unwrap();
+            assert_eq!(source.lock().unwrap().query_row("SELECT COUNT(*) FROM backup_preupgrade_history", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            if compact_calls_first { db::compact_api_calls_older_than(&source, 7).unwrap(); }
+            db::prune_transcriptions_older_than(&source, 7).unwrap();
+            let conn = source.lock().unwrap();
+            assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_hourly_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 12);
+            assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 2);
+            let activity = export_activity_conn(&conn).unwrap();
+            drop(conn);
+            let dest = db::open(":memory:").unwrap();
+            let conn = dest.lock().unwrap();
+            import_activity(&conn, &activity, &[], &HashSet::new()).unwrap();
+            assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 12);
+            assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_hourly_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 12);
+            assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 2);
+            drop(conn);
+            drop(source);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
     fn pruning_preupgrade_ambiguous_history_does_not_duplicate_words() {
         let source = db::open(":memory:").unwrap();
         let dest = db::open(":memory:").unwrap();
