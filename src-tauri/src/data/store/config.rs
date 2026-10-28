@@ -559,11 +559,17 @@ pub struct AudioConfig {
     pub device: Option<String>,
     pub noise_reduction: bool,
     pub echo_cancellation: bool,
+    #[cfg(target_os = "linux")]
     pub duck_audio: bool,
+    #[cfg(target_os = "linux")]
     pub duck_target: u8,
+    #[cfg(target_os = "linux")]
     pub duck_fade_down_ms: u64,
+    #[cfg(target_os = "linux")]
     pub duck_fade_up_ms: u64,
+    #[cfg(target_os = "linux")]
     pub duck_fade_down_smooth: bool,
+    #[cfg(target_os = "linux")]
     pub duck_fade_up_smooth: bool,
     pub mic_gain: f32,
     pub mute_audio: bool,
@@ -578,11 +584,17 @@ impl Default for AudioConfig {
             device: None,
             noise_reduction: true,
             echo_cancellation: false,
+            #[cfg(target_os = "linux")]
             duck_audio: false,
+            #[cfg(target_os = "linux")]
             duck_target: 25,
+            #[cfg(target_os = "linux")]
             duck_fade_down_ms: 250,
+            #[cfg(target_os = "linux")]
             duck_fade_up_ms: 150,
+            #[cfg(target_os = "linux")]
             duck_fade_down_smooth: true,
+            #[cfg(target_os = "linux")]
             duck_fade_up_smooth: true,
             mic_gain: default_mic_gain(),
             mute_audio: false,
@@ -603,11 +615,17 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         .unwrap_or(true);
     let echo_cancellation = store.get(ECHO_CANCELLATION)
         .and_then(|v| v.as_bool()).unwrap_or(false);
+    #[cfg(target_os = "linux")]
     let duck_audio = store.get(DUCK_AUDIO).and_then(|v| v.as_bool()).unwrap_or(false);
+    #[cfg(target_os = "linux")]
     let duck_target = store.get(DUCK_TARGET).and_then(|v| v.as_u64()).unwrap_or(25).min(100) as u8;
+    #[cfg(target_os = "linux")]
     let duck_fade_down_ms = store.get(DUCK_FADE_DOWN_MS).and_then(|v| v.as_u64()).unwrap_or(250).min(5000);
+    #[cfg(target_os = "linux")]
     let duck_fade_up_ms = store.get(DUCK_FADE_UP_MS).and_then(|v| v.as_u64()).unwrap_or(150).min(5000);
+    #[cfg(target_os = "linux")]
     let duck_fade_down_smooth = store.get(DUCK_FADE_DOWN_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
+    #[cfg(target_os = "linux")]
     let duck_fade_up_smooth = store.get(DUCK_FADE_UP_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
     let mic_gain = store
         .get(MIC_GAIN)
@@ -643,11 +661,17 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         device,
         noise_reduction,
         echo_cancellation,
+        #[cfg(target_os = "linux")]
         duck_audio,
+        #[cfg(target_os = "linux")]
         duck_target,
+        #[cfg(target_os = "linux")]
         duck_fade_down_ms,
+        #[cfg(target_os = "linux")]
         duck_fade_up_ms,
+        #[cfg(target_os = "linux")]
         duck_fade_down_smooth,
+        #[cfg(target_os = "linux")]
         duck_fade_up_smooth,
         mic_gain,
         mute_audio,
