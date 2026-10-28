@@ -28,6 +28,87 @@ fn finite_sample_or_zero(v: f32) -> f32 {
     }
 }
 
+fn soft_limit(sample: f32) -> f32 {
+    let magnitude = sample.abs();
+    if magnitude <= 0.9 {
+        sample
+    } else {
+        let excess = magnitude - 0.9;
+        sample.signum() * (0.9 + 0.1 * excess / (0.1 + excess))
+    }
+}
+
+struct SpeechGain {
+    gain: f32,
+    applied_gain: f32,
+    target_rms: f32,
+    baseline: f32,
+}
+
+impl SpeechGain {
+    fn new(baseline: f32) -> Self {
+        Self {
+            gain: baseline,
+            applied_gain: baseline,
+            target_rms: (0.1 * baseline / crate::data::store::default_mic_gain())
+                .clamp(0.04, 0.22),
+            baseline,
+        }
+    }
+
+    #[cfg(test)]
+    fn apply(
+        &mut self,
+        samples: &mut [f32],
+        speech: bool,
+        sample_rate: u32,
+        stats: &mut InputLevelStats,
+    ) {
+        self.apply_with_lookahead(samples, &[], speech, sample_rate, stats);
+    }
+
+    fn apply_with_lookahead(
+        &mut self,
+        samples: &mut [f32],
+        lookahead: &[f32],
+        speech: bool,
+        sample_rate: u32,
+        stats: &mut InputLevelStats,
+    ) {
+        if samples.is_empty() {
+            return;
+        }
+        let target_gain = if speech {
+            let rms = rms_f32(samples);
+            let desired = (self.target_rms / rms.max(0.0001)).clamp(0.25, 16.0);
+            let time_constant = if desired < self.gain { 0.08 } else { 0.8 };
+            let alpha =
+                1.0 - (-(samples.len() as f32 / sample_rate as f32) / time_constant).exp();
+            self.gain += (desired - self.gain) * alpha;
+            self.gain
+        } else {
+            self.baseline
+        };
+        let max_step = 1.6 / (sample_rate as f32 * 0.005);
+        let mut limits = vec![0.0; samples.len()];
+        let mut future_limit = f32::INFINITY;
+        for sample in lookahead.iter().rev() {
+            future_limit = (future_limit + max_step).min(0.98 / sample.abs().max(0.0001));
+        }
+        for (sample, limit) in samples.iter().zip(limits.iter_mut()).rev() {
+            future_limit = (future_limit + max_step).min(0.98 / sample.abs().max(0.0001));
+            *limit = future_limit;
+        }
+        let smoothing = 1.0 - (-1.0 / (sample_rate as f32 * 0.005)).exp();
+        for (sample, limit) in samples.iter_mut().zip(limits) {
+            self.applied_gain += (target_gain - self.applied_gain) * smoothing;
+            stats.observe(*sample, self.applied_gain);
+            self.applied_gain = self.applied_gain.min(limit);
+            *sample = soft_limit(*sample * self.applied_gain);
+        }
+    }
+}
+
 const CLIPPING_WARN_FRACTION: f32 = 0.01;
 
 const LOUD_SAMPLE_FLOOR: f32 = 0.1;
@@ -38,6 +119,7 @@ const RAW_FULL_SCALE: f32 = 0.99;
 struct InputLevelStats {
     sum_sq: f64,
     peak: f32,
+    boosted_peak: f32,
     clipped: u64,
     loud: u64,
     count: u64,
@@ -52,10 +134,11 @@ impl InputLevelStats {
             self.peak = raw_abs;
         }
         let boosted = raw_abs * gain;
+        self.boosted_peak = self.boosted_peak.max(boosted);
         if boosted >= LOUD_SAMPLE_FLOOR {
             self.loud += 1;
         }
-        if boosted >= 1.0 {
+        if boosted >= 1.0 || raw_abs >= RAW_FULL_SCALE {
             self.clipped += 1;
         }
     }
@@ -90,15 +173,15 @@ fn log_input_levels(stats: &InputLevelStats, gain: f32) {
         return;
     }
     log::info!(
-        "audio: input levels gain={gain:.1}x raw_rms={:.1} dBFS raw_peak={:.1} dBFS boosted_peak={:.1} dBFS clipped={:.2}% of loud samples",
+        "audio: input levels configured_gain={gain:.1}x raw_rms={:.1} dBFS raw_peak={:.1} dBFS pre_limiter_peak={:.1} dBFS limited={:.2}% of loud samples",
         dbfs(stats.rms()),
         dbfs(stats.peak),
-        dbfs(stats.peak * gain),
+        dbfs(stats.boosted_peak),
         stats.clipped_fraction() * 100.0
     );
     if stats.is_clipping() {
         log::warn!(
-            "audio: input is clipping ({:.1}% of loud samples) at gain {gain:.1}x; {}",
+            "audio: input exceeded full scale before limiting ({:.1}% of loud samples) with configured gain {gain:.1}x; {}",
             stats.clipped_fraction() * 100.0,
             clipping_advice(stats, gain)
         );
@@ -529,6 +612,11 @@ impl StreamingResampler {
     }
 
     fn finish(&mut self, output: &mut Vec<f32>, max_samples: usize) -> bool {
+        let emitted = output.len();
+        self.finish_tail(output, max_samples, emitted)
+    }
+
+    fn finish_tail(&mut self, output: &mut Vec<f32>, max_samples: usize, emitted: usize) -> bool {
         if self.sample_rate == TARGET_SAMPLE_RATE {
             return false;
         }
@@ -537,8 +625,10 @@ impl StreamingResampler {
             .input_samples
             .saturating_mul(TARGET_SAMPLE_RATE as u64)
             .div_ceil(self.sample_rate as u64);
-        let target_samples = expected_samples.min(max_samples as u64) as usize;
-        while output.len() < target_samples {
+        let initial_len = output.len();
+        let remaining = expected_samples.saturating_sub(emitted as u64);
+        let target_len = initial_len.saturating_add(remaining as usize).min(max_samples);
+        while output.len() < target_len {
             let lo = self.source_position.floor() as usize;
             if lo >= self.tail.len() {
                 break;
@@ -548,7 +638,7 @@ impl StreamingResampler {
             output.push(self.tail[lo] * (1.0 - t) + self.tail[hi] * t);
             self.source_position += ratio;
         }
-        let truncated = expected_samples > max_samples as u64;
+        let truncated = remaining > max_samples.saturating_sub(initial_len) as u64;
         self.tail.clear();
         self.source_position = 0.0;
         truncated
@@ -668,56 +758,118 @@ impl RecordingSession {
                     None
                 };
                 let mut live_vad = crate::media::vad::LiveSpeechDetector::new(gain);
+                let mut event_vad = crate::media::vad::LiveSpeechDetector::new(gain);
                 let speech_detected_worker = Arc::clone(&speech_detected_w);
                 let mut update_live_speech = |samples: &[f32]| {
-                    if !speech_detected_worker.load(Ordering::Acquire) && live_vad.push(samples) {
+                    if !speech_detected_worker.load(Ordering::Acquire) && event_vad.push(samples) {
                         speech_detected_worker.store(true, Ordering::Release);
                     }
                 };
+                let mut vad_resampler = StreamingResampler::new(sample_rate);
+                let mut vad_input = Vec::new();
+                let mut vad_samples_emitted = 0;
+                let mut vad_finished = false;
+                let mut speech_gain = SpeechGain::new(gain);
+                let chunk_samples = (sample_rate as usize * 30 / 1000).max(1);
+                let mut pending_audio = Vec::with_capacity(chunk_samples * 2);
+                let mut held_audio = Vec::with_capacity(chunk_samples * 2);
+                let mut held_speech = false;
 
                 let mut observed_wake = worker_wake.sequence.load(Ordering::Acquire);
                 loop {
                     batch.clear();
-                    while let Some(sample) = worker_queue.pop() {
-                        input_levels.observe(sample, gain);
-                        batch.push(clamp_unit_sample(sample * gain));
+                    let remaining = chunk_samples.saturating_sub(pending_audio.len()).max(1);
+                    while batch.len() < remaining {
+                        let Some(sample) = worker_queue.pop() else {
+                            break;
+                        };
+                        batch.push(sample);
                     }
 
+                    let previous_frames = live_vad.processed_frames();
+                    vad_input.clear();
                     if !batch.is_empty() && termination == RecordingTermination::Complete {
-                        let processed: &[f32] = if let Some(d) = denoiser.as_mut() {
-                            processed_batch.clear();
-                            d.push(&batch, &mut processed_batch);
-                            &processed_batch
-                        } else {
-                            &batch
-                        };
-                        for &sample in processed {
-                            worker_envelope.push_sample(sample, processed_display_gain);
+                        vad_resampler.push(&batch, &mut vad_input, usize::MAX);
+                        pending_audio.extend_from_slice(&batch);
+                    }
+
+                    let stopping = worker_stop.load(Ordering::Relaxed) && worker_queue.is_empty();
+                    if stopping && !vad_finished {
+                        let emitted = vad_samples_emitted + vad_input.len();
+                        vad_resampler.finish_tail(
+                            &mut vad_input,
+                            usize::MAX,
+                            emitted,
+                        );
+                        vad_finished = true;
+                    }
+                    vad_samples_emitted += vad_input.len();
+                    for sample in &mut vad_input {
+                        *sample = soft_limit(*sample * gain);
+                    }
+                    live_vad.push(&vad_input);
+                    if (stopping || live_vad.processed_frames() > previous_frames)
+                        && termination == RecordingTermination::Complete
+                    {
+                        let pending_speech = live_vad.speech_active();
+                        if held_audio.is_empty() && !pending_audio.is_empty() {
+                            std::mem::swap(&mut held_audio, &mut pending_audio);
+                            held_speech = pending_speech;
                         }
-                        let before_len = samples_16k.len();
-                        let duration_limit =
-                            resampler.push(processed, &mut samples_16k, max_output_samples);
-                        update_live_speech(&samples_16k[before_len..]);
-                        if duration_limit {
-                            termination = RecordingTermination::DurationLimit;
-                        }
-                        if let Some(sink) = durable.as_mut() {
-                            if sink.extend(&samples_16k[before_len..]).is_err() {
-                                recovery_write_failed = true;
+                        while !held_audio.is_empty() && (!pending_audio.is_empty() || stopping) {
+                            speech_gain.apply_with_lookahead(
+                                &mut held_audio,
+                                &pending_audio,
+                                held_speech,
+                                sample_rate,
+                                &mut input_levels,
+                            );
+                            let processed: &[f32] = if let Some(d) = denoiser.as_mut() {
+                                processed_batch.clear();
+                                d.push(&held_audio, &mut processed_batch);
+                                &processed_batch
+                            } else {
+                                &held_audio
+                            };
+                            for &sample in processed {
+                                worker_envelope.push_sample(sample, processed_display_gain);
+                            }
+                            let before_len = samples_16k.len();
+                            let duration_limit =
+                                resampler.push(processed, &mut samples_16k, max_output_samples);
+                            update_live_speech(&samples_16k[before_len..]);
+                            if duration_limit {
+                                termination = RecordingTermination::DurationLimit;
+                            }
+                            if let Some(sink) = durable.as_mut() {
+                                if sink.extend(&samples_16k[before_len..]).is_err() {
+                                    recovery_write_failed = true;
+                                }
+                            }
+                            held_audio.clear();
+                            if termination == RecordingTermination::Complete
+                                && worker_dropped.load(Ordering::Acquire) > 0
+                            {
+                                termination = RecordingTermination::DroppedSamples;
+                            }
+                            if termination != RecordingTermination::Complete {
+                                let _ = limit_stop_tx.send(());
+                                break;
+                            }
+                            if !pending_audio.is_empty() {
+                                std::mem::swap(&mut held_audio, &mut pending_audio);
+                                held_speech = pending_speech;
+                            }
+                            if !stopping {
+                                break;
                             }
                         }
-                        if termination == RecordingTermination::Complete
-                            && worker_dropped.load(Ordering::Acquire) > 0
-                        {
-                            termination = RecordingTermination::DroppedSamples;
-                        }
                         if termination != RecordingTermination::Complete {
-                            let _ = limit_stop_tx.send(());
                             break;
                         }
                     }
 
-                    if worker_stop.load(Ordering::Relaxed) && worker_queue.is_empty() {
+                    if stopping {
                         break;
                     }
 
@@ -1036,6 +1188,142 @@ pub(crate) fn encode_wav(samples: &[f32], sample_rate: u32, channels: u16) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vad_input_is_independent_of_capture_batch_boundaries() {
+        let input: Vec<f32> = (0..2400)
+            .map(|i| if i % 100 == 0 { 0.8 } else { 0.04 })
+            .collect();
+        let render = |chunk_size: usize| {
+            let mut resampler = super::StreamingResampler::new(8_000);
+            let mut result = Vec::new();
+            for chunk in input.chunks(chunk_size) {
+                let mut output = Vec::new();
+                resampler.push(chunk, &mut output, usize::MAX);
+                result.extend(output.into_iter().map(|sample| super::soft_limit(sample * 3.5)));
+            }
+            let mut tail = Vec::new();
+            resampler.finish_tail(&mut tail, usize::MAX, result.len());
+            result.extend(tail.into_iter().map(|sample| super::soft_limit(sample * 3.5)));
+            result
+        };
+        let one_batch = render(input.len());
+        let small_batches = render(31);
+        assert_eq!(one_batch.len(), 4_800);
+        assert_eq!(one_batch, small_batches);
+    }
+
+    #[test]
+    fn speech_gain_adjusts_speech_but_does_not_learn_from_silence() {
+        let mut gain = super::SpeechGain::new(3.5);
+        for _ in 0..100 {
+            let mut quiet = vec![0.01; 480];
+            gain.apply(&mut quiet, true, 16_000, &mut super::InputLevelStats::default());
+        }
+        let boosted = gain.gain;
+        assert!(boosted > 3.5);
+        for _ in 0..100 {
+            let mut silence = vec![0.0; 480];
+            gain.apply(&mut silence, false, 16_000, &mut super::InputLevelStats::default());
+        }
+        assert_eq!(gain.gain, boosted);
+        let mut loud = vec![0.8; 480];
+        gain.apply(&mut loud, true, 16_000, &mut super::InputLevelStats::default());
+        assert!(loud.iter().all(|sample| *sample < 1.0));
+        assert!(gain.gain < boosted);
+    }
+
+    #[test]
+    fn speech_gain_changes_smoothly_at_speech_boundaries() {
+        let mut gain = super::SpeechGain::new(3.5);
+        let mut stats = super::InputLevelStats::default();
+        let mut speech = vec![0.01; 480];
+        for _ in 0..100 {
+            speech.fill(0.01);
+            gain.apply(&mut speech, true, 16_000, &mut stats);
+        }
+        let previous = *speech.last().unwrap();
+        let mut quiet = vec![0.01; 480];
+        gain.apply(&mut quiet, false, 16_000, &mut stats);
+        assert!((quiet[0] - previous).abs() < 0.001);
+    }
+
+    #[test]
+    fn loud_onset_is_limited_before_speech_is_confirmed() {
+        let mut gain = super::SpeechGain::new(3.5);
+        let mut onset: Vec<f32> = (0..480).map(|i| if i % 2 == 0 { 0.4 } else { 0.8 }).collect();
+        gain.apply(&mut onset, false, 16_000, &mut super::InputLevelStats::default());
+        assert!(onset.iter().all(|sample| *sample < 1.0));
+        assert!((onset[0] / onset[1] - 0.5).abs() < 0.03);
+    }
+
+    #[test]
+    fn late_loud_onset_does_not_cause_a_gain_jump_at_the_frame_boundary() {
+        let mut gain = super::SpeechGain::new(3.5);
+        let mut stats = super::InputLevelStats::default();
+        let mut first = vec![0.1; 480];
+        gain.apply(&mut first, false, 16_000, &mut stats);
+        let mut second = vec![0.1; 480];
+        second[479] = 0.8;
+        gain.apply(&mut second, false, 16_000, &mut stats);
+        assert!((second[0] - first[479]).abs() < 0.005);
+        assert!(second[479] < 1.0);
+    }
+
+    #[test]
+    fn near_limit_frame_start_does_not_jump_for_a_later_peak() {
+        let mut gain = super::SpeechGain::new(3.5);
+        let mut stats = super::InputLevelStats::default();
+        let mut first = vec![0.280; 480];
+        gain.apply(&mut first, false, 16_000, &mut stats);
+        let mut second = vec![0.281; 480];
+        second[479] = 0.8;
+        gain.apply(&mut second, false, 16_000, &mut stats);
+        assert!((second[0] - first[479]).abs() < 0.02);
+        assert!(second[479] < 1.0);
+    }
+
+    #[test]
+    fn lookahead_avoids_a_jump_when_a_peak_follows_the_frame_boundary() {
+        let mut gain = super::SpeechGain::new(3.5);
+        let mut stats = super::InputLevelStats::default();
+        let mut first = vec![0.280; 480];
+        let mut second = vec![0.280; 480];
+        second[1] = 0.8;
+        gain.apply_with_lookahead(&mut first, &second, false, 16_000, &mut stats);
+        gain.apply(&mut second, false, 16_000, &mut stats);
+        assert!((second[0] - first[479]).abs() < 0.02);
+        assert!(second[1] < 1.0);
+    }
+
+    #[test]
+    fn limiter_preserves_warning_for_a_saturated_microphone() {
+        let mut gain = super::SpeechGain::new(1.0);
+        let mut stats = super::InputLevelStats::default();
+        let mut full_scale = vec![1.0; 480];
+        gain.apply(&mut full_scale, true, 16_000, &mut stats);
+        assert!(stats.is_clipping());
+    }
+
+    #[test]
+    fn microphone_setting_raises_speech_target() {
+        let mut normal = super::SpeechGain::new(3.5);
+        let mut high = super::SpeechGain::new(7.0);
+        for _ in 0..200 {
+            normal.apply(
+                &mut vec![0.02; 480],
+                true,
+                16_000,
+                &mut super::InputLevelStats::default(),
+            );
+            high.apply(
+                &mut vec![0.02; 480],
+                true,
+                16_000,
+                &mut super::InputLevelStats::default(),
+            );
+        }
+        assert!(high.gain > normal.gain);
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn missing_microphone_requires_a_valid_graph_without_capture_sources() {
