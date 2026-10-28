@@ -29,8 +29,11 @@ test('skill installation requires consent and an explicit selection of detected 
 });
 
 test('CLI refuses malformed or absent local grants before making a request', async () => {
-  await assert.rejects(invoke('describe', {}, {}), /Set VERENU_AGENT_TOKEN/);
-  await assert.rejects(invoke('describe', {}, { VERENU_AGENT_TOKEN: 'a'.repeat(64), VERENU_AGENT_PORT: 'https://example.com' }), /Set VERENU_AGENT_TOKEN/);
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-agent-no-session-'));
+  try {
+    await assert.rejects(invoke('describe', {}, { VERENU_APP_DATA_DIR_OVERRIDE: home }), /No running Verenu agent session found|Automatic agent access is not available on Windows/);
+    await assert.rejects(invoke('describe', {}, { VERENU_AGENT_TOKEN: 'a'.repeat(64), VERENU_AGENT_PORT: 'https://example.com' }), /Invalid explicit agent grant/);
+  } finally { await fs.rm(home, { recursive: true, force: true }); }
 });
 
 test('audio policy uses explicit portable rules, prioritizes unmute and leaves unknown routes unchanged', () => {

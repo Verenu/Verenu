@@ -59,6 +59,12 @@ test('native evidence cannot substitute another platform or capability', () => {
   assert.throws(() => nativeRequirements([], [{ platform: 'unknown', scope: 'clipboard' }]));
 });
 
+test('skill setup documentation does not require native permission checks', () => {
+  assert.deepEqual(nativeRequirements(['Agent-Skills/verenu-control/setup/SKILL.md']), []);
+  assert.deepEqual(nativeRequirements(['src/lib/views/Setup.svelte']),
+    ['linux', 'darwin', 'win32'].map(platform => ({ platform, scope: 'permissions' })));
+});
+
 test('flaky or skipped acceptance cannot be erased by a later passing record', () => {
   const row = { ...passed, category: 'acceptance', criterion: 'saved', observed: 'Saved', artifacts: [{ path: '/evidence' }] };
   for (const invalid of [{ ...row, flaky: true }, { ...row, status: 'skipped' }]) {

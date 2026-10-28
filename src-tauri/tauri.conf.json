@@ -54,7 +54,7 @@
     }
   },
   "bundle": {
-    "resources": { "../Agent-Skills/verenu-control/": "agent-skill/" },
+    "resources": { "../Agent-Skills/verenu-control/": "agent-skill/", "../Agent-Skills/verenu-install/": "agent-install-skill/" },
     "active": true,
     "targets": "all",
     "category": "Productivity",
