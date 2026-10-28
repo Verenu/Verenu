@@ -134,6 +134,23 @@ pub fn agent_history_report(db: &Db, range: HistoryRange) -> Result<Value> {
     )
 }
 
+/// Aggregate retained metadata without reading dictated text.
+pub fn agent_history_usage(db: &Db, range: HistoryRange) -> Result<Value> {
+    range.validate()?;
+    let conn = lock_conn(db)?;
+    let (count, oldest, newest): (i64, Option<String>, Option<String>) = conn.query_row(
+        "SELECT count(*), min(created_at), max(created_at) FROM transcriptions WHERE created_at >= ?1 AND created_at < ?2",
+        params![range.start, range.end], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let mut stmt = conn.prepare("SELECT app_name, context_id, count(*) FROM transcriptions WHERE created_at >= ?1 AND created_at < ?2 GROUP BY app_name, context_id ORDER BY count(*) DESC, app_name, context_id LIMIT 501")?;
+    let rows = stmt.query_map(params![range.start, range.end], |r| Ok(json!({
+        "app_name": r.get::<_, Option<String>>(0)?, "context_id": r.get::<_, Option<i64>>(1)?, "count": r.get::<_, i64>(2)?
+    })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let truncated = rows.len() > 500;
+    Ok(json!({"retained_count": count, "oldest": oldest, "newest": newest,
+        "truncated": truncated, "app_contexts": rows.into_iter().take(500).collect::<Vec<_>>(),
+        "limits": "Retained history only. Application identifiers do not identify browser websites."}))
+}
+
 pub fn diagnostic_retention(db: &Db, days: Option<u32>) -> Result<u32> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
@@ -284,6 +301,22 @@ mod tests {
             }
         )
         .is_err());
+    }
+    #[test]
+    fn usage_aggregates_retained_application_metadata_without_text() {
+        let db = super::super::open(":memory:").unwrap();
+        for app in ["example-app", "example-app", "browser"] {
+            super::super::insert_transcription_returning(
+                &db, "synthetic private raw", "synthetic private clean", 1, 1000,
+                "synthetic", Some(app), None,
+            ).unwrap();
+        }
+        let usage = agent_history_usage(&db, range()).unwrap();
+        assert_eq!(usage["retained_count"], 3);
+        assert_eq!(usage["app_contexts"][0]["app_name"], "example-app");
+        assert_eq!(usage["app_contexts"][0]["count"], 2);
+        assert!(!usage.to_string().contains("synthetic private"));
+        assert_eq!(usage["truncated"], false);
     }
     #[test]
     fn diagnostic_journal_is_opt_in_and_disable_clears_without_touching_history() {
