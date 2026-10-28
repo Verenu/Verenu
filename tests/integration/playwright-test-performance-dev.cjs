@@ -7,6 +7,7 @@ const { finish, message } = require('./_regression-result.cjs');
 
 const expected = 'Warm browser startup and common settings interactions stay within the checked-in regression budgets.';
 const round = (value) => Math.round(value * 100) / 100;
+const sections = ['Models', 'Privacy', 'Audio', 'About', 'General'];
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
@@ -26,6 +27,19 @@ const round = (value) => Math.round(value * 100) / 100;
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   try {
+    // Compile the lazy settings modules in Vite before timing a fresh browser context.
+    const warmup = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    try {
+      await seedDevState(warmup, { settings: { setup_complete: true, legacy_features_enabled: true } });
+      await warmup.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+      await warmup.locator('.nav-item:has-text("Settings")').click({ timeout: TIMEOUT });
+      for (const label of sections) {
+        await warmup.locator('.settings-nav-item', { hasText: label }).click({ timeout: TIMEOUT });
+        await warmup.locator('h2.settings-h', { hasText: label }).waitFor({ state: 'visible', timeout: TIMEOUT });
+      }
+    } finally {
+      await warmup.close();
+    }
     const start = performance.now();
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
     await page.locator('.nav-item').first().waitFor({ state: 'visible', timeout: TIMEOUT });
@@ -37,7 +51,7 @@ const round = (value) => Math.round(value * 100) / 100;
     const settingsOpen = performance.now() - settingsStart;
 
     const sectionTimes = [];
-    for (const label of ['Models', 'Privacy', 'Audio', 'About', 'General']) {
+    for (const label of sections) {
       const sectionStart = performance.now();
       await page.locator('.settings-nav-item', { hasText: label }).click({ timeout: TIMEOUT });
       await page.locator('h2.settings-h', { hasText: label }).waitFor({ state: 'visible', timeout: TIMEOUT });
