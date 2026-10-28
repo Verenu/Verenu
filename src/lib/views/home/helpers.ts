@@ -8,6 +8,7 @@ export interface Entry {
   words: number;
   created_at: string;
   app_name?: string | null;
+  website_domain?: string | null;
   duration_ms?: number | null;
 }
 export interface Stats { total_words: number; avg_wpm: number; day_streak: number; }

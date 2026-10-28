@@ -102,6 +102,7 @@ pub(super) fn resolve_context_for_window(
         &context,
         sub_app.as_ref(),
     );
+    identity.website_domain = browser_domain;
     identity.t3_skills = store::settings_snapshot(app)
         .ok()
         .as_ref()

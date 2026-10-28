@@ -12,6 +12,7 @@ pub struct RecentEntry {
     pub words: i64,
     pub duration_ms: i64,
     pub app_name: Option<String>,
+    pub website_domain: Option<String>,
     pub created_at: String,
 }
 
@@ -30,6 +31,7 @@ fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntr
         duration_ms: row.get(3)?,
         app_name: row.get(4)?,
         created_at: row.get(5)?,
+        website_domain: row.get(6)?,
     })
 }
 
@@ -44,16 +46,24 @@ pub fn insert_transcription_returning(
     app_name: Option<&str>,
     context_id: Option<i64>,
 ) -> Result<RecentEntry> {
+    insert_transcription_with_website(db, raw, clean, words, duration_ms, api_used, app_name, context_id, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_transcription_with_website(
+    db: &Db, raw: &str, clean: &str, words: i64, duration_ms: i64,
+    api_used: &str, app_name: Option<&str>, context_id: Option<i64>, website_domain: Option<&str>,
+) -> Result<RecentEntry> {
     let spoken_words = compute_spoken_words(db, raw)?;
     let _ = words;
     let words = spoken_words;
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let entry = tx.query_row(
-        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
-         RETURNING id, clean_text, words, duration_ms, app_name, created_at",
-        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id],
+        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+         RETURNING id, clean_text, words, duration_ms, app_name, created_at, website_domain",
+        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain],
         recent_entry_from_row,
     )?;
     tx.execute(
@@ -81,7 +91,7 @@ pub fn increment_lifetime_dictionary_fixes(db: &Db, count: i64) -> Result<()> {
 pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare_cached(
-        "SELECT id, clean_text, words, duration_ms, app_name, created_at \
+        "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain \
          FROM transcriptions ORDER BY id DESC",
     )?;
     let rows = stmt
@@ -137,12 +147,15 @@ fn query_recent_page_fts(
     app_name: Option<&str>,
 ) -> Result<Vec<RecentEntry>> {
     let mut sql = String::from(
-        "SELECT t.id, t.clean_text, t.words, t.duration_ms, t.app_name, t.created_at
-           FROM transcriptions_fts f
-           JOIN transcriptions t ON t.id = f.rowid
-          WHERE transcriptions_fts MATCH ?",
+        "SELECT t.id, t.clean_text, t.words, t.duration_ms, t.app_name, t.created_at, t.website_domain
+           FROM transcriptions t WHERE 1 = 1",
     );
-    let mut values = vec![rusqlite::types::Value::from(fts_match_query(search))];
+    let mut values = Vec::new();
+    for term in search.split_whitespace() {
+        sql.push_str(" AND (t.id IN (SELECT rowid FROM transcriptions_fts WHERE transcriptions_fts MATCH ?) OR lower(t.website_domain) LIKE '%' || lower(?) || '%' ESCAPE '\\')");
+        values.push(rusqlite::types::Value::from(fts_match_query(term)));
+        values.push(rusqlite::types::Value::from(escape_like(term)));
+    }
     if let Some(app_name) = app_name {
         sql.push_str(" AND t.app_name = ?");
         values.push(rusqlite::types::Value::from(app_name.to_string()));
@@ -225,12 +238,12 @@ fn query_recent_page_conn(
 
     let mut sql = if app_name.is_some() {
         String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain
              FROM transcriptions WHERE app_name = ?",
         )
     } else {
         String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain
              FROM transcriptions WHERE 1 = 1",
         )
     };
@@ -246,9 +259,10 @@ fn query_recent_page_conn(
         sql.push_str(
             " AND (lower(clean_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
              OR lower(raw_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
-             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
+             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+             OR lower(website_domain) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
         );
-        for _ in 0..3 {
+        for _ in 0..4 {
             values.push(rusqlite::types::Value::from(term.clone()));
         }
     }
@@ -819,6 +833,44 @@ mod tests {
         let hits = query_recent_page(&db, 50, 0, Some("LOOK"), None).expect("search look");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean B");
+    }
+
+    #[test]
+    fn website_search_matches_history_in_both_search_paths() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        super::insert_transcription_with_website(&db, "public words", "public words", 2, 1000, "test", Some("browser"), None, Some("docs.example.test")).unwrap();
+        insert_transcription_returning(&db, "other", "other", 1, 1000, "test", Some("browser"), None).unwrap();
+        for term in ["example", "EX", "public example"] {
+            let hits = query_recent_page(&db, 50, 0, Some(term), Some("browser")).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].website_domain.as_deref(), Some("docs.example.test"));
+        }
+        assert!(query_recent_page(&db, 50, 0, Some("example"), Some("other-app")).unwrap().is_empty());
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE transcription_fts_meta SET populated = 0 WHERE name = 'history'", []).unwrap();
+        drop(conn);
+        assert_eq!(query_recent_page(&db, 50, 0, Some("public example"), None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn website_migration_keeps_old_history_without_inventing_domains() {
+        let path = std::env::temp_dir().join(format!("verenu-website-migration-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::data::db::open(&path).unwrap();
+        insert_transcription_returning(&db, "old words", "old words", 2, 1000, "test", Some("browser"), None).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN website_domain; PRAGMA user_version = 34;").unwrap();
+        }
+        drop(db);
+        let migrated = crate::data::db::open(&path).unwrap();
+        let rows = super::query_recent(&migrated).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].clean_text, "old words");
+        assert_eq!(rows[0].website_domain, None);
+        drop(migrated);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]
