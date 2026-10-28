@@ -325,6 +325,12 @@
   let pillSizeInFlight = false;
   let pillSizeInFlightTarget: { w: number; h: number } | null = null;
   let pillSizePending: { w: number; h: number } | null = null;
+  // Window size an in-progress growth (see growPillWindow) must not drop
+  // below, so a settle report from before the content grew cannot queue a
+  // shrink behind the growth and undo it before the transition starts.
+  let pillSizeFloor: { w: number; h: number } | null = null;
+  // Resolvers waiting for the native window to finish growing.
+  let pillSizeWaiters: Array<() => void> = [];
 
   function sendPillSize(w: number, h: number) {
     pillSizeInFlight = true;
@@ -350,13 +356,17 @@
           const next = pillSizePending;
           pillSizePending = null;
           sendPillSize(next.w, next.h);
+        } else {
+          const waiters = pillSizeWaiters;
+          pillSizeWaiters = [];
+          for (const resolve of waiters) resolve();
         }
       });
   }
 
   function reportPillSize(width: number, height: number) {
-    const w = windowWidthFor(width);
-    const h = windowHeightFor(height);
+    const w = Math.max(windowWidthFor(width), pillSizeFloor?.w ?? 0);
+    const h = Math.max(windowHeightFor(height), pillSizeFloor?.h ?? 0);
     if (pillSizeInFlight) {
       pillSizePending =
         pillSizeInFlightTarget?.w === w && pillSizeInFlightTarget.h === h ? null : { w, h };
@@ -364,6 +374,25 @@
     }
     if (w === lastSentWidth && h === lastSentHeight) return;
     sendPillSize(w, h);
+  }
+
+  // Grows the native window to hold `width` x `height` and resolves once it
+  // has, so a CSS transition into that space is never clipped by a window that
+  // is still catching up. The timeout is only a backstop: a slow or failed
+  // resize must not strand the animation.
+  function growPillWindow(width: number, height: number): Promise<void> {
+    // Reserve the size first so no queued or in-flight smaller report can undo
+    // the growth, then wait for the queue to drain onto it.
+    pillSizeFloor = {
+      w: Math.max(windowWidthFor(width), pillSizeFloor?.w ?? 0),
+      h: Math.max(windowHeightFor(height), pillSizeFloor?.h ?? 0),
+    };
+    reportPillSize(width, height);
+    if (!pillSizeInFlight) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, 150);
+      pillSizeWaiters.push(() => { clearTimeout(timer); resolve(); });
+    });
   }
 
   function measureAndResize() {
@@ -491,6 +520,7 @@
       errLines = 1;
       errScroll = false;
       errorMsg = '';
+      pillSizeFloor = null;
       timers.clear('errorTimer');
       cancelOpen = false;
       showCancelBtn = false;
@@ -530,29 +560,31 @@
     await tick();
     if (taskId !== openErrorTaskId || state !== 'error') return;
 
-    const applySize = () => {
+    const applySize = async () => {
       const box = errSizerEl?.getBoundingClientRect();
       const textW = box ? Math.ceil(box.width) : 0;
       const lines = box ? Math.max(1, Math.round(box.height / ERROR_LINE_H)) : 1;
 
-      if (textW <= 0) {
-        errWidth = ERROR_COLLAPSED_WIDTH;
-        errHeight = ERROR_SINGLE_H;
-        errScroll = false;
-      } else if (lines <= 1) {
-        errWidth = textW + ERROR_CHROME_W;
-        errHeight = ERROR_SINGLE_H;
-        errScroll = false;
-      } else {
-        errWidth = ERROR_TEXT_MAX_W + ERROR_CHROME_W;
-        const shown = Math.min(lines, ERROR_MAX_LINES);
-        errHeight = shown * ERROR_LINE_H + ERROR_CARD_PAD_V;
-        errScroll = lines > ERROR_MAX_LINES;
+      let width = ERROR_COLLAPSED_WIDTH;
+      let height = ERROR_SINGLE_H;
+      let scroll = false;
+      if (textW > 0 && lines <= 1) {
+        width = textW + ERROR_CHROME_W;
+      } else if (textW > 0) {
+        width = ERROR_TEXT_MAX_W + ERROR_CHROME_W;
+        height = Math.min(lines, ERROR_MAX_LINES) * ERROR_LINE_H + ERROR_CARD_PAD_V;
+        scroll = lines > ERROR_MAX_LINES;
       }
+      // Grow the native window first and only then start the CSS transition
+      // into the new space.
+      await growPillWindow(width, height);
+      if (taskId !== openErrorTaskId || state !== 'error') return;
+      errWidth = width;
+      errHeight = height;
+      errScroll = scroll;
       errLines = lines;
       errOpen = true;
       void setPillInteractive(true);
-      reportPillSize(errWidth, errHeight);
     };
 
     if (wasOpen) {
@@ -643,6 +675,7 @@
         }
         prevState = state;
         state = incoming;
+        if (incoming !== 'error') pillSizeFloor = null;
         void setPillInteractive(isTerminalState(incoming));
         if (isAudioState(state)) {
           refreshDpr();
@@ -1602,4 +1635,47 @@
   }
   .hf-btn.cancel  { animation: hfBtnIn 0.16s ease-out both; }
   .hf-btn.confirm { animation: hfBtnIn 0.16s ease-out 0.03s both; }
+
+  /* Reduced motion: no scale/slide/width morphs. States swap with a short
+     opacity fade; continuous effects (bars, spinner, shine) carry information
+     and are left alone. */
+  @keyframes pillFade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pill,
+    .pill.processing.from-rec,
+    .pill.processing.from-hf,
+    .pill.processing.from-loading,
+    .pill.loading-local.from-processing,
+    .pill.cancelled.from-rec,
+    .pill.cancelled.from-hf {
+      animation: pillFade 0.12s linear both !important;
+    }
+    .pill.recording { animation-delay: 0.25s !important; }
+    .pill.dying,
+    .pill.processing.from-rec.dying,
+    .pill.processing.from-hf.dying,
+    .pill.processing.from-loading.dying,
+    .pill.loading-local.from-processing.dying,
+    .pill.cancelled.from-rec.dying,
+    .pill.cancelled.from-hf.dying {
+      animation: pillFade 0.12s linear reverse both !important;
+    }
+    .pill.no-anim:not(.dying) { animation: none !important; }
+    .pill,
+    .pill.processing,
+    .pill.error,
+    .pill.cancelled,
+    .pill.paste-failed,
+    .pill.copied,
+    .pill.handsfree,
+    .stage-roll,
+    .err-text,
+    .pill-context {
+      transition: none !important;
+    }
+    .hf-btn { animation: none !important; }
+  }
 </style>
