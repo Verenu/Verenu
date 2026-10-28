@@ -12,29 +12,39 @@ the installed resources on Windows/Linux).
 
 ## Enable access
 
-Close Verenu normally, then start it with a private grant. For example on Linux:
+Open Verenu normally, then request access from the bundled CLI:
 
 ```bash
-export VERENU_AGENT_PORT=17439
-export VERENU_AGENT_TOKEN="$(openssl rand -hex 32)"
-verenu &
+node Agent-Skills/verenu-control/scripts/verenu-agent.mjs connect
 node Agent-Skills/verenu-control/scripts/verenu-agent.mjs describe
 ```
 
-Use the executable inside the app bundle on macOS. PowerShell examples are in
-the CLI's `--help`. Keep the variables in the invoking shell; do not print the
-token, put it in a command argument, or commit it. It grants settings/Context
-writes and explicit transcript reads. Restarting without these variables revokes
-access. Invalid configuration or an occupied port fails startup; no port fallback
-or automatic credential discovery occurs. The API is off in ordinary launches.
+Approve the request in the Verenu window. The grant allows local agents running
+as your user to read private data and change settings and Contexts until Verenu
+quits. Later agents can reuse it without another prompt during that session.
+The token is kept in a user-private local session file; never print, share or
+commit it. Automatic approval requests are supported on Linux and macOS. On
+Windows, automatic access is unavailable until secure storage is supported; the
+explicit `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` launch grant remains
+available. On all platforms that explicit grant remains supported for testing.
 
 The API binds only `127.0.0.1`, requires a 64-character random hex bearer token,
 rejects browser Origin/Fetch-Metadata requests, and provides no CORS access.
-Other processes with the grant can act as the user. Loopback is not a substitute
+Other processes running as your user can read the shared grant and act as the
+user. Loopback is not a substitute
 for keeping the grant private. No credential, arbitrary SQL, shell, microphone
 capture, or text-injection endpoint exists.
 
 ## Discover and install the skill
+
+The app also bundles a small `agent-install-skill/` guide for agents handling
+Verenu requests. It explains how to use the control skill in place or, with the
+user's agreement, save it for the current harness and optionally selected
+other harnesses. On ordinary desktop startup, Verenu registers this discovery-only
+guide in detected harnesses. It does not overwrite existing skills, and it
+does not reinstall a guide the user removed. A harness detected later is
+registered on a subsequent startup. This does not enable the API or install
+the control skill.
 
 ```bash
 npm run agent -- harnesses
@@ -80,7 +90,10 @@ mutation: cancellation does not guarantee a native operation was undone.
 - Read settings and microphones; write the discovered allowlist of audio,
   cleanup, caps, spacing, provider/model, language, prompt and history settings.
 - Create, duplicate, rename, pin, color, edit or delete Context groups; inspect
-  stats, dictionary and snippets; assign/remove apps and website targets.
+  stats, dictionary, snippets and sub-app rules; assign/remove apps and website targets.
+  The API also exposes the vocabulary and snippet inventories, their explicit
+  Context assignments, and the native assignment setters. Effective Context
+  inventories include inherited Everywhere items.
   Reassignment moves a target. `update_context_settings` replaces its settings:
   read first and preserve fields you are not changing. Everywhere semantics
   remain owned by the existing native handlers. `create_context` and
@@ -89,7 +102,7 @@ mutation: cancellation does not guarantee a native operation was undone.
   or explicitly invoke `test_cleanup_prompt` with the existing saved provider
   credentials. That last command makes a live provider request and may cost
   money. Linting alone does not prove provider behavior.
-- Read `history.report`, bounded `history.page`, and `diagnostics.top`; configure
+- Read `history.report`, metadata-only `history.usage`, bounded `history.page`, and `diagnostics.top`; configure
   journal retention using `diagnostics.retention`.
 
 Read back mutations. Open/reload the relevant UI view to observe external edits;
