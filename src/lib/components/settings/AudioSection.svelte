@@ -117,7 +117,7 @@
   <div class="gain-header">
     <div>
       <div class="label">Microphone gain</div>
-      <div class="desc">Digital boost applied on top of your system input volume. Raise the system volume first if you need more than about 4×.</div>
+      <div class="desc">Speech level adjusts automatically. Leave this at the default unless speech is too quiet or not detected; higher values target a louder level.</div>
     </div>
     <span class="gain-value">{micGain.toFixed(1)}×</span>
   </div>
