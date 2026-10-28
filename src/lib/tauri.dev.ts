@@ -672,11 +672,31 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return undefined as T;
     case 'get_setting':
       return getDevSetting(String(args?.key ?? '')) as T;
+    case 'get_effective_transcription_model': {
+      const current = getDevSetting('transcription_default_model');
+      const legacy = getDevSetting('transcription_model');
+      const model = [current, legacy].find(value => typeof value === 'string' && value.includes('/'));
+      return (model ?? 'groq/whisper-large-v3-turbo') as T;
+    }
     case 'get_storage_full_simulation':
       return devStorageFullSimulation as T;
     case 'set_storage_full_simulation':
       devStorageFullSimulation = Boolean(args?.enabled);
       return undefined as T;
+    case 'save_model_settings_if_unchanged': {
+      if (devStorageFullSimulation) throw new Error('STORAGE_FULL: simulated settings write failure');
+      const expected = args?.expected as Record<string, unknown>;
+      const values = args?.values as Record<string, unknown>;
+      if (!expected || !values) throw new Error('Invalid model settings snapshot');
+      if (Object.entries(expected).some(([key, value]) =>
+        JSON.stringify(getDevSetting(key)) !== JSON.stringify(value))) {
+        throw new Error('Model settings changed while you were editing. Reload them before saving.');
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(DEV_STORAGE_KEY, JSON.stringify({ ...readDevSettings(), ...values }));
+      }
+      return undefined as T;
+    }
     case 'save_setting':
       if (typeof args?.key !== 'string' || args.key.length === 0) {
         return undefined as T;

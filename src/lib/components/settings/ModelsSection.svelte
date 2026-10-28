@@ -36,6 +36,7 @@
     type LocalModelMemoryPolicy,
     type ProviderId,
     type ProviderModelMap,
+    type SettingsSnapshot,
   } from '../../settings';
   import ModelTaskTile from './ModelTaskTile.svelte';
   import { localModelDownloads } from './localModelDownloads';
@@ -51,7 +52,7 @@
     type ModelPerformance,
     supportsLocalLanguage,
   } from './modelPresets';
-  import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
+  import { refreshTranscriptionModel } from '../../transcriptionModelStore.svelte';
   import {
     hydrateCatalogCache,
     modelCatalogStore,
@@ -226,22 +227,8 @@
     pendingPresetRequestsSettled = 0;
   }
 
-  async function setCleanupEnabled(value: boolean) {
-    const previousValue = cleanupEnabled;
-    const previousStoreValue = appStore.cleanupEnabled;
-    cleanupEnabled = value;
-    appStore.cleanupEnabled = value;
-    try {
-      await saveSetting('cleanup_enabled', value);
-    } catch (err) {
-      cleanupEnabled = previousValue;
-      appStore.cleanupEnabled = previousStoreValue;
-      console.error('save cleanup_enabled from preset failed', err);
-      throw err;
-    }
-  }
-
   function activatePreset(target: PresetTarget, presetId: string) {
+    if (modelConflict) return;
     if (!presetId.startsWith('fallback-')) {
       modelSelectionMode = presetId.endsWith('-accurate') ? 'quality' : presetId.endsWith('-balanced') ? 'balanced' : 'fastest';
     }
@@ -252,11 +239,12 @@
       cleanupDefaultModel = target.cleanupDefaultModel;
     }
     cleanupFallbackModels = [...target.cleanupFallbacks];
-    setCleanupEnabled(target.cleanupEnabled).catch((err) => console.error('preset cleanup flag failed', err));
+    cleanupEnabled = target.cleanupEnabled;
     persistAll().catch((err) => console.error('persist preset failed', err));
   }
 
   function applyPreset(preset: Preset) {
+    if (modelConflict) return;
     const target = preset.target;
     if (!target) return;
     clearPendingPreset();
@@ -487,48 +475,66 @@
   }
 
   let persistChain: Promise<void> = Promise.resolve();
+  const modelKeys = [
+    'transcription_models_by_provider', 'cleanup_models_by_provider',
+    'transcription_default_model', 'cleanup_default_model',
+    'transcription_fallback_models', 'cleanup_fallback_models',
+    'dual_transcription_enabled', 'model_selection_mode',
+    'transcription_model', 'cleanup_model', 'transcription_provider', 'cleanup_provider',
+    'cleanup_enabled',
+  ] as const;
+  const modelRelatedKeys: readonly string[] = [
+    ...modelKeys, 'custom_providers', 'local_model_memory_policy', 'transcription_language',
+    'advanced_model_ui', 'cleanup_prompt_override',
+  ];
+  let modelBaseline: Record<string, unknown> | null = null;
+  let modelConflict = $state(false);
+  let agentChangeVersion = 0;
+
+  function modelSnapshot(all: SettingsSnapshot): Record<string, unknown> {
+    return Object.fromEntries(modelKeys.map(key => [key, all[key] ?? null]));
+  }
 
   function persistAll(): Promise<void> {
     ensureDefaultAndFallbacks();
     const transcriptionProvider = splitModelId(transcriptionDefaultModel)?.provider ?? 'groq';
     const cleanupProvider = splitModelId(cleanupDefaultModel)?.provider ?? 'groq';
-    const snapshot = {
-      transcriptionModelsByProvider,
-      cleanupModelsByProvider,
-      transcriptionDefaultModel,
-      cleanupDefaultModel,
-      transcriptionFallbackModels,
-      dualTranscriptionEnabled,
-      cleanupFallbackModels,
-      transcriptionProvider,
-      cleanupProvider,
-      localModelMemoryPolicy,
-      modelSelectionMode,
+    const snapshot = structuredClone($state.snapshot({
+      transcription_models_by_provider: transcriptionModelsByProvider,
+      cleanup_models_by_provider: cleanupModelsByProvider,
+      transcription_default_model: transcriptionDefaultModel,
+      cleanup_default_model: cleanupDefaultModel,
+      transcription_fallback_models: transcriptionFallbackModels,
+      dual_transcription_enabled: dualTranscriptionEnabled,
+      model_selection_mode: modelSelectionMode,
+      cleanup_fallback_models: cleanupFallbackModels,
+      transcription_model: transcriptionDefaultModel,
+      cleanup_model: cleanupDefaultModel,
+      transcription_provider: transcriptionProvider,
+      cleanup_provider: cleanupProvider,
+      cleanup_enabled: cleanupEnabled,
+    }));
+    const writeSnapshot = async () => {
+      if (!modelBaseline || modelConflict) throw new Error('Reload model settings before saving.');
+      const version = agentChangeVersion;
+      try {
+        await invoke('save_model_settings_if_unchanged', { expected: modelBaseline, values: snapshot });
+        modelBaseline = snapshot;
+        if (version === agentChangeVersion) appStore.cleanupEnabled = snapshot.cleanup_enabled;
+        void refreshTranscriptionModel();
+        window.dispatchEvent(new Event('verenu:setting-saved'));
+      } catch (error) {
+        if (String(error).includes('changed while you were editing')) modelConflict = true;
+        throw error;
+      }
     };
-    transcriptionModelStore.defaultModel = transcriptionDefaultModel;
-
-    const writeSnapshot = () =>
-      Promise.all([
-        saveSetting('transcription_models_by_provider', snapshot.transcriptionModelsByProvider),
-        saveSetting('cleanup_models_by_provider', snapshot.cleanupModelsByProvider),
-        saveSetting('transcription_default_model', snapshot.transcriptionDefaultModel),
-        saveSetting('cleanup_default_model', snapshot.cleanupDefaultModel),
-        saveSetting('transcription_fallback_models', snapshot.transcriptionFallbackModels),
-        saveSetting('dual_transcription_enabled', snapshot.dualTranscriptionEnabled),
-        saveSetting('model_selection_mode', snapshot.modelSelectionMode),
-        saveSetting('cleanup_fallback_models', snapshot.cleanupFallbackModels),
-        saveSetting('transcription_model', snapshot.transcriptionDefaultModel),
-        saveSetting('cleanup_model', snapshot.cleanupDefaultModel),
-        saveSetting('transcription_provider', snapshot.transcriptionProvider),
-        saveSetting('cleanup_provider', snapshot.cleanupProvider),
-        saveSetting('local_model_memory_policy', snapshot.localModelMemoryPolicy),
-      ]).then(() => {});
 
     persistChain = persistChain.then(writeSnapshot, writeSnapshot);
     return persistChain;
   }
 
-  async function migrateAndLoad() {
+  async function migrateAndLoad(readOnly = false) {
+    const version = agentChangeVersion;
     void refreshAppleIntelligence();
     const [all, keyStatus] = await Promise.all([
       loadSettingsSnapshot(),
@@ -536,6 +542,7 @@
     ]);
     const { advanced_model_ui: advancedRaw, cleanup_enabled: cleanupRaw,
       transcription_language: language, model_selection_mode: selectionMode } = all;
+    modelBaseline = modelSnapshot(all);
 
     apiKeyStatus = { ...apiKeyStatus, ...keyStatus, local: true };
     transcriptionLanguage = language ?? 'en';
@@ -545,7 +552,7 @@
     hydrateCatalogCache(all.provider_model_cache);
     if (typeof cleanupRaw === 'boolean') {
       cleanupEnabled = cleanupRaw;
-      appStore.cleanupEnabled = cleanupRaw;
+      if (version === agentChangeVersion) appStore.cleanupEnabled = cleanupRaw;
     }
     transcriptionModelsByProvider = mergeProviderModelMap(all.transcription_models_by_provider);
     const rawCleanupModelsByProvider = mergeProviderModelMap(all.cleanup_models_by_provider);
@@ -639,7 +646,7 @@
       || JSON.stringify(cleanupFallbackModels) !== JSON.stringify(preCleanupFallbackModels)
       || cleanupModelMapChanged;
 
-    if (changed) {
+    if (changed && !readOnly) {
       await persistAll();
     }
 
@@ -650,7 +657,9 @@
       refreshLocalLlmState(),
     ]);
 
-    validateLocalSelectionsAfterLoad();
+    if (!readOnly) validateLocalSelectionsAfterLoad();
+    await refreshTranscriptionModel();
+    if (version === agentChangeVersion) modelConflict = false;
   }
 
   function validateLocalSelectionsAfterLoad() {
@@ -748,8 +757,7 @@
     dualTranscriptionEnabled = value;
     transcriptionModeDropdownOpen = false;
     try {
-      await saveSetting('dual_transcription_enabled', value);
-      await saveSetting('model_selection_mode', 'manual');
+      await persistAll();
     } catch (err) {
       dualTranscriptionEnabled = !value;
       console.error('save dual transcription setting failed:', err);
@@ -767,6 +775,15 @@
   }
 
   onMount(() => {
+    const onAgentSettingsChanged = (event: Event) => {
+      const keys = (event as CustomEvent<string[] | null>).detail;
+      agentChangeVersion += 1;
+      if (!keys || keys.some(key => modelRelatedKeys.includes(key))) modelConflict = true;
+      void invoke<Record<ProviderId, boolean>>('get_api_key_status')
+        .then(status => { apiKeyStatus = { ...apiKeyStatus, ...status, local: true }; })
+        .catch(err => console.error('refresh API key status failed', err));
+    };
+    window.addEventListener('verenu:agent-settings-changed', onAgentSettingsChanged);
     refreshLocalModels().catch((err) => console.error('refresh local models failed', err));
     refreshLocalState().catch((err) => console.error('refresh local state failed', err));
     refreshLocalLlmModels().catch((err) => console.error('refresh local cleanup models failed', err));
@@ -794,6 +811,7 @@
     window.addEventListener('verenu:api-key-saved', onKeySaved);
     window.addEventListener('verenu:api-key-deleted', onKeyDeleted);
     return () => {
+      window.removeEventListener('verenu:agent-settings-changed', onAgentSettingsChanged);
       window.removeEventListener('verenu:api-key-saved', onKeySaved);
       window.removeEventListener('verenu:api-key-deleted', onKeyDeleted);
     };
@@ -810,6 +828,14 @@
 
 <h2 class="settings-h">Models</h2>
 
+{#if modelConflict}
+  <div class="panel-note" role="alert">
+    Model settings changed outside this screen. Reload to use the latest settings; unsaved selections here will be discarded.
+    <button class="btn-ghost" onclick={() => { void persistChain.catch(() => {}).then(() => migrateAndLoad(true)); }}>Reload model settings</button>
+  </div>
+{/if}
+
+<div inert={modelConflict}>
 <div data-setting-target="model-presets">
   <ModelPresetPicker
     {apiKeyStatus}
@@ -996,6 +1022,8 @@
   <button class="btn-ghost" type="button" onclick={openLocalModelsFolder}>Open models folder</button>
 </div>
 {/if}
+
+</div>
 
 <style>
 
