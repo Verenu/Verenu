@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
+import { constants as fsConstants } from 'node:fs';
 
 const skillRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const harnesses = [
@@ -46,17 +47,116 @@ export async function installSkill(selected, { home = os.homedir(), permanent = 
   return destinations;
 }
 
-export async function invoke(command, args = {}, env = process.env) {
-  const token = env.VERENU_AGENT_TOKEN;
-  const port = Number(env.VERENU_AGENT_PORT);
-  if (!/^[a-f\d]{64}$/i.test(token ?? '') || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('Set VERENU_AGENT_TOKEN and VERENU_AGENT_PORT to the grant used to launch Verenu. See --help.');
+function sessionPaths(env) {
+  if (process.platform === 'win32') throw new Error('Automatic agent access is not available on Windows. See --help for the explicit grant.');
+  if (env.VERENU_APP_DATA_DIR_OVERRIDE) return [path.join(env.VERENU_APP_DATA_DIR_OVERRIDE, 'agent-session.json')];
+  const home = env.HOME || os.homedir();
+  if (process.platform === 'darwin') return [path.join(home, 'Library', 'Application Support', 'Verenu', 'agent-session.json')];
+  const standard = path.join(home, '.config');
+  return [...new Set([env.XDG_CONFIG_HOME || standard, standard].map((base) => path.join(base, 'Verenu', 'agent-session.json')))];
+}
+
+async function readDescriptor(filename) {
+  let file;
+  try {
+    file = await fs.open(filename, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 4096 || (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0))) {
+      throw new Error('The agent session file is not private to this user.');
+    }
+    let value;
+    try { value = JSON.parse(await file.readFile('utf8')); }
+    catch { throw new Error('Invalid Verenu agent session file.'); }
+    if (!value || typeof value !== 'object' || value.version !== 1 || typeof value.instance !== 'string' || !/^[a-f\d-]{36}$/i.test(value.instance) || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535 ||
+        !['idle', 'pending', 'denied', 'approved'].includes(value.status) ||
+        (value.status === 'approved' && (typeof value.token !== 'string' || !/^[a-f\d]{64}$/i.test(value.token)))) {
+      throw new Error('Invalid Verenu agent session file.');
+    }
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  } finally {
+    await file?.close();
   }
-  const response = await fetch(`http://127.0.0.1:${port}/v1/invoke`, {
-    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(65000),
-    redirect: 'error',
-  });
+}
+
+async function resolveSession(env) {
+  const live = [];
+  for (const filename of sessionPaths(env)) {
+    const session = await readDescriptor(filename);
+    if (!session) continue;
+    try {
+      const response = await fetch(`http://127.0.0.1:${session.port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+      if (!response.ok) continue;
+      const status = await response.json();
+      if (status.version === 1 && status.instance === session.instance) live.push({ filename, session });
+    } catch { /* A stale descriptor is not a running profile. */ }
+  }
+  if (live.length > 1) throw new Error('More than one Verenu profile is running. Specify the intended VERENU_APP_DATA_DIR_OVERRIDE before connecting.');
+  if (!live.length) throw new Error('No running Verenu agent session found. Open the installed Verenu app and try again.');
+  return live[0];
+}
+
+export async function connect(env = process.env, { timeoutMs = 120000, pollMs = 250 } = {}) {
+  if (env.VERENU_AGENT_TOKEN !== undefined || env.VERENU_AGENT_PORT !== undefined) {
+    await invoke('describe', {}, env);
+    return;
+  }
+  const resolved = await resolveSession(env);
+  const filename = resolved.filename;
+  let session = resolved.session;
+  const instance = session.instance;
+  if (session.status === 'approved') {
+    try { await invoke('describe', {}, { VERENU_AGENT_TOKEN: session.token, VERENU_AGENT_PORT: String(session.port) }); }
+    catch { throw new Error('Could not reach the approved Verenu session. Open Verenu and try again.'); }
+    return;
+  }
+  let response;
+  try {
+    response = await fetch(`http://127.0.0.1:${session.port}/v1/pair`, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    throw new Error('Could not reach the running Verenu app. Open Verenu and try again.');
+  }
+  if (!response.ok) throw new Error(`Verenu could not start an approval request (HTTP ${response.status}).`);
+  if (response.status !== 200) console.error('Approve agent access in the Verenu window. Access lasts until Verenu quits.');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    const previousPort = session.port;
+    session = await readDescriptor(filename);
+    if (!session || session.port !== previousPort || session.instance !== instance) throw new Error('Verenu restarted during approval. Try connecting again.');
+    if (session.status === 'approved') {
+      try { await invoke('describe', {}, { VERENU_AGENT_TOKEN: session.token, VERENU_AGENT_PORT: String(session.port) }); }
+      catch { throw new Error('Could not reach the approved Verenu session. Open Verenu and try again.'); }
+      return;
+    }
+    if (session.status === 'denied') throw new Error('Agent access was declined in Verenu.');
+  }
+  throw new Error('Agent approval timed out. Try connecting again.');
+}
+
+export async function invoke(command, args = {}, env = process.env) {
+  let token = env.VERENU_AGENT_TOKEN;
+  let port = Number(env.VERENU_AGENT_PORT);
+  if (token === undefined && env.VERENU_AGENT_PORT === undefined) {
+    const { session } = await resolveSession(env);
+    if (session.status !== 'approved') throw new Error('Agent access is not approved yet. Run connect and approve the request in Verenu.');
+    ({ token, port } = session);
+  }
+  if (!/^[a-f\d]{64}$/i.test(token ?? '') || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Invalid explicit agent grant. Set both VERENU_AGENT_TOKEN and VERENU_AGENT_PORT, or remove both and use connect.');
+  }
+  let response;
+  try {
+    response = await fetch(`http://127.0.0.1:${port}/v1/invoke`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(65000),
+      redirect: 'error',
+    });
+  } catch { throw new Error('Could not reach the Verenu agent session. Open Verenu and try again.'); }
   const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
   if (result.version !== 1 || !Object.hasOwn(result, 'result')) throw new Error('Unsupported agent API response');
@@ -66,29 +166,30 @@ export async function invoke(command, args = {}, env = process.env) {
 async function main(argv) {
   const [command, ...args] = argv;
   if (!command || command === '--help') {
-    console.log(`Verenu agent CLI (Node 20+). The desktop app must be running with an explicit grant.
+    console.log(`Verenu agent CLI (Node 20+). The desktop app must be running.
 Usage: node verenu-agent.mjs <command> '[JSON args]'
        node verenu-agent.mjs <command> --stdin
+       node verenu-agent.mjs connect
        node verenu-agent.mjs harnesses
        node verenu-agent.mjs install-skill
        node verenu-agent.mjs install-skill --permanent --harness codex,claude [--replace]
 
-Use describe for the live API and supported settings. All responses are JSON.
-Generate a random token in your shell; never paste it into chat or commit it.
-Linux/macOS (same shell for app and CLI):
-  export VERENU_AGENT_TOKEN="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))')"
-  export VERENU_AGENT_PORT=17421
-  verenu
-PowerShell:
+Run connect and approve the request in Verenu. Agents running as your user can
+reuse that grant until Verenu quits. It allows private reads and settings writes.
+Use describe for the live API and supported settings. Responses are JSON.
+An explicit VERENU_AGENT_TOKEN and VERENU_AGENT_PORT grant remains supported.
+Never print or share a token. The grant and profile belong to the running app.
+On Windows, automatic session access is unavailable; for an explicit grant,
+launch Verenu from a private PowerShell session after setting:
   $env:VERENU_AGENT_TOKEN = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
   $env:VERENU_AGENT_PORT = '17421'
-  & 'C:\\path\\to\\verenu.exe'
-
-Restart without these variables to revoke access. Existing app instances must be closed normally first.
+Do not paste the token into chat or log it. Quit and relaunch without these
+variables to revoke the explicit grant.
 Installation writes only selected detected harnesses. It does not enable the API or change global instructions.
 Text history requires include_text:true on each history.page request. Output may be private.`);
     return;
   }
+  if (command === 'connect') { if (args.length) throw new Error('connect takes no arguments'); await connect(); console.log('Verenu agent access approved for this session.'); return; }
   if (command === 'harnesses') { console.log(JSON.stringify(await detectedHarnesses(), null, 2)); return; }
   if (command === 'install-skill') {
     const detected = await detectedHarnesses();
