@@ -497,7 +497,6 @@ impl Analytics {
             "history_retention": category(crate::data::store::HISTORY_RETENTION),
             "local_model_memory_policy": category(crate::data::store::LOCAL_MODEL_MEMORY_POLICY),
             "mic_mute_button_dictation": bool_value(crate::data::store::MIC_MUTE_BUTTON_DICTATION),
-            "sync_enabled": bool_value(crate::data::store::SYNC_ENABLED),
             "context_group_count": context_group_count,
             "feature_breadth": feature_breadth,
         }));
@@ -522,7 +521,6 @@ impl Analytics {
             crate::data::store::MIC_MUTE_BUTTON_DICTATION => {
                 ("mic_mute_button_dictation", json!(value.as_bool()))
             }
-            crate::data::store::SYNC_ENABLED => ("sync_enabled", json!(value.as_bool())),
             crate::data::store::PAUSE_MEDIA_DURING_DICTATION => {
                 ("pause_media", json!(value.as_bool()))
             }
@@ -1113,7 +1111,6 @@ fn safe_properties(event: &str, properties: Value) -> Value {
             "context_group_count",
             "feature_breadth",
             "mic_mute_button_dictation",
-            "sync_enabled",
         ],
         "setting_changed" => &["setting", "value"],
         "dictation_started" => &["run_id", "handsfree", "noise_reduction"],
@@ -1666,7 +1663,7 @@ category_allowlist! { normalize_setting, "unknown";
     "cleanup_enabled" | "voice_commands_enabled" | "dual_transcription_enabled" | "noise_reduction" | "auto_learn_enabled" |
     "contextual_formatting" | "pause_media" | "transcription_provider" | "cleanup_provider" |
     "cleanup_intensity" | "history_retention" | "local_model_memory_policy" |
-    "mic_mute_button_dictation" | "sync_enabled"
+    "mic_mute_button_dictation"
 }
 
 fn safe_setting_value(value: &Value) -> Value {

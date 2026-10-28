@@ -8,7 +8,7 @@ internal fun safeAnalyticsSettings(json: JSONObject?): Map<String, Any> {
     "cleanup_enabled", "voice_commands_enabled", "dual_transcription_enabled", "noise_reduction", "mute_audio",
     "exclusive_mic", "pause_media", "sound_effects",
     "auto_learn_enabled", "contextual_formatting", "contextual_caps", "auto_spacing",
-    "autostart_enabled", "mic_mute_button_dictation", "sync_enabled",
+    "autostart_enabled", "mic_mute_button_dictation",
   )
   val categories = listOf(
     "transcription_provider", "cleanup_provider", "cleanup_intensity",

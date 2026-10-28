@@ -95,7 +95,7 @@
   );
 
   const settingsGroups = $derived(
-    visibleSettingsSections({ isMac, devMode: appStore.devModeEnabled, legacyMode: appStore.legacyFeaturesEnabled, syncEnabled: appStore.syncEnabled })
+    visibleSettingsSections({ isMac, devMode: appStore.devModeEnabled, legacyMode: appStore.legacyFeaturesEnabled })
   );
 
   type RailEntry =

@@ -8,6 +8,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Fixed the flicker when switching pages, Settings sections, Style tabs, and context groups. The leaving panel faded out too fast, so both panels were half-transparent at once and the background showed through (coverage dipped to 74%). It now stays opaque while the new panel rises (98% minimum). Scroll now resets without moving the page that is still on screen, and the transition no longer rewrites accessibility attributes on every frame.
 - Updated About, update checks and installer validation, package metadata, and documentation to use the `Verenu/Verenu` organization repository.
+- Sync now starts by default and is available in Settings without the experimental developer switch. Existing disabled flag values no longer prevent startup or synchronous muting.
+- If nearby discovery cannot start, sync continues using saved connections while Verenu retries discovery.
+- Nearby discovery now updates the advertised address when a device changes networks, so paired devices can reconnect without restarting Verenu.
 
 - Reduced dependency info and repeated parser-warning noise, included subsystem names in session logs, and added a filtered current-process log query with retention and suppression counts for agent debugging.
 - Text inputs no longer show colored accent outlines, rings, or glows when focused; focused fields only get a subtle neutral border change.

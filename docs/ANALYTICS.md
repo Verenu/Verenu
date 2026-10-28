@@ -212,7 +212,7 @@ Settings properties are only the approved booleans `cleanup_enabled`, `voice_com
 `dual_transcription_enabled`, `noise_reduction`, `mute_audio`, `exclusive_mic`,
 `pause_media`, `sound_effects`, `auto_learn_enabled`,
 `contextual_formatting`, `contextual_caps`, `auto_spacing`, and
-`autostart_enabled`, `mic_mute_button_dictation`, and `sync_enabled`; and the bounded categories `transcription_provider`,
+`autostart_enabled` and `mic_mute_button_dictation`; and the bounded categories `transcription_provider`,
 `cleanup_provider`, `cleanup_intensity`, `history_retention`, and
 `local_model_memory_policy`. Unknown category values become `unknown`.
 `context_group_count` is clamped to 0-200 and excludes the built-in Everywhere

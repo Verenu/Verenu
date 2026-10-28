@@ -54,7 +54,6 @@
       isMac,
       devMode: appStore.devModeEnabled,
       legacyMode: appStore.legacyFeaturesEnabled,
-      syncEnabled: appStore.syncEnabled,
     })
   );
   const mobileSections = $derived(mobileGroups.flatMap((group) => group.items));
@@ -157,12 +156,6 @@
 
   $effect(() => {
     if (!appStore.legacyFeaturesEnabled && appStore.settingsSection === 'apps') {
-      appStore.settingsSection = 'general';
-    }
-  });
-
-  $effect(() => {
-    if (!appStore.syncEnabled && appStore.settingsSection === 'sync') {
       appStore.settingsSection = 'general';
     }
   });
