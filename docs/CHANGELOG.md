@@ -12,6 +12,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - If nearby discovery cannot start, sync continues using saved connections while Verenu retries discovery.
 - Nearby discovery now updates the advertised address when a device changes networks, so paired devices can reconnect without restarting Verenu.
 
+- Made dictation pill bars use a consistent pixel width and spacing at fractional display scales, including on Hyprland.
 - Reduced dependency info and repeated parser-warning noise, included subsystem names in session logs, and added a filtered current-process log query with retention and suppression counts for agent debugging.
 - Text inputs no longer show colored accent outlines, rings, or glows when focused; focused fields only get a subtle neutral border change.
 - Redesigned Settings > Developer around debugging. Overview now ranks findings with numbers (failing stages, a dominant pipeline stage, retries, cache misses, memory growth, idle CPU, heavy child processes, chatty or slow operations, log spam), shows where dictation time goes, and **Copy report** puts a compact plain-text report on the clipboard for pasting to an agent. Failures group by cause with per-failure copy and jumps to the trace and its logs. Pipeline shows stage timing (avg, p95, max) and an expandable waterfall per run. Logs add a Problems filter, repeat collapsing, and one-click copy. Runtime, Activity, and Storage merged into Resources, and Fault Injection moved into Developer Settings. The page no longer counts its own polling as app activity.
