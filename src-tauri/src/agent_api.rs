@@ -94,7 +94,10 @@ impl Pairing {
             result
         }
         #[cfg(not(unix))]
-        anyhow::bail!("Secure shared agent grants are unavailable on this platform")
+        {
+            let _ = (status, path, self.port);
+            anyhow::bail!("Secure shared agent grants are unavailable on this platform")
+        }
     }
 }
 
