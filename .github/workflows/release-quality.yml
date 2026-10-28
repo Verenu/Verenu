@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   fast:
-    name: Release fast profile (${{ matrix.label }})
+    name: Release fast regression suites (${{ matrix.suites }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -29,7 +29,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source-ref }}
-      - uses: ./.github/actions/regression-checks
+      - name: Run selected fast regression suites
+        uses: ./.github/actions/regression-checks
         with:
           report-prefix: release-fast-${{ matrix.label }}
           profile: fast
@@ -47,7 +48,7 @@ jobs:
           report-prefix: release-linux
           profile: linux
   owned:
-    name: Release owned sessions (${{ matrix.label }})
+    name: ${{ matrix.suite == 'node' && 'Release Rust-backed Node integration tests' || format('Release Rust-backed {0} browser tests', matrix.project) }} (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -72,7 +73,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source-ref }}
-      - uses: ./.github/actions/regression-checks
+      - name: Run selected isolated session tests
+        uses: ./.github/actions/regression-checks
         with:
           report-prefix: release-${{ matrix.label }}
           profile: owned
@@ -80,7 +82,7 @@ jobs:
           shard: ${{ matrix.shard }}
           project: ${{ matrix.project }}
   rust:
-    name: Release Rust ${{ matrix.check }} (${{ matrix.os }})
+    name: Release ${{ matrix.check == 'clippy' && 'Rust lint' || 'Rust tests' }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +99,9 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: release-${{ matrix.check }}
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
         if: matrix.check == 'test'
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
+      - name: Lint Rust with Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
         if: matrix.check == 'clippy'

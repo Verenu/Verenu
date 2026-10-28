@@ -11,7 +11,7 @@ inputs:
     description: all, node, or browser owned tests
     default: all
   shard:
-    description: Node shard index/count
+    description: Node or browser shard index/count
     default: 1/1
   project:
     description: all, desktop, or phone browser project
@@ -55,7 +55,7 @@ runs:
       if: inputs.profile != 'linux'
       shell: bash
       run: npx playwright install --with-deps chromium
-    - name: Run deterministic contracts
+    - name: Run selected deterministic regression suites
       if: inputs.profile == 'all' || inputs.profile == 'fast'
       shell: bash
       env:
@@ -80,7 +80,7 @@ runs:
       if: inputs.profile == 'all' || inputs.profile == 'linux'
       shell: bash
       run: dbus-run-session -- xvfb-run -a cargo run --manifest-path src-tauri/Cargo.toml --example runtime-handle-stress
-    - name: Run every owned-session and browser regression
+    - name: Run selected isolated session tests
       if: inputs.profile == 'all' || inputs.profile == 'owned'
       shell: bash
       env:

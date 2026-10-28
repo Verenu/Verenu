@@ -116,7 +116,7 @@ jobs:
           NODE
 
   rust-partitions:
-    name: Rust ${{ matrix.check }} (${{ matrix.os }})
+    name: ${{ matrix.check == 'clippy' && 'Rust lint' || matrix.check == 'test' && 'Rust tests' || 'Rust dev-session bridge tests' }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -196,7 +196,7 @@ jobs:
           echo "No changed file exceeds 10 MB."
 
   fast-partitions:
-    name: Fast profile (${{ matrix.label }})
+    name: Fast regression suites (${{ matrix.suites }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -213,7 +213,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Run shared regression gate
+      - name: Run selected fast regression suites
         uses: ./.github/actions/regression-checks
         with:
           report-prefix: pr-fast-${{ matrix.label }}
@@ -244,7 +244,7 @@ jobs:
           node -e 'const jobs=JSON.parse(process.env.RESULTS); const failed=Object.entries(jobs).filter(([,job])=>job.result!=="success"); if(failed.length) { console.error(failed.map(([name,job])=>`${name}: ${job.result}`).join("\n")); process.exit(1); }'
 
   owned-sessions:
-    name: Owned sessions (${{ matrix.label }})
+    name: ${{ matrix.suite == 'node' && 'Rust-backed Node integration tests' || format('Rust-backed {0} browser tests', matrix.project) }} (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
@@ -267,7 +267,8 @@ jobs:
           - { label: phone-4, suite: browser, shard: '4/4', project: phone }
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/regression-checks
+      - name: Run selected isolated session tests
+        uses: ./.github/actions/regression-checks
         with:
           report-prefix: pr-${{ matrix.label }}
           profile: owned
@@ -286,8 +287,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:ci
-      - run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
+      - name: Test and lint CI workflows
+        run: npm run test:ci
+      - name: Test Playwright report validation
+        run: node --test tests/verification/playwright-summary.test.mjs tests/verification/playwright-report.test.mjs
 
   android:
     name: Android Kotlin and unit tests
@@ -314,7 +317,8 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run build
-      - run: npm run test:android
+      - name: Run Android unit tests
+        run: npm run test:android
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -347,10 +351,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
       - run: npm ci
-      - name: Run native WebView
+      - name: Test native WebView and IPC
         if: runner.os != 'Linux'
         run: npm run test:native:webview -- --report tests/reports/native.json
-      - name: Run Linux native WebView
+      - name: Test Linux native WebView and IPC
         if: runner.os == 'Linux'
         run: |
           runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"
