@@ -642,7 +642,7 @@ pub fn is_win_key_down() -> bool {
 #[allow(dead_code)]
 pub fn force_release_win_key() {}
 pub fn caps_lock_is_on() -> bool {
-    false
+    crate::core::hyprland::caps_lock_is_on().unwrap_or(false)
 }
 
 fn escape_bind_snippet(cancel_portal_id: &str) -> String {
