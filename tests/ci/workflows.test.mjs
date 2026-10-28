@@ -105,7 +105,7 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux'");
   assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
   assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
-  assert.equal(shared.runs.steps.find(step => step.name === 'Run deterministic contracts').if, "inputs.profile == 'all' || inputs.profile == 'fast'");
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('npm test -- --strict')).if, "inputs.profile == 'all' || inputs.profile == 'fast'");
 });
 
 test('Rust partitions retain every platform check and required status fails closed', () => {
@@ -238,7 +238,7 @@ test('PR checks compile and run Android native regressions and native WebViews',
   assert.equal(jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3').with.packages, 'platform-tools');
   assert.equal(jobs.android.steps.find(step => step.with?.name === 'android-unit-reports').with['if-no-files-found'], 'ignore');
   assert.deepEqual(jobs.native.strategy.matrix.os, ['windows-latest', 'macos-latest', 'ubuntu-latest']);
-  assert.match(jobs.native.steps.find(step => step.name === 'Run Linux native WebView').run, /XDG_RUNTIME_DIR/);
+  assert.match(jobs.native.steps.find(step => step.if === "runner.os == 'Linux'" && step.run?.includes('test:native:webview')).run, /XDG_RUNTIME_DIR/);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);
   assert.ok(shared.runs.steps.some(step => step.run?.includes('cargo clippy')));
