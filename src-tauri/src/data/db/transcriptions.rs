@@ -391,7 +391,7 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
          SELECT COALESCE(activity_day, date(created_at, 'localtime')), COALESCE(activity_hour, CAST(strftime('%H', created_at, 'localtime') AS INTEGER)),
                 COALESCE(context_id, 0), SUM(words)
            FROM transcriptions
-          WHERE created_at < ?1 AND NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid = transcriptions.uuid)
+          WHERE created_at < ?1 AND NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid = transcriptions.uuid)
           GROUP BY 1, 2, 3
          ON CONFLICT(day, hour, context_id) DO UPDATE SET total_words = total_words + excluded.total_words",
         [&cutoff],
@@ -403,7 +403,6 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
            FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
           WHERE (a.created_at < ?1 OR t.created_at < ?1 OR t.id IS NULL)
             AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
-            AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
           GROUP BY 1, 2, 3, 4, 5
          ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
            calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,
