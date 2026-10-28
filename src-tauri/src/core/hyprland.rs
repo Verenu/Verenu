@@ -110,6 +110,45 @@ fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn caps_lock_is_on() -> Option<bool> {
+    let devices: serde_json::Value = hyprctl_json(&["-j", "devices"])?;
+    active_keyboard_caps_lock(&devices)
+}
+
+#[cfg(target_os = "linux")]
+fn active_keyboard_caps_lock(devices: &serde_json::Value) -> Option<bool> {
+    devices.get("keyboards")?.as_array()?.iter()
+        .find(|keyboard| keyboard.get("main").and_then(|value| value.as_bool()) == Some(true))?
+        .get("capsLock")?.as_bool()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod caps_lock_tests {
+    use super::active_keyboard_caps_lock;
+    use serde_json::json;
+
+    #[test]
+    fn reads_caps_lock_from_the_active_keyboard() {
+        for state in [true, false] {
+            let devices = json!({"keyboards": [
+                {"main": false, "capsLock": !state},
+                {"main": true, "capsLock": state}
+            ]});
+            assert_eq!(active_keyboard_caps_lock(&devices), Some(state));
+        }
+    }
+
+    #[test]
+    fn missing_or_unsupported_keyboard_state_is_unknown() {
+        for devices in [json!({}), json!({"keyboards": []}),
+            json!({"keyboards": [{"main": true}]}),
+            json!({"keyboards": [{"main": false, "capsLock": true}]})] {
+            assert_eq!(active_keyboard_caps_lock(&devices), None);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn socket_request(command: &str) -> Option<std::io::Result<Vec<u8>>> {
     let path = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
         .join("hypr")
