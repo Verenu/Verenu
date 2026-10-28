@@ -8,6 +8,7 @@ use uuid::Uuid;
 mod backup_file;
 mod backup_history;
 mod backup_stats;
+pub(crate) use backup_stats::{import_sync_receipt, validate_totals};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct ExportStats {
@@ -218,6 +219,7 @@ pub struct ImportSummary {
     pub history_inserted: usize,
     pub history_existing: usize,
     pub history_conflicts: usize,
+    pub history_expired: usize,
     pub history_context_unmatched: usize,
     pub activity_conflicts: usize,
     pub website_targets_skipped: usize,
@@ -372,6 +374,7 @@ fn import_payload(
     let mut legacy_app_matched = 0;
     let mut legacy_app_dropped = 0;
     let initial_settings = settings.snapshot()?;
+    let mut effective_retention = initial_settings.get(store::HISTORY_RETENTION).and_then(|v| v.as_str()).unwrap_or("30 days").to_string();
 
     if !payload.settings.is_object() {
         log::warn!(
@@ -429,6 +432,7 @@ fn import_payload(
                     }
                     if key == store::HISTORY_RETENTION {
                         history_prune_days = value.as_str().and_then(store::history_retention_days);
+                        effective_retention = value.as_str().unwrap_or("30 days").to_string();
                     }
                     settings_applied += 1;
                 }
@@ -440,18 +444,21 @@ fn import_payload(
         }
     }
 
-    let mut library_stats = LibraryImportStats::default();
-    library_stats.app_targets_matched = legacy_app_matched;
-    library_stats.app_targets_dropped = legacy_app_dropped;
+    let mut library_stats = LibraryImportStats {
+        app_targets_matched: legacy_app_matched,
+        app_targets_dropped: legacy_app_dropped,
+        ..Default::default()
+    };
     let mut history_stats = backup_history::HistoryImportStats::default();
     let mut activity_conflicts = 0;
+    let imports_retention = pending_settings.iter().any(|(key, _)| key == store::HISTORY_RETENTION);
 
     {
         let mut conn = db
             .lock()
             .map_err(|_| "Database lock was poisoned".to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let existing_days = backup_stats::existing_days(&tx).map_err(|e| e.to_string())?;
+        let mut existing_days = backup_stats::existing_days(&tx).map_err(|e| e.to_string())?;
 
         if payload.version == "1" {
             import_legacy_library_conn(&tx, &payload, &mut library_stats)
@@ -465,19 +472,28 @@ fn import_payload(
             }
         }
 
+        if let Some(activity) = &payload.activity {
+            backup_stats::import_context_aliases(&tx, activity, &payload.contexts).map_err(|e| e.to_string())?;
+        }
+        existing_days.extend(backup_stats::existing_days(&tx).map_err(|e| e.to_string())?);
+
         if let Some(history) = &payload.history {
-            history_stats = backup_history::import_history(&tx, history, &payload.contexts).map_err(|e| e.to_string())?;
+            let cutoff = store::history_retention_days(&effective_retention).map(|days| (chrono::Utc::now().naive_utc() - chrono::Duration::days(days)).format("%Y-%m-%d %H:%M:%S").to_string());
+            history_stats = backup_history::import_history_with_retention(&tx, history, &payload.contexts, cutoff.as_deref()).map_err(|e| e.to_string())?;
         }
         if let Some(activity) = &payload.activity {
             activity_conflicts = backup_stats::import_activity(&tx, activity, &payload.contexts, &existing_days).map_err(|e| e.to_string())?;
         } else if payload.stats.total_words > 0 {
-            tx.execute("INSERT INTO lifetime_stats (id, total_words) VALUES (1, MAX(0, ?1 - COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0))) ON CONFLICT(id) DO UPDATE SET total_words = MAX(total_words, excluded.total_words)", [payload.stats.total_words]).map_err(|e| e.to_string())?;
             activity_conflicts += 1;
         }
+        backup_stats::validate_totals(&tx).map_err(|e| e.to_string())?;
 
         settings.save_values_with_commit(
             pending_settings,
             |previous| {
+                if !imports_retention && previous.get(store::HISTORY_RETENTION) != initial_settings.get(store::HISTORY_RETENTION) {
+                    return Err("History retention changed during import; please retry".to_string());
+                }
                 if let Some(providers) = restored_providers {
                     clear_provider_keys(previous, &providers)?;
                 }
@@ -537,6 +553,7 @@ fn import_payload(
         history_inserted: history_stats.inserted,
         history_existing: history_stats.existing,
         history_conflicts: history_stats.conflicts,
+        history_expired: history_stats.expired,
         history_context_unmatched: history_stats.context_unmatched,
         activity_conflicts,
         website_targets_skipped: library_stats.website_targets_skipped,
@@ -1215,6 +1232,9 @@ fn import_context_conn(
         .contextual_formatting_override
         .or_else(|| source.contextual_formatting_disabled.then_some(true));
     let name = source.name.trim();
+    if let Some(uuid) = source.uuid.as_deref() {
+        anyhow::ensure!(Uuid::parse_str(uuid).is_ok() || (source.is_everywhere && uuid == "everywhere-0000-0000-0000-000000000001"), "Invalid Context identity in backup");
+    }
     if name.is_empty() {
         stats.contexts_skipped += 1;
         return Ok(None);
@@ -1242,6 +1262,10 @@ fn import_context_conn(
             ],
         )?;
         stats.contexts_already_existed += 1;
+        if let Some(uuid) = source.uuid.as_deref() {
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, uuid, id, &local)?;
+        }
         return Ok(Some(id));
     }
 
@@ -1266,10 +1290,32 @@ fn import_context_conn(
             |row| row.get(0),
         )
         .optional()?;
+    if existing_by_uuid.is_none() {
+        if let Some(uuid) = source.uuid.as_deref() {
+            let alias: Option<(i64, Option<String>)> = conn.query_row("SELECT c.id,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1", [uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((id, original_name)) = alias {
+                if original_name.as_deref().is_none_or(|original| original.eq_ignore_ascii_case(name)) {
+                    let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+                    db::resolve_pending_contexts(conn, uuid, id, &local)?;
+                    stats.contexts_already_existed += 1;
+                    return Ok(Some(id));
+                }
+            }
+        }
+    }
     let existing: Option<i64> = existing_by_uuid.or(existing_by_name);
+
+    if existing_by_uuid.is_some() || existing_by_name.is_none() {
+        if let Some(uuid) = source.uuid.as_deref() {
+            conn.execute("DELETE FROM backup_context_aliases WHERE source_uuid=?1", [uuid])?;
+        }
+    }
 
     if let Some(id) = existing {
         if source.uuid.is_some() && existing_by_uuid.is_none() {
+            conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) SELECT ?1,uuid,?3 FROM contexts WHERE id=?2 ON CONFLICT(source_uuid) DO UPDATE SET local_uuid=excluded.local_uuid,source_name=excluded.source_name", params![source.uuid,id,name])?;
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, source.uuid.as_deref().expect("source identity exists"), id, &local)?;
             stats.contexts_already_existed += 1;
             stats.context_conflicts += 1;
             return Ok(Some(id));
@@ -1319,6 +1365,10 @@ fn import_context_conn(
             )?;
         }
         stats.contexts_already_existed += 1;
+        if let Some(uuid) = source.uuid.as_deref() {
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, uuid, id, &local)?;
+        }
         return Ok(Some(id));
     }
 
@@ -1361,7 +1411,9 @@ fn import_context_conn(
     match inserted {
         Ok(_) => {
             stats.contexts_inserted += 1;
-            Ok(Some(conn.last_insert_rowid()))
+            let id = conn.last_insert_rowid();
+            db::resolve_pending_contexts(conn, &uuid, id, &uuid)?;
+            Ok(Some(id))
         }
         Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
             let by_name: Option<i64> = conn
@@ -1877,11 +1929,13 @@ mod tests {
         db::insert_transcription_returning(&source, "synthetic words", "synthetic words", 2, 1000, "test", None, Some(source_context.id)).unwrap();
         let (_, contexts) = export_contextual_library(&source).unwrap();
         let activity = backup_stats::export_activity(&source).unwrap();
+        let history = backup_history::export_history_conn(&source.lock().unwrap()).unwrap();
         let dest = db::open(":memory:").unwrap();
         let local_context = db::insert_context_returning(&dest, "Work", None, None, None, None, false).unwrap();
         let conn = dest.lock().unwrap();
         let local_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id = ?1", [local_context.id], |r| r.get(0)).unwrap();
         assert_ne!(contexts.iter().find(|context| context.name == "Work").unwrap().uuid.as_deref(), Some(local_uuid.as_str()));
+        backup_history::import_history(&conn, &history, &contexts).unwrap();
         backup_stats::import_activity(&conn, &activity, &contexts, &Default::default()).unwrap();
         backup_stats::import_activity(&conn, &activity, &contexts, &Default::default()).unwrap();
         let words: i64 = conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid = ?1", [&local_uuid], |r| r.get(0)).unwrap();
@@ -1930,6 +1984,15 @@ mod tests {
         let matched = resolve_import_target(&target("com.microsoft.Word", Some("Microsoft Word"), Some("macos")), &installed, Some("windows")).unwrap();
         assert_eq!(matched.executable, "winword.exe");
         assert!(matched.matched);
+    }
+
+    #[test]
+    fn import_matches_a_bundle_component_without_an_app_name() {
+        let installed = [app("Microsoft Excel", "com.microsoft.Excel")];
+        let matched = resolve_import_target(&target("EXCEL.EXE", None, Some("windows")), &installed, Some("macos")).unwrap();
+        assert_eq!(matched.executable, "com.microsoft.excel");
+        let ambiguous = [app("Excel", "com.microsoft.Excel"), app("Excel", "org.example.Excel")];
+        assert!(resolve_import_target(&target("EXCEL.EXE", None, Some("windows")), &ambiguous, Some("macos")).is_none());
     }
 
     #[test]

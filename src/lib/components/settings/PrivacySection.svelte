@@ -215,6 +215,7 @@
     history_inserted?: number;
     history_existing?: number;
     history_conflicts?: number;
+    history_expired?: number;
     history_context_unmatched?: number;
     activity_conflicts?: number;
     website_targets_skipped?: number;
@@ -319,8 +320,8 @@
       const contextParts = contextTotal > 0 || appParts
         ? ` Contexts: ${contextTotal}${appParts ? ` (${appParts})` : ''}.` : '';
       const correctionSummary = correctionParts ? ` Corrections: ${correctionParts}.` : '';
-      const historySummary = s.history_inserted || s.history_existing || s.history_conflicts
-        ? ` History: ${s.history_inserted ?? 0} added, ${s.history_existing ?? 0} already on device${s.history_conflicts ? `, ${s.history_conflicts} conflicts left unchanged` : ''}${s.history_context_unmatched ? `, ${s.history_context_unmatched} without a matching Context` : ''}.`
+      const historySummary = s.history_inserted || s.history_existing || s.history_conflicts || s.history_expired
+        ? ` History: ${s.history_inserted ?? 0} added, ${s.history_existing ?? 0} already on device${s.history_expired ? `, ${s.history_expired} outside your retention period` : ''}${s.history_conflicts ? `, ${s.history_conflicts} with unresolved conflicts` : ''}${s.history_context_unmatched ? `, ${s.history_context_unmatched} without a matching Context` : ''}.`
         : '';
       const activitySummary = s.activity_conflicts
         ? ` ${s.activity_conflicts} activity summaries overlapped or could not be matched; some older totals may be incomplete.`
