@@ -24,7 +24,11 @@ test('invalid or incompatible selectors fail before any backend is launched', ()
     ['--shard', '1/6'], ['--shard', '0/1'], ['--shard', '2/1'],
     ['--suite', 'node', '--shard', '1/65'], ['--suite', 'node', '--shard', 'NaN/6'],
     ['--project', 'phone'], ['--suite', 'browser', '--project', 'missing'],
-    ['--suite', 'browser', '--shard', '1/6'], ['--suite', 'node', '--project', 'phone'],
+    ['--suite', 'node', '--project', 'phone'], ['--suite', 'browser', '--shard', '1/4'],
   ]) assert.throws(() => sessionPartition(args), undefined, JSON.stringify(args));
   assert.throws(() => partitionFiles(['one.test.mjs'], { index: 2, count: 2 }), /no files/);
+});
+
+test('browser partitions accept an explicit project and shard', () => {
+  assert.deepEqual(sessionPartition(['--suite', 'browser', '--project', 'phone', '--shard', '3/4']), { suite: 'browser', index: 3, count: 4, project: 'phone' });
 });

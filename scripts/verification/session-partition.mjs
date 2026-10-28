@@ -15,8 +15,9 @@ export function sessionPartition(args) {
   if (!/^[1-9]\d*\/[1-9]\d*$/.test(shard)) throw new Error('Expected --shard index/count');
   const [index, count] = shard.split('/').map(Number);
   if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index > count || count > 64) throw new Error('Invalid session shard');
-  if (suite !== 'node' && shard !== '1/1') throw new Error('--shard requires --suite node');
+  if (suite === 'all' && shard !== '1/1') throw new Error('--shard requires --suite node or browser');
   if (!['all', 'desktop', 'phone'].includes(project) || (suite !== 'browser' && project !== 'all')) throw new Error('--project requires --suite browser and a known project');
+  if (suite === 'browser' && count > 1 && project === 'all') throw new Error('Browser shards require an explicit project');
   return { suite, index, count, project };
 }
 
