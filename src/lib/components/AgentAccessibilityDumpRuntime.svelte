@@ -57,7 +57,7 @@
       accentColor: appStore.accentColor,
       cleanupEnabled: appStore.cleanupEnabled,
       legacyFeaturesEnabled: appStore.legacyFeaturesEnabled,
-      syncEnabled: appStore.syncEnabled,
+      syncEnabled: true,
       pillState: appStore.pillState,
       setupComplete: appStore.setupComplete,
       snippetCount: appStore.snippets.length,

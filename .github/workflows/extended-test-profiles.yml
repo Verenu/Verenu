@@ -107,6 +107,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
 
+      - name: Run sync tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml 'sync::' --lib
+
       - name: Run native profile
         if: runner.os != 'Linux'
         run: npm run test:native:webview -- --report tests/reports/native-profile.json
