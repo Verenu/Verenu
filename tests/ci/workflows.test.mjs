@@ -106,6 +106,10 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
   assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
   assert.equal(shared.runs.steps.find(step => step.run?.includes('npm test -- --strict')).if, "inputs.profile == 'all' || inputs.profile == 'fast'");
+  const promptCompile = shared.runs.steps.find(step => step.run?.includes('prompt_regression_fixtures_hold --no-run'));
+  assert.match(promptCompile.if, /inputs\.fast-suites == ''/);
+  assert.match(promptCompile.if, /,contract,/);
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('cargo build --manifest-path src-tauri/Cargo.toml --features dev-session')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
 });
 
 test('Rust partitions retain every platform check and required status fails closed', () => {
