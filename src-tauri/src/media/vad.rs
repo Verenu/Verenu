@@ -127,6 +127,8 @@ pub struct LiveSpeechDetector {
     min_speech_ms: u64,
     min_speech_ratio: f32,
     min_longest_run_ms: u64,
+    speech_active: bool,
+    speech_confirmed: bool,
 }
 
 impl LiveSpeechDetector {
@@ -160,6 +162,8 @@ impl LiveSpeechDetector {
             min_speech_ms: (MIN_SPEECH_MS_BASE as f32 * scale) as u64,
             min_speech_ratio: MIN_SPEECH_RATIO_BASE * scale,
             min_longest_run_ms: (MIN_LONGEST_RUN_MS_BASE as f32 * scale) as u64,
+            speech_active: false,
+            speech_confirmed: false,
         }
     }
 
@@ -184,6 +188,8 @@ impl LiveSpeechDetector {
                 }
             };
 
+            self.speech_active = detected && self.vad.is_some();
+
             consumed += FRAME_SAMPLES;
             self.total_ms += FRAME_MS;
             if detected {
@@ -202,12 +208,19 @@ impl LiveSpeechDetector {
                 self.min_speech_ratio,
                 self.min_longest_run_ms,
             ) {
-                self.frame.drain(..consumed);
-                return true;
+                self.speech_confirmed = true;
             }
         }
         self.frame.drain(..consumed);
-        false
+        self.speech_confirmed
+    }
+
+    pub fn speech_active(&self) -> bool {
+        self.speech_active
+    }
+
+    pub fn processed_frames(&self) -> u64 {
+        self.total_ms / FRAME_MS
     }
 }
 
@@ -284,6 +297,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_detector_keeps_observing_frames_after_speech_is_confirmed() {
+        let mut detector = LiveSpeechDetector::new(store::DEFAULT_MIC_GAIN);
+        detector.vad = None;
+        assert!(detector.push(&vec![0.1; FRAME_SAMPLES * 10]));
+        assert!(!detector.speech_active());
+        detector.push(&vec![0.0; FRAME_SAMPLES * 10]);
+        assert_eq!(detector.total_ms, FRAME_MS * 20);
+    }
+
+    #[test]
     fn live_fallback_preserves_partial_frames_across_batches() {
         let mut detector = LiveSpeechDetector::new(store::DEFAULT_MIC_GAIN);
         detector.vad = None;
@@ -296,14 +319,13 @@ mod tests {
     }
 
     #[test]
-    fn live_fallback_retains_unprocessed_samples_when_speech_latches() {
+    fn live_fallback_processes_all_frames_when_speech_latches() {
         let mut detector = LiveSpeechDetector::new(store::DEFAULT_MIC_GAIN);
         detector.vad = None;
         let samples = vec![1.0; FRAME_SAMPLES * 20 + 137];
         assert!(detector.push(&samples));
-        let consumed = (detector.total_ms / FRAME_MS) as usize * FRAME_SAMPLES;
-        assert_eq!(detector.frame, samples[consumed..]);
-        assert_eq!(detector.total_ms, MIN_SPEECH_MS_BASE);
+        assert_eq!(detector.frame, samples[FRAME_SAMPLES * 20..]);
+        assert_eq!(detector.total_ms, FRAME_MS * 20);
     }
 
     #[test]
