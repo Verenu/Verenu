@@ -22,7 +22,6 @@
   let ruin = $state(false);
   let devStartup = $state(false);
   let forceSetup = $state(false);
-  let sync = $state(false);
   let storageFull = $state(false);
   let provider = $state<ProviderId>('groq');
   let providerOpen = $state(false);
@@ -49,12 +48,6 @@
     forceSetup = value;
     await saveSetting('force_setup_on_launch', value).catch(() => { forceSetup = !value; });
   }
-  async function setSync(value: boolean) {
-    if (value && typeof window !== 'undefined' && !window.confirm('Enable experimental encrypted LAN sync?')) return;
-    sync = value;
-    await saveSetting('sync_enabled', value).then(() => { appStore.syncEnabled = value; }).catch(() => { sync = !value; });
-  }
-
   function providerDown() {
     appStore.providerStatusSimulation = true;
     appStore.providerStatusAlerts = [{ providerId: provider, providerName: provider === 'google' ? 'Gemini' : provider, status: 'degraded', severity: 'high', message: 'Diagnostic provider degradation preview.', detailsUrl: '' }];
@@ -89,9 +82,9 @@
     Promise.all([
       invoke<boolean>('get_dev_logging_enabled'), invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
       invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
-      invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }), invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
+      invoke<boolean | null>('get_setting', { key: 'force_setup_on_launch' }),
       invoke<boolean>('get_storage_full_simulation'),
-    ]).then(([v, r, d, f, s, st]) => { verbose = v; ruin = r ?? false; devStartup = d ?? false; forceSetup = f ?? false; sync = s ?? false; storageFull = st; }).catch(() => {});
+    ]).then(([v, r, d, f, st]) => { verbose = v; ruin = r ?? false; devStartup = d ?? false; forceSetup = f ?? false; storageFull = st; }).catch(() => {});
   });
 </script>
 
@@ -103,7 +96,6 @@
     <div class="setting-row" data-setting-target="developer-ruin-accessibility"><div><div class="label">Ruin accessibility</div><div class="desc">Expose a privacy-filtered state dump for T3 Code.</div></div><Toggle checked={ruin} onchange={setRuin} label="Ruin accessibility" /></div>
     <div class="setting-row" data-setting-target="developer-dev-mode-startup"><div><div class="label">Dev mode on startup</div><div class="desc">Keep Developer visible after every launch.</div></div><Toggle checked={devStartup} onchange={setDevStartup} label="Enable dev mode on startup" /></div>
     <div class="setting-row" data-setting-target="developer-setup"><div><div class="label">Force setup on launch</div><div class="desc">Show onboarding without erasing settings.</div></div><Toggle checked={forceSetup} onchange={setForceSetup} label="Force setup" /></div>
-    <div class="setting-row" data-setting-target="developer-sync"><div><div class="label">LAN device sync</div><div class="desc">Experimental. Off by default.</div></div><Toggle checked={sync} onchange={setSync} label="Enable LAN sync" /></div>
   </section>
 
   <section data-setting-target="developer-simulations">
