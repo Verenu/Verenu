@@ -8,6 +8,8 @@ mod posthog_build_support;
 mod analytics;
 #[cfg(desktop)]
 mod agent_api;
+#[cfg(desktop)]
+mod agent_discovery;
 mod android;
 mod api;
 mod app_hotkey;
@@ -415,7 +417,21 @@ pub fn run() {
             };
 
             #[cfg(desktop)]
-            agent_api::start(app.handle().clone())?;
+            if let Err(error) = agent_api::start(app.handle().clone()) {
+                log::warn!("Agent access is unavailable: {error}");
+            }
+
+            #[cfg(desktop)]
+            if !is_dev_session() {
+                match app.path().home_dir() {
+                    Ok(home) => {
+                        if let Err(error) = agent_discovery::register(&home, &app_data_dir()) {
+                            log::warn!("Could not register agent discovery skill: {error}");
+                        }
+                    }
+                    Err(error) => log::warn!("Could not locate home for agent discovery: {error}"),
+                }
+            }
 
             #[cfg(desktop)]
             if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
@@ -637,6 +653,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(desktop)]
+            agent_api::agent_pair_pending,
+            #[cfg(desktop)]
+            agent_api::agent_pair_respond,
             system::windows_titlebar::get_native_titlebar_metrics,
             system::windows_titlebar::set_native_titlebar_theme,
             system::omarchy_theme::get_omarchy_theme,
@@ -837,6 +857,8 @@ pub fn run() {
                 log::info!("app exit requested");
             }
             if let tauri::RunEvent::Exit = _event {
+                #[cfg(desktop)]
+                agent_api::clear_session(_app);
                 crate::media::sound::release_all_mutes_on_exit();
                 log::info!("app exiting; unloading local models");
                 crate::pipeline::failover::flush_on_exit(_app);
