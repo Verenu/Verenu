@@ -9,11 +9,10 @@ static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 fn enabled(app: &AppHandle) -> bool {
     store::settings_snapshot(app).is_ok_and(|settings| {
-        settings.get(store::SYNC_ENABLED).and_then(|v| v.as_bool()) == Some(true)
-            && settings
-                .get(store::SYNC_MUTING_ENABLED)
-                .and_then(|v| v.as_bool())
-                == Some(true)
+        settings
+            .get(store::SYNC_MUTING_ENABLED)
+            .and_then(|v| v.as_bool())
+            == Some(true)
     })
 }
 
