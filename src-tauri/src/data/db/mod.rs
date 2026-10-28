@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cleanup_cache;
+mod activity;
 mod contexts;
 mod dictionary;
 mod agent_history;
@@ -16,6 +17,7 @@ mod transcriptions;
 mod validation;
 
 pub use cleanup_cache::*;
+pub(crate) use activity::*;
 pub use contexts::*;
 pub use dictionary::*;
 pub use agent_history::*;
