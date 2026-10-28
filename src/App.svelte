@@ -335,7 +335,7 @@
         const savedThemesRead = readSettingsWithRetry(() =>
           invoke<unknown>('get_setting', { key: 'custom_themes' }),
         ).catch(() => null);
-        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
+        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
@@ -344,7 +344,6 @@
           invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
-          invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
           invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
@@ -361,7 +360,6 @@
         appStore.cleanupEnabled = cleanupEnabled ?? true;
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
         appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
-        appStore.syncEnabled = syncEnabled ?? false;
         appStore.ruinAccessibility = ruinAccessibility ?? false;
         appStore.devModeOnStartup = devModeOnStartup ?? false;
         appStore.subAppCaptureHotkey = typeof subAppCaptureHotkey === 'string' ? subAppCaptureHotkey : null;
@@ -374,10 +372,8 @@
     (async () => {
       await reloadGlobalSettings();
       if (!mounted) return;
-      if (appStore.syncEnabled) {
-        try { stopSyncListeners = startSyncListeners(); }
-        catch (error) { console.error('Failed to start sync listeners:', error); }
-      }
+      try { stopSyncListeners = startSyncListeners(); }
+      catch (error) { console.error('Failed to start sync listeners:', error); }
 
       const unlisten = await listen<string>('verenu:error', (ev) => {
         showErrorToast(ev.payload ?? '');
