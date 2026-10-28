@@ -849,7 +849,7 @@ mod live_address_bar {
             assert!(domain.is_none(), "ambiguous window must use app Context");
             return;
         }
-        assert_eq!(domain.as_deref(), Some(expected.as_str()));
+        assert!(domain.as_deref() == Some(expected.as_str()), "captured hostname did not match the synthetic fixture");
         assert!(started.elapsed() < std::time::Duration::from_millis(800), "domain read exceeded recording-start budget");
         let db = crate::data::db::open(":memory:").unwrap();
         let context = crate::data::db::insert_context_returning(&db, "Website fixture", None, None, None, None, false).unwrap();
